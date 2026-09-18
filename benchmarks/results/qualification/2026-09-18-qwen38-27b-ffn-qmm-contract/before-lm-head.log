@@ -1,0 +1,22 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <workspace>/crates/mlx-sys/../../.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+   Compiling ax-engine-mlx v7.4.0 (<workspace>/crates/ax-engine-mlx)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.96s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_mlx-980f9d8d1c5565f9)
+
+running 1 test
+test model::tests::lm_head_verify_qmm_contract_applies_dense_bias_once ...
+thread 'model::tests::lm_head_verify_qmm_contract_applies_dense_bias_once' (14017760) panicked at crates/ax-engine-mlx/src/model/mod.rs:5657:13:
+assertion `left == right` failed: Bfloat16: verify head must include one bias
+  left: Some(0.0)
+ right: None
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    model::tests::lm_head_verify_qmm_contract_applies_dense_bias_once
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1588 filtered out; finished in 2.50s
+
+error: test failed, to rerun pass `-p ax-engine-mlx --lib`

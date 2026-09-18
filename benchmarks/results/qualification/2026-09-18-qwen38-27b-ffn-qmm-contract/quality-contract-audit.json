@@ -1,0 +1,153 @@
+{
+  "schema": "ax.qwen38.line_set_contract.audit.v1",
+  "audit_date": "2026-09-18",
+  "scope": "Read-only source and retained-artifact audit; documentation interpretation only; no inference or regrading.",
+  "baseline_source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+  "baseline_wheel_sha256": "8177d8a18b986dfe6d0997db7802feb8f908397e067be3e71f731cdea99d9cbb",
+  "baseline_artifact_hashes": {
+    "selected_case_bank_sha256": "6ce468a7d7f97807797444cb48a143fc2e0cd991bd25b8bd6c99acc8631e0ca0",
+    "retained_results_sha256": "f954a616dee0844ba5f141ee37e7514565a891c7723a785eb0afa1e0b228f8e5"
+  },
+  "external_source": {
+    "git_revision": "8db1d1d155cb0400a86a86b9c62d0defb3a6148b",
+    "working_tree_clean": true,
+    "file": "ds4_eval.c",
+    "file_sha256": "4092ce91692e99b6cbb846401f075969362de5d2ea62662513979e18480f9a60",
+    "native_subset_match_lines": [
+      3171,
+      3188
+    ],
+    "line_set_dispatch_lines": [
+      3372,
+      3378
+    ],
+    "explicit_kind_resolution_lines": [
+      1386,
+      1389
+    ],
+    "explicit_non_compsec_line_set_declaration": {
+      "file": "ds4_eval_cases.c",
+      "lines": [
+        1061,
+        1072
+      ]
+    }
+  },
+  "historical_source_provenance": [
+    {
+      "artifact_label": "retained-axq6-32k-campaign",
+      "created_at": "2026-09-16T16:32:55.099229+00:00",
+      "manifest_sha256": "39fa3c080279ace3bb15c7cf0492c300861dc2c780d1499799c50849d5d180da",
+      "bank_sha256": "4e2cd845d78f748299dd3754b58d00695ccea36f3ecfc1f9c5fba9de87607834",
+      "source_hashes": {
+        "ds4_eval.c": "4092ce91692e99b6cbb846401f075969362de5d2ea62662513979e18480f9a60",
+        "ds4_eval_cases.c": "9e61d65d5c4db4fd312955b9ce4aed487b0487748b2cb8f91cf6b80b9b5cc764"
+      },
+      "historical_harness_sha256": {
+        "run_ds4_qa.py": "0b6bb38dfec9972bc7a5b6198e97f208a16e599c1ea0c10ddb96f41bdf8c3548",
+        "ds4_questions.py": "3685270f8fd82831a780872841f163eca5c3ecf0a5482f77e9e0a5dcdb41433a"
+      },
+      "current_ds4_eval_c_bytes_match_imported_source": true,
+      "max_tokens": 32000,
+      "thinking": true
+    },
+    {
+      "artifact_label": "retained-mxfp4-32k-campaign",
+      "created_at": "2026-09-17T02:14:38.972943+00:00",
+      "manifest_sha256": "84df6c3656c8ddf73370c505fe0b9d021e404d680bc9a8ebfbd1edbaf6a3632e",
+      "bank_sha256": "51552beca928b2b0c2784ec4d224d2192ef92ea228b1e626a894cf4a981245b5",
+      "source_hashes": {
+        "ds4_eval.c": "4092ce91692e99b6cbb846401f075969362de5d2ea62662513979e18480f9a60",
+        "ds4_eval_cases.c": "9e61d65d5c4db4fd312955b9ce4aed487b0487748b2cb8f91cf6b80b9b5cc764"
+      },
+      "historical_harness_sha256": {
+        "run_ds4_qa.py": "0b6bb38dfec9972bc7a5b6198e97f208a16e599c1ea0c10ddb96f41bdf8c3548",
+        "ds4_questions.py": "3685270f8fd82831a780872841f163eca5c3ecf0a5482f77e9e0a5dcdb41433a"
+      },
+      "current_ds4_eval_c_bytes_match_imported_source": true,
+      "max_tokens": 32000,
+      "thinking": true
+    }
+  ],
+  "ax_harness": {
+    "files_sha256": {
+      "qa/run_ds4_qa.py": "86b189bfb9d55d0eba2274961335a2c8d0999b35e46f1b800c7049e2cb689f78",
+      "qa/ds4_questions.py": "3685270f8fd82831a780872841f163eca5c3ecf0a5482f77e9e0a5dcdb41433a"
+    },
+    "byte_identical_to_baseline_source_commit": true,
+    "status_contract": "Exact equality with a complete key or alias set.",
+    "recorded_detection_contract": "Nonempty reported line set contained within a key or alias set, after AX completion/format parsing.",
+    "grader_modified": false,
+    "historical_grades_modified": false
+  },
+  "baseline_request_audit": {
+    "total_rows": 24,
+    "full_request_dictionary_matches": 24,
+    "gold_matches": 24,
+    "unique_cases_per_route": 12,
+    "selected_source_counts": {
+      "COMPSEC": 11,
+      "NIST Juliet": 1
+    },
+    "settings": {
+      "max_tokens": 512,
+      "temperature": 0,
+      "top_p": 1,
+      "seed": 0,
+      "stream": false,
+      "enable_thinking": false,
+      "system_convention": "Existing answer-only diagnostic system instruction"
+    },
+    "route_counts": {
+      "direct": {
+        "rows": 12,
+        "unique_keys": 12,
+        "recorded_status_counts": {
+          "wrong": 7,
+          "truncated": 5
+        },
+        "recorded_detections": 7
+      },
+      "mtp": {
+        "rows": 12,
+        "unique_keys": 12,
+        "recorded_status_counts": {
+          "wrong": 7,
+          "truncated": 5
+        },
+        "recorded_detections": 7
+      }
+    }
+  },
+  "conclusions": {
+    "strict_correct_per_route": {
+      "numerator": 0,
+      "denominator": 12
+    },
+    "strict_score_is_original_native_task_accuracy": false,
+    "recorded_detection_is_end_to_end_native_grade": false,
+    "source_file_identity_proves_historical_matching_semantics": true,
+    "external_grader_executed_by_ax": false,
+    "documentation_labeling_suffices_without_grade_changes": true
+  },
+  "separate_diagnostic": {
+    "variant": "complete_set_v1",
+    "status": "Prepared requests only; execution evidence to be supplied separately.",
+    "target_source_commit": "d121f107999e3b8627f60455a79bdd0dad7ada6c",
+    "cases": 2,
+    "variants": 2,
+    "routes": 2,
+    "planned_requests": 8,
+    "fresh_process_per_request": true,
+    "request_bank_sha256": "0543fd232ac438db87e29b36a30855c365ba6ce8d64cef98d369a4cdfc251704",
+    "replacement_diff_sha256": "0fece184575a136ffbd5fde3f5fea35e2a3c49efb84539c2b7c87c931d274590",
+    "original_instruction_utf8_sha256": "df15dd19ae6561588405838bb0e5f2dffc2a779c882611a162f14ce06f7ef03a",
+    "replacement_instruction_utf8_sha256": "238f98cf69cd60f26af14b1c9156b33b0ffb61509ec79350e4d4499eb28066a7",
+    "one_exact_instruction_replacement_per_variant": true,
+    "code_and_safety_instruction_unchanged": true,
+    "gold_unchanged": true,
+    "stricter_new_task_not_source_task_repair": true,
+    "reused_keys_not_proven_exhaustive_causal_sets": true
+  },
+  "publication_filter": "Own analysis, identities, hashes and counts only. No external question text, source code, source comments, answer keys, raw responses, private hostnames, or local absolute paths."
+}

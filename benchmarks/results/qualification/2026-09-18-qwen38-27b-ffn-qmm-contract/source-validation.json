@@ -1,0 +1,368 @@
+{
+  "source_commit": "d121f107999e3b8627f60455a79bdd0dad7ada6c",
+  "scope": "Local unit/source validation; SKU qualification is recorded separately",
+  "source_before": {
+    "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": "7121f5251e080abb629c6981a9182a2c86d8b2ca7a459bdc0baaf730b3df0135",
+    "crates/ax-engine-mlx/src/model/shared/utils.rs": "ffc82c32bbdeb43c75b14edc6c444364cf7576640f9d38af28bfdd812ea52d7c",
+    "crates/ax-engine-mlx/src/model/mod.rs": "a84d17265510f0a36d99f75268a185091a4a9fe3bdbe8c00f5c654d027bfc68c"
+  },
+  "source_after": {
+    "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": "7121f5251e080abb629c6981a9182a2c86d8b2ca7a459bdc0baaf730b3df0135",
+    "crates/ax-engine-mlx/src/model/shared/utils.rs": "ffc82c32bbdeb43c75b14edc6c444364cf7576640f9d38af28bfdd812ea52d7c",
+    "crates/ax-engine-mlx/src/model/mod.rs": "a84d17265510f0a36d99f75268a185091a4a9fe3bdbe8c00f5c654d027bfc68c"
+  },
+  "regressions": {
+    "before": {
+      "published_file": "before.log",
+      "raw_sha256": "a8798159cb3059c35f77664beaf4f0bac76af39b2b8a774d00839a64931577ef",
+      "published_sha256": "487028df634cca051711cefb25c49528984e889f596a207f676db04fac6f9ff6",
+      "receipt": {
+        "command": [
+          "rustup",
+          "run",
+          "1.97.1",
+          "cargo",
+          "test",
+          "-p",
+          "ax-engine-mlx",
+          "--lib",
+          "qw_verify_qmm_contract_",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "environment_override": {
+          "AX_MLX_MTP_VERIFY_QMM_MIN_N": "16384"
+        },
+        "source_sha256_before": {
+          "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": "18b9b4be7a0c91f55d05b3a0c5502f08cc17c21d6eb1138cb7621ff065a65297",
+          "crates/ax-engine-mlx/src/model/shared/utils.rs": "e7ec217a26a1c771302ae47e8dcdc2fa3eb7905724a792f85c18d58508810fce"
+        },
+        "source_sha256_after": {
+          "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": "18b9b4be7a0c91f55d05b3a0c5502f08cc17c21d6eb1138cb7621ff065a65297",
+          "crates/ax-engine-mlx/src/model/shared/utils.rs": "e7ec217a26a1c771302ae47e8dcdc2fa3eb7905724a792f85c18d58508810fce"
+        },
+        "exit_code": 101,
+        "elapsed_seconds": 17.47,
+        "host_role": "Local unit tests only; not SKU qualification",
+        "raw_log_sha256": "a8798159cb3059c35f77664beaf4f0bac76af39b2b8a774d00839a64931577ef"
+      }
+    },
+    "before-lm-head": {
+      "published_file": "before-lm-head.log",
+      "raw_sha256": "4aa7d2aa32fbf11fc1d9998d445b272e15ab4dcb1d2053dc6338e3a34580ded4",
+      "published_sha256": "d676d6dc629ce57a2d249fa00544502465c4eee3a14da89a27d87ec2efc58314",
+      "receipt": {
+        "command": [
+          "rustup",
+          "run",
+          "1.97.1",
+          "cargo",
+          "test",
+          "-p",
+          "ax-engine-mlx",
+          "--lib",
+          "lm_head_verify_qmm_contract_",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "environment_override": {
+          "AX_MLX_MTP_VERIFY_QMM_MIN_N": "16384"
+        },
+        "source_sha256_before": {
+          "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": "7121f5251e080abb629c6981a9182a2c86d8b2ca7a459bdc0baaf730b3df0135",
+          "crates/ax-engine-mlx/src/model/shared/utils.rs": "ffc82c32bbdeb43c75b14edc6c444364cf7576640f9d38af28bfdd812ea52d7c",
+          "crates/ax-engine-mlx/src/model/mod.rs": "b56da73c8bff9d26a12b4114208296ebfca9780744870b586502e7094fd47a1d"
+        },
+        "source_sha256_after": {
+          "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": "7121f5251e080abb629c6981a9182a2c86d8b2ca7a459bdc0baaf730b3df0135",
+          "crates/ax-engine-mlx/src/model/shared/utils.rs": "ffc82c32bbdeb43c75b14edc6c444364cf7576640f9d38af28bfdd812ea52d7c",
+          "crates/ax-engine-mlx/src/model/mod.rs": "b56da73c8bff9d26a12b4114208296ebfca9780744870b586502e7094fd47a1d"
+        },
+        "exit_code": 101,
+        "elapsed_seconds": 10.38,
+        "host_role": "Local unit tests only; not SKU qualification",
+        "scope": "After helper contract repair, before adapting the direct lm-head caller",
+        "raw_log_sha256": "4aa7d2aa32fbf11fc1d9998d445b272e15ab4dcb1d2053dc6338e3a34580ded4"
+      }
+    },
+    "after-all-callers": {
+      "published_file": "after-all-callers.log",
+      "raw_sha256": "1450a7049ac5f619a875ceec59f28a3ddaeec790e833448e04c7533f16fe62f5",
+      "published_sha256": "f307e28a738c9fdc9cb94e7f09f4a781916d3fe4fb6ffb9f502ee28bab885f40",
+      "receipt": {
+        "command": [
+          "rustup",
+          "run",
+          "1.97.1",
+          "cargo",
+          "test",
+          "-p",
+          "ax-engine-mlx",
+          "--lib",
+          "verify_qmm",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "environment_override": {
+          "AX_MLX_MTP_VERIFY_QMM_MIN_N": "16384"
+        },
+        "source_sha256_before": {
+          "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": "7121f5251e080abb629c6981a9182a2c86d8b2ca7a459bdc0baaf730b3df0135",
+          "crates/ax-engine-mlx/src/model/shared/utils.rs": "ffc82c32bbdeb43c75b14edc6c444364cf7576640f9d38af28bfdd812ea52d7c",
+          "crates/ax-engine-mlx/src/model/mod.rs": "a84d17265510f0a36d99f75268a185091a4a9fe3bdbe8c00f5c654d027bfc68c"
+        },
+        "source_sha256_after": {
+          "crates/ax-engine-mlx/src/model/shared/verify_qmm.rs": "7121f5251e080abb629c6981a9182a2c86d8b2ca7a459bdc0baaf730b3df0135",
+          "crates/ax-engine-mlx/src/model/shared/utils.rs": "ffc82c32bbdeb43c75b14edc6c444364cf7576640f9d38af28bfdd812ea52d7c",
+          "crates/ax-engine-mlx/src/model/mod.rs": "a84d17265510f0a36d99f75268a185091a4a9fe3bdbe8c00f5c654d027bfc68c"
+        },
+        "exit_code": 0,
+        "elapsed_seconds": 9.56,
+        "host_role": "Local unit tests only; not SKU qualification",
+        "raw_log_sha256": "1450a7049ac5f619a875ceec59f28a3ddaeec790e833448e04c7533f16fe62f5"
+      }
+    }
+  },
+  "checks": [
+    {
+      "check": "qmm-regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--lib",
+        "verify_qmm"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "fmt",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "--force-warn",
+        "clippy::unwrap-used",
+        "--force-warn",
+        "clippy::expect-used",
+        "--force-warn",
+        "clippy::panic",
+        "--force-warn",
+        "clippy::dbg-macro",
+        "--force-warn",
+        "clippy::large-enum-variant"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "rust",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "maturin",
+      "command": [
+        "maturin",
+        "develop",
+        "--profile",
+        "release-pyext"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "scripts",
+      "command": [
+        "bash",
+        "scripts/check-scripts.sh"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "python",
+      "command": [
+        "<workspace>/.venv/bin/python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "qwen27b",
+      "command": [
+        "<workspace>/.venv/bin/python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "flash_next",
+      "command": [
+        "<workspace>/.venv/bin/python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "claims",
+      "command": [
+        "<workspace>/.venv/bin/python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "strict_clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 101,
+    "source_base": "8045937d9e3c2c8e1e489283aaaf4bb0ef192eba",
+    "patch_sha256": "898a36bd1d61415711f8c915ba5384c6d687d8bdd239b70b87b306b322c31ef1",
+    "raw_log_sha256": "18de9c55a1c69cfc8478805fee9acad0bd98338de3099597da7a466e29481ba6",
+    "interpretation": "Failed on pre-existing untouched core restriction lints; CI-policy Clippy passed with the five existing force-warn exceptions. No lint policy was changed.",
+    "first_error": "crates/ax-engine-core/src/architecture_registry.rs:706:20, clippy::expect-used"
+  },
+  "python": {
+    "passed": 209,
+    "skipped": 26,
+    "subtests_passed": 140
+  },
+  "raw_gate_log_sha256": {
+    "claims.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "clippy.log": "3396f6a968fe6d511db258e29a6c4cc97390d5e571d5273c8d685b8abdd94353",
+    "flash_next.log": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "maturin.log": "19471c659d390b8ec4bab8041f7c9ed13c53e4d37abec30130b270fc31c2d443",
+    "python.log": "a30a6d4f85780c88c4ad4bfd83bdd2aa1c733d6f626cf67fac3f7e2d0716694d",
+    "qmm-regression.log": "7ba1a27dffce97d59582d97eb931e87c009294b004fd638d386b72ac783c98c4",
+    "qwen27b.log": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+    "rust.log": "969d2f1e3cdb11663a3bd1f612e3307a2d40089d011b2cc6223dac1f219c1aa2",
+    "scripts.log": "eb6548cf118c199e85689a64b0628e72e52da11555b8ddb4ac95bbeea44f95bf"
+  },
+  "reviews": {
+    "scope": "Self-contained advisory reviews; not independent test runs. Final review included both production callers.",
+    "initial_grok": {
+      "command": [
+        "grok",
+        "-p",
+        "<prompt.txt contents>",
+        "--output-format",
+        "plain",
+        "--max-turns",
+        "1",
+        "--disallowed-tools",
+        "run_terminal_cmd,search_replace",
+        "-m",
+        "grok-4.6"
+      ],
+      "timeout_seconds": 180,
+      "timed_out": true,
+      "exit_code": -15,
+      "elapsed_seconds": 180.01,
+      "prompt_sha256": "5ea94265f2b122a9bfe4a710fc039bab94502954b760f28150e5842de7802bc6",
+      "stdout_sha256": "747c0d2e9e02238bf990764f5c5ecf421cbc694a5987d354c06d3d8589818d54",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "initial_qwen": {
+      "command": [
+        "ax-code",
+        "run",
+        "--model",
+        "<configured-provider>/qwen3.8-max",
+        "--sandbox",
+        "read-only",
+        "--title",
+        "Verify QMM integration contracts review",
+        "<prompt.txt contents>"
+      ],
+      "timeout_seconds": 180,
+      "timed_out": true,
+      "exit_code": -15,
+      "elapsed_seconds": 180.02,
+      "prompt_sha256": "5ea94265f2b122a9bfe4a710fc039bab94502954b760f28150e5842de7802bc6",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "2e927fd241a532d58ffa79ab2844f4f1aabe6bd046fa3057f42fc90292bbbcf5"
+    },
+    "final_grok": {
+      "command": [
+        "grok",
+        "-p",
+        "<final-prompt.txt contents>",
+        "--output-format",
+        "plain",
+        "--max-turns",
+        "1",
+        "--disallowed-tools",
+        "run_terminal_cmd,search_replace",
+        "-m",
+        "grok-4.6"
+      ],
+      "timeout_seconds": 180,
+      "timed_out": false,
+      "exit_code": 0,
+      "elapsed_seconds": 71.84,
+      "prompt_sha256": "a69b519f82ba4a41cba7d82bf089887b0eb1f19c06433a4b60aacc39be7f7d4f",
+      "stdout_sha256": "d7f76b5f020865a42b368270220720dcb9d5c0afe1b818c292b1ee8d4b561935",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "final_qwen": {
+      "command": [
+        "ax-code",
+        "run",
+        "--model",
+        "<configured-provider>/qwen3.8-max",
+        "--sandbox",
+        "read-only",
+        "--title",
+        "Review final QMM caller amendment",
+        "<final-prompt.txt contents>"
+      ],
+      "timeout_seconds": 180,
+      "timed_out": false,
+      "exit_code": 0,
+      "elapsed_seconds": 67.98,
+      "prompt_sha256": "a69b519f82ba4a41cba7d82bf089887b0eb1f19c06433a4b60aacc39be7f7d4f",
+      "stdout_sha256": "5431f215ea3e29336ecb5eb1351e0402437f695480fbfa8baa6f2f572b3bbcf0",
+      "stderr_sha256": "21da32cbe7fbcb5a5489345de099a8db93117dd3aae52c353e3ceef71a7f835e"
+    },
+    "source_assessment": "Both callers add dense bias once. Mixed affine metadata uses stock promotion. Do not constrain separate dense-bias dtype: its ordinary add may promote the output. No reviewer claim establishes a fix for the distinct bias-free BF16 FFN discrepancy."
+  }
+}

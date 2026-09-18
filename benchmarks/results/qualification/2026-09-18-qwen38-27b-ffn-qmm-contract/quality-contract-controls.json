@@ -1,0 +1,321 @@
+{
+  "source_commit": "d121f107999e3b8627f60455a79bdd0dad7ada6c",
+  "wheel_sha256": "89d43b038bbd11950e43472e41175c15b2e8a6854d4dcbdfe908c392fb280b29",
+  "server_sha256": "9d2cbc61584d89ce2e6e55a64c9b910d6dee5327e4345202be688a2a49b26f31",
+  "scope": "New cold two-case contract experiment; not a rerun of the historical 12-case failure subset or a release gate.",
+  "quality_acceptance_claim": false,
+  "max_tokens": 512,
+  "temperature": 0,
+  "seed": 0,
+  "thinking": false,
+  "fresh_process_per_request": true,
+  "runtime_overrides": {},
+  "variant_bank_sha256": "0543fd232ac438db87e29b36a30855c365ba6ce8d64cef98d369a4cdfc251704",
+  "harness_sha256": {
+    "qa/run_ds4_qa.py": "86b189bfb9d55d0eba2274961335a2c8d0999b35e46f1b800c7049e2cb689f78",
+    "qa/ds4_questions.py": "3685270f8fd82831a780872841f163eca5c3ecf0a5482f77e9e0a5dcdb41433a"
+  },
+  "runner_sha256": "0ee3fa313d97c37d851425ba024ff8867780b566c7c2a13de116a975ffc05c98",
+  "gold_and_grader_unchanged": true,
+  "all_requests_equal_reviewed_bank": true,
+  "all_raw_response_grades_recomputed": true,
+  "independent_server_count": 8,
+  "experiment_complete": true,
+  "group_status_counts": {
+    "original/direct": {
+      "truncated": 1,
+      "wrong": 1
+    },
+    "original/mtp": {
+      "truncated": 1,
+      "wrong": 1
+    },
+    "complete_set_v1/direct": {
+      "wrong": 2
+    },
+    "complete_set_v1/mtp": {
+      "wrong": 2
+    }
+  },
+  "cells": [
+    {
+      "key": "COMPSEC:compsec-079",
+      "mode": "direct",
+      "variant": "original",
+      "thinking": false,
+      "fresh_process": true,
+      "request_canonical_sha256": "8f26adf9d1d61e0a78fb59ec6ca6c5d7a89cf29c90993dbe24e2dbd666bf32b8",
+      "request_body_sha256": "0e7e22c61c069a7bfe0acb3292dc15e7771486207fce0a9d96ccdac838a5c87f",
+      "response_body_sha256": "2c5cd72f4268d7ae89804ca4ad5878b197638ddd31dca6641d9a82e996c1b69c",
+      "case_canonical_sha256": "94e1261fa373691b340fa16285a32fdd8b7238000170b1de80e458d648f487fa",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "grade_canonical_sha256": "b6f62e81a4f7c3e37501138de1fe6db8305bd1417fac2b3c56e62dad4a29c6bf",
+      "http_status": 200,
+      "server_log_sha256": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 409,
+        "completion_tokens": 512,
+        "total_tokens": 921
+      },
+      "cleanup_completed": true
+    },
+    {
+      "key": "COMPSEC:compsec-079",
+      "mode": "mtp",
+      "variant": "original",
+      "thinking": false,
+      "fresh_process": true,
+      "request_canonical_sha256": "8f26adf9d1d61e0a78fb59ec6ca6c5d7a89cf29c90993dbe24e2dbd666bf32b8",
+      "request_body_sha256": "0e7e22c61c069a7bfe0acb3292dc15e7771486207fce0a9d96ccdac838a5c87f",
+      "response_body_sha256": "1848b9acde95b03271a47bc4248e532b24e9eab3272c40d9c0973786c54dc8ed",
+      "case_canonical_sha256": "94e1261fa373691b340fa16285a32fdd8b7238000170b1de80e458d648f487fa",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "grade_canonical_sha256": "b6f62e81a4f7c3e37501138de1fe6db8305bd1417fac2b3c56e62dad4a29c6bf",
+      "http_status": 200,
+      "server_log_sha256": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+      "finish_reason": "length",
+      "usage": {
+        "prompt_tokens": 409,
+        "completion_tokens": 512,
+        "total_tokens": 921
+      },
+      "cleanup_completed": true
+    },
+    {
+      "key": "COMPSEC:compsec-079",
+      "mode": "direct",
+      "variant": "complete_set_v1",
+      "thinking": false,
+      "fresh_process": true,
+      "request_canonical_sha256": "0d293d7541b44198fabe407734c0b63f37a701381023a2d77416176f8573911b",
+      "request_body_sha256": "08a4bc6fd344a105f32fc2c3baa9cc5424c11212df4297862307ce140af160c1",
+      "response_body_sha256": "918c58256d037d1111163cd0bf21d3b7cd78aec30053b37649f0af491a214fcf",
+      "case_canonical_sha256": "94e1261fa373691b340fa16285a32fdd8b7238000170b1de80e458d648f487fa",
+      "grade": {
+        "status": "wrong",
+        "answer": "0",
+        "detection": false,
+        "span_reported": 1,
+        "span_expected": null,
+        "span_recall": null
+      },
+      "grade_canonical_sha256": "1c34b572f21b9a7e0e3bb6ec7d618549d2f30da927c73df3ca1b2aee7aa25e08",
+      "http_status": 200,
+      "server_log_sha256": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 436,
+        "completion_tokens": 4,
+        "total_tokens": 440
+      },
+      "cleanup_completed": true
+    },
+    {
+      "key": "COMPSEC:compsec-079",
+      "mode": "mtp",
+      "variant": "complete_set_v1",
+      "thinking": false,
+      "fresh_process": true,
+      "request_canonical_sha256": "0d293d7541b44198fabe407734c0b63f37a701381023a2d77416176f8573911b",
+      "request_body_sha256": "08a4bc6fd344a105f32fc2c3baa9cc5424c11212df4297862307ce140af160c1",
+      "response_body_sha256": "26ed0728802314ceb2646624da665ab9ec5516bd0130767d30fab6c99c7de3a4",
+      "case_canonical_sha256": "94e1261fa373691b340fa16285a32fdd8b7238000170b1de80e458d648f487fa",
+      "grade": {
+        "status": "wrong",
+        "answer": "0",
+        "detection": false,
+        "span_reported": 1,
+        "span_expected": null,
+        "span_recall": null
+      },
+      "grade_canonical_sha256": "1c34b572f21b9a7e0e3bb6ec7d618549d2f30da927c73df3ca1b2aee7aa25e08",
+      "http_status": 200,
+      "server_log_sha256": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 436,
+        "completion_tokens": 4,
+        "total_tokens": 440
+      },
+      "cleanup_completed": true
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "mode": "direct",
+      "variant": "original",
+      "thinking": false,
+      "fresh_process": true,
+      "request_canonical_sha256": "1dea35017c1fd63066bee421e0d782a8984abdeca674512face027be6edafe08",
+      "request_body_sha256": "6ba05f4dc380572a5dc9e57aee1769a3a53d75850a409fe93546e2607fb8a761",
+      "response_body_sha256": "080518132c4785cf6082d7e71a51de37b8978d6c12546d8c0f42cf7c0c85a92d",
+      "case_canonical_sha256": "eee0899e38f8e41084d321df6fd597c7d2c55c2fa2e9a4e514f57b152320c72b",
+      "grade": {
+        "status": "wrong",
+        "answer": "3",
+        "detection": true,
+        "span_reported": 1,
+        "span_expected": 4,
+        "span_recall": 0.25
+      },
+      "grade_canonical_sha256": "55bd1db88d9c3b5fff6394f0ea3ef1c5b7b2008593919548afdced1b3e966a22",
+      "http_status": 200,
+      "server_log_sha256": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 381,
+        "completion_tokens": 4,
+        "total_tokens": 385
+      },
+      "cleanup_completed": true
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "mode": "mtp",
+      "variant": "original",
+      "thinking": false,
+      "fresh_process": true,
+      "request_canonical_sha256": "1dea35017c1fd63066bee421e0d782a8984abdeca674512face027be6edafe08",
+      "request_body_sha256": "6ba05f4dc380572a5dc9e57aee1769a3a53d75850a409fe93546e2607fb8a761",
+      "response_body_sha256": "1bd52ec557a8b354028058cc7b19059a0ad57fd738218cbfaa0028849702102b",
+      "case_canonical_sha256": "eee0899e38f8e41084d321df6fd597c7d2c55c2fa2e9a4e514f57b152320c72b",
+      "grade": {
+        "status": "wrong",
+        "answer": "3",
+        "detection": true,
+        "span_reported": 1,
+        "span_expected": 4,
+        "span_recall": 0.25
+      },
+      "grade_canonical_sha256": "55bd1db88d9c3b5fff6394f0ea3ef1c5b7b2008593919548afdced1b3e966a22",
+      "http_status": 200,
+      "server_log_sha256": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 381,
+        "completion_tokens": 4,
+        "total_tokens": 385
+      },
+      "cleanup_completed": true
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "mode": "direct",
+      "variant": "complete_set_v1",
+      "thinking": false,
+      "fresh_process": true,
+      "request_canonical_sha256": "89e742085dec1a30ee4ad2f0199e058bb69ee3fc21f7c33ca264f4be9edb8d6c",
+      "request_body_sha256": "e69a17e89dc3a90388226fa99010c53b20b35cb247bd91157fd4ded027884d86",
+      "response_body_sha256": "77814607fd00ecaf4ef99e795a51d667bdfef8a29496ce814578daaa19dfce57",
+      "case_canonical_sha256": "eee0899e38f8e41084d321df6fd597c7d2c55c2fa2e9a4e514f57b152320c72b",
+      "grade": {
+        "status": "wrong",
+        "answer": "3",
+        "detection": true,
+        "span_reported": 1,
+        "span_expected": 4,
+        "span_recall": 0.25
+      },
+      "grade_canonical_sha256": "55bd1db88d9c3b5fff6394f0ea3ef1c5b7b2008593919548afdced1b3e966a22",
+      "http_status": 200,
+      "server_log_sha256": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 408,
+        "completion_tokens": 4,
+        "total_tokens": 412
+      },
+      "cleanup_completed": true
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "mode": "mtp",
+      "variant": "complete_set_v1",
+      "thinking": false,
+      "fresh_process": true,
+      "request_canonical_sha256": "89e742085dec1a30ee4ad2f0199e058bb69ee3fc21f7c33ca264f4be9edb8d6c",
+      "request_body_sha256": "e69a17e89dc3a90388226fa99010c53b20b35cb247bd91157fd4ded027884d86",
+      "response_body_sha256": "db9f3160fc59b5cefaa98a668553da06616b280b7af55313e445b3ad5b0470fa",
+      "case_canonical_sha256": "eee0899e38f8e41084d321df6fd597c7d2c55c2fa2e9a4e514f57b152320c72b",
+      "grade": {
+        "status": "wrong",
+        "answer": "3",
+        "detection": true,
+        "span_reported": 1,
+        "span_expected": 4,
+        "span_recall": 0.25
+      },
+      "grade_canonical_sha256": "55bd1db88d9c3b5fff6394f0ea3ef1c5b7b2008593919548afdced1b3e966a22",
+      "http_status": 200,
+      "server_log_sha256": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 408,
+        "completion_tokens": 4,
+        "total_tokens": 412
+      },
+      "cleanup_completed": true
+    }
+  ],
+  "paired": [
+    {
+      "key": "COMPSEC:compsec-079",
+      "variant": "original",
+      "response_content_equal": false
+    },
+    {
+      "key": "COMPSEC:compsec-079",
+      "variant": "complete_set_v1",
+      "response_content_equal": true
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "variant": "original",
+      "response_content_equal": true
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "variant": "complete_set_v1",
+      "response_content_equal": true
+    }
+  ],
+  "raw_artifact_sha256": {
+    "02-COMPSEC-compsec-079-original-mtp-request.json": "0e7e22c61c069a7bfe0acb3292dc15e7771486207fce0a9d96ccdac838a5c87f",
+    "summary.json": "41d21befb0d23ad3b840852159d0aab65e9df236f566ec3b4cbb13c077d42ac6",
+    "02-COMPSEC-compsec-079-original-mtp-response.json": "1848b9acde95b03271a47bc4248e532b24e9eab3272c40d9c0973786c54dc8ed",
+    "variant-bank.json": "0543fd232ac438db87e29b36a30855c365ba6ce8d64cef98d369a4cdfc251704",
+    "06-COMPSEC-compsec-086-original-mtp-request.json": "6ba05f4dc380572a5dc9e57aee1769a3a53d75850a409fe93546e2607fb8a761",
+    "07-COMPSEC-compsec-086-complete_set_v1-direct-response.json": "77814607fd00ecaf4ef99e795a51d667bdfef8a29496ce814578daaa19dfce57",
+    "06-COMPSEC-compsec-086-original-mtp-server.log": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+    "08-COMPSEC-compsec-086-complete_set_v1-mtp-server.log": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+    "07-COMPSEC-compsec-086-complete_set_v1-direct-request.json": "e69a17e89dc3a90388226fa99010c53b20b35cb247bd91157fd4ded027884d86",
+    "02-COMPSEC-compsec-079-original-mtp-server.log": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+    "04-COMPSEC-compsec-079-complete_set_v1-mtp-response.json": "26ed0728802314ceb2646624da665ab9ec5516bd0130767d30fab6c99c7de3a4",
+    "provenance.json": "e4846e1fe808c872f72da3f22969f12c0200098389c3779943ae38ab8c2468a6",
+    "01-COMPSEC-compsec-079-original-direct-request.json": "0e7e22c61c069a7bfe0acb3292dc15e7771486207fce0a9d96ccdac838a5c87f",
+    "06-COMPSEC-compsec-086-original-mtp-response.json": "1bd52ec557a8b354028058cc7b19059a0ad57fd738218cbfaa0028849702102b",
+    "results.json": "8a95e05ba16fb520d6fb385e4b569e6b918478657f7f6698a0e77b5a24c78bfd",
+    "07-COMPSEC-compsec-086-complete_set_v1-direct-server.log": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+    "03-COMPSEC-compsec-079-complete_set_v1-direct-request.json": "08a4bc6fd344a105f32fc2c3baa9cc5424c11212df4297862307ce140af160c1",
+    "05-COMPSEC-compsec-086-original-direct-response.json": "080518132c4785cf6082d7e71a51de37b8978d6c12546d8c0f42cf7c0c85a92d",
+    "03-COMPSEC-compsec-079-complete_set_v1-direct-response.json": "918c58256d037d1111163cd0bf21d3b7cd78aec30053b37649f0af491a214fcf",
+    "variant-receipt.json": "999761e3da49643c0e75d2d1b33a27b40d9630b50976bb1e9b2b8666b3c4e547",
+    "01-COMPSEC-compsec-079-original-direct-response.json": "2c5cd72f4268d7ae89804ca4ad5878b197638ddd31dca6641d9a82e996c1b69c",
+    "05-COMPSEC-compsec-086-original-direct-request.json": "6ba05f4dc380572a5dc9e57aee1769a3a53d75850a409fe93546e2607fb8a761",
+    "01-COMPSEC-compsec-079-original-direct-server.log": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+    "08-COMPSEC-compsec-086-complete_set_v1-mtp-request.json": "e69a17e89dc3a90388226fa99010c53b20b35cb247bd91157fd4ded027884d86",
+    "03-COMPSEC-compsec-079-complete_set_v1-direct-server.log": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+    "04-COMPSEC-compsec-079-complete_set_v1-mtp-request.json": "08a4bc6fd344a105f32fc2c3baa9cc5424c11212df4297862307ce140af160c1",
+    "04-COMPSEC-compsec-079-complete_set_v1-mtp-server.log": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145",
+    "08-COMPSEC-compsec-086-complete_set_v1-mtp-response.json": "db9f3160fc59b5cefaa98a668553da06616b280b7af55313e445b3ad5b0470fa",
+    "05-COMPSEC-compsec-086-original-direct-server.log": "5eedaeb46187ffa23c658ffcebbcdb413f1e23add1fe11912a1d57f93571e145"
+  },
+  "interpretation": "Original079 is truncated in both fresh processes; original086 reports an accepted location but does not match the stricter complete key. The complete_set_v1 variant returns0 for079 and3 for086 on both routes. This is a stricter new task and its reused accepted-location keys are not proven exhaustive causal sets; it does not replace original scores or release qualification.",
+  "publication": "No external question text or source code is copied here. Exact requests and responses remain in retained raw artifacts; hashes and observed answer/grade fields are curated."
+}

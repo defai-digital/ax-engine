@@ -1,0 +1,992 @@
+diff --git a/crates/ax-engine-mlx/src/model/families/qwen3_linear.rs b/crates/ax-engine-mlx/src/model/families/qwen3_linear.rs
+index 2b3d0231..50adbd7e 100644
+--- a/crates/ax-engine-mlx/src/model/families/qwen3_linear.rs
++++ b/crates/ax-engine-mlx/src/model/families/qwen3_linear.rs
+@@ -60,6 +60,7 @@ pub(crate) fn layer_forward_verify_functional(
+         return None;
+     }
+ 
++    crate::model::diagnostic_record("layer_input", hidden);
+     let fuse_la_norm = fastpath::should_qwen_la_norm_qkvz_fuse(&cfg.model_family, seq);
+     let fold_exact_attn_norm = !fuse_la_norm && fastpath::qwen_linear_mtp_exact_enabled();
+     if fuse_la_norm {
+@@ -100,7 +101,10 @@ pub(crate) fn layer_forward_verify_functional(
+         cfg.rms_norm_eps,
+         false,
+     );
++    crate::model::diagnostic_record("attention_residual", &residual);
++    crate::model::diagnostic_record("ffn_input", &normed2);
+     let hidden = ffn_swiglu_plus_residual(cfg, w, &normed2, None, layer_idx, &residual);
++    crate::model::diagnostic_record("layer_output", &hidden);
+     Some(QwenLinearVerifyLayerOutput { hidden, state })
+ }
+ 
+@@ -147,6 +151,7 @@ pub(crate) fn layer_forward(
+     last_position_only: bool,
+     skip_post_attention_ffn: bool,
+ ) -> MlxArray {
++    crate::model::diagnostic_record("layer_input", hidden);
+     let seq = hidden.shape()[1] as usize;
+     if let Some(compiled) = super::super::whole_verify::try_compiled_qwen_linear_verify_layer(
+         cfg, w, hidden, cache, layer_idx,
+@@ -275,6 +280,8 @@ pub(crate) fn layer_forward(
+         cfg.rms_norm_eps,
+         last_only_active,
+     );
++    crate::model::diagnostic_record("attention_residual", &hidden);
++    crate::model::diagnostic_record("ffn_input", &normed2);
+     if let Some(started) = residual_norm_started {
+         forward_profile_eval_elapsed(
+             profile_decode_layer,
+@@ -421,6 +428,7 @@ pub(crate) fn layer_forward(
+             &[&out],
+         );
+     }
++    crate::model::diagnostic_record("layer_output", &out);
+     out
+ }
+ 
+diff --git a/crates/ax-engine-mlx/src/model/mod.rs b/crates/ax-engine-mlx/src/model/mod.rs
+index e9c4f2c6..a6952755 100644
+--- a/crates/ax-engine-mlx/src/model/mod.rs
++++ b/crates/ax-engine-mlx/src/model/mod.rs
+@@ -211,8 +211,280 @@ pub(crate) fn reject_unimplemented_qwen4_exp(cfg: &ModelConfig) {
+ /// graphs for every layer of the same attention type.
+ ///
+ /// Returns updated hidden states.
++type DiagnosticStages = std::collections::BTreeMap<&'static str, MlxArray>;
++thread_local! {
++    pub(crate) static DIAGNOSTIC_MODE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
++    static DIAGNOSTIC_STAGES: std::cell::RefCell<Option<DiagnosticStages>> = const { std::cell::RefCell::new(None) };
++    static DIAGNOSTIC_ALTERNATES: std::cell::RefCell<Vec<(&'static str, MlxArray, MlxArray)>> = const { std::cell::RefCell::new(Vec::new()) };
++}
++
++// Ignored diagnostic only. Captures are armed after the production layer and
++// only around layer-zero eager replay; compiled closure leaves stay unchanged.
++pub(crate) fn diagnostic_record(label: &'static str, value: &MlxArray) {
++    DIAGNOSTIC_STAGES.with(|slot| {
++        if let Some(stages) = slot.borrow_mut().as_mut() {
++            assert!(
++                stages.insert(label, value.clone()).is_none(),
++                "duplicate diagnostic stage: {label}"
++            );
++        }
++    });
++}
++
++pub(crate) fn diagnostic_alternate(label: &'static str, actual: &MlxArray, alternate: &MlxArray) {
++    if diagnostic_capture_active() {
++        DIAGNOSTIC_ALTERNATES.with(|slot| {
++            slot.borrow_mut()
++                .push((label, actual.clone(), alternate.clone()))
++        });
++    }
++}
++
++pub(crate) fn diagnostic_capture_active() -> bool {
++    DIAGNOSTIC_STAGES.with(|slot| slot.borrow().is_some())
++}
++
++pub(crate) fn diagnostic_ffn_route(route: &str) {
++    if diagnostic_capture_active() {
++        eprintln!("ffn_dispatch route={route}");
++    }
++}
++
++// A nested closure may trace on its first application. Suppress observers
++// while it is compiled/applied, and capture only the returned real arrays.
++pub(crate) struct DiagnosticCapturePause(Option<DiagnosticStages>);
++
++pub(crate) fn diagnostic_pause_stages() -> DiagnosticCapturePause {
++    DiagnosticCapturePause(DIAGNOSTIC_STAGES.with(|slot| slot.borrow_mut().take()))
++}
++
++impl Drop for DiagnosticCapturePause {
++    fn drop(&mut self) {
++        DIAGNOSTIC_STAGES.with(|slot| {
++            assert!(slot.borrow().is_none());
++            *slot.borrow_mut() = self.0.take();
++        });
++    }
++}
++
++fn diagnostic_begin_stages(route: &str) {
++    DIAGNOSTIC_ALTERNATES.with(|slot| assert!(slot.borrow().is_empty()));
++    DIAGNOSTIC_STAGES.with(|slot| {
++        assert!(slot.borrow().is_none());
++        *slot.borrow_mut() = Some(DiagnosticStages::new());
++    });
++    eprintln!(
++        "hidden_stage_route route={route} exact={} target={} relaxed={} whole_trace={}",
++        crate::fastpath::qwen_linear_mtp_exact_enabled(),
++        crate::fastpath::qwen_linear_mtp_target_verify_enabled(),
++        crate::fastpath::qwen_linear_mtp_relaxed_session_enabled(),
++        crate::fastpath::qwen_linear_mtp_whole_verify_trace_enabled()
++    );
++}
++
++fn diagnostic_take_stages() -> DiagnosticStages {
++    let stages =
++        DIAGNOSTIC_STAGES.with(|slot| slot.borrow_mut().take().expect("capture must be armed"));
++    let alternates = DIAGNOSTIC_ALTERNATES.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
++    for (label, actual, alternate) in alternates {
++        diagnostic_difference(label, 0, &actual, &alternate);
++    }
++    stages
++}
++
++fn diagnostic_compare_stages(target: &DiagnosticStages, ordinary: &DiagnosticStages) {
++    let required = [
++        "layer_input",
++        "attention_input",
++        "conv_state_input",
++        "recurrent_state_input",
++        "projection_qkv",
++        "projection_z",
++        "projection_a",
++        "projection_b",
++        "post_input_q",
++        "post_input_k",
++        "post_input_v",
++        "recurrent_y",
++        "recurrent_state",
++        "attention_gated",
++        "attention_projection",
++        "attention_residual",
++        "ffn_input",
++        "ffn_gate",
++        "ffn_up",
++        "ffn_activation",
++        "ffn_down",
++        "ffn_output",
++        "layer_output",
++    ];
++    for label in required {
++        let a = target
++            .get(label)
++            .unwrap_or_else(|| panic!("missing target stage {label}"));
++        let b = ordinary
++            .get(label)
++            .unwrap_or_else(|| panic!("missing ordinary stage {label}"));
++        diagnostic_difference(&format!("hidden_{label}"), 0, a, b);
++    }
++}
++pub(crate) fn diagnostic_difference(label: &str, layer: usize, a: &MlxArray, b: &MlxArray) {
++    assert_eq!(a.shape(), b.shape());
++    assert_eq!(a.dtype(), b.dtype());
++    eprintln!(
++        "stage_dtype layer={layer} stage={label} dtype={:?}",
++        a.dtype()
++    );
++    let a = mlx_sys::astype(a, mlx_sys::MlxDtype::Float32, None);
++    let b = mlx_sys::astype(b, mlx_sys::MlxDtype::Float32, None);
++    mlx_sys::eval(&[&a, &b]);
++    let mut maximum = 0.0_f32;
++    let mut count = 0;
++    for (x, y) in a.data_f32().iter().zip(b.data_f32()) {
++        assert!(
++            x.is_finite() && y.is_finite(),
++            "non-finite diagnostic input at {label}"
++        );
++        maximum = maximum.max((x - y).abs());
++        count += usize::from(x.to_bits() != y.to_bits());
++    }
++    eprintln!(
++        "stage_compare layer={layer} stage={label} max_abs={maximum:.9e} unequal={count} shape={:?}",
++        a.shape()
++    );
++}
+ #[allow(clippy::too_many_arguments)]
+ pub fn layer_forward(
++    cfg: &ModelConfig,
++    w: &LayerWeights,
++    hidden: &MlxArray,
++    cache: &mut MlxKVCache,
++    layer_idx: usize,
++    token_offset: usize,
++    per_layer_input: Option<&MlxArray>,
++    shared_mask: Option<&Option<MlxArray>>,
++) -> MlxArray {
++    let snapshot = DIAGNOSTIC_MODE.with(|m| m.get() == 1).then(|| {
++        let mut base = cache.clone();
++        if let Some(after) = cache.linear_prefix_capture_after() {
++            base.begin_linear_prefix_capture(after);
++        }
++        base
++    });
++    let out = diagnostic_inner_layer_forward(
++        cfg,
++        w,
++        hidden,
++        cache,
++        layer_idx,
++        token_offset,
++        per_layer_input,
++        shared_mask,
++    );
++    if let Some(mut base) = snapshot {
++        let mut target_stages = None;
++        if cfg.is_linear_attention_layer(layer_idx) {
++            let (conv, recurrent) = base.linear_state(layer_idx);
++            if let (Some(conv), Some(recurrent)) = (conv, recurrent) {
++                let _trace = crate::fastpath::scoped_qwen_linear_mtp_whole_verify_trace(true);
++                if layer_idx == 0 {
++                    diagnostic_begin_stages("target_functional_eager");
++                }
++                if let Some(eager) = families::qwen3_linear::layer_forward_verify_functional(
++                    cfg, w, hidden, layer_idx, conv, recurrent,
++                ) {
++                    diagnostic_difference(
++                        "compiled_vs_functional_hidden",
++                        layer_idx,
++                        &out,
++                        &eager.hidden,
++                    );
++                    if let Some((q, a, t)) = cache.linear_mtp_tape_stash(layer_idx) {
++                        diagnostic_difference(
++                            "compiled_vs_functional_qkv",
++                            layer_idx,
++                            &q,
++                            &eager.state.qkv,
++                        );
++                        diagnostic_difference(
++                            "compiled_vs_functional_a",
++                            layer_idx,
++                            &a,
++                            &eager.state.a,
++                        );
++                        diagnostic_difference(
++                            "compiled_vs_functional_tape",
++                            layer_idx,
++                            &t,
++                            &eager.state.tape,
++                        );
++                    }
++                    if let Some(v) = cache.linear_state(layer_idx).0 {
++                        diagnostic_difference(
++                            "compiled_vs_functional_conv",
++                            layer_idx,
++                            v,
++                            &eager.state.conv_state,
++                        );
++                    }
++                    if let Some(v) = cache.linear_state(layer_idx).1 {
++                        diagnostic_difference(
++                            "compiled_vs_functional_recurrent",
++                            layer_idx,
++                            v,
++                            &eager.state.recurrent_state,
++                        );
++                    }
++                }
++                if layer_idx == 0 {
++                    target_stages = Some(diagnostic_take_stages());
++                }
++            }
++        }
++        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
++        let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
++        let _session = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
++        let _qmm = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(false);
++        if layer_idx == 0 {
++            diagnostic_begin_stages("ordinary_same_input");
++        }
++        let other = diagnostic_inner_layer_forward(
++            cfg,
++            w,
++            hidden,
++            &mut base,
++            layer_idx,
++            token_offset,
++            per_layer_input,
++            shared_mask,
++        );
++        if layer_idx == 0 {
++            let ordinary_stages = diagnostic_take_stages();
++            let target_stages =
++                target_stages.expect("linear layer-zero target capture is required");
++            diagnostic_compare_stages(&target_stages, &ordinary_stages);
++        }
++        diagnostic_difference("full_layer_same_input", layer_idx, &out, &other);
++        if let (Some((aq, aa, _)), Some((bq, ba, _))) = (
++            cache.linear_mtp_tape_stash(layer_idx),
++            base.linear_mtp_projection_stash(layer_idx),
++        ) {
++            diagnostic_difference("qkv", layer_idx, &aq, &bq);
++            diagnostic_difference("a", layer_idx, &aa, &ba);
++        }
++        let (ac, ar) = cache.linear_state(layer_idx);
++        let (bc, br) = base.linear_state(layer_idx);
++        if let (Some(a), Some(b)) = (ac, bc) {
++            diagnostic_difference("conv_state", layer_idx, a, b);
++        }
++        if let (Some(a), Some(b)) = (ar, br) {
++            diagnostic_difference("recurrent_state", layer_idx, a, b);
++        }
++    }
++    out
++}
++
++fn diagnostic_inner_layer_forward(
+     cfg: &ModelConfig,
+     w: &LayerWeights,
+     hidden: &MlxArray, // [1, seq, hidden]
+diff --git a/crates/ax-engine-mlx/src/model/shared/linear_attention.rs b/crates/ax-engine-mlx/src/model/shared/linear_attention.rs
+index d9ada191..0399831c 100644
+--- a/crates/ax-engine-mlx/src/model/shared/linear_attention.rs
++++ b/crates/ax-engine-mlx/src/model/shared/linear_attention.rs
+@@ -188,9 +188,19 @@ pub(crate) fn linear_attention_forward_verify_functional(
+         return None;
+     }
+ 
++    crate::model::diagnostic_record("attention_input", x);
++    crate::model::diagnostic_record("conv_state_input", conv_state);
++    crate::model::diagnostic_record("recurrent_state_input", recurrent_state);
+     let (qkv, z, a, b) = linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, false);
++    crate::model::diagnostic_record("projection_qkv", &qkv);
++    crate::model::diagnostic_record("projection_z", &z);
++    crate::model::diagnostic_record("projection_a", &a);
++    crate::model::diagnostic_record("projection_b", &b);
+     let (q, k, v, new_conv_state, _) =
+         linear_attention_post_input(cfg, linear_cfg, linear_w, &qkv, Some(conv_state), false);
++    crate::model::diagnostic_record("post_input_q", &q);
++    crate::model::diagnostic_record("post_input_k", &k);
++    crate::model::diagnostic_record("post_input_v", &v);
+     let (out, new_recurrent_state, tape) = gated_delta_kernel_with_tape(
+         &q,
+         &k,
+@@ -201,6 +211,8 @@ pub(crate) fn linear_attention_forward_verify_functional(
+         &b,
+         recurrent_state,
+     )?;
++    crate::model::diagnostic_record("recurrent_y", &out);
++    crate::model::diagnostic_record("recurrent_state", &new_recurrent_state);
+     let value_dim = linear_cfg.value_dim() as i32;
+     let output = if let Some(fused) =
+         try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim, layer_idx)
+@@ -218,10 +230,12 @@ pub(crate) fn linear_attention_forward_verify_functional(
+                 linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx)
+             },
+         );
++        crate::model::diagnostic_record("attention_gated", &gated);
+         let flat = reshape(&gated, &[1, seq, value_dim], None);
+         qw(&flat, &linear_w.out_proj)
+     };
+ 
++    crate::model::diagnostic_record("attention_projection", &output);
+     Some(LinearAttentionVerifyOutput {
+         output,
+         conv_state: new_conv_state,
+@@ -351,8 +365,13 @@ fn linear_attention_forward_inner(
+     }
+ 
+     let profile_started = Instant::now();
++    crate::model::diagnostic_record("attention_input", x);
+     let (qkv, z, a, b) =
+         linear_attention_inputs(cfg, linear_cfg, linear_w, x, seq, profile_enabled);
++    crate::model::diagnostic_record("projection_qkv", &qkv);
++    crate::model::diagnostic_record("projection_z", &z);
++    crate::model::diagnostic_record("projection_a", &a);
++    crate::model::diagnostic_record("projection_b", &b);
+     if cache.linear_prefix_capture_after().is_some() {
+         // oMLX's Qwen verifier avoids a partial-accept backbone replay by
+         // retaining these already-computed projections and replaying only the
+@@ -369,6 +388,12 @@ fn linear_attention_forward_inner(
+     );
+ 
+     let (conv_state, recurrent_state) = cache.linear_state(layer_idx);
++    if let Some(conv_state) = conv_state {
++        crate::model::diagnostic_record("conv_state_input", conv_state);
++    }
++    if let Some(recurrent_state) = recurrent_state {
++        crate::model::diagnostic_record("recurrent_state_input", recurrent_state);
++    }
+     let prefix_capture_after = cache
+         .linear_prefix_capture_after()
+         .filter(|after| *after < seq as usize);
+@@ -461,6 +486,9 @@ fn linear_attention_forward_inner(
+             conv_state,
+             profile_enabled,
+         );
++        crate::model::diagnostic_record("post_input_q", &q);
++        crate::model::diagnostic_record("post_input_k", &k);
++        crate::model::diagnostic_record("post_input_v", &v);
+         let prefix_conv_state = match (prefix_capture_after, metal_prefix_conv) {
+             (Some(1), Some(prefix)) => Some(prefix),
+             (Some(after), _) => {
+@@ -534,6 +562,8 @@ fn linear_attention_forward_inner(
+         profile_started,
+         &[&out, &new_recurrent_state],
+     );
++    crate::model::diagnostic_record("recurrent_y", &out);
++    crate::model::diagnostic_record("recurrent_state", &new_recurrent_state);
+     cache.set_linear_state(layer_idx, new_conv_state, new_recurrent_state);
+     if let Some(tape) = mtp_tape {
+         cache.set_linear_mtp_tape_stash(layer_idx, qkv.clone(), a.clone(), tape);
+@@ -578,6 +608,7 @@ fn linear_attention_forward_inner(
+                 linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx)
+             },
+         );
++        crate::model::diagnostic_record("attention_gated", &out);
+         let flat = if fastpath::should_skip_unused_la_out_reshape(&out.shape(), seq, value_dim) {
+             out
+         } else {
+@@ -589,6 +620,7 @@ fn linear_attention_forward_inner(
+             qw(&flat, &linear_w.out_proj)
+         }
+     };
++    crate::model::diagnostic_record("attention_projection", &out);
+     linear_attention_profile_eval_elapsed(
+         profile_enabled,
+         LinearAttentionProfileStage::Output,
+@@ -813,6 +845,7 @@ fn qwen_la_gated_out_projection(
+     // ordinary target execution; a portable-only gate still changes rounding.
+     let gated =
+         rms_norm_gated_with_full_gate_policy(hidden, gate, norm, eps, allow_full_gate_metal);
++    crate::model::diagnostic_record("attention_gated", &gated);
+     Some(qw(&reshape(&gated, &[1, seq, value_dim], None), out_proj))
+ }
+ 
+diff --git a/crates/ax-engine-mlx/src/model/shared/mlp.rs b/crates/ax-engine-mlx/src/model/shared/mlp.rs
+index a8c8fd21..5b9c16a3 100644
+--- a/crates/ax-engine-mlx/src/model/shared/mlp.rs
++++ b/crates/ax-engine-mlx/src/model/shared/mlp.rs
+@@ -708,29 +708,37 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
+     // Graceful degradation on mutex poison: skip the compiled path and fall
+     // through to the uncached `silu_mul` below. Under `panic = "abort"` a
+     // poisoned mutex would otherwise crash the process.
+-    let outputs = if let Ok(mut guard) = cache.lock() {
+-        if let Entry::Vacant(slot) = guard.entry(tid)
+-            && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
+-                let gate = inputs.get(0);
+-                let up = inputs.get(1);
+-                vec![silu_mul(&gate, &up, None)]
+-            })
+-            .compile(true)
+-        {
+-            slot.insert(compiled);
++    let outputs = {
++        let _pause = crate::model::diagnostic_pause_stages();
++        if let Ok(mut guard) = cache.lock() {
++            if let Entry::Vacant(slot) = guard.entry(tid)
++                && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
++                    let gate = inputs.get(0);
++                    let up = inputs.get(1);
++                    vec![silu_mul(&gate, &up, None)]
++                })
++                .compile(true)
++            {
++                slot.insert(compiled);
++            }
++            guard
++                .get(&tid)
++                .and_then(|cls| cls.try_apply(&[gate, up]).ok())
++        } else {
++            None
+         }
+-        guard
+-            .get(&tid)
+-            .and_then(|cls| cls.try_apply(&[gate, up]).ok())
+-    } else {
+-        None
+     };
+-
+     if let Some(mut outputs) = outputs
+         && let Some(out) = outputs.pop()
+     {
++        crate::model::diagnostic_ffn_route("swiglu_compiled_return");
++        if crate::model::diagnostic_capture_active() {
++            let eager = silu_mul(gate, up, None);
++            crate::model::diagnostic_alternate("alternate_swiglu_compiled_vs_eager", &out, &eager);
++        }
+         return out;
+     }
++    crate::model::diagnostic_ffn_route("swiglu_uncompiled_fallback");
+     silu_mul(gate, up, None)
+ }
+ 
+@@ -2931,14 +2939,16 @@ pub(crate) fn ffn_swiglu(
+     post_norm: Option<&MlxArray>,
+     layer_idx: usize,
+ ) -> MlxArray {
+-    ffn_swiglu_with_policy(
++    let out = ffn_swiglu_with_policy(
+         cfg,
+         w,
+         x,
+         post_norm,
+         layer_idx,
+         ProjectionBatchPolicy::Shared,
+-    )
++    );
++    crate::model::diagnostic_record("ffn_output", &out);
++    out
+ }
+ 
+ /// Decode FFN plus residual: `residual + swiglu_ffn(x)`.
+@@ -3250,6 +3260,14 @@ fn ffn_swiglu_with_policy_inner(
+         w.gate_up_packed.is_some(),
+         super::utils::gemma4_prefill_skip_last_ffn_packed_active(),
+     );
++    if crate::model::diagnostic_capture_active() {
++        eprintln!(
++            "ffn_selection seq={seq} leading={leading_elements} use_packed={use_packed} prefer_split={prefer_split_gate_up} has_packed={} has_split={has_split_gate_up} input_dtype={:?} input_shape={:?}",
++            w.gate_up_packed.is_some(),
++            x.dtype(),
++            x.shape()
++        );
++    }
+ 
+     // Compiled dense FFN with packed gate_up.
+     // - SwiGLU (Qwen): decode shapeless + prefill fixed-shape.
+@@ -3308,40 +3326,49 @@ fn ffn_swiglu_with_policy_inner(
+             pack_mode,
+             mlx_sys::MlxQuantizationMode::Affine | mlx_sys::MlxQuantizationMode::Mxfp4
+         );
+-        let compiled_result = if !uses_geglu
+-            && seq == 1
+-            && leading_elements == 1
+-            && compile_ok_for_quant
+-            && fastpath::dense_ffn_compile_enabled()
+-        {
+-            apply_layer_dense_ffn_decode(cfg.compile_cache_identity, layer_idx, &input_refs, body)
+-        } else if seq > 1
+-            && leading_elements
+-                >= if fastpath::should_gemma4_packed_ffn_compile_p128(&cfg.model_family, seq) {
+-                    fastpath::GEMMA4_PACKED_FFN_COMPILE_P128_LEADING
+-                } else {
+-                    fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
+-                }
+-            && dense_ffn_prefill_compile_supported(&cfg.model_family, leading_elements)
+-            && compile_ok_for_quant
+-            && fastpath::dense_ffn_compile_prefill_enabled()
+-        {
+-            apply_layer_dense_ffn_prefill_min(
+-                cfg.compile_cache_identity,
+-                layer_idx,
+-                leading_elements,
+-                if fastpath::should_gemma4_packed_ffn_compile_p128(&cfg.model_family, seq) {
+-                    fastpath::GEMMA4_PACKED_FFN_COMPILE_P128_LEADING
+-                } else {
+-                    fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
+-                },
+-                &input_refs,
+-                body,
+-            )
+-        } else {
+-            None
++        let compiled_result = {
++            let _pause = crate::model::diagnostic_pause_stages();
++            if !uses_geglu
++                && seq == 1
++                && leading_elements == 1
++                && compile_ok_for_quant
++                && fastpath::dense_ffn_compile_enabled()
++            {
++                apply_layer_dense_ffn_decode(
++                    cfg.compile_cache_identity,
++                    layer_idx,
++                    &input_refs,
++                    body,
++                )
++            } else if seq > 1
++                && leading_elements
++                    >= if fastpath::should_gemma4_packed_ffn_compile_p128(&cfg.model_family, seq) {
++                        fastpath::GEMMA4_PACKED_FFN_COMPILE_P128_LEADING
++                    } else {
++                        fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
++                    }
++                && dense_ffn_prefill_compile_supported(&cfg.model_family, leading_elements)
++                && compile_ok_for_quant
++                && fastpath::dense_ffn_compile_prefill_enabled()
++            {
++                apply_layer_dense_ffn_prefill_min(
++                    cfg.compile_cache_identity,
++                    layer_idx,
++                    leading_elements,
++                    if fastpath::should_gemma4_packed_ffn_compile_p128(&cfg.model_family, seq) {
++                        fastpath::GEMMA4_PACKED_FFN_COMPILE_P128_LEADING
++                    } else {
++                        fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING
++                    },
++                    &input_refs,
++                    body,
++                )
++            } else {
++                None
++            }
+         };
+         if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
++            crate::model::diagnostic_ffn_route("packed_whole_ffn_compiled_return_unresolved_cuts");
+             return result;
+         }
+     }
+@@ -3359,6 +3386,7 @@ fn ffn_swiglu_with_policy_inner(
+             .or(packed_gs64.as_ref())
+             .or(packed_cw.as_ref())
+             .unwrap_or(packed_src);
++        crate::model::diagnostic_ffn_route("packed_gate_up_projection");
+         let out = qw_with_policy(x, packed, projection_policy);
+         qwen_prefill_maybe_async_packed_gate_up(&out, qwen_dense_ffn, seq);
+         let packed_dim = out
+@@ -3371,6 +3399,12 @@ fn ffn_swiglu_with_policy_inner(
+             "packed FFN output last dimension must be positive and even, got {packed_dim}"
+         );
+         let half = packed_dim / 2;
++        if crate::model::diagnostic_capture_active() {
++            let gate = slice_last_dim(&out, 0, half, None);
++            let up = slice_last_dim(&out, half, packed_dim, None);
++            crate::model::diagnostic_record("ffn_gate", &gate);
++            crate::model::diagnostic_record("ffn_up", &up);
++        }
+         if cfg.uses_geglu {
+             // Profiling should add barriers around the production graph, not
+             // silently fall back to the split GEGLU route. Otherwise the
+@@ -3460,6 +3494,8 @@ fn ffn_swiglu_with_policy_inner(
+             gate_up_profile_recorded = profile_decode || profile_prefill;
+             let activation_started = Instant::now();
+             if let Some(ffn_hidden) = packed_swiglu_metal(&out, half) {
++                crate::model::diagnostic_ffn_route("packed_swiglu_metal_return");
++                crate::model::diagnostic_record("ffn_activation", &ffn_hidden);
+                 qwen_prefill_maybe_eval_ffn_hidden(&ffn_hidden, qwen_dense_ffn, seq);
+                 forward_profile_eval_elapsed(
+                     profile_decode,
+@@ -3517,7 +3553,9 @@ fn ffn_swiglu_with_policy_inner(
+                     );
+                     return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+                 }
++                crate::model::diagnostic_ffn_route("packed_down_projection");
+                 let out = qw_with_policy(&ffn_hidden, down, projection_policy);
++                crate::model::diagnostic_record("ffn_down", &out);
+                 qwen_prefill_maybe_async_down(&out, qwen_dense_ffn, seq);
+                 forward_profile_eval_elapsed(
+                     profile_decode,
+@@ -3529,11 +3567,13 @@ fn ffn_swiglu_with_policy_inner(
+                 return out;
+             }
+         }
++        crate::model::diagnostic_ffn_route("packed_activation_generic_fallback");
+         packed_gate_up = Some(out.clone());
+         let gate = mlx_slice_last_dim(&out, 0, half);
+         let up = mlx_slice_last_dim(&out, half, half * 2);
+         (gate, up)
+     } else {
++        crate::model::diagnostic_ffn_route("split_gate_up_projection");
+         let split_from_packed = if w.gate_proj.is_none() {
+             w.gate_up_packed
+                 .as_ref()
+@@ -4011,6 +4051,7 @@ fn ffn_swiglu_with_policy_inner(
+                 projection_policy,
+             )
+         {
++            crate::model::diagnostic_ffn_route("split_whole_ffn_compiled_return_unresolved_cuts");
+             return ffn_out;
+         }
+         // Qwen split **prefill** compile (seq>1): same graph as decode compile
+@@ -4035,6 +4076,7 @@ fn ffn_swiglu_with_policy_inner(
+                 projection_policy,
+             )
+         {
++            crate::model::diagnostic_ffn_route("split_whole_ffn_compiled_return_unresolved_cuts");
+             return ffn_out;
+         }
+         // mlxcel residual: `compiled_gelu_approx_mlp_forward` for split affine
+@@ -4101,6 +4143,13 @@ fn ffn_swiglu_with_policy_inner(
+             && projection_policy == ProjectionBatchPolicy::Shared
+             && let Some((gate, up)) = qwen_compiled_split_prefill_gate_up(x, gate_w, up_w)
+         {
++            crate::model::diagnostic_ffn_route("split_compiled_dual_gate_up_return");
++            if crate::model::diagnostic_capture_active() {
++                let eager_gate = qw_with_policy(x, gate_w, projection_policy);
++                let eager_up = qw_with_policy(x, up_w, projection_policy);
++                crate::model::diagnostic_alternate("alternate_dual_gate_vs_qw", &gate, &eager_gate);
++                crate::model::diagnostic_alternate("alternate_dual_up_vs_qw", &up, &eager_up);
++            }
+             (gate, up)
+         } else if cfg.uses_geglu
+             && seq > 1
+@@ -4164,13 +4213,20 @@ fn ffn_swiglu_with_policy_inner(
+             && let Some((gate, up)) =
+                 qwen_prefill_maybe_dual_affine_gate_up(&cfg.model_family, seq, x, gate_w, up_w)
+         {
++            crate::model::diagnostic_ffn_route("dual_affine_gate_up_return");
+             (gate, up)
+         } else {
++            crate::model::diagnostic_ffn_route("split_gate_qw");
+             let gate = qw_with_policy(x, gate_w, projection_policy);
++            crate::model::diagnostic_ffn_route("split_up_qw");
+             let up = qw_with_policy(x, up_w, projection_policy);
+             (gate, up)
+         }
+     };
++    if packed_gate_up.is_none() {
++        crate::model::diagnostic_record("ffn_gate", &gate_out);
++        crate::model::diagnostic_record("ffn_up", &up_out);
++    }
+     // Co-submit dual gate/up before GEGLU when explicitly requested, for the
+     // admitted Gemma p128 probe, or inside a short relaxed Qwen MTP verifier.
+     qwen_prefill_maybe_async_gate_up(&gate_out, &up_out, qwen_dense_ffn, seq);
+@@ -4287,7 +4343,9 @@ fn ffn_swiglu_with_policy_inner(
+     // math without the server-thread stream hazards of the removed compiled
+     // closure experiment.
+     let activation_started = Instant::now();
++    crate::model::diagnostic_ffn_route("generic_dense_activation");
+     let ffn_hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
++    crate::model::diagnostic_record("ffn_activation", &ffn_hidden);
+     qwen_prefill_maybe_eval_ffn_hidden(&ffn_hidden, qwen_dense_ffn, seq);
+     forward_profile_eval_elapsed(
+         profile_decode,
+@@ -4308,6 +4366,8 @@ fn ffn_swiglu_with_policy_inner(
+         && let Some(out) =
+             qwen_compiled_prefill_down_qmm(cfg.compile_cache_identity, layer_idx, &ffn_hidden, down)
+     {
++        crate::model::diagnostic_ffn_route("compiled_down_projection_return");
++        crate::model::diagnostic_record("ffn_down", &out);
+         forward_profile_eval_elapsed(
+             profile_decode,
+             profile_prefill,
+@@ -4328,6 +4388,8 @@ fn ffn_swiglu_with_policy_inner(
+         && fastpath::qwen_prefill_flat_down_qmm_enabled()
+         && let Some(out) = qwen_prefill_flat_down_qmm(&ffn_hidden, down)
+     {
++        crate::model::diagnostic_ffn_route("flat_down_projection_return");
++        crate::model::diagnostic_record("ffn_down", &out);
+         forward_profile_eval_elapsed(
+             profile_decode,
+             profile_prefill,
+@@ -4379,7 +4441,9 @@ fn ffn_swiglu_with_policy_inner(
+         );
+         return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
+     }
++    crate::model::diagnostic_ffn_route("generic_down_projection");
+     let out = qw_with_policy(&ffn_hidden, down, projection_policy);
++    crate::model::diagnostic_record("ffn_down", &out);
+     qwen_prefill_maybe_async_down(&out, qwen_dense_ffn, seq);
+     forward_profile_eval_elapsed(
+         profile_decode,
+@@ -4398,6 +4462,7 @@ fn qwen_compiled_split_prefill_gate_up(
+     gate: &QuantizedWeight,
+     up: &QuantizedWeight,
+ ) -> Option<(MlxArray, MlxArray)> {
++    let _pause = crate::model::diagnostic_pause_stages();
+     if !fastpath::qwen_compiled_dual_gate_up_enabled() {
+         return None;
+     }
+@@ -4497,6 +4562,7 @@ fn qwen_compiled_split_verify_ffn(
+     rms_norm_eps: f32,
+     projection_policy: ProjectionBatchPolicy,
+ ) -> Option<MlxArray> {
++    let _pause = crate::model::diagnostic_pause_stages();
+     let x_shape = x.shape();
+     if x_shape.len() < 2 {
+         return None;
+@@ -5223,6 +5289,7 @@ fn qwen_compiled_split_prefill_ffn(
+     rms_norm_eps: f32,
+     projection_policy: ProjectionBatchPolicy,
+ ) -> Option<MlxArray> {
++    let _pause = crate::model::diagnostic_pause_stages();
+     let x_shape = x.shape();
+     if x_shape.len() < 2 || x_shape[x_shape.len() - 2] <= 1 {
+         return None;
+@@ -5290,6 +5357,7 @@ fn qwen_compiled_prefill_down_qmm_for(
+     hidden: &MlxArray,
+     down: &QuantizedWeight,
+ ) -> Option<MlxArray> {
++    let _pause = crate::model::diagnostic_pause_stages();
+     let shape = hidden.shape();
+     if shape.len() < 2 || shape[shape.len() - 2] <= 1 {
+         return None;
+diff --git a/crates/ax-engine-mlx/src/model/shared/utils.rs b/crates/ax-engine-mlx/src/model/shared/utils.rs
+index 402485de..f36206a8 100644
+--- a/crates/ax-engine-mlx/src/model/shared/utils.rs
++++ b/crates/ax-engine-mlx/src/model/shared/utils.rs
+@@ -913,21 +913,60 @@ pub(crate) fn dense_wide_gemv_weight_t(x: &MlxArray, weight_t: &MlxArray) -> Opt
+ }
+ 
+ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
++    let diagnostic_route = |route: &str| {
++        if crate::model::diagnostic_capture_active() {
++            eprintln!(
++                "projection_dispatch route={route} input_shape={:?} input_dtype={:?} weight_shape={:?} weight_dtype={:?} scales_dtype={:?} group_bias_dtype={:?} quant_mode={:?} bits={} group_size={} linear_bias={} linear_bias_dtype={:?}",
++                x.shape(),
++                x.dtype(),
++                qw.weight.shape(),
++                qw.weight.dtype(),
++                qw.scales.as_ref().map(|value| value.dtype()),
++                qw.biases.as_ref().map(|value| value.dtype()),
++                qw.mlx_quantization_mode(),
++                qw.bits,
++                qw.group_size,
++                qw.linear_bias.is_some(),
++                qw.linear_bias.as_ref().map(|value| value.dtype())
++            );
++        }
++    };
+     // Dense Linear bias (`QuantizedWeight.linear_bias`) is separate from affine
+     // group-quant biases (`qw.biases`). Matches mlx-lm `nn.Linear` /
+     // `QuantizedLinear`: y = x @ W + b. Required for GPT-OSS Q/K/V/O + router.
+     let y = if fastpath::qwen_linear_mtp_exact_enabled()
+         && let Some(invariant) = invariant_projection_metal_impl(x, qw)
+     {
++        diagnostic_route("invariant_projection_metal");
+         invariant
+     } else if let Some(verify) = super::verify_qmm::try_qwen_mtp_verify_qmm(x, qw) {
++        diagnostic_route("verify_qmm_return");
++        if crate::model::diagnostic_capture_active() {
++            crate::model::diagnostic_ffn_route("alternate_verify_qmm_guard_off_begin");
++            let ordinary = {
++                let _qmm = super::verify_qmm::QwenMtpVerifyQmmGuard::arm(false);
++                qw_direct(x, qw)
++            };
++            let comparable = match &qw.linear_bias {
++                Some(bias) => add(&verify, bias, None),
++                None => verify.clone(),
++            };
++            crate::model::diagnostic_alternate(
++                "alternate_verify_qmm_vs_guard_off",
++                &comparable,
++                &ordinary,
++            );
++            crate::model::diagnostic_ffn_route("alternate_verify_qmm_guard_off_end");
++        }
+         verify
+     } else if qwen_prefill_dequant_dense_applies(x)
+         && let Some(weight_t) = cached_prefill_dequant_weight_t(qw)
+     {
++        diagnostic_route("prefill_dequant_matmul");
+         matmul(x, &weight_t, None)
+     } else if let Some(scales) = &qw.scales {
+         // MXFP8/MXFP4 have no affine group-bias channel; pass None for those modes.
++        diagnostic_route("mlx_quantized_matmul_with_wrappers");
+         let mode = qw.mlx_quantization_mode();
+         let quant_biases = match mode {
+             mlx_sys::MlxQuantizationMode::Affine => qw.biases.as_ref(),
+@@ -980,11 +1019,19 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
+         let wt = transpose(&qw.weight, &[1, 0], None);
+         matmul(x, &wt, None)
+     };
+-    if let Some(bias) = &qw.linear_bias {
++    let out = if let Some(bias) = &qw.linear_bias {
+         add(&y, bias, None)
+     } else {
+         y
++    };
++    if crate::model::diagnostic_capture_active() {
++        eprintln!(
++            "projection_return output_shape={:?} output_dtype={:?}",
++            out.shape(),
++            out.dtype()
++        );
+     }
++    out
+ }
+ 
+ static UNQUANTIZED_DECODE_PROJECTION_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+diff --git a/crates/ax-engine-mlx/src/model/whole_verify.rs b/crates/ax-engine-mlx/src/model/whole_verify.rs
+index 9c72ef8a..117db84e 100644
+--- a/crates/ax-engine-mlx/src/model/whole_verify.rs
++++ b/crates/ax-engine-mlx/src/model/whole_verify.rs
+@@ -60,6 +60,24 @@ pub(crate) fn try_compiled_qwen_linear_verify_layer(
+         conv_state?.clone(),
+         recurrent_state?.clone(),
+     ];
++    if crate::model::DIAGNOSTIC_MODE.with(|m| m.get() == 4) {
++        let _trace = crate::fastpath::scoped_qwen_linear_mtp_whole_verify_trace(true);
++        let result = families::qwen3_linear::layer_forward_verify_functional(
++            cfg, weights, hidden, layer_idx, &inputs[1], &inputs[2],
++        )?;
++        cache.set_linear_state(
++            layer_idx,
++            result.state.conv_state,
++            result.state.recurrent_state,
++        );
++        cache.set_linear_mtp_tape_stash(
++            layer_idx,
++            result.state.qkv,
++            result.state.a,
++            result.state.tape,
++        );
++        return Some(result.hidden);
++    }
+     let refs: Vec<&MlxArray> = inputs.iter().collect();
+     let key = (
+         cfg.compile_cache_identity,
+@@ -122,6 +140,9 @@ pub(crate) fn try_compiled_qwen_linear_verify_layer(
+     drop(guard);
+     let [hidden_out, conv_out, recurrent_out, qkv, a, tape]: [MlxArray; 6] =
+         outputs.try_into().ok()?;
++    if crate::model::DIAGNOSTIC_MODE.with(|m| m.get() == 1) {
++        eprintln!("stage_route layer={layer_idx} route=compiled_whole_linear");
++    }
+     cache.set_linear_state(layer_idx, conv_out, recurrent_out);
+     cache.set_linear_mtp_tape_stash(layer_idx, qkv, a, tape);
+     Some(hidden_out)
+diff --git a/crates/ax-engine-mlx/src/runner/mod.rs b/crates/ax-engine-mlx/src/runner/mod.rs
+index 15825c82..2e88fd38 100644
+--- a/crates/ax-engine-mlx/src/runner/mod.rs
++++ b/crates/ax-engine-mlx/src/runner/mod.rs
+@@ -9823,6 +9823,8 @@ impl MlxRunner {
+                         replay_kill_switch || self.qwen_linear_mtp_force_replay,
+                     );
+                 let clone_started = Instant::now();
++                let diagnostic_snapshot = (token_offset <= 454 && 454 < token_offset + verify_len)
++                    .then(|| state.cache.clone());
+                 let mut verify_cache = state.cache.clone();
+                 if !exact_linear_replay && !pending.is_empty() {
+                     verify_cache.begin_linear_prefix_capture(1);
+@@ -9997,6 +9999,55 @@ impl MlxRunner {
+                     .as_ref()
+                     .map(|arr| arr.data_u32().to_vec())
+                     .unwrap_or_default();
++                if let Some(snapshot) = diagnostic_snapshot {
++                    let row = 454 - token_offset;
++                    let inputs: Vec<u32> = std::iter::once(verify_input[0])
++                        .chain(pending.iter().copied())
++                        .collect();
++                    eprintln!(
++                        "hidden_stage_window offset={token_offset} row={row} inputs={inputs:?}"
++                    );
++                    for mode in [0, 1, 4] {
++                        crate::model::DIAGNOSTIC_MODE.with(|m| m.set(mode));
++                        let mut cloned = snapshot.clone();
++                        cloned.begin_linear_prefix_capture(1);
++                        let logits = if mode == 0 {
++                            logits_all.clone()
++                        } else {
++                            crate::model::forward_all_positions(
++                                &self.cfg,
++                                &self.weights,
++                                &inputs,
++                                &mut cloned,
++                                token_offset,
++                            )
++                        };
++                        crate::model::diagnostic_difference(
++                            &format!("mode_{mode}_logits"),
++                            999,
++                            &logits_all,
++                            &logits,
++                        );
++                        let floats = astype(&logits, mlx_sys::MlxDtype::Float32, None);
++                        let mut refs = cloned.collect_eval_refs();
++                        refs.push(&floats);
++                        eval(&refs);
++                        let data = floats.data_f32();
++                        let scores =
++                            &data[row * self.cfg.vocab_size..(row + 1) * self.cfg.vocab_size];
++                        let mut indices: Vec<usize> = (0..scores.len()).collect();
++                        indices.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
++                        eprintln!(
++                            "stage_ablation mode={mode} offset={token_offset} row={row} top2={:?}",
++                            indices
++                                .iter()
++                                .take(2)
++                                .map(|&i| (i, scores[i]))
++                                .collect::<Vec<_>>()
++                        );
++                    }
++                    crate::model::DIAGNOSTIC_MODE.with(|m| m.set(0));
++                }
+                 let target_softmax_extract_started = Instant::now();
+                 let target_probs_cpu = lazy_target_probs
+                     .as_ref()

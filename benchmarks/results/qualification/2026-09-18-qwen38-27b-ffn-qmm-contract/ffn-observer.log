@@ -1,0 +1,1241 @@
+ax-engine-server preview listening on http://127.0.0.1:31496 model_id=qwen3.8-27b support_tier=MlxPreview
+hidden_stage_window offset=452 row=2 inputs=[220, 2972, 2239, 28692]
+stage_dtype layer=999 stage=mode_0_logits dtype=Float32
+stage_compare layer=999 stage=mode_0_logits max_abs=0.000000000e0 unequal=0 shape=[4, 248320]
+stage_ablation mode=0 offset=452 row=2 top2=[(898, 23.0), (28692, 23.0)]
+stage_route layer=0 route=compiled_whole_linear
+hidden_stage_route route=target_functional_eager exact=false target=true relaxed=true whole_trace=true
+projection_dispatch route=mlx_quantized_matmul_with_wrappers input_shape=[1, 4, 6144] input_dtype=Bfloat16 weight_shape=[5120, 768] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=32 linear_bias=false linear_bias_dtype=None
+projection_return output_shape=[1, 4, 5120] output_dtype=Bfloat16
+ffn_selection seq=4 leading=4 use_packed=false prefer_split=false has_packed=false has_split=true input_dtype=Bfloat16 input_shape=[1, 4, 5120]
+ffn_dispatch route=split_gate_up_projection
+ffn_dispatch route=split_gate_qw
+projection_dispatch route=verify_qmm_return input_shape=[1, 4, 5120] input_dtype=Bfloat16 weight_shape=[17408, 640] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=64 linear_bias=false linear_bias_dtype=None
+ffn_dispatch route=alternate_verify_qmm_guard_off_begin
+projection_dispatch route=mlx_quantized_matmul_with_wrappers input_shape=[1, 4, 5120] input_dtype=Bfloat16 weight_shape=[17408, 640] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=64 linear_bias=false linear_bias_dtype=None
+projection_return output_shape=[1, 4, 17408] output_dtype=Bfloat16
+ffn_dispatch route=alternate_verify_qmm_guard_off_end
+projection_return output_shape=[1, 4, 17408] output_dtype=Bfloat16
+ffn_dispatch route=split_up_qw
+projection_dispatch route=verify_qmm_return input_shape=[1, 4, 5120] input_dtype=Bfloat16 weight_shape=[17408, 640] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=64 linear_bias=false linear_bias_dtype=None
+ffn_dispatch route=alternate_verify_qmm_guard_off_begin
+projection_dispatch route=mlx_quantized_matmul_with_wrappers input_shape=[1, 4, 5120] input_dtype=Bfloat16 weight_shape=[17408, 640] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=64 linear_bias=false linear_bias_dtype=None
+projection_return output_shape=[1, 4, 17408] output_dtype=Bfloat16
+ffn_dispatch route=alternate_verify_qmm_guard_off_end
+projection_return output_shape=[1, 4, 17408] output_dtype=Bfloat16
+ffn_dispatch route=generic_dense_activation
+ffn_dispatch route=swiglu_compiled_return
+ffn_dispatch route=generic_down_projection
+projection_dispatch route=mlx_quantized_matmul_with_wrappers input_shape=[1, 4, 17408] input_dtype=Bfloat16 weight_shape=[5120, 2176] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=64 linear_bias=false linear_bias_dtype=None
+projection_return output_shape=[1, 4, 5120] output_dtype=Bfloat16
+stage_dtype layer=0 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=0 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=0 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=0 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=0 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=0 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=0 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=0 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=0 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=0 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=0 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=0 stage=alternate_verify_qmm_vs_guard_off dtype=Bfloat16
+stage_compare layer=0 stage=alternate_verify_qmm_vs_guard_off max_abs=1.220703125e-4 unequal=5 shape=[1, 4, 17408]
+stage_dtype layer=0 stage=alternate_verify_qmm_vs_guard_off dtype=Bfloat16
+stage_compare layer=0 stage=alternate_verify_qmm_vs_guard_off max_abs=4.882812500e-4 unequal=13 shape=[1, 4, 17408]
+stage_dtype layer=0 stage=alternate_swiglu_compiled_vs_eager dtype=Bfloat16
+stage_compare layer=0 stage=alternate_swiglu_compiled_vs_eager max_abs=0.000000000e0 unequal=0 shape=[1, 4, 17408]
+hidden_stage_route route=ordinary_same_input exact=false target=false relaxed=false whole_trace=false
+projection_dispatch route=mlx_quantized_matmul_with_wrappers input_shape=[1, 4, 6144] input_dtype=Bfloat16 weight_shape=[5120, 768] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=32 linear_bias=false linear_bias_dtype=None
+projection_return output_shape=[1, 4, 5120] output_dtype=Bfloat16
+ffn_selection seq=4 leading=4 use_packed=false prefer_split=false has_packed=false has_split=true input_dtype=Bfloat16 input_shape=[1, 4, 5120]
+ffn_dispatch route=split_gate_up_projection
+ffn_dispatch route=split_gate_qw
+projection_dispatch route=mlx_quantized_matmul_with_wrappers input_shape=[1, 4, 5120] input_dtype=Bfloat16 weight_shape=[17408, 640] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=64 linear_bias=false linear_bias_dtype=None
+projection_return output_shape=[1, 4, 17408] output_dtype=Bfloat16
+ffn_dispatch route=split_up_qw
+projection_dispatch route=mlx_quantized_matmul_with_wrappers input_shape=[1, 4, 5120] input_dtype=Bfloat16 weight_shape=[17408, 640] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=64 linear_bias=false linear_bias_dtype=None
+projection_return output_shape=[1, 4, 17408] output_dtype=Bfloat16
+ffn_dispatch route=generic_dense_activation
+ffn_dispatch route=swiglu_compiled_return
+ffn_dispatch route=generic_down_projection
+projection_dispatch route=mlx_quantized_matmul_with_wrappers input_shape=[1, 4, 17408] input_dtype=Bfloat16 weight_shape=[5120, 2176] weight_dtype=Uint32 scales_dtype=Some(Bfloat16) group_bias_dtype=Some(Bfloat16) quant_mode=Affine bits=4 group_size=64 linear_bias=false linear_bias_dtype=None
+projection_return output_shape=[1, 4, 5120] output_dtype=Bfloat16
+stage_dtype layer=0 stage=alternate_swiglu_compiled_vs_eager dtype=Bfloat16
+stage_compare layer=0 stage=alternate_swiglu_compiled_vs_eager max_abs=0.000000000e0 unequal=0 shape=[1, 4, 17408]
+stage_dtype layer=0 stage=hidden_layer_input dtype=Bfloat16
+stage_compare layer=0 stage=hidden_layer_input max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=hidden_attention_input dtype=Bfloat16
+stage_compare layer=0 stage=hidden_attention_input max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=hidden_conv_state_input dtype=Bfloat16
+stage_compare layer=0 stage=hidden_conv_state_input max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=0 stage=hidden_recurrent_state_input dtype=Float32
+stage_compare layer=0 stage=hidden_recurrent_state_input max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=0 stage=hidden_projection_qkv dtype=Bfloat16
+stage_compare layer=0 stage=hidden_projection_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=0 stage=hidden_projection_z dtype=Bfloat16
+stage_compare layer=0 stage=hidden_projection_z max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=0 stage=hidden_projection_a dtype=Bfloat16
+stage_compare layer=0 stage=hidden_projection_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=0 stage=hidden_projection_b dtype=Bfloat16
+stage_compare layer=0 stage=hidden_projection_b max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=0 stage=hidden_post_input_q dtype=Bfloat16
+stage_compare layer=0 stage=hidden_post_input_q max_abs=0.000000000e0 unequal=0 shape=[1, 4, 16, 128]
+stage_dtype layer=0 stage=hidden_post_input_k dtype=Bfloat16
+stage_compare layer=0 stage=hidden_post_input_k max_abs=0.000000000e0 unequal=0 shape=[1, 4, 16, 128]
+stage_dtype layer=0 stage=hidden_post_input_v dtype=Bfloat16
+stage_compare layer=0 stage=hidden_post_input_v max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=0 stage=hidden_recurrent_y dtype=Bfloat16
+stage_compare layer=0 stage=hidden_recurrent_y max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=0 stage=hidden_recurrent_state dtype=Float32
+stage_compare layer=0 stage=hidden_recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=0 stage=hidden_attention_gated dtype=Bfloat16
+stage_compare layer=0 stage=hidden_attention_gated max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=0 stage=hidden_attention_projection dtype=Bfloat16
+stage_compare layer=0 stage=hidden_attention_projection max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=hidden_attention_residual dtype=Bfloat16
+stage_compare layer=0 stage=hidden_attention_residual max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=hidden_ffn_input dtype=Bfloat16
+stage_compare layer=0 stage=hidden_ffn_input max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=hidden_ffn_gate dtype=Bfloat16
+stage_compare layer=0 stage=hidden_ffn_gate max_abs=1.220703125e-4 unequal=5 shape=[1, 4, 17408]
+stage_dtype layer=0 stage=hidden_ffn_up dtype=Bfloat16
+stage_compare layer=0 stage=hidden_ffn_up max_abs=4.882812500e-4 unequal=13 shape=[1, 4, 17408]
+stage_dtype layer=0 stage=hidden_ffn_activation dtype=Bfloat16
+stage_compare layer=0 stage=hidden_ffn_activation max_abs=1.907348633e-6 unequal=15 shape=[1, 4, 17408]
+stage_dtype layer=0 stage=hidden_ffn_down dtype=Bfloat16
+stage_compare layer=0 stage=hidden_ffn_down max_abs=3.051757812e-5 unequal=32 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=hidden_ffn_output dtype=Bfloat16
+stage_compare layer=0 stage=hidden_ffn_output max_abs=3.051757812e-5 unequal=32 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=hidden_layer_output dtype=Bfloat16
+stage_compare layer=0 stage=hidden_layer_output max_abs=3.051757812e-5 unequal=2 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=0 stage=full_layer_same_input max_abs=3.051757812e-5 unequal=2 shape=[1, 4, 5120]
+stage_dtype layer=0 stage=qkv dtype=Bfloat16
+stage_compare layer=0 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=0 stage=a dtype=Bfloat16
+stage_compare layer=0 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=0 stage=conv_state dtype=Bfloat16
+stage_compare layer=0 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=0 stage=recurrent_state dtype=Float32
+stage_compare layer=0 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=1 route=compiled_whole_linear
+stage_dtype layer=1 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=1 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=1 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=1 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=1 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=1 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=1 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=1 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=1 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=1 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=1 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=1 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=1 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=1 stage=full_layer_same_input max_abs=2.441406250e-4 unequal=27 shape=[1, 4, 5120]
+stage_dtype layer=1 stage=qkv dtype=Bfloat16
+stage_compare layer=1 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=1 stage=a dtype=Bfloat16
+stage_compare layer=1 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=1 stage=conv_state dtype=Bfloat16
+stage_compare layer=1 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=1 stage=recurrent_state dtype=Float32
+stage_compare layer=1 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=2 route=compiled_whole_linear
+stage_dtype layer=2 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=2 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=2 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=2 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=2 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=2 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=2 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=2 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=2 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=2 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=2 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=2 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=2 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=2 stage=full_layer_same_input max_abs=4.882812500e-4 unequal=12 shape=[1, 4, 5120]
+stage_dtype layer=2 stage=qkv dtype=Bfloat16
+stage_compare layer=2 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=2 stage=a dtype=Bfloat16
+stage_compare layer=2 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=2 stage=conv_state dtype=Bfloat16
+stage_compare layer=2 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=2 stage=recurrent_state dtype=Float32
+stage_compare layer=2 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=3 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=3 stage=full_layer_same_input max_abs=4.882812500e-4 unequal=76 shape=[1, 4, 5120]
+stage_route layer=4 route=compiled_whole_linear
+stage_dtype layer=4 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=4 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=4 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=4 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=4 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=4 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=4 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=4 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=4 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=4 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=4 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=4 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=4 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=4 stage=full_layer_same_input max_abs=4.882812500e-4 unequal=71 shape=[1, 4, 5120]
+stage_dtype layer=4 stage=qkv dtype=Bfloat16
+stage_compare layer=4 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=4 stage=a dtype=Bfloat16
+stage_compare layer=4 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=4 stage=conv_state dtype=Bfloat16
+stage_compare layer=4 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=4 stage=recurrent_state dtype=Float32
+stage_compare layer=4 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=5 route=compiled_whole_linear
+stage_dtype layer=5 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=5 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=5 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=5 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=5 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=5 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=5 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=5 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=5 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=5 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=5 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=5 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=5 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=5 stage=full_layer_same_input max_abs=4.882812500e-4 unequal=17 shape=[1, 4, 5120]
+stage_dtype layer=5 stage=qkv dtype=Bfloat16
+stage_compare layer=5 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=5 stage=a dtype=Bfloat16
+stage_compare layer=5 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=5 stage=conv_state dtype=Bfloat16
+stage_compare layer=5 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=5 stage=recurrent_state dtype=Float32
+stage_compare layer=5 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=6 route=compiled_whole_linear
+stage_dtype layer=6 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=6 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=6 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=6 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=6 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=6 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=6 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=6 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=6 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=6 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=6 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=6 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=6 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=6 stage=full_layer_same_input max_abs=4.882812500e-4 unequal=48 shape=[1, 4, 5120]
+stage_dtype layer=6 stage=qkv dtype=Bfloat16
+stage_compare layer=6 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=6 stage=a dtype=Bfloat16
+stage_compare layer=6 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=6 stage=conv_state dtype=Bfloat16
+stage_compare layer=6 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=6 stage=recurrent_state dtype=Float32
+stage_compare layer=6 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=7 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=7 stage=full_layer_same_input max_abs=9.765625000e-4 unequal=31 shape=[1, 4, 5120]
+stage_route layer=8 route=compiled_whole_linear
+stage_dtype layer=8 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=8 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=8 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=8 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=8 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=8 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=8 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=8 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=8 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=8 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=8 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=8 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=8 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=8 stage=full_layer_same_input max_abs=1.953125000e-3 unequal=20 shape=[1, 4, 5120]
+stage_dtype layer=8 stage=qkv dtype=Bfloat16
+stage_compare layer=8 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=8 stage=a dtype=Bfloat16
+stage_compare layer=8 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=8 stage=conv_state dtype=Bfloat16
+stage_compare layer=8 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=8 stage=recurrent_state dtype=Float32
+stage_compare layer=8 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=9 route=compiled_whole_linear
+stage_dtype layer=9 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=9 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=9 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=9 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=9 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=9 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=9 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=9 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=9 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=9 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=9 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=9 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=9 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=9 stage=full_layer_same_input max_abs=1.953125000e-3 unequal=28 shape=[1, 4, 5120]
+stage_dtype layer=9 stage=qkv dtype=Bfloat16
+stage_compare layer=9 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=9 stage=a dtype=Bfloat16
+stage_compare layer=9 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=9 stage=conv_state dtype=Bfloat16
+stage_compare layer=9 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=9 stage=recurrent_state dtype=Float32
+stage_compare layer=9 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=10 route=compiled_whole_linear
+stage_dtype layer=10 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=10 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=10 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=10 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=10 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=10 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=10 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=10 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=10 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=10 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=10 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=10 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=10 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=10 stage=full_layer_same_input max_abs=9.765625000e-4 unequal=29 shape=[1, 4, 5120]
+stage_dtype layer=10 stage=qkv dtype=Bfloat16
+stage_compare layer=10 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=10 stage=a dtype=Bfloat16
+stage_compare layer=10 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=10 stage=conv_state dtype=Bfloat16
+stage_compare layer=10 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=10 stage=recurrent_state dtype=Float32
+stage_compare layer=10 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=11 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=11 stage=full_layer_same_input max_abs=9.765625000e-4 unequal=5 shape=[1, 4, 5120]
+stage_route layer=12 route=compiled_whole_linear
+stage_dtype layer=12 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=12 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=12 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=12 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=12 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=12 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=12 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=12 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=12 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=12 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=12 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=12 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=12 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=12 stage=full_layer_same_input max_abs=2.441406250e-4 unequal=1 shape=[1, 4, 5120]
+stage_dtype layer=12 stage=qkv dtype=Bfloat16
+stage_compare layer=12 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=12 stage=a dtype=Bfloat16
+stage_compare layer=12 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=12 stage=conv_state dtype=Bfloat16
+stage_compare layer=12 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=12 stage=recurrent_state dtype=Float32
+stage_compare layer=12 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=13 route=compiled_whole_linear
+stage_dtype layer=13 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=13 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=13 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=13 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=13 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=13 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=13 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=13 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=13 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=13 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=13 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=13 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=13 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=13 stage=full_layer_same_input max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=13 stage=qkv dtype=Bfloat16
+stage_compare layer=13 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=13 stage=a dtype=Bfloat16
+stage_compare layer=13 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=13 stage=conv_state dtype=Bfloat16
+stage_compare layer=13 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=13 stage=recurrent_state dtype=Float32
+stage_compare layer=13 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=14 route=compiled_whole_linear
+stage_dtype layer=14 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=14 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=14 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=14 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=14 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=14 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=14 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=14 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=14 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=14 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=14 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=14 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=14 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=14 stage=full_layer_same_input max_abs=4.882812500e-4 unequal=34 shape=[1, 4, 5120]
+stage_dtype layer=14 stage=qkv dtype=Bfloat16
+stage_compare layer=14 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=14 stage=a dtype=Bfloat16
+stage_compare layer=14 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=14 stage=conv_state dtype=Bfloat16
+stage_compare layer=14 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=14 stage=recurrent_state dtype=Float32
+stage_compare layer=14 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=15 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=15 stage=full_layer_same_input max_abs=1.953125000e-3 unequal=23 shape=[1, 4, 5120]
+stage_route layer=16 route=compiled_whole_linear
+stage_dtype layer=16 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=16 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=16 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=16 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=16 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=16 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=16 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=16 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=16 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=16 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=16 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=16 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=16 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=16 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=53 shape=[1, 4, 5120]
+stage_dtype layer=16 stage=qkv dtype=Bfloat16
+stage_compare layer=16 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=16 stage=a dtype=Bfloat16
+stage_compare layer=16 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=16 stage=conv_state dtype=Bfloat16
+stage_compare layer=16 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=16 stage=recurrent_state dtype=Float32
+stage_compare layer=16 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=17 route=compiled_whole_linear
+stage_dtype layer=17 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=17 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=17 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=17 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=17 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=17 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=17 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=17 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=17 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=17 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=17 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=17 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=17 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=17 stage=full_layer_same_input max_abs=4.882812500e-4 unequal=14 shape=[1, 4, 5120]
+stage_dtype layer=17 stage=qkv dtype=Bfloat16
+stage_compare layer=17 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=17 stage=a dtype=Bfloat16
+stage_compare layer=17 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=17 stage=conv_state dtype=Bfloat16
+stage_compare layer=17 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=17 stage=recurrent_state dtype=Float32
+stage_compare layer=17 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=18 route=compiled_whole_linear
+stage_dtype layer=18 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=18 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=18 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=18 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=18 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=18 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=18 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=18 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=18 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=18 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=18 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=18 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=18 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=18 stage=full_layer_same_input max_abs=9.765625000e-4 unequal=11 shape=[1, 4, 5120]
+stage_dtype layer=18 stage=qkv dtype=Bfloat16
+stage_compare layer=18 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=18 stage=a dtype=Bfloat16
+stage_compare layer=18 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=18 stage=conv_state dtype=Bfloat16
+stage_compare layer=18 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=18 stage=recurrent_state dtype=Float32
+stage_compare layer=18 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=19 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=19 stage=full_layer_same_input max_abs=1.953125000e-3 unequal=59 shape=[1, 4, 5120]
+stage_route layer=20 route=compiled_whole_linear
+stage_dtype layer=20 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=20 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=20 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=20 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=20 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=20 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=20 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=20 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=20 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=20 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=20 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=20 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=20 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=20 stage=full_layer_same_input max_abs=1.953125000e-3 unequal=15 shape=[1, 4, 5120]
+stage_dtype layer=20 stage=qkv dtype=Bfloat16
+stage_compare layer=20 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=20 stage=a dtype=Bfloat16
+stage_compare layer=20 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=20 stage=conv_state dtype=Bfloat16
+stage_compare layer=20 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=20 stage=recurrent_state dtype=Float32
+stage_compare layer=20 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=21 route=compiled_whole_linear
+stage_dtype layer=21 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=21 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=21 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=21 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=21 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=21 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=21 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=21 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=21 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=21 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=21 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=21 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=21 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=21 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=535 shape=[1, 4, 5120]
+stage_dtype layer=21 stage=qkv dtype=Bfloat16
+stage_compare layer=21 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=21 stage=a dtype=Bfloat16
+stage_compare layer=21 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=21 stage=conv_state dtype=Bfloat16
+stage_compare layer=21 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=21 stage=recurrent_state dtype=Float32
+stage_compare layer=21 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=22 route=compiled_whole_linear
+stage_dtype layer=22 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=22 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=22 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=22 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=22 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=22 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=22 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=22 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=22 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=22 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=22 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=22 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=22 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=22 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=92 shape=[1, 4, 5120]
+stage_dtype layer=22 stage=qkv dtype=Bfloat16
+stage_compare layer=22 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=22 stage=a dtype=Bfloat16
+stage_compare layer=22 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=22 stage=conv_state dtype=Bfloat16
+stage_compare layer=22 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=22 stage=recurrent_state dtype=Float32
+stage_compare layer=22 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=23 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=23 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=5 shape=[1, 4, 5120]
+stage_route layer=24 route=compiled_whole_linear
+stage_dtype layer=24 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=24 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=24 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=24 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=24 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=24 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=24 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=24 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=24 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=24 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=24 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=24 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=24 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=24 stage=full_layer_same_input max_abs=1.953125000e-3 unequal=3 shape=[1, 4, 5120]
+stage_dtype layer=24 stage=qkv dtype=Bfloat16
+stage_compare layer=24 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=24 stage=a dtype=Bfloat16
+stage_compare layer=24 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=24 stage=conv_state dtype=Bfloat16
+stage_compare layer=24 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=24 stage=recurrent_state dtype=Float32
+stage_compare layer=24 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=25 route=compiled_whole_linear
+stage_dtype layer=25 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=25 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=25 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=25 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=25 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=25 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=25 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=25 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=25 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=25 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=25 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=25 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=25 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=25 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=34 shape=[1, 4, 5120]
+stage_dtype layer=25 stage=qkv dtype=Bfloat16
+stage_compare layer=25 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=25 stage=a dtype=Bfloat16
+stage_compare layer=25 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=25 stage=conv_state dtype=Bfloat16
+stage_compare layer=25 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=25 stage=recurrent_state dtype=Float32
+stage_compare layer=25 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=26 route=compiled_whole_linear
+stage_dtype layer=26 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=26 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=26 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=26 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=26 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=26 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=26 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=26 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=26 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=26 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=26 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=26 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=26 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=26 stage=full_layer_same_input max_abs=9.765625000e-4 unequal=5 shape=[1, 4, 5120]
+stage_dtype layer=26 stage=qkv dtype=Bfloat16
+stage_compare layer=26 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=26 stage=a dtype=Bfloat16
+stage_compare layer=26 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=26 stage=conv_state dtype=Bfloat16
+stage_compare layer=26 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=26 stage=recurrent_state dtype=Float32
+stage_compare layer=26 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=27 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=27 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=108 shape=[1, 4, 5120]
+stage_route layer=28 route=compiled_whole_linear
+stage_dtype layer=28 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=28 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=28 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=28 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=28 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=28 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=28 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=28 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=28 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=28 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=28 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=28 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=28 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=28 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=142 shape=[1, 4, 5120]
+stage_dtype layer=28 stage=qkv dtype=Bfloat16
+stage_compare layer=28 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=28 stage=a dtype=Bfloat16
+stage_compare layer=28 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=28 stage=conv_state dtype=Bfloat16
+stage_compare layer=28 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=28 stage=recurrent_state dtype=Float32
+stage_compare layer=28 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=29 route=compiled_whole_linear
+stage_dtype layer=29 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=29 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=29 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=29 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=29 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=29 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=29 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=29 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=29 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=29 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=29 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=29 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=29 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=29 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=48 shape=[1, 4, 5120]
+stage_dtype layer=29 stage=qkv dtype=Bfloat16
+stage_compare layer=29 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=29 stage=a dtype=Bfloat16
+stage_compare layer=29 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=29 stage=conv_state dtype=Bfloat16
+stage_compare layer=29 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=29 stage=recurrent_state dtype=Float32
+stage_compare layer=29 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=30 route=compiled_whole_linear
+stage_dtype layer=30 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=30 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=30 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=30 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=30 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=30 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=30 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=30 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=30 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=30 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=30 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=30 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=30 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=30 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=36 shape=[1, 4, 5120]
+stage_dtype layer=30 stage=qkv dtype=Bfloat16
+stage_compare layer=30 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=30 stage=a dtype=Bfloat16
+stage_compare layer=30 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=30 stage=conv_state dtype=Bfloat16
+stage_compare layer=30 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=30 stage=recurrent_state dtype=Float32
+stage_compare layer=30 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=31 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=31 stage=full_layer_same_input max_abs=9.765625000e-4 unequal=4 shape=[1, 4, 5120]
+stage_route layer=32 route=compiled_whole_linear
+stage_dtype layer=32 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=32 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=32 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=32 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=32 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=32 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=32 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=32 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=32 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=32 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=32 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=32 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=32 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=32 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=57 shape=[1, 4, 5120]
+stage_dtype layer=32 stage=qkv dtype=Bfloat16
+stage_compare layer=32 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=32 stage=a dtype=Bfloat16
+stage_compare layer=32 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=32 stage=conv_state dtype=Bfloat16
+stage_compare layer=32 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=32 stage=recurrent_state dtype=Float32
+stage_compare layer=32 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=33 route=compiled_whole_linear
+stage_dtype layer=33 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=33 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=33 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=33 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=33 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=33 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=33 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=33 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=33 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=33 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=33 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=33 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=33 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=33 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=985 shape=[1, 4, 5120]
+stage_dtype layer=33 stage=qkv dtype=Bfloat16
+stage_compare layer=33 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=33 stage=a dtype=Bfloat16
+stage_compare layer=33 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=33 stage=conv_state dtype=Bfloat16
+stage_compare layer=33 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=33 stage=recurrent_state dtype=Float32
+stage_compare layer=33 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=34 route=compiled_whole_linear
+stage_dtype layer=34 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=34 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=34 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=34 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=34 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=34 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=34 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=34 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=34 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=34 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=34 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=34 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=34 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=34 stage=full_layer_same_input max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=34 stage=qkv dtype=Bfloat16
+stage_compare layer=34 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=34 stage=a dtype=Bfloat16
+stage_compare layer=34 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=34 stage=conv_state dtype=Bfloat16
+stage_compare layer=34 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=34 stage=recurrent_state dtype=Float32
+stage_compare layer=34 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=35 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=35 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=30 shape=[1, 4, 5120]
+stage_route layer=36 route=compiled_whole_linear
+stage_dtype layer=36 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=36 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=36 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=36 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=36 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=36 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=36 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=36 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=36 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=36 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=36 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=36 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=36 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=36 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=34 shape=[1, 4, 5120]
+stage_dtype layer=36 stage=qkv dtype=Bfloat16
+stage_compare layer=36 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=36 stage=a dtype=Bfloat16
+stage_compare layer=36 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=36 stage=conv_state dtype=Bfloat16
+stage_compare layer=36 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=36 stage=recurrent_state dtype=Float32
+stage_compare layer=36 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=37 route=compiled_whole_linear
+stage_dtype layer=37 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=37 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=37 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=37 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=37 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=37 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=37 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=37 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=37 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=37 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=37 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=37 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=37 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=37 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=66 shape=[1, 4, 5120]
+stage_dtype layer=37 stage=qkv dtype=Bfloat16
+stage_compare layer=37 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=37 stage=a dtype=Bfloat16
+stage_compare layer=37 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=37 stage=conv_state dtype=Bfloat16
+stage_compare layer=37 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=37 stage=recurrent_state dtype=Float32
+stage_compare layer=37 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=38 route=compiled_whole_linear
+stage_dtype layer=38 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=38 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=38 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=38 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=38 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=38 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=38 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=38 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=38 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=38 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=38 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=38 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=38 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=38 stage=full_layer_same_input max_abs=1.953125000e-3 unequal=5 shape=[1, 4, 5120]
+stage_dtype layer=38 stage=qkv dtype=Bfloat16
+stage_compare layer=38 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=38 stage=a dtype=Bfloat16
+stage_compare layer=38 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=38 stage=conv_state dtype=Bfloat16
+stage_compare layer=38 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=38 stage=recurrent_state dtype=Float32
+stage_compare layer=38 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=39 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=39 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=30 shape=[1, 4, 5120]
+stage_route layer=40 route=compiled_whole_linear
+stage_dtype layer=40 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=40 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=40 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=40 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=40 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=40 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=40 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=40 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=40 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=40 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=40 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=40 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=40 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=40 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=31 shape=[1, 4, 5120]
+stage_dtype layer=40 stage=qkv dtype=Bfloat16
+stage_compare layer=40 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=40 stage=a dtype=Bfloat16
+stage_compare layer=40 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=40 stage=conv_state dtype=Bfloat16
+stage_compare layer=40 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=40 stage=recurrent_state dtype=Float32
+stage_compare layer=40 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=41 route=compiled_whole_linear
+stage_dtype layer=41 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=41 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=41 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=41 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=41 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=41 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=41 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=41 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=41 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=41 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=41 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=41 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=41 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=41 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=1068 shape=[1, 4, 5120]
+stage_dtype layer=41 stage=qkv dtype=Bfloat16
+stage_compare layer=41 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=41 stage=a dtype=Bfloat16
+stage_compare layer=41 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=41 stage=conv_state dtype=Bfloat16
+stage_compare layer=41 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=41 stage=recurrent_state dtype=Float32
+stage_compare layer=41 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=42 route=compiled_whole_linear
+stage_dtype layer=42 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=42 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=42 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=42 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=42 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=42 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=42 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=42 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=42 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=42 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=42 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=42 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=42 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=42 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=30 shape=[1, 4, 5120]
+stage_dtype layer=42 stage=qkv dtype=Bfloat16
+stage_compare layer=42 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=42 stage=a dtype=Bfloat16
+stage_compare layer=42 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=42 stage=conv_state dtype=Bfloat16
+stage_compare layer=42 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=42 stage=recurrent_state dtype=Float32
+stage_compare layer=42 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=43 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=43 stage=full_layer_same_input max_abs=1.953125000e-3 unequal=16 shape=[1, 4, 5120]
+stage_route layer=44 route=compiled_whole_linear
+stage_dtype layer=44 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=44 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=44 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=44 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=44 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=44 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=44 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=44 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=44 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=44 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=44 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=44 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=44 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=44 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=5 shape=[1, 4, 5120]
+stage_dtype layer=44 stage=qkv dtype=Bfloat16
+stage_compare layer=44 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=44 stage=a dtype=Bfloat16
+stage_compare layer=44 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=44 stage=conv_state dtype=Bfloat16
+stage_compare layer=44 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=44 stage=recurrent_state dtype=Float32
+stage_compare layer=44 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=45 route=compiled_whole_linear
+stage_dtype layer=45 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=45 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=45 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=45 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=45 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=45 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=45 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=45 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=45 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=45 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=45 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=45 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=45 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=45 stage=full_layer_same_input max_abs=1.562500000e-2 unequal=33 shape=[1, 4, 5120]
+stage_dtype layer=45 stage=qkv dtype=Bfloat16
+stage_compare layer=45 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=45 stage=a dtype=Bfloat16
+stage_compare layer=45 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=45 stage=conv_state dtype=Bfloat16
+stage_compare layer=45 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=45 stage=recurrent_state dtype=Float32
+stage_compare layer=45 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=46 route=compiled_whole_linear
+stage_dtype layer=46 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=46 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=46 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=46 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=46 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=46 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=46 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=46 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=46 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=46 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=46 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=46 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=46 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=46 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=15 shape=[1, 4, 5120]
+stage_dtype layer=46 stage=qkv dtype=Bfloat16
+stage_compare layer=46 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=46 stage=a dtype=Bfloat16
+stage_compare layer=46 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=46 stage=conv_state dtype=Bfloat16
+stage_compare layer=46 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=46 stage=recurrent_state dtype=Float32
+stage_compare layer=46 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=47 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=47 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=4 shape=[1, 4, 5120]
+stage_route layer=48 route=compiled_whole_linear
+stage_dtype layer=48 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=48 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=48 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=48 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=48 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=48 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=48 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=48 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=48 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=48 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=48 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=48 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=48 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=48 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=38 shape=[1, 4, 5120]
+stage_dtype layer=48 stage=qkv dtype=Bfloat16
+stage_compare layer=48 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=48 stage=a dtype=Bfloat16
+stage_compare layer=48 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=48 stage=conv_state dtype=Bfloat16
+stage_compare layer=48 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=48 stage=recurrent_state dtype=Float32
+stage_compare layer=48 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=49 route=compiled_whole_linear
+stage_dtype layer=49 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=49 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=49 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=49 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=49 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=49 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=49 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=49 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=49 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=49 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=49 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=49 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=49 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=49 stage=full_layer_same_input max_abs=3.906250000e-3 unequal=9 shape=[1, 4, 5120]
+stage_dtype layer=49 stage=qkv dtype=Bfloat16
+stage_compare layer=49 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=49 stage=a dtype=Bfloat16
+stage_compare layer=49 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=49 stage=conv_state dtype=Bfloat16
+stage_compare layer=49 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=49 stage=recurrent_state dtype=Float32
+stage_compare layer=49 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=50 route=compiled_whole_linear
+stage_dtype layer=50 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=50 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=50 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=50 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=50 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=50 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=50 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=50 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=50 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=50 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=50 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=50 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=50 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=50 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=43 shape=[1, 4, 5120]
+stage_dtype layer=50 stage=qkv dtype=Bfloat16
+stage_compare layer=50 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=50 stage=a dtype=Bfloat16
+stage_compare layer=50 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=50 stage=conv_state dtype=Bfloat16
+stage_compare layer=50 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=50 stage=recurrent_state dtype=Float32
+stage_compare layer=50 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=51 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=51 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=16 shape=[1, 4, 5120]
+stage_route layer=52 route=compiled_whole_linear
+stage_dtype layer=52 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=52 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=52 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=52 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=52 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=52 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=52 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=52 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=52 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=52 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=52 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=52 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=52 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=52 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=10 shape=[1, 4, 5120]
+stage_dtype layer=52 stage=qkv dtype=Bfloat16
+stage_compare layer=52 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=52 stage=a dtype=Bfloat16
+stage_compare layer=52 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=52 stage=conv_state dtype=Bfloat16
+stage_compare layer=52 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=52 stage=recurrent_state dtype=Float32
+stage_compare layer=52 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=53 route=compiled_whole_linear
+stage_dtype layer=53 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=53 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=53 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=53 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=53 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=53 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=53 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=53 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=53 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=53 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=53 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=53 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=53 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=53 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=32 shape=[1, 4, 5120]
+stage_dtype layer=53 stage=qkv dtype=Bfloat16
+stage_compare layer=53 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=53 stage=a dtype=Bfloat16
+stage_compare layer=53 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=53 stage=conv_state dtype=Bfloat16
+stage_compare layer=53 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=53 stage=recurrent_state dtype=Float32
+stage_compare layer=53 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=54 route=compiled_whole_linear
+stage_dtype layer=54 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=54 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=54 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=54 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=54 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=54 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=54 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=54 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=54 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=54 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=54 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=54 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=54 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=54 stage=full_layer_same_input max_abs=1.562500000e-2 unequal=43 shape=[1, 4, 5120]
+stage_dtype layer=54 stage=qkv dtype=Bfloat16
+stage_compare layer=54 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=54 stage=a dtype=Bfloat16
+stage_compare layer=54 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=54 stage=conv_state dtype=Bfloat16
+stage_compare layer=54 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=54 stage=recurrent_state dtype=Float32
+stage_compare layer=54 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=55 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=55 stage=full_layer_same_input max_abs=3.125000000e-2 unequal=4 shape=[1, 4, 5120]
+stage_route layer=56 route=compiled_whole_linear
+stage_dtype layer=56 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=56 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=56 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=56 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=56 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=56 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=56 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=56 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=56 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=56 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=56 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=56 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=56 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=56 stage=full_layer_same_input max_abs=3.125000000e-2 unequal=12 shape=[1, 4, 5120]
+stage_dtype layer=56 stage=qkv dtype=Bfloat16
+stage_compare layer=56 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=56 stage=a dtype=Bfloat16
+stage_compare layer=56 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=56 stage=conv_state dtype=Bfloat16
+stage_compare layer=56 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=56 stage=recurrent_state dtype=Float32
+stage_compare layer=56 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=57 route=compiled_whole_linear
+stage_dtype layer=57 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=57 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=57 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=57 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=57 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=57 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=57 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=57 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=57 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=57 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=57 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=57 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=57 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=57 stage=full_layer_same_input max_abs=1.562500000e-2 unequal=23 shape=[1, 4, 5120]
+stage_dtype layer=57 stage=qkv dtype=Bfloat16
+stage_compare layer=57 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=57 stage=a dtype=Bfloat16
+stage_compare layer=57 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=57 stage=conv_state dtype=Bfloat16
+stage_compare layer=57 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=57 stage=recurrent_state dtype=Float32
+stage_compare layer=57 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=58 route=compiled_whole_linear
+stage_dtype layer=58 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=58 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=58 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=58 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=58 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=58 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=58 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=58 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=58 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=58 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=58 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=58 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=58 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=58 stage=full_layer_same_input max_abs=7.812500000e-3 unequal=15 shape=[1, 4, 5120]
+stage_dtype layer=58 stage=qkv dtype=Bfloat16
+stage_compare layer=58 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=58 stage=a dtype=Bfloat16
+stage_compare layer=58 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=58 stage=conv_state dtype=Bfloat16
+stage_compare layer=58 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=58 stage=recurrent_state dtype=Float32
+stage_compare layer=58 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=59 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=59 stage=full_layer_same_input max_abs=3.125000000e-2 unequal=25 shape=[1, 4, 5120]
+stage_route layer=60 route=compiled_whole_linear
+stage_dtype layer=60 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=60 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=60 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=60 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=60 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=60 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=60 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=60 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=60 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=60 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=60 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=60 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=60 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=60 stage=full_layer_same_input max_abs=1.562500000e-2 unequal=5 shape=[1, 4, 5120]
+stage_dtype layer=60 stage=qkv dtype=Bfloat16
+stage_compare layer=60 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=60 stage=a dtype=Bfloat16
+stage_compare layer=60 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=60 stage=conv_state dtype=Bfloat16
+stage_compare layer=60 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=60 stage=recurrent_state dtype=Float32
+stage_compare layer=60 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=61 route=compiled_whole_linear
+stage_dtype layer=61 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=61 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=61 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=61 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=61 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=61 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=61 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=61 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=61 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=61 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=61 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=61 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=61 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=61 stage=full_layer_same_input max_abs=1.562500000e-2 unequal=13 shape=[1, 4, 5120]
+stage_dtype layer=61 stage=qkv dtype=Bfloat16
+stage_compare layer=61 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=61 stage=a dtype=Bfloat16
+stage_compare layer=61 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=61 stage=conv_state dtype=Bfloat16
+stage_compare layer=61 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=61 stage=recurrent_state dtype=Float32
+stage_compare layer=61 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_route layer=62 route=compiled_whole_linear
+stage_dtype layer=62 stage=compiled_vs_functional_hidden dtype=Bfloat16
+stage_compare layer=62 stage=compiled_vs_functional_hidden max_abs=0.000000000e0 unequal=0 shape=[1, 4, 5120]
+stage_dtype layer=62 stage=compiled_vs_functional_qkv dtype=Bfloat16
+stage_compare layer=62 stage=compiled_vs_functional_qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=62 stage=compiled_vs_functional_a dtype=Bfloat16
+stage_compare layer=62 stage=compiled_vs_functional_a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=62 stage=compiled_vs_functional_tape dtype=Float32
+stage_compare layer=62 stage=compiled_vs_functional_tape max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48, 128]
+stage_dtype layer=62 stage=compiled_vs_functional_conv dtype=Bfloat16
+stage_compare layer=62 stage=compiled_vs_functional_conv max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=62 stage=compiled_vs_functional_recurrent dtype=Float32
+stage_compare layer=62 stage=compiled_vs_functional_recurrent max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=62 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=62 stage=full_layer_same_input max_abs=3.125000000e-2 unequal=55 shape=[1, 4, 5120]
+stage_dtype layer=62 stage=qkv dtype=Bfloat16
+stage_compare layer=62 stage=qkv max_abs=0.000000000e0 unequal=0 shape=[1, 4, 10240]
+stage_dtype layer=62 stage=a dtype=Bfloat16
+stage_compare layer=62 stage=a max_abs=0.000000000e0 unequal=0 shape=[1, 4, 48]
+stage_dtype layer=62 stage=conv_state dtype=Bfloat16
+stage_compare layer=62 stage=conv_state max_abs=0.000000000e0 unequal=0 shape=[1, 3, 10240]
+stage_dtype layer=62 stage=recurrent_state dtype=Float32
+stage_compare layer=62 stage=recurrent_state max_abs=0.000000000e0 unequal=0 shape=[1, 48, 128, 128]
+stage_dtype layer=63 stage=full_layer_same_input dtype=Bfloat16
+stage_compare layer=63 stage=full_layer_same_input max_abs=3.125000000e-2 unequal=16 shape=[1, 4, 5120]
+stage_dtype layer=999 stage=mode_1_logits dtype=Float32
+stage_compare layer=999 stage=mode_1_logits max_abs=0.000000000e0 unequal=0 shape=[4, 248320]
+stage_ablation mode=1 offset=452 row=2 top2=[(898, 23.0), (28692, 23.0)]
+stage_dtype layer=999 stage=mode_4_logits dtype=Float32
+stage_compare layer=999 stage=mode_4_logits max_abs=0.000000000e0 unequal=0 shape=[4, 248320]
+stage_ablation mode=4 offset=452 row=2 top2=[(898, 23.0), (28692, 23.0)]

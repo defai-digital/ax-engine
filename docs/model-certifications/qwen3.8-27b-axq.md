@@ -41,6 +41,40 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-18 reference comparison and actual-input FFN attribution locate the
+  first captured layer-zero difference at gate/up QMM, with BF16 activation
+  and metadata and no dense bias. The observation-only build preserves all
+  192 tokens, full live logits and 288 compiled/eager leaves. Nested SwiGLU
+  compilation is exact in this control. Disabling custom QMM does not restore
+  direct/reference identity; the later first-token split remains unattributed.
+  Separate reproduced integration defects are repaired in `d121f107`: dense
+  Linear bias is applied once by each caller, and mixed affine metadata retains
+  stock dtype promotion. These repairs do not explain the captured bias-free,
+  same-dtype FFN difference. Defaults and numerical tolerances are unchanged.
+  The clean bundled `d121f107` wheel passes executable qualification on the
+  selected mini: doctor and installed-package identity, 32/32 hard QA and
+  7/7 surfaces per route, active MTP counters, and the paired 64-token probe.
+  This is version-bound qualification, not broad quality or Tier 2 acceptance.
+  [Reference comparison, regressions and version-bound validation](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-ffn-qmm-contract/).
+
+- **LINE_SET interpretation correction:** the imported source asks for a primary
+  bug location and its scorer accepts a nonempty subset of audited locations.
+  The historical source-file hashes confirm that contract was present when the
+  questions were imported. AX's exact-set score measures an additional,
+  stricter enumeration requirement. Its raw scores and gold sets remain
+  unchanged, but **0/24 full recall is not evidence that the original tasks
+  required every gold location**. On the retained `aa38f18b` twelve-case replay,
+  each route has seven accepted-location subset detections and five truncations,
+  while its exact-set score remains 0/12. Do not report that as twelve semantic
+  failures or population accuracy. An aligned quality protocol, remaining
+  truncation/recovery failures and broader qualification are still open.
+  A separate two-case complete-set prompt diagnostic returns `0` for 079 and
+  `3` for 086 on both AX routes and the pinned independent direct reference,
+  with full rendered prompt/input-token parity. The reused location keys are
+  not validated exhaustive causal annotations. This selected result does not
+  establish correctness, a quality repair or broader numerical equivalence.
+  [Source contract and diagnostic evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-ffn-qmm-contract/quality-contract.md).
+
 - 2026-09-18 GDN prework rounding repair (`aa38f18b`) restores intermediate
   activation-dtype boundaries in fused convolution, SiLU, normalization, and
   scaling. Exact BF16/FP16 prework and BF16 fused-verifier regressions pass.
@@ -56,7 +90,7 @@ Landed, labeled:
   7/7 surfaces per route, active MTP without silent fallback, and the paired
   64-token greedy probe. This closes that version-bound scope only.
   The final bundled wheel's unchanged twelve-case 512-token diagnostic remains
-  **0/12 correct per route**, with seven wrong and five truncated responses
+  **0/12 exact-set passes per route**, with seven strict-wrong and five truncated responses
   per route and **6/12** paired content matches. Truncation counts increase
   from four direct / two MTP on the previous wheel. This failure subset is not
   overall model accuracy, and the repair does not establish a quality gain.
@@ -229,13 +263,16 @@ Landed, labeled:
     full 32000-token cap (`finish_reason=max_output_tokens`). The continuation
     recovery pass recovered only 4/11 and 5/12 of those rows, so most
     budget-exhausted questions still fail after extension.
-  - **LINE_SET under-reporting.** All 24 `LINE_SET` rows across both packs were
+  - **LINE_SET scoring-contract mismatch.** All 24 `LINE_SET` rows across both packs were
     graded (none truncated), reported exactly **one** line each, and every
     reported line fell inside the gold span (detection 24/24, precision 24/24).
     Gold spans were 2-6 lines (median 3); full recall was **0/24** (median
     recall 0.33). The saved replies contain single-line answers; the grader
     accepts comma/range values. This rules out the proposed first-line
     truncation explanation for these replies, not every harness defect.
+    The source prompt and scorer permit accepted-location subsets; complete
+    enumeration is an additional AX metric, not the original task contract.
+    These counts therefore do not establish a model completeness defect.
     A later controlled diagnostic on the selected mini used 12 of these
     questions, a fixed answer-only system message, thinking disabled and a
     512-token cap. Original wording passed 0/12 direct and 1/12 MTP; a generic
@@ -267,11 +304,12 @@ Not claimed:
 - P0 multimodal quality for this pack
 - Long-context decode-at-depth
 - Clean-worktree replacement of the 2026-08-30 refresh
-- Any release-quality accuracy bar on the 2026-09-16/17 failed-pair retest; the
-  29.4% / 20.6% strict accuracy above is recorded as **evidence of an open
-  gap**, not as a passing qualification
-- `LINE_SET` enumeration completeness: original campaign full recall is 0/24
-  across both packs; the different diagnostic protocol above also has failures
+- Any release-quality accuracy bar on the 2026-09-16/17 failed-pair retest;
+  29.4% / 20.6% are strict selected-subset scores with the known LINE_SET
+  source-contract mismatch, not an aligned release-quality accuracy measure
+- Qualification under an aligned `LINE_SET` protocol: original full recall
+  remains 0/24 under the additional exact-set metric; stricter enumeration
+  diagnostics are separate tasks and do not replace the original contract
 - General immunity to generation stalls. The diagnosed oversized recovery
   prefill now reaches the existing KV starvation failure bound and delivers
   its terminal response. Target-mini recovery also completes with adequate
