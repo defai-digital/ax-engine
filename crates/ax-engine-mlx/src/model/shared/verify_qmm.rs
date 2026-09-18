@@ -14,7 +14,7 @@
 //! throughput admission pass on Apple Silicon.
 
 use mlx_sys::{
-    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, add, concatenate,
+    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, concatenate,
     contiguous, reshape, slice, zeros,
 };
 use std::cell::Cell;
@@ -452,8 +452,13 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
         return None;
     }
     let groups = k / weight.group_size;
-    if weight.scales.as_ref()?.shape() != [n, groups]
-        || weight.biases.as_ref()?.shape() != [n, groups]
+    let scales = weight.scales.as_ref()?;
+    let biases = weight.biases.as_ref()?;
+    // Mixed affine dtypes need MLX's common-type promotion before projection.
+    if scales.dtype() != x.dtype()
+        || biases.dtype() != x.dtype()
+        || scales.shape() != [n, groups]
+        || biases.shape() != [n, groups]
     {
         return None;
     }
@@ -594,12 +599,8 @@ fn try_qwen_mtp_verify_qmm_for_min_n(
     } else {
         slice(&flat, &[0, 0], &[m, n], &[1, 1], None)
     };
-    let projected = reshape(&flat, &[1, m, n], None);
-    Some(if let Some(linear_bias) = weight.linear_bias.as_ref() {
-        add(&projected, linear_bias, None)
-    } else {
-        projected
-    })
+    // The projection caller adds the separate dense Linear bias once.
+    Some(reshape(&flat, &[1, m, n], None))
 }
 
 #[cfg(test)]
@@ -638,8 +639,8 @@ mod tests {
         );
         let weight = QuantizedWeight {
             weight: quantized[0].clone(),
-            scales: Some(quantized[1].clone()),
-            biases: Some(quantized[2].clone()),
+            scales: Some(astype(&quantized[1], MlxDtype::Bfloat16, None)),
+            biases: Some(astype(&quantized[2], MlxDtype::Bfloat16, None)),
             group_size: 32,
             bits: 4,
             mode: "affine".to_owned(),
@@ -669,6 +670,8 @@ mod tests {
             MlxQuantizationMode::Affine,
             None,
         );
+        assert_eq!(routed.dtype(), MlxDtype::Bfloat16);
+        assert_eq!(reference.dtype(), routed.dtype());
         let routed_f32 = astype(&routed, MlxDtype::Float32, None);
         let reference_f32 = astype(&reference, MlxDtype::Float32, None);
         eval(&[&routed_f32, &reference_f32]);

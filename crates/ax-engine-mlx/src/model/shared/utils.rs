@@ -2209,6 +2209,103 @@ mod tests {
         assert!((got[1] - 1.75).abs() < 1e-5, "got {}", got[1]);
     }
 
+    fn verify_qmm_contract_fixture(
+        input_dtype: MlxDtype,
+        scale_dtype: MlxDtype,
+        group_bias_dtype: MlxDtype,
+        input_value: f32,
+    ) -> (MlxArray, QuantizedWeight) {
+        let (m, n, k) = (4, 16_384, 64);
+        let input = astype(
+            &array_f32(&vec![input_value; (m * k) as usize], &[1, m, k]),
+            input_dtype,
+            None,
+        );
+        let metadata = array_f32(&vec![1.0 / 64.0; (n * 2) as usize], &[n, 2]);
+        let weight = QuantizedWeight {
+            weight: mlx_sys::zeros(&[n, k / 8], MlxDtype::Uint32, None),
+            scales: Some(astype(&metadata, scale_dtype, None)),
+            biases: Some(astype(&metadata, group_bias_dtype, None)),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_owned(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+        };
+        (input, weight)
+    }
+
+    #[test]
+    fn qw_verify_qmm_contract_applies_dense_bias_once() {
+        use super::super::verify_qmm::{QwenMtpVerifyQmmGuard, try_qwen_mtp_verify_qmm};
+
+        let _exact = fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _guard = QwenMtpVerifyQmmGuard::arm(true);
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+            let (input, mut weight) = verify_qmm_contract_fixture(dtype, dtype, dtype, 0.0);
+            weight.linear_bias = Some(astype(
+                &array_f32(&vec![0.5; 16_384], &[16_384]),
+                dtype,
+                None,
+            ));
+            let projection =
+                try_qwen_mtp_verify_qmm(&input, &weight).expect("matching dtypes remain eligible");
+            assert_eq!(projection.dtype(), dtype);
+            let output = super::qw(&input, &weight);
+            assert_eq!(output.dtype(), dtype);
+            let projection = astype(&projection, MlxDtype::Float32, None);
+            let output = astype(&output, MlxDtype::Float32, None);
+            eval(&[&projection, &output]);
+            assert!(projection.data_f32().iter().all(|value| *value == 0.0));
+            let mismatch = output
+                .data_f32()
+                .iter()
+                .copied()
+                .find(|value| *value != 0.5);
+            assert_eq!(mismatch, None, "{dtype:?}: zero input must return one bias");
+        }
+    }
+
+    #[test]
+    fn qw_verify_qmm_contract_preserves_affine_dtype_promotion() {
+        use super::super::verify_qmm::{QwenMtpVerifyQmmGuard, try_qwen_mtp_verify_qmm};
+
+        let _exact = fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _guard = QwenMtpVerifyQmmGuard::arm(true);
+        for (input_dtype, scale_dtype, group_bias_dtype) in [
+            (MlxDtype::Bfloat16, MlxDtype::Float32, MlxDtype::Bfloat16),
+            (MlxDtype::Bfloat16, MlxDtype::Bfloat16, MlxDtype::Float32),
+            (MlxDtype::Float16, MlxDtype::Bfloat16, MlxDtype::Bfloat16),
+            (MlxDtype::Bfloat16, MlxDtype::Float16, MlxDtype::Float16),
+        ] {
+            let (input, weight) =
+                verify_qmm_contract_fixture(input_dtype, scale_dtype, group_bias_dtype, 1.0);
+            let reference = quantized_matmul(
+                &input,
+                &weight.weight,
+                weight.scales.as_ref().unwrap(),
+                weight.biases.as_ref(),
+                true,
+                Some(weight.group_size),
+                Some(weight.bits),
+                None,
+            );
+            let output = super::qw(&input, &weight);
+            assert_eq!(reference.dtype(), MlxDtype::Float32);
+            assert_eq!(
+                output.dtype(),
+                reference.dtype(),
+                "activation={input_dtype:?}, scale={scale_dtype:?}, group bias={group_bias_dtype:?}"
+            );
+            assert!(try_qwen_mtp_verify_qmm(&input, &weight).is_none());
+            eval(&[&output, &reference]);
+            assert_eq!(output.data_f32(), reference.data_f32());
+        }
+    }
+
     #[test]
     fn project_unquantized_decode_matches_x_at_weight_t() {
         let hidden = 8;

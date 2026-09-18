@@ -2029,7 +2029,11 @@ fn lm_head_verify_window_projection(
         // quantized head once for all verify rows; exact-profile calls remain
         // unarmed and retain the singleton-identity path below.
         if let Some(verify) = shared::verify_qmm::try_qwen_mtp_verify_qmm(normed, lm_head) {
-            return verify;
+            return if let Some(bias) = &lm_head.linear_bias {
+                add(&verify, bias, None)
+            } else {
+                verify
+            };
         }
         // Dense heads with a prepared `[in, out]` buffer: one batched
         // multi-row GEMV reads the head once for the whole window, and its
@@ -5629,6 +5633,38 @@ mod tests {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+        }
+    }
+
+    #[test]
+    fn lm_head_verify_qmm_contract_applies_dense_bias_once() {
+        let (seq, vocab, hidden) = (4, 100_000, 64);
+        let _guard = shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true);
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
+            let input = zeros(&[1, seq, hidden], dtype, None);
+            let mut head = quantized_zero_weight(&[vocab, hidden / 8], &[vocab, 1]);
+            head.scales = Some(zeros(&[vocab, 1], dtype, None));
+            head.biases = Some(zeros(&[vocab, 1], dtype, None));
+            head.linear_bias = Some(astype(
+                &array_f32(&vec![0.5; vocab as usize], &[vocab]),
+                dtype,
+                None,
+            ));
+            assert!(shared::verify_qmm::try_qwen_mtp_verify_qmm(&input, &head).is_some());
+            let output = lm_head_verify_window_projection(&input, &head, "qwen3_5", seq, hidden);
+            assert_eq!(output.dtype(), dtype);
+            assert_eq!(output.shape(), vec![1, seq, vocab]);
+            let output = astype(&output, MlxDtype::Float32, None);
+            eval(&[&output]);
+            let mismatch = output
+                .data_f32()
+                .iter()
+                .copied()
+                .find(|value| *value != 0.5);
+            assert_eq!(
+                mismatch, None,
+                "{dtype:?}: verify head must include one bias"
+            );
         }
     }
 
