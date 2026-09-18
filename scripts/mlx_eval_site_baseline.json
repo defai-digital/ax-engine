@@ -51,6 +51,10 @@
   "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": {
     "try_eval": 4
   },
+  "crates/ax-engine-mlx/src/model/qwen4_exp_mtp_diagnostics.rs": {
+    "eval": 2,
+    "try_eval": 1
+  },
   "crates/ax-engine-mlx/src/model/shared/attention.rs": {
     "async_eval": 2,
     "eval": 3

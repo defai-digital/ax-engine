@@ -253,6 +253,8 @@ fn sum_verify_wall_us(correction_wall_us: u32, bonus_wall_us: u32, rejection_wal
 }
 
 pub(crate) struct VerifiedStep {
+    #[cfg(test)]
+    pub verification_logits: Option<MlxArray>,
     pub committed: Vec<u32>,
     pub accepted: bool,
     pub after_primary: Qwen4ExpOutput,
@@ -371,6 +373,8 @@ pub(crate) fn verify_one(
         let correction = next_token(&after_primary)?;
         let correction_margin = top_two_margin(&after_primary.logits, 0)?;
         let verified = VerifiedStep {
+            #[cfg(test)]
+            verification_logits: None,
             committed: vec![primary],
             accepted: false,
             after_primary,
@@ -401,6 +405,8 @@ pub(crate) fn verify_one(
         let bonus = token_at_row(&batched.logits, 1)?;
         let bonus_margin = top_two_margin(&batched.logits, 1)?;
         let verified = VerifiedStep {
+            #[cfg(test)]
+            verification_logits: Some(batched.logits.clone()),
             committed: vec![primary, draft],
             accepted: true,
             after_primary: output_row(&batched, 0)?,
@@ -421,6 +427,8 @@ pub(crate) fn verify_one(
         let rejection_wall_us = elapsed_us(started);
         let next_primary = next_token(&after_primary)?;
         let verified = VerifiedStep {
+            #[cfg(test)]
+            verification_logits: Some(batched.logits.clone()),
             committed: vec![primary],
             accepted: false,
             after_primary,
@@ -464,6 +472,8 @@ pub(crate) struct CursorStep {
 }
 
 struct AdvancedStep {
+    #[cfg(test)]
+    observation: CandidateStepObservation,
     trunk_state: Qwen4ExpState,
     consumed: Vec<u32>,
     next_primary: u32,
@@ -579,6 +589,12 @@ impl Qwen4ExpDraftCursor {
             self.draft_state = draft_state;
             self.stream_hidden = Some(output.stream_hidden);
             return Ok(AdvancedStep {
+                #[cfg(test)]
+                observation: CandidateStepObservation {
+                    draft_token: None,
+                    verification_logits: None,
+                    next_logits: output.logits.clone(),
+                },
                 trunk_state: output.state,
                 consumed: vec![primary],
                 next_primary,
@@ -633,6 +649,12 @@ impl Qwen4ExpDraftCursor {
         self.proposed += 1;
         self.accepted += usize::from(accepted);
         Ok(AdvancedStep {
+            #[cfg(test)]
+            observation: CandidateStepObservation {
+                draft_token: Some(draft),
+                verification_logits: verified.verification_logits,
+                next_logits: final_output.logits.clone(),
+            },
             trunk_state: final_output.state,
             consumed,
             next_primary,
@@ -703,6 +725,14 @@ pub(crate) struct CandidateSession {
 }
 
 #[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct CandidateStepObservation {
+    pub draft_token: Option<u32>,
+    pub verification_logits: Option<MlxArray>,
+    pub next_logits: MlxArray,
+}
+
+#[cfg(test)]
 impl CandidateSession {
     /// Match production's n-1 plus singleton prefill schedule, then warm the
     /// draft cache with shifted prompt pairs. No prompt token is speculative.
@@ -762,6 +792,17 @@ impl CandidateSession {
         remaining: usize,
         terminal_ids: &[u32],
     ) -> Result<Vec<u32>, String> {
+        self.step_observed(trunk, head, remaining, terminal_ids)
+            .map(|(consumed, _)| consumed)
+    }
+
+    pub(crate) fn step_observed(
+        &mut self,
+        trunk: &Qwen4ExpWeights,
+        head: &Qwen4ExpMtpWeights,
+        remaining: usize,
+        terminal_ids: &[u32],
+    ) -> Result<(Vec<u32>, CandidateStepObservation), String> {
         let mut cursor = Qwen4ExpDraftCursor {
             draft_state: self.draft_state.clone(),
             stream_hidden: Some(self.stream_hidden.clone()),
@@ -784,7 +825,7 @@ impl CandidateSession {
         self.primary = advanced.next_primary;
         self.proposed = cursor.proposed;
         self.accepted = cursor.accepted;
-        Ok(advanced.consumed)
+        Ok((advanced.consumed, advanced.observation))
     }
 }
 

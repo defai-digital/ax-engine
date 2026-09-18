@@ -5,6 +5,9 @@ use super::*;
 use ax_engine_core::{NativeModelArtifacts, NativeRuntimeStatus, WeightSanitize};
 use std::path::{Path, PathBuf};
 
+#[path = "qwen4_exp_mtp_diagnostics.rs"]
+mod mtp_diagnostics;
+
 fn assert_equal(a: &MlxArray, b: &MlxArray) {
     mlx_sys::eval(&[a, b]);
     assert_eq!(a.shape(), b.shape());
