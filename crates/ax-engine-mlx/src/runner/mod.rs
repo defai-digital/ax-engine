@@ -7218,6 +7218,9 @@ impl MlxRunner {
                 state.cache.seq_len()
             ),
         );
+        if state.cache.seq_len() != 0 {
+            return telemetry;
+        }
         // Shape-exact warm extension: a multi-token extension chunk whose
         // (offset, len) is off the cold chunk grid dispatches different
         // SDPA kernels than the cold baseline at the same absolute
@@ -7230,28 +7233,16 @@ impl MlxRunner {
         // under one chunk is cheaper than any drift risk. Restores that
         // need no multi-token extension (warm_repeat tails of <=1 token)
         // keep their full length.
-        let extension_tokens = item
-            .input_token_slice
-            .len()
-            .saturating_sub(reused_tokens.len());
-        let reused_tokens: &[u32] = if extension_tokens > 1 {
-            let chunk = self.prefill_chunk.max(1);
-            let grid_len = (reused_tokens.len() / chunk) * chunk;
-            if grid_len != reused_tokens.len() {
-                Self::pfx_dbg(
-                    "restore-grid-trim",
-                    &format!(
-                        "claim={} grid={} chunk={chunk}",
-                        reused_tokens.len(),
-                        grid_len
-                    ),
-                );
-            }
-            &reused_tokens[..grid_len]
-        } else {
-            reused_tokens
+        let Some(restore_len) =
+            grid_aligned_prefix_restore_len(item, reused_tokens.len(), self.prefill_chunk.max(1))
+        else {
+            // The scheduler already removed this prefix from the input slice.
+            // Recompute prefix+suffix together instead of leaving a context gap.
+            telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
+            return telemetry;
         };
-        if reused_tokens.is_empty() || state.cache.seq_len() != 0 {
+        let reused_tokens = &reused_tokens[..restore_len];
+        if reused_tokens.is_empty() {
             return telemetry;
         }
         let capture_prefill_output =
@@ -14427,6 +14418,31 @@ fn extend_prompt_prefix_tokens(
     state.prompt_prefix_tokens.extend_from_slice(token_ids);
 }
 
+/// Select a cold-grid restore boundary, or require a full scheduler-prefix replay.
+fn grid_aligned_prefix_restore_len(
+    item: &ax_engine_core::ExecutionItem,
+    candidate_len: usize,
+    chunk: usize,
+) -> Option<usize> {
+    let scheduler_claim = item.reused_prefix_token_slice.len();
+    let extension_tokens = if item.mode == ExecutionMode::Prefill && scheduler_claim > 0 {
+        // The scheduler input already contains only the uncached suffix.
+        item.input_token_slice.len()
+    } else {
+        item.input_token_slice.len().saturating_sub(candidate_len)
+    };
+    let restore_len = if extension_tokens > 1 {
+        candidate_len / chunk.max(1) * chunk.max(1)
+    } else {
+        candidate_len
+    };
+    if item.mode == ExecutionMode::Prefill && restore_len < scheduler_claim {
+        None
+    } else {
+        Some(restore_len)
+    }
+}
+
 fn full_prefill_recompute_tokens_for_warmup_fallback(
     item: &ax_engine_core::ExecutionItem,
     token_ids: &[u32],
@@ -17541,6 +17557,57 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_enqueued".into(), 10)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_committed".into(), 8)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_commit_failed".into(), 1)));
+    }
+
+    #[test]
+    fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
+        for (prefix_len, suffix_len, chunk, expected) in [
+            (4, 8, 8, None),
+            (12, 20, 8, None),
+            (12, 2, 8, None),
+            (8, 2, 8, Some(8)),
+            (12, 1, 8, Some(12)),
+            (0, 20, 8, Some(0)),
+        ] {
+            let item = ax_engine_core::ExecutionItem {
+                request_id: RequestId(21),
+                mode: ExecutionMode::Prefill,
+                planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+                input_token_slice: vec![2; suffix_len],
+                reused_prefix_token_slice: vec![1; prefix_len],
+                position_range: PositionRange {
+                    start: prefix_len as u32,
+                    end_exclusive: (prefix_len + suffix_len) as u32,
+                },
+                scheduled_token_count: suffix_len as u32,
+                block_table_ref: RequestId(21),
+                prefix_tokens_reused: prefix_len as u32,
+                prefix_blocks_reused: 1,
+            };
+            let selected = grid_aligned_prefix_restore_len(&item, prefix_len, chunk);
+            assert_eq!(
+                selected, expected,
+                "prefix={prefix_len}, suffix={suffix_len}"
+            );
+            if selected.is_none() {
+                let telemetry = MlxPrefixCacheTelemetry {
+                    warmup_tokens: prefix_len as u32,
+                    ..MlxPrefixCacheTelemetry::default()
+                };
+                let state = RequestState::new(2, 21, None);
+                let replay = full_prefill_recompute_tokens_for_warmup_fallback(
+                    &item,
+                    &item.input_token_slice,
+                    &telemetry,
+                    &state,
+                )
+                .expect("trimmed scheduler claims must replay the complete prompt");
+                assert_eq!(replay, [vec![1; prefix_len], vec![2; suffix_len]].concat());
+            }
+            if prefix_len == 0 {
+                assert_eq!(grid_aligned_prefix_restore_len(&item, 12, chunk), Some(8));
+            }
+        }
     }
 
     #[test]
