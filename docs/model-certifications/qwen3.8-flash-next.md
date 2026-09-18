@@ -210,6 +210,14 @@ cells. `qualification=false` and `release_ready=false` are intentional.
 Recorded binary/harness hashes are never replaced with hashes of newer files.
 A mismatching or unavailable harness is an open reproducibility gate.
 
+Selected-expert `/metrics` totals from the installed `c10162e6` runtime
+undercount reads during intermediate single-token decode: the SDK omitted
+those steps' route reports, including their per-step read deltas. These
+counters establish selected-read activity but cannot quantify complete logical
+payload or physical disk I/O. The SDK now preserves the two read deltas while
+omitting the full route map. Corrected native counter validation remains open;
+the recorded artifacts and their binary identities are unchanged.
+
 - [Statistical acceptance](../../benchmarks/results/flash-next-statistical-acceptance-m2-20260916.json)
 - [Native build identity and checked source hashes](../../benchmarks/results/flash-next-native-build-m2-20260916.json)
 - [Completed QA, long context and NLL](../../benchmarks/results/flash-next-extended-qa-v3-m2-20260916.json)

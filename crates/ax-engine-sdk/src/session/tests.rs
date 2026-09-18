@@ -2300,3 +2300,78 @@ fn llama_cpp_terminal_requests_are_pruned_after_retention_limit() {
         MAX_LLAMA_CPP_TERMINAL_REQUESTS
     );
 }
+
+#[test]
+fn shared_decode_reports_every_selected_read_delta_without_full_routes() {
+    #[derive(Debug)]
+    struct SelectedReadRunner;
+    impl ExecutionRunner for SelectedReadRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let mut output = DeterministicRunner.run(input);
+            output.route_metadata.attention_route = Some("test_attention".into());
+            output.route_metadata.crossover_decisions.extend([
+                ("ax_mlx_decode_steps".into(), 1),
+                ("ax_mlx_flash_next_selected_expert_gathers".into(), 48),
+                ("ax_mlx_flash_next_selected_expert_payload_kib".into(), 100),
+                ("unrelated_large_route_entry".into(), 999),
+            ]);
+            output
+        }
+    }
+    let mut session = shared_stream_test_session(64);
+    session.core = EngineCore::with_runtime_components(
+        KvManagerConfig::validated(CacheGroupId(0), 4, 64),
+        SelectedReadRunner,
+        DeterministicSampler,
+    );
+    let id = session
+        .submit_generate(GenerateRequest {
+            model_id: "qwen3".into(),
+            input_tokens: vec![7; 8],
+            input_text: None,
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 8,
+            sampling: Default::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        })
+        .expect("submit");
+    let mut steps = 0;
+    let mut sparse_steps = 0;
+    let mut gathers = 0;
+    let mut payload_kib = 0;
+    for _ in 0..32 {
+        let (report, ids) = session.step_report_with_request_ids().expect("step");
+        if !ids.contains(&id) {
+            continue;
+        }
+        steps += 1;
+        let route = report
+            .route
+            .as_ref()
+            .expect("read deltas must survive route elision");
+        gathers += route
+            .decision("ax_mlx_flash_next_selected_expert_gathers")
+            .unwrap_or(0);
+        payload_kib += route
+            .decision("ax_mlx_flash_next_selected_expert_payload_kib")
+            .unwrap_or(0);
+        if route.attention_route.is_none() {
+            sparse_steps += 1;
+            assert_eq!(route.crossover_decisions.len(), 2);
+            assert!(route.decision("unrelated_large_route_entry").is_none());
+        }
+        if session.request_report(id).expect("request").state == SessionRequestState::Finished {
+            break;
+        }
+    }
+    assert!(sparse_steps > 0, "exercise the omitted full-route path");
+    assert_eq!(gathers, steps * 48);
+    assert_eq!(payload_kib, steps * 100);
+    let report = session.request_report(id).expect("terminal request");
+    assert_eq!(report.state, SessionRequestState::Finished);
+    assert_eq!(
+        report.route.attention_route.as_deref(),
+        Some("test_attention")
+    );
+}
