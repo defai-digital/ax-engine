@@ -1,0 +1,30 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from $WORKTREE/crates/mlx-sys/../../.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+   Compiling ax-engine-mlx v7.4.0 ($WORKTREE/crates/ax-engine-mlx)
+   Compiling mlx-sys v7.4.0 ($WORKTREE/crates/mlx-sys)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.88s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_mlx-5bd779f1cf94124a)
+
+running 20 tests
+test expert_stream::selected::tests::mxfp4_known_codes_and_exponent_scales_match_mlx_values ... ok
+test expert_stream::selected::tests::mxfp4_paging_preserves_scales_routing_outputs_and_recovery ... ok
+test expert_stream::selected::tests::mxfp4_paging_rejects_unbound_modes_bad_scales_and_hidden_biases ... ok
+test fastpath::tests::invariant_mxfp4_qmv_fast_is_opt_in ... ok
+test model::shared::linear_attention::tests::exact_s2_mxfp4_fused_qkvz_ba_matches_split_qw ... ok
+test model::shared::linear_attention::tests::matching_affine_quant_rejects_mxfp4_even_when_bits_match ... ok
+test model::shared::linear_attention::tests::qw_rms_norm_qmm_mxfp4_matches_rms_then_qw ... ok
+test model::shared::mlp::tests::quantized_matmul_rms_norm_mxfp4_matches_imperative ... ok
+test model::shared::mlp::tests::qwen_compiled_split_verify_ffn_mxfp4_s2_matches_imperative ... ok
+test model::shared::mlp::tests::qwen_swiglu_down_fuse_mxfp4_matches_imperative ... ok
+test model::shared::mlp::tests::switch_gather_sorted_mxfp4_experts_match_unsorted ... ok
+test model::shared::utils::tests::batched_mxfp4_multi_token_without_exact_vs_singleton ... batched MXFP4 S=2 vs singleton max_abs=0
+ok
+test model::shared::utils::tests::exact_mxfp4_short_qmm_flatten_matches_3d ... ok
+test model::shared::utils::tests::exact_qw_mxfp4_qmv_fast_s2_matches_singleton ... ok
+test model::shared::utils::tests::exact_shared_mxfp4_multi_token_matches_singleton_rows ... ok
+test model::shared::utils::tests::invariant_mxfp4_qmv_fast_matches_mlx_singleton ... ok
+test model::shared::utils::tests::invariant_mxfp4_qmv_fast_s2_rows_match_singleton ... ok
+test weights::tests::load_deepseek_v4_mtp_sidecar_loads_axquant_fp8_mxfp4_layout ... ok
+test weights::tests::mtp_take_mxfp4_experts_none_when_any_expert_tensor_missing ... ok
+test weights::tests::mtp_take_mxfp4_experts_stacks_fused_gate_up_and_down ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 1558 filtered out; finished in 3.40s

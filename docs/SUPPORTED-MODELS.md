@@ -119,7 +119,7 @@ Qwen 3.8 caveat:
   payload, fresh-download and installed-runtime qualification remain open.
   Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
   variable. 2-bit still needs `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
-  `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4 stays rejected. Do not treat it as 27B
+  `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4/group32 also requires the family opt-in; target qualification remains open. Do not treat it as 27B
   or as Super-class 2.4T. Record:
   [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).
 

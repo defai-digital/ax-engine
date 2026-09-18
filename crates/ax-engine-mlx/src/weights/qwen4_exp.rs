@@ -24,6 +24,7 @@ use mlx_sys::{
     load_safetensors_filtered, slice, transpose,
 };
 
+use crate::expert_stream::{ExpertQuantizationMode, ExpertQuantizationModes};
 use crate::model::LinearAttentionConfig;
 use crate::model::shared::qwen4_exp_attention::{
     Qwen4ExpAttention, Qwen4ExpAttentionConfig, Qwen4ExpAttentionWeights,
@@ -122,7 +123,7 @@ pub(crate) fn load_with_paging_policy(
         WeightLoadError::FileMissing(format!("cannot resolve root {}: {e}", root.display()))
     })?;
 
-    let streamed_layers = stream_manifest
+    let (streamed_layers, quantization_modes) = stream_manifest
         .as_ref()
         .map(|stream| {
             validate_expert_paging_contract(
@@ -139,13 +140,17 @@ pub(crate) fn load_with_paging_policy(
         .as_ref()
         .map(crate::expert_stream::streamed_skip_names)
         .unwrap_or_default();
-    let expert_stream = stream_manifest.map(|stream| {
-        Arc::new(crate::expert_stream::ExpertStackPager::new(
-            Arc::new(stream),
-            root.to_path_buf(),
-            budget_layers,
-        ))
-    });
+    let expert_stream = stream_manifest
+        .map(|stream| {
+            crate::expert_stream::ExpertStackPager::new_with_quantization_modes(
+                Arc::new(stream),
+                root.to_path_buf(),
+                budget_layers,
+                quantization_modes,
+            )
+            .map(Arc::new)
+        })
+        .transpose()?;
     let specs = manifest.tensors.as_slice();
     let mut name_map = load_resident_tensors(root, &canonical_root, manifest, &stream_skip)?;
     sanitize_norms_and_convs(manifest.weight_sanitize, &manifest.tensors, &mut name_map)?;
@@ -578,14 +583,14 @@ pub(super) fn read_weight_index(
 }
 
 /// Bind the paging sidecar to the already validated native tensor contract.
-/// The pager currently interprets quantized projections as affine only.
+/// Preserve each projection mode separately from the v1 bits/group fields.
 fn validate_expert_paging_contract(
     root: &Path,
     canonical_root: &Path,
     specs: &[NativeTensorSpec],
     expected_top_k: u32,
     stream: &crate::expert_stream::ExpertStreamManifest,
-) -> Result<HashSet<u32>, WeightLoadError> {
+) -> Result<(HashSet<u32>, ExpertQuantizationModes), WeightLoadError> {
     use crate::expert_stream::ExpertProj;
     let invalid = |message: String| {
         WeightLoadError::InvalidLayer(format!("qwen4_exp expert paging: {message}"))
@@ -610,6 +615,7 @@ fn validate_expert_paging_contract(
     let index = read_weight_index(root, canonical_root)?;
     let mut declared = HashSet::new();
     let mut layers = HashSet::new();
+    let mut modes = ExpertQuantizationModes::new();
     for entry in &stream.tensors {
         if !declared.insert(entry.name.clone()) {
             return Err(invalid(format!("duplicate tensor {}", entry.name)));
@@ -630,7 +636,7 @@ fn validate_expert_paging_contract(
             .or_else(|| sidecar_base.and_then(|name| by_name.get(name).copied()))
             .ok_or_else(|| {
                 invalid(format!(
-                    "{} is not a declared expert projection or affine sidecar",
+                    "{} is not a declared expert projection or quantization sidecar",
                     entry.name
                 ))
             })?;
@@ -645,8 +651,18 @@ fn validate_expert_paging_contract(
                 entry.name
             )));
         }
-        let (bits, group_size) = match &spec.quantization {
-            Some(quant) if quant.mode == "affine" => (quant.bits, quant.group_size),
+        let (bits, group_size, quantization_mode) = match &spec.quantization {
+            Some(quant) if quant.mode == "affine" => {
+                (quant.bits, quant.group_size, ExpertQuantizationMode::Affine)
+            }
+            Some(quant)
+                if quant.mode == "mxfp4"
+                    && quant.bits == 4
+                    && quant.group_size == 32
+                    && spec.dtype == ax_engine_core::NativeTensorDataType::U32 =>
+            {
+                (4, 32, ExpertQuantizationMode::Mxfp4)
+            }
             Some(quant) => {
                 return Err(invalid(format!(
                     "{} uses unsupported paging quantization {}",
@@ -660,15 +676,16 @@ fn validate_expert_paging_contract(
                     | ax_engine_core::NativeTensorDataType::F32
             ) && !spec.source_quantized =>
             {
-                (4, 64)
+                (4, 64, ExpertQuantizationMode::Affine)
             }
             None => {
                 return Err(invalid(format!(
-                    "{} lacks a supported dense or affine contract",
+                    "{} lacks a supported dense or quantized contract",
                     spec.name
                 )));
             }
         };
+        modes.insert(spec.name.clone(), quantization_mode);
         if (entry.bits, entry.group_size) != (bits, group_size) {
             return Err(invalid(format!(
                 "{} disagrees with native bits/group_size",
@@ -710,6 +727,18 @@ fn validate_expert_paging_contract(
                 "unsupported dense expert bias {linear_bias}"
             )));
         }
+        let group_bias = format!("{base}.biases");
+        if modes.get(&spec.name) == Some(&ExpertQuantizationMode::Mxfp4)
+            && (declared.contains(&group_bias)
+                || index
+                    .as_ref()
+                    .is_some_and(|map| map.contains_key(&group_bias))
+                || specs.iter().any(|tensor| tensor.name == group_bias))
+        {
+            return Err(invalid(format!(
+                "MXFP4 must not declare group bias {group_bias}"
+            )));
+        }
         // The pager automatically reads colocated sidecars. Cross-file sidecars
         // must also appear in its plan so their shard is opened on a cache miss.
         if spec.quantization.is_some() {
@@ -727,7 +756,7 @@ fn validate_expert_paging_contract(
             }
         }
     }
-    Ok(layers)
+    Ok((layers, modes))
 }
 
 /// Select the exact trunk tensors and their named sidecars before opening
@@ -1819,8 +1848,23 @@ mod tests {
         .collect();
         let plan = crate::expert_stream::infer_layer_stack_manifest(&specs, 2).unwrap();
         assert_eq!(
-            validate_expert_paging_contract(&root, &canonical, &specs, 2, &plan).unwrap(),
+            validate_expert_paging_contract(&root, &canonical, &specs, 2, &plan)
+                .unwrap()
+                .0,
             HashSet::from([0])
+        );
+        let mut mxfp4_specs = specs.clone();
+        for spec in &mut mxfp4_specs {
+            spec.quantization.as_mut().unwrap().mode = "mxfp4".into();
+        }
+        let (layers, modes) =
+            validate_expert_paging_contract(&root, &canonical, &mxfp4_specs, 2, &plan).unwrap();
+        assert_eq!(layers, HashSet::from([0]));
+        assert_eq!(modes.len(), 3);
+        assert!(
+            modes
+                .values()
+                .all(|mode| *mode == ExpertQuantizationMode::Mxfp4)
         );
         for violation in [
             "bits",
@@ -1851,7 +1895,7 @@ mod tests {
                 "duplicate" => changed.tensors.push(changed.tensors[0].clone()),
                 "file" => changed.tensors[0].file = "other.safetensors".into(),
                 "unknown" => changed.tensors[0].name = "unrecognized.weight".into(),
-                "mode" => changed_specs[0].quantization.as_mut().unwrap().mode = "mxfp4".into(),
+                "mode" => changed_specs[0].quantization.as_mut().unwrap().mode = "mxfp8".into(),
                 "topk" => changed.experts_per_tok = 1,
                 _ => unreachable!(),
             }

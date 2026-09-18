@@ -1,0 +1,31 @@
+# Flash Next MXFP4 diagnostic paging and pack audit
+
+This tranche enables explicit MXFP4 expert paging behind the existing family
+opt-in. It does not qualify the full model, MTP, performance or release.
+
+The pinned target pack audit records all 47 files, 26 safetensor headers,
+2690 tensors, 2659 index entries and 288 stream entries. It preserves the
+528 MXFP4 projections, 227 affine8/group32 overrides, affine8/group64 output
+head and 31 BF16 MTP sidecar tensors. The first Hub attempt failed decoding a
+CAS response; the second resumed attempt used unchanged defaults and passed
+all file hashes. Storage was NAS over SMB on M5 Max 128 GiB.
+
+Small native controls run on an M3 Max build host. They cover known MXFP4
+codes and E8M0 exponents, generated F32/BF16 projections, routing order and
+duplicates, selected/full-layer prefill and decode, byte caps, malformed
+sidecars, truncation and recovery. These results are not M5 measurements.
+
+The complete target matrix remains open: installed delivery and QA,
+independent numerical and MTP state/runner controls, long context, nine
+throughput cells, cold latency and peak memory. Six-bit is out of scope.
+
+Validation: 3710 Rust tests passed, 46 ignored; Python 199 passed,
+36 skipped. Formatting, script gates and CI-policy Clippy passed. Strict
+restriction-lint Clippy failed on existing test uses of expect; this is not
+reported as strict all-lints green. Logs retain expected negative-control
+MLX errors; process exit and final test summaries determine the result.
+
+output-head-repro.txt is the expected failing regression before the
+role-specific affine8/group64 fix; output-head-fixed.txt passes afterward.
+The final workspace log includes the corrected regression. Source file
+hashes and exact commands are recorded in validation.json.

@@ -13,10 +13,17 @@ The target is
 [`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/tree/0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35)
 at revision `0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35`. Published file
 metadata totals 132,261,853,669 bytes. Default MXFP4/group32 coexists with
-per-tensor affine8/group32 overrides; the protected MTP sidecar is BF16.
+per-tensor affine8/group32 overrides and an affine8/group64 output head;
+the protected MTP sidecar is BF16.
 The current campaign uses a NAS-backed Hugging Face cache over SMB; storage
-conditions are part of qualification. MXFP4 paging remains rejected by the
-current native loader; model publication does not establish AX execution.
+conditions are part of qualification. MXFP4 paging requires the explicit
+`AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` opt-in. Small generated-tensor controls
+cover bounded U8 scale reads, full-layer/selected-row equivalence, malformed
+layouts and I/O recovery; target whole-model qualification is still open.
+
+[Pinned pack audit](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/pack-audit.json)
+records full file hashes and quantization geometry. Successful Hub staging does
+not establish installed AX delivery or model execution.
 
 Six-bit is excluded from this target campaign. The former Studio target and
 all affine results below are historical; they do not qualify MXFP4 on M5 Max.
@@ -24,8 +31,8 @@ Existing download aliases retain their original pack identity.
 
 | Gate | Current target state |
 | --- | --- |
-| MXFP4 execution | Open: validated mode/scale/bias contracts through full-layer and selected-expert paging |
-| Immutable delivery | Published revision and metadata identified; target SSD payload verification pending |
+| MXFP4 execution | Diagnostic mode binding and U8 scales implemented; full-layer/selected-row controls pass. Target whole-model validation remains open |
+| Immutable delivery | All 47 pinned files and 26 tensor headers verified on target NAS; installed AX delivery remains open |
 | Numerical and MTP | New pack-specific holdout, direct/MTP state, rollback and trained-head evidence required |
 | Installed QA and lifecycle | Target QA, SSE/disconnect/recovery, stop/budget and long-context evidence pending |
 | Throughput and memory | Nine new cells: 512/2048/8192 prompt tokens x AX direct/reference/AX MTP; target peak memory and cold latency pending |
@@ -313,7 +320,8 @@ not published.
 Audited affine 4-bit/group64 and 6-bit/group64 manifests can be admitted
 without an environment variable. `runtime_status.ready` expresses loader
 admission, not checkpoint certification. Unknown exporter layouts, invalid
-geometry, mixed expert layouts and MXFP4 remain rejected by the native loader.
+geometry and mixed expert layouts remain rejected. MXFP4/group32 now has an
+explicit family opt-in for diagnostic validation; it is not release-qualified.
 2-bit/group32 requires both `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
 `AX_ENGINE_2BIT_EXPERIMENTAL=1`. Auto/On/Off expert residency is unchanged.
 

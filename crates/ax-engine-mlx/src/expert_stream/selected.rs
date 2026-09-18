@@ -1,10 +1,13 @@
-//! Bounded reads of complete affine expert matrices along axis zero.
+//! Bounded reads of quantized expert matrices along axis zero.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use mlx_sys::{MlxDtype, RowTensorMeta, SafetensorsRowReader};
 
+use super::quantization::{
+    ExpertQuantizationMode, ExpertQuantizationModes, mode_for, validate_mxfp4_pair,
+};
 use super::{ExpertProj, ExpertStreamManifest, LayerExpertStack, is_quantization_sidecar_name};
 use crate::weights::QuantizedWeight;
 
@@ -34,7 +37,8 @@ struct ProjectionRows {
     projection: ExpertProj,
     weight: TensorRows,
     scales: TensorRows,
-    biases: TensorRows,
+    biases: Option<TensorRows>,
+    mode: ExpertQuantizationMode,
     bits: i32,
     group_size: i32,
 }
@@ -53,6 +57,7 @@ impl SelectedExpertRows {
         root: &Path,
         layer: u32,
         max_gather_bytes: usize,
+        modes: Option<&ExpertQuantizationModes>,
     ) -> Result<Self, String> {
         let tensors: Vec<_> = manifest.tensors_for_layer(layer).collect();
         let weights: Vec<_> = tensors
@@ -67,15 +72,19 @@ impl SelectedExpertRows {
         }
         let mut selections = BTreeMap::<PathBuf, Vec<String>>::new();
         let mut locations = HashMap::new();
+        let mut forbidden = Vec::new();
         for tensor in &weights {
             let base = tensor.name.strip_suffix(".weight").ok_or_else(|| {
                 format!("selected experts: unsupported weight name {}", tensor.name)
             })?;
-            for name in [
-                tensor.name.clone(),
-                format!("{base}.scales"),
-                format!("{base}.biases"),
-            ] {
+            let mode = mode_for(modes, &tensor.name)?;
+            let mut names = vec![tensor.name.clone(), format!("{base}.scales")];
+            if mode == ExpertQuantizationMode::Affine {
+                names.push(format!("{base}.biases"));
+            } else {
+                forbidden.extend([format!("{base}.biases"), format!("{base}.bias")]);
+            }
+            for name in names {
                 let file = tensors
                     .iter()
                     .find(|entry| entry.name == name)
@@ -86,13 +95,18 @@ impl SelectedExpertRows {
                 selections.entry(file.clone()).or_default().push(name);
             }
         }
+        if tensors.iter().any(|t| forbidden.contains(&t.name)) {
+            return Err("selected experts: MXFP4 expert bias is unsupported".into());
+        }
+        let forbidden: Vec<&str> = forbidden.iter().map(String::as_str).collect();
         let mut readers = Vec::new();
         let mut file_indices = HashMap::new();
         for (file, names) in selections {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            let reader = SafetensorsRowReader::open_selected_stacks(
+            let reader = SafetensorsRowReader::open_selected_stacks_rejecting(
                 &root.join(&file),
                 &names,
+                &forbidden,
                 max_gather_bytes,
             )?;
             file_indices.insert(file, readers.len());
@@ -124,11 +138,15 @@ impl SelectedExpertRows {
             if !seen.insert(projection) {
                 return Err("selected experts: duplicate projection".into());
             }
-            if tensor.expert_axis != 0
-                || tensor.num_experts != manifest.num_experts
-                || !matches!((tensor.bits, tensor.group_size), (2, 32) | (4 | 6, 64))
-            {
-                return Err("selected experts: unsupported affine expert layout".into());
+            let mode = mode_for(modes, &tensor.name)?;
+            let supported = match mode {
+                ExpertQuantizationMode::Affine => {
+                    matches!((tensor.bits, tensor.group_size), (2, 32) | (4 | 6, 64))
+                }
+                ExpertQuantizationMode::Mxfp4 => (tensor.bits, tensor.group_size) == (4, 32),
+            };
+            if tensor.expert_axis != 0 || tensor.num_experts != manifest.num_experts || !supported {
+                return Err("selected experts: unsupported quantized expert layout".into());
             }
             let base = tensor
                 .name
@@ -136,27 +154,42 @@ impl SelectedExpertRows {
                 .ok_or_else(|| "selected experts: missing weight suffix".to_string())?;
             let weight = lookup(tensor.name.clone())?;
             let scales = lookup(format!("{base}.scales"))?;
-            let biases = lookup(format!("{base}.biases"))?;
-            if weight.meta.dtype != MlxDtype::Uint32
-                || !matches!(
-                    scales.meta.dtype,
-                    MlxDtype::Float32 | MlxDtype::Float16 | MlxDtype::Bfloat16
-                )
-                || scales.meta.dtype != biases.meta.dtype
-                || scales.meta.shape != biases.meta.shape
-                || weight.meta.shape[..2] != scales.meta.shape[..2]
-                || weight.meta.rows != manifest.num_experts as usize
-                || u64::from(weight.meta.shape[2] as u32) * 32
-                    != u64::from(scales.meta.shape[2] as u32)
-                        * u64::from(tensor.group_size)
-                        * u64::from(tensor.bits)
-            {
-                return Err(format!(
-                    "selected experts: incompatible affine triplet {}",
-                    tensor.name
-                ));
-            }
-            for row in [&weight, &scales, &biases] {
+            let biases = match mode {
+                ExpertQuantizationMode::Affine => {
+                    let biases = lookup(format!("{base}.biases"))?;
+                    if weight.meta.dtype != MlxDtype::Uint32
+                        || !matches!(
+                            scales.meta.dtype,
+                            MlxDtype::Float32 | MlxDtype::Float16 | MlxDtype::Bfloat16
+                        )
+                        || scales.meta.dtype != biases.meta.dtype
+                        || scales.meta.shape != biases.meta.shape
+                        || weight.meta.shape[..2] != scales.meta.shape[..2]
+                        || weight.meta.rows != manifest.num_experts as usize
+                        || u64::from(weight.meta.shape[2] as u32) * 32
+                            != u64::from(scales.meta.shape[2] as u32)
+                                * u64::from(tensor.group_size)
+                                * u64::from(tensor.bits)
+                    {
+                        return Err(format!(
+                            "selected experts: incompatible affine triplet {}",
+                            tensor.name
+                        ));
+                    }
+                    Some(biases)
+                }
+                ExpertQuantizationMode::Mxfp4 => {
+                    validate_mxfp4_pair(
+                        &weight.meta.shape,
+                        weight.meta.dtype,
+                        &scales.meta.shape,
+                        scales.meta.dtype,
+                        manifest.num_experts,
+                    )?;
+                    None
+                }
+            };
+            for row in [&weight, &scales].into_iter().chain(biases.iter()) {
                 bytes_per_expert = bytes_per_expert
                     .checked_add(row.meta.row_bytes)
                     .ok_or_else(|| "selected experts: byte count overflow".to_string())?;
@@ -166,6 +199,7 @@ impl SelectedExpertRows {
                 weight,
                 scales,
                 biases,
+                mode,
                 bits: tensor.bits as i32,
                 group_size: tensor.group_size as i32,
             });
@@ -228,10 +262,10 @@ impl SelectedExpertRows {
             let weight = QuantizedWeight {
                 weight: read(&projection.weight)?,
                 scales: Some(read(&projection.scales)?),
-                biases: Some(read(&projection.biases)?),
+                biases: projection.biases.as_ref().map(read).transpose()?,
                 bits: projection.bits,
                 group_size: projection.group_size,
-                mode: "affine".into(),
+                mode: projection.mode.as_str().into(),
                 linear_bias: None,
                 decode_weight_t: None,
                 decode_q2_weight: None,
@@ -281,6 +315,16 @@ mod tests {
         group: i32,
         dtype: MlxDtype,
     ) -> (ExpertStreamManifest, Qwen4ExpResidentExperts) {
+        fixture_with_mode(root, bits, group, dtype, MlxQuantizationMode::Affine)
+    }
+
+    fn fixture_with_mode(
+        root: &Path,
+        bits: i32,
+        group: i32,
+        dtype: MlxDtype,
+        mode: MlxQuantizationMode,
+    ) -> (ExpertStreamManifest, Qwen4ExpResidentExperts) {
         let mut entries = Vec::new();
         let mut weights = Vec::new();
         for (offset, projection) in ["gate", "up", "down"].into_iter().enumerate() {
@@ -288,7 +332,7 @@ mod tests {
                 &dense(&[8, 64, 64], offset * 7, dtype),
                 Some(group),
                 Some(bits),
-                MlxQuantizationMode::Affine,
+                mode,
                 None,
                 None,
             );
@@ -305,6 +349,10 @@ mod tests {
                             .flat_map(|v| v.to_le_bytes())
                             .collect(),
                     )
+                } else if array.dtype() == MlxDtype::Uint8 {
+                    let values = astype(array, MlxDtype::Uint32, None);
+                    eval(&[&values]);
+                    ("U8", values.data_u32().iter().map(|&v| v as u8).collect())
                 } else {
                     let fp32 = astype(array, MlxDtype::Float32, None);
                     eval(&[&fp32]);
@@ -342,8 +390,14 @@ mod tests {
             let mut weight = QuantizedWeight::new(
                 parts[0].clone(),
                 Some(parts[1].clone()),
-                Some(parts[2].clone()),
+                parts.get(2).cloned(),
             );
+            weight.mode = if mode == MlxQuantizationMode::Mxfp4 {
+                "mxfp4"
+            } else {
+                "affine"
+            }
+            .into();
             weight.bits = bits;
             weight.group_size = group;
             weights.push(weight);
@@ -412,9 +466,10 @@ mod tests {
                 ));
                 std::fs::create_dir_all(&root).unwrap();
                 let (manifest, resident) = fixture(&root, bits, group, dtype);
-                let reader = SelectedExpertRows::open(&manifest, &root, 0, 1 << 20).unwrap();
+                let reader = SelectedExpertRows::open(&manifest, &root, 0, 1 << 20, None).unwrap();
                 let row_bytes = reader.bytes_per_expert;
-                let exact = SelectedExpertRows::open(&manifest, &root, 0, 6 * row_bytes).unwrap();
+                let exact =
+                    SelectedExpertRows::open(&manifest, &root, 0, 6 * row_bytes, None).unwrap();
                 assert!(exact.gather_if_fits(&[7, 0, 4, 1, 7, 2]).unwrap().is_some());
                 let before = exact.payload_bytes_read();
                 assert!(
@@ -492,8 +547,9 @@ mod tests {
                 assert_eq!(pager.selected_payload_bytes_read().unwrap(), before);
                 assert_eq!(pager.selected_prefill_capacity_fallback_layers(), 0);
 
-                let small =
-                    Arc::new(SelectedExpertRows::open(pager.manifest(), &root, 0, 1).unwrap());
+                let small = Arc::new(
+                    SelectedExpertRows::open(pager.manifest(), &root, 0, 1, None).unwrap(),
+                );
                 pager
                     .selected_readers
                     .lock()
@@ -563,7 +619,7 @@ mod tests {
                 ));
                 std::fs::create_dir_all(&root).unwrap();
                 let (manifest, resident) = fixture(&root, bits, group, dtype);
-                let reader = SelectedExpertRows::open(&manifest, &root, 0, 1 << 20).unwrap();
+                let reader = SelectedExpertRows::open(&manifest, &root, 0, 1 << 20, None).unwrap();
                 assert_eq!(reader.payload_bytes_read(), 0);
                 let _ = take_selected_expert_read_stats();
                 let stack = reader.gather(&[7, 2, 7, 5]).unwrap();
@@ -639,7 +695,7 @@ mod tests {
                 let before = reader.payload_bytes_read();
                 assert!(reader.gather(&[0, 8]).is_err());
                 assert_eq!(reader.payload_bytes_read(), before);
-                let small = SelectedExpertRows::open(pager.manifest(), &root, 0, 1).unwrap();
+                let small = SelectedExpertRows::open(pager.manifest(), &root, 0, 1, None).unwrap();
                 assert!(small.gather(&[0]).is_err());
                 assert_eq!(small.payload_bytes_read(), 0);
                 let path = root.join("up-biases.safetensors");
@@ -660,5 +716,270 @@ mod tests {
                 std::fs::remove_dir_all(root).unwrap();
             }
         }
+    }
+    #[test]
+    fn mxfp4_known_codes_and_exponent_scales_match_mlx_values() {
+        let words = [
+            0x76543210u32,
+            0xfedcba98,
+            0x76543210,
+            0xfedcba98,
+            0x76543210,
+            0xfedcba98,
+            0x76543210,
+            0xfedcba98,
+        ];
+        let weight = MlxArray::from_raw_data(words.as_ptr().cast(), 32, &[2, 4], MlxDtype::Uint32);
+        let exponents = [127u8, 128];
+        let scales =
+            MlxArray::from_raw_data(exponents.as_ptr().cast(), 2, &[2, 1], MlxDtype::Uint8);
+        let decoded = mlx_sys::dequantize_with_mode(
+            &weight,
+            &scales,
+            None,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            Some(MlxDtype::Float32),
+            None,
+        );
+        eval(&[&decoded]);
+        let codes = [
+            0., 0.5, 1., 1.5, 2., 3., 4., 6., -0., -0.5, -1., -1.5, -2., -3., -4., -6.,
+        ];
+        let expected: Vec<f32> = [1., 2.]
+            .into_iter()
+            .flat_map(|scale| {
+                codes
+                    .into_iter()
+                    .cycle()
+                    .take(32)
+                    .map(move |value| value * scale)
+            })
+            .collect();
+        assert_eq!(decoded.data_f32(), expected);
+    }
+
+    fn mxfp4_modes(manifest: &ExpertStreamManifest) -> ExpertQuantizationModes {
+        manifest
+            .tensors
+            .iter()
+            .filter(|t| !is_quantization_sidecar_name(&t.name))
+            .map(|t| (t.name.clone(), ExpertQuantizationMode::Mxfp4))
+            .collect()
+    }
+
+    #[test]
+    fn mxfp4_paging_preserves_scales_routing_outputs_and_recovery() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            let root = std::env::temp_dir()
+                .join(format!("ax-mxfp4-paging-{}-{dtype:?}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let (manifest, resident) =
+                fixture_with_mode(&root, 4, 32, dtype, MlxQuantizationMode::Mxfp4);
+            let modes = mxfp4_modes(&manifest);
+            let reader =
+                SelectedExpertRows::open(&manifest, &root, 0, 1 << 20, Some(&modes)).unwrap();
+            assert_eq!(reader.payload_bytes_read(), 0);
+            let row_bytes = reader.bytes_per_expert;
+            assert_eq!(row_bytes, 3 * (64 * 8 * 4 + 64 * 2));
+            let stack = reader.gather(&[7, 2, 7, 5]).unwrap();
+            let ids = astype(
+                &MlxArray::from_f32_slice(&[7., 2., 7., 5.]),
+                MlxDtype::Int32,
+                None,
+            );
+            for (actual, expected) in [
+                (stack.gate_exps.as_ref().unwrap(), &resident.gate),
+                (stack.up_exps.as_ref().unwrap(), &resident.up),
+                (stack.down_exps.as_ref().unwrap(), &resident.down),
+            ] {
+                assert_eq!(actual.mode, "mxfp4");
+                assert!(actual.biases.is_none());
+                assert_eq!(actual.scales.as_ref().unwrap().dtype(), MlxDtype::Uint8);
+                equal(
+                    &actual.weight,
+                    &mlx_sys::take(&expected.weight, &ids, 0, None),
+                );
+                equal(
+                    actual.scales.as_ref().unwrap(),
+                    &mlx_sys::take(expected.scales.as_ref().unwrap(), &ids, 0, None),
+                );
+            }
+            assert_eq!(reader.payload_bytes_read(), (4 * row_bytes) as u64);
+            let pager = Arc::new(
+                ExpertStackPager::new_with_quantization_modes(
+                    Arc::new(manifest),
+                    root.clone(),
+                    1,
+                    modes,
+                )
+                .unwrap(),
+            );
+            let full = pager.ensure_layer(0).unwrap();
+            assert_eq!(full.gate_exps.as_ref().unwrap().mode, "mxfp4");
+            equal(
+                &full.gate_exps.as_ref().unwrap().weight,
+                &resident.gate.weight,
+            );
+            let source = Arc::new(ExpertLayerSource::new(Arc::clone(&pager), 0));
+            let baseline = module(Qwen4ExpExpertWeights::Resident(Box::new(resident)), dtype);
+            let mut paged = module(Qwen4ExpExpertWeights::Streamed(source), dtype);
+            for tokens in [1, 3] {
+                let x = dense(&[1, tokens, 64], 31, dtype);
+                equal(
+                    &baseline.forward(&x, ProjectionBatchPolicy::Shared).unwrap(),
+                    &paged.forward(&x, ProjectionBatchPolicy::Shared).unwrap(),
+                );
+            }
+            paged.enable_selected_decode_for_test();
+            paged.enable_selected_prefill_for_test();
+            for tokens in [1, 2, 7] {
+                for shift in [1, 31] {
+                    let x = dense(&[1, tokens, 64], shift, dtype);
+                    equal(
+                        &baseline.forward(&x, ProjectionBatchPolicy::Shared).unwrap(),
+                        &paged.forward(&x, ProjectionBatchPolicy::Shared).unwrap(),
+                    );
+                }
+            }
+            assert!(pager.selected_payload_bytes_read().unwrap() > 0);
+            let small = Arc::new(
+                SelectedExpertRows::open(
+                    pager.manifest(),
+                    &root,
+                    0,
+                    row_bytes,
+                    pager.quantization_modes.as_ref(),
+                )
+                .unwrap(),
+            );
+            pager
+                .selected_readers
+                .lock()
+                .unwrap()
+                .insert(0, Arc::clone(&small));
+            let x = dense(&[1, 3, 64], 31, dtype);
+            equal(
+                &baseline.forward(&x, ProjectionBatchPolicy::Shared).unwrap(),
+                &paged.forward(&x, ProjectionBatchPolicy::Shared).unwrap(),
+            );
+            assert_eq!(small.payload_bytes_read(), 0);
+            assert_eq!(pager.selected_prefill_capacity_fallback_layers(), 1);
+            assert!(small.gather(&[8]).is_err());
+            assert!(small.gather(&[]).is_err());
+            // A failed scale read must surface even while a full layer is cached.
+            let fresh = Arc::new(
+                SelectedExpertRows::open(
+                    pager.manifest(),
+                    &root,
+                    0,
+                    1 << 20,
+                    pager.quantization_modes.as_ref(),
+                )
+                .unwrap(),
+            );
+            pager.selected_readers.lock().unwrap().insert(0, fresh);
+            let path = root.join("up-scales.safetensors");
+            let saved = std::fs::read(&path).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(0)
+                .unwrap();
+            assert!(paged.forward(&x, ProjectionBatchPolicy::Shared).is_err());
+            std::fs::write(&path, saved).unwrap();
+            equal(
+                &baseline.forward(&x, ProjectionBatchPolicy::Shared).unwrap(),
+                &paged.forward(&x, ProjectionBatchPolicy::Shared).unwrap(),
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn mxfp4_paging_rejects_unbound_modes_bad_scales_and_hidden_biases() {
+        let root =
+            std::env::temp_dir().join(format!("ax-mxfp4-paging-invalid-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (manifest, _) =
+            fixture_with_mode(&root, 4, 32, MlxDtype::Float32, MlxQuantizationMode::Mxfp4);
+        let modes = mxfp4_modes(&manifest);
+        for changed in [ExpertQuantizationModes::new(), {
+            let mut m = modes.clone();
+            m.insert("unknown".into(), ExpertQuantizationMode::Mxfp4);
+            m
+        }] {
+            assert!(
+                ExpertStackPager::new_with_quantization_modes(
+                    Arc::new(manifest.clone()),
+                    root.clone(),
+                    1,
+                    changed
+                )
+                .is_err()
+            );
+        }
+        let mut wrong_group = manifest.clone();
+        wrong_group
+            .tensors
+            .iter_mut()
+            .for_each(|t| t.group_size = 64);
+        assert!(
+            ExpertStackPager::new_with_quantization_modes(
+                Arc::new(wrong_group),
+                root.clone(),
+                1,
+                modes.clone()
+            )
+            .is_err()
+        );
+        let path = root.join("gate-scales.safetensors");
+        let saved = std::fs::read(&path).unwrap();
+        let header_len = u64::from_le_bytes(saved[..8].try_into().unwrap()) as usize;
+        let header: serde_json::Value = serde_json::from_slice(&saved[8..8 + header_len]).unwrap();
+        for kind in ["dtype", "shape", "bias", "truncated"] {
+            let mut value = header.clone();
+            let mut payload = saved[8 + header_len..].to_vec();
+            match kind {
+                "dtype" => value["expert.gate.scales"]["dtype"] = "F16".into(),
+                "shape" => value["expert.gate.scales"]["shape"] = serde_json::json!([8, 32, 4]),
+                "bias" => {
+                    value["expert.gate.biases"] = value["expert.gate.scales"].clone();
+                }
+                _ => {
+                    payload.pop();
+                }
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let mut file = (bytes.len() as u64).to_le_bytes().to_vec();
+            file.extend(bytes);
+            file.extend(payload);
+            std::fs::write(&path, file).unwrap();
+            assert!(
+                SelectedExpertRows::open(&manifest, &root, 0, 1 << 20, Some(&modes)).is_err(),
+                "{kind}"
+            );
+            let pager = ExpertStackPager::new_with_quantization_modes(
+                Arc::new(manifest.clone()),
+                root.clone(),
+                1,
+                modes.clone(),
+            )
+            .unwrap();
+            assert!(pager.ensure_layer(0).is_err(), "{kind}");
+        }
+        std::fs::write(path, saved).unwrap();
+        let pager = ExpertStackPager::new_with_quantization_modes(
+            Arc::new(manifest),
+            root.clone(),
+            1,
+            modes,
+        )
+        .unwrap();
+        assert!(pager.ensure_layer(0).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
