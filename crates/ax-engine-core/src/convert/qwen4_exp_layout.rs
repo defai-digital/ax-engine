@@ -180,6 +180,20 @@ pub(crate) fn experimental_runtime_admission(
     }
 }
 
+/// Classify the existing audited MXFP4 envelope without admitting a new format.
+/// The caller owns complete native-manifest validation and runtime opt-in.
+pub(crate) fn audited_mxfp4_runtime_format(
+    model_dir: &Path,
+    manifest: &NativeModelManifest,
+) -> bool {
+    manifest.tensor_format == crate::model::NativeTensorFormat::Safetensors
+        && matches!(
+            inspect_expert_layout(manifest),
+            Ok(Some(ExpertLayout::Mxfp4))
+        )
+        && experimental_runtime_admission(model_dir, manifest, true)
+}
+
 /// Hard-error format gate for Flash Next. Product 4/6-bit packs pass without
 /// env. 2-bit and MXFP4 still need the family opt-in. Mixed layouts and
 /// protected-projection mismatches are errors, not silent admission failures.
@@ -804,6 +818,75 @@ mod tests {
             candidate.tensors.pop();
             candidate.tensors.last_mut().unwrap().quantization = None;
             assert!(!experimental_runtime_admission(&dir, &candidate, true));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn audited_mxfp4_classification_reuses_layout_and_protected_formats() {
+        let dir = temp_model_dir("mxfp4-classification");
+        write_axquant_manifest(&dir, &audited_legacy_json());
+        let mut manifest = base_manifest();
+        apply(&dir, &mut manifest).unwrap();
+        let mut expert = conv_tensor(
+            "expert",
+            NativeTensorRole::FfnGateExps,
+            vec![4, 64, 8],
+            NativeTensorDataType::U32,
+            true,
+        );
+        expert.quantization = Some(NativeTensorQuantization {
+            mode: "mxfp4".into(),
+            bits: 4,
+            group_size: 32,
+        });
+        manifest.tensors.push(expert);
+        assert!(audited_mxfp4_runtime_format(&dir, &manifest));
+        for violation in [
+            "affine",
+            "missing_exporter",
+            "sanitize",
+            "protected",
+            "unknown",
+        ] {
+            let mut changed = manifest.clone();
+            match violation {
+                "affine" => {
+                    let quant = changed
+                        .tensors
+                        .last_mut()
+                        .unwrap()
+                        .quantization
+                        .as_mut()
+                        .unwrap();
+                    quant.mode = "affine".into();
+                    quant.group_size = 64;
+                    assert!(experimental_runtime_admission(&dir, &changed, false));
+                }
+                "missing_exporter" => {
+                    std::fs::remove_file(dir.join(AXQUANT_MANIFEST_FILE)).unwrap();
+                }
+                "sanitize" => changed.weight_sanitize = WeightSanitize::HfToMlx,
+                "protected" => {
+                    changed.tensors.last_mut().unwrap().role = NativeTensorRole::TokenEmbedding;
+                }
+                "unknown" => {
+                    changed
+                        .tensors
+                        .last_mut()
+                        .unwrap()
+                        .quantization
+                        .as_mut()
+                        .unwrap()
+                        .mode = "mxfp8".into();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !audited_mxfp4_runtime_format(&dir, &changed),
+                "accepted {violation}"
+            );
+            write_axquant_manifest(&dir, &audited_legacy_json());
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -30,11 +30,49 @@ fn logits_comparison(a: &MlxArray, b: &MlxArray) -> Value {
            "max_abs": difference.max_abs, "relative": difference.relative})
 }
 
-fn observation_exact(a: &CandidateStepObservation, b: &CandidateStepObservation) -> bool {
-    a.draft_token == b.draft_token
-        && mtp_parity::mtp_logits_divergence(&a.next_logits, &b.next_logits).max_abs == 0.0
+fn floating_array_exact(a: &MlxArray, b: &MlxArray) -> bool {
+    if a.dtype() != b.dtype() || a.shape() != b.shape() {
+        return false;
+    }
+    let a = mlx_sys::contiguous(&astype(a, MlxDtype::Float32, None), None);
+    let b = mlx_sys::contiguous(&astype(b, MlxDtype::Float32, None), None);
+    mlx_sys::try_eval(&[&a, &b]).unwrap();
+    a.data_f32()
+        .iter()
+        .zip(b.data_f32())
+        .all(|(a, b)| a.is_finite() && b.is_finite() && a.to_bits() == b.to_bits())
+}
+
+fn observation_exact(
+    a: &CandidateStepObservation,
+    b: &CandidateStepObservation,
+    layers: usize,
+) -> bool {
+    a.target_schedule == b.target_schedule
+        && a.draft_token == b.draft_token
+        && if a.target_schedule == "canonical_singleton" {
+            floating_array_exact(&a.next_logits, &b.next_logits)
+        } else {
+            mtp_parity::mtp_logits_divergence(&a.next_logits, &b.next_logits).max_abs == 0.0
+        }
         && match (&a.verification_logits, &b.verification_logits) {
             (Some(a), Some(b)) => mtp_parity::mtp_logits_divergence(a, b).max_abs == 0.0,
+            (None, None) => true,
+            _ => false,
+        }
+        && match (
+            &a.canonical_correction_logits,
+            &b.canonical_correction_logits,
+        ) {
+            (Some(a), Some(b)) => floating_array_exact(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+        && match (&a.canonical_primary, &b.canonical_primary) {
+            (Some(a), Some(b)) => {
+                flash_mtp_state_bytes(&a.state, layers) == flash_mtp_state_bytes(&b.state, layers)
+                    && floating_array_exact(&a.stream_hidden, &b.stream_hidden)
+            }
             (None, None) => true,
             _ => false,
         }
@@ -60,6 +98,7 @@ fn difference_value(position: usize, source: &str, logits: &MlxArray, mtp_token:
 
 fn same_session(a: &CandidateSession, b: &CandidateSession, layers: usize) -> bool {
     a.primary == b.primary
+        && floating_array_exact(&a.primary_logits, &b.primary_logits)
         && a.proposed == b.proposed
         && a.accepted == b.accepted
         && flash_mtp_state_bytes(&a.trunk_state, layers)
@@ -106,7 +145,7 @@ impl DiagnosticModel<'_> {
             .unwrap();
         let stable = repeated == consumed
             && same_session(actual, &repeat, self.trunk.layers.len())
-            && observation_exact(observation, &repeat_observation);
+            && observation_exact(observation, &repeat_observation, self.trunk.layers.len());
         let first = self.singleton(before.primary, &before.trunk_state);
         let first_repeat = self.singleton(before.primary, &before.trunk_state);
         let singleton_stable =
@@ -123,6 +162,14 @@ impl DiagnosticModel<'_> {
             json!({"correction": logits_comparison(&row0, &first.logits),
                 "bonus": logits_comparison(&row1, &second.as_ref().unwrap().logits)})
         });
+        let canonical_rows = observation
+            .canonical_correction_logits
+            .as_ref()
+            .map(|logits| {
+                json!({"correction": logits_comparison(logits, &first.logits),
+                "bonus": (consumed.len() == 2).then(|| logits_comparison(
+                    &observation.next_logits, &second.as_ref().unwrap().logits))})
+            });
         let count = direct_after.state.position() - direct_before.position();
         assert!(count > 0 && count <= consumed.len());
         let mut direct_repeat = self.singleton(consumed[0], direct_before);
@@ -147,7 +194,9 @@ impl DiagnosticModel<'_> {
             "remaining": remaining, "primary": before.primary, "actual_draft": observation.draft_token,
             "accepted": consumed.len() == 2, "consumed": consumed,
             "actual_next": logits_summary(&observation.next_logits),
+            "target_schedule": observation.target_schedule,
             "actual_verifier_rows": verifier_rows,
+            "actual_canonical_singleton_rows": canonical_rows,
             "before_common_prefix_state_arrays": state_rows(&before.trunk_state, direct_before),
             "same_checkpoint_post_state_arrays": state_rows(&actual.trunk_state, &committed_singleton.state),
             "note": "Verifier logits and proposal are captured from the actual test session, including rejected windows. Repeated singleton rows use identical tokens/checkpoints. Full-window row state is never treated as a one-token state.",
@@ -178,8 +227,18 @@ impl DiagnosticModel<'_> {
             qwen4_exp::Qwen4ExpState::new(self.trunk, self.owner)
         };
         let mut direct = self.singleton(*tokens.last().unwrap(), &prefix);
+        let mut full_state_identity =
+            flash_mtp_state_bytes(&session.trunk_state, self.trunk.layers.len())
+                == flash_mtp_state_bytes(&direct.state, self.trunk.layers.len());
+        let mut stream_hidden_identity =
+            floating_array_exact(&session.stream_hidden, &direct.stream_hidden);
+        let mut canonical_logits_identity =
+            floating_array_exact(&session.primary_logits, &direct.logits);
         let prefill = json!({"repeat_session_exact": prefill_stable,
             "direct": logits_row(&direct), "mtp_token": session.primary,
+            "serialized_state_exact": full_state_identity,
+            "stream_hidden_exact": stream_hidden_identity,
+            "logits_exact": canonical_logits_identity,
             "state_arrays": state_rows(&session.trunk_state, &direct.state)});
         let mut matched = Vec::new();
         let mut steps = Vec::new();
@@ -213,6 +272,7 @@ impl DiagnosticModel<'_> {
                 .unwrap();
             assert!(!consumed.is_empty() && consumed.len() <= remaining);
             let mut rows = Vec::new();
+            let mut primary_exact = None;
             for (index, &token) in consumed.iter().enumerate() {
                 rows.push(logits_row(&direct));
                 if token != flash_next_mtp_greedy_token(&direct) {
@@ -230,6 +290,34 @@ impl DiagnosticModel<'_> {
                     break;
                 }
                 direct = self.singleton(token, &direct.state);
+                if index == 0
+                    && let (Some(primary), Some(logits)) = (
+                        &observation.canonical_primary,
+                        &observation.canonical_correction_logits,
+                    )
+                {
+                    let state_exact =
+                        flash_mtp_state_bytes(&primary.state, self.trunk.layers.len())
+                            == flash_mtp_state_bytes(&direct.state, self.trunk.layers.len());
+                    let hidden_exact =
+                        floating_array_exact(&primary.stream_hidden, &direct.stream_hidden);
+                    let logits_exact = floating_array_exact(logits, &direct.logits);
+                    if !state_exact
+                        && first_state_difference.is_none()
+                        && mtp_parity::mtp_state_divergence(&primary.state, &direct.state).max_abs
+                            > 0.0
+                    {
+                        first_state_difference =
+                            Some(json!({"generated_prefix_length": matched.len(),
+                            "state_arrays": state_rows(&primary.state, &direct.state)}));
+                    }
+                    full_state_identity &= state_exact;
+                    stream_hidden_identity &= hidden_exact;
+                    canonical_logits_identity &= logits_exact;
+                    primary_exact = Some(json!({"generated_prefix_length": matched.len(),
+                        "state": state_exact, "stream_hidden": hidden_exact,
+                        "logits": logits_exact}));
+                }
             }
             if difference.is_none()
                 && !stopped_at_terminal
@@ -240,6 +328,8 @@ impl DiagnosticModel<'_> {
                     matched.len(),
                     if consumed.len() == 2 {
                         "bonus"
+                    } else if observation.target_schedule == "canonical_singleton" {
+                        "correction"
                     } else {
                         "singleton_replay"
                     },
@@ -248,7 +338,11 @@ impl DiagnosticModel<'_> {
                 );
                 difference = Some(value);
             }
-            let state_difference = if difference.is_none() && !stopped_at_terminal {
+            let aligned_prefix = matched.len() == start + consumed.len()
+                && direct.state.position() == session.trunk_state.position();
+            let compare_state = (difference.is_none() && !stopped_at_terminal)
+                || (observation.target_schedule == "canonical_singleton" && aligned_prefix);
+            let state_difference = if compare_state {
                 let d = mtp_parity::mtp_state_divergence(&session.trunk_state, &direct.state);
                 if d.max_abs > 0.0 && first_state_difference.is_none() {
                     first_state_difference = Some(json!({"generated_prefix_length": matched.len(),
@@ -258,10 +352,26 @@ impl DiagnosticModel<'_> {
             } else {
                 None
             };
+            let full_state_exact = compare_state.then(|| {
+                flash_mtp_state_bytes(&session.trunk_state, self.trunk.layers.len())
+                    == flash_mtp_state_bytes(&direct.state, self.trunk.layers.len())
+            });
+            full_state_identity &= full_state_exact.unwrap_or(true);
+            let stream_hidden_exact = compare_state
+                .then(|| floating_array_exact(&session.stream_hidden, &direct.stream_hidden));
+            stream_hidden_identity &= stream_hidden_exact.unwrap_or(true);
+            let actual_next_logits_exact = aligned_prefix
+                .then(|| floating_array_exact(&observation.next_logits, &direct.logits));
+            canonical_logits_identity &= actual_next_logits_exact.unwrap_or(true);
             steps.push(json!({"position": start, "remaining": remaining,
+                "target_schedule": observation.target_schedule,
                 "consumed": consumed, "next_primary": session.primary, "direct_rows": rows,
                 "actual_draft": observation.draft_token, "actual_next": logits_summary(&observation.next_logits),
                 "common_prefix_state_difference": state_difference,
+                "common_prefix_serialized_state_exact": full_state_exact,
+                "common_prefix_stream_hidden_exact": stream_hidden_exact,
+                "canonical_primary_exact": primary_exact,
+                "actual_next_logits_exact": actual_next_logits_exact,
                 "proposed": session.proposed, "accepted": session.accepted}));
             if difference.is_some() {
                 save(&json!({"prompt_ids": tokens, "max_new_tokens": max_new,
@@ -286,6 +396,9 @@ impl DiagnosticModel<'_> {
             "greedy_identity": difference.is_none(), "first_difference": difference,
             "prefill": prefill, "steps": steps, "stopped_at_terminal": stopped_at_terminal,
             "first_state_difference": first_state_difference,
+            "compared_full_state_identity": full_state_identity,
+            "compared_stream_hidden_identity": stream_hidden_identity,
+            "compared_canonical_logits_identity": canonical_logits_identity,
             "proposed": session.proposed, "accepted": session.accepted,
             "qualification": false, "release_ready": false,
             "scope": "Stops at first actual token difference; no tolerance or near-tie acceptance. No HTTP trajectory identity is inferred."})
@@ -318,6 +431,7 @@ fn flash_next_first_token_divergence() {
         NativeModelArtifacts::from_dir(&root).unwrap()
     };
     let trunk = crate::weights::qwen4_exp::load(&root, artifacts.manifest()).unwrap();
+    result["target_schedule"] = json!(crate::model::qwen4_exp_mtp::target_schedule_name(&trunk));
     let head = crate::weights::qwen4_exp_mtp::load(&root, artifacts.manifest(), &trunk).unwrap();
     let terminal_ids = flash_next_mtp_load_terminal_ids(&root);
     result["terminal_ids"] = json!(terminal_ids);
@@ -407,11 +521,25 @@ fn first_difference_retains_ties_and_wide_margins() {
 #[test]
 #[ignore = "requires generated tiny Flash Next MTP fixtures"]
 fn first_difference_synthetic_budget_and_terminal() {
+    synthetic_budget_and_terminal(false);
+}
+
+#[test]
+#[ignore = "requires generated tiny Flash Next MTP fixtures"]
+fn canonical_first_difference_synthetic_budget_and_terminal() {
+    synthetic_budget_and_terminal(true);
+}
+
+fn synthetic_budget_and_terminal(canonical: bool) {
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
     let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
     manifest.weight_sanitize = WeightSanitize::HfToMlx;
     manifest.runtime_status = NativeRuntimeStatus::default();
-    let trunk = crate::weights::qwen4_exp::load(&root, &manifest).unwrap();
+    let mut trunk = crate::weights::qwen4_exp::load(&root, &manifest).unwrap();
+    if canonical {
+        trunk.target_schedule =
+            crate::weights::qwen4_exp::Qwen4ExpTargetSchedule::CanonicalSingleton;
+    }
     let head = crate::weights::qwen4_exp_mtp::load(&root, &manifest, &trunk).unwrap();
     let tokens = [1, 2, 3, 4, 5, 6, 7];
     let model = DiagnosticModel {
@@ -433,6 +561,23 @@ fn first_difference_synthetic_budget_and_terminal() {
     );
     assert_eq!(result["stopped_at_terminal"], false);
     assert_eq!(result["qualification"], false);
+    if canonical {
+        assert_eq!(result["prefill"]["logits_exact"], true);
+        assert_eq!(result["compared_full_state_identity"], true);
+        assert_eq!(result["compared_stream_hidden_identity"], true);
+        assert_eq!(result["compared_canonical_logits_identity"], true);
+        for step in result["steps"].as_array().unwrap() {
+            let primary = &step["canonical_primary_exact"];
+            assert_eq!(
+                primary["generated_prefix_length"],
+                step["position"].as_u64().unwrap() + 1
+            );
+            assert_eq!(primary["state"], true);
+            assert_eq!(primary["stream_hidden"], true);
+            assert_eq!(primary["logits"], true);
+            assert_eq!(step["actual_next_logits_exact"], true);
+        }
+    }
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_SYNTHETIC_DIAGNOSTIC_OUTPUT") {
         let path = PathBuf::from(path);
         assert!(!path.exists());
@@ -471,7 +616,11 @@ fn first_difference_synthetic_budget_and_terminal() {
     );
     let mut altered = observation.clone();
     altered.draft_token = altered.draft_token.map(|token| (token + 1) % 32);
-    assert!(!observation_exact(&observation, &altered));
+    assert!(!observation_exact(
+        &observation,
+        &altered,
+        trunk.layers.len()
+    ));
     actual.primary = (actual.primary + 1) % 32;
     let replay = model.replay(
         &before,

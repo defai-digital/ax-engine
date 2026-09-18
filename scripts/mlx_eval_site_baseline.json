@@ -46,14 +46,17 @@
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": {
     "eval": 10,
-    "try_eval": 3
+    "try_eval": 4
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp_mtp.rs": {
     "try_eval": 4
   },
+  "crates/ax-engine-mlx/src/model/qwen4_exp_mtp_canonical_tests.rs": {
+    "try_eval": 1
+  },
   "crates/ax-engine-mlx/src/model/qwen4_exp_mtp_diagnostics.rs": {
     "eval": 2,
-    "try_eval": 1
+    "try_eval": 2
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp_tests.rs": {
     "eval": 1
@@ -107,6 +110,7 @@
     "try_eval": 3
   },
   "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": {
+    "eval": 2,
     "try_eval": 2
   },
   "crates/ax-engine-mlx/src/runner/mod.rs": {

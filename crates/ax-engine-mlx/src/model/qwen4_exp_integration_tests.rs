@@ -14,6 +14,25 @@ fn assert_equal(a: &MlxArray, b: &MlxArray) {
     assert_eq!(a.data_f32(), b.data_f32());
 }
 
+fn flash_mtp_hidden_exact(a: &MlxArray, b: &MlxArray) -> bool {
+    if a.shape() != b.shape()
+        || a.dtype() != b.dtype()
+        || !matches!(
+            a.dtype(),
+            MlxDtype::Float32 | MlxDtype::Float16 | MlxDtype::Bfloat16
+        )
+    {
+        return false;
+    }
+    let a = mlx_sys::contiguous(&astype(a, MlxDtype::Float32, None), None);
+    let b = mlx_sys::contiguous(&astype(b, MlxDtype::Float32, None), None);
+    mlx_sys::try_eval(&[&a, &b]).unwrap();
+    a.data_f32()
+        .iter()
+        .zip(b.data_f32())
+        .all(|(a, b)| a.is_finite() && b.is_finite() && a.to_bits() == b.to_bits())
+}
+
 #[test]
 #[ignore = "requires generated official Flash Next oracle artifacts and Metal"]
 fn qwen4_exp_eval_failure_returns_error_without_committing_state() {
@@ -1800,6 +1819,8 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     let artifacts = NativeModelArtifacts::from_dir(&root).unwrap();
     let start = std::time::Instant::now();
     let trunk = crate::weights::qwen4_exp::load(&root, artifacts.manifest()).unwrap();
+    let canonical =
+        crate::model::qwen4_exp_mtp::target_schedule_name(&trunk) == "canonical_singleton";
     let trunk_seconds = start.elapsed().as_secs_f64();
     let start = std::time::Instant::now();
     let mut head =
@@ -1851,6 +1872,13 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         flash_mtp_state_bytes(&session.draft_state, 1),
         flash_mtp_state_bytes(&draft_reference, 1)
     );
+    // Prefill already proved both full state encodings above. Include the saved
+    // target hidden row, then retain exactness over every aligned decode prefix.
+    let mut canonical_trunk_state_exact = true;
+    let mut canonical_draft_state_exact = true;
+    let mut canonical_saved_hidden_exact =
+        !canonical || flash_mtp_hidden_exact(&session.stream_hidden, &direct.stream_hidden);
+    let mut canonical_prefixes_compared = usize::from(canonical);
     let mut generated = Vec::new();
     let mut agreement = Vec::new();
     let mut proposed = 0usize;
@@ -1957,6 +1985,16 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         }
         if comparing {
             assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
+            if canonical {
+                canonical_trunk_state_exact &=
+                    flash_mtp_state_bytes(&session.trunk_state, trunk.layers.len())
+                        == flash_mtp_state_bytes(&direct.state, trunk.layers.len());
+                canonical_draft_state_exact &= flash_mtp_state_bytes(&session.draft_state, 1)
+                    == flash_mtp_state_bytes(&draft_reference, 1);
+                canonical_saved_hidden_exact &=
+                    flash_mtp_hidden_exact(&session.stream_hidden, &direct.stream_hidden);
+                canonical_prefixes_compared += 1;
+            }
             last_trunk_arrays =
                 mtp_parity::mtp_state_array_records(&session.trunk_state, &direct.state);
             max_state_divergence = max_state_divergence.max_relative(
@@ -1981,13 +2019,21 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         );
     }
     let greedy_identity = identity.greedy_identity && generated == expected_cut;
-    let within_tolerance =
-        max_state_divergence.relative <= tolerance.limit && identity.identity_until_first_tie;
+    let within_tolerance = if canonical {
+        greedy_identity
+            && canonical_trunk_state_exact
+            && canonical_draft_state_exact
+            && canonical_saved_hidden_exact
+            && max_state_divergence.max_abs == 0.0
+    } else {
+        max_state_divergence.relative <= tolerance.limit && identity.identity_until_first_tie
+    };
     let agreement_rate = crate::model::qwen4_exp_mtp::trained_head::agreement_rate(&agreement);
     assert_eq!(agreement.len(), proposed);
     assert_eq!(agreement.iter().filter(|agreed| **agreed).count(), accepted);
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "qualification":false,"route":"flash_next_mtp_candidate_sequential_primary_verify",
+        "target_schedule": crate::model::qwen4_exp_mtp::target_schedule_name(&trunk),
         "trunk_load_seconds":trunk_seconds,"head_load_seconds":head_seconds,
         "generation_seconds":start.elapsed().as_secs_f64(),"prompt_ids":tokens,
         "expected_ids":expected,"generated_ids":generated.clone(),"greedy_tokens":generated.clone(),
@@ -2023,6 +2069,14 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "state_arrays": mtp_parity::mtp_state_arrays_json(&last_trunk_arrays),
         "note":"Reconstructed candidate head; primary verification is authoritative; no throughput claim"
     });
+    result["canonical_compared_full_trunk_state_exact"] =
+        serde_json::json!(canonical.then_some(canonical_trunk_state_exact));
+    result["canonical_compared_full_draft_state_exact"] =
+        serde_json::json!(canonical.then_some(canonical_draft_state_exact));
+    result["canonical_compared_saved_stream_hidden_exact"] =
+        serde_json::json!(canonical.then_some(canonical_saved_hidden_exact));
+    result["canonical_common_prefixes_compared"] =
+        serde_json::json!(canonical.then_some(canonical_prefixes_compared));
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT")
         .or_else(|| std::env::var_os("AX_FLASH_NEXT_RESULT_PATH"))
     {
@@ -2634,6 +2688,7 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
     let result = serde_json::json!({
         "qualification": false,
         "route": "flash_next_mtp_trained_head_oracle",
+        "target_schedule": crate::model::qwen4_exp_mtp::target_schedule_name(&trunk),
         "head_permuted": head_permuted,
         "permute_seed": permute_seed,
         "trunk_load_seconds": trunk_seconds,
@@ -2661,6 +2716,12 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
     eprintln!("{result}");
+    if crate::model::qwen4_exp_mtp::target_schedule_name(&trunk) == "canonical_singleton" {
+        assert!(
+            greedy_identity,
+            "canonical MTP requires exact greedy identity, including ties"
+        );
+    }
     assert!(
         identity_until_first_tie,
         "MTP greedy identity failed before a documented near-tie"

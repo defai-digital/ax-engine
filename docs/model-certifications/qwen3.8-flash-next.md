@@ -129,6 +129,17 @@ checks pass. These forced-streaming native results retain the zero-margin
 roses mismatch as a failure; they do not identify an operator cause or qualify
 installed default behavior, MTP, performance or release readiness.
 
+The current implementation candidate uses ordinary single-token target forwards
+for both MTP decisions and retained state within the audited mixed MXFP4 pack
+format. Load-time classification checks the resolved quantization modes and
+validated expert-paging metadata; unclassified formats cannot attach an MTP
+head. Existing affine verifier behavior is preserved. Local synthetic controls
+cover accepted/rejected drafts, output budgets, terminal tokens, state ownership
+and failed-step recovery. Actual M5 model validation of this candidate remains
+pending; the `cd207324` failures above are the retained comparison baseline.
+Experimental opt-in, qualification and release gates remain unchanged, and no
+MTP speedup is claimed.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.
@@ -170,7 +181,7 @@ Existing download aliases retain their original pack identity.
 | --- | --- |
 | MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
 | Immutable delivery | Installed85 default recovery verifies all 47 published files and the generated manifest on target NAS. Original failed attempts remain retained; fresh-cache and final-candidate delivery qualification remain open |
-| Numerical and MTP | Current `cd207324` M5 original-full collection is valid but token identity fails at positions 15 and 6, with state failures at consumed prefixes 2 and 3 (105/109 and 104/109 arrays). The short state failure and incomplete M2 SIGBUS remain retained. Historical selected-paging bounds do not close current-candidate/default qualification gates |
+| Numerical and MTP | The retained `cd207324` M5 original-full collection is valid but token identity fails at positions 15 and 6, with state failures at consumed prefixes 2 and 3 (105/109 and 104/109 arrays). The current ordinary-singleton candidate awaits actual M5 model validation. The short state failure and incomplete M2 SIGBUS remain retained. Historical selected-paging bounds do not close current-candidate/default qualification gates |
 | Installed QA and lifecycle | All 105 direct/MTP pairs collected; each mode has 102 quality passes, three retained failures and a successful long lookup. Two text differences keep QA failed; SSE/disconnect/recovery and stop/budget qualification remain open |
 | Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
