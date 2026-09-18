@@ -29,6 +29,7 @@ import copy
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import signal
@@ -4057,9 +4058,14 @@ def axengine_one_run(
     server_pid: int | None = None,
     sampler: dict[str, Any] | None = None,
     seed: int = MLX_LM_RANDOM_SEED,
+    socket_timeout_seconds: float = 300.0,
 ) -> dict[str, Any]:
+    if not math.isfinite(socket_timeout_seconds) or socket_timeout_seconds <= 0:
+        raise ValueError("socket_timeout_seconds must be finite and positive")
     request_started = time.perf_counter()
     first_output_wall_s: float | None = None
+    first_output_tokens = 0
+    first_output_event: str | None = None
     sampling_dict: dict[str, Any] = {"ignore_eos": True, "seed": seed}
     if sampler:
         sampling_dict.update(sampler)
@@ -4071,7 +4077,8 @@ def axengine_one_run(
             "sampling": sampling_dict,
         }
     ).encode()
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+    # This bounds socket operations, not the total request duration.
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=socket_timeout_seconds)
     try:
         conn.request(
             "POST",
@@ -4109,6 +4116,8 @@ def axengine_one_run(
                     output_tokens = int(output_len_raw)
                     if output_tokens > 0 and first_output_wall_s is None:
                         first_output_wall_s = time.perf_counter() - request_started
+                        first_output_tokens = output_tokens
+                        first_output_event = "step"
                 step_route = step.get("route") or obj.get("request", {}).get("route")
                 merge_step_local_route_decisions(step_local_decisions, step_route)
                 step_id = step.get("step_id")
@@ -4139,6 +4148,8 @@ def axengine_one_run(
                     output_tokens = len(response_tokens) or output_tokens
                     if response_tokens and first_output_wall_s is None:
                         first_output_wall_s = time.perf_counter() - request_started
+                        first_output_tokens = len(response_tokens)
+                        first_output_event = "response"
                     if capture_output_token_ids:
                         output_token_ids = [int(token) for token in response_tokens]
                 final_route = route_with_more_decisions(
@@ -4215,9 +4226,14 @@ def axengine_one_run(
         "decode_tok_s": measured_decode_tokens / decode_s if decode_s > 0 else 0.0,
         "output_tokens": float(output_tokens),
         "client_wall_total_ms": client_wall_total_ms,
+        "socket_timeout_seconds": socket_timeout_seconds,
     }
     if first_output_wall_s is not None:
         run["client_wall_ttft_ms"] = first_output_wall_s * 1000.0
+        # A speculative step may expose multiple tokens at one client timestamp.
+        run["client_first_output_tokens"] = first_output_tokens
+        run["client_first_output_event"] = first_output_event
+        run["client_output_tokens_after_first_event"] = output_tokens - first_output_tokens
     if prefill_cache_warm:
         run["prefill_cache_warm"] = True
     rss_gb = process_rss_gb(server_pid)
