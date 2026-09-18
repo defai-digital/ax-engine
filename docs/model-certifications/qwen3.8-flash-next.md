@@ -5,7 +5,7 @@ Status: **Candidate; release qualification open**
 Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 Target SKU: **MacBook Pro M5 Max, 128 GB**. Target pack: **MXFP4 MTP**.
-Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-17**.
+Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-18**.
 
 ## Current target and open gates
 
@@ -33,6 +33,15 @@ tokens). These four requests do not establish full QA, numerical certification,
 or throughput. The required Auto request includes intrusive stack sampling;
 its elapsed time is not benchmark evidence. Full target QA is in progress.
 
+[MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
+now includes all three numerical reference graphs, eight inputs and 3,316
+positions per graph, with completed artifact and post-run hash verification.
+These M2 reference results still require M5 AX data for the four-graph decision;
+AX numerical acceptance has not been evaluated. The separate 105-item
+functional reference replay has 101 quality passes and four retained failures.
+Neither collection closes AX QA or the missing `mlx_lm.benchmark` primary
+baseline. No failed answer was normalized into a pass.
+
 Six-bit is excluded from this target campaign. The former Studio target and
 all affine results below are historical; they do not qualify MXFP4 on M5 Max.
 Existing download aliases retain their original pack identity.
@@ -41,7 +50,7 @@ Existing download aliases retain their original pack identity.
 | --- | --- |
 | MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
 | Immutable delivery | All 47 pinned files and 26 tensor headers verified on target NAS; installed AX delivery remains open |
-| Numerical and MTP | New pack-specific holdout, direct/MTP state, rollback and trained-head evidence required |
+| Numerical and MTP | Three MXFP4 numerical reference graphs complete with verified artifacts; M5 AX comparison, direct/MTP state, rollback and trained-head evidence remain open |
 | Installed QA and lifecycle | Frozen105-item target QA is in progress; SSE/disconnect/recovery, stop/budget and long-context qualification remain pending |
 | Throughput and memory | Nine new cells: 512/2048/8192 prompt tokens x AX direct/reference/AX MTP; target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
