@@ -31,7 +31,16 @@ and [default Auto route](../../benchmarks/results/qualification/2026-09-17-flash
 including post-run file hashes and identical text/usage (46 input, 32 output
 tokens). These four requests do not establish full QA, numerical certification,
 or throughput. The required Auto request includes intrusive stack sampling;
-its elapsed time is not benchmark evidence. Full target QA is in progress.
+its elapsed time is not benchmark evidence.
+
+[Full installed target QA](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-target-qa/README.md)
+has now collected all 105 original inputs in each mode, with 210 normal stops
+and clean shutdowns. Each mode has 102 quality passes and three retained
+failures. Direct/MTP text matches on 103/105 pairs; two reasoning answers
+differ despite identical checker results. Both modes pass the 29,774-token
+lookup. The frozen supervisor completed all pre/post integrity checks, but
+the overall QA verdict is **failed**. Generated token IDs and logit margins
+were not recorded by this endpoint; a near-tie explanation is not established.
 
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
@@ -51,7 +60,7 @@ Existing download aliases retain their original pack identity.
 | MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
 | Immutable delivery | All 47 pinned files and 26 tensor headers verified on target NAS; installed AX delivery remains open |
 | Numerical and MTP | Three MXFP4 numerical reference graphs complete with verified artifacts; M5 AX comparison, direct/MTP state, rollback and trained-head evidence remain open |
-| Installed QA and lifecycle | Frozen105-item target QA is in progress; SSE/disconnect/recovery, stop/budget and long-context qualification remain pending |
+| Installed QA and lifecycle | All 105 direct/MTP pairs collected; each mode has 102 quality passes, three retained failures and a successful long lookup. Two text differences keep QA failed; SSE/disconnect/recovery and stop/budget qualification remain open |
 | Throughput and memory | Nine new cells: 512/2048/8192 prompt tokens x AX direct/reference/AX MTP; target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
 

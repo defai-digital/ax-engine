@@ -1,0 +1,143 @@
+{
+  "schema": "ax.flash_next.mxfp4.target_qa.v1",
+  "qualification": false,
+  "release_ready": false,
+  "passed": false,
+  "collection_complete": true,
+  "target": "MacBook Pro M5 Max 128 GiB",
+  "storage": "NAS over SMB",
+  "model_repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "model_revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "source_commit": "85a2bab0dd72c9e2076f455237dca052ff8d12b7",
+  "wheel_sha256": "b05b1ef032761bd4d05f3c9401621618f70bf2f2ba151f489ab7e364359275f3",
+  "modes": {
+    "disabled": {
+      "cases": 105,
+      "quality_passes": 102,
+      "quality_failures": [
+        "instruction_alphabet_first",
+        "science_gravity_earth",
+        "knowledge_water_formula"
+      ],
+      "normal_stops": 105,
+      "server_exit_code": 0,
+      "final_metrics": {
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 0.0,
+        "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 0.0,
+        "ax_engine_mtp_draft_tokens_total": 0.0,
+        "ax_engine_mtp_accepted_tokens_total": 0.0,
+        "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+        "ax_engine_mlx_prefix_cache_hits_total": 0.0,
+        "ax_engine_mlx_prefix_cache_reused_tokens_total": 0.0,
+        "ax_engine_mlx_mtp_certified_default_on": 0.0,
+        "flash_next_mtp_series": {
+          "ax_engine_mtp_draft_tokens_total": 0.0,
+          "ax_engine_mtp_accepted_tokens_total": 0.0,
+          "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+          "ax_engine_mtp_accept_rate_ewma_x1000": 0.0
+        }
+      }
+    },
+    "required": {
+      "cases": 105,
+      "quality_passes": 102,
+      "quality_failures": [
+        "instruction_alphabet_first",
+        "science_gravity_earth",
+        "knowledge_water_formula"
+      ],
+      "normal_stops": 105,
+      "server_exit_code": 0,
+      "final_metrics": {
+        "ax_engine_mlx_flash_next_selected_expert_gathers_total": 0.0,
+        "ax_engine_mlx_flash_next_selected_expert_payload_kib_total": 0.0,
+        "ax_engine_mtp_draft_tokens_total": 437.0,
+        "ax_engine_mtp_accepted_tokens_total": 326.0,
+        "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+        "ax_engine_mlx_prefix_cache_hits_total": 0.0,
+        "ax_engine_mlx_prefix_cache_reused_tokens_total": 0.0,
+        "ax_engine_mlx_mtp_certified_default_on": 0.0,
+        "flash_next_mtp_series": {
+          "ax_engine_mtp_draft_tokens_total": 437.0,
+          "ax_engine_mtp_accepted_tokens_total": 326.0,
+          "ax_engine_mtp_direct_fallback_steps_total": 0.0,
+          "ax_engine_mtp_accept_rate_ewma_x1000": 1000.0
+        }
+      }
+    }
+  },
+  "direct_mtp": {
+    "text_identity": false,
+    "matching_text_pairs": 103,
+    "compared_pairs": 105,
+    "checker_identity": true,
+    "differences": [
+      {
+        "id": "reasoning_cause_effect",
+        "first_differing_character": 339,
+        "direct_text": "**Answer: A**\n\n**Explanation:**\nThe rain is the direct cause of the river flooding. Heavy rainfall increases the volume of water in the river system, leading to overflow. People buying umbrellas is a reaction to the rain or a prediction of it, but it has no physical impact on the water levels in the river. Therefore, the rain is the cause, while buying umbrellas is merely a correlated human behavior.",
+        "mtp_text": "**Answer: A**\n\n**Explanation:**\nThe rain is the direct cause of the river flooding. Heavy rainfall increases the volume of water in the river system, leading to overflow. People buying umbrellas is a reaction to the rain or a prediction of it, but it has no physical impact on the water levels in the river. Therefore, the rain is the causal factor, while buying umbrellas is merely a correlated human behavior."
+      },
+      {
+        "id": "reasoning_syllogism_roses",
+        "first_differing_character": 55,
+        "direct_text": "No\n\n**Explanation:**\nThis is a classic logical fallacy known as the **fallacy of the undistributed middle**.\n\n1.  **Premise 1:** All roses are flowers. (Roses are a subset of flowers.)\n2.  **Premise 2:** Some flowers fade quickly. (A subset of flowers fades quickly.)\n\nThe fact that \"some flowers\" fade quickly does not specify *which* flowers. The flowers that fade quickly might be tulips, daisies, or lilies, but not necessarily roses. Since the \"some flowers\" that fade quickly do not necessarily overlap with the subset of \"roses,\" we cannot logically conclude that any roses fade quickly based solely on these two premises.",
+        "mtp_text": "No\n\n**Explanation:**\nThis is a classic logical fallacy involving categorical syllogisms. Here is the breakdown:\n\n1.  **Premise 1:** All roses are flowers. (Roses $\\subseteq$ Flowers)\n2.  **Premise 2:** Some flowers fade quickly. (There is an overlap between the set of Flowers and the set of things that fade quickly.)\n\nThe fact that \"some flowers fade quickly\" does not specify *which* flowers. The flowers that fade quickly could be tulips, daisies, or lilies, but not necessarily roses. Since the premises do not establish a link between the specific subset of \"flowers that fade quickly\" and the subset of \"roses,\" we cannot logically conclude that any roses fade quickly. It is possible, but not guaranteed by the premises."
+      }
+    ],
+    "first_token_divergence_diagnosed": false,
+    "output_token_ids_recorded": false
+  },
+  "long_context": {
+    "disabled": {
+      "prompt_tokens": 29774,
+      "text": "1734",
+      "seconds": 1400.2725787499803,
+      "finish_reason": "stop"
+    },
+    "required": {
+      "prompt_tokens": 29774,
+      "text": "1734",
+      "seconds": 1284.1494396660128,
+      "finish_reason": "stop"
+    }
+  },
+  "integrity": {
+    "installed_files": 68,
+    "qa_files": 6,
+    "before_and_after": "Verified by the frozen supervisor before collection_complete was set; file digests are retained in integrity.json.gz"
+  },
+  "scope": "Installed opt-in/default Auto paging functional QA; unchanged failed quality and text-identity gates. No numerical, trained-head, throughput, cold-latency or release qualification.",
+  "primary_benchmark": "mlx_lm.benchmark remains unsupported; functional MLX-VLM comparison is not a replacement",
+  "public_artifacts": [
+    {
+      "file": "installed-qa.json.gz",
+      "sha256": "c0019183d1e175b6d2476785d3b28172db5a8d20a3c4ee5f9ec21450d7593a08",
+      "uncompressed_sha256": "5a380e0beb02fb6eb9797c4f0692951d1ac5c5a5e5665214ac2c45cf65bcb9b8"
+    },
+    {
+      "file": "reference-comparison.json.gz",
+      "sha256": "787b7457c1f597093efe3ec67ee172db70ff887c154eb046c94ea9a62908daa5",
+      "uncompressed_sha256": "1a09857f9d4636eec40cf40781b8643914952bca5bd47a0d1bf4f2173b1c75dc"
+    },
+    {
+      "file": "integrity.json.gz",
+      "sha256": "7358022e1b2a2c9c445e556993353297f923d99d06b20257c315b3c8ffbc901e",
+      "uncompressed_sha256": "23ebeb088198a253bc9adf3e8c60253509ae716e66752f4276d485c9be48dd7d"
+    }
+  ],
+  "source_sha256": {
+    "full-qa-terminal.json": "b91135ece6f52a113efc7ba9c0c9de1fef139ea301bc34a18c822a617f4b25ae",
+    "run-installed-full-qa.py": "74f536d96c8bc130b5e9a1f6cc8c04fdf96f37737d6cc636291e6020d5c861a8",
+    "full-qa-freeze.json": "a862c5cb5256c09cb2ac2a8779a0c683a49357833c45b57e5f95ba1900bab464",
+    "installed-freeze-r2.json": "abb47995684715584a82ab78619e7f4aea4da5dfb1843727fe5fd8ef6da597dd",
+    "full-qa-inputs.json": "e1e8234c02ee02a4a4d8b96acef0e88d128ebaae9ef5e904e86050c51ff283e4",
+    "full-qa-items.json": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
+    "reference-qa/complete-ax-comparison.json": "1a09857f9d4636eec40cf40781b8643914952bca5bd47a0d1bf4f2173b1c75dc",
+    "reference-qa/collection-terminal.json": "0787ac1edc684ded5a287349a4a3dee882dcea5e8cac1e0de0d0666cfb5baea2"
+  },
+  "curation": {
+    "script_sha256": "f60453da774b2ef5901edea1a5e9e66fef082bcfd760b87fb38ba84bbe7ca3fe",
+    "policy": "Private location strings replaced by stable hash labels; outputs, scores and verdicts unchanged; gzip mtime=0"
+  }
+}
