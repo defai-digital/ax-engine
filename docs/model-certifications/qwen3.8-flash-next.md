@@ -116,6 +116,19 @@ exited cleanly. This forced-streaming native diagnostic uses a one-layer
 expert cache; it does not qualify installed default behavior or identify a
 particular faulty operator. Full target identity remains open.
 
+[The same-source M5 original-full diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-m5-full/README.md)
+also completes with valid collection and failed numerical identity. The two
+original requests have 256-token caps and stop at their first greedy mismatch:
+cause/effect matches 15 positions, then differs at zero-based position 15
+(bonus, direct 6745 / MTP 5073); roses matches six positions, then differs at
+position 6 (correction, direct 198 / MTP 271). Their earliest stored-state
+differences are consumed prefix 2, layer 1 `ple.conv` (105/109 arrays), and
+prefix 3, layer 2 `gdn.conv` (104/109 arrays). Both prefills are exact.
+All 47 pre/post payload hashes, manifest, runtime/source and process cleanup
+checks pass. These forced-streaming native results retain the zero-margin
+roses mismatch as a failure; they do not identify an operator cause or qualify
+installed default behavior, MTP, performance or release readiness.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.
@@ -157,7 +170,7 @@ Existing download aliases retain their original pack identity.
 | --- | --- |
 | MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
 | Immutable delivery | Installed85 default recovery verifies all 47 published files and the generated manifest on target NAS. Original failed attempts remain retained; fresh-cache and final-candidate delivery qualification remain open |
-| Numerical and MTP | Current `cd207324` M5 short collection is valid but state identity fails at consumed prefix 3 (104/109 arrays). The M2 full attempt is incomplete after SIGBUS. Historical selected-paging numerical bounds and bounded controls do not close failed exact-identity or current-candidate/default qualification gates |
+| Numerical and MTP | Current `cd207324` M5 original-full collection is valid but token identity fails at positions 15 and 6, with state failures at consumed prefixes 2 and 3 (105/109 and 104/109 arrays). The short state failure and incomplete M2 SIGBUS remain retained. Historical selected-paging bounds do not close current-candidate/default qualification gates |
 | Installed QA and lifecycle | All 105 direct/MTP pairs collected; each mode has 102 quality passes, three retained failures and a successful long lookup. Two text differences keep QA failed; SSE/disconnect/recovery and stop/budget qualification remain open |
 | Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
