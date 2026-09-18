@@ -1,0 +1,57 @@
+{
+  "artifacts": {
+    "lifecycle-and-installation.json.gz": {
+      "bytes": 817034,
+      "sha256": "8c955c6f979114b64e89315b2de679234cb02f0c62944eaefdf779a47f21d298"
+    }
+  },
+  "ci_jobs_passed": 8,
+  "ci_real_weight_steps_skipped": [
+    "Run server preview smoke check",
+    "Run QA bank sample + surface probes against real model",
+    "Run frozen matrix benchmark smoke check",
+    "Run matrix compare benchmark smoke check",
+    "Run trusted baseline benchmark smoke check",
+    "Run replay benchmark smoke check",
+    "Run prefix-reuse equivalence regression gate",
+    "Run compatible-model smoke matrix"
+  ],
+  "default_mode_scope": "Unchanged MTP/paging policy within experimental family opt-in; not default family certification",
+  "family_admission": "explicit experimental opt-in",
+  "installed_runtime_files": 52,
+  "local_standalone_tests": 81,
+  "modes": {
+    "default": {
+      "baseline_completion_tokens": 32,
+      "baseline_prompt_tokens": 46,
+      "clean_server_exit": 0,
+      "disconnect_active_streams": 1.0,
+      "lifecycle_actions": 7,
+      "mtp_draft_tokens": 0.0
+    },
+    "required": {
+      "baseline_completion_tokens": 32,
+      "baseline_prompt_tokens": 46,
+      "clean_server_exit": 0,
+      "disconnect_active_streams": 1.0,
+      "lifecycle_actions": 7,
+      "mtp_draft_tokens": 16.0
+    }
+  },
+  "payload_prepost_files": 47,
+  "performance_and_primary_baseline": "open",
+  "previous_lifecycle_failures_retained": true,
+  "prior_numerical_scope": "Unchanged complete numerical/runtime source trees admit this new server test; prior numerical receipts keep bf06 identity",
+  "prior_numerical_source_commit": "bf06cbb22c93d3a52b12cac4c31f396a36066da2",
+  "qa_210_requests": "pending separate campaign",
+  "qualification": false,
+  "release_ready": false,
+  "requests_validated": 14,
+  "result": "PASS_INSTALLED_LIFECYCLE_ONLY",
+  "schema": "ax.flash_next.installed_lifecycle_summary.v1",
+  "source_commit": "5d0288810a159bdb86d46cd26001042ae1802a3c",
+  "strict_clippy": "1798 unchanged baseline diagnostics; not a strict pass",
+  "target": "MacBook Pro M5 Max 128 GiB, MXFP4 MTP, NAS over SMB",
+  "trained_permuted_controls": "pending separate campaign",
+  "wheel_sha256": "96509d63ceefd412f2f96c90cb20e14a63d4e9f429bcc2e6cc8a6eebfefbaccf"
+}

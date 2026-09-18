@@ -173,12 +173,31 @@ metadata equality despite matching text, finish reason and token totals. After
 that harness correction, baseline, SSE, budgets and stop pass, but the disconnect
 probe exposes a stale active-stream gauge: zero active streams while one job is
 pending and only the preceding five requests have completed. Drain/recovery and
-required MTP remain untested. Both runs lack their original postchecks; separate
-later integrity followups pass without changing the failed lifecycle verdicts.
+required MTP remain untested in those attempts. Both runs lack their original
+postchecks; separate later integrity followups pass without changing the failed
+lifecycle verdicts.
 The server now publishes stream ownership before its first decode burst, with
-a local before/after regression. A rebuilt wheel and complete M5 lifecycle
-requalification are still required. This does not change model arithmetic or
+a local before/after regression. This does not change model arithmetic or
 promote the product default.
+
+[The rebuilt `5d028881` installation and lifecycle](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-lifecycle-gauge-fix/README.md)
+now pass on the M5/NAS target. Both default and required-MTP modes complete
+all seven lifecycle actions: baseline, full SSE, one/two-token budgets, stop,
+unfinished disconnect and identical recovery. The active-stream gauge is one
+before each disconnect, then work drains. Both servers exit cleanly, all owned
+processes are gone, and the original pre/post checks verify all 47 model payloads
+and 52 installed runtime files. Independent reconstruction validates all 14
+actions against raw responses, events and metrics.
+
+Family admission still requires explicit experimental opt-in; "default" here
+means the unchanged MTP/paging policy within that opt-in. The new wheel passes
+81 isolated packaging tests. Exact-source CI passes eight jobs but skips all
+eight real-weight execution steps; strict Clippy retains 1,798 unchanged
+baseline diagnostics. Prior numerical evidence keeps source `bf06cbb2`, with
+complete unchanged numerical/runtime trees bound by a source comparison.
+The new 105-input-per-mode QA campaign is launched separately; no result is
+claimed yet. Broader MTP, checkpoint, performance, memory, primary-reference
+and fresh-delivery gates remain open.
 
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
@@ -222,7 +241,7 @@ Existing download aliases retain their original pack identity.
 | MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
 | Immutable delivery | Installed85 default recovery verifies all 47 published files and the generated manifest on target NAS. Original failed attempts remain retained; fresh-cache and final-candidate delivery qualification remain open |
 | Numerical and MTP | Canonical source `bf06cbb2` passes the original two-prompt M5 diagnostic (90/133 positions to EOS) and four-prompt holdout (64 outputs each), including compared state/hidden/logits and complete integrity checks. Broader checkpoint/default/MTP qualification remains open. All `cd207324` failures and incomplete M2 SIGBUS remain retained |
-| Installed QA and lifecycle | Historical installed85 QA has 102/105 quality passes per mode, three retained failures, two text differences and successful long lookup. The bf06 wheel installation passes, but its two lifecycle attempts fail; the active-stream gauge fix requires a new wheel and complete M5 rerun before candidate QA |
+| Installed QA and lifecycle | Source `5d028881` passes installation and all 14 lifecycle actions with original pre/post integrity checks. New 105-input-per-mode QA is launched, without a result yet. Historical installed85 QA failures and both bf06 lifecycle failures remain retained |
 | Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
 
