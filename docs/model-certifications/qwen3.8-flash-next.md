@@ -135,10 +135,18 @@ format. Load-time classification checks the resolved quantization modes and
 validated expert-paging metadata; unclassified formats cannot attach an MTP
 head. Existing affine verifier behavior is preserved. Local synthetic controls
 cover accepted/rejected drafts, output budgets, terminal tokens, state ownership
-and failed-step recovery. Actual M5 model validation of this candidate remains
-pending; the `cd207324` failures above are the retained comparison baseline.
-Experimental opt-in, qualification and release gates remain unchanged, and no
-MTP speedup is claimed.
+and failed-step recovery. The [same-source M5 canonical diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-m5-canonical-full/README.md)
+now passes independently reviewed collection and numerical identity on source
+`bf06cbb2`. The original two requests finish at EOS after 90 and 133 equal
+output positions; 256 remains the per-request cap. Repeated prefill and every
+compared complete serialized state, stream hidden and canonical full-logit
+checkpoint are exact. All 47 pre/post payload hashes, generated manifest,
+source/runtime bindings and owned-process cleanup pass. This uses forced
+streaming with one cached expert layer and the pinned diagnostic runtime.
+It does not qualify the candidate wheel's installed/default behavior, independent
+holdout, full QA, lifecycle, memory or throughput. The `cd207324` failures above
+remain the comparison baseline. Experimental opt-in, qualification and release
+gates remain unchanged, and no MTP speedup is claimed.
 
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
