@@ -1,0 +1,30 @@
+{
+  "schema": "ax-engine.flash-next.native-memory-observation.v1",
+  "qualification": false,
+  "release_ready": false,
+  "target": "MacBook Pro M5 Max 128 GiB",
+  "storage": "NAS over SMB",
+  "samples": 172,
+  "sampling_interval_seconds": 10,
+  "first_at": "2026-09-18T02:06:07.395248+00:00",
+  "last_at": "2026-09-18T02:34:41.240175+00:00",
+  "sampled_rss_max_bytes": {
+    "selected/running-disabled": 16826335232,
+    "selected/running-required": 17005412352,
+    "default/running-disabled": 14214955008,
+    "default/running-required": 14171127808
+  },
+  "swapusage_values": [
+    "vm.swapusage: total = 1024.00M  used = 0.25M  free = 1023.75M  (encrypted)"
+  ],
+  "scope": "Process RSS sampled every10 seconds and system VM state; not exact per-model peak or attributable swap. Full payload hashes warm file caches.",
+  "raw_sha256": "9bc209133f8be1a35d843f248c303708990a83e74084b03f00d8a4cf207e6960",
+  "stack_sample": {
+    "duration_seconds": 3,
+    "policy": "required",
+    "route": "default",
+    "observer_effect": "Intrusive live sampling during the required request; not a benchmark timing",
+    "finding": "Native generation samples include whole-layer ensure_layer, filtered safetensor load, from_raw_data and memmove; no physical NAS byte attribution.",
+    "raw_sha256": "fdb14f5ebdeb808bcf32a47a08c7f2640ef86f0f928cb8f87332cfd77855967c"
+  }
+}

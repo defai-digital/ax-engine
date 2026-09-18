@@ -56,5 +56,18 @@ The selected-route retry completed and passed both requests plus full post-run
 file hashes. Direct and required MTP produced identical text and usage (46 input,
 32 output tokens). Direct drafted zero tokens; required MTP drafted 16 and
 accepted 14. Both servers exited normally. This is one fixed-input diagnostic,
-not trained-head certification, full QA, or a throughput comparison. The default
-Auto route is still running and has no terminal acceptance result here.
+not trained-head certification, full QA, or a throughput comparison.
+
+The default Auto route also passed both requests, identical text/usage and
+complete post-run file hashes (native-default-r2.json). It used no selected-row
+overrides and recorded zero selected gathers. Both servers exited normally;
+MTP certification remained off. The required request was observed with a
+three-second live stack sample, so its elapsed time is not benchmark evidence.
+No performance ratio is inferred across these single-request controls.
+
+native-memory-samples-r2.jsonl retains all172 process/system observations;
+native-memory-observation.json summarizes their scope and sampled RSS maxima.
+System swap used remained0.25MiB across these samples. This neither attributes
+swap to the model nor proves a zero-swap guarantee for longer workloads.
+Ten-second process samples can miss peaks. MLX allocator peaks in the native
+results are separate from process RSS and system filesystem-cache accounting.
