@@ -148,6 +148,25 @@ holdout, full QA, lifecycle, memory or throughput. The `cd207324` failures above
 remain the comparison baseline. Experimental opt-in, qualification and release
 gates remain unchanged, and no MTP speedup is claimed.
 
+[The same-source four-prompt holdout and candidate installation](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-m5-holdout-installed/README.md)
+now pass on M5. The four frozen inputs contain 66/72/76/70 IDs; each reaches
+64 equal output positions, with exact compared primary/final state, hidden and
+full logits. Each compares 63 consumed positions and 109 prefill state arrays;
+the final emitted token is not consumed by another forward pass. All 47
+pre/post payload hashes and clean owned-process checks pass. This retains the
+forced-streaming native diagnostic scope and one-layer expert cache.
+
+The proper `bf06cbb2` wheel is also installed in a separate target environment.
+All 21 AX package members match; 28 tokenizer members and 52 runtime files are
+bound. Isolated import, bundled-runtime doctor, default MXFP4 rejection and
+experimental metadata validation pass without replacing the existing manifest.
+Installed runtime libraries match the diagnostic. Dependency versions and
+observed tokenizer bytes are recorded; prior immutable third-party wheel
+reproduction is not claimed. This installation check executes no model request.
+Installed API lifecycle, full QA/long context, broader numerical controls,
+memory/latency, performance, the primary baseline and fresh delivery remain
+open. Neither result promotes the product default or qualifies a release.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.
