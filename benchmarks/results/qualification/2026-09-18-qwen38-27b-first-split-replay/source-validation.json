@@ -3,8 +3,8 @@
   "scope": "Injected acceptance/cache control-flow regression; not default Qwen split numerical reproduction",
   "source_base": "0f7f2d2d0ae6e66a80c7d6f746fbb058efd2a951",
   "runtime_patch_sha256": "90814b94b24df7ddfafcec1f144676c1081c89c92118a49e2ec8bdb9a005098e",
-  "runtime_commit": null,
-  "commit_status": "Not supplied at curation time",
+  "runtime_commit": "22affab50be4ff31edf7ea1b85b63439ee5733f1",
+  "commit_status": "Committed locally; clean final wheel built and installed on the selected SKU; not pushed or released",
   "frozen_runtime_source_sha256": {
     "crates/ax-engine-mlx/src/runner/mod.rs": "cdea4eacf96b285e0ae3d9433c3bd2ebe02337b31839afde7c0f36d67ff74a6a",
     "crates/ax-engine-mlx/src/ngram_accel.rs": "a390db47d6c1de5faa75dbc24b394dbc2be767c66e5766b15b5200dd3ccc487c"
@@ -270,8 +270,14 @@
     "dry_run_limit": "Qwen dry runs list contracts; they are not live hardware qualification"
   },
   "final_wheel_qualification": {
-    "status": "pending",
-    "claim": false
+    "status": "passed",
+    "claim": "Version-bound executable qualification only; no release-ready or MTP Tier 2 claim",
+    "artifact": "qualification.json",
+    "build": "final-build.json",
+    "cold_controls": "cold-controls.json",
+    "default_arms_preserved": 8,
+    "default_direct_mtp_pairs_equal": 2,
+    "default_direct_mtp_pairs_total": 4
   },
   "default_qwen_split_fixed_claim": false,
   "release_ready_claim": false,

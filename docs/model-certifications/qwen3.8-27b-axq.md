@@ -61,8 +61,13 @@ Landed, labeled:
   and pass afterward with real input-dependent KV. Reference contract comparison
   precedes this AX-owned change. Default relaxed acceptance and sampled behavior
   remain unchanged; optimistic acceptance and whole-request direct equivalence
-  remain outside the guarantee. Final-wheel qualification is recorded separately
-  when completed. Quality, numerical consistency and Tier 2 gates remain open;
+  remain outside the guarantee. The clean bundled `22affab5` wheel passes
+  qualification on the selected mini: doctor/package identity, 32/32 hard QA
+  and 7/7 surfaces per route, active MTP and the paired 64-token probe. All
+  eight default 192-token outputs preserve the prior baseline; paired equality
+  remains 2/4, with splits at 116 and 155. Old/new forced replay both match
+  direct on 079, so this is preservation, not a measured quality gain.
+  Quality, numerical consistency and Tier 2 gates remain open;
   **not ship-ready**.
   [First-split observation and forced-replay regression evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-first-split-replay/).
 

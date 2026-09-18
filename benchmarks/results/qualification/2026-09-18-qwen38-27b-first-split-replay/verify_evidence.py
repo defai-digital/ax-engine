@@ -58,6 +58,75 @@ def verify_regression(publication):
     require(not validation["default_qwen_split_fixed_claim"] and not validation["release_ready_claim"], "regression scope")
 
 
+def verify_final_wheel():
+    qualification = read("qualification.json")
+    build = read("final-build.json")["manifest"]
+    cold = read("cold-controls.json")
+    source = read("source-validation.json")
+    require(build["source_commit"] == qualification["source_commit"] == source["runtime_commit"], "qualified final source")
+    require(build["source_commit"] == "22affab50be4ff31edf7ea1b85b63439ee5733f1" and not build["dirty"], "clean runtime commit")
+    for key in ["wheel_sha256", "server_sha256", "bench_sha256", "cli_sha256", "model_revision"]:
+        require(build[key] == qualification["build"][key], "qualified artifact: " + key)
+    require(qualification["status"] == "passed" and not qualification["runtime_overrides"], "executed default qualification")
+    require(qualification["host"]["chip"] == "Apple M4 Pro" and qualification["host"]["memory_bytes"] == 68719476736, "selected SKU")
+    require(qualification["paired_greedy"]["matched"] and qualification["paired_greedy"]["output_tokens"] == 64, "64-token qualification pair")
+    require({c["mode"] for c in qualification["cells"]} == {"direct", "mtp"}, "qualification routes")
+    for cell in qualification["cells"]:
+        require(cell["qa_items"] == cell["qa_hard_passed"] == 32 and cell["soft_failed_checks"] == 0, "32 hard QA per route")
+        require(len(cell["surface"]) == 7 and all(r["passed"] and not r["skipped"] for r in cell["surface"]), "seven surfaces per route")
+    pair = {cell["mode"]: cell for cell in qualification["cells"]}
+    requests = {mode: cell["probe_request"] for mode, cell in pair.items()}
+    require(requests["direct"]["model_id"] == "qwen3.8-27b" and requests["mtp"]["model_id"] == "mtp-qwen3.8-27b", "qualification route IDs")
+    require({k: v for k, v in requests["direct"].items() if k != "model_id"} == {k: v for k, v in requests["mtp"].items() if k != "model_id"}, "qualification pair payload identity")
+    require(pair["direct"]["probe_response"]["output_tokens"] == pair["mtp"]["probe_response"]["output_tokens"] and len(pair["direct"]["probe_response"]["output_tokens"]) == 64, "actual qualification token equality")
+    for mode, cell in pair.items():
+        mtp = cell["probe_response"]["performance"]["mtp"]
+        require(mtp["active"] == (mode == "mtp") and mtp["direct_fallback_steps"] == 0, "qualification route activation")
+        require(mtp["draft_tokens"] > 0 if mode == "mtp" else mtp["draft_tokens"] == 0, "qualification draft counters")
+    require(cold["provenance"]["manifest"] == build, "cold controls artifact identity")
+    require(cold["provenance"]["model_files_freshly_rehashed"] == build["model_files"] and len(build["model_files"]) == 22, "cold full pack hashes")
+    rows = cold["results"]
+    require(len(rows) == 11 and len({r["name"] for r in rows}) == 11, "eleven unique cold arms")
+    defaults = []
+    forced = []
+    expected_forced = {"old-forced": {"AX_MLX_MTP_LINEAR_EXACT_REPLAY": "1"},
+                       "new-forced": {"AX_MLX_MTP_LINEAR_EXACT_REPLAY": "1"},
+                       "new-forced-skip": {"AX_MLX_MTP_LINEAR_EXACT_REPLAY": "1", "AX_MLX_MTP_SKIP_STATE": "1"}}
+    forced_request = next(r["request"] for r in cold["baseline"] if r["name"] == "COMPSEC:compsec-079" and r["mode"] == "direct")
+    for row in rows:
+        require("error" not in row and not row["watchdog_expired"] and row["cleanup"]["returncode"] == 0, "bounded cold arm completion")
+        for kind in ["request", "response"]:
+            raw = (ROOT / row[kind + "_file"]).read_bytes()
+            require(digest(raw) == row[kind + "_body_sha256"], "exact cold HTTP body")
+            require(json.loads(raw) == row[kind], "retained cold body matches row")
+        reply = row["response"]
+        require(reply["status"] == "finished" and reply["finish_reason"] == "max_output_tokens" and len(reply["output_tokens"]) == 192, "complete 192-token cold reply")
+        counters = reply["performance"]["mtp"]
+        require(counters["active"] == (row["mode"] == "mtp") and counters["direct_fallback_steps"] == 0, "cold route has no silent fallback")
+        if row["arm"] in {"direct", "mtp"}:
+            defaults.append(row)
+            prior = next(r for r in cold["baseline"] if r["name"] == row["case"] and r["mode"] == row["arm"])
+            require(not row["overrides"] and row["binary_sha256"] == build["server_sha256"], "default final server")
+            require(row["request"] == prior["request"] and reply["output_tokens"] == prior["response"]["output_tokens"], "all default outputs preserved")
+        else:
+            forced.append(row["arm"])
+            require(row["arm"] in expected_forced and row["overrides"] == expected_forced[row["arm"]], "exact forced/skip diagnostic overrides")
+            require(row["mode"] == "mtp" and row["case"] == "COMPSEC:compsec-079" and row["request"] == forced_request, "fixed forced diagnostic request")
+            expected_binary = cold["provenance"]["old_server_sha256"] if row["arm"] == "old-forced" else build["server_sha256"]
+            require(row["binary_sha256"] == expected_binary, "forced replay server identity")
+    require(len(forced) == 3 and set(forced) == set(expected_forced), "three fixed opt-in arms")
+    require(len(defaults) == cold["summary"]["default_arms_preserved"] == 8, "eight default arms")
+    require(cold["summary"]["complete"] and not cold["summary"]["quality_or_global_direct_equivalence_claim"], "bounded diagnostic scope")
+    for comparison in cold["summary"]["comparisons"]:
+        lanes = {r["arm"]: r["response"]["output_tokens"] for r in rows if r["case"] == comparison["case"]}
+        left, right = (comparison["left"], comparison["right"]) if "left" in comparison else ("direct", "mtp")
+        first = next((i for i, (a, b) in enumerate(zip(lanes[left], lanes[right])) if a != b), None)
+        key = "first_difference" if "left" in comparison else "direct_mtp_first_difference"
+        require(comparison[key] == first, "recorded cold first difference")
+        if "all_192_equal" in comparison:
+            require(comparison["all_192_equal"] == (first is None), "recorded full output equality")
+
+
 def main():
     publication = read("publication.json")
     for name, receipt in publication["artifacts"].items():
@@ -165,7 +234,9 @@ def main():
     require("primary=314 draft=279 singleton=[279,2849] batched=[279, 40278]" in fixed_log, "second-step fidelity limit")
     require(digest((ROOT / "oracle-direct-prefill.patch").read_bytes()) == fixed["build"]["patch_sha256"], "exact oracle patch")
     verify_regression(publication)
+    verify_final_wheel()
     print("PASS: published hashes; 3x192 output fidelity; 993280 recorded exact logits; 128x3 immutable cache witnesses; oracle failure/correction/reversal and output117 limit")
+    print("PASS: final bundled wheel qualification and all eleven retained cold arms")
     print("PASS: frozen forced-replay regression; meaningful negative runs; stable-source 11-check validation with strict-Clippy failure retained; advisory timeouts retained")
 
 

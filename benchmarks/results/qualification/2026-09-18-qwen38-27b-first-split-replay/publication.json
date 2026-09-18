@@ -1,6 +1,6 @@
 {
   "schema": "ax.qwen38.first_split_evidence.v1",
-  "publication": "Curated evidence; no runtime change or release acceptance",
+  "publication": "Curated diagnostic, runtime-regression and scoped final-wheel qualification evidence; no release acceptance",
   "private_path_label": "<SKU_WORKSPACE>, <LOCAL_WORKSPACE>, <LOCAL_HOME>, <RUSTUP_HOME> and <LOCAL_TEMP> replace private execution paths; configured-provider replaces private review endpoint identity. Public CLI/model names are retained.",
   "artifacts": {
     "observer.patch": {
@@ -151,14 +151,18 @@
       "bytes": 3516
     },
     "README.md": {
-      "published_sha256": "54020141ba0fe2d0da87078f69c3263eb308a4a8e63050977061c40ac36f1eaf",
-      "transformation": "New or updated English curation/validation artifact",
-      "bytes": 10952
+      "published_sha256": "65725fe52e0511c9e517566948475e4783cee894bbc1c4e45815848807fca802",
+      "raw_source_sha256": null,
+      "source_label": "final qualification curation",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 13574
     },
     "verify_evidence.py": {
-      "published_sha256": "baa91fefdbfd89c11047c76793f95a847fba9eebaaab4c88d155775d4a3ba666",
-      "transformation": "New or updated English curation/validation artifact",
-      "bytes": 11901
+      "published_sha256": "da271185a0828ca162822c1e9445c4dce4877a36bde1cdabadd5c9c04ed3c81d",
+      "raw_source_sha256": null,
+      "source_label": "final qualification curation",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 18159
     },
     "regression/final.json": {
       "published_sha256": "93390543de88a56e3f7ddb568e3f602d0dd35e36e8025262381664cc7e7597ff",
@@ -446,9 +450,186 @@
       "transformation": "New or updated English curation/validation artifact"
     },
     "source-validation.json": {
-      "published_sha256": "d8bbb5f14281e8b9a0c45a71a3340b3969565ffef39a86bcde91a1a9c511105c",
-      "bytes": 13906,
-      "transformation": "New or updated English curation/validation artifact"
+      "published_sha256": "f0f975583d37f48fa045244c46af7d440319d5929ddbc1a145f3902b9bdf61c7",
+      "raw_source_sha256": null,
+      "source_label": "final qualification curation",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 14321
+    },
+    "final-build.json": {
+      "published_sha256": "abf54330db0dc824693e9745ed1779b35bd73cc4bbd0a6df46e5109245ff563d",
+      "raw_source_sha256": "7b196886789cd6aa7703a2422a92ce92348cb2e0e0f689cea695ac7549f912f8",
+      "source_label": "build-manifest-forced-replay-installed.json",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 8155
+    },
+    "qualification.json": {
+      "published_sha256": "fb55bb410bdc3b9e90531d8a9871edccac1982a7985c1c961fb5fcdb5dc1deb7",
+      "raw_source_sha256": "6c9b36593e03f960d3a1da8993d28364f6bb2e694060e1082149b9fee384fc64",
+      "source_label": "qualification-forced-replay-installed/qualification.json",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 62483
+    },
+    "cold-controls.json": {
+      "published_sha256": "3d67b80a49d9513866a888c12571f0547a0307d3a2a4a9d43593426a1fa53734",
+      "raw_source_sha256": "4e0851de1cf6b7ff1049d017797fa53050dba4b8df46e09e762a47a7a4c1c7db",
+      "source_label": "forced-replay-cold-controls/results.json",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 842270
+    },
+    "cold/COMPSEC-compsec-087-mtp-response.json": {
+      "published_sha256": "aabed393223f541acbbd11e7d8de9e5407348b846c2a9c848b03dac30a91badb",
+      "raw_source_sha256": "aabed393223f541acbbd11e7d8de9e5407348b846c2a9c848b03dac30a91badb",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-087-mtp-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20327
+    },
+    "cold/COMPSEC-compsec-079-old-forced-response.json": {
+      "published_sha256": "95b9f27675aa6fa49d0c96f07a5e4a4849191ef165b43e8c48d8ca5bb04341bb",
+      "raw_source_sha256": "95b9f27675aa6fa49d0c96f07a5e4a4849191ef165b43e8c48d8ca5bb04341bb",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-old-forced-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20034
+    },
+    "cold/COMPSEC-compsec-079-old-forced-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-old-forced-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-077-mtp-request.json": {
+      "published_sha256": "e7a2945cc045b3e5d79204a2f01697b29e27c2db96160f882b53b5ad2d09a003",
+      "raw_source_sha256": "e7a2945cc045b3e5d79204a2f01697b29e27c2db96160f882b53b5ad2d09a003",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-077-mtp-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2170
+    },
+    "cold/COMPSEC-compsec-087-direct-response.json": {
+      "published_sha256": "fc73802f31c2ad5106be6cd89f49bbeff9e3e0ada04c2bfe59b4ebc28dfb9cdc",
+      "raw_source_sha256": "fc73802f31c2ad5106be6cd89f49bbeff9e3e0ada04c2bfe59b4ebc28dfb9cdc",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-087-direct-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20285
+    },
+    "cold/COMPSEC-compsec-079-mtp-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-mtp-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-079-new-forced-skip-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-new-forced-skip-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-079-new-forced-skip-response.json": {
+      "published_sha256": "96b903c4cbcd62f3dbb769e7673e36e970a04413534eabf56c1ae7b56620fb28",
+      "raw_source_sha256": "96b903c4cbcd62f3dbb769e7673e36e970a04413534eabf56c1ae7b56620fb28",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-new-forced-skip-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20040
+    },
+    "cold/COMPSEC-compsec-079-new-forced-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-new-forced-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-079-mtp-response.json": {
+      "published_sha256": "2757a4d7f33b017287391fc65e0a548371c63e20c478c1c7f4e018808f392aa3",
+      "raw_source_sha256": "2757a4d7f33b017287391fc65e0a548371c63e20c478c1c7f4e018808f392aa3",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-mtp-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20013
+    },
+    "cold/COMPSEC-compsec-079-new-forced-response.json": {
+      "published_sha256": "81e3b0a6ab40d638f2ef4f98621df172ba7b8e9bd792bb2cc90e3610fe9417e3",
+      "raw_source_sha256": "81e3b0a6ab40d638f2ef4f98621df172ba7b8e9bd792bb2cc90e3610fe9417e3",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-new-forced-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20034
+    },
+    "cold/COMPSEC-compsec-092-direct-request.json": {
+      "published_sha256": "6dc7ec2c46246b26e990d1b074a7ec5a92766f3b974fbc3d0e4a73f7ce796048",
+      "raw_source_sha256": "6dc7ec2c46246b26e990d1b074a7ec5a92766f3b974fbc3d0e4a73f7ce796048",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-092-direct-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 1984
+    },
+    "cold/COMPSEC-compsec-077-direct-response.json": {
+      "published_sha256": "39d77739fb35a4b2011f488971a44c5dcb3d0d3d6e5201b7f76ac98799473389",
+      "raw_source_sha256": "39d77739fb35a4b2011f488971a44c5dcb3d0d3d6e5201b7f76ac98799473389",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-077-direct-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19766
+    },
+    "cold/COMPSEC-compsec-087-mtp-request.json": {
+      "published_sha256": "9cba90326a6a971c859854d20d737a06a5f6aed7ea3724d7eed5590036abce47",
+      "raw_source_sha256": "9cba90326a6a971c859854d20d737a06a5f6aed7ea3724d7eed5590036abce47",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-087-mtp-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2750
+    },
+    "cold/COMPSEC-compsec-079-direct-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-direct-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-087-direct-request.json": {
+      "published_sha256": "9cba90326a6a971c859854d20d737a06a5f6aed7ea3724d7eed5590036abce47",
+      "raw_source_sha256": "9cba90326a6a971c859854d20d737a06a5f6aed7ea3724d7eed5590036abce47",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-087-direct-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2750
+    },
+    "cold/COMPSEC-compsec-092-direct-response.json": {
+      "published_sha256": "6b224186bef1cea142f866c538ba7323fe598548d9a4e0f964635ee4d4f74af1",
+      "raw_source_sha256": "6b224186bef1cea142f866c538ba7323fe598548d9a4e0f964635ee4d4f74af1",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-092-direct-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19635
+    },
+    "cold/COMPSEC-compsec-077-direct-request.json": {
+      "published_sha256": "e7a2945cc045b3e5d79204a2f01697b29e27c2db96160f882b53b5ad2d09a003",
+      "raw_source_sha256": "e7a2945cc045b3e5d79204a2f01697b29e27c2db96160f882b53b5ad2d09a003",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-077-direct-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2170
+    },
+    "cold/COMPSEC-compsec-077-mtp-response.json": {
+      "published_sha256": "a41cf5c5e7881a63e1e39cc158e04452af9900d891970a5f6116869cff806591",
+      "raw_source_sha256": "a41cf5c5e7881a63e1e39cc158e04452af9900d891970a5f6116869cff806591",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-077-mtp-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19816
+    },
+    "cold/COMPSEC-compsec-092-mtp-request.json": {
+      "published_sha256": "6dc7ec2c46246b26e990d1b074a7ec5a92766f3b974fbc3d0e4a73f7ce796048",
+      "raw_source_sha256": "6dc7ec2c46246b26e990d1b074a7ec5a92766f3b974fbc3d0e4a73f7ce796048",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-092-mtp-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 1984
+    },
+    "cold/COMPSEC-compsec-092-mtp-response.json": {
+      "published_sha256": "d7698c018da91be4b88e54908241c8144e9573d16dbd8507b69d4d3ea7412f9e",
+      "raw_source_sha256": "d7698c018da91be4b88e54908241c8144e9573d16dbd8507b69d4d3ea7412f9e",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-092-mtp-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19685
+    },
+    "cold/COMPSEC-compsec-079-direct-response.json": {
+      "published_sha256": "87b16ec8943948037295fa4751db1eba3832afb05fb266200523830eeb504a5b",
+      "raw_source_sha256": "87b16ec8943948037295fa4751db1eba3832afb05fb266200523830eeb504a5b",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-direct-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19977
     }
   },
   "source_receipts": {
@@ -516,6 +697,8 @@
     "tensor_dump_retained": false,
     "raw_tensor_comparisons_recomputed_offline": false,
     "scope": "Recorded witnesses and exact retained HTTP/token data only",
-    "forced_replay_source_validation": "11 completed commands; strict Clippy101 retained, other10 pass; source unchanged"
+    "forced_replay_source_validation": "11 completed commands; strict Clippy101 retained, other10 pass; source unchanged",
+    "final_installed_qualification": "passed on clean22affab5 wheel; bounded scope only",
+    "final_cold_controls": "eleven complete arms; eight default outputs preserved; default pair2/4 unchanged"
   }
 }

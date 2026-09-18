@@ -81,7 +81,8 @@ The standalone batched arm also does not reproduce actual MTP target scopes.
 
 ## Artifact identity and retained evidence
 
-The installed production runtime is clean `d121f107999e3b8627f60455a79bdd0dad7ada6c`;
+The first-split observer uses installed production runtime
+`d121f107999e3b8627f60455a79bdd0dad7ada6c`, built from clean source;
 its bundled wheel SHA256 is
 `89d43b038bbd11950e43472e41175c15b2e8a6854d4dcbdfe908c392fb280b29`.
 The observer and oracle source base is the later evidence-only commit
@@ -165,14 +166,56 @@ formatting, full Rust tests, development extension install, scripts, Python
 claims. Dry runs do not execute hardware qualification. The complete-patch Claude
 review finished and was source-adjudicated; Grok and Qwen through AX Code
 complete-patch reviews and their short retries timed out. These are advisory outcomes, not test passes.
-Final-wheel qualification for this correction is **pending**. The earlier
+Final-wheel qualification for this correction is recorded below. The earlier
 installed-wheel observer remains evidence about its recorded d121f107 artifact.
+
+## Final source and installed-wheel validation
+
+Runtime commit **`22affab50be4ff31edf7ea1b85b63439ee5733f1`** was built from a
+clean source tree with the standard bundled `release-pyext` wheel workflow.
+The wheel SHA256 is
+`68453e454424b4e52c88f4964b9eb1e120a8405931194f95cc0522f999924e78`;
+the installed server SHA256 is
+`6631b1740934d8a990cbb8efd2277e2e2ed364f920696f42f89cdfb124641efa`.
+The isolated mini environment installs only this AX package and pip; the
+native extension loads MLX and JACCL from the wheel's own `.dylibs` directory.
+This validates the final artifact on the selected SKU, not every supported
+machine. No build-machine MLX path or arithmetic override is needed.
+
+The executable qualification passes doctor, installed-package identity,
+**32/32 hard QA and 7/7 surface probes per route**, zero soft failures and the
+paired 64-token greedy probe. MTP is active without silent direct fallback.
+All local Rust tests, Python tests (209 passed, 26 skipped, 140 subtests),
+formatting and script gates pass. CI-policy Clippy passes with its existing
+restriction exceptions; unmodified strict Clippy still fails on pre-existing
+restriction lints. No lint policy was changed.
+
+Eleven additional fresh-process arms retain full 192-token outputs. All eight
+default direct/MTP outputs are identical to their corresponding previous
+`d121f107` baselines. Paired equality remains **2/4**: 077 and 092 match;
+079 and 087 first differ at output indices **116 and 155**. This correction
+therefore does not close the default-route numerical difference.
+
+On 079, the old forced-replay path, new forced-replay path and new forced path
+with experimental skip-state enabled all match the actual direct output at
+all 192 positions. Since the old forced path already matches, this is a
+preservation control, not a newly demonstrated quality gain. Skip-on changes
+additional draft scheduling; equality does not prove that the old stale-state
+branch was reached in this run. The failing-before unit test separately proves
+that branch defect. Timings are diagnostic only and are not a speed benchmark.
+
+[qualification.json](qualification.json), [final-build.json](final-build.json)
+and [cold-controls.json](cold-controls.json) retain exact artifact identities,
+full token comparisons and raw evidence hashes. The `cold/` directory retains
+all eleven request and response bodies byte-exact. The offline verifier checks
+these bodies, source/artifact binding, route counters and derived comparisons.
+The source and evidence are committed locally; no push or release was performed.
 
 ## Remaining scope
 
 Actual direct-state capture, the longer trajectory difference and case 087
 remain separate work. This evidence closes no release-quality, MTP Tier 2,
 long-context or endurance gate. The forced-replay regression is separate from
-the original default-route split, and its fresh-wheel validation is pending.
-Existing qualification remains scoped to the artifact and
-tests in the [preceding evidence](../2026-09-18-qwen38-27b-ffn-qmm-contract/README.md).
+the original default-route split. Final-wheel qualification is limited to the
+recorded artifact and tests above. Earlier artifact evidence remains in the
+[preceding record](../2026-09-18-qwen38-27b-ffn-qmm-contract/README.md).
