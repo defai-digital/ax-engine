@@ -78,11 +78,21 @@ The passing three-token control therefore does not close whole-model identity.
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.
-These M2 reference results still require M5 AX data for the four-graph decision;
+The four-graph comparison with the M5 AX collection remains pending;
 AX numerical acceptance has not been evaluated. The separate 105-item
 functional reference replay has 101 quality passes and four retained failures.
 Neither collection closes AX QA or the missing `mlx_lm.benchmark` primary
 baseline. No failed answer was normalized into a pass.
+
+[The installed M5 fixed-workload attempt](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-workload/README.md)
+completed one of six AX cells: 512-token direct, with two warmups and three
+measurements of 128 output tokens each. The first required-MTP warmup exceeded
+the frozen 3,600-second request deadline; no required trial completed, and
+the four larger-context AX cells did not start. All 68 recorded installed
+identities match before/after. This failed attempt used source `85a2bab0`,
+not the later QSA correction. Forced server cleanup after the timeout does
+not establish a native crash or its cause. The three primary reference cells
+remain unsupported; no speedup or completed performance matrix is claimed.
 
 Six-bit is excluded from this target campaign. The former Studio target and
 all affine results below are historical; they do not qualify MXFP4 on M5 Max.
@@ -94,7 +104,7 @@ Existing download aliases retain their original pack identity.
 | Immutable delivery | All 47 pinned files and 26 tensor headers verified on target NAS; installed AX delivery remains open |
 | Numerical and MTP | Three numerical reference graphs complete; M5 AX comparison pending. Target bounded state/runner controls pass, but completed real/permuted-head controls fail exact identity; MTP qualification remains open |
 | Installed QA and lifecycle | All 105 direct/MTP pairs collected; each mode has 102 quality passes, three retained failures and a successful long lookup. Two text differences keep QA failed; SSE/disconnect/recovery and stop/budget qualification remain open |
-| Throughput and memory | Nine new cells: 512/2048/8192 prompt tokens x AX direct/reference/AX MTP; target peak memory and cold latency pending |
+| Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
 
 ## Existing affine implementation and historical evidence
