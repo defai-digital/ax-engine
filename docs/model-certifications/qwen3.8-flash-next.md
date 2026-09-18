@@ -25,6 +25,14 @@ layouts and I/O recovery; target whole-model qualification is still open.
 records full file hashes and quantization geometry. Successful Hub staging does
 not establish installed AX delivery or model execution.
 
+[Installed default recovery](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-default-recovery/README.md)
+now completes on the M5/NAS target using source `85a2bab0`: all 47 published
+file hashes and the generated native manifest match, runtime identities remain
+unchanged, and the owned processes have exited. The invocation reused the
+original partial cache with unchanged default transport settings. Both earlier
+failed attempts remain recorded; this recovery does not qualify fresh-cache
+delivery, later runtime candidates, model execution or lifecycle behavior.
+
 Installed M5 fixed-input controls now pass both direct and required MTP on the
 [selected route](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/native-selected-r2.json)
 and [default Auto route](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/native-default-r2.json),
@@ -135,7 +143,7 @@ Existing download aliases retain their original pack identity.
 | Gate | Current target state |
 | --- | --- |
 | MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
-| Immutable delivery | All 47 pinned files and 26 tensor headers verified on target NAS; installed AX delivery remains open |
+| Immutable delivery | Installed85 default recovery verifies all 47 published files and the generated manifest on target NAS. Original failed attempts remain retained; fresh-cache and final-candidate delivery qualification remain open |
 | Numerical and MTP | Historical selected-paging AX/reference comparison passes frozen numerical bounds; current-candidate/default qualification remains open. Target bounded state/runner controls pass, but completed real/permuted-head controls fail exact identity; MTP qualification remains open |
 | Installed QA and lifecycle | All 105 direct/MTP pairs collected; each mode has 102 quality passes, three retained failures and a successful long lookup. Two text differences keep QA failed; SSE/disconnect/recovery and stop/budget qualification remain open |
 | Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |

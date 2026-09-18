@@ -1,0 +1,42 @@
+{
+  "artifacts": {
+    "integrity.json.gz": {
+      "bytes": 3428,
+      "sha256": "296edfbe407d27bad75f996b03c526cb8e9f0958851eac0d2f365f31ead449f8",
+      "uncompressed_bytes": 13090,
+      "uncompressed_sha256": "d9c507b38ee87f4a4f255e9660747f5734405511aeb4be103bc498671fb923b6"
+    },
+    "recovery.json.gz": {
+      "bytes": 58839,
+      "sha256": "63415e418e1298b7930070090466eb71db1169bf55cdb7777a6229930d9912cd",
+      "uncompressed_bytes": 205989,
+      "uncompressed_sha256": "42c341a2323d55527d485df483dd5c2a31bb9b670a91b6398a3f99ac976ac3a0"
+    }
+  },
+  "cli_elapsed_seconds": 372.420701,
+  "default_recovery_passed": true,
+  "earlier_default_failures_retained": 2,
+  "final_verified_published_members": 47,
+  "fresh_download_passed": false,
+  "generated_manifest_separate": true,
+  "hardware": {
+    "chip": "Apple M5 Max",
+    "memory_bytes": 137438953472
+  },
+  "manifest_sha256": "4252bb87db718f88e7e2eae3a08abe7e118999ffe8b664e301574348b5195512",
+  "original_terminal_sha256": "285f680e336e3ccd60ac5bd696b159c26e7098bfe6ef1eb6db0528247f2d5fba",
+  "overall_including_payload_verification_seconds": 673.804133,
+  "preexisting_snapshot_metadata_members": 31,
+  "qualification": false,
+  "release_ready": false,
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "runtime_before_after_equal": true,
+  "schema_version": 1,
+  "scope": "Installed85 default transport recovery of the original partial NAS cache only",
+  "source_commit": "85a2bab0dd72c9e2076f455237dca052ff8d12b7",
+  "timing_scope": "Observed invocation and verification durations; not throughput or transferred bytes",
+  "verified_file_count": 47,
+  "verified_payload_bytes": 132261853669,
+  "wheel_sha256": "b05b1ef032761bd4d05f3c9401621618f70bf2f2ba151f489ab7e364359275f3"
+}
