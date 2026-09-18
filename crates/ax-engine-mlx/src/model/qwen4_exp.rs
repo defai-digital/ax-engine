@@ -854,7 +854,13 @@ fn forward_prepared_with_verifier_policy(
             .map_err(|e| e.to_string())?;
         #[cfg(test)]
         profiling::mark("mlp_hc_read", &[read.branch_input()]);
-        let delta = layer.moe.forward(read.branch_input(), policy)?;
+        let delta = if policy == verifier_policy {
+            layer.moe.forward(read.branch_input(), policy)?
+        } else {
+            layer
+                .moe
+                .forward_with_verifier_policy(read.branch_input(), policy, verifier_policy)?
+        };
         hidden = read.write(&delta).map_err(|e| e.to_string())?;
         #[cfg(test)]
         profiling::mark("mlp_hc_write", &[&hidden]);
@@ -886,6 +892,10 @@ fn forward_prepared_with_verifier_policy(
         state: next,
     })
 }
+
+#[cfg(test)]
+#[path = "qwen4_exp_tests.rs"]
+mod verifier_tests;
 
 #[cfg(test)]
 mod tests {

@@ -296,12 +296,21 @@ impl Qwen4ExpMoe {
         input: &MlxArray,
         policy: ProjectionBatchPolicy,
     ) -> Result<MlxArray, String> {
+        self.forward_with_verifier_policy(input, policy, policy)
+    }
+
+    pub(crate) fn forward_with_verifier_policy(
+        &self,
+        input: &MlxArray,
+        policy: ProjectionBatchPolicy,
+        verifier_policy: ProjectionBatchPolicy,
+    ) -> Result<MlxArray, String> {
         let shape = self.validate_input(input)?;
         if self.selected_decode
             && shape[0] == 1
             && (shape[1] == 1 || (self.selected_prefill && policy == ProjectionBatchPolicy::Shared))
             && let Qwen4ExpExpertWeights::Streamed(source) = &self.weights.experts
-            && let Some(output) = self.forward_selected(input, policy, source)?
+            && let Some(output) = self.forward_selected(input, policy, verifier_policy, source)?
         {
             return Ok(output);
         }
@@ -316,7 +325,7 @@ impl Qwen4ExpMoe {
             }
             crate::model::qwen4_exp::profiling::mark("expert_resolve", &arrays);
         }
-        let output = self.forward_with_experts(input, policy, &experts)?;
+        let output = self.forward_with_experts(input, policy, verifier_policy, &experts)?;
         // Streamed layers must release their pending expert graph references
         // before the next layer resolves a (possibly different) paged stack,
         // rather than relying only on the pager's LRU eviction.
@@ -335,6 +344,7 @@ impl Qwen4ExpMoe {
         &self,
         input: &MlxArray,
         policy: ProjectionBatchPolicy,
+        verifier_policy: ProjectionBatchPolicy,
         experts: &ResolvedExperts<'_>,
     ) -> Result<MlxArray, String> {
         let shape = self.validate_input(input)?;
@@ -349,14 +359,14 @@ impl Qwen4ExpMoe {
                     &[1, 1, 1],
                     None,
                 );
-                outputs.push(self.forward_with_experts(&row, policy, experts)?);
+                outputs.push(self.forward_with_experts(&row, policy, verifier_policy, experts)?);
             }
             return Ok(concatenate(&outputs.iter().collect::<Vec<_>>(), 1, None));
         }
         let (indices, routing) = self.route(input, policy);
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("moe_routing", &[&indices, &routing]);
-        self.forward_routed(input, policy, experts, &indices, &routing)
+        self.forward_routed(input, policy, verifier_policy, experts, &indices, &routing)
     }
 
     fn route(&self, input: &MlxArray, policy: ProjectionBatchPolicy) -> (MlxArray, MlxArray) {
@@ -384,6 +394,7 @@ impl Qwen4ExpMoe {
         &self,
         input: &MlxArray,
         policy: ProjectionBatchPolicy,
+        verifier_policy: ProjectionBatchPolicy,
         source: &ExpertLayerSource,
     ) -> Result<Option<MlxArray>, String> {
         let (indices, routing) = self.route(input, policy);
@@ -419,7 +430,8 @@ impl Qwen4ExpMoe {
             indices.dtype(),
             None,
         );
-        let output = self.forward_routed(input, policy, &experts, &indices, &routing)?;
+        let output =
+            self.forward_routed(input, policy, verifier_policy, &experts, &indices, &routing)?;
         try_eval(&[&output])
             .map_err(|e| format!("qwen4_exp selected MoE output eval failed: {e}"))?;
         Ok(Some(output))
@@ -429,6 +441,7 @@ impl Qwen4ExpMoe {
         &self,
         input: &MlxArray,
         policy: ProjectionBatchPolicy,
+        verifier_policy: ProjectionBatchPolicy,
         experts: &ResolvedExperts<'_>,
         indices: &MlxArray,
         routing: &MlxArray,
@@ -443,7 +456,13 @@ impl Qwen4ExpMoe {
         let down = squeeze_switch_singleton(&qw_gather(&activated, experts.down(), indices, false));
         let weighted = multiply(&down, &expand_dims_axes(routing, &[-1], None), None);
         let routed = sum_axis(&weighted, -2, false, None);
-        let shared_gate = qw_with_policy(input, &w.shared_gate, policy);
+        let shared_gate_policy =
+            if w.shared_gate.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+                verifier_policy
+            } else {
+                policy
+            };
+        let shared_gate = qw_with_policy(input, &w.shared_gate, shared_gate_policy);
         let shared_activation = silu_projection_dtype(&shared_gate);
         let shared_up = qw_with_policy(input, &w.shared_up, policy);
         let shared_input = multiply(&shared_activation, &shared_up, None);
@@ -642,6 +661,7 @@ mod tests {
             .forward_routed(
                 &input,
                 ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::Shared,
                 &resolved,
                 &indices,
                 &routing,
@@ -650,6 +670,7 @@ mod tests {
         let actual = module
             .forward_routed(
                 &input,
+                ProjectionBatchPolicy::Shared,
                 ProjectionBatchPolicy::Shared,
                 &compact,
                 &remap,

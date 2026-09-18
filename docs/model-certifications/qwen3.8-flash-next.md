@@ -85,6 +85,16 @@ still differ. This candidate has not completed the full diagnostic or M5/NAS
 qualification. The earlier failures remain retained, and default admission
 remains closed.
 
+[Supplementary shared-gate attribution](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-shared-gate/README.md)
+reproduces one further MXFP4 projection difference on identical captured inputs
+and original weights. The verifier correction preserves all five output tokens,
+both accepted pairs and prefill in the final-source M2 control; all 47 pre/post
+pack hashes match. At consumed prefix 4, the first stored-state difference
+moves from layer 34 to layer 41, with 16 arrays still different. Only prefixes
+2 and 4 were compared. Complete state identity therefore still fails, and the
+original full diagnostic is running separately. M5/NAS installed qualification,
+performance, lifecycle and default-MTP promotion remain open.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.
