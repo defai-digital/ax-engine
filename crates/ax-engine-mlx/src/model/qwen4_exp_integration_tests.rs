@@ -1120,7 +1120,15 @@ fn observe_greedy_mismatch(
     tie_margin: f32,
 ) {
     use crate::model::qwen4_exp_mtp::mtp_parity;
-    if expected == actual || !*comparing {
+    if !*comparing {
+        return;
+    }
+    assert!(
+        position <= identity.compared_positions,
+        "comparison skipped a position"
+    );
+    identity.compared_positions = identity.compared_positions.max(position + 1);
+    if expected == actual {
         return;
     }
     identity.greedy_identity = false;
@@ -1131,6 +1139,43 @@ fn observe_greedy_mismatch(
         }
         Ok(None) => {}
         Err(error) => panic!("{error}"),
+    }
+}
+
+#[test]
+fn flash_next_mtp_comparison_coverage_stops_at_first_difference() {
+    use crate::model::qwen4_exp_mtp::mtp_parity::GreedyIdentityReport;
+    for first_difference in [None, Some(0), Some(1), Some(15)] {
+        let mut identity = GreedyIdentityReport::exact();
+        let mut comparing = true;
+        for position in 0..16 {
+            let token = if first_difference == Some(position) {
+                271
+            } else {
+                13
+            };
+            // A pending primary can be observed again when it is committed.
+            for _ in 0..2 {
+                observe_greedy_mismatch(
+                    &mut identity,
+                    &mut comparing,
+                    position,
+                    13,
+                    token,
+                    0.0,
+                    0.5,
+                );
+            }
+        }
+        assert_eq!(
+            identity.compared_positions,
+            first_difference.map_or(16, |p| p + 1)
+        );
+        assert_eq!(identity.greedy_identity, first_difference.is_none());
+        assert_eq!(
+            identity.tie_divergences.len(),
+            usize::from(first_difference.is_some())
+        );
     }
 }
 
@@ -1973,7 +2018,7 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "within_tolerance": within_tolerance,
         "stopped_at_terminal": stopped_at_terminal,
         "terminal_position": terminal_position,
-        "compared_positions": generated.len(),
+        "compared_positions": identity.compared_positions,
         "terminal_ids": terminal_ids,
         "state_arrays": mtp_parity::mtp_state_arrays_json(&last_trunk_arrays),
         "note":"Reconstructed candidate head; primary verification is authoritative; no throughput claim"
@@ -2353,7 +2398,7 @@ fn flash_next_mtp_oracle_generate(
     );
     FlashNextMtpOracleRun {
         too_short: flash_next_mtp_too_short(&generated, terminal_ids),
-        compared_positions: generated.len(),
+        compared_positions: identity.compared_positions,
         generated,
         agreement,
         proposed,
@@ -2783,6 +2828,7 @@ fn flash_next_mtp_oracle_agreement_matches_proposals_when_stopped_inside_budget(
         flash_next_mtp_oracle_generate(&trunk, &head, &[1], 5, owner, draft_owner, &[0]);
     assert!(too_short.too_short);
     assert!(too_short.stopped_at_terminal);
+    assert_eq!(too_short.compared_positions, 1);
     assert_eq!(too_short.agreement.len(), too_short.proposed);
     assert_eq!(too_short.proposed, 0);
 
@@ -2790,6 +2836,7 @@ fn flash_next_mtp_oracle_agreement_matches_proposals_when_stopped_inside_budget(
         flash_next_mtp_oracle_generate(&trunk, &head, &[1], 5, owner + 2, draft_owner + 2, &[]);
     assert!(!full_budget.stopped_at_terminal);
     assert_eq!(full_budget.generated.len(), 5);
+    assert_eq!(full_budget.compared_positions, 5);
     assert_eq!(full_budget.agreement.len(), full_budget.proposed);
     assert_eq!(full_budget.proposed, 2);
 

@@ -42,6 +42,14 @@ lookup. The frozen supervisor completed all pre/post integrity checks, but
 the overall QA verdict is **failed**. Generated token IDs and logit margins
 were not recorded by this endpoint; a near-tie explanation is not established.
 
+[Target native MTP controls](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-mtp/README.md)
+are also complete and **failed exact identity**. Real-head acceptance is
+94/116 (81.03%), while the permuted head accepts 0/209. Both use 104 inputs
+with 55 short exclusions; only 102/104 generated-token arrays agree across
+heads. Bounded state/runner controls and post-run integrity verification
+passed. The recorded coverage overstatement after a first mismatch is
+preserved and explained in the evidence; it does not waive the failure.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.
@@ -59,7 +67,7 @@ Existing download aliases retain their original pack identity.
 | --- | --- |
 | MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
 | Immutable delivery | All 47 pinned files and 26 tensor headers verified on target NAS; installed AX delivery remains open |
-| Numerical and MTP | Three MXFP4 numerical reference graphs complete with verified artifacts; M5 AX comparison, direct/MTP state, rollback and trained-head evidence remain open |
+| Numerical and MTP | Three numerical reference graphs complete; M5 AX comparison pending. Target bounded state/runner controls pass, but completed real/permuted-head controls fail exact identity; MTP qualification remains open |
 | Installed QA and lifecycle | All 105 direct/MTP pairs collected; each mode has 102 quality passes, three retained failures and a successful long lookup. Two text differences keep QA failed; SSE/disconnect/recovery and stop/budget qualification remain open |
 | Throughput and memory | Nine new cells: 512/2048/8192 prompt tokens x AX direct/reference/AX MTP; target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |

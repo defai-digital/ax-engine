@@ -346,7 +346,9 @@ fn runner_greedy_identity(
         }
     }
     if position == shared && direct.tokens.len() == mtp.tokens.len() {
-        return mtp_parity::GreedyIdentityReport::exact();
+        let mut report = mtp_parity::GreedyIdentityReport::exact();
+        report.compared_positions = shared;
+        return report;
     }
     let direct_margin = if position < shared {
         direct_margin_at_divergence(
@@ -496,6 +498,10 @@ fn flash_next_runner_mtp_matches_direct_across_prefill_quanta_and_budgets() {
                 assert_eq!(
                     candidate.tokens, direct.tokens,
                     "quantum={quantum}, budget={budget}"
+                );
+                assert_eq!(
+                    runner_greedy_identity(&direct, &candidate, &runner).compared_positions,
+                    direct.tokens.len()
                 );
                 assert_eq!(direct.maximum("ax_mlx_flash_next_mtp_verified_steps"), 0);
                 if budget > 1 {

@@ -1,0 +1,77 @@
+{
+  "qualification": false,
+  "release_ready": false,
+  "completed": true,
+  "passed": false,
+  "terminal_sha256": "03dd5a0aa100d9f86f6d6bf5513092c79dacd9eaa910e3b5396b7ee949b744cb",
+  "integrity": "Frozen supervisor completed verify() before phase complete; four raw result hashes independently verified locally",
+  "real_head": {
+    "accepted": 94,
+    "proposed": 116,
+    "acceptance_rate": 0.8103448275862069,
+    "greedy_identity": false
+  },
+  "permuted_head": {
+    "accepted": 0,
+    "proposed": 209,
+    "acceptance_rate": 0.0,
+    "greedy_identity": true
+  },
+  "exclusions": 55,
+  "requests": 104,
+  "output_pairs_identical": 102,
+  "schema": "ax.flash_next.mxfp4.target_mtp.v1",
+  "target": "MacBook Pro M5 Max 128 GiB",
+  "storage": "NAS over SMB",
+  "source_commit": "2642a6286211ae540c2dd4cdb308f8149987685a",
+  "binary_sha256": "9c1d319a764f86a612608f95cb02a48aa19dd8a24fed08a1e9e1239070b0b2fc",
+  "model_revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "scope": "Selected-route bounded native controls; no HTTP trajectory or throughput claim",
+  "artifacts": [
+    {
+      "file": "native-controls.json.gz",
+      "sha256": "8064c71f275f703a25caf90cd72eb62596da0a208d499f625a1e581020848770",
+      "uncompressed_sha256": "cde919636960d3739a1c346484a0b7d17c10cded444e1809d4dd8e935061147b"
+    },
+    {
+      "file": "integrity.json.gz",
+      "sha256": "ff2d05e0e22c5d848208c44340e6892058ce9fe0c3eb53b811b793147330abf8",
+      "uncompressed_sha256": "5a38b7d9f6c2c8eaa6b8b47b960cbc3e98407e5f9f3b89140faf43c2cf290067"
+    }
+  ],
+  "curation_sha256": "b61a2e902e110e6855e2d2f24eb9e158fd3434e25b62d4e63c7c383279862e35",
+  "divergence_coverage": [
+    {
+      "mode": "real",
+      "id": "reasoning_cause_effect",
+      "reported_positions": 16,
+      "observed_positions": 16,
+      "tie_divergences": [
+        {
+          "margin": 0.125,
+          "position": 15,
+          "tokens": [
+            6745,
+            5073
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "real",
+      "id": "reasoning_syllogism_roses",
+      "reported_positions": 16,
+      "observed_positions": 2,
+      "tie_divergences": [
+        {
+          "margin": 0.0,
+          "position": 1,
+          "tokens": [
+            13,
+            271
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -863,6 +863,7 @@ pub(crate) mod mtp_parity {
         pub greedy_identity: bool,
         pub identity_until_first_tie: bool,
         pub tie_divergences: Vec<TieDivergence>,
+        pub compared_positions: usize,
     }
 
     impl GreedyIdentityReport {
@@ -871,6 +872,7 @@ pub(crate) mod mtp_parity {
                 greedy_identity: true,
                 identity_until_first_tie: true,
                 tie_divergences: Vec::new(),
+                compared_positions: 0,
             }
         }
     }
@@ -936,6 +938,7 @@ pub(crate) mod mtp_parity {
         let shared = direct.len().min(mtp.len());
         let mut report = GreedyIdentityReport::exact();
         for position in 0..shared {
+            report.compared_positions = position + 1;
             if direct[position] == mtp[position] {
                 continue;
             }
@@ -1270,10 +1273,12 @@ pub(crate) mod mtp_parity {
         assert_eq!(tied.tie_divergences.len(), 1);
         assert_eq!(tied.tie_divergences[0].position, 2);
         assert_eq!(tied.tie_divergences[0].tokens, [271, 561]);
+        assert_eq!(tied.compared_positions, 3);
         let exact = greedy_identity_until_tie(&direct, &direct, 0.0, 0.5).unwrap();
         assert!(exact.greedy_identity);
         assert!(exact.identity_until_first_tie);
         assert!(exact.tie_divergences.is_empty());
+        assert_eq!(exact.compared_positions, direct.len());
         let wide = greedy_identity_until_tie(&direct, &mtp, 1.25, 0.5).unwrap_err();
         assert_eq!(
             wide,
