@@ -108,6 +108,16 @@ not the later QSA correction. Forced server cleanup after the timeout does
 not establish a native crash or its cause. The three primary reference cells
 remain unsupported; no speedup or completed performance matrix is claimed.
 
+[An isolated required-512 diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-required512-diagnostic/README.md)
+subsequently completed all 128 outputs on the same installed `85a2bab0` source
+within the original deadlines. It omitted the five preceding direct requests
+and added progress/resource observation, so it does not replace the failed
+matrix or identify the original timeout's cause. Its first 37 token IDs match
+all five direct trials, then the trajectories diverge; greedy identity fails.
+SSE, client and terminal records agree, and the frozen helper completes both
+68-file integrity checks. This is bounded diagnostic evidence, not a throughput,
+quality or later-candidate qualification result.
+
 Six-bit is excluded from this target campaign. The former Studio target and
 all affine results below are historical; they do not qualify MXFP4 on M5 Max.
 Existing download aliases retain their original pack identity.

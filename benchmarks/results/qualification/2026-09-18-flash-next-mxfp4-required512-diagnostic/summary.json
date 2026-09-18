@@ -1,0 +1,123 @@
+{
+  "artifacts": [
+    {
+      "file": "terminal.json.gz",
+      "numeric_preservation": {
+        "booleans": 42,
+        "floats": 6,
+        "integers": 160
+      },
+      "records": null,
+      "sha256": "788a13d55ffb2015b069a8ca5a12fe3ffd52e2b3c1037544159b306aff9cc4df",
+      "uncompressed_sha256": "04921aacb3356c9a8fffffeb5467043cf995906850542e75f3263ff362e5a3c4"
+    },
+    {
+      "file": "client.json.gz",
+      "numeric_preservation": {
+        "booleans": 5,
+        "floats": 6,
+        "integers": 133
+      },
+      "records": null,
+      "sha256": "ba36a48ed6666df7f61ff502530a638fc010ae65f3586f6f68108c5883096d8d",
+      "uncompressed_sha256": "ddd2750b2775181f2105e019467bb2fc8f089f530b132b57b73ae0d39b023fcd"
+    },
+    {
+      "file": "trial.json.gz",
+      "numeric_preservation": {
+        "booleans": 0,
+        "floats": 9,
+        "integers": 450
+      },
+      "records": null,
+      "sha256": "c3e56e4beb42e311cb7f36b1b45a0bb995dca967665fb3a904671add503f79ad",
+      "uncompressed_sha256": "8388b1d968055a5403eb720d4cd472cd61544a2fe3cf210ec8b97ac239c79928"
+    },
+    {
+      "file": "sse-progress.jsonl.gz",
+      "numeric_preservation": {
+        "booleans": 187,
+        "floats": 564,
+        "integers": 48289
+      },
+      "records": 563,
+      "sha256": "fb28360069b6d3fc0aec863be03a7775ebaf6407dd45cbfd71ec3eb00be47cfd",
+      "uncompressed_sha256": "9055b1d6110bf405aa05687bdb5f8c3545c2c51270f8c6476961137fe2e69703"
+    },
+    {
+      "file": "resource-samples.jsonl.gz",
+      "numeric_preservation": {
+        "booleans": 1,
+        "floats": 152,
+        "integers": 303
+      },
+      "records": 76,
+      "sha256": "df5844431243442c86ead14a92e84827755776be0b7f41127281ff104b91ba7b",
+      "uncompressed_sha256": "5b31f9aac06e66bc0cdc43161336d41196ecb3f9d8168a0cc2f4319b43e026fa"
+    },
+    {
+      "file": "integrity.json.gz",
+      "numeric_preservation": {
+        "booleans": 67,
+        "floats": 121,
+        "integers": 5168
+      },
+      "records": null,
+      "sha256": "b7e521bfef23119217451bdb4b15274e8fe41de560571df05a2d98e989d85e49",
+      "uncompressed_sha256": "3c7a12ff623074e27c4b79c13b0f8a53eeb3653f3f113f7424e7ae61272affb0"
+    },
+    {
+      "file": "audit.json.gz",
+      "numeric_preservation": {
+        "booleans": 26,
+        "floats": 15,
+        "integers": 190
+      },
+      "records": null,
+      "sha256": "a66ff29cd1d0082a6e02f378b7ad49e041236e01a1938d07617e10176441ee97",
+      "uncompressed_sha256": "994a5337b39ad3a0951e30e132bdadca86170d53757b4d05db22d3b7ae9b6bf8"
+    }
+  ],
+  "binary_sha256": "9d6725d82da906ef324d1601a939405b64779d4251ec3bf7ae5435e80d3cb4ed",
+  "cache_order_equivalent": false,
+  "curator_sha256": "d35847357aa1ba00869583c73e71a241abed8b4778decbbe925959926ec1dc1d",
+  "diagnostic_valid": true,
+  "different_aligned_positions": 91,
+  "direct_trials_compared": 5,
+  "eos_token": 248046,
+  "eos_token_position": 1,
+  "equal_prefix_tokens": 37,
+  "events": 76,
+  "first_difference": {
+    "direct_token": 3070,
+    "position": 37,
+    "required_token": 7701
+  },
+  "greedy_identity": false,
+  "ignore_eos": true,
+  "metrics_samples_available": 75,
+  "observation_limits": [
+    "Observer and metrics overhead is retained; no throughput or speedup claim.",
+    "One isolated repeat does not explain the original deadline failure or establish repeatability.",
+    "Required output diverges from all five original direct outputs; no greedy parity.",
+    "Host VM/swap is not per-request NAS traffic or total GPU/unified-memory pressure."
+  ],
+  "omitted_prior_direct_requests": 5,
+  "output_tokens": 128,
+  "payload_identity_limit": "Two source-bound completed pre/post validation receipts covering 68 pinned files, not independently retained observed per-file digest maps; local curator did not reread remote payloads.",
+  "performance_claim": false,
+  "physical_nas_io_available": false,
+  "prior_timeout_localized": false,
+  "prior_timeout_preserved": true,
+  "privacy_controls": 6,
+  "qualification": false,
+  "release_ready": false,
+  "request_completed": true,
+  "resource_samples": 76,
+  "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "runtime_source_commit": "85a2bab0dd72c9e2076f455237dca052ff8d12b7",
+  "sampled_rss_is_peak": false,
+  "scope": "One observed installed M5 Max 128 GiB required-MTP 512-input/128-output request; reordered warm-storage diagnostic only",
+  "source_bound_identity_files": 68,
+  "step_events": 74
+}
