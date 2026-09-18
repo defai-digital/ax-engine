@@ -54,9 +54,19 @@ preserved and explained in the evidence; it does not waive the failure.
 reproduces batch/singleton rounding differences with actual BF16 inputs and
 original QKV/output weights. Verifier-only per-row projections move the first
 changed stored state from layer 0 to layer 43 in the original three-token
-roses control. Eleven state arrays still differ; this is a component correction,
-not whole-model or M5 identity qualification. Direct and affine routing retain
+roses control. That GDN-only candidate retains eleven differing state arrays;
+this is a component correction, not whole-model or M5 identity qualification.
+Direct and affine routing retain
 their existing policies, and default admission remains closed.
+
+[Supplementary MXFP4 QSA attribution](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-qsa/README.md)
+isolates main-key and indexer projection scheduling differences on identical
+captured inputs. The main-key replay exactly reproduces the native outputs;
+the indexer replay has no captured native projection. Applying the verifier
+policy to these two MXFP4 projections leaves no recorded state difference in
+the same three-token control, with all three output tokens equal and all 47
+pack hashes unchanged. This bounded M2 result does not establish longer
+trajectory identity or qualify the M5/NAS target; those gates remain open.
 
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316

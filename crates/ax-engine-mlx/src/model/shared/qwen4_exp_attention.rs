@@ -414,6 +414,18 @@ impl Qwen4ExpAttention {
         position_offset: usize,
         policy: ProjectionBatchPolicy,
     ) -> Result<Qwen4ExpAttentionOutput> {
+        self.forward_with_verifier_policy(hidden, cache, position_offset, policy, policy)
+    }
+
+    /// Align MXFP4 key histories with singleton decode without changing other projections.
+    pub(crate) fn forward_with_verifier_policy(
+        &self,
+        hidden: &MlxArray,
+        cache: &Qwen4ExpAttentionCache,
+        position_offset: usize,
+        policy: ProjectionBatchPolicy,
+        verifier_policy: ProjectionBatchPolicy,
+    ) -> Result<Qwen4ExpAttentionOutput> {
         let cfg = self.config;
         let (batch, seq) = self.validate_hidden(hidden)?;
         let _total = position_offset
@@ -426,7 +438,13 @@ impl Qwen4ExpAttention {
             .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("position offset"))?;
         self.validate_cache(cache, batch, hidden.dtype(), position_offset)?;
 
-        let selection = match policy {
+        let index_policy =
+            if self.indexer.projection_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+                verifier_policy
+            } else {
+                policy
+            };
+        let selection = match index_policy {
             ProjectionBatchPolicy::Shared => {
                 self.indexer
                     .select(hidden, cache.index(), position_offset)?
@@ -442,7 +460,13 @@ impl Qwen4ExpAttention {
         crate::model::qwen4_exp::profiling::mark("qsa_indexer", &[selection.gather_indices()]);
 
         let q_packed = qw_with_policy(hidden, &self.q_proj, policy);
-        let k_raw = qw_with_policy(hidden, &self.k_proj, policy);
+        let key_policy =
+            if self.k_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+                verifier_policy
+            } else {
+                policy
+            };
+        let k_raw = qw_with_policy(hidden, &self.k_proj, key_policy);
         let v_raw = qw_with_policy(hidden, &self.v_proj, policy);
         #[cfg(test)]
         for (stage, array) in [
@@ -586,6 +610,10 @@ impl Qwen4ExpAttention {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "qwen4_exp_attention_verifier_tests.rs"]
+mod verifier_tests;
 
 fn attend_selected(
     queries: &MlxArray,

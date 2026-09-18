@@ -634,7 +634,7 @@ pub(crate) fn forward(
     forward_with_verifier_policy(weights, tokens, state, owner, policy, policy)
 }
 
-/// Keep verifier HC and MXFP4 GDN QKV/output projections aligned with singleton
+/// Keep verifier HC and selected MXFP4 projections aligned with singleton
 /// decode independently of shared projections and selected-expert paging.
 pub(crate) fn forward_with_verifier_policy(
     weights: &Qwen4ExpWeights,
@@ -823,7 +823,13 @@ fn forward_prepared_with_verifier_policy(
             }
             (Qwen4ExpAttentionBranch::Qsa(branch), AttentionState::Qsa(cache)) => {
                 let result = branch
-                    .forward(read.branch_input(), cache, state.position, policy)
+                    .forward_with_verifier_policy(
+                        read.branch_input(),
+                        cache,
+                        state.position,
+                        policy,
+                        verifier_policy,
+                    )
                     .map_err(|e| e.to_string())?;
                 let delta = result.delta().clone();
                 *cache = result.into_next_state();
