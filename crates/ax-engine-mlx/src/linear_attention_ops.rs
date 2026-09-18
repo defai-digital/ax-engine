@@ -332,7 +332,7 @@ pub fn linear_attention_decode_post_input_metal(
                 ],
                 &["q", "k", "v", "new_conv_state", "prefix_conv_state"],
                 DECODE_POST_INPUT_SIMD32_KERNEL_SOURCE,
-                "",
+                POST_INPUT_ROUNDING_HEADER,
                 true,
             )
         })
@@ -350,7 +350,7 @@ pub fn linear_attention_decode_post_input_metal(
                 ],
                 &["q", "k", "v", "new_conv_state", "prefix_conv_state"],
                 DECODE_POST_INPUT_KERNEL_SOURCE,
-                "",
+                POST_INPUT_ROUNDING_HEADER,
                 true,
             )
         })
@@ -523,7 +523,7 @@ pub(crate) fn gated_delta_fused_verify_from_qkv(
                 "prefix_conv_state",
             ],
             GATED_DELTA_FUSED_VERIFY_KERNEL_SOURCE,
-            "",
+            POST_INPUT_ROUNDING_HEADER,
             true,
         )
     });
@@ -709,7 +709,7 @@ pub(crate) fn gated_delta_fused_verify_no_checkpoint_from_qkv(
             ],
             &["y", "state_out", "new_conv_state"],
             GATED_DELTA_FUSED_VERIFY_NO_CHECKPOINT_KERNEL_SOURCE,
-            "",
+            POST_INPUT_ROUNDING_HEADER,
             true,
         )
     });
@@ -2525,6 +2525,27 @@ const RMS_NORM_FULL_GATE_KERNEL_SOURCE: &str = r#"
 // Short-verifier specialization adapted from the Apache-2.0 oMLX GDN
 // prework layout. One SIMD lane owns adjacent channels, so Q/K normalization
 // needs one SIMD reduction and no threadgroup-memory barrier tree.
+// Preserve the stored activation boundaries of conv1d -> sigmoid -> multiply
+// and RMSNorm -> scale even when these operations share a Metal dispatch.
+const POST_INPUT_ROUNDING_HEADER: &str = r#"
+    template <typename T>
+    inline float ax_post_input_silu(float accumulator) {
+      const T x = static_cast<T>(accumulator);
+      const T exponential = static_cast<T>(metal::precise::exp(metal::abs(static_cast<float>(x))));
+      const T denominator = static_cast<T>(1) + exponential;
+      const T low = static_cast<T>(metal::precise::divide(1.0f, static_cast<float>(denominator)));
+      const T gate = x >= static_cast<T>(0) ? static_cast<T>(1) - low : low;
+      return static_cast<float>(static_cast<T>(x * gate));
+    }
+
+    template <typename T>
+    inline T ax_post_input_scaled_norm(float value, float inverse_rms, float scale) {
+      const T normalized = static_cast<T>(value * inverse_rms);
+      const T typed_scale = static_cast<T>(scale);
+      return static_cast<T>(static_cast<float>(normalized) * static_cast<float>(typed_scale));
+    }
+"#;
+
 const DECODE_POST_INPUT_SIMD32_KERNEL_SOURCE: &str = r#"
     constexpr int KeyDim = Hk * HeadDim;
     constexpr int ValueDim = Hv * HeadDim;
@@ -2569,7 +2590,7 @@ const DECODE_POST_INPUT_SIMD32_KERNEL_SOURCE: &str = r#"
           acc += tails[i][t] *
               static_cast<float>(conv_weight[channel * ConvKernelDim + t]);
         }
-        const float value = acc / (1.0f + exp(-acc));
+        const float value = ax_post_input_silu<T>(acc);
         activated[i] = value;
         sumsq += value * value;
       }
@@ -2582,9 +2603,9 @@ const DECODE_POST_INPUT_SIMD32_KERNEL_SOURCE: &str = r#"
           const int out_idx = ((batch_idx * Seq + token) * Hk + head) * HeadDim + d;
           const float scale = is_q ? q_scale[0] : k_scale[0];
           if (is_q) {
-            q[out_idx] = static_cast<T>(activated[i] * norm_scale * scale);
+            q[out_idx] = ax_post_input_scaled_norm<T>(activated[i], norm_scale, scale);
           } else {
-            k[out_idx] = static_cast<T>(activated[i] * norm_scale * scale);
+            k[out_idx] = ax_post_input_scaled_norm<T>(activated[i], norm_scale, scale);
           }
         }
       } else {
@@ -2662,7 +2683,7 @@ const DECODE_POST_INPUT_KERNEL_SOURCE: &str = r#"
         acc += tail[t] *
             static_cast<float>(conv_weight[channel * ConvKernelDim + t]);
       }
-      float activated = acc / (1.0f + exp(-acc));
+      float activated = ax_post_input_silu<T>(acc);
 
       if (is_q || is_k) {
         squares[lane] = activated * activated;
@@ -2678,11 +2699,11 @@ const DECODE_POST_INPUT_KERNEL_SOURCE: &str = r#"
         if (is_q) {
           int head = group_idx;
           q[((batch_idx * Seq + token) * Hk + head) * HeadDim + lane] =
-              static_cast<T>(activated * norm_scale * q_scale[0]);
+              ax_post_input_scaled_norm<T>(activated, norm_scale, q_scale[0]);
         } else {
           int head = group_idx - Hk;
           k[((batch_idx * Seq + token) * Hk + head) * HeadDim + lane] =
-              static_cast<T>(activated * norm_scale * k_scale[0]);
+              ax_post_input_scaled_norm<T>(activated, norm_scale, k_scale[0]);
         }
       } else {
         int head = group_idx - 2 * Hk;
@@ -2803,8 +2824,8 @@ const GATED_DELTA_FUSED_VERIFY_KERNEL_SOURCE: &str = r#"
             k_acc += k_tail[i][t] * static_cast<float>(
                 conv_weight[k_channel * ConvKernelDim + t]);
           }
-          q_raw[i] = q_acc / (1.0f + exp(-q_acc));
-          k_raw[i] = k_acc / (1.0f + exp(-k_acc));
+          q_raw[i] = ax_post_input_silu<InT>(q_acc);
+          k_raw[i] = ax_post_input_silu<InT>(k_acc);
           q_square_sum += q_raw[i] * q_raw[i];
           k_square_sum += k_raw[i] * k_raw[i];
         }
@@ -2817,9 +2838,9 @@ const GATED_DELTA_FUSED_VERIFY_KERNEL_SOURCE: &str = r#"
         for (int i = 0; i < NPerLane; ++i) {
           const int d = s_base + i;
           q_values[token * Dk + d] =
-              static_cast<InT>(q_raw[i] * q_norm * q_scale[0]);
+              ax_post_input_scaled_norm<InT>(q_raw[i], q_norm, q_scale[0]);
           k_values[token * Dk + d] =
-              static_cast<InT>(k_raw[i] * k_norm * k_scale[0]);
+              ax_post_input_scaled_norm<InT>(k_raw[i], k_norm, k_scale[0]);
 
           const int q_channel = hk_idx * Dk + d;
           const int k_channel = KeyDim + hk_idx * Dk + d;
@@ -2872,7 +2893,7 @@ const GATED_DELTA_FUSED_VERIFY_KERNEL_SOURCE: &str = r#"
               conv_weight[v_channel * ConvKernelDim + t]);
         }
         v_values[token * Tgy + local_y] =
-            static_cast<InT>(v_acc / (1.0f + exp(-v_acc)));
+            static_cast<InT>(ax_post_input_silu<InT>(v_acc));
         for (int t = 0; t < TailLen - 1; ++t) {
           v_tail[t] = v_tail[t + 1];
         }
@@ -3020,8 +3041,8 @@ const GATED_DELTA_FUSED_VERIFY_NO_CHECKPOINT_KERNEL_SOURCE: &str = r#"
             k_acc += k_tail[i][t] * static_cast<float>(
                 conv_weight[k_channel * ConvKernelDim + t]);
           }
-          q_raw[i] = q_acc / (1.0f + exp(-q_acc));
-          k_raw[i] = k_acc / (1.0f + exp(-k_acc));
+          q_raw[i] = ax_post_input_silu<InT>(q_acc);
+          k_raw[i] = ax_post_input_silu<InT>(k_acc);
           q_square_sum += q_raw[i] * q_raw[i];
           k_square_sum += k_raw[i] * k_raw[i];
         }
@@ -3034,9 +3055,9 @@ const GATED_DELTA_FUSED_VERIFY_NO_CHECKPOINT_KERNEL_SOURCE: &str = r#"
         for (int i = 0; i < NPerLane; ++i) {
           const int d = s_base + i;
           q_values[token * Dk + d] =
-              static_cast<InT>(q_raw[i] * q_norm * q_scale[0]);
+              ax_post_input_scaled_norm<InT>(q_raw[i], q_norm, q_scale[0]);
           k_values[token * Dk + d] =
-              static_cast<InT>(k_raw[i] * k_norm * k_scale[0]);
+              ax_post_input_scaled_norm<InT>(k_raw[i], k_norm, k_scale[0]);
 
           const int q_channel = hk_idx * Dk + d;
           const int k_channel = KeyDim + hk_idx * Dk + d;
@@ -3081,7 +3102,7 @@ const GATED_DELTA_FUSED_VERIFY_NO_CHECKPOINT_KERNEL_SOURCE: &str = r#"
               conv_weight[v_channel * ConvKernelDim + t]);
         }
         v_values[token * Tgy + local_y] =
-            static_cast<InT>(v_acc / (1.0f + exp(-v_acc)));
+            static_cast<InT>(ax_post_input_silu<InT>(v_acc));
         for (int t = 0; t < TailLen - 1; ++t) {
           v_tail[t] = v_tail[t + 1];
         }
@@ -4825,6 +4846,225 @@ mod tests {
                 portable_state.data_f32(),
                 1e-6,
             );
+        }
+    }
+
+    fn post_input_rounding_fixture(
+        seq: usize,
+        dtype: MlxDtype,
+    ) -> (LinearAttentionConfig, MlxArray, MlxArray, MlxArray) {
+        let (q_scale, k_scale) = linear_attention_qk_scale(128);
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_value_heads: 3,
+            num_key_heads: 1,
+            key_head_dim: 128,
+            value_head_dim: 128,
+            conv_kernel_dim: 4,
+            q_scale,
+            k_scale,
+        };
+        let conv_dim = cfg.conv_dim();
+        // Small dyadic products and sums are exact, isolating activation and
+        // normalization rounding from convolution accumulation order.
+        let state_data: Vec<f32> = (0..3 * conv_dim)
+            .map(|idx| ((idx % 13) as f32 - 6.0) / 16.0)
+            .collect();
+        let weight_data: Vec<f32> = (0..conv_dim * cfg.conv_kernel_dim)
+            .map(|idx| ((idx % 7) as f32 - 3.0) / 8.0)
+            .collect();
+        let weight = astype(
+            &f32_array(
+                &weight_data,
+                &[conv_dim as i32, cfg.conv_kernel_dim as i32, 1],
+            ),
+            dtype,
+            None,
+        );
+        let qkv_data: Vec<f32> = (0..seq * conv_dim)
+            .map(|idx| ((idx % 17) as f32 - 8.0) / 16.0)
+            .collect();
+        let qkv = astype(
+            &f32_array(&qkv_data, &[1, seq as i32, conv_dim as i32]),
+            dtype,
+            None,
+        );
+        let state = astype(
+            &f32_array(&state_data, &[1, 3, conv_dim as i32]),
+            dtype,
+            None,
+        );
+        (cfg, qkv, weight, state)
+    }
+
+    fn assert_post_input_rounding_boundaries(dtype: MlxDtype) {
+        let mut mismatches = Vec::new();
+
+        for (seq, target_verify) in [(1, false), (4, false), (1, true), (4, true)] {
+            let _target = fastpath::scoped_qwen_linear_mtp_target_verify(target_verify);
+            let (cfg, qkv, weight, state) = post_input_rounding_fixture(seq, dtype);
+            let (conv_out, portable_state) =
+                linear_attention_conv1d(&cfg, &qkv, &weight, Some(&state));
+            let split = split_linear_attention_qkv(&cfg, &conv_out);
+            let (portable_q, portable_k) =
+                normalize_linear_attention_qk(&cfg, &split.q, &split.k, 1e-6);
+            let (metal_q, metal_k, metal_v, metal_state, _) =
+                linear_attention_decode_post_input_metal(
+                    &cfg,
+                    &qkv,
+                    &weight,
+                    Some(&state),
+                    cfg.q_scale,
+                    cfg.k_scale,
+                    1e-6,
+                )
+                .expect("post-input rounding fixture must use the Metal path");
+            for (label, actual, expected) in [
+                ("q", metal_q, portable_q),
+                ("k", metal_k, portable_k),
+                ("v", metal_v, split.v),
+                ("conv_state", metal_state, portable_state),
+            ] {
+                assert_eq!(actual.shape(), expected.shape());
+                assert_eq!(actual.dtype(), dtype);
+                assert_eq!(expected.dtype(), dtype);
+                let actual = astype(&contiguous(&actual, None), MlxDtype::Float32, None);
+                let expected = astype(&contiguous(&expected, None), MlxDtype::Float32, None);
+                mlx_sys::eval(&[&actual, &expected]);
+                let unequal = actual
+                    .data_f32()
+                    .iter()
+                    .zip(expected.data_f32())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                if unequal != 0 {
+                    mismatches.push(format!(
+                        "seq={seq} target_verify={target_verify} {label}: {unequal} unequal elements"
+                    ));
+                }
+            }
+        }
+        assert!(mismatches.is_empty(), "{}", mismatches.join("; "));
+    }
+
+    #[test]
+    fn decode_post_input_metal_preserves_bf16_rounding_boundaries() {
+        assert_post_input_rounding_boundaries(MlxDtype::Bfloat16);
+    }
+
+    #[test]
+    fn decode_post_input_metal_preserves_fp16_rounding_boundaries() {
+        assert_post_input_rounding_boundaries(MlxDtype::Float16);
+    }
+
+    #[test]
+    fn fused_gated_delta_verify_bf16_128d_matches_portable_prework() {
+        for seq in [2, 4] {
+            let (cfg, qkv, weight, conv_state) =
+                post_input_rounding_fixture(seq, MlxDtype::Bfloat16);
+            let heads = cfg.num_value_heads;
+            let a_log = f32_array(&[-0.25, -0.125, 0.0], &[heads as i32]);
+            let dt_bias = f32_array(&[0.0625, 0.0, -0.03125], &[heads as i32]);
+            let ab_data: Vec<f32> = (0..seq * heads)
+                .map(|idx| ((idx % 9) as f32 - 4.0) / 16.0)
+                .collect();
+            let a_raw = astype(
+                &f32_array(&ab_data, &[1, seq as i32, heads as i32]),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let b_raw = astype(
+                &f32_array(
+                    &ab_data.iter().rev().copied().collect::<Vec<_>>(),
+                    &[1, seq as i32, heads as i32],
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let recurrent_state = f32_array(
+                &(0..heads * 128 * 128)
+                    .map(|idx| ((idx % 19) as f32 - 9.0) / 512.0)
+                    .collect::<Vec<_>>(),
+                &[1, heads as i32, 128, 128],
+            );
+            let (conv_out, expected_conv) =
+                linear_attention_conv1d(&cfg, &qkv, &weight, Some(&conv_state));
+            let split = split_linear_attention_qkv(&cfg, &conv_out);
+            let (q, k) = normalize_linear_attention_qk(&cfg, &split.q, &split.k, 1e-6);
+            let (expected_y, expected_state, expected_checkpoint) =
+                gated_delta_kernel_with_prefix_checkpoint(
+                    &q,
+                    &k,
+                    &split.v,
+                    &a_log,
+                    &a_raw,
+                    &dt_bias,
+                    &b_raw,
+                    &recurrent_state,
+                    1,
+                );
+            let first_qkv = slice(
+                &qkv,
+                &[0, 0, 0],
+                &[1, 1, cfg.conv_dim() as i32],
+                &[1, 1, 1],
+                None,
+            );
+            let (_, expected_prefix_conv) =
+                linear_attention_conv1d(&cfg, &first_qkv, &weight, Some(&conv_state));
+            let (y, state, checkpoint, conv, prefix_conv) = gated_delta_fused_verify_from_qkv(
+                &cfg,
+                &qkv,
+                &weight,
+                Some(&conv_state),
+                &a_log,
+                &a_raw,
+                &dt_bias,
+                &b_raw,
+                &recurrent_state,
+                cfg.q_scale,
+                cfg.k_scale,
+                1e-6,
+            )
+            .expect("BF16 D128 checkpoint verifier must execute");
+            let (no_checkpoint_y, no_checkpoint_state, no_checkpoint_conv) =
+                gated_delta_fused_verify_no_checkpoint_from_qkv(
+                    &cfg,
+                    &qkv,
+                    &weight,
+                    Some(&conv_state),
+                    &a_log,
+                    &a_raw,
+                    &dt_bias,
+                    &b_raw,
+                    &recurrent_state,
+                    cfg.q_scale,
+                    cfg.k_scale,
+                    1e-6,
+                )
+                .expect("BF16 D128 no-checkpoint verifier must execute");
+            for (label, actual, expected) in [
+                ("y", &y, &expected_y),
+                ("state", &state, &expected_state),
+                ("checkpoint", &checkpoint, &expected_checkpoint),
+                ("conv", &conv, &expected_conv),
+                ("prefix_conv", &prefix_conv, &expected_prefix_conv),
+                ("no_checkpoint_y", &no_checkpoint_y, &expected_y),
+                ("no_checkpoint_state", &no_checkpoint_state, &expected_state),
+                ("no_checkpoint_conv", &no_checkpoint_conv, &expected_conv),
+            ] {
+                assert_eq!(actual.shape(), expected.shape());
+                assert_eq!(actual.dtype(), expected.dtype());
+                let actual = astype(&contiguous(actual, None), MlxDtype::Float32, None);
+                let expected = astype(&contiguous(expected, None), MlxDtype::Float32, None);
+                mlx_sys::eval(&[&actual, &expected]);
+                assert_close(
+                    &format!("fused_bf16_portable_seq{seq}_{label}"),
+                    actual.data_f32(),
+                    expected.data_f32(),
+                    0.0,
+                );
+            }
         }
     }
 
