@@ -79,16 +79,22 @@ The build manifest records `source_commit`, `dirty: false`, `server_sha256`,
 `bench_sha256`, `wheel_sha256`, `cli_sha256`, `model_revision`, and `model_files` (relative
 filename to SHA-256). Hash executables after wheel installation. The gate
 checks the exact SKU, clean checkout, build and model hashes, doctor readiness,
-and both direct/MTP surface and sampled QA. It also requires the two raw
-16-input/64-output-token greedy probes to match exactly; a route-dependent
-greedy divergence on this probe fails the gate. This one probe is a
-regression gate, not general numerical or quality certification. Missing,
-skipped, partial, divergent, or fallback results fail. Results, including failures, are saved in
-`qualification.json` (schema 2, with hashes of both probe requests and responses);
-historical schema-1 passes do not satisfy this paired gate. Use a new output directory for every run. Runtime
+and both direct/MTP surface and sampled QA. The two raw 16-input/64-output-token
+greedy probes must be complete. Their cross-route token identity is diagnostic
+only: differences are disclosed without failing product-health qualification.
+Missing, skipped, partial, failed-QA or fallback results still fail. Results,
+including failures, are saved in `qualification.json` (schema 3, with hashes of
+both probe requests and responses). `paired_greedy` records `matched`,
+`first_divergence`, `divergence_count` and every differing position with both
+token IDs. It explicitly sets `release_blocking: false`; unavailable logit
+margins are `null`, not an inferred zero. Historical schema-1/2 evidence keeps
+its original meaning and is not reclassified. Use a new output directory for every run. Runtime
 `AX_`/`DYLD_` overrides are rejected for this product-default qualification.
 A passing small QA sample does not establish advanced benchmark accuracy or
-MTP Tier 2 certification.
+MTP certification. The report marks MTP-S, MTP-P and MTP-D as `not_assessed`:
+cross-route identity proves neither same-state verifier safety nor speed nor
+default-promotion readiness. Separate MTP-S evidence is still required for
+shipping MTP. See the [three-gate requirements](model-certifications/qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means).
 
 The live path expects a clean worktree, `ax-engine doctor` ready, surface QA
 for direct and MTP, and a short direct + MTP check against the last published
@@ -97,7 +103,8 @@ refresh. Full stack claims still use
 baseline. MTP suites are `flappy`, `long_code`, and `python_modules_long`.
 Silent direct-fallback on the MTP path is a fail.
 
-Campaign-only (does not block unrelated patches): MTP Tier 2 promotion, 8h/72h
+Campaign-only (does not block unrelated patches): MTP-P performance certification,
+MTP-D default promotion, 8h/72h
 endurance, long-context decode-at-depth, peer ranking, multi-model residency,
 multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
 Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next MXFP4 MTP is a

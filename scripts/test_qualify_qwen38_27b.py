@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,14 +52,29 @@ class LiveGateTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_cells(cells)
 
-    def test_paired_greedy_rejects_divergence_after_individual_qa_passes(self):
+    def test_paired_greedy_discloses_divergence_without_blocking_product_health(self):
         direct = dict(status="finished", prompt_tokens=list(range(1, 17)),
                       output_tokens=list(range(64)))
-        self.assertTrue(validate_paired_greedy(direct, direct)["matched"])
+        matched = validate_paired_greedy(direct, direct)
+        self.assertTrue(matched["matched"])
+        self.assertEqual(matched["differences"], [])
+        self.assertIsNone(matched["first_divergence"])
+        self.assertEqual(matched["divergence_count"], 0)
         changed = list(direct["output_tokens"])
         changed[25] = 999
-        with self.assertRaisesRegex(ValueError, "differs at output index 25"):
-            validate_paired_greedy(direct, {**direct, "output_tokens": changed})
+        changed[63] = 888
+        result = validate_paired_greedy(direct, {**direct, "output_tokens": changed})
+        self.assertFalse(result["matched"])
+        self.assertFalse(result["release_blocking"])
+        self.assertEqual(result["classification"], "diagnostic_only")
+        self.assertEqual(result["first_divergence"], 25)
+        self.assertEqual(result["divergence_count"], 2)
+        self.assertEqual(result["differences"], [
+            {"index": 25, "direct_token": 25, "mtp_token": 999},
+            {"index": 63, "direct_token": 63, "mtp_token": 888},
+        ])
+        self.assertIsNone(result["logit_margins"])
+        self.assertEqual(direct["output_tokens"], list(range(64)))
 
     def test_paired_greedy_rejects_empty_failed_partial_and_wrong_inputs(self):
         good = dict(status="finished", prompt_tokens=list(range(1, 17)),
@@ -84,10 +101,101 @@ class LiveGateTest(unittest.TestCase):
                 code = run_live(SimpleNamespace(output=out), mod.contract(), ROOT)
             self.assertEqual(code, 1)
             result = json.loads((out / "qualification.json").read_text())
-            self.assertEqual(result["schema"], 2)
+            self.assertEqual(result["schema"], 3)
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["cells"], [])
             self.assertIn("requires Mac mini", result["error"])
+
+    def test_live_report_preserves_diagnostic_split_but_rejects_invalid_or_fallback(self):
+        # Fixture orchestration only: no hardware, installed wheel or model qualification.
+        import run_qa_matrix as matrix
+
+        for failure in (None, "partial", "fallback", "quality"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                package = root / "ax_engine"
+                (package / "_bin").mkdir(parents=True)
+                (root / "bin").mkdir()
+                model = root / "model"
+                model.mkdir()
+                (model / "weights.safetensors").write_bytes(b"fixture weights")
+                (package / "__init__.py").write_bytes(b"# fixture package\n")
+                args = SimpleNamespace(
+                    output=root / "result", model_dir=model, port=31494,
+                    build_manifest=root / "manifest.json", wheel=root / "fixture.whl",
+                    server_bin=package / "_bin/ax-engine-server",
+                    bench_bin=package / "_bin/ax-engine-bench", cli=root / "bin/ax-engine",
+                )
+                for path in (args.server_bin, args.bench_bin, args.cli):
+                    path.write_bytes(b"fixture executable")
+                with zipfile.ZipFile(args.wheel, "w") as wheel:
+                    wheel.write(package / "__init__.py", "ax_engine/__init__.py")
+                digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+                model_files = {"weights.safetensors": digest(model / "weights.safetensors")}
+                manifest = dict(source_commit="fixture-commit", dirty=False,
+                                model_revision=mod.PRIMARY_REVISION, model_files=model_files)
+                for key, path in (("server", args.server_bin), ("bench", args.bench_bin),
+                                  ("wheel", args.wheel), ("cli", args.cli)):
+                    manifest[key + "_sha256"] = digest(path)
+                args.build_manifest.write_text(json.dumps(manifest))
+                contract = mod.contract()
+                contract["model_manifest_sha256"] = hashlib.sha256(
+                    json.dumps(model_files, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+                fake_package = ModuleType("ax_engine")
+                fake_package.__file__ = str(package / "__init__.py")
+
+                def doctor(command, **kwargs):
+                    kwargs["stdout"].write(json.dumps({"result": "ready", "ready_for": ["model_checks"]}))
+                    return SimpleNamespace(returncode=0)
+
+                def run_cell(cell, **kwargs):
+                    response = dict(status="finished", prompt_tokens=list(range(1, 17)),
+                                    output_tokens=list(range(64)))
+                    if cell.mode == "mtp":
+                        response["output_tokens"][25] = 999
+                        if failure == "partial":
+                            response["output_tokens"].pop()
+                    for prefix, value in (("server-route", response),
+                                          ("server-route-request", {"fixture": True})):
+                        (args.output / f"{prefix}-{cell.mode}-qwen3.8-27b.json").write_text(json.dumps(value))
+                    cell.status = "ok"
+                    cell.surface_passed = True
+                    cell.qa_items = cell.qa_hard_passed = 32
+                    if cell.mode == "mtp":
+                        cell.mtp_draft_tokens = 0 if failure == "fallback" else 3
+                        cell.mtp_verify_tokens = 4
+                        if failure == "quality":
+                            cell.qa_hard_passed = 31
+                    return cell
+
+                with patch.dict(sys.modules, {"ax_engine": fake_package,
+                                "ax_engine._ax_engine": ModuleType("ax_engine._ax_engine")}), \
+                     patch.dict("os.environ", {}, clear=True), \
+                     patch("qwen38_live_gate.sys.executable", str(root / "bin/python")), \
+                     patch("qwen38_live_gate.platform.system", return_value="Darwin"), \
+                     patch("qwen38_live_gate.platform.machine", return_value="arm64"), \
+                     patch("qwen38_live_gate.subprocess.check_output", side_effect=[
+                         "Apple M4 Pro", "Mac16,11", str(64 * 1024**3), "26.6.2", "fixture-commit", ""]), \
+                     patch("qwen38_live_gate.subprocess.run", side_effect=doctor), \
+                     patch.object(matrix, "run_cell", side_effect=run_cell):
+                    code = run_live(args, contract, ROOT)
+                result = json.loads((args.output / "qualification.json").read_text())
+                self.assertEqual(result["schema"], 3)
+                self.assertEqual(result["mtp_certification"],
+                                 {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")})
+                self.assertEqual(len(result["paired_greedy_artifacts"]), 4)
+                for name, expected in result["paired_greedy_artifacts"].items():
+                    self.assertEqual(digest(args.output / name), expected)
+                self.assertEqual(code, 1 if failure else 0)
+                self.assertEqual(result["status"], "failed" if failure else "passed")
+                if failure:
+                    self.assertIn({"partial": "incomplete", "fallback": "requested route",
+                                   "quality": "QA failed"}[failure], result["error"])
+                else:
+                    self.assertFalse(result["paired_greedy"]["matched"])
+                    self.assertEqual(result["paired_greedy"]["first_divergence"], 25)
+                    self.assertFalse(result["paired_greedy"]["release_blocking"])
 
     def test_run_requires_all_provenance_arguments(self):
         with self.assertRaises(SystemExit):
@@ -108,6 +216,14 @@ class QualifyQwen38Test(unittest.TestCase):
         )
         self.assertIn("27B weights", payload["ci"])
         self.assertEqual(payload["host_class"], "Mac mini M4 Pro, 64 GB")
+
+    def test_contract_separates_product_health_from_mtp_certification(self):
+        payload = mod.contract()
+        self.assertIn("complete paired 64-token direct/MTP greedy probe artifacts", payload["release_blocking"])
+        self.assertFalse(any("identical" in gate for gate in payload["release_blocking"]))
+        self.assertIn("not a ship gate", payload["diagnostic_only"][0])
+        self.assertEqual(set(payload["mtp_gates"]), {"MTP-S", "MTP-P", "MTP-D"})
+        self.assertIn("Separate shipping safety gate", payload["mtp_gates"]["MTP-S"])
 
     def test_dry_run_cli_json(self) -> None:
         proc = subprocess.run(

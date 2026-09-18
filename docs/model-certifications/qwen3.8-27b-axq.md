@@ -32,6 +32,10 @@ Two consequences for reading this record:
 - The paired direct/MTP greedy identity probe is a **debug probe**, not a ship
   gate. Its results are published below as MTP-P disclosure. It does not block
   Candidate status or opt-in availability.
+  The live qualification harness applies this policy to its 64-token probe:
+  schema 3 records token differences while still rejecting incomplete evidence,
+  failed QA or unproven routes. Its product-health pass does not assess MTP-S,
+  MTP-P or MTP-D; each requires separate evidence.
 - MTP routing stays fail-closed. Until MTP-D is opened and accepted, the product
   default is direct decode, so enabling MTP is an explicit opt-in and existing
   greedy tokens do not change silently.

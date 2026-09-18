@@ -36,11 +36,30 @@ def contract() -> dict[str, Any]:
             "ax-engine doctor ready on the pinned snapshot",
             "QA surface: direct + MTP for qwen3.8-27b",
             "no silent MTP direct-fallback",
-            "paired 64-token direct/MTP greedy probe is identical",
+            "complete paired 64-token direct/MTP greedy probe artifacts",
             "clean worktree + matching engine commit",
         ],
+        "diagnostic_only": [
+            "paired direct/MTP token identity and divergence positions (not a ship gate)",
+        ],
+        "mtp_gates": {
+            "MTP-S": (
+                "Separate shipping safety gate: zero drafts accepted against the same-state "
+                "verifier decision; not assessed by cross-route parity"
+            ),
+            "MTP-P": (
+                "Scoped acceleration claims: weighted >= 1.20x and prompt-median >= 1.10x "
+                "on two authorizing workloads, negative control, divergence disclosures "
+                "and full evidence; not assessed here"
+            ),
+            "MTP-D": (
+                "Separate default-promotion decision and release tag after MTP-S/P, "
+                "default-path parity with shared tie-break, quality, endurance and "
+                "long-context validation; not assessed here"
+            ),
+        },
         "campaign_only": [
-            "MTP Tier 2 promotion",
+            "MTP-P performance certification and MTP-D default promotion",
             "8h/72h endurance",
             "long-context decode-at-depth",
             "peer ranking",
@@ -106,6 +125,12 @@ def _print_contract(as_json: bool) -> None:
     print("release-blocking:")
     for item in payload["release_blocking"]:
         print(f"  - {item}")
+    print("diagnostic-only:")
+    for item in payload["diagnostic_only"]:
+        print(f"  - {item}")
+    print("MTP gates (separate evidence):")
+    for gate, requirement in payload["mtp_gates"].items():
+        print(f"  {gate}: {requirement}")
     print("campaign-only:")
     for item in payload["campaign_only"]:
         print(f"  - {item}")

@@ -43,7 +43,7 @@ def validate_cells(cells: list[dict]) -> None:
 
 
 def validate_paired_greedy(direct: dict, mtp: dict) -> dict:
-    """Reject a route split even when the separate product-health suites pass."""
+    """Require complete probes; disclose cross-route differences without promotion."""
     for mode, response in (("direct", direct), ("mtp", mtp)):
         tokens = response.get("output_tokens")
         if (response.get("status") != "finished"
@@ -51,11 +51,18 @@ def validate_paired_greedy(direct: dict, mtp: dict) -> dict:
                 or not isinstance(tokens, list) or len(tokens) != 64
                 or any(type(token) is not int or token < 0 for token in tokens)):
             raise ValueError(f"{mode} greedy probe is missing, failed, or incomplete")
-    for index, (left, right) in enumerate(zip(direct["output_tokens"], mtp["output_tokens"])):
-        if left != right:
-            raise ValueError(f"direct/MTP greedy probe differs at output index {index}")
-    return {"matched": True, "prompt_tokens": 16, "output_tokens": 64,
-            "scope": "One pinned raw-token probe; not broad accuracy or MTP Tier 2"}
+    differences = [
+        {"index": index, "direct_token": left, "mtp_token": right}
+        for index, (left, right) in enumerate(zip(direct["output_tokens"], mtp["output_tokens"]))
+        if left != right
+    ]
+    return {"matched": not differences, "prompt_tokens": 16, "output_tokens": 64,
+            "classification": "diagnostic_only", "release_blocking": False,
+            "first_divergence": differences[0]["index"] if differences else None,
+            "divergence_count": len(differences), "differences": differences,
+            # The HTTP token probe does not capture either route's full logits.
+            "logit_margins": None,
+            "scope": "One paired raw-token diagnostic; not MTP-S, MTP-P or MTP-D certification"}
 
 
 def run_live(args, contract: dict, repo: Path) -> int:
@@ -63,7 +70,9 @@ def run_live(args, contract: dict, repo: Path) -> int:
 
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    result = {'schema': 2, 'status': 'failed', 'contract': contract, 'cells': []}
+    result = {'schema': 3, 'status': 'failed', 'contract': contract, 'cells': [],
+              'scope': 'Primary SKU product-health qualification; not MTP certification',
+              'mtp_certification': {gate: 'not_assessed' for gate in ('MTP-S', 'MTP-P', 'MTP-D')}}
     try:
         def capture(command: list[str]) -> str:
             return subprocess.check_output(command, text=True, cwd=repo, timeout=30).strip()
