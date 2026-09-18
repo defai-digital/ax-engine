@@ -2,7 +2,7 @@ use mlx_sys::{
     MlxArray, MlxDtype, MlxQuantizationMode, MlxVectorArray, async_eval, concatenate, contiguous,
     eval, qwen_linear_attention_inputs_packed, qwen_linear_attention_inputs_packed_compiled,
     qwen_linear_attention_post_input, qwen_linear_attention_post_input_compiled, reshape, rms_norm,
-    rms_norm_quantized_matmul, rms_norm_silu_mul_normed, slice, slice_last_dim, zeros,
+    rms_norm_quantized_matmul, slice, slice_last_dim, zeros,
 };
 use std::time::Instant;
 
@@ -203,7 +203,7 @@ pub(crate) fn linear_attention_forward_verify_functional(
     )?;
     let value_dim = linear_cfg.value_dim() as i32;
     let output = if let Some(fused) =
-        try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim)
+        try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim, layer_idx)
     {
         fused
     } else {
@@ -561,7 +561,7 @@ fn linear_attention_forward_inner(
         return out;
     }
     let out = if let Some(fused) =
-        try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim)
+        try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim, layer_idx)
     {
         fused
     } else {
@@ -769,6 +769,7 @@ fn exact_verify_s1_metal_gate_o_proj(
     Some(concatenate(&refs, 1, None))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_qwen_la_out_proj_silu_mul_qmm(
     cfg: &ModelConfig,
     hidden: &MlxArray,
@@ -776,6 +777,7 @@ fn try_qwen_la_out_proj_silu_mul_qmm(
     linear_w: &LinearAttentionWeights,
     seq: i32,
     value_dim: i32,
+    layer_idx: usize,
 ) -> Option<MlxArray> {
     if !fastpath::should_qwen_la_out_proj_silu_mul_qmm(&cfg.model_family, seq) {
         return None;
@@ -788,9 +790,12 @@ fn try_qwen_la_out_proj_silu_mul_qmm(
         cfg.rms_norm_eps,
         seq,
         value_dim,
+        !fastpath::qwen_linear_mtp_exact_enabled()
+            && linear_attention_full_gate_metal_allowed(cfg, linear_w, layer_idx),
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn qwen_la_gated_out_projection(
     hidden: &MlxArray,
     gate: &MlxArray,
@@ -799,14 +804,15 @@ fn qwen_la_gated_out_projection(
     eps: f32,
     seq: i32,
     value_dim: i32,
+    allow_full_gate_metal: bool,
 ) -> Option<MlxArray> {
     if !out_proj.is_fused_qmm_quantized() {
         return None;
     }
-    // Gated RMSNorm uses float32 SiLU/multiply, then casts before projection.
-    // FFN SwiGLU has a different precision contract; its low-precision
-    // silu_mul composition must not be substituted here.
-    let gated = rms_norm_silu_mul_normed(hidden, gate, norm, eps, None);
+    // Share both dtype boundaries and layer-specific Metal admission with
+    // ordinary target execution; a portable-only gate still changes rounding.
+    let gated =
+        rms_norm_gated_with_full_gate_policy(hidden, gate, norm, eps, allow_full_gate_metal);
     Some(qw(&reshape(&gated, &[1, seq, value_dim], None), out_proj))
 }
 
@@ -2129,6 +2135,7 @@ mod tests {
     #[test]
     fn qwen_la_projection_preserves_float32_gate_before_output_cast() {
         use mlx_sys::{astype, quantize, quantized_matmul, silu_mul};
+        let _exact = fastpath::scoped_qwen_linear_mtp_exact(true);
         for dtype in [MlxDtype::Bfloat16, MlxDtype::Float16] {
             for seq in [2, 4, 8] {
                 let array = |values: Vec<f32>, shape: &[i32]| {
@@ -2204,9 +2211,10 @@ mod tests {
                     Some(4),
                     None,
                 );
-                let actual =
-                    qwen_la_gated_out_projection(&hidden, &gate, &norm, &out_proj, 1e-6, seq, 64)
-                        .expect("affine projection must engage");
+                let actual = qwen_la_gated_out_projection(
+                    &hidden, &gate, &norm, &out_proj, 1e-6, seq, 64, false,
+                )
+                .expect("affine projection must engage");
                 let a = astype(&actual, MlxDtype::Float32, None);
                 let b = astype(&expected, MlxDtype::Float32, None);
                 eval(&[&a, &b]);
@@ -2220,6 +2228,25 @@ mod tests {
                     b.data_f32(),
                     "dtype={dtype:?} seq={seq} max_abs={max_abs}"
                 );
+                let _relaxed = fastpath::scoped_qwen_linear_mtp_exact(false);
+                for allow_full in [false, true] {
+                    let gated = rms_norm_gated_with_full_gate_policy(
+                        &hidden, &gate, &norm, 1e-6, allow_full,
+                    );
+                    let expected = qw(&reshape(&gated, &[1, seq, 64], None), &out_proj);
+                    let actual = qwen_la_gated_out_projection(
+                        &hidden, &gate, &norm, &out_proj, 1e-6, seq, 64, allow_full,
+                    )
+                    .expect("relaxed projection must engage");
+                    let a = astype(&actual, MlxDtype::Float32, None);
+                    let b = astype(&expected, MlxDtype::Float32, None);
+                    eval(&[&a, &b]);
+                    assert_eq!(
+                        a.data_f32(),
+                        b.data_f32(),
+                        "relaxed dtype={dtype:?} seq={seq} full={allow_full}"
+                    );
+                }
             }
         }
     }
