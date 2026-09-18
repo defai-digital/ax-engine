@@ -68,6 +68,13 @@ the same three-token control, with all three output tokens equal and all 47
 pack hashes unchanged. This bounded M2 result does not establish longer
 trajectory identity or qualify the M5/NAS target; those gates remain open.
 
+[The longer QSA diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-qsa-full/README.md)
+retains a failed identity result on that candidate. Cause/effect matches 89
+token positions including EOS, but stored state differs after prefix 2.
+Roses first differs in stored state after prefix 4 and in output at position
+13. Both prefill comparisons are exact and all 47 pack pre/post hashes match.
+The passing three-token control therefore does not close whole-model identity.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.
