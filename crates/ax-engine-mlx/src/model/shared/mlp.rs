@@ -8560,6 +8560,96 @@ mod tests {
     }
 
     #[test]
+    fn qwen_compiled_split_verify_ffn_bf16_affine_matches_imperative() {
+        let seq = 4i32;
+        let hidden = 64i32;
+        let intermediate = 32i32;
+        let x_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i % 19) as f32 - 9.0) * 0.13)
+            .collect();
+        let attn_data: Vec<f32> = (0..(seq * hidden) as usize)
+            .map(|i| ((i % 17) as f32 - 8.0) * -0.071)
+            .collect();
+        let norm_data: Vec<f32> = (0..hidden as usize)
+            .map(|i| 0.75 + (i as f32) * 0.004)
+            .collect();
+        let gate_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i % 23) as f32 - 11.0) * 0.03)
+            .collect();
+        let up_data: Vec<f32> = (0..(intermediate * hidden) as usize)
+            .map(|i| ((i % 29) as f32 - 14.0) * -0.023)
+            .collect();
+        let down_data: Vec<f32> = (0..(hidden * intermediate) as usize)
+            .map(|i| ((i % 31) as f32 - 15.0) * 0.017)
+            .collect();
+        let hidden_x = astype(
+            &array_f32(&x_data, &[1, seq, hidden]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let attn = astype(
+            &array_f32(&attn_data, &[1, seq, hidden]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let ffn_norm = astype(&array_f32(&norm_data, &[hidden]), MlxDtype::Bfloat16, None);
+        let qmx = |w: &MlxArray| {
+            let w = astype(w, MlxDtype::Bfloat16, None);
+            let q = quantize(
+                &w,
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Affine,
+                None,
+                None,
+            );
+            QuantizedWeight {
+                weight: q[0].clone(),
+                scales: Some(q[1].clone()),
+                biases: Some(q[2].clone()),
+                group_size: 32,
+                bits: 4,
+                mode: "affine".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
+            }
+        };
+        let mut cfg = v4_test_config(1, 1);
+        cfg.model_family = "qwen3_5".to_string();
+        cfg.compile_cache_identity = 0x4246_3136_4146_4634;
+        let dummy = array_f32(&[0.0], &[1]);
+        let mut w = v4_layer_weights(dummy, &hidden_x);
+        w.router_proj = None;
+        w.ffn_norm = ffn_norm.clone();
+        w.gate_proj = Some(qmx(&array_f32(&gate_data, &[intermediate, hidden])));
+        w.up_proj = Some(qmx(&array_f32(&up_data, &[intermediate, hidden])));
+        w.down_proj = Some(qmx(&array_f32(&down_data, &[hidden, intermediate])));
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _verify = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
+        let compiled = qwen_compiled_split_verify_ffn_plus_residual(&cfg, &w, &hidden_x, &attn, 0)
+            .expect("relaxed BF16 S=4 residual+FFN compile must engage");
+        let (residual, normed) = add_rms_norm_pair(&hidden_x, &attn, &ffn_norm, 1e-6, None);
+        let g = qw(&normed, w.gate_proj.as_ref().unwrap());
+        let u = qw(&normed, w.up_proj.as_ref().unwrap());
+        let act = silu_mul(&g, &u, None);
+        let ffn = qw(&act, w.down_proj.as_ref().unwrap());
+        let portable = add(&residual, &ffn, None);
+        let compiled = astype(&compiled, MlxDtype::Float32, None);
+        let portable = astype(&portable, MlxDtype::Float32, None);
+        eval(&[&compiled, &portable]);
+        assert_eq!(compiled.shape(), portable.shape());
+        let a = compiled.data_f32();
+        let b = portable.data_f32();
+        assert_eq!(
+            a, b,
+            "BF16 compiled FFN must preserve imperative tensor rounding"
+        );
+    }
+
+    #[test]
     fn qwen_compiled_split_verify_o_proj_ffn_plus_residual_s2_matches_imperative() {
         let seq = 2i32;
         let hidden = 64i32;
