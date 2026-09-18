@@ -233,6 +233,15 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("--mlx-version", pypi)
         self.assertIn("shared-key: release-macos-arm64", pypi)
 
+    def test_wheel_builds_install_pinned_rust_components_before_validation(self) -> None:
+        # rustup which can provision only the minimal compiler on a fresh
+        # runner; the pinned build wrapper also requires Clippy and rustfmt.
+        for name in ("release-candidate.yml", "pypi.yml"):
+            workflow = (WORKFLOWS_DIR / name).read_text()
+            install = "rustup toolchain install --profile minimal --component clippy,rustfmt"
+            self.assertIn(install, workflow, name)
+            self.assertLess(workflow.index(install), workflow.index("bash scripts/build-pypi-wheel.sh"))
+
     def test_release_smoke_venvs_are_isolated_from_rust_cache(self) -> None:
         workflows = {path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")}
 
