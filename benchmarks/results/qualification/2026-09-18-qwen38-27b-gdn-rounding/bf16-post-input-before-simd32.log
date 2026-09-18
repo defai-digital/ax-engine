@@ -1,0 +1,19 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <local-build-path> (PipWheel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_mlx-980f9d8d1c5565f9)
+
+running 1 test
+test linear_attention_ops::tests::decode_post_input_metal_preserves_bf16_rounding_boundaries ...
+thread 'linear_attention_ops::tests::decode_post_input_metal_preserves_bf16_rounding_boundaries' (13560119) panicked at crates/ax-engine-mlx/src/linear_attention_ops.rs:4919:9:
+seq=1 target_verify=false q: 52 unequal elements; seq=1 target_verify=false k: 79 unequal elements; seq=1 target_verify=false v: 169 unequal elements; seq=4 target_verify=false q: 261 unequal elements; seq=4 target_verify=false k: 309 unequal elements; seq=4 target_verify=false v: 701 unequal elements; seq=1 target_verify=true q: 52 unequal elements; seq=1 target_verify=true k: 79 unequal elements; seq=1 target_verify=true v: 169 unequal elements; seq=4 target_verify=true q: 261 unequal elements; seq=4 target_verify=true k: 309 unequal elements; seq=4 target_verify=true v: 701 unequal elements
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    linear_attention_ops::tests::decode_post_input_metal_preserves_bf16_rounding_boundaries
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1583 filtered out; finished in 1.56s
+
+error: test failed, to rerun pass `-p ax-engine-mlx --lib`

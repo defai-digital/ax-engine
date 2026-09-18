@@ -1,0 +1,17 @@
+{
+  "initial_attempt": {
+    "status": "failed",
+    "source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+    "error": "ValueError: cli does not match build manifest",
+    "raw_result_sha256": "97730f541ea14660b41fb304855cdab0d0c5c09846c8cdc1a6c4fff7af5b4bd2"
+  },
+  "cause": "The build receipt mislabeled the bundled native CLI hash as the installed Python console-script launcher hash. The qualifier rejected the mismatch before running QA. This was a provenance preparation error, not a native runtime import failure.",
+  "correction": "Verify the exact pip-generated launcher against the wheel console_scripts entry point, record native_cli_sha256 separately, and use the installed launcher cli_sha256 for a fresh full qualification run. No wheel or qualifier source changed.",
+  "final_attempt": {
+    "status": "passed",
+    "source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+    "wheel_sha256": "8177d8a18b986dfe6d0997db7802feb8f908397e067be3e71f731cdea99d9cbb",
+    "cli_sha256": "88fb615dc23afe49ae1e5d9e3dc9a2e3686d9cdb8a4adc369fdb43822fdb5f39",
+    "result": "qualification.json"
+  }
+}

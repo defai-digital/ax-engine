@@ -1,0 +1,205 @@
+diff --git a/crates/ax-engine-mlx/src/fastpath.rs b/crates/ax-engine-mlx/src/fastpath.rs
+index f48b4543..906dcd8b 100644
+--- a/crates/ax-engine-mlx/src/fastpath.rs
++++ b/crates/ax-engine-mlx/src/fastpath.rs
+@@ -721,7 +721,8 @@ pub fn mtp_packed_verify_ffn_enabled() -> bool {
+ 
+ /// Whether fixed-shape Qwen verifier layer closures may engage.
+ pub fn qwen_linear_mtp_layer_compile_enabled() -> bool {
+-    !qwen_linear_mtp_whole_verify_trace_enabled()
++    !crate::model::DIAGNOSTIC_MODE.with(|m| m.get() == 3)
++        && !qwen_linear_mtp_whole_verify_trace_enabled()
+         && (qwen_linear_mtp_exact_enabled()
+             || (qwen_linear_mtp_target_verify_enabled() && mtp_target_layer_compile_enabled()))
+ }
+diff --git a/crates/ax-engine-mlx/src/model/mod.rs b/crates/ax-engine-mlx/src/model/mod.rs
+index e9c4f2c6..b676c61c 100644
+--- a/crates/ax-engine-mlx/src/model/mod.rs
++++ b/crates/ax-engine-mlx/src/model/mod.rs
+@@ -211,8 +211,69 @@ pub(crate) fn reject_unimplemented_qwen4_exp(cfg: &ModelConfig) {
+ /// graphs for every layer of the same attention type.
+ ///
+ /// Returns updated hidden states.
++thread_local! {
++    pub(crate) static DIAGNOSTIC_MODE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
++}
++pub(crate) fn diagnostic_difference(label: &str, layer: usize, a: &MlxArray, b: &MlxArray) {
++    assert_eq!(a.shape(), b.shape());
++    assert_eq!(a.dtype(), b.dtype());
++    eprintln!("stage_dtype layer={layer} stage={label} dtype={:?}",a.dtype());
++    let a = mlx_sys::astype(a, mlx_sys::MlxDtype::Float32, None);
++    let b = mlx_sys::astype(b, mlx_sys::MlxDtype::Float32, None);
++    mlx_sys::eval(&[&a, &b]);
++    let mut maximum = 0.0_f32;
++    let mut count = 0;
++    for (x,y) in a.data_f32().iter().zip(b.data_f32()) {
++        maximum = maximum.max((x-y).abs());
++        count += usize::from(x != y);
++    }
++    eprintln!("stage_compare layer={layer} stage={label} max_abs={maximum:.9e} unequal={count} shape={:?}", a.shape());
++}
+ #[allow(clippy::too_many_arguments)]
+-pub fn layer_forward(
++pub fn layer_forward(cfg: &ModelConfig, w: &LayerWeights, hidden: &MlxArray,
++    cache: &mut MlxKVCache, layer_idx: usize, token_offset: usize,
++    per_layer_input: Option<&MlxArray>, shared_mask: Option<&Option<MlxArray>>) -> MlxArray {
++    let snapshot = DIAGNOSTIC_MODE.with(|m| m.get() == 1).then(|| {
++        let mut base = cache.clone();
++        if let Some(after) = cache.linear_prefix_capture_after() { base.begin_linear_prefix_capture(after); }
++        base
++    });
++    let out = diagnostic_inner_layer_forward(cfg,w,hidden,cache,layer_idx,token_offset,per_layer_input,shared_mask);
++    if let Some(mut base) = snapshot {
++        if cfg.is_linear_attention_layer(layer_idx) {
++            let (conv,recurrent) = base.linear_state(layer_idx);
++            if let (Some(conv),Some(recurrent)) = (conv,recurrent) {
++                let _trace = crate::fastpath::scoped_qwen_linear_mtp_whole_verify_trace(true);
++                if let Some(eager) = families::qwen3_linear::layer_forward_verify_functional(cfg,w,hidden,layer_idx,conv,recurrent) {
++                    diagnostic_difference("compiled_vs_functional_hidden",layer_idx,&out,&eager.hidden);
++                    if let Some((q,a,t)) = cache.linear_mtp_tape_stash(layer_idx) {
++                        diagnostic_difference("compiled_vs_functional_qkv",layer_idx,&q,&eager.state.qkv);
++                        diagnostic_difference("compiled_vs_functional_a",layer_idx,&a,&eager.state.a);
++                        diagnostic_difference("compiled_vs_functional_tape",layer_idx,&t,&eager.state.tape);
++                    }
++                    if let Some(v) = cache.linear_state(layer_idx).1 { diagnostic_difference("compiled_vs_functional_recurrent",layer_idx,v,&eager.state.recurrent_state); }
++                }
++            }
++        }
++        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
++        let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
++        let _session = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
++        let _qmm = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(false);
++        let other = diagnostic_inner_layer_forward(cfg,w,hidden,&mut base,layer_idx,token_offset,per_layer_input,shared_mask);
++        diagnostic_difference("full_layer_same_input",layer_idx,&out,&other);
++        if let (Some((aq,aa,_)),Some((bq,ba,_))) = (cache.linear_mtp_tape_stash(layer_idx),base.linear_mtp_projection_stash(layer_idx)) {
++            diagnostic_difference("qkv",layer_idx,&aq,&bq);
++            diagnostic_difference("a",layer_idx,&aa,&ba);
++        }
++        let (ac, ar) = cache.linear_state(layer_idx);
++        let (bc, br) = base.linear_state(layer_idx);
++        if let (Some(a),Some(b)) = (ac,bc) { diagnostic_difference("conv_state",layer_idx,a,b); }
++        if let (Some(a),Some(b)) = (ar,br) { diagnostic_difference("recurrent_state",layer_idx,a,b); }
++    }
++    out
++}
++
++fn diagnostic_inner_layer_forward(
+     cfg: &ModelConfig,
+     w: &LayerWeights,
+     hidden: &MlxArray, // [1, seq, hidden]
+diff --git a/crates/ax-engine-mlx/src/model/shared/linear_attention.rs b/crates/ax-engine-mlx/src/model/shared/linear_attention.rs
+index d9ada191..559c4efb 100644
+--- a/crates/ax-engine-mlx/src/model/shared/linear_attention.rs
++++ b/crates/ax-engine-mlx/src/model/shared/linear_attention.rs
+@@ -201,6 +201,26 @@ pub(crate) fn linear_attention_forward_verify_functional(
+         &b,
+         recurrent_state,
+     )?;
++    if layer_idx == 0 && crate::model::DIAGNOSTIC_MODE.with(|m| m.get() == 1) {
++        let (pq,pk,pv,_,_) = {
++            let _target = fastpath::scoped_qwen_linear_mtp_target_verify(false);
++            linear_attention_post_input(cfg,linear_cfg,linear_w,&qkv,Some(conv_state),false)
++        };
++        crate::model::diagnostic_difference("post_input_q",layer_idx,&q,&pq);
++        crate::model::diagnostic_difference("post_input_k",layer_idx,&k,&pk);
++        crate::model::diagnostic_difference("post_input_v",layer_idx,&v,&pv);
++        let (plain_y,plain_state) = gated_delta_kernel(&q,&k,&v,&linear_w.a_log,&a,&linear_w.dt_bias,&b,recurrent_state);
++        crate::model::diagnostic_difference("tape_vs_standard_y",layer_idx,&out,&plain_y);
++        crate::model::diagnostic_difference("tape_vs_standard_state",layer_idx,&new_recurrent_state,&plain_state);
++        let (_,_,pa,pb) = {
++            let _target = fastpath::scoped_qwen_linear_mtp_target_verify(false);
++            let _session = fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
++            let _qmm = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(false);
++            linear_attention_inputs(cfg,linear_cfg,linear_w,x,seq,false)
++        };
++        crate::model::diagnostic_difference("projection_a",layer_idx,&a,&pa);
++        crate::model::diagnostic_difference("projection_b",layer_idx,&b,&pb);
++    }
+     let value_dim = linear_cfg.value_dim() as i32;
+     let output = if let Some(fused) =
+         try_qwen_la_out_proj_silu_mul_qmm(cfg, &out, &z, linear_w, seq, value_dim, layer_idx)
+@@ -1087,6 +1107,8 @@ fn linear_attention_post_input(
+     cached_conv_state: Option<&MlxArray>,
+     profile_enabled: bool,
+ ) -> (MlxArray, MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
++    let _diagnostic_target = crate::model::DIAGNOSTIC_MODE.with(|m| m.get() == 5)
++        .then(|| fastpath::scoped_qwen_linear_mtp_target_verify(false));
+     let qwen_default_enabled = qwen_linear_attention_direct_cpp_default_family(cfg)
+         && fastpath::qwen_direct_cpp_linear_attention_post_input_enabled();
+     let seq = qkv.shape().get(1).copied().unwrap_or_default();
+diff --git a/crates/ax-engine-mlx/src/model/whole_verify.rs b/crates/ax-engine-mlx/src/model/whole_verify.rs
+index 9c72ef8a..8de1045c 100644
+--- a/crates/ax-engine-mlx/src/model/whole_verify.rs
++++ b/crates/ax-engine-mlx/src/model/whole_verify.rs
+@@ -41,7 +41,8 @@ pub(crate) fn try_compiled_qwen_linear_verify_layer(
+     layer_idx: usize,
+ ) -> Option<MlxArray> {
+     let seq = hidden.shape().get(1).copied()?;
+-    if !crate::fastpath::mtp_linear_layer_compile_enabled()
++    if crate::model::DIAGNOSTIC_MODE.with(|m| matches!(m.get(), 2 | 3))
++        || !crate::fastpath::mtp_linear_layer_compile_enabled()
+         || !crate::fastpath::qwen_linear_mtp_target_verify_enabled()
+         || crate::fastpath::qwen_linear_mtp_whole_verify_trace_enabled()
+         || !cfg.model_family.eq_ignore_ascii_case("qwen3_5")
+@@ -60,6 +61,13 @@ pub(crate) fn try_compiled_qwen_linear_verify_layer(
+         conv_state?.clone(),
+         recurrent_state?.clone(),
+     ];
++    if crate::model::DIAGNOSTIC_MODE.with(|m| matches!(m.get(), 4 | 5)) {
++        let _trace = crate::fastpath::scoped_qwen_linear_mtp_whole_verify_trace(true);
++        let result = families::qwen3_linear::layer_forward_verify_functional(cfg,weights,hidden,layer_idx,&inputs[1],&inputs[2])?;
++        cache.set_linear_state(layer_idx,result.state.conv_state,result.state.recurrent_state);
++        cache.set_linear_mtp_tape_stash(layer_idx,result.state.qkv,result.state.a,result.state.tape);
++        return Some(result.hidden);
++    }
+     let refs: Vec<&MlxArray> = inputs.iter().collect();
+     let key = (
+         cfg.compile_cache_identity,
+@@ -122,6 +130,7 @@ pub(crate) fn try_compiled_qwen_linear_verify_layer(
+     drop(guard);
+     let [hidden_out, conv_out, recurrent_out, qkv, a, tape]: [MlxArray; 6] =
+         outputs.try_into().ok()?;
++    if crate::model::DIAGNOSTIC_MODE.with(|m| m.get() == 1) { eprintln!("stage_route layer={layer_idx} route=compiled_whole_linear"); }
+     cache.set_linear_state(layer_idx, conv_out, recurrent_out);
+     cache.set_linear_mtp_tape_stash(layer_idx, qkv, a, tape);
+     Some(hidden_out)
+diff --git a/crates/ax-engine-mlx/src/runner/mod.rs b/crates/ax-engine-mlx/src/runner/mod.rs
+index 15825c82..8c044101 100644
+--- a/crates/ax-engine-mlx/src/runner/mod.rs
++++ b/crates/ax-engine-mlx/src/runner/mod.rs
+@@ -9823,6 +9823,7 @@ impl MlxRunner {
+                         replay_kill_switch || self.qwen_linear_mtp_force_replay,
+                     );
+                 let clone_started = Instant::now();
++                let diagnostic_snapshot = (token_offset <= 454 && 454 < token_offset + verify_len).then(|| state.cache.clone());
+                 let mut verify_cache = state.cache.clone();
+                 if !exact_linear_replay && !pending.is_empty() {
+                     verify_cache.begin_linear_prefix_capture(1);
+@@ -9997,6 +9998,27 @@ impl MlxRunner {
+                     .as_ref()
+                     .map(|arr| arr.data_u32().to_vec())
+                     .unwrap_or_default();
++                if let Some(snapshot) = diagnostic_snapshot {
++                    let row = 454 - token_offset;
++                    let inputs: Vec<u32> = std::iter::once(verify_input[0]).chain(pending.iter().copied()).collect();
++                    for mode in 0..=5 {
++                        crate::model::DIAGNOSTIC_MODE.with(|m| m.set(mode));
++                        let mut cloned = snapshot.clone();
++                        cloned.begin_linear_prefix_capture(1);
++                        let logits = if mode == 0 { logits_all.clone() } else {
++                            crate::model::forward_all_positions(&self.cfg,&self.weights,&inputs,&mut cloned,token_offset)
++                        };
++                        crate::model::diagnostic_difference(&format!("mode_{mode}_logits"),999,&logits_all,&logits);
++                        let floats = astype(&logits, mlx_sys::MlxDtype::Float32, None);
++                        let mut refs = cloned.collect_eval_refs(); refs.push(&floats); eval(&refs);
++                        let data = floats.data_f32();
++                        let scores = &data[row*self.cfg.vocab_size..(row+1)*self.cfg.vocab_size];
++                        let mut indices: Vec<usize> = (0..scores.len()).collect();
++                        indices.sort_by(|&a,&b| scores[b].total_cmp(&scores[a]));
++                        eprintln!("stage_ablation mode={mode} offset={token_offset} row={row} top2={:?}",indices.iter().take(2).map(|&i| (i,scores[i])).collect::<Vec<_>>());
++                    }
++                    crate::model::DIAGNOSTIC_MODE.with(|m| m.set(0));
++                }
+                 let target_softmax_extract_started = Instant::now();
+                 let target_probs_cpu = lazy_target_probs
+                     .as_ref()

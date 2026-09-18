@@ -86,13 +86,20 @@ reference prefixes. For compsec-079 the reference has a separate 512-token
 budget; its comparison with the 192-token AX controls is explicitly prefix-only.
 These selected cases do not establish overall fidelity or accuracy.
 
-The reference's original 512-token cases return Answer 19 for compsec-079
-(gold 18-19) and Answer 3 for compsec-086 (gold 3-6): both still fail unchanged
-strict full-span grading. The prompt allows a single best line while the
-scorer requires a complete span, but wording is not a sufficient explanation:
-a separate [two-case wording diagnostic](span-wording-diagnostic.json) explicitly
-asks for the complete contiguous span and still fails both. Those altered
-prompts do not replace original grades or acceptance results.
+The reference's original cases with a 512-token output budget return
+Answer 19 for compsec-079 (gold 18-19) and Answer 3 for compsec-086
+(gold 3,13-15). Both fail unchanged strict line-set grading. The original
+prompts allow a single best line, while the scorer requires the complete
+gold line set.
+
+A separate [two-case wording diagnostic](span-wording-diagnostic.json)
+returns Answer 0 for compsec-079 and Answer 3 for compsec-086; both retain
+their recorded failing grades. However, the altered prompt requests a
+contiguous span including all intervening lines, while compsec-086 retains
+the non-contiguous gold set 3,13-15. That case is therefore not a clean
+control for wording effects, and these results do not resolve the
+prompt/scorer mismatch. The diagnostic does not replace original grades
+or acceptance results.
 
 ## Validation and reproduction
 

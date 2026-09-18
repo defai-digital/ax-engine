@@ -1,0 +1,10 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <local-build-path> (PipWheel)
+   Compiling ax-engine-mlx v7.4.0 (<local-build-path>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.39s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_mlx-980f9d8d1c5565f9)
+
+running 2 tests
+test linear_attention_ops::tests::decode_post_input_metal_preserves_bf16_rounding_boundaries ... ok
+test linear_attention_ops::tests::decode_post_input_metal_preserves_fp16_rounding_boundaries ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1584 filtered out; finished in 2.51s

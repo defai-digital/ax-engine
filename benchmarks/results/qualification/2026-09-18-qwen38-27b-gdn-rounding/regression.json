@@ -1,0 +1,88 @@
+{
+  "final_source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+  "final_runtime_source_sha256": "970f0b0297d1947d1953847067bc4bacf3155253c32ef59c0cb32677b3789e60",
+  "baseline_receipts": [
+    {
+      "label": "v3",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--lib",
+        "decode_post_input_metal_preserves_bf16_rounding_boundaries",
+        "--",
+        "--nocapture"
+      ],
+      "environment_override": {
+        "AX_MLX_MTP_GDN_PREWORK_SIMD32": "0"
+      },
+      "host_role": "local unit test only; not SKU qualification",
+      "source_sha256_before": "a3748a6efae7e65a3656858877dc050d19e58e34383fa176964b78fe93515c02",
+      "source_sha256_after": "a3748a6efae7e65a3656858877dc050d19e58e34383fa176964b78fe93515c02",
+      "fixture_sha256": "71b45702e10fa6fd1323259f452fe3b8544e54857a0cdd991ada1d31c976dd91",
+      "exit_code": 101,
+      "elapsed_seconds": 7.68
+    },
+    {
+      "label": "simd32",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--lib",
+        "decode_post_input_metal_preserves_bf16_rounding_boundaries",
+        "--",
+        "--nocapture"
+      ],
+      "environment_override": {
+        "AX_MLX_MTP_GDN_PREWORK_SIMD32": "1"
+      },
+      "host_role": "local unit test only; not SKU qualification",
+      "source_sha256_before": "a3748a6efae7e65a3656858877dc050d19e58e34383fa176964b78fe93515c02",
+      "source_sha256_after": "a3748a6efae7e65a3656858877dc050d19e58e34383fa176964b78fe93515c02",
+      "fixture_sha256": "71b45702e10fa6fd1323259f452fe3b8544e54857a0cdd991ada1d31c976dd91",
+      "exit_code": 101,
+      "elapsed_seconds": 1.69
+    }
+  ],
+  "final_tests": [
+    "decode_post_input_metal_preserves_bf16_rounding_boundaries",
+    "decode_post_input_metal_preserves_fp16_rounding_boundaries",
+    "fused_gated_delta_verify_bf16_128d_matches_portable_prework"
+  ],
+  "scope": "Local unit regressions only; exact dyadic convolution fixtures isolate stored dtype boundaries. Fused recurrence coverage is BF16, shared prework coverage is BF16 and FP16.",
+  "raw_retained_logs_sha256": {
+    "fp16-boundary-simd32.log": "cc9fad5d2a93ddc20a8d3feef0ae21a8a5986c800a181fdb79cb2691a30b1abe",
+    "after-v3.log": "cef288e1887f4efd5fbf3b7dbaf410d6f1f256a02e0ea3821de2282ae34ea55c",
+    "precise-promotions.log": "9e6fc8fb3d3b69a1b6f9a1bef016f3585117f6ebc47832f7574e5e5a413bda75",
+    "boundary-after-shared-fixture.log": "5ede8a0b181129f49196f8b41f4be24146e22c076890550a4529e347dea428da",
+    "after-v3-typed.log": "123545e6904f6bea8e0f6b85e4a3a4825a5fd9f86a10aa9abee8adccab471952",
+    "final-simd32.log": "b7ccd243c30fb0bf048123a8082885d9728d90d50aa5e8d2b82d0b753111288a",
+    "after-simd32-typed.log": "1bc6c1036dba515681a51024fe1449865d996a8b8053b5f8409d01142e1cf336",
+    "fp16-boundary-v3.log": "2edef6f73d671b015b1ce423820f0b32d9c67a4d9d08d7dbc693776248c2b077",
+    "final-fused.log": "2a31d5c732874d61d3959184fdb88a63db601039fa0361f8274af43266a4510d",
+    "native-promotions.log": "b622d0da6fd62fc33656a32aec424e976311a0ccae82296d859e608723c3a3b1",
+    "fused-bf16-portable-after.log": "05ad7cf4ef13e71bfbdf3b432e45bfe821c67dd0644c3b93e9eeac7968c52ecb",
+    "bf16-post-input-before-simd32.log": "0cf31a901ff7c2a232ebab412830224023039d5c59cbda595120057cf1c04339",
+    "bf16-post-input-before-v3.log": "9975719c96b232d55e46d4dd2308e3d2dedd55048b095165ce57e33b94d945e1",
+    "after.log": "fd779e67cb73b0a85ee443f24490a81693a738696ac7e8aae709eceec6447c40",
+    "half-primitive.log": "1999cfbfc9ee0c006f7fe549ba60459b8ba0ec9b15e8911ad2ae97e4686f92ce"
+  },
+  "published_sanitized_logs_sha256": {
+    "bf16-post-input-before-simd32.log": "47b55e1f53e07146833e24b0183ca27d2f5b56744f5e7c6d00163cd5d678ec14",
+    "bf16-post-input-before-v3.log": "c0ded2a1fc0872430ccbcbd54036e8b56d85667f006e3cc7653557fa9c33b642",
+    "final-fused.log": "e5f4414d1fa4207b9f6bb026c8991e280f70764fb5f13f6b6996e621084d5db6",
+    "final-simd32.log": "755619397f7f0e23925d19983a0bdb399a0138c3491061fb2a176d8b1fe3468a",
+    "half-primitive.log": "1999cfbfc9ee0c006f7fe549ba60459b8ba0ec9b15e8911ad2ae97e4686f92ce",
+    "precise-promotions.log": "298b3d439bf591448265153ae0b1575fb6f207942288f6bc1fa0f5c107323c27"
+  },
+  "sanitization": "Published logs replace absolute local build paths and normalize trailing whitespace; raw log hashes remain separate."
+}

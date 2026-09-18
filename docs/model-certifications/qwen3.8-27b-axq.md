@@ -41,6 +41,29 @@ cannot silently change what the selector loads.
 
 Landed, labeled:
 
+- 2026-09-18 GDN prework rounding repair (`aa38f18b`) restores intermediate
+  activation-dtype boundaries in fused convolution, SiLU, normalization, and
+  scaling. Exact BF16/FP16 prework and BF16 fused-verifier regressions pass.
+  Earlier instrumented observations, before the final FP16 refinement,
+  eliminate the captured post-input and same-input recurrent-state differences;
+  full-layer hidden differences remain. Clean final native-server controls on
+  the selected mini improve 192-token direct/MTP agreement from **0/4 to 2/4**;
+  compsec-079 and 087 still split at indices 116 and 155. Paired agreement is
+  not reference fidelity: final compsec-092 matches between AX routes but
+  differs from the independent reference, which old MTP matched.
+  The clean final bundled wheel passes executable qualification on the
+  selected SKU: doctor ready, installed-package identity, 32/32 hard QA and
+  7/7 surfaces per route, active MTP without silent fallback, and the paired
+  64-token greedy probe. This closes that version-bound scope only.
+  The final bundled wheel's unchanged twelve-case 512-token diagnostic remains
+  **0/12 correct per route**, with seven wrong and five truncated responses
+  per route and **6/12** paired content matches. Truncation counts increase
+  from four direct / two MTP on the previous wheel. This failure subset is not
+  overall model accuracy, and the repair does not establish a quality gain.
+  Original long-thinking, saved recovery, broad route consistency, and MTP
+  Tier 2 remain open; **not ship-ready**.
+  [Rounding attribution, final controls and validation](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-gdn-rounding/).
+
 - 2026-09-18 residual-state investigation reproduces all four remaining route
   differences in fresh processes on the unchanged `4cbda8b5` wheel. LA fusion
   off, full checkpoint capture, and FA storage rebind off do not remove the
@@ -55,8 +78,10 @@ Landed, labeled:
   `c9a7ff97` adds a passing exact BF16 affine FFN regression; its small fixture
   does not prove whole-layer or production-shape equivalence. The unchanged pinned
   reference also differs from AX direct on these long prompts, and fails two
-  original strict span cases. An explicit full-span wording diagnostic still
-  fails both cases. `276bd1d4` improves the replay oracle without changing
+  original strict line-set cases. An altered wording diagnostic retains two
+  failing grades, but its contiguous-span instruction conflicts with one
+  non-contiguous gold set and does not resolve the prompt/scorer mismatch.
+  `276bd1d4` improves the replay oracle without changing
   production arithmetic. Quality and numerical-route gates remain open;
   **not ship-ready**.
   [Controls, state evidence and reference](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-residual-state/).
