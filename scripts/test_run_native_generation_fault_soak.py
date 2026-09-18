@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import importlib.util
+import http.server
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -24,6 +26,51 @@ MODULE_SPEC.loader.exec_module(runner)
 
 
 class NativeGenerationFaultSoakTests(unittest.TestCase):
+    def test_stall_requires_actual_output_instead_of_only_response_headers(self):
+        for has_output in (False, True):
+            with self.subTest(has_output=has_output):
+                body = b'event: accepted\ndata: {"request_id": 1}\n\n'
+                if has_output:
+                    body += b'event: step\ndata: {"delta_tokens": [7]}\n\n'
+
+                class Handler(http.server.BaseHTTPRequestHandler):
+                    def do_POST(self):
+                        self.rfile.read(int(self.headers['Content-Length']))
+                        self.send_response(200)
+                        self.send_header('Content-Length', str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+
+                    def log_message(self, *_args):
+                        pass
+
+                with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+                    thread = threading.Thread(target=server.serve_forever,
+                                              kwargs={'poll_interval': 0.01}, daemon=True)
+                    thread.start()
+                    try:
+                        result = runner.run_stalled_request(
+                            runner.RequestSpec('stall', 'stalled', [1, 2], 4096),
+                            base_url=f'http://127.0.0.1:{server.server_port}',
+                            model_id='fixture', timeout=1, hold_s=0.001,
+                        )
+                    finally:
+                        server.shutdown()
+                        thread.join(timeout=1)
+                self.assertEqual(result['output_tokens'], int(has_output))
+                self.assertGreater(result['receive_buffer_bytes'], 0)
+                self.assertEqual(result['outcome'],
+                                 'expected_stall_disconnect' if has_output else 'client_error')
+
+    def test_stalled_budget_does_not_expand_slow_consumer_budget(self):
+        specs = runner.build_request_specs(
+            rounds=1, normal_per_round=0, disconnect_per_round=0,
+            slow_per_round=1, stalled_per_round=1, base_tokens=[1, 2],
+            normal_output_tokens=32, fault_output_tokens=512, stalled_output_tokens=4096,
+        )[0]
+        self.assertEqual([(s.kind, s.max_output_tokens) for s in specs],
+                         [('slow', 512), ('stalled', 4096)])
+
     def test_parse_prometheus_metrics_ignores_comments_and_labels(self):
         metrics = runner.parse_prometheus_metrics(
             """

@@ -7,12 +7,15 @@ import argparse
 import concurrent.futures
 import datetime as dt
 import hashlib
+import http.client
 import json
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -21,7 +24,7 @@ import bench_ax_serving as serving_bench
 import bench_mlx_inference_stack as bench
 
 
-SCHEMA_VERSION = "ax.native_generation_fault_soak.v1"
+SCHEMA_VERSION = "ax.native_generation_fault_soak.v2"
 QUIESCENT_GAUGES = (
     "ax_engine_jobs_in_flight",
     "ax_engine_generation_jobs_pending",
@@ -175,29 +178,56 @@ def run_stalled_request(
     hold_s: float,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/v1/generate/stream",
-        data=json.dumps(build_payload(spec, model_id)).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    address = urllib.parse.urlsplit(base_url)
+    if address.scheme != "http" or not address.hostname:
+        raise ValueError("fault-soak stalled transport requires a local HTTP endpoint")
     http_status: int | None = None
     error_payload: Any = None
     outcome = "client_error"
+    output_tokens = 0
+    receive_buffer_bytes = 0
+    connection = http.client.HTTPConnection(address.hostname, address.port, timeout=timeout)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # Set the receive window before connect; urllib's normal socket buffers
+        # can absorb a whole short generation without applying backpressure.
+        connection.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connection.sock.settimeout(timeout)
+        connection.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        receive_buffer_bytes = connection.sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        connection.sock.connect((address.hostname, address.port or 80))
+        connection.request("POST", "/v1/generate/stream",
+                           body=json.dumps(build_payload(spec, model_id)).encode(),
+                           headers={"Content-Type": "application/json"})
+        with connection.getresponse() as response:
             http_status = response.status
+            if http_status != 200:
+                raise RuntimeError(f"stalled request HTTP status {http_status}")
+            # Headers can arrive while the job is still queued. Begin the stall
+            # only after actual output, otherwise this tests queue cancellation.
+            event_name = None
+            while output_tokens == 0:
+                line = response.readline()
+                if not line:
+                    raise RuntimeError("stalled request ended before its first output")
+                if line.startswith(b"event:"):
+                    event_name = line[6:].decode().strip()
+                elif line.startswith(b"data:"):
+                    event = json.loads(line[5:])
+                    output_tokens += serving_bench.delta_token_count(event_name, event)
             time.sleep(hold_s)
             outcome = "expected_stall_disconnect"
     except Exception as error:  # noqa: BLE001 - retain transport failures in evidence.
         error_payload = str(error)
+    finally:
+        connection.close()
     return {
         "request_id": spec.request_id,
         "kind": spec.kind,
         "outcome": outcome,
         "http_status": http_status,
-        "output_events": 0,
-        "output_tokens": 0,
+        "output_events": 1 if output_tokens else 0,
+        "output_tokens": output_tokens,
+        "receive_buffer_bytes": receive_buffer_bytes,
         "error": error_payload,
         "elapsed_ms": (time.perf_counter() - started) * 1000.0,
     }
@@ -351,6 +381,7 @@ def build_request_specs(
     base_tokens: list[int],
     normal_output_tokens: int,
     fault_output_tokens: int,
+    stalled_output_tokens: int | None = None,
 ) -> list[list[RequestSpec]]:
     rounds_out: list[list[RequestSpec]] = []
     request_index = 0
@@ -360,7 +391,7 @@ def build_request_specs(
             ("normal", normal_per_round, normal_output_tokens),
             ("disconnect", disconnect_per_round, fault_output_tokens),
             ("slow", slow_per_round, fault_output_tokens),
-            ("stalled", stalled_per_round, fault_output_tokens),
+            ("stalled", stalled_per_round, stalled_output_tokens or fault_output_tokens),
         ):
             for _ in range(count):
                 input_tokens = list(base_tokens)
@@ -436,6 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt-tokens", type=positive_int, default=128)
     parser.add_argument("--normal-output-tokens", type=positive_int, default=32)
     parser.add_argument("--fault-output-tokens", type=positive_int, default=512)
+    parser.add_argument("--stalled-output-tokens", type=positive_int, default=4096)
     parser.add_argument("--disconnect-after-output-events", type=positive_int, default=1)
     parser.add_argument("--slow-delay-ms", type=positive_float, default=20.0)
     parser.add_argument("--stalled-hold-ms", type=positive_float, default=8000.0)
@@ -481,6 +513,7 @@ def main_with_args(argv: list[str]) -> int:
         base_tokens=base_tokens,
         normal_output_tokens=args.normal_output_tokens,
         fault_output_tokens=args.fault_output_tokens,
+        stalled_output_tokens=args.stalled_output_tokens,
     )
 
     started_at = utc_now()
@@ -625,6 +658,7 @@ def main_with_args(argv: list[str]) -> int:
                 "prompt_tokens": args.prompt_tokens,
                 "normal_output_tokens": args.normal_output_tokens,
                 "fault_output_tokens": args.fault_output_tokens,
+                "stalled_output_tokens": args.stalled_output_tokens,
                 "disconnect_after_output_events": args.disconnect_after_output_events,
                 "slow_delay_ms": args.slow_delay_ms,
                 "stalled_hold_ms": args.stalled_hold_ms,
