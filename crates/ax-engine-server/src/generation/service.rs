@@ -1393,9 +1393,12 @@ fn handle_command(
                     },
                 );
                 debug_assert!(previous.is_none(), "request IDs are process-unique");
+                // Publish ownership before the first potentially long engine burst.
+                update_stream_gauges(state, active_streams);
                 if started.send(Ok(())).is_err() {
                     let _ = session.cancel_request(request_id);
                     active_streams.remove(&request_id);
+                    update_stream_gauges(state, active_streams);
                     complete_job(state);
                 }
             }
@@ -2435,6 +2438,62 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         assert!(!service.is_busy());
+    }
+
+    #[tokio::test]
+    async fn active_stream_gauge_is_visible_during_first_engine_step() {
+        let (service, _) = NativeGenerationService::spawn_with_factory(|| {
+            Ok(EngineSession::new_deterministic_native_for_tests())
+        })
+        .unwrap();
+        let (entered_tx, entered_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let release_rx = parking_lot::Mutex::new(release_rx);
+        let first_step = AtomicBool::new(true);
+        service.set_step_observer(move |_| {
+            if first_step.swap(false, Ordering::AcqRel) {
+                let _ = entered_tx.send(());
+                let _ = release_rx.lock().recv_timeout(Duration::from_secs(5));
+            }
+        });
+        let admission = Arc::new(crate::admission::AdmissionController::new(Some(1)));
+        let events = service
+            .start_stream(
+                42,
+                GenerateRequest {
+                    model_id: "qwen3".to_string(),
+                    input_tokens: vec![1, 2, 3, 4],
+                    input_text: None,
+                    multimodal_inputs: Default::default(),
+                    max_output_tokens: 100,
+                    sampling: Default::default(),
+                    stop_sequences: Vec::new(),
+                    metadata: None,
+                },
+                admission.try_admit().unwrap(),
+            )
+            .await
+            .unwrap();
+        let entered = entered_rx.recv_timeout(Duration::from_secs(2));
+        let active_during_step = service.active_streams();
+        let pending_during_step = service.pending_jobs();
+        // Always release the worker before asserting, including on regression.
+        drop(events);
+        let _ = release_tx.send(());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while (service.is_busy() || service.active_streams() != 0) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let pending_after_disconnect = service.pending_jobs();
+        let active_after_disconnect = service.active_streams();
+        service.shutdown().await.unwrap();
+
+        assert!(entered.is_ok(), "worker must reach its first engine step");
+        assert_eq!(pending_during_step, 1);
+        assert_eq!(active_during_step, 1);
+        assert_eq!(pending_after_disconnect, 0);
+        assert_eq!(active_after_disconnect, 0);
+        assert_eq!(admission.active_jobs(), 0);
     }
 
     #[tokio::test]

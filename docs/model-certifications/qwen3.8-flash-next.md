@@ -167,6 +167,19 @@ Installed API lifecycle, full QA/long context, broader numerical controls,
 memory/latency, performance, the primary baseline and fresh delivery remain
 open. Neither result promotes the product default or qualifies a release.
 
+[The installed `bf06cbb2` lifecycle attempts](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-lifecycle/README.md)
+retain two failures. The first comparator incorrectly required cold/warm cache
+metadata equality despite matching text, finish reason and token totals. After
+that harness correction, baseline, SSE, budgets and stop pass, but the disconnect
+probe exposes a stale active-stream gauge: zero active streams while one job is
+pending and only the preceding five requests have completed. Drain/recovery and
+required MTP remain untested. Both runs lack their original postchecks; separate
+later integrity followups pass without changing the failed lifecycle verdicts.
+The server now publishes stream ownership before its first decode burst, with
+a local before/after regression. A rebuilt wheel and complete M5 lifecycle
+requalification are still required. This does not change model arithmetic or
+promote the product default.
+
 [MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
 now includes all three numerical reference graphs, eight inputs and 3,316
 positions per graph, with completed artifact and post-run hash verification.
@@ -208,8 +221,8 @@ Existing download aliases retain their original pack identity.
 | --- | --- |
 | MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
 | Immutable delivery | Installed85 default recovery verifies all 47 published files and the generated manifest on target NAS. Original failed attempts remain retained; fresh-cache and final-candidate delivery qualification remain open |
-| Numerical and MTP | The retained `cd207324` M5 original-full collection is valid but token identity fails at positions 15 and 6, with state failures at consumed prefixes 2 and 3 (105/109 and 104/109 arrays). The current ordinary-singleton candidate awaits actual M5 model validation. The short state failure and incomplete M2 SIGBUS remain retained. Historical selected-paging bounds do not close current-candidate/default qualification gates |
-| Installed QA and lifecycle | All 105 direct/MTP pairs collected; each mode has 102 quality passes, three retained failures and a successful long lookup. Two text differences keep QA failed; SSE/disconnect/recovery and stop/budget qualification remain open |
+| Numerical and MTP | Canonical source `bf06cbb2` passes the original two-prompt M5 diagnostic (90/133 positions to EOS) and four-prompt holdout (64 outputs each), including compared state/hidden/logits and complete integrity checks. Broader checkpoint/default/MTP qualification remains open. All `cd207324` failures and incomplete M2 SIGBUS remain retained |
+| Installed QA and lifecycle | Historical installed85 QA has 102/105 quality passes per mode, three retained failures, two text differences and successful long lookup. The bf06 wheel installation passes, but its two lifecycle attempts fail; the active-stream gauge fix requires a new wheel and complete M5 rerun before candidate QA |
 | Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
 
