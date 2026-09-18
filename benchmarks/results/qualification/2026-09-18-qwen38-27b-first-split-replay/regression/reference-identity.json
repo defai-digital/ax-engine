@@ -1,0 +1,36 @@
+[
+  {
+    "reference": "MTPLX",
+    "revision": "6459194642ba091ba7c17c3aba889b808340c3fc",
+    "status_porcelain": "",
+    "files": [
+      {
+        "path": ".internal/reference/MTPLX/mtplx/gdn_capture.py",
+        "sha256": "6d8aa6b8c34e23c6e8ba977a87ac78e8ad6a4564b0b163f34fb8f8489fa23e85"
+      },
+      {
+        "path": ".internal/reference/MTPLX/mtplx/benchmarks/runners/batch_equivalence.py",
+        "sha256": "814758039e62ba8bbe6b6e249a8a7fa692aa5ec509cc9ce620c05310d92b2e5e"
+      },
+      {
+        "path": ".internal/reference/MTPLX/mtplx/benchmarks/runners/capture_commit_equivalence.py",
+        "sha256": "26715f8da4a2a2764afeefa4b71937bd003ec49c38a77826e6d71c484bb3bab3"
+      }
+    ]
+  },
+  {
+    "reference": "omlx",
+    "revision": "b18b4b0ff85951ba16e3ea9f183114bc14842588",
+    "status_porcelain": "",
+    "files": [
+      {
+        "path": ".internal/reference/omlx/omlx/patches/mlx_lm_mtp/qwen35_model.py",
+        "sha256": "c468a62fd15356f82b5ad9cf5b14921b3b259daf273f06c426f0c2163729b8d0"
+      },
+      {
+        "path": ".internal/reference/omlx/omlx/patches/mlx_lm_mtp/batch_generator.py",
+        "sha256": "10900693b8d54e4f9ccebdaca57c0d542432a0abbbe3eba67510a1dcaaae0db6"
+      }
+    ]
+  }
+]

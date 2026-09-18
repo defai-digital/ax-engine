@@ -34,6 +34,7 @@ echo "==> QA: py_compile harness modules"
   qa/embedding_bank.py \
   scripts/run_qa_matrix.py \
   scripts/test_qa_checkers.py \
+  scripts/test_qa_release_contract.py \
   scripts/test_qa_sampling.py \
   scripts/test_run_qa_matrix.py \
   scripts/test_qa_surface_probes.py \
@@ -48,6 +49,7 @@ echo "==> QA: unit tests (sampling, checkers, matrix, surface, embedding, multim
   scripts/test_audit_qa_retest.py \
   scripts/test_qa_sampling.py \
   scripts/test_qa_checkers.py \
+  scripts/test_qa_release_contract.py \
   scripts/test_run_qa_matrix.py \
   scripts/test_qa_surface_probes.py \
   scripts/test_qa_embedding_probes.py \

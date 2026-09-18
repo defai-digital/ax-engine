@@ -1,0 +1,477 @@
+{
+  "admitted": true,
+  "position": 524,
+  "output_index": 116,
+  "window": {
+    "accept_count": 2,
+    "all_accepted": false,
+    "event": "window",
+    "exact": false,
+    "exact_linear_replay": false,
+    "exact_rejection_correction": null,
+    "generated_tokens": [
+      760,
+      709,
+      1510,
+      7935,
+      68844,
+      16,
+      18,
+      13786,
+      63,
+      11036,
+      40278,
+      220,
+      16,
+      13,
+      18,
+      7189,
+      13,
+      198,
+      16,
+      13,
+      220,
+      2972,
+      9388,
+      82,
+      92217,
+      1368,
+      449,
+      4953,
+      369,
+      3816,
+      11,
+      279,
+      3511,
+      369,
+      7629,
+      13,
+      1061,
+      369,
+      5902,
+      13,
+      198,
+      17,
+      13,
+      220,
+      2972,
+      2239,
+      898,
+      1982,
+      92217,
+      1049,
+      11988,
+      279,
+      1528,
+      5484,
+      364,
+      1510,
+      32099,
+      7561,
+      1510,
+      32099,
+      31547,
+      7561,
+      321,
+      1510,
+      24100,
+      27653,
+      198,
+      262,
+      348,
+      256,
+      1510,
+      32099,
+      63,
+      1411,
+      1510,
+      22916,
+      35709,
+      31547,
+      63,
+      198,
+      262,
+      348,
+      256,
+      1510,
+      32099,
+      31547,
+      63,
+      1411,
+      1510,
+      22916,
+      24100,
+      63,
+      198,
+      262,
+      348,
+      256,
+      1510,
+      24100,
+      63,
+      1411,
+      1510,
+      65914,
+      290,
+      63,
+      198,
+      262,
+      348,
+      256,
+      1061,
+      11870,
+      12083,
+      644,
+      47164,
+      279
+    ],
+    "inputs": [
+      279,
+      1906,
+      314,
+      279
+    ],
+    "lazy_inputs_materialized": true,
+    "live_whole_compiled": false,
+    "native_greedy_logits": false,
+    "offset": 522,
+    "pending": [
+      1906,
+      314,
+      279
+    ],
+    "position": 524,
+    "predicted": [
+      1906,
+      314,
+      6397,
+      40278
+    ],
+    "primary_from_skip": null,
+    "projected_replay": true,
+    "qmm_guard_armed_by_live_scope": true,
+    "relaxed": true,
+    "row": 2,
+    "target": true,
+    "whole_trace": false
+  },
+  "arrays": {
+    "live_target": {
+      "event": "array",
+      "label": "live_target",
+      "metadata": {
+        "dtype": "Float32",
+        "elements": 993280,
+        "f32_bits_le_sha256": "d91438ab14747685073c87421f0fe219ba63f3cd773c72ae218209993eb8ce0a",
+        "finite": true,
+        "shape": [
+          4,
+          248320
+        ]
+      }
+    },
+    "same_scope_target_replay": {
+      "event": "array",
+      "label": "same_scope_target_replay",
+      "metadata": {
+        "dtype": "Float32",
+        "elements": 993280,
+        "f32_bits_le_sha256": "d91438ab14747685073c87421f0fe219ba63f3cd773c72ae218209993eb8ce0a",
+        "finite": true,
+        "shape": [
+          4,
+          248320
+        ]
+      },
+      "whole_compiled": false
+    },
+    "ordinary_batch": {
+      "entry": "forward_all_positions: stock full-batch LM head, not live verifier head helper",
+      "event": "array",
+      "exact": false,
+      "label": "ordinary_batch",
+      "metadata": {
+        "dtype": "Float32",
+        "elements": 993280,
+        "f32_bits_le_sha256": "e69781534a73e954124146408d2f175f8218b767b3db77578c9db47d4cfa4a16",
+        "finite": true,
+        "shape": [
+          4,
+          248320
+        ]
+      },
+      "qmm_guard": false,
+      "relaxed": false,
+      "target": false,
+      "whole_trace": false
+    },
+    "ordinary_singleton": {
+      "ending_cache_seq_len": 525,
+      "event": "array",
+      "input_count": 3,
+      "label": "ordinary_singleton",
+      "metadata": {
+        "dtype": "Bfloat16",
+        "elements": 248320,
+        "f32_bits_le_sha256": "30e01b1afeb5cda4b630313b5e8febaf8bf7ae1fdd956254c0f87cfe3b56edb3",
+        "finite": true,
+        "shape": [
+          248320
+        ]
+      }
+    }
+  },
+  "selected_rows": {
+    "live_target": {
+      "direct_token": {
+        "logit": 21.75,
+        "token": 279
+      },
+      "elements": 248320,
+      "event": "row",
+      "finite": true,
+      "label": "live_target",
+      "mtp_token": {
+        "logit": 21.875,
+        "token": 6397
+      },
+      "top8": [
+        [
+          6397,
+          21.875
+        ],
+        [
+          279,
+          21.75
+        ],
+        [
+          2849,
+          21.75
+        ],
+        [
+          55112,
+          21.625
+        ],
+        [
+          40278,
+          20.125
+        ],
+        [
+          1375,
+          18.5
+        ],
+        [
+          8163,
+          18.0
+        ],
+        [
+          1439,
+          17.375
+        ]
+      ]
+    },
+    "same_scope_target_replay": {
+      "direct_token": {
+        "logit": 21.75,
+        "token": 279
+      },
+      "elements": 248320,
+      "event": "row",
+      "finite": true,
+      "label": "same_scope_target_replay",
+      "mtp_token": {
+        "logit": 21.875,
+        "token": 6397
+      },
+      "top8": [
+        [
+          6397,
+          21.875
+        ],
+        [
+          279,
+          21.75
+        ],
+        [
+          2849,
+          21.75
+        ],
+        [
+          55112,
+          21.625
+        ],
+        [
+          40278,
+          20.125
+        ],
+        [
+          1375,
+          18.5
+        ],
+        [
+          8163,
+          18.0
+        ],
+        [
+          1439,
+          17.375
+        ]
+      ]
+    },
+    "ordinary_batch": {
+      "direct_token": {
+        "logit": 21.75,
+        "token": 279
+      },
+      "elements": 248320,
+      "event": "row",
+      "finite": true,
+      "label": "ordinary_batch",
+      "mtp_token": {
+        "logit": 21.875,
+        "token": 6397
+      },
+      "top8": [
+        [
+          6397,
+          21.875
+        ],
+        [
+          279,
+          21.75
+        ],
+        [
+          2849,
+          21.75
+        ],
+        [
+          55112,
+          21.625
+        ],
+        [
+          40278,
+          20.125
+        ],
+        [
+          1375,
+          18.5
+        ],
+        [
+          8163,
+          18.0
+        ],
+        [
+          1439,
+          17.25
+        ]
+      ]
+    },
+    "ordinary_singleton": {
+      "direct_token": {
+        "logit": 21.75,
+        "token": 279
+      },
+      "elements": 248320,
+      "event": "row",
+      "finite": true,
+      "label": "ordinary_singleton",
+      "mtp_token": {
+        "logit": 21.75,
+        "token": 6397
+      },
+      "top8": [
+        [
+          279,
+          21.75
+        ],
+        [
+          2849,
+          21.75
+        ],
+        [
+          6397,
+          21.75
+        ],
+        [
+          55112,
+          21.625
+        ],
+        [
+          40278,
+          20.125
+        ],
+        [
+          1375,
+          18.5
+        ],
+        [
+          8163,
+          18.0
+        ],
+        [
+          1439,
+          17.25
+        ]
+      ]
+    }
+  },
+  "comparisons": {
+    "live_vs_same_scope_full_logits": {
+      "elements": 993280,
+      "event": "logit_comparison",
+      "label": "live_vs_same_scope_full_logits",
+      "max_abs": 0.0,
+      "unequal": 0
+    },
+    "live_vs_ordinary_batch_full_logits": {
+      "elements": 993280,
+      "event": "logit_comparison",
+      "label": "live_vs_ordinary_batch_full_logits",
+      "max_abs": 0.125,
+      "unequal": 716051
+    },
+    "live_vs_singleton_selected_row": {
+      "elements": 248320,
+      "event": "logit_comparison",
+      "label": "live_vs_singleton_selected_row",
+      "max_abs": 0.125,
+      "unequal": 185298
+    },
+    "ordinary_batch_vs_singleton_selected_row": {
+      "elements": 248320,
+      "event": "logit_comparison",
+      "label": "ordinary_batch_vs_singleton_selected_row",
+      "max_abs": 0.125,
+      "unequal": 186795
+    }
+  },
+  "emission": {
+    "accept_count": 2,
+    "cache_seq_len_after_commit": 525,
+    "correction_argmax_token": 6397,
+    "event": "emission",
+    "generated_count_before": 114,
+    "offset": 522,
+    "primary_from_skip": null,
+    "result": [
+      1906,
+      314,
+      6397
+    ],
+    "tail_token": 6397
+  },
+  "cache_witnesses_unchanged": true,
+  "direct_cache_observed": false,
+  "scope": "Live MTP history only; the ordinary batch also changes the LM-head helper. No actual-direct cache identity claim.",
+  "full_192_clean_direct_matches_baseline": true,
+  "full_192_clean_mtp_matches_baseline": true,
+  "full_192_observer_matches_clean_mtp": true,
+  "loaded_native_paths": {
+    "libmlx.dylib": [
+      "<SKU_WORKSPACE>/qmm-contract-venv/lib/python3.12/site-packages/ax_engine/.dylibs/libmlx.dylib"
+    ],
+    "libjaccl.dylib": [
+      "<SKU_WORKSPACE>/qmm-contract-venv/lib/python3.12/site-packages/ax_engine/.dylibs/libjaccl.dylib"
+    ]
+  }
+}

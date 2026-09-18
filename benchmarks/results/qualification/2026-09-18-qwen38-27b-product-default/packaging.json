@@ -1,0 +1,17 @@
+{
+  "native_import": "passed",
+  "native_dyld_trace_sha256": "17d2c3322c7c0083128bcdef4a809ec8e0ea670b8880750afa958bc0f9b01ac1",
+  "installed_packages": [
+    {
+      "name": "ax-engine",
+      "version": "7.4.0"
+    },
+    {
+      "name": "pip",
+      "version": "26.1.2"
+    }
+  ],
+  "loaded_mlx": "ax_engine/.dylibs/libmlx.dylib",
+  "loaded_jaccl": "ax_engine/.dylibs/libjaccl.dylib",
+  "scope": "Fresh isolated environment on primary SKU; installed wheel members checked byte-for-byte"
+}

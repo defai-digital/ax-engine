@@ -1,0 +1,181 @@
+{
+  "manifest": {
+    "source_commit": "22affab50be4ff31edf7ea1b85b63439ee5733f1",
+    "dirty": false,
+    "wheel_sha256": "68453e454424b4e52c88f4964b9eb1e120a8405931194f95cc0522f999924e78",
+    "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+    "model_files": {
+      ".gitattributes": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+      "README.md": "7677e390e100379412fc00f53a0f8e07b60904eed226aee2b246cd9a146bd4fe",
+      "axquant_manifest.json": "c0c3588c6376bc55b3c22a80f5ca11a8befb05860d23d848d0985af0e148eebb",
+      "axquant_mtp_sidecar_manifest.json": "2f3e71df1c5b08c6f5af9b6b0b2e79c51e80ecb2d1ee36d0355ed9b6cfd10be4",
+      "axquant_plan.json": "9a636a6c9bcbf29ec3c652a65b7ff6832ff9d654e9d29fdeedd0932c909d5d62",
+      "axquant_quantizer_execution.json": "5385db149a32005a6b56fb8823fc9fd047f15f1e6ca2d611b1f3f9757712fa69",
+      "axquant_runtime.json": "3a2656bcf22f31feb788a00ddb8d9e853e741a121b273c6cf94fdc228274abab",
+      "axquant_vision_sidecar_manifest.json": "d4196a4d77b0e7a5ec743f22334625c3397f2a9d13986c76f3b976eeea967f7d",
+      "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "config.json": "850c0bf06e1baa0b250544b9b0ba4b3f8ea1716fb64937f7791ad421450f8054",
+      "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+      "model-00001-of-00004.safetensors": "d45beafeb00e3d6b172a4e6aabc2359691f0b98a06559d68a3d0e48043305b01",
+      "model-00002-of-00004.safetensors": "6fcb8ad0ca0b812b45bada6565a531da9c2a27810d57fe1d1f551b475491b514",
+      "model-00003-of-00004.safetensors": "cff8ff8f81cee61fcca46e0e091c3f62ad4b14c614b5900c731b2de90c8ed9dc",
+      "model-00004-of-00004.safetensors": "7363f3f12faf0bcecb79d308ff3c6ff5787daa70a9a0431a72ceb098c3c97678",
+      "model-manifest.json": "e3699d9af5e0585d3e65b1acbed3cf1697141c5da48d0be976a668381b00329a",
+      "model.safetensors.index.json": "c9c5b1336f1c552f149e95c818a7431f65971292d12d4f2ab5ff37689654328d",
+      "mtp.safetensors": "914bef4ec6fcfde83925f9c138559253db030d9138b0a375623d6fdc06ebe898",
+      "mtplx_runtime.json": "119b930ed4b470a08008aa2a51b4a83162907a85b8455f559cffa03e33236ed6",
+      "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer_config.json": "95c557768e6b88a7128befc7bfd3c7de50e5d51af9b8b33a9f4dee0e04f99679",
+      "vision.safetensors": "d0d927c489250588557d5761dcd47ca267ef64c95f7e7d58dd6a0cccf54ac68f"
+    },
+    "attestation": "local clean-source build; not a hosted release attestation",
+    "server_sha256": "6631b1740934d8a990cbb8efd2277e2e2ed364f920696f42f89cdfb124641efa",
+    "bench_sha256": "309b9fe0faae68b38b82970fa54754eb33f88a28684a50cc56ec9e1be796e858",
+    "native_cli_sha256": "fb5b926f44c7a02cfd4aff42115dc3c1a0b3f815131539e7b324c0c44676906e",
+    "cli_sha256": "28a02ed3eb6643f2377418353e7f696fa08b370d4c6e34174a196c56dec947ce",
+    "cli_attestation": "Installed pip console-script launcher verified against the wheel entry point; native CLI hash recorded separately"
+  },
+  "wheel_profile": "release-pyext",
+  "build_command": [
+    "bash",
+    "scripts/build-pypi-wheel.sh"
+  ],
+  "source_tree_clean_before_and_after_build": true,
+  "build_log_sha256": "e208fbb847845978daebaa9abe64a558aad95232dbff3c2eef04f8525661fe7f",
+  "deployment_log_sha256": "2419dd5373b03cfbc60c722a541d5986427999f09096afe482574460e5d24a1c",
+  "installed_packages": [
+    {
+      "name": "ax-engine",
+      "version": "7.4.0"
+    },
+    {
+      "name": "pip",
+      "version": "26.1.2"
+    }
+  ],
+  "native_import_stdout_sha256": "d7c6749a80918a0520c7d1b73bb133b148f12cfe96270fad7e9c61ccab38fb71",
+  "native_import_dyld_sha256": "5029a4e20674dbc97d4bc9997424e420602f3207a95ce5409ff5faea978b4747",
+  "cold_runner_sha256": "32455bec87d4684236b86894cc633f7013af406036eeadeac78ce4f7e36a8a0d",
+  "scope": "Local clean-source build and isolated selected-SKU installation; not a hosted release or universal portability claim",
+  "collector_review": {
+    "script_sha256": "dbc756ac5475cc9bced1f81a9243289cabdafb199f00fda36d994914a9845d38",
+    "scope": "Offline synthetic preflight fixtures and stubbed run_arm; no native server or model executed. Final build identity placeholders remain to be filled by coordinator.",
+    "checks": [
+      {
+        "name": "valid synthetic preflight with frozen real request matrix",
+        "result": "passed"
+      },
+      {
+        "name": "wrong final source",
+        "result": "rejected",
+        "message": "Final source/build receipt mismatch"
+      },
+      {
+        "name": "wrong final wheel receipt",
+        "result": "rejected",
+        "message": "Final source/build receipt mismatch"
+      },
+      {
+        "name": "installed server changed",
+        "result": "rejected",
+        "message": "Installed server differs"
+      },
+      {
+        "name": "installed native changed",
+        "result": "rejected",
+        "message": "Installed native differs from wheel"
+      },
+      {
+        "name": "frozen baseline changed",
+        "result": "rejected",
+        "message": "Frozen baseline changed"
+      },
+      {
+        "name": "frozen cases changed",
+        "result": "rejected",
+        "message": "Frozen cases changed"
+      },
+      {
+        "name": "route sampling mismatch despite matching injected baseline receipt",
+        "result": "rejected",
+        "message": "Raw request contract or route prompt differs"
+      },
+      {
+        "name": "ambient runtime override",
+        "result": "rejected",
+        "message": "Ambient runtime overrides forbidden"
+      },
+      {
+        "name": "11-arm dry simulation reports composite skip mismatch without false stale-state attribution",
+        "result": "passed",
+        "arm_count": 11
+      }
+    ]
+  },
+  "collector_final_identity": {
+    "reviewed_script_sha256": "dbc756ac5475cc9bced1f81a9243289cabdafb199f00fda36d994914a9845d38",
+    "final_script_sha256": "32455bec87d4684236b86894cc633f7013af406036eeadeac78ce4f7e36a8a0d",
+    "change": "Fill only final source/wheel/server constants from the completed clean build",
+    "source_commit": "22affab50be4ff31edf7ea1b85b63439ee5733f1",
+    "wheel_sha256": "68453e454424b4e52c88f4964b9eb1e120a8405931194f95cc0522f999924e78",
+    "server_sha256": "6631b1740934d8a990cbb8efd2277e2e2ed364f920696f42f89cdfb124641efa"
+  },
+  "final_cleanup": {
+    "owned_final_server_processes": [],
+    "qualification_exit": 0,
+    "cold_summary": {
+      "complete": true,
+      "default_arms_preserved": 8,
+      "forced_skip_control_equal": true,
+      "comparisons": [
+        {
+          "case": "COMPSEC:compsec-077",
+          "direct_mtp_first_difference": null
+        },
+        {
+          "case": "COMPSEC:compsec-079",
+          "direct_mtp_first_difference": 116
+        },
+        {
+          "case": "COMPSEC:compsec-079",
+          "left": "new-forced",
+          "right": "new-forced-skip",
+          "all_192_equal": true,
+          "first_difference": null,
+          "scope": "Composite skip-on output control; the flag changes additional draft scheduling. Unit regression separately proves stale-state consumption is blocked."
+        },
+        {
+          "case": "COMPSEC:compsec-079",
+          "left": "old-forced",
+          "right": "new-forced",
+          "first_difference": null,
+          "all_192_equal": true
+        },
+        {
+          "case": "COMPSEC:compsec-079",
+          "left": "direct",
+          "right": "old-forced",
+          "first_difference": null,
+          "all_192_equal": true
+        },
+        {
+          "case": "COMPSEC:compsec-079",
+          "left": "direct",
+          "right": "new-forced",
+          "first_difference": null,
+          "all_192_equal": true
+        },
+        {
+          "case": "COMPSEC:compsec-087",
+          "direct_mtp_first_difference": 155
+        },
+        {
+          "case": "COMPSEC:compsec-092",
+          "direct_mtp_first_difference": null
+        }
+      ],
+      "quality_or_global_direct_equivalence_claim": false,
+      "results_sha256": "4e0851de1cf6b7ff1049d017797fa53050dba4b8df46e09e762a47a7a4c1c7db"
+    }
+  }
+}

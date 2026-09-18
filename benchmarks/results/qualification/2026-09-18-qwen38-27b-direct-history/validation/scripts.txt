@@ -1,0 +1,867 @@
+==> QA: py_compile harness modules
+==> QA: validate question bank
+Bank OK: 79 prompts, 14 categories
+==> QA: unit tests (sampling, checkers, matrix, surface, embedding, multimodal)
+test_hash_changes_with_evidence (scripts.test_audit_qa_retest.RetestAuditTests.test_hash_changes_with_evidence) ... ok
+test_recovery_preserves_primary_and_reports_partial_recall (scripts.test_audit_qa_retest.RetestAuditTests.test_recovery_preserves_primary_and_reports_partial_recall) ... ok
+test_rejects_different_question_key (scripts.test_audit_qa_retest.RetestAuditTests.test_rejects_different_question_key) ... ok
+test_rejects_missing_or_duplicate_records (scripts.test_audit_qa_retest.RetestAuditTests.test_rejects_missing_or_duplicate_records) ... ok
+test_rejects_tampered_grade (scripts.test_audit_qa_retest.RetestAuditTests.test_rejects_tampered_grade) ... ok
+test_case_sensitive_match (scripts.test_qa_sampling.ExactAnswerTests.test_case_sensitive_match) ... ok
+test_exact_answer_aliases (scripts.test_qa_sampling.ExactAnswerTests.test_exact_answer_aliases) ... ok
+test_exact_answer_fails_when_missing (scripts.test_qa_sampling.ExactAnswerTests.test_exact_answer_fails_when_missing) ... ok
+test_exact_answer_normalizes_nbsp (scripts.test_qa_sampling.ExactAnswerTests.test_exact_answer_normalizes_nbsp)
+gpt-oss-20b emitted NBSP between tokens for instruction_three_colors. ... ok
+test_exact_answer_passes_substring_for_long (scripts.test_qa_sampling.ExactAnswerTests.test_exact_answer_passes_substring_for_long) ... ok
+test_full_match_rejects_prose (scripts.test_qa_sampling.ExactAnswerTests.test_full_match_rejects_prose) ... ok
+test_keywords_are_soft_and_do_not_fail_hard_pass (scripts.test_qa_sampling.ExactAnswerTests.test_keywords_are_soft_and_do_not_fail_hard_pass) ... ok
+test_run_all_checks_includes_exact_answer (scripts.test_qa_sampling.ExactAnswerTests.test_run_all_checks_includes_exact_answer) ... ok
+test_short_token_does_not_match_inside_words (scripts.test_qa_sampling.ExactAnswerTests.test_short_token_does_not_match_inside_words) ... ok
+test_bank_is_larger_than_default_sample (scripts.test_qa_sampling.QaSamplingTests.test_bank_is_larger_than_default_sample) ... ok
+test_bank_validates_clean (scripts.test_qa_sampling.QaSamplingTests.test_bank_validates_clean) ... ok
+test_different_seeds_usually_differ (scripts.test_qa_sampling.QaSamplingTests.test_different_seeds_usually_differ) ... ok
+test_explicit_ids (scripts.test_qa_sampling.QaSamplingTests.test_explicit_ids) ... ok
+test_sample_is_deterministic_with_seed (scripts.test_qa_sampling.QaSamplingTests.test_sample_is_deterministic_with_seed) ... ok
+test_stratified_covers_multiple_categories (scripts.test_qa_sampling.QaSamplingTests.test_stratified_covers_multiple_categories) ... ok
+test_unique_prompt_ids_in_bank (scripts.test_qa_sampling.QaSamplingTests.test_unique_prompt_ids_in_bank) ... ok
+test_json_report_schema (scripts.test_qa_checkers.JsonReportTests.test_json_report_schema) ... ok
+test_regex_requires_all_patterns (scripts.test_qa_checkers.QaCheckerTests.test_regex_requires_all_patterns) ... ok
+test_run_all_checks_fails_visible_replacement_chars (scripts.test_qa_checkers.QaCheckerTests.test_run_all_checks_fails_visible_replacement_chars) ... ok
+test_unicode_replacement_checker_fails_corrupt_text (scripts.test_qa_checkers.QaCheckerTests.test_unicode_replacement_checker_fails_corrupt_text) ... ok
+test_unicode_replacement_checker_passes_clean_text (scripts.test_qa_checkers.QaCheckerTests.test_unicode_replacement_checker_passes_clean_text) ... ok
+test_build_server_cmd_embed_and_multimodal_disable_ngram (scripts.test_run_qa_matrix.RunQaMatrixTests.test_build_server_cmd_embed_and_multimodal_disable_ngram) ... ok
+test_build_server_cmd_modes (scripts.test_run_qa_matrix.RunQaMatrixTests.test_build_server_cmd_modes)
+Regression: MTP must not disable ngram; direct must; ngram neither MTP flag. ... ok
+test_classify_engine_fail_detects_panic_and_null (scripts.test_run_qa_matrix.RunQaMatrixTests.test_classify_engine_fail_detects_panic_and_null) ... ok
+test_live_route_requires_completed_draft_and_verify (scripts.test_run_qa_matrix.RunQaMatrixTests.test_live_route_requires_completed_draft_and_verify) ... ok
+test_load_matrix_parses_ok_lines_and_modes (scripts.test_run_qa_matrix.RunQaMatrixTests.test_load_matrix_parses_ok_lines_and_modes) ... ok
+test_mtp_telemetry_active_requires_positive_signal (scripts.test_run_qa_matrix.RunQaMatrixTests.test_mtp_telemetry_active_requires_positive_signal) ... ok
+test_package_looks_like_mtp_sidecar_and_assistant (scripts.test_run_qa_matrix.RunQaMatrixTests.test_package_looks_like_mtp_sidecar_and_assistant) ... ok
+test_package_looks_like_multimodal (scripts.test_run_qa_matrix.RunQaMatrixTests.test_package_looks_like_multimodal) ... ok
+test_port_preflight_preserves_listener_and_allows_time_wait (scripts.test_run_qa_matrix.RunQaMatrixTests.test_port_preflight_preserves_listener_and_allows_time_wait) ... ok
+test_write_inventory (scripts.test_run_qa_matrix.RunQaMatrixTests.test_write_inventory) ... ok
+test_cancel_accepts_http_201_submit (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_cancel_accepts_http_201_submit)
+Server returns 201 Created for /v1/requests submit. ... ok
+test_cancel_skipped_on_404 (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_cancel_skipped_on_404) ... ok
+test_cancel_success_path (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_cancel_success_path) ... ok
+test_chat_completion_payload_with_tools (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_chat_completion_payload_with_tools) ... ok
+test_concurrent_chat_all_ok (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_concurrent_chat_all_ok) ... ok
+test_extract_chat_content (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_extract_chat_content) ... ok
+test_media_policy_probes (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_media_policy_probes) ... ok
+test_multimodal_hard_fail_when_capability_claimed (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_multimodal_hard_fail_when_capability_claimed) ... ok
+test_multimodal_soft_skip_on_400_without_capability (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_multimodal_soft_skip_on_400_without_capability) ... ok
+test_png_fixture_crc_and_pixel_data (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_png_fixture_crc_and_pixel_data) ... ok
+test_sse_and_normalize_helpers (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_sse_and_normalize_helpers) ... ok
+test_stream_parity_ok (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_stream_parity_ok) ... ok
+test_surface_report_hard_pass_with_soft_skip (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_surface_report_hard_pass_with_soft_skip) ... ok
+test_tiny_png_data_url (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_tiny_png_data_url) ... ok
+test_tools_schema_fails_on_500 (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_tools_schema_fails_on_500) ... ok
+test_tools_schema_soft_skip_on_422 (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_tools_schema_soft_skip_on_422) ... ok
+test_video_capability_requires_real_success (scripts.test_qa_surface_probes.SurfaceProbeHelperTests.test_video_capability_requires_real_success) ... ok
+test_default_batch_threshold_ignores_8b_inside_snapshot_hash (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_default_batch_threshold_ignores_8b_inside_snapshot_hash) ... ok
+test_default_batch_threshold_looser_for_qwen8b (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_default_batch_threshold_looser_for_qwen8b) ... ok
+test_infer_model_kind (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_infer_model_kind) ... ok
+test_infer_pooling (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_infer_pooling) ... ok
+test_resolve_eos_from_tokenizer_config (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_resolve_eos_from_tokenizer_config) ... ok
+test_resolve_eos_prefers_im_end_over_legacy_s (scripts.test_qa_embedding_probes.EmbeddingInferTests.test_resolve_eos_prefers_im_end_over_legacy_s)
+Regression: Qwen configs use <|im_end|>; </s> must not win first. ... ok
+test_average_precision_perfect (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_average_precision_perfect) ... ok
+test_cosine_identical (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_cosine_identical) ... ok
+test_cosine_orthogonal (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_cosine_orthogonal) ... ok
+test_hit_and_mrr (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_hit_and_mrr) ... ok
+test_is_finite (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_is_finite) ... ok
+test_l2_norm (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_l2_norm) ... ok
+test_rank_by_cosine (scripts.test_qa_embedding_probes.EmbeddingMathTests.test_rank_by_cosine) ... ok
+test_empty_rejected (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_empty_rejected) ... ok
+test_extract_vectors_sorts_by_index (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_extract_vectors_sorts_by_index) ... ok
+test_pair_classification_mock (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_pair_classification_mock) ... ok
+test_probe_api_shape_ok (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_probe_api_shape_ok) ... ok
+test_probe_l2_normalized (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_probe_l2_normalized) ... ok
+test_report_schema_v2 (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_report_schema_v2) ... ok
+test_retrieval_mock (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_retrieval_mock) ... ok
+test_semantic_order_majority (scripts.test_qa_embedding_probes.EmbeddingProbeMockTests.test_semantic_order_majority) ... ok
+test_image_color_content_match (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_image_color_content_match) ... ok
+test_model_advertises_image_from_capabilities (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_model_advertises_image_from_capabilities) ... ok
+test_multimodal_soft_skip_only_without_require (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_multimodal_soft_skip_only_without_require) ... ok
+test_remote_media_must_reject (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_remote_media_must_reject) ... ok
+test_run_multimodal_smoke_policy_only_with_mocks (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_run_multimodal_smoke_policy_only_with_mocks) ... ok
+test_sse_extract_and_normalize (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_sse_extract_and_normalize) ... ok
+test_video_must_reject (scripts.test_qa_multimodal_probes.CapabilityAndPolicyTests.test_video_must_reject) ... ok
+test_package_detection_vision_config (scripts.test_qa_multimodal_probes.MultimodalPackageTests.test_package_detection_vision_config) ... ok
+test_solid_png_header (scripts.test_qa_multimodal_probes.MultimodalPackageTests.test_solid_png_header) ... ok
+
+----------------------------------------------------------------------
+Ran 83 tests in 0.032s
+
+OK
+==> QA: offline gate OK
+............................................................................................................................................    [reference] warmup x 1
+    [ax-engine-py] warmup x 1
+    [reference] trial 1: 1412411.7 chunks/s  1412411.7 tok/s  p95=0.0 ms
+    [ax-engine-py] trial 1: 2000101.2 chunks/s  2000101.2 tok/s  p95=0.0 ms
+    [ax-engine-py] trial 2: 2403787.5 chunks/s  2403787.5 tok/s  p95=0.0 ms
+    [reference] trial 2: 2666646.4 chunks/s  2666646.4 tok/s  p95=0.0 ms
+    [reference] trial 3: 2666646.4 chunks/s  2666646.4 tok/s  p95=0.0 ms
+    [ax-engine-py] trial 3: 3002948.6 chunks/s  3002948.6 tok/s  p95=0.0 ms
+.................................................................................................................................................AX serving benchmark report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpvkcnw5z9/serving.md
+[ax-sweep] (1/1) a
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpjgrmtqju/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpjgrmtqju/out/sweep_summary.md
+[ax-sweep]   -> ok
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpjgrmtqju/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpjgrmtqju/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpjgrmtqju/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpjgrmtqju/out/sweep_summary.md
+.[ax-sweep] (1/1) a
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5eww87iu/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5eww87iu/out/sweep_summary.md
+[ax-sweep]   -> ok
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5eww87iu/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5eww87iu/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5eww87iu/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5eww87iu/out/sweep_summary.md
+.[ax-sweep] (1/1) a
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmppy0j7tw0/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmppy0j7tw0/out/sweep_summary.md
+[ax-sweep]   -> ok
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmppy0j7tw0/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmppy0j7tw0/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmppy0j7tw0/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmppy0j7tw0/out/sweep_summary.md
+.[ax-sweep] (1/1) a
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp11cve6x8/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp11cve6x8/out/sweep_summary.md
+[ax-sweep]   -> ok
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp11cve6x8/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp11cve6x8/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp11cve6x8/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp11cve6x8/out/sweep_summary.md
+...[ax-sweep] (1/1) a
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5kx4zrqo/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5kx4zrqo/out/sweep_summary.md
+[ax-sweep]   -> ok
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5kx4zrqo/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5kx4zrqo/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5kx4zrqo/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5kx4zrqo/out/sweep_summary.md
+.[ax-sweep] (1/1) a
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_9w7_jhz/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_9w7_jhz/out/sweep_summary.md
+[ax-sweep]   -> ok
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_9w7_jhz/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_9w7_jhz/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_9w7_jhz/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_9w7_jhz/out/sweep_summary.md
+.[ax-sweep] (1/1) a
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6nutzxu_/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6nutzxu_/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6nutzxu_/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6nutzxu_/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6nutzxu_/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6nutzxu_/out/sweep_summary.md
+.[ax-sweep] (1/1) a
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3qgq4jf7/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3qgq4jf7/out/sweep_summary.md
+[ax-sweep]   -> bench_failed
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3qgq4jf7/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3qgq4jf7/out/sweep_summary.md
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3qgq4jf7/out/sweep_results.json
+[ax-sweep] wrote /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3qgq4jf7/out/sweep_summary.md
+..............[ax-sweep]   invoke: <repository>/.venv/bin/python3 /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmphdfxj1hv/bench.py --model-dir /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmphdfxj1hv/model --prompt-tokens 128 --generation-tokens 128 --repetitions 5 --warmup-repetitions 2 --cooldown 15.0 --no-build-ax-engine --output /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmphdfxj1hv/out/a.json --skip-mlx-lm --ax-direct
+.[ax-sweep]   invoke: <repository>/.venv/bin/python3 /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpir93pim5/bench.py --model-dir /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpir93pim5/model --prompt-tokens 128 --generation-tokens 128 --repetitions 5 --warmup-repetitions 2 --cooldown 15.0 --no-build-ax-engine --output /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpir93pim5/out/a.json --ax-compare-policies --reuse-reference-results-from /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpir93pim5/reference/a.json --max-load-average 1.5 --max-top-process-cpu-percent 50.0 --load-average-wait-timeout 600.0 --load-average-poll-interval 10.0
+.[ax-sweep]   invoke: <repository>/.venv/bin/python3 /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3xruqraw/bench.py --model-dir /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3xruqraw/model --prompt-tokens 128 --generation-tokens 128 --repetitions 5 --warmup-repetitions 2 --cooldown 15.0 --no-build-ax-engine --output /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp3xruqraw/out/a.json --skip-ax-engine
+.[ax-sweep]   invoke: <repository>/.venv/bin/python3 /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpce8wglu4/bench.py --model-dir /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpce8wglu4/model --prompt-tokens 128 --generation-tokens 128 --repetitions 5 --warmup-repetitions 2 --cooldown 15.0 --no-build-ax-engine --output /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpce8wglu4/out/a.json --ax-direct --reuse-reference-results-from /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpce8wglu4/reference/a.json --require-ax-multi-metric-peer-wins
+.[ax-sweep]   invoke: <repository>/.venv/bin/python3 /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp8cgh7_jf/bench.py --model-dir /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp8cgh7_jf/model --prompt-tokens 128 --generation-tokens 128 --repetitions 5 --warmup-repetitions 2 --cooldown 15.0 --no-build-ax-engine --output /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp8cgh7_jf/out/a.json --ax-compare-policies --reuse-reference-results-from /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp8cgh7_jf/reference/a.json
+......[sweep]   invoke: <repository>/.venv/bin/python3 /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp4t9f1f12/bench_mlx_inference_stack.py --model-dir /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp4t9f1f12/model --prompt-tokens 128,512 --generation-tokens 128 --repetitions 3 --cooldown 0.0 --llama-cpp-bench /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp4t9f1f12/llama-bench --llama-cpp-gguf /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp4t9f1f12/model.gguf --llama-cpp-n-gpu-layers 99 --output /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp4t9f1f12/gemma-4-e2b-it-4bit.json --skip-ax-engine --no-build-ax-engine --skip-mlx-lm --max-load-average 2.0 --max-top-process-cpu-percent 50.0 --load-average-wait-timeout 900.0
+...........[sweep]   invoke: <repository>/.venv/bin/python3 /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_86cjk8m/bench_mlx_inference_stack.py --model-dir /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_86cjk8m/model --prompt-tokens 128,512 --generation-tokens 128 --repetitions 3 --cooldown 0.0 --llama-cpp-bench /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_86cjk8m/llama-bench --llama-cpp-gguf /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_86cjk8m/model.gguf --llama-cpp-n-gpu-layers 99 --output /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp_86cjk8m/gemma-4-e2b-it-4bit.json --llama-cpp-decode-at-depth --skip-ax-engine --no-build-ax-engine --skip-mlx-lm --max-load-average 2.0 --max-top-process-cpu-percent 50.0 --load-average-wait-timeout 900.0 --llama-cpp-extra-args -fa 1 -ctk q8_0
+..[sweep]   invoke: <repository>/.venv/bin/python3 /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp06uu8j58/bench_mlx_inference_stack.py --model-dir /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp06uu8j58/model --prompt-tokens 128,512 --generation-tokens 128 --repetitions 3 --cooldown 0.0 --llama-cpp-bench /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp06uu8j58/llama-bench --llama-cpp-gguf /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp06uu8j58/model.gguf --llama-cpp-n-gpu-layers 99 --output /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp06uu8j58/gemma-4-e2b-it-4bit.json --ax-compare-policies --no-build-ax-engine --max-load-average 2.0 --max-top-process-cpu-percent 50.0 --load-average-wait-timeout 900.0
+...................................Updated config.json with MTP fields.
+........................................................................s......................s.......ss......................[skip] mtplx does not support direct mode yet — update SUPPORT_MATRIX when it does
+.............s.........................................[rerun-ineligible] /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpoa1p56mc/out/mtplx.json
+[run] 27b-4bit flappy mtplx
+............................................................................usage: python3 -m unittest [-h] [--dry-run] [--model-dir MODEL_DIR] [--json]
+                           [--run] [--output OUTPUT]
+                           [--build-manifest BUILD_MANIFEST]
+                           [--server-bin SERVER_BIN] [--bench-bin BENCH_BIN]
+                           [--wheel WHEEL] [--cli CLI] [--port PORT]
+python3 -m unittest: error: --run requires model-dir, output, build-manifest, server-bin, bench-bin, wheel and cli; no dry-run
+............................................................................................................................................................................................................................................................................................................note: draft releases present; re-run with --strict to fail, or finish/delete them after publish verification.
+.............................................................
+----------------------------------------------------------------------
+Ran 985 tests in 15.758s
+
+OK (skipped=5)
+{
+  "schema": 2,
+  "status": "failed",
+  "contract": {
+    "alias": "qwen3.8-27b:axq",
+    "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+    "model_manifest_sha256": "621470389598a8042634f1b65c71f0dd5f02ae47b44ed9e8080083e28725cc26",
+    "host_class": "Mac mini M4 Pro, 64 GB",
+    "status": "Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).",
+    "ci": "dry-run only; do not mount 27B weights on CI",
+    "release_blocking": [
+      "ax-engine doctor ready on the pinned snapshot",
+      "QA surface: direct + MTP for qwen3.8-27b",
+      "no silent MTP direct-fallback",
+      "paired 64-token direct/MTP greedy probe is identical",
+      "clean worktree + matching engine commit"
+    ],
+    "campaign_only": [
+      "MTP Tier 2 promotion",
+      "8h/72h endurance",
+      "long-context decode-at-depth",
+      "peer ranking",
+      "multi-model add-mode",
+      "P0 multimodal quality"
+    ],
+    "commands": {
+      "doctor": "ax-engine doctor --mlx-model-artifacts-dir $MODEL_DIR --json",
+      "serve": "ax-engine serve qwen3.8-27b:axq",
+      "qa_inventory": "OK|direct|qwen3.8-27b:axq|$MODEL_DIR\nOK|mtp|qwen3.8-27b:axq|$MODEL_DIR",
+      "stack": "python3 scripts/bench_mlx_inference_stack.py --model-repo-id AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP --model-dir $MODEL_DIR"
+    }
+  },
+  "cells": [],
+  "host": {
+    "system": "Darwin",
+    "arch": "arm64",
+    "chip": "Apple M5 Max",
+    "model": "MacBookPro",
+    "memory_bytes": 137438953472,
+    "os": "26.6.2"
+  },
+  "error": "ValueError: qualification requires Mac mini M4 Pro 64 GB (Mac16,11)"
+}
+live preflight ok: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpfvjc8l1e/3e290738e96972307c6aeb9934ab170ca0eae1c1
+next: ax-engine doctor, then QA surface direct+mtp on this snapshot
+preflight only: NOT qualified; use --run with build provenance to execute gates
+live preflight ok: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpox6fxgg_
+family qwen4_exp; declared ready and affine layout; metadata preflight only
+this affine manifest does not qualify the MXFP4 MTP target
+next: ax-engine doctor, then QA surface direct+mtp on this snapshot
+this script does not start the Flash Next server (operator-owned live run)
+Long-context comparison report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpxq8bbw4u/artifact.md
+Long-context decode-at-depth report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmptk826w78/artifact.md
+AX-only direct snapshot charts are rendered
+version tags: 2
+releases:     1 (1 published, 0 draft)
+orphan tags: none
+allowed historical orphan tags:
+  - v1.1
+draft releases: none
+version tags: 2
+releases:     1 (1 published, 0 draft)
+orphan tags (tag exists, no GitHub release):
+  - v1.1
+draft releases: none
+version tags: 1
+releases:     1 (0 published, 1 draft)
+orphan tags: none
+draft releases (warn):
+  - v1.0
+version tags: 1
+releases:     1 (0 published, 1 draft)
+orphan tags: none
+stuck drafts:
+  - v1.0
+test_absent_ax_mlx_decode_profile_stays_silent (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_absent_ax_mlx_decode_profile_stays_silent) ... ok
+test_absent_ax_mlx_gemma4_assistant_mtp_stays_silent (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_absent_ax_mlx_gemma4_assistant_mtp_stays_silent) ... ok
+test_absent_ax_mlx_gemma4_moe_profile_stays_silent (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_absent_ax_mlx_gemma4_moe_profile_stays_silent) ... ok
+test_absent_ax_mlx_linear_attention_profile_stays_silent (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_absent_ax_mlx_linear_attention_profile_stays_silent) ... ok
+test_absent_ax_mlx_telemetry_stays_silent (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_absent_ax_mlx_telemetry_stays_silent) ... ok
+test_artifact_run_stability_ignores_non_object_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_artifact_run_stability_ignores_non_object_rows) ... ok
+test_artifact_run_stability_rejects_empty_ax_scope (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_artifact_run_stability_rejects_empty_ax_scope) ... ok
+test_artifact_run_stability_rejects_stale_row_schema (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_artifact_run_stability_rejects_stale_row_schema) ... ok
+test_artifact_run_stability_summarizes_ax_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_artifact_run_stability_summarizes_ax_rows) ... ok
+test_attach_baseline_requires_matching_mlx_lm_row (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_attach_baseline_requires_matching_mlx_lm_row) ... ok
+test_attempted_fastpath_summary_counts_profile_blocked_attempts (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_attempted_fastpath_summary_counts_profile_blocked_attempts) ... ok
+test_ax_decode_claim_status_distinguishes_no_draft_fallback (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_decode_claim_status_distinguishes_no_draft_fallback) ... ok
+test_ax_decode_claim_status_reports_throughput_policy_only (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_decode_claim_status_reports_throughput_policy_only) ... ok
+test_ax_decode_effective_route_identifies_linear_no_draft_fallback (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_decode_effective_route_identifies_linear_no_draft_fallback) ... ok
+test_ax_decode_policy_defaults_to_kv_trim (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_decode_policy_defaults_to_kv_trim) ... ok
+test_ax_mlx_decode_profile_is_extracted_and_summarized (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_decode_profile_is_extracted_and_summarized) ... ok
+test_ax_mlx_decode_route_summary_classifies_diffusion (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_decode_route_summary_classifies_diffusion) ... ok
+test_ax_mlx_decode_route_summary_classifies_pipeline_and_mixed_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_decode_route_summary_classifies_pipeline_and_mixed_rows) ... ok
+test_ax_mlx_gemma4_assistant_mtp_is_extracted_and_summarized (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_gemma4_assistant_mtp_is_extracted_and_summarized) ... ok
+test_ax_mlx_gemma4_moe_profile_is_extracted_and_summarized (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_gemma4_moe_profile_is_extracted_and_summarized) ... ok
+test_ax_mlx_linear_attention_profile_is_extracted_and_summarized (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_linear_attention_profile_is_extracted_and_summarized) ... ok
+test_ax_mlx_lm_peer_win_non_candidate_exits_nonzero (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_lm_peer_win_non_candidate_exits_nonzero) ... ok
+test_ax_mlx_lm_peer_wins_rejects_missing_duplicate_and_hash_mismatch (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_lm_peer_wins_rejects_missing_duplicate_and_hash_mismatch) ... ok
+test_ax_mlx_lm_peer_wins_rejects_ties_and_losses (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_lm_peer_wins_rejects_ties_and_losses) ... ok
+test_ax_mlx_lm_peer_wins_requires_all_three_metrics (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_lm_peer_wins_requires_all_three_metrics) ... ok
+test_ax_mlx_model_contract_must_be_stable_across_repetitions (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_model_contract_must_be_stable_across_repetitions) ... ok
+test_ax_mlx_telemetry_is_extracted_and_summarized (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mlx_telemetry_is_extracted_and_summarized) ... ok
+test_ax_mtp_profitability_speedup_gauge_allows_values_above_one_x (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mtp_profitability_speedup_gauge_allows_values_above_one_x) ... ok
+test_ax_mtp_telemetry_rejects_mixed_effective_modes (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_mtp_telemetry_rejects_mixed_effective_modes) ... ok
+test_ax_ngram_telemetry_is_extracted_from_route (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_ngram_telemetry_is_extracted_from_route) ... ok
+test_ax_ngram_telemetry_summarizes_trials (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_ngram_telemetry_summarizes_trials) ... ok
+test_ax_only_refresh_accepts_peer_only_reference_without_ax_regression (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_only_refresh_accepts_peer_only_reference_without_ax_regression) ... ok
+test_ax_only_refresh_non_publication_candidate_exits_nonzero (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_only_refresh_non_publication_candidate_exits_nonzero) ... ok
+test_ax_only_refresh_passing_summary_has_no_failure_reasons (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_only_refresh_passing_summary_has_no_failure_reasons) ... ok
+test_ax_only_refresh_regression_blocks_duplicate_current_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_only_refresh_regression_blocks_duplicate_current_rows) ... ok
+test_ax_only_refresh_regression_blocks_duplicate_reference_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_only_refresh_regression_blocks_duplicate_reference_rows) ... ok
+test_ax_only_refresh_regression_blocks_missing_reference_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_only_refresh_regression_blocks_missing_reference_rows) ... ok
+test_ax_only_refresh_regression_blocks_slower_ax_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_only_refresh_regression_blocks_slower_ax_rows) ... ok
+test_ax_prefill_work_contract_labels_greedy_cache_only_aligned_with_runtime (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_prefill_work_contract_labels_greedy_cache_only_aligned_with_runtime) ... ok
+test_ax_prefill_work_contract_no_repeat_ngram_forces_historical (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_prefill_work_contract_no_repeat_ngram_forces_historical) ... ok
+test_ax_sse_parser_resets_event_after_each_frame (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_sse_parser_resets_event_after_each_frame) ... ok
+test_ax_sse_parser_supports_multiline_data_without_stale_event (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_sse_parser_supports_multiline_data_without_stale_event) ... ok
+test_ax_step_timing_classifies_chunked_prefill_by_scheduled_tokens (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_step_timing_classifies_chunked_prefill_by_scheduled_tokens) ... ok
+test_ax_step_timing_prefers_route_metadata_over_token_heuristic (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ax_step_timing_prefers_route_metadata_over_token_heuristic) ... ok
+test_axengine_command_can_enable_decode_profile (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_enable_decode_profile) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091 --disable-ngram-acceleration
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_command_can_enable_direct_linear_attention_routes (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_enable_direct_linear_attention_routes) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091 --disable-ngram-acceleration
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_command_can_enable_gemma4_assistant_mtp (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_enable_gemma4_assistant_mtp) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091
+  [ax-engine] AX_MLX_MTP_MAX_DEPTH=1
+  [ax-engine] AX_MLX_GEMMA4_ASSISTANT_MTP=1
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_command_can_enable_gemma4_moe_profile (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_enable_gemma4_moe_profile) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091 --disable-ngram-acceleration
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_command_can_enable_linear_attention_profile (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_enable_linear_attention_profile) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091 --disable-ngram-acceleration
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_command_can_enable_linear_attention_projection_pack (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_enable_linear_attention_projection_pack) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091 --disable-ngram-acceleration
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_command_can_enable_qwen_dense_ffn_matvec_metal (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_enable_qwen_dense_ffn_matvec_metal) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091 --disable-ngram-acceleration
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_command_can_enable_qwen_linear_mtp_exact_profile (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_enable_qwen_linear_mtp_exact_profile) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091
+  [ax-engine] AX_MLX_QWEN_LINEAR_MTP_EXACT=1
+  [ax-engine] AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE=1
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_command_can_keep_prefix_cache_enabled (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_can_keep_prefix_cache_enabled) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091 --disable-ngram-acceleration
+ok
+test_axengine_command_disables_prefix_cache_by_default (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_command_disables_prefix_cache_by_default) ...   [ax-engine] /tmp/ax-engine-server --mlx --mlx-model-artifacts-dir /tmp/model --model-id test-model --port 19091 --disable-ngram-acceleration
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+ok
+test_axengine_direct_summary_rejects_ngram_telemetry (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_direct_summary_rejects_ngram_telemetry) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_gemma4_assistant_mtp_ngram_row_has_distinct_identity (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_gemma4_assistant_mtp_ngram_row_has_distinct_identity) ...   [ax-engine/ax_engine_gemma4_assistant_mtp_ngram] prompt=3 generation=3 policy=gemma4_assistant_mtp_ngram_stacking
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_gemma4_assistant_mtp_row_summarizes_route_metadata (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_gemma4_assistant_mtp_row_summarizes_route_metadata) ...   [ax-engine/ax_engine_gemma4_assistant_mtp] prompt=3 generation=3 policy=gemma4_assistant_mtp_no_ngram_stacking
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_gpu_wake_posts_tiny_generate_and_settles (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_gpu_wake_posts_tiny_generate_and_settles) ... ok
+test_axengine_gpu_wake_swallows_request_errors (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_gpu_wake_swallows_request_errors) ... ok
+test_axengine_ngram_summary_allows_ngram_telemetry (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_ngram_summary_allows_ngram_telemetry) ...   [ax-engine/ax_engine_mlx_ngram_accel] prompt=3 generation=3 policy=ngram_acceleration_kv_trim
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_one_run_decode_rate_matches_mlx_lm_generation_contract (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_one_run_decode_rate_matches_mlx_lm_generation_contract) ... ok
+test_axengine_one_run_records_client_wall_ttft_from_first_output (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_one_run_records_client_wall_ttft_from_first_output) ... ok
+test_axengine_one_run_rejects_failed_terminal_response (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_one_run_rejects_failed_terminal_response) ... ok
+test_axengine_one_run_rejects_stream_without_terminal_response (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_one_run_rejects_stream_without_terminal_response) ... ok
+test_axengine_one_run_sends_configured_sampling_seed (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_one_run_sends_configured_sampling_seed) ... ok
+test_axengine_pure_mtp_row_records_head_only_policy (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_pure_mtp_row_records_head_only_policy) ...   [ax-engine/ax_engine_mlx_pure_mtp] prompt=3 generation=3 policy=mtp_head_only_no_ngram_stacking
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_row_captures_output_token_ids_only_when_requested (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_row_captures_output_token_ids_only_when_requested) ...   [ax-engine/ax_engine_mlx_ngram_accel] prompt=3 generation=3 policy=ngram_acceleration_kv_trim
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_row_preserves_output_token_ids_when_requested (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_row_preserves_output_token_ids_when_requested) ...   [ax-engine/ax_engine_mlx_ngram_accel] prompt=3 generation=3 policy=ngram_acceleration_kv_trim
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_summary_can_label_linear_attention_pack_row (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_summary_can_label_linear_attention_pack_row) ...   [ax-engine/ax_engine_mlx_linear_pack] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_summary_exposes_direct_cpp_linear_attention_post_input_route (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_summary_exposes_direct_cpp_linear_attention_post_input_route) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_summary_exposes_direct_cpp_linear_attention_route (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_summary_exposes_direct_cpp_linear_attention_route) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=15.0 tok/s decode=20.0 tok/s out=3
+ok
+test_axengine_summary_includes_ttft_and_memory (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_axengine_summary_includes_ttft_and_memory) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=10.0 tok/s decode=20.0 tok/s out=3
+    rep 2: prefill=15.0 tok/s decode=20.0 tok/s out=3
+    rep 3: prefill=8.0 tok/s decode=20.0 tok/s out=3
+ok
+test_bandwidth_accounting_blocks_moe_without_active_bytes (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bandwidth_accounting_blocks_moe_without_active_bytes) ... ok
+test_bandwidth_accounting_dense_model (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bandwidth_accounting_dense_model) ... ok
+test_bandwidth_accounting_moe_model_with_active_experts (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bandwidth_accounting_moe_model_with_active_experts) ... ok
+test_bandwidth_accounting_skips_zero_decode (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bandwidth_accounting_skips_zero_decode) ... ok
+test_bandwidth_accounting_with_peak_bandwidth (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bandwidth_accounting_with_peak_bandwidth) ... ok
+test_bench_axengine_checks_load_gate_before_warmup_and_repetitions (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bench_axengine_checks_load_gate_before_warmup_and_repetitions) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=10.0 tok/s decode=20.0 tok/s out=3
+    rep 2: prefill=10.0 tok/s decode=20.0 tok/s out=3
+ok
+test_bench_axengine_prefill_work_contract_reflects_actual_sampler (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bench_axengine_prefill_work_contract_reflects_actual_sampler) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=10.0 tok/s decode=20.0 tok/s out=3
+ok
+test_bench_axengine_records_configured_seed (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bench_axengine_records_configured_seed) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=10.0 tok/s decode=20.0 tok/s out=3
+ok
+test_bench_axengine_records_tail_regression_stability (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bench_axengine_records_tail_regression_stability) ... ok
+test_bench_axengine_reports_interim_summary_before_cooldown (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bench_axengine_reports_interim_summary_before_cooldown) ... ok
+test_bench_axengine_skips_gpu_wake_when_disabled (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bench_axengine_skips_gpu_wake_when_disabled) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=10.0 tok/s decode=20.0 tok/s out=3
+ok
+test_bench_axengine_wakes_gpu_before_warmup_and_each_rep (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_bench_axengine_wakes_gpu_before_warmup_and_each_rep) ...   [ax-engine/ax_engine_mlx] prompt=3 generation=3 policy=direct_no_ngram_acceleration
+    warmup 1/1
+    rep 1: prefill=10.0 tok/s decode=20.0 tok/s out=3
+    rep 2: prefill=10.0 tok/s decode=20.0 tok/s out=3
+ok
+test_benchmark_boundary_collects_without_load_gate (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_benchmark_boundary_collects_without_load_gate) ... ok
+test_benchmark_boundary_enforces_load_gate (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_benchmark_boundary_enforces_load_gate) ... ok
+test_build_incomplete_output_marker_is_non_publication_candidate (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_build_incomplete_output_marker_is_non_publication_candidate) ... ok
+test_build_real_prompts_attaches_suite_metadata (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_build_real_prompts_attaches_suite_metadata) ...   [prompt] real suite=coding case=one tokens=3 text_sha256=38164fbd1760 path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmppty1jbxc/artifacts/real-coding-one-gen-128-3c23d1572272.json
+  [prompt] real suite=coding case=two tokens=4 text_sha256=01e158900b5f path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmppty1jbxc/artifacts/real-coding-two-gen-128-68b29623bcf8.json
+ok
+test_build_real_prompts_raw_encoding_skips_chat_template (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_build_real_prompts_raw_encoding_skips_chat_template) ...   [prompt] real suite=coding case=one tokens=2 text_sha256=38164fbd1760 path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp4bqg02xa/artifacts/real-coding-one-gen-128-44f65a6052fe.json
+ok
+test_build_reference_prompts_tags_random_source (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_build_reference_prompts_tags_random_source) ...   [prompt] prompt_tokens=4 sha256=f6bd10506e9a path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpzf0gy1ss/artifacts/prompt-4-gen-8-f6bd10506e9a.json
+ok
+test_build_row_identity_matches_rust_gate_schema (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_build_row_identity_matches_rust_gate_schema) ... ok
+test_canonical_prompt_hash_is_stable_and_order_sensitive (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_canonical_prompt_hash_is_stable_and_order_sensitive) ... ok
+test_canonical_sampler_signature_collapses_greedy_equivalents (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_canonical_sampler_signature_collapses_greedy_equivalents) ... ok
+test_collect_host_metadata_uses_supplied_performance_conditions (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_collect_host_metadata_uses_supplied_performance_conditions) ... ok
+test_collect_model_metadata_detects_linear_attention_policy (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_collect_model_metadata_detects_linear_attention_policy) ... ok
+test_collect_performance_condition_metadata_parses_pmset (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_collect_performance_condition_metadata_parses_pmset) ... ok
+test_collect_top_process_cpu_metadata_ignores_stopped_processes (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_collect_top_process_cpu_metadata_ignores_stopped_processes) ... ok
+test_collect_top_process_cpu_metadata_parses_ps (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_collect_top_process_cpu_metadata_parses_ps) ... ok
+test_core_prefix_reuse_telemetry_is_extracted_and_summarized (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_core_prefix_reuse_telemetry_is_extracted_and_summarized) ... ok
+test_default_on_env_enabled_matches_runtime_kill_switch (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_default_on_env_enabled_matches_runtime_kill_switch) ... ok
+test_default_on_env_explicit_enable_overrides_inherited_kill_switch (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_default_on_env_explicit_enable_overrides_inherited_kill_switch) ... ok
+test_default_repetition_and_cooldown_contract_matches_docs (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_default_repetition_and_cooldown_contract_matches_docs) ... ok
+test_direct_linear_attention_post_input_compare_accepts_direct_ax_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_direct_linear_attention_post_input_compare_accepts_direct_ax_rows) ... ok
+test_direct_linear_attention_post_input_compare_rejects_missing_ax_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_direct_linear_attention_post_input_compare_rejects_missing_ax_rows) ... ok
+test_direct_linear_attention_post_input_compare_rejects_non_direct_ax_modes (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_direct_linear_attention_post_input_compare_rejects_non_direct_ax_modes) ... ok
+test_direct_linear_attention_post_input_compare_rejects_other_paired_modes (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_direct_linear_attention_post_input_compare_rejects_other_paired_modes) ... ok
+test_direct_linear_attention_post_input_compare_rejects_profile_modes (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_direct_linear_attention_post_input_compare_rejects_profile_modes) ... ok
+test_ensure_ax_engine_server_binary_builds_before_checking_binary (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ensure_ax_engine_server_binary_builds_before_checking_binary) ...   [build] cargo build -p ax-engine-server --release
+ok
+test_ensure_ax_engine_server_binary_reports_missing_without_build (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ensure_ax_engine_server_binary_reports_missing_without_build) ... ok
+test_ensure_port_available_allows_closed_listener_port (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ensure_port_available_allows_closed_listener_port) ... ok
+test_ensure_port_available_rejects_existing_listener (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_ensure_port_available_rejects_existing_listener) ... ok
+test_explicit_model_keeps_explicit_model_repo_id (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_explicit_model_keeps_explicit_model_repo_id) ... ok
+test_explicit_model_repo_id_model_resolves_same_cache_repo (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_explicit_model_repo_id_model_resolves_same_cache_repo) ... ok
+test_explicit_non_repo_model_requires_repo_id_or_model_dir (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_explicit_non_repo_model_requires_repo_id_or_model_dir) ... ok
+test_gateddelta_prefill_profile_cli_reports_model_preflight_before_server_check (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_gateddelta_prefill_profile_cli_reports_model_preflight_before_server_check) ... ok
+test_gateddelta_prefill_profile_defaults_to_long_prompt_matrix (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_gateddelta_prefill_profile_defaults_to_long_prompt_matrix) ... ok
+test_gateddelta_prefill_profile_model_preflight_requires_qwen_contract (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_gateddelta_prefill_profile_model_preflight_requires_qwen_contract) ... ok
+test_gateddelta_prefill_profile_requires_linear_attention_metadata (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_gateddelta_prefill_profile_requires_linear_attention_metadata) ... ok
+test_hf_cache_roots_follow_hugging_face_env_order (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_hf_cache_roots_follow_hugging_face_env_order) ... ok
+test_linear_attention_pack_compare_enables_profile_gate (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_linear_attention_pack_compare_enables_profile_gate) ... ok
+test_linear_attention_profile_prefers_prefill_route (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_linear_attention_profile_prefers_prefill_route) ... ok
+test_linear_attention_projection_layout_detects_packed_manifest (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_linear_attention_projection_layout_detects_packed_manifest) ... ok
+test_load_real_prompt_suite_parses_required_fields (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_real_prompt_suite_parses_required_fields) ... ok
+test_load_real_prompt_suite_rejects_duplicate_ids (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_real_prompt_suite_rejects_duplicate_ids) ... ok
+test_load_real_prompt_suite_rejects_empty_file (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_real_prompt_suite_rejects_empty_file) ... ok
+test_load_real_prompt_suite_rejects_invalid_json (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_real_prompt_suite_rejects_invalid_json) ... ok
+test_load_real_prompt_suite_rejects_missing_required_field (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_real_prompt_suite_rejects_missing_required_field) ... ok
+test_load_real_prompt_suite_skips_blank_and_comment_lines (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_real_prompt_suite_skips_blank_and_comment_lines) ... ok
+test_load_reused_reference_rows_filters_and_requires_mlx_lm (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_reused_reference_rows_filters_and_requires_mlx_lm) ... ok
+test_load_reused_reference_rows_rejects_duplicate_mlx_lm_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_reused_reference_rows_rejects_duplicate_mlx_lm_rows) ... ok
+test_load_reused_reference_rows_rejects_missing_results (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_reused_reference_rows_rejects_missing_results) ... ok
+test_load_reused_reference_rows_rejects_wrong_schema (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_load_reused_reference_rows_rejects_wrong_schema) ... ok
+test_long_prompt_artifact_is_compact_and_round_trips (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_long_prompt_artifact_is_compact_and_round_trips) ...   [prompt] prompt_tokens=131072 sha256=42f3d6c5cd1a path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpk9ezas3x/prompt-131072-gen-64-42f3d6c5cd1a.json
+ok
+test_max_top_process_cpu_percent_reads_numeric_value (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_max_top_process_cpu_percent_reads_numeric_value) ... ok
+test_mlx_lm_row_attaches_derived_ttft (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_mlx_lm_row_attaches_derived_ttft) ...   [prompt] prompt_tokens=4 sha256=f6bd10506e9a path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmphbf2r5dn/prompt-4-gen-2-f6bd10506e9a.json
+  [mlx_lm] <repository>/.venv/bin/python3 -m mlx_lm.benchmark --model model --batch-size 1 --prompt-tokens 4 --generation-tokens 2 --num-trials 3 --delay 0 --prefill-step-size 2048
+ok
+test_mlx_lm_trial_selection_rejects_missing_warmup_trial (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_mlx_lm_trial_selection_rejects_missing_warmup_trial) ... ok
+test_mtp_exact_claim_requires_recorded_proposal_law (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_mtp_exact_claim_requires_recorded_proposal_law) ... ok
+test_one_minute_load_average_reads_numeric_value (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_one_minute_load_average_reads_numeric_value) ... ok
+test_parse_mlx_lm_trials_and_reported_averages (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_parse_mlx_lm_trials_and_reported_averages) ... ok
+test_prefill_cache_warm_detects_physical_or_logical_reuse (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_prefill_cache_warm_detects_physical_or_logical_reuse) ... ok
+test_prefix_reuse_evidence_classifies_absent_and_partial_coverage (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_prefix_reuse_evidence_classifies_absent_and_partial_coverage) ... ok
+test_prefix_reuse_evidence_summarizes_ax_rows (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_prefix_reuse_evidence_summarizes_ax_rows) ... ok
+test_print_summary_includes_run_stability (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_print_summary_includes_run_stability) ... ok
+test_prompt_artifact_records_hash_and_validates_inline_tokens (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_prompt_artifact_records_hash_and_validates_inline_tokens) ...   [prompt] prompt_tokens=4 sha256=f6bd10506e9a path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp5_p8f8vg/prompt-4-gen-2-f6bd10506e9a.json
+ok
+test_public_claim_gate_requires_release_methodology (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_public_claim_gate_requires_release_methodology) ... ok
+test_render_gateddelta_prefill_profile_output_writes_markdown (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_render_gateddelta_prefill_profile_output_writes_markdown) ... ok
+test_resolve_model_dir_prefers_explicit_model_dir (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_resolve_model_dir_prefers_explicit_model_dir) ... ok
+test_resolve_model_dir_rejects_unprepared_hugging_face_snapshot (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_resolve_model_dir_rejects_unprepared_hugging_face_snapshot) ... ok
+test_resolve_model_dir_uses_hugging_face_cache_snapshot (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_resolve_model_dir_uses_hugging_face_cache_snapshot) ... ok
+test_reused_reference_model_identity_accepts_same_snapshot_in_new_cache (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_reused_reference_model_identity_accepts_same_snapshot_in_new_cache) ... ok
+test_reused_reference_model_identity_rejects_repo_mismatch (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_reused_reference_model_identity_rejects_repo_mismatch) ... ok
+test_reused_reference_model_identity_rejects_snapshot_mismatch (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_reused_reference_model_identity_rejects_snapshot_mismatch) ... ok
+test_reused_reference_publication_metadata_is_bounded (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_reused_reference_publication_metadata_is_bounded) ... ok
+test_reused_reference_publication_shape_requires_effective_warmups (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_reused_reference_publication_shape_requires_effective_warmups) ... ok
+test_route_with_more_decisions_keeps_step_telemetry_over_response_route (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_route_with_more_decisions_keeps_step_telemetry_over_response_route) ... ok
+test_route_with_more_decisions_prefers_decode_signals_over_prefill_totals (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_route_with_more_decisions_prefers_decode_signals_over_prefill_totals) ... ok
+test_route_with_more_decisions_prefers_nonzero_counters_on_equal_keys (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_route_with_more_decisions_prefers_nonzero_counters_on_equal_keys) ... ok
+test_scheduler_telemetry_is_extracted_and_summarized (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_scheduler_telemetry_is_extracted_and_summarized) ... ok
+test_step_local_route_decisions_are_merged_into_selected_decode_route (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_step_local_route_decisions_are_merged_into_selected_decode_route) ... ok
+test_summarize_ngram_accept_at_depth_yields_histogram_or_empty (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_summarize_ngram_accept_at_depth_yields_histogram_or_empty) ... ok
+test_summarize_runs_ignores_invalid_none_values (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_summarize_runs_ignores_invalid_none_values) ... ok
+test_top_process_helpers_exclude_benchmark_server_pid (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_top_process_helpers_exclude_benchmark_server_pid) ... ok
+test_validate_gateddelta_prefill_profile_output_runs_checker (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_validate_gateddelta_prefill_profile_output_runs_checker) ... ok
+test_validate_reused_reference_prompt_hashes_rejects_mismatches (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_validate_reused_reference_prompt_hashes_rejects_mismatches) ... ok
+test_wait_for_performance_load_ignores_benchmark_server_cpu (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_wait_for_performance_load_ignores_benchmark_server_cpu) ... ok
+test_wait_for_performance_load_rejects_high_top_process_cpu (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_wait_for_performance_load_rejects_high_top_process_cpu) ... ok
+test_wait_for_performance_load_rejects_unavailable_load (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_wait_for_performance_load_rejects_unavailable_load) ... ok
+test_wait_for_performance_load_returns_when_under_threshold (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_wait_for_performance_load_returns_when_under_threshold) ... ok
+test_wait_for_performance_load_times_out (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_wait_for_performance_load_times_out) ... ok
+test_wait_for_performance_load_waits_until_threshold (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_wait_for_performance_load_waits_until_threshold) ...   [load-gate] one-minute load 2.000 exceeds 1.000; sleeping 2.0s
+ok
+test_wait_for_performance_load_waits_until_top_process_cpu_threshold (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_wait_for_performance_load_waits_until_top_process_cpu_threshold) ...   [load-gate] top process Code Helper at 81.0% CPU exceeds 50.0%; sleeping 2.0s
+ok
+test_wait_for_server_returns_when_process_exits (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_wait_for_server_returns_when_process_exits) ... ok
+test_write_real_prompt_tokens_emits_artifact_with_source_real (scripts.test_bench_mlx_inference_stack.MlxInferenceStackBenchTests.test_write_real_prompt_tokens_emits_artifact_with_source_real) ...   [prompt] real suite=coding case=case_a tokens=5 text_sha256=64ec88ca00b2 path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmphj7pjzof/prompts/real-coding-case_a-gen-128-4a642008f854.json
+ok
+test_builds_and_validates_scaling_artifact (scripts.test_build_mlx_prefill_scaling_artifact.BuildPrefillScalingArtifactTests.test_builds_and_validates_scaling_artifact) ... ok
+test_duplicate_mlx_lm_baseline_fails_closed (scripts.test_build_mlx_prefill_scaling_artifact.BuildPrefillScalingArtifactTests.test_duplicate_mlx_lm_baseline_fails_closed) ... ok
+test_min_context_filter_requires_remaining_baseline (scripts.test_build_mlx_prefill_scaling_artifact.BuildPrefillScalingArtifactTests.test_min_context_filter_requires_remaining_baseline) ... ok
+test_missing_ax_memory_fails (scripts.test_build_mlx_prefill_scaling_artifact.BuildPrefillScalingArtifactTests.test_missing_ax_memory_fails) ... ok
+test_insufficient_context_coverage_fails (scripts.test_mlx_prefill_scaling_artifact.PrefillScalingArtifactTests.test_insufficient_context_coverage_fails) ... ok
+test_invalid_prompt_hash_fails (scripts.test_mlx_prefill_scaling_artifact.PrefillScalingArtifactTests.test_invalid_prompt_hash_fails) ... ok
+test_missing_mlx_lm_baseline_fails (scripts.test_mlx_prefill_scaling_artifact.PrefillScalingArtifactTests.test_missing_mlx_lm_baseline_fails) ... ok
+test_stale_ratio_fails (scripts.test_mlx_prefill_scaling_artifact.PrefillScalingArtifactTests.test_stale_ratio_fails) ... ok
+test_valid_artifact_passes (scripts.test_mlx_prefill_scaling_artifact.PrefillScalingArtifactTests.test_valid_artifact_passes) ... ok
+test_cli_writes_report (scripts.test_render_mlx_prefill_scaling_report.PrefillScalingReportTests.test_cli_writes_report) ... ok
+test_renders_markdown_table_and_bend_marker (scripts.test_render_mlx_prefill_scaling_report.PrefillScalingReportTests.test_renders_markdown_table_and_bend_marker) ... ok
+test_campaign_with_required_families_passes_and_renders (scripts.test_mlx_prefill_scaling_campaign.PrefillScalingCampaignTests.test_campaign_with_required_families_passes_and_renders) ... ok
+test_cli_writes_campaign_report (scripts.test_mlx_prefill_scaling_campaign.PrefillScalingCampaignTests.test_cli_writes_campaign_report) ... ok
+test_missing_required_family_fails (scripts.test_mlx_prefill_scaling_campaign.PrefillScalingCampaignTests.test_missing_required_family_fails) ... ok
+test_mixed_host_fails_by_default (scripts.test_mlx_prefill_scaling_campaign.PrefillScalingCampaignTests.test_mixed_host_fails_by_default) ... ok
+test_benchmark_warm_cannot_carry_startup_metrics (scripts.test_mlx_startup_latency_artifact.StartupLatencyArtifactTests.test_benchmark_warm_cannot_carry_startup_metrics) ... ok
+test_cli_reports_validated_phases (scripts.test_mlx_startup_latency_artifact.StartupLatencyArtifactTests.test_cli_reports_validated_phases) ... ok
+test_mismatched_prompt_hash_fails (scripts.test_mlx_startup_latency_artifact.StartupLatencyArtifactTests.test_mismatched_prompt_hash_fails) ... ok
+test_missing_phase_fails (scripts.test_mlx_startup_latency_artifact.StartupLatencyArtifactTests.test_missing_phase_fails) ... ok
+test_stale_ratio_fails (scripts.test_mlx_startup_latency_artifact.StartupLatencyArtifactTests.test_stale_ratio_fails) ... ok
+test_valid_artifact_passes (scripts.test_mlx_startup_latency_artifact.StartupLatencyArtifactTests.test_valid_artifact_passes) ... ok
+test_boolean_is_not_accepted_as_a_ratio (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_boolean_is_not_accepted_as_a_ratio) ... ok
+test_boolean_is_not_accepted_as_an_integer (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_boolean_is_not_accepted_as_an_integer) ... ok
+test_boolean_is_not_accepted_as_scheduler_evidence (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_boolean_is_not_accepted_as_scheduler_evidence) ... ok
+test_captured_output_length_must_match_generation_contract (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_captured_output_length_must_match_generation_contract) ... ok
+test_captured_shared_prefix_output_divergence_fails (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_captured_shared_prefix_output_divergence_fails) ... ok
+test_captured_shared_prefix_outputs_are_validated_exactly (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_captured_shared_prefix_outputs_are_validated_exactly) ... ok
+test_cli_reports_concurrency_levels (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_cli_reports_concurrency_levels) ... ok
+test_failure_count_must_be_zero (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_failure_count_must_be_zero) ... ok
+test_missing_scheduler_evidence_can_validate_legacy_boundary (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_missing_scheduler_evidence_can_validate_legacy_boundary) ... ok
+test_missing_scheduler_evidence_fails (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_missing_scheduler_evidence_fails) ... ok
+test_missing_single_request_baseline_fails (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_missing_single_request_baseline_fails) ... ok
+test_non_finite_metric_is_rejected (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_non_finite_metric_is_rejected) ... ok
+test_non_finite_ratio_tolerance_cannot_disable_ratio_validation (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_non_finite_ratio_tolerance_cannot_disable_ratio_validation) ... ok
+test_overflowed_standard_json_number_is_rejected (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_overflowed_standard_json_number_is_rejected) ... ok
+test_prompt_hash_count_must_match_concurrency (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_prompt_hash_count_must_match_concurrency) ... ok
+test_stale_ratio_fails (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_stale_ratio_fails) ... ok
+test_valid_artifact_passes (scripts.test_mlx_concurrent_prefill_artifact.ConcurrentPrefillArtifactTests.test_valid_artifact_passes) ... ok
+test_cli_writes_report (scripts.test_render_mlx_p2_latency_report.P2LatencyReportTests.test_cli_writes_report) ... ok
+test_renders_both_sections (scripts.test_render_mlx_p2_latency_report.P2LatencyReportTests.test_renders_both_sections) ... ok
+test_requires_at_least_one_artifact (scripts.test_render_mlx_p2_latency_report.P2LatencyReportTests.test_requires_at_least_one_artifact) ... MLX P2 latency report failed: at least one artifact path is required
+ok
+test_build_prompt_docs_can_reuse_an_exact_shared_prefix (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_build_prompt_docs_can_reuse_an_exact_shared_prefix) ...   [prompt] prompt_tokens=3 sha256=a615eeaee21d path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpmp0g6sh9/prompts/prompt-3-gen-1-a615eeaee21d.json
+  [prompt] prompt_tokens=3 sha256=a615eeaee21d path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpmp0g6sh9/prompts/prompt-3-gen-1-a615eeaee21d.json
+  [prompt] prompt_tokens=3 sha256=a615eeaee21d path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpmp0g6sh9/prompts/prompt-3-gen-1-a615eeaee21d.json
+  [prompt] prompt_tokens=3 sha256=a615eeaee21d path=/var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpmp0g6sh9/prompts/prompt-3-gen-1-a615eeaee21d.json
+ok
+test_concurrent_capture_records_explicit_shared_prefix_mode (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_concurrent_capture_records_explicit_shared_prefix_mode) ... ok
+test_concurrent_capture_warms_each_shape_before_measurement (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_concurrent_capture_warms_each_shape_before_measurement) ... ok
+test_concurrent_row_computes_ratios_and_overlap_classification (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_concurrent_row_computes_ratios_and_overlap_classification) ... ok
+test_concurrent_trial_preserves_request_errors (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_concurrent_trial_preserves_request_errors) ... ok
+test_concurrent_trial_samples_peak_rss_while_requests_run (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_concurrent_trial_samples_peak_rss_while_requests_run) ... ok
+test_dry_run_does_not_require_real_model_weights (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_dry_run_does_not_require_real_model_weights) ... ok
+test_dry_run_reports_markdown_output_path (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_dry_run_reports_markdown_output_path) ... ok
+test_parse_concurrency_levels_adds_single_request_baseline (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_parse_concurrency_levels_adds_single_request_baseline) ... ok
+test_run_one_request_uses_client_observed_ttft (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_run_one_request_uses_client_observed_ttft) ... ok
+test_scheduler_evidence_deduplicates_shared_step_ids (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_scheduler_evidence_deduplicates_shared_step_ids) ... ok
+test_shared_step_evidence_reports_engine_step_fanout (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_shared_step_evidence_reports_engine_step_fanout) ... ok
+test_start_direct_server_passes_model_identity (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_start_direct_server_passes_model_identity) ... ok
+test_startup_rows_keep_warm_load_metrics_out_of_benchmark_warm (scripts.test_run_mlx_p2_latency_artifacts.P2LatencyRunnerTests.test_startup_rows_keep_warm_load_metrics_out_of_benchmark_warm) ... ok
+test_bad_preflight_head_dim_fails (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_bad_preflight_head_dim_fails) ... ok
+test_bad_preflight_schema_fails (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_bad_preflight_schema_fails) ... ok
+test_cli_validates_artifact_file (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_cli_validates_artifact_file) ... ok
+test_missing_model_preflight_fails (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_missing_model_preflight_fails) ... ok
+test_missing_recurrent_counter_fails (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_missing_recurrent_counter_fails) ... ok
+test_missing_runtime_profile_fails (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_missing_runtime_profile_fails) ... ok
+test_ngram_row_fails (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_ngram_row_fails) ... ok
+test_optional_mlx_swift_lm_rows_are_allowed (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_optional_mlx_swift_lm_rows_are_allowed) ... ok
+test_prompt_matrix_mismatch_fails (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_prompt_matrix_mismatch_fails) ... ok
+test_valid_artifact_passes (scripts.test_gateddelta_prefill_profile_artifact.GatedDeltaPrefillProfileArtifactTests.test_valid_artifact_passes) ... ok
+test_cli_writes_report (scripts.test_render_gateddelta_prefill_profile_report.GatedDeltaPrefillProfileReportTests.test_cli_writes_report) ... ok
+test_renders_stage_table_and_decision_hint (scripts.test_render_gateddelta_prefill_profile_report.GatedDeltaPrefillProfileReportTests.test_renders_stage_table_and_decision_hint) ... ok
+test_cli_writes_report (scripts.test_render_mlx_decode_profile_report.MlxDecodeProfileReportTests.test_cli_writes_report) ... ok
+test_directory_filter_selects_decode_profile_artifacts (scripts.test_render_mlx_decode_profile_report.MlxDecodeProfileReportTests.test_directory_filter_selects_decode_profile_artifacts) ... ok
+test_old_artifact_missing_new_fields_renders_na (scripts.test_render_mlx_decode_profile_report.MlxDecodeProfileReportTests.test_old_artifact_missing_new_fields_renders_na) ... ok
+test_renders_stage_and_substage_tables (scripts.test_render_mlx_decode_profile_report.MlxDecodeProfileReportTests.test_renders_stage_and_substage_tables) ... ok
+test_cli_writes_report (scripts.test_render_mlx_forward_profile_report.MlxForwardProfileReportTests.test_cli_writes_report) ... ok
+test_directory_filter_selects_profile_artifacts (scripts.test_render_mlx_forward_profile_report.MlxForwardProfileReportTests.test_directory_filter_selects_profile_artifacts) ... ok
+test_pack_comparison_marks_candidate_win (scripts.test_render_mlx_forward_profile_report.MlxForwardProfileReportTests.test_pack_comparison_marks_candidate_win) ... ok
+test_rejects_stale_profile_token_sentinel (scripts.test_render_mlx_forward_profile_report.MlxForwardProfileReportTests.test_rejects_stale_profile_token_sentinel) ... ok
+test_renders_linear_pack_engine_rows (scripts.test_render_mlx_forward_profile_report.MlxForwardProfileReportTests.test_renders_linear_pack_engine_rows) ... ok
+test_renders_projection_breakdown_and_pack_hint (scripts.test_render_mlx_forward_profile_report.MlxForwardProfileReportTests.test_renders_projection_breakdown_and_pack_hint) ... ok
+test_renders_runtime_pack_marker_and_delta_hint (scripts.test_render_mlx_forward_profile_report.MlxForwardProfileReportTests.test_renders_runtime_pack_marker_and_delta_hint) ... ok
+test_renders_stage_table_and_decision_hint (scripts.test_render_mlx_forward_profile_report.MlxForwardProfileReportTests.test_renders_stage_table_and_decision_hint) ... ok
+test_cli_accepts_min_pack_candidate_wins (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_cli_accepts_min_pack_candidate_wins) ... ok
+test_cli_reports_diagnostics (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_cli_reports_diagnostics) ... ok
+test_cli_reports_missing_file_without_traceback (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_cli_reports_missing_file_without_traceback) ... ok
+test_min_pack_candidate_win_prompts_accepts_multiple_prompts (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_min_pack_candidate_win_prompts_accepts_multiple_prompts) ... ok
+test_min_pack_candidate_win_prompts_must_be_non_negative (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_min_pack_candidate_win_prompts_must_be_non_negative) ... ok
+test_min_pack_candidate_win_prompts_rejects_thin_prompt_coverage (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_min_pack_candidate_win_prompts_rejects_thin_prompt_coverage) ... ok
+test_min_pack_candidate_win_shapes_accepts_distinct_shapes (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_min_pack_candidate_win_shapes_accepts_distinct_shapes) ... ok
+test_min_pack_candidate_win_shapes_must_be_non_negative (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_min_pack_candidate_win_shapes_must_be_non_negative) ... ok
+test_min_pack_candidate_win_shapes_rejects_thin_shape_coverage (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_min_pack_candidate_win_shapes_rejects_thin_shape_coverage) ... ok
+test_min_pack_candidate_wins_gate_rejects_thin_evidence (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_min_pack_candidate_wins_gate_rejects_thin_evidence) ... ok
+test_min_pack_candidate_wins_must_be_non_negative (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_min_pack_candidate_wins_must_be_non_negative) ... ok
+test_pack_candidate_win_gate_implies_pack_comparison (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_pack_candidate_win_gate_implies_pack_comparison) ... ok
+test_pack_candidate_win_gate_rejects_regression (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_pack_candidate_win_gate_rejects_regression) ... ok
+test_pack_comparison_artifact_passes_as_diagnostic (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_pack_comparison_artifact_passes_as_diagnostic) ... ok
+test_pack_comparison_requires_direct_ax_policy (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_pack_comparison_requires_direct_ax_policy) ... ok
+test_pack_comparison_requires_matched_split_row (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_pack_comparison_requires_matched_split_row) ... ok
+test_public_packed_claim_fails_closed (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_public_packed_claim_fails_closed) ... ok
+test_summary_disambiguates_generation_tokens (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_summary_disambiguates_generation_tokens) ... ok
+test_summary_reports_pack_comparison_verdicts (scripts.test_mlx_forward_profile_artifact.MlxForwardProfileArtifactTests.test_summary_reports_pack_comparison_verdicts) ... ok
+test_current_artifact_arguments_enable_optional_boundaries (scripts.test_mlx_prefill_claim_cycle.MlxPrefillClaimCycleTests.test_current_artifact_arguments_enable_optional_boundaries) ... ok
+test_default_checks_cover_w0_to_w4_boundaries (scripts.test_mlx_prefill_claim_cycle.MlxPrefillClaimCycleTests.test_default_checks_cover_w0_to_w4_boundaries) ... ok
+test_main_returns_zero_when_all_checks_pass (scripts.test_mlx_prefill_claim_cycle.MlxPrefillClaimCycleTests.test_main_returns_zero_when_all_checks_pass) ... ok
+test_main_returns_zero_when_optional_boundaries_are_skipped (scripts.test_mlx_prefill_claim_cycle.MlxPrefillClaimCycleTests.test_main_returns_zero_when_optional_boundaries_are_skipped) ... ok
+test_cli_json_outputs_normalized_metadata (scripts.test_gateddelta_prefill_model.GatedDeltaPrefillModelTests.test_cli_json_outputs_normalized_metadata) ... ok
+test_key_head_dim_alignment_fails (scripts.test_gateddelta_prefill_model.GatedDeltaPrefillModelTests.test_key_head_dim_alignment_fails) ... ok
+test_missing_linear_attention_field_fails (scripts.test_gateddelta_prefill_model.GatedDeltaPrefillModelTests.test_missing_linear_attention_field_fails) ... ok
+test_missing_manifest_fails (scripts.test_gateddelta_prefill_model.GatedDeltaPrefillModelTests.test_missing_manifest_fails) ... ok
+test_non_qwen_manifest_fails (scripts.test_gateddelta_prefill_model.GatedDeltaPrefillModelTests.test_non_qwen_manifest_fails) ... ok
+test_valid_qwen35_manifest_passes (scripts.test_gateddelta_prefill_model.GatedDeltaPrefillModelTests.test_valid_qwen35_manifest_passes) ... ok
+test_valid_qwen_next_manifest_passes_with_explicit_interval (scripts.test_gateddelta_prefill_model.GatedDeltaPrefillModelTests.test_valid_qwen_next_manifest_passes_with_explicit_interval) ... ok
+test_dry_run_prints_plan_without_requiring_manifest (scripts.test_run_gateddelta_prefill_profile.GatedDeltaPrefillProfileRunnerTests.test_dry_run_prints_plan_without_requiring_manifest) ... ok
+test_non_dry_run_fails_model_preflight_before_build (scripts.test_run_gateddelta_prefill_profile.GatedDeltaPrefillProfileRunnerTests.test_non_dry_run_fails_model_preflight_before_build) ... ok
+test_ax_only_refresh_regression_summary_accepts_reference_parity (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_only_refresh_regression_summary_accepts_reference_parity) ... ok
+test_ax_only_refresh_regression_summary_rejects_decode_regression (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_only_refresh_regression_summary_rejects_decode_regression) ... ok
+test_ax_only_refresh_regression_summary_rejects_duplicate_current (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_only_refresh_regression_summary_rejects_duplicate_current) ... ok
+test_ax_only_refresh_regression_summary_rejects_duplicate_reference (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_only_refresh_regression_summary_rejects_duplicate_reference) ... ok
+test_ax_only_refresh_regression_summary_rejects_missing_reference (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_only_refresh_regression_summary_rejects_missing_reference) ... ok
+test_ax_only_refresh_rejects_reference_without_results (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_only_refresh_rejects_reference_without_results) ... ok
+test_ax_only_refresh_rejects_wrong_reference_schema (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_only_refresh_rejects_wrong_reference_schema) ... ok
+test_ax_only_refresh_schema_requires_regression_summary (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_only_refresh_schema_requires_regression_summary) ... ok
+test_ax_overlay_allows_ax_only_artifact_without_mlx_lm_rows (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_overlay_allows_ax_only_artifact_without_mlx_lm_rows) ... ok
+test_ax_overlay_publishes_prior_high_water_when_latest_regresses (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_overlay_publishes_prior_high_water_when_latest_regresses) ... ok
+test_ax_split_allows_explicit_no_decode_steps (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ax_split_allows_explicit_no_decode_steps) ... ok
+test_benchmark_window_rejects_high_publication_load (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_benchmark_window_rejects_high_publication_load) ... ok
+test_benchmark_window_rejects_malformed_shape (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_benchmark_window_rejects_malformed_shape) ... ok
+test_benchmark_window_validates_optional_shape (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_benchmark_window_validates_optional_shape) ... ok
+test_build_provenance_allows_clean_or_legacy_artifact (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_build_provenance_allows_clean_or_legacy_artifact) ... ok
+test_build_provenance_allows_dirty_artifact_with_accepted_flag (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_build_provenance_allows_dirty_artifact_with_accepted_flag) ... ok
+test_build_provenance_rejects_benchmark_doc_only_dirty_artifact (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_build_provenance_rejects_benchmark_doc_only_dirty_artifact) ... ok
+test_build_provenance_rejects_dirty_without_accepted_flag (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_build_provenance_rejects_dirty_without_accepted_flag) ... ok
+test_build_provenance_rejects_tracked_dirty_artifact (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_build_provenance_rejects_tracked_dirty_artifact) ... ok
+test_checked_in_historical_mtp_evidence_is_quarantined (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_checked_in_historical_mtp_evidence_is_quarantined) ... ok
+test_claim_gate_methodology_accepts_clean_two_plus_five_run (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_claim_gate_methodology_accepts_clean_two_plus_five_run) ... ok
+test_claim_gate_methodology_rejects_short_warmup (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_claim_gate_methodology_rejects_short_warmup) ... ok
+test_decode_table_generation_heading_must_match_artifact_shape (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_decode_table_generation_heading_must_match_artifact_shape) ... ok
+test_deepseek_v4_2bit_evidence_does_not_claim_inactive_mtp (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_deepseek_v4_2bit_evidence_does_not_claim_inactive_mtp) ... ok
+test_degenerate_direct_claim_status_is_rejected (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_degenerate_direct_claim_status_is_rejected) ... ok
+test_degenerate_ngram_claim_status_is_rejected (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_degenerate_ngram_claim_status_is_rejected) ... ok
+test_direct_ax_row_accepts_direct_cpp_linear_attention_hits (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_accepts_direct_cpp_linear_attention_hits) ... ok
+test_direct_ax_row_allows_split_ffn_for_5bit_model (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_allows_split_ffn_for_5bit_model) ... ok
+test_direct_ax_row_allows_split_ffn_for_qwen3_dense_model (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_allows_split_ffn_for_qwen3_dense_model) ... ok
+test_direct_ax_row_rejects_direct_cpp_linear_attention_post_input_without_summary (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_rejects_direct_cpp_linear_attention_post_input_without_summary) ... ok
+test_direct_ax_row_rejects_direct_cpp_linear_attention_without_summary (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_rejects_direct_cpp_linear_attention_without_summary) ... ok
+test_direct_ax_row_rejects_fused_kv_decode_fallback_claim (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_rejects_fused_kv_decode_fallback_claim) ... ok
+test_direct_ax_row_rejects_hidden_hotpath_fallback_counters (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_rejects_hidden_hotpath_fallback_counters) ... ok
+test_direct_ax_row_rejects_incomplete_direct_cpp_linear_attention_hits (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_rejects_incomplete_direct_cpp_linear_attention_hits) ... ok
+test_direct_ax_row_rejects_unstable_run_stability (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_row_rejects_unstable_run_stability) ... ok
+test_direct_ax_variant_rows_reject_hidden_hotpath_fallback_counters (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_ax_variant_rows_reject_hidden_hotpath_fallback_counters) ... ok
+test_direct_generation_claim_boundary_accepts_archived_evidence (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_generation_claim_boundary_accepts_archived_evidence) ... ok
+test_direct_generation_claim_boundary_accepts_current_cross_run_evidence (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_generation_claim_boundary_accepts_current_cross_run_evidence) ... ok
+test_direct_generation_claim_boundary_accepts_qualified_boxplot (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_generation_claim_boundary_accepts_qualified_boxplot) ... ok
+test_direct_generation_claim_boundary_rejects_matrix_wide_claim (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_generation_claim_boundary_rejects_matrix_wide_claim) ... ok
+test_direct_generation_claim_boundary_rejects_unqualified_boxplot (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_generation_claim_boundary_rejects_unqualified_boxplot) ... ok
+test_direct_generation_claim_boundary_rejects_unqualified_current_snapshots (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_direct_generation_claim_boundary_rejects_unqualified_current_snapshots) ... ok
+test_host_performance_conditions_rejects_high_publication_load (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_host_performance_conditions_rejects_high_publication_load) ... ok
+test_host_performance_conditions_rejects_high_top_process_cpu (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_host_performance_conditions_rejects_high_top_process_cpu) ... ok
+test_host_performance_conditions_rejects_malformed_shape (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_host_performance_conditions_rejects_malformed_shape) ... ok
+test_host_performance_conditions_validate_optional_shape (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_host_performance_conditions_validate_optional_shape) ... ok
+test_legacy_mlx_inference_prompt_path_resolves_to_categorized_checkout (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_legacy_mlx_inference_prompt_path_resolves_to_categorized_checkout) ... ok
+test_legacy_non_gated_rows_allow_missing_claim_status (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_legacy_non_gated_rows_allow_missing_claim_status) ... ok
+test_llama_cpp_rows_accept_current_metadata_key (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_llama_cpp_rows_accept_current_metadata_key) ... ok
+test_metric_median_raises_clean_error_on_null_median (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_metric_median_raises_clean_error_on_null_median) ... ok
+test_metric_summary_median_raises_clean_error_on_null_median (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_metric_summary_median_raises_clean_error_on_null_median) ... ok
+test_ngram_effective_claim_requires_draft_acceptance (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ngram_effective_claim_requires_draft_acceptance) ... ok
+test_ngram_no_accept_fallback_allows_attempts_without_acceptance (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ngram_no_accept_fallback_allows_attempts_without_acceptance) ... ok
+test_ngram_no_draft_fallback_allows_matching_effective_route (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ngram_no_draft_fallback_allows_matching_effective_route) ... ok
+test_ngram_no_draft_fallback_allows_request_disabled_direct_route (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ngram_no_draft_fallback_allows_request_disabled_direct_route) ... ok
+test_ngram_no_draft_fallback_rejects_inconsistent_effective_route (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ngram_no_draft_fallback_rejects_inconsistent_effective_route) ... ok
+test_ngram_telemetry_allows_no_observed_draft_path_for_no_decode (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_ngram_telemetry_allows_no_observed_draft_path_for_no_decode) ... ok
+test_non_reference_rows_must_match_artifact_repetition_count (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_non_reference_rows_must_match_artifact_repetition_count) ... ok
+test_phase0_artifact_rejects_non_object_result_row (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_artifact_rejects_non_object_result_row) ... ok
+test_phase0_artifact_rejects_unvalidated_ax_engine_row (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_artifact_rejects_unvalidated_ax_engine_row) ... ok
+test_phase0_artifact_requires_ax_runtime_identity (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_artifact_requires_ax_runtime_identity) ... ok
+test_phase0_ax_row_accepts_historical_contract_for_no_repeat_ngram (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_ax_row_accepts_historical_contract_for_no_repeat_ngram) ... ok
+test_phase0_ax_row_accepts_long_greedy_prefill_work_contract (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_ax_row_accepts_long_greedy_prefill_work_contract) ... ok
+test_phase0_ax_row_rejects_stale_long_prefill_work_contract (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_ax_row_rejects_stale_long_prefill_work_contract) ... ok
+test_phase0_ax_ttft_requires_positive_prefill_steps (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_ax_ttft_requires_positive_prefill_steps) ... ok
+test_phase0_ax_ttft_requires_positive_prefill_timing (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_ax_ttft_requires_positive_prefill_timing) ... ok
+test_phase0_ax_ttft_requires_positive_ttft_metric (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_ax_ttft_requires_positive_ttft_metric) ... ok
+test_phase0_claim_gate_rejects_inconsistent_blocked_reason_count (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_claim_gate_rejects_inconsistent_blocked_reason_count) ... ok
+test_phase0_claim_gate_rejects_inconsistent_overlap_claim (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_claim_gate_rejects_inconsistent_overlap_claim) ... ok
+test_phase0_claim_gate_rejects_inconsistent_prefix_coverage (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_claim_gate_rejects_inconsistent_prefix_coverage) ... ok
+test_phase0_claim_gate_rejects_invalid_overlap_classification (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_claim_gate_rejects_invalid_overlap_classification) ... ok
+test_phase0_claim_gate_rejects_negative_prefix_counter (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_claim_gate_rejects_negative_prefix_counter) ... ok
+test_phase0_claim_gate_requires_prefix_coverage_classification (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_claim_gate_requires_prefix_coverage_classification) ... ok
+test_phase0_mtp_row_rejects_missing_effective_claim (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_mtp_row_rejects_missing_effective_claim) ... ok
+test_phase0_mtp_row_rejects_ngram_stacking_hits (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_mtp_row_rejects_ngram_stacking_hits) ... ok
+test_phase0_pure_mtp_row_accepts_mtp_only_contract (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_phase0_pure_mtp_row_accepts_mtp_only_contract) ... ok
+test_public_claim_requires_matching_artifact_evidence (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_public_claim_requires_matching_artifact_evidence) ... ok
+test_public_continuous_batching_claim_accepts_positive_overlap (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_public_continuous_batching_claim_accepts_positive_overlap) ... ok
+test_public_continuous_batching_claim_requires_positive_overlap (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_public_continuous_batching_claim_requires_positive_overlap) ... ok
+test_public_prefix_reuse_claim_requires_physical_snapshot_hit (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_public_prefix_reuse_claim_requires_physical_snapshot_hit) ... ok
+test_qwen38_review_distinguishes_profile_selection_from_terminal_scope (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_qwen38_review_distinguishes_profile_selection_from_terminal_scope) ... ok
+test_readme_accepts_exact_mtp_comparison_with_a_loss (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_accepts_exact_mtp_comparison_with_a_loss) ... ok
+test_readme_accepts_nonpublishable_mtp_diagnostic_contract (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_accepts_nonpublishable_mtp_diagnostic_contract) ... ok
+test_readme_boundary_artifacts_accept_current_text (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_boundary_artifacts_accept_current_text) ... ok
+test_readme_boundary_artifacts_reject_missing_campaign_scope (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_boundary_artifacts_reject_missing_campaign_scope) ... ok
+test_readme_boundary_artifacts_reject_stale_concurrency_classification (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_boundary_artifacts_reject_stale_concurrency_classification) ... ok
+test_readme_boundary_artifacts_reject_stale_prefill_ratio (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_boundary_artifacts_reject_stale_prefill_ratio) ... ok
+test_readme_can_scope_ax_decode_overlay_to_prompt (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_can_scope_ax_decode_overlay_to_prompt) ... ok
+test_readme_can_validate_reference_and_ax_overlay_sources (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_can_validate_reference_and_ax_overlay_sources) ... ok
+test_readme_condition_metadata_requirement_accepts_complete_metadata (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_condition_metadata_requirement_accepts_complete_metadata) ... ok
+test_readme_condition_metadata_requirement_rejects_missing_metadata (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_condition_metadata_requirement_rejects_missing_metadata) ... ok
+test_readme_hot_prefix_artifact_accepts_physical_hit_claim (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_hot_prefix_artifact_accepts_physical_hit_claim) ... ok
+test_readme_hot_prefix_artifact_rejects_warmup_substitution (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_hot_prefix_artifact_rejects_warmup_substitution) ... ok
+test_readme_hot_prefix_claim_rejects_stale_reused_tokens (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_hot_prefix_claim_rejects_stale_reused_tokens) ... ok
+test_readme_metrics_match_artifact_rows (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_metrics_match_artifact_rows) ... ok
+test_readme_metrics_reject_incomplete_benchmark_marker (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_metrics_reject_incomplete_benchmark_marker) ... ok
+test_readme_rejects_acceleration_title_for_mtp_diagnostic (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_rejects_acceleration_title_for_mtp_diagnostic) ... ok
+test_readme_rejects_exact_mtp_without_full_measured_commit (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_rejects_exact_mtp_without_full_measured_commit) ... ok
+test_readme_rejects_ineligible_exact_mtp_rows (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_rejects_ineligible_exact_mtp_rows) ... ok
+test_readme_rejects_partial_exact_mtp_matrix (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_rejects_partial_exact_mtp_matrix) ... ok
+test_readme_rejects_publishable_approximate_mtp_summary (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_rejects_publishable_approximate_mtp_summary) ... ok
+test_readme_rejects_sampled_decode_for_greedy_mtp_artifact (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_rejects_sampled_decode_for_greedy_mtp_artifact) ... ok
+test_readme_rejects_unscoped_base_in_composite_sources (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_readme_rejects_unscoped_base_in_composite_sources) ... ok
+test_repo_internal_absolute_prompt_path_resolves_to_checkout (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_repo_internal_absolute_prompt_path_resolves_to_checkout) ... ok
+test_reused_reference_rows_may_have_source_repetition_count (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_reused_reference_rows_may_have_source_repetition_count) ... ok
+test_run_stability_summary_accepts_current_rows (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_run_stability_summary_accepts_current_rows) ... ok
+test_run_stability_summary_rejects_empty_ax_scope (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_run_stability_summary_rejects_empty_ax_scope) ... ok
+test_run_stability_summary_rejects_non_publication_candidate (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_run_stability_summary_rejects_non_publication_candidate) ... ok
+test_run_stability_summary_rejects_publication_candidate_drift (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_run_stability_summary_rejects_publication_candidate_drift) ... ok
+test_run_stability_summary_rejects_stale_counts (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_run_stability_summary_rejects_stale_counts) ... ok
+test_run_stability_summary_rejects_stale_row_schema_without_phase0 (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_run_stability_summary_rejects_stale_row_schema_without_phase0) ... ok
+test_stale_readme_metric_fails (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_stale_readme_metric_fails) ... ok
+test_stale_readme_percentage_fails (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_stale_readme_percentage_fails) ... ok
+test_summary_reports_narrative_claim_checks_separately (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_summary_reports_narrative_claim_checks_separately) ... ok
+test_superseded_evidence_manifest_cannot_be_publishable (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_superseded_evidence_manifest_cannot_be_publishable) ... ok
+test_unavailable_cells_allow_annotated_no_decode_text (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_unavailable_cells_allow_annotated_no_decode_text) ... ok
+test_unknown_public_claim_fails_closed (scripts.test_readme_performance_artifacts.ReadmePerformanceArtifactTests.test_unknown_public_claim_fails_closed) ... ok
+test_bench_mlx_inference_stack_is_not_doc_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_bench_mlx_inference_stack_is_not_doc_only) ... ok
+test_benchmark_results_json_are_doc_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_benchmark_results_json_are_doc_only) ... ok
+test_engine_code_is_not_doc_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_engine_code_is_not_doc_only) ... ok
+test_llama_cpp_sweep_orchestrator_is_doc_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_llama_cpp_sweep_orchestrator_is_doc_only) ... ok
+test_pyproject_toml_is_doc_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_pyproject_toml_is_doc_only) ... ok
+test_readme_and_box_whisker_svgs_are_doc_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_readme_and_box_whisker_svgs_are_doc_only) ... ok
+test_test_scripts_are_doc_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_test_scripts_are_doc_only) ... ok
+test_tracked_dirty_aggregate_accepts_post_processing_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_tracked_dirty_aggregate_accepts_post_processing_only) ... ok
+test_tracked_dirty_aggregate_rejects_bench_producer (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_tracked_dirty_aggregate_rejects_bench_producer) ... ok
+test_tracked_dirty_delete_status_accepted_for_doc_only_path (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_tracked_dirty_delete_status_accepted_for_doc_only_path) ... ok
+test_update_readme_post_processing_scripts_are_doc_only (scripts.test_readme_performance_artifacts.TrackedDirtyAllowlistTests.test_update_readme_post_processing_scripts_are_doc_only) ... ok
+test_deepseek_v4_fails_closed_when_references_missing (scripts.test_probe_mlx_model_support.MlxModelSupportProbeTests.test_deepseek_v4_fails_closed_when_references_missing) ... ok
+test_deepseek_v4_fails_closed_while_native_runtime_in_progress (scripts.test_probe_mlx_model_support.MlxModelSupportProbeTests.test_deepseek_v4_fails_closed_while_native_runtime_in_progress) ... ok
+test_gemma4_unified_is_candidate_without_manifest (scripts.test_probe_mlx_model_support.MlxModelSupportProbeTests.test_gemma4_unified_is_candidate_without_manifest) ... ok
+test_gemma4_unified_is_text_and_tensor_runtime_ready_with_manifest (scripts.test_probe_mlx_model_support.MlxModelSupportProbeTests.test_gemma4_unified_is_text_and_tensor_runtime_ready_with_manifest) ... ok
+test_glm_is_not_runtime_ready_when_reference_file_missing_a_marker (scripts.test_probe_mlx_model_support.MlxModelSupportProbeTests.test_glm_is_not_runtime_ready_when_reference_file_missing_a_marker) ... ok
+test_glm_is_runtime_ready_when_manifest_references_and_features_exist (scripts.test_probe_mlx_model_support.MlxModelSupportProbeTests.test_glm_is_runtime_ready_when_manifest_references_and_features_exist) ... ok
+test_known_family_manifest_family_mismatch_fails_closed (scripts.test_probe_mlx_model_support.MlxModelSupportProbeTests.test_known_family_manifest_family_mismatch_fails_closed) ... ok
+test_known_family_manifest_ready_reports_manifest_features (scripts.test_probe_mlx_model_support.MlxModelSupportProbeTests.test_known_family_manifest_ready_reports_manifest_features) ... ok
+
+----------------------------------------------------------------------
+Ran 420 tests in 0.988s
+
+OK
+MLX prefill scaling report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp78s8jqwv/prefill-scaling.md
+MLX prefill scaling campaign report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpxfnk6r6r/campaign.md
+MLX P2 latency report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp7gj5rq46/p2-latency.md
+Output directory: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp65rj5qaa/out
+Startup artifact: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp65rj5qaa/out/startup-latency.json
+Concurrent artifact: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp65rj5qaa/out/concurrent-prefill.json
+Markdown report: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp65rj5qaa/out/p2-latency.md
+Dry run only; no server will be started.
+Output directory: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6f4_1hik/out
+Startup artifact: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6f4_1hik/out/startup-latency.json
+Concurrent artifact: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6f4_1hik/out/concurrent-prefill.json
+Markdown report: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6f4_1hik/out/p2-latency.md
+Dry run only; no server will be started.
+GatedDelta prefill profile report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmpx9h8ip8h/gateddelta-profile.md
+MLX decode profile report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp6el0aw4j/gemma-decode-profile.md
+MLX forward profile report written: /var/folders/_k/7sc0bwc55zq_t81br51f6xn40000gn/T/tmp0j180aka/qwen-linear-profile.md
+README performance artifact check passed: 207 metrics validated; 2 narrative claims validated; 12 condition metadata artifacts validated
+[PASS] W0-W3 README table and narrative claim gate
+README performance artifact check passed: 207 metrics validated; 2 narrative claims validated; 12 condition metadata artifacts validated
+[SKIP] W1 long-context prefill boundary
+no current artifact provided
+[SKIP] W3 concurrent-prefill boundary
+no current artifact provided
+[SKIP] W4 forward-profile diagnostic boundary
+no current artifact provided
+MLX prefill claim-cycle gate passed: 1 checks (3 optional boundaries skipped)
+[skip] no current offline policy search artifacts under benchmarks/results/profiling/offline-policy-search
+ok: no decode hot-path candidate manifests found under <repository>/.internal/analysis/decode-hot-path-kernels
+ok: no no-go direct-MLX FFN production route found
+ok: MLX generation fastpath env controls are owned by fastpath.rs
+eval-site inventory matches baseline (214 sites)
+[skip] no current linear-attention pack promotion artifacts declared
+[skip] no current Qwen post-input route promotion artifacts declared
+[skip] no current MLA prefix-restore evidence artifacts declared
+[skip] no current MLA prefix-restore retirement artifacts declared
+README performance charts are up to date
+ok: no MLXcel-specific Markdown under docs/
+Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+alias: qwen3.8-27b:axq
+repo:  AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP
+rev:   3e290738e96972307c6aeb9934ab170ca0eae1c1
+host:  Mac mini M4 Pro, 64 GB
+ci:    dry-run only; do not mount 27B weights on CI
+release-blocking:
+  - ax-engine doctor ready on the pinned snapshot
+  - QA surface: direct + MTP for qwen3.8-27b
+  - no silent MTP direct-fallback
+  - paired 64-token direct/MTP greedy probe is identical
+  - clean worktree + matching engine commit
+campaign-only:
+  - MTP Tier 2 promotion
+  - 8h/72h endurance
+  - long-context decode-at-depth
+  - peer ranking
+  - multi-model add-mode
+  - P0 multimodal quality
+commands:
+  doctor: ax-engine doctor --mlx-model-artifacts-dir $MODEL_DIR --json
+  serve: ax-engine serve qwen3.8-27b:axq
+  qa_inventory: OK|direct|qwen3.8-27b:axq|$MODEL_DIR
+OK|mtp|qwen3.8-27b:axq|$MODEL_DIR
+  stack: python3 scripts/bench_mlx_inference_stack.py --model-repo-id AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP --model-dir $MODEL_DIR
+Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+family: qwen4_exp
+alias:  not registered for the MXFP4 target
+repo:   AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP
+host:   MacBook Pro M5 Max, 128 GB
+target admission: MXFP4/group32 blocked pending native paging implementation
+existing affine admission: 4-bit/group64 and 6-bit/group64; not target qualification
+fail-closed: convert must not remap onto qwen3_5
+ok: no TurboQuant references outside the historical allowlist
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+OK
+....................
+----------------------------------------------------------------------
+Ran 20 tests in 0.346s
+
+OK

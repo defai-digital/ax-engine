@@ -1,0 +1,25 @@
+Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+alias: qwen3.8-27b:axq
+repo:  AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP
+rev:   3e290738e96972307c6aeb9934ab170ca0eae1c1
+host:  Mac mini M4 Pro, 64 GB
+ci:    dry-run only; do not mount 27B weights on CI
+release-blocking:
+  - ax-engine doctor ready on the pinned snapshot
+  - QA surface: direct + MTP for qwen3.8-27b
+  - no silent MTP direct-fallback
+  - paired 64-token direct/MTP greedy probe is identical
+  - clean worktree + matching engine commit
+campaign-only:
+  - MTP Tier 2 promotion
+  - 8h/72h endurance
+  - long-context decode-at-depth
+  - peer ranking
+  - multi-model add-mode
+  - P0 multimodal quality
+commands:
+  doctor: ax-engine doctor --mlx-model-artifacts-dir $MODEL_DIR --json
+  serve: ax-engine serve qwen3.8-27b:axq
+  qa_inventory: OK|direct|qwen3.8-27b:axq|$MODEL_DIR
+OK|mtp|qwen3.8-27b:axq|$MODEL_DIR
+  stack: python3 scripts/bench_mlx_inference_stack.py --model-repo-id AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP --model-dir $MODEL_DIR

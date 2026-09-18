@@ -1,0 +1,24 @@
+📦 Including license file `LICENSE`
+🍹 Building a mixed python/rust project
+🐍 Found CPython 3.12 at <LOCAL_WORKSPACE>/.venv/bin/python
+🔗 Found pyo3 bindings with abi3-py3.12 support
+📡 Using build options profile, features from pyproject.toml
+Ignoring huggingface-hub: markers 'extra == "download"' don't match your environment
+Ignoring mlx-lm: markers 'extra == "download"' don't match your environment
+Ignoring pillow: markers 'extra == "multimodal"' don't match your environment
+Ignoring fastapi: markers 'extra == "openai"' don't match your environment
+Ignoring tokenizers: markers 'extra == "openai"' don't match your environment
+Ignoring uvicorn: markers 'extra == "openai"' don't match your environment
+   Compiling ring v0.17.14
+   Compiling mlx-sys v7.4.0 (<LOCAL_WORKSPACE>/crates/mlx-sys)
+   Compiling rustls v0.23.45
+   Compiling rustls-webpki v0.103.15
+   Compiling ureq v2.12.1
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <LOCAL_WORKSPACE>/.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+   Compiling ax-engine-mlx v7.4.0 (<LOCAL_WORKSPACE>/crates/ax-engine-mlx)
+   Compiling ax-engine-sdk v7.4.0 (<LOCAL_WORKSPACE>/crates/ax-engine-sdk)
+   Compiling ax-engine-py v7.4.0 (<LOCAL_WORKSPACE>/crates/ax-engine-py)
+    Finished `release-pyext` profile [optimized] target(s) in 1m 25s
+📦 Built wheel for abi3 Python ≥ 3.12 to <LOCAL_TEMP>/ax_engine-7.4.0-cp312-abi3-macosx_11_0_arm64.whl
+✏️ Setting installed package as editable
+🛠 Installed ax-engine-7.4.0

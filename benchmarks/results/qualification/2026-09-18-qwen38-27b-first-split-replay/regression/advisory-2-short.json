@@ -1,0 +1,8 @@
+{
+  "name": "grok",
+  "exit_code": -15,
+  "timed_out": true,
+  "elapsed_seconds": 180.01488799997605,
+  "prompt_sha256": "ddfd53a6f08ddb26b88446177b8453b30dc5e8cda916d728910f6935c4040eea",
+  "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

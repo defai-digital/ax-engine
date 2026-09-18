@@ -1,0 +1,86 @@
+[
+  {
+    "after_mode": "ngram",
+    "before_mode": "direct",
+    "same_input_sampling_budget": true,
+    "model_id_before": "qwen3.8-27b",
+    "model_id_after": "qwen3.8-27b",
+    "before_tokens": 64,
+    "after_tokens": 64,
+    "differences": [],
+    "before_mtp": {
+      "available": true,
+      "requested": false,
+      "active": false,
+      "direct_fallback_steps": 0,
+      "draft_tokens": 0,
+      "accepted_tokens": 0,
+      "decode_steps": 0
+    },
+    "after_mtp": {
+      "available": true,
+      "requested": false,
+      "active": false,
+      "direct_fallback_steps": 0,
+      "draft_tokens": 0,
+      "accepted_tokens": 0,
+      "decode_steps": 0
+    }
+  },
+  {
+    "after_mode": "direct",
+    "before_mode": "direct",
+    "same_input_sampling_budget": true,
+    "model_id_before": "qwen3.8-27b",
+    "model_id_after": "qwen3.8-27b",
+    "before_tokens": 64,
+    "after_tokens": 64,
+    "differences": [],
+    "before_mtp": {
+      "available": true,
+      "requested": false,
+      "active": false,
+      "direct_fallback_steps": 0,
+      "draft_tokens": 0,
+      "accepted_tokens": 0,
+      "decode_steps": 0
+    },
+    "after_mtp": {
+      "available": true,
+      "requested": false,
+      "active": false,
+      "direct_fallback_steps": 0,
+      "draft_tokens": 0,
+      "accepted_tokens": 0,
+      "decode_steps": 0
+    }
+  },
+  {
+    "after_mode": "mtp",
+    "before_mode": "mtp",
+    "same_input_sampling_budget": true,
+    "model_id_before": "qwen3.8-27b",
+    "model_id_after": "mtp-qwen3.8-27b",
+    "before_tokens": 64,
+    "after_tokens": 64,
+    "differences": [],
+    "before_mtp": {
+      "available": true,
+      "requested": true,
+      "active": true,
+      "direct_fallback_steps": 0,
+      "draft_tokens": 60,
+      "accepted_tokens": 41,
+      "decode_steps": 21
+    },
+    "after_mtp": {
+      "available": true,
+      "requested": true,
+      "active": true,
+      "direct_fallback_steps": 0,
+      "draft_tokens": 60,
+      "accepted_tokens": 41,
+      "decode_steps": 21
+    }
+  }
+]

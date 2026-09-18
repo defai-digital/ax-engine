@@ -164,7 +164,7 @@ def validate_bank(bank: Optional[Sequence[QaPrompt]] = None) -> list[str]:
     items = list(bank) if bank is not None else list(QUESTION_BANK)
     errors: list[str] = []
     seen: set[str] = set()
-    valid_match = {"auto", "substring", "token", "last_line", "full", "case"}
+    valid_match = {"auto", "substring", "token", "last_line", "full", "case", "comma_list"}
     for p in items:
         if not p.id:
             errors.append("empty prompt id")

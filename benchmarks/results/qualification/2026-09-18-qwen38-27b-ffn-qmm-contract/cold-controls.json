@@ -1,0 +1,197 @@
+{
+  "source_commit": "d121f107999e3b8627f60455a79bdd0dad7ada6c",
+  "baseline_source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+  "scope": "Four previously selected raw-token cases, fresh process per route and case, 192-token cap; no broad accuracy, performance or Tier2 claim",
+  "wheel_sha256": "89d43b038bbd11950e43472e41175c15b2e8a6854d4dcbdfe908c392fb280b29",
+  "process_library_path": "Installed wheel ax_engine/.dylibs",
+  "request_hash_encoding": "SHA256 of canonical UTF-8 JSON with sorted keys and compact separators",
+  "cells": [
+    {
+      "case": "COMPSEC:compsec-077",
+      "route": "direct",
+      "request_sha256": "b20e1c1c970ccceb7917dbb6462701c00a0cb661f5cdc386e000ba4035e2f3dd",
+      "request_equal_baseline": true,
+      "output_tokens_equal_baseline": true,
+      "output_count": 192,
+      "output_token_json_sha256": "12926559bea764c6d1f1f5e57a29077a6bb4b9ef5082e4e23a1de163085fd565",
+      "response_sha256": "a39b9ebd4348881f6a39603a7c19905ae3a4d706cd096422606d738f6fe48843",
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": false,
+        "active": false,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 0,
+        "accepted_tokens": 0,
+        "decode_steps": 0
+      }
+    },
+    {
+      "case": "COMPSEC:compsec-077",
+      "route": "mtp",
+      "request_sha256": "b20e1c1c970ccceb7917dbb6462701c00a0cb661f5cdc386e000ba4035e2f3dd",
+      "request_equal_baseline": true,
+      "output_tokens_equal_baseline": true,
+      "output_count": 192,
+      "output_token_json_sha256": "12926559bea764c6d1f1f5e57a29077a6bb4b9ef5082e4e23a1de163085fd565",
+      "response_sha256": "ff8c8a06ee7fbf5691d5176a59266bd37b2cc1b7213e24603e1d710484bd47cd",
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": true,
+        "active": true,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 179,
+        "accepted_tokens": 129,
+        "decode_steps": 63
+      }
+    },
+    {
+      "case": "COMPSEC:compsec-079",
+      "route": "direct",
+      "request_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+      "request_equal_baseline": true,
+      "output_tokens_equal_baseline": true,
+      "output_count": 192,
+      "output_token_json_sha256": "284d71277d6f3595e6183ca37666361cbe7d6e9b4f0b4c3bc8ff75a626316a1f",
+      "response_sha256": "0a1ce289ba98301d9f068c05d0322e90de580576b863d909aa50c4719a0cc80d",
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": false,
+        "active": false,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 0,
+        "accepted_tokens": 0,
+        "decode_steps": 0
+      }
+    },
+    {
+      "case": "COMPSEC:compsec-079",
+      "route": "mtp",
+      "request_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+      "request_equal_baseline": true,
+      "output_tokens_equal_baseline": true,
+      "output_count": 192,
+      "output_token_json_sha256": "51d26304951eecd29061ed6d90da649f7a25ad6c6f84d5315eaae71a79d098b1",
+      "response_sha256": "ea8b9bb199385cf7952b0944aa9b1ef6dc13625772a67959aacc21f523ade6db",
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": true,
+        "active": true,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 190,
+        "accepted_tokens": 122,
+        "decode_steps": 69
+      }
+    },
+    {
+      "case": "COMPSEC:compsec-087",
+      "route": "direct",
+      "request_sha256": "bda36dc92d22a71baa1e44aed769bea3a60b9fdf8ae3eab3b9066ba9095a2f92",
+      "request_equal_baseline": true,
+      "output_tokens_equal_baseline": true,
+      "output_count": 192,
+      "output_token_json_sha256": "87bebd854ca667a95bbcce35da1031b6a63a2b656a7d80adc75fb55aabde7ca1",
+      "response_sha256": "c7551008700bea1dd670ac1b47bb245a9e6de58ef18573c89c6ded0bf486a5f7",
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": false,
+        "active": false,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 0,
+        "accepted_tokens": 0,
+        "decode_steps": 0
+      }
+    },
+    {
+      "case": "COMPSEC:compsec-087",
+      "route": "mtp",
+      "request_sha256": "bda36dc92d22a71baa1e44aed769bea3a60b9fdf8ae3eab3b9066ba9095a2f92",
+      "request_equal_baseline": true,
+      "output_tokens_equal_baseline": true,
+      "output_count": 192,
+      "output_token_json_sha256": "c51b6ba1531eb50d8d13fa7938d677dc5f89fa1249d4f2ca619e1e4e80cf3e54",
+      "response_sha256": "9a5eb9d6c7d88025f6691158a7de11950310c3f200fdf4068e4a640a588a2a44",
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": true,
+        "active": true,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 193,
+        "accepted_tokens": 124,
+        "decode_steps": 68
+      }
+    },
+    {
+      "case": "COMPSEC:compsec-092",
+      "route": "direct",
+      "request_sha256": "59b41d3673fbd7f36f09f1f279621bcf88c24c710214ed087515639b32cb74aa",
+      "request_equal_baseline": true,
+      "output_tokens_equal_baseline": true,
+      "output_count": 192,
+      "output_token_json_sha256": "337d04120a760e97762d70f8dad85198439222490de84682b3b09995959987cb",
+      "response_sha256": "b3a41b2991e614c2747a0012480140c6844b2e2691bb7b5c68ea1d2629d03f24",
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": false,
+        "active": false,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 0,
+        "accepted_tokens": 0,
+        "decode_steps": 0
+      }
+    },
+    {
+      "case": "COMPSEC:compsec-092",
+      "route": "mtp",
+      "request_sha256": "59b41d3673fbd7f36f09f1f279621bcf88c24c710214ed087515639b32cb74aa",
+      "request_equal_baseline": true,
+      "output_tokens_equal_baseline": true,
+      "output_count": 192,
+      "output_token_json_sha256": "337d04120a760e97762d70f8dad85198439222490de84682b3b09995959987cb",
+      "response_sha256": "3e11861dc97b825b8a596a43cafb7ba81a386015f98d063beca31802253e3205",
+      "status": "finished",
+      "mtp": {
+        "available": true,
+        "requested": true,
+        "active": true,
+        "direct_fallback_steps": 0,
+        "draft_tokens": 195,
+        "accepted_tokens": 122,
+        "decode_steps": 70
+      }
+    }
+  ],
+  "paired": [
+    {
+      "case": "COMPSEC:compsec-077",
+      "matched": true,
+      "first_difference_zero_based": null
+    },
+    {
+      "case": "COMPSEC:compsec-079",
+      "matched": false,
+      "first_difference_zero_based": 116
+    },
+    {
+      "case": "COMPSEC:compsec-087",
+      "matched": false,
+      "first_difference_zero_based": 155
+    },
+    {
+      "case": "COMPSEC:compsec-092",
+      "matched": true,
+      "first_difference_zero_based": null
+    }
+  ],
+  "raw_results_sha256": "4389049691872dcbbf9821f3d3340bb4e86bafea214b5b30420f6be9a78af44c",
+  "baseline_raw_results_sha256": "fa5c3c297694413f42d5096b7e6efb8a5ca92ba20734f0328d2813e16513479c",
+  "raw_provenance_sha256": "38b6edb96a51366756e9e28913b9c756e220f59f67b8f0750636ac1d57a669ac",
+  "paired_equal_count": 2,
+  "probe_added_runtime_arithmetic_overrides": []
+}

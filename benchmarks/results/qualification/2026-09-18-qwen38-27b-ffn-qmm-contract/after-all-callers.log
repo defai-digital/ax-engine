@@ -1,0 +1,17 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <workspace>/crates/mlx-sys/../../.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+   Compiling ax-engine-mlx v7.4.0 (<workspace>/crates/ax-engine-mlx)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.75s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_mlx-980f9d8d1c5565f9)
+
+running 8 tests
+test model::shared::utils::tests::qw_verify_qmm_contract_applies_dense_bias_once ... ok
+test model::shared::utils::tests::qw_verify_qmm_contract_preserves_affine_dtype_promotion ... ok
+test model::shared::verify_qmm::tests::four_partition_split_k_matches_small_projection ... ok
+test model::shared::verify_qmm::tests::four_row_split_k_matches_affine_qmm_on_minimum_routed_shape ... ok
+test model::shared::verify_qmm::tests::guard_restores_nested_state ... ok
+test model::shared::verify_qmm::tests::multi_simdgroup_matches_affine_qmm_on_large_n_shape ... ok
+test model::shared::verify_qmm::tests::split_k_matches_affine_qmm_on_minimum_routed_shape ... ok
+test model::tests::lm_head_verify_qmm_contract_applies_dense_bias_once ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1581 filtered out; finished in 3.14s
+

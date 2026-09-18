@@ -1,0 +1,29 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <workspace>/crates/mlx-sys/../../.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+   Compiling ax-engine-mlx v7.4.0 (<workspace>/crates/ax-engine-mlx)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.33s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_mlx-980f9d8d1c5565f9)
+
+running 2 tests
+test model::shared::utils::tests::qw_verify_qmm_contract_applies_dense_bias_once ...
+thread 'model::shared::utils::tests::qw_verify_qmm_contract_applies_dense_bias_once' (13969302) panicked at crates/ax-engine-mlx/src/model/shared/utils.rs:2260:13:
+assertion `left == right` failed: Bfloat16: zero input must return one bias
+  left: Some(1.0)
+ right: None
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test model::shared::utils::tests::qw_verify_qmm_contract_preserves_affine_dtype_promotion ...
+thread 'model::shared::utils::tests::qw_verify_qmm_contract_preserves_affine_dtype_promotion' (13969484) panicked at crates/ax-engine-mlx/src/model/shared/utils.rs:2290:13:
+assertion `left == right` failed: activation=Bfloat16, scale=Float32, group bias=Bfloat16
+  left: Bfloat16
+ right: Float32
+FAILED
+
+failures:
+
+failures:
+    model::shared::utils::tests::qw_verify_qmm_contract_applies_dense_bias_once
+    model::shared::utils::tests::qw_verify_qmm_contract_preserves_affine_dtype_promotion
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 1586 filtered out; finished in 3.72s
+
+error: test failed, to rerun pass `-p ax-engine-mlx --lib`

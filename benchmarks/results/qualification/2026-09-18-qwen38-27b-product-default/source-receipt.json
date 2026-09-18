@@ -1,0 +1,28 @@
+{
+  "source_commit": "030ba2882ebdcfa98cac5f82f9f18117c96b8a08",
+  "tracked_clean": true,
+  "files": {
+    "crates/ax-engine-mlx/src/fastpath.rs": "80577e4bb07603115e155c7bbdef01fd41f9e78e19fd6eb2b2973819c7a9e634",
+    "crates/ax-engine-mlx/src/runner/mod.rs": "3d0bf66b6dcf754f23b803a3167c056a04f8eb2fb67737b7df83cf576b66453b",
+    "crates/ax-engine-mlx/src/runner/mtp_model_policy.rs": "b05aa5f26fde79b941be4e862aa6ed45d0175506a61537f3c97f1204b0d8e0a5",
+    "crates/ax-engine-mlx/src/runner/mtp_tuning.rs": "0afb1df61e0a5ecad3daa7519c13d63398fc986b5bc9e013ade2133a1d25558a",
+    "crates/ax-engine-sdk/src/session/native.rs": "1b448301d60f030636f13a1e09dbac373d38a00219d2acc91c4126cf07ed6482",
+    "docs/TESTING.md": "71acd5bfe8a8a859c27bdba108816dcd30b96d7ad4ad8523a4ee0bfe85b4c14e",
+    "docs/model-certifications/qwen3.8-27b-axq.md": "2ce7554bfabe74a377cceaed07c67c256b83bee265a62cbce03aafa90ea188a7",
+    "scripts/qualify_qwen38_27b.py": "ddcf686293ef98eebec49273f2288f331af9ca8fb98f88bf19977cdf67b9ae78",
+    "scripts/qwen38_live_gate.py": "74d7128e67ca6b0c160706edf6db4dfb39201dbf7a20298553ca463170cdbe7c",
+    "scripts/run_qa_matrix.py": "a266f31d904d701965ef923833dfbc8c381e5b68bc763bdf6bcb588a4d345a13",
+    "scripts/test_qualify_qwen38_27b.py": "89961a2026ffc3b33af78e1b352ddfdb4361dae25256bad254ad86f334916a49",
+    "scripts/test_run_qa_matrix.py": "5651f367aa69b18359b392433fcc241ba8cce1dbd226a5c2b945349094aa3b1e"
+  },
+  "rust_tests": {
+    "passed": 3725,
+    "ignored": 46
+  },
+  "python_tests": {
+    "passed": 209,
+    "skipped": 26,
+    "subtests": 140
+  },
+  "strict_clippy_exit": 101
+}

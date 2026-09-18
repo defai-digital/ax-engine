@@ -1,0 +1,22 @@
+{
+  "source_commit": "0f7f2d2d0ae6e66a80c7d6f746fbb058efd2a951",
+  "dirty": true,
+  "command": [
+    "rustup",
+    "run",
+    "1.97.1",
+    "cargo",
+    "build",
+    "--locked",
+    "--profile",
+    "release-server",
+    "-p",
+    "ax-engine-mlx",
+    "--bin",
+    "linear_mtp_state_oracle_probe"
+  ],
+  "exit_code": 0,
+  "patch_sha256": "5cd63368dca5895d6bcceaeb69266390fe826a2d5257784088adee866ec2be23",
+  "source_file_sha256": "69861aeedd513533c2fc132418b30ad7fcfb5ca335ad55a9c5bc9aa6d8281fbe",
+  "binary_sha256": "1d7d5dce9902e4617d938b2cca89de9ef999a122e626c9c7fe6025eee82fd280"
+}

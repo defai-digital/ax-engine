@@ -1,0 +1,26 @@
+[
+  {
+    "timing": "before_connect",
+    "before": 1024,
+    "connected": 326640,
+    "after": 326640,
+    "held": 326640,
+    "sent": 458232
+  },
+  {
+    "timing": "after_connect",
+    "before": 131072,
+    "connected": 408300,
+    "after": 1024,
+    "held": 523647,
+    "sent": 663032
+  },
+  {
+    "timing": "both",
+    "before": 1024,
+    "connected": 326640,
+    "after": 1024,
+    "held": 523647,
+    "sent": 654840
+  }
+]

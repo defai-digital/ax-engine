@@ -1,0 +1,6 @@
+mlx.core.float16 0 36 0.0009765625
+mlx.core.float16 1 36 0.0009765625
+mlx.core.float16 2 0 0.0
+mlx.core.bfloat16 0 0 0.0
+mlx.core.bfloat16 1 0 0.0
+mlx.core.bfloat16 2 0 0.0

@@ -1,0 +1,24 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <repository>/crates/mlx-sys/../../.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+   Compiling ax-engine-mlx v7.4.0 (<repository>/crates/ax-engine-mlx)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.89s
+     Running unittests src/bin/linear_mtp_state_oracle_probe.rs (target/debug/deps/linear_mtp_state_oracle_probe-00b514092021223b)
+
+running 1 test
+test tests::comparison_reads_strided_float32_views_in_logical_order ... mlx error: mlx_array_data_float32: array is not row-contiguous; materialize a contiguous copy before reading raw data
+FAILED
+
+failures:
+
+---- tests::comparison_reads_strided_float32_views_in_logical_order stdout ----
+
+thread 'tests::comparison_reads_strided_float32_views_in_logical_order' (18359266) panicked at crates/mlx-sys/src/array.rs:252:21:
+mlx_array_data_float32 failed: mlx_array_data_float32: array is not row-contiguous; materialize a contiguous copy before reading raw data
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::comparison_reads_strided_float32_views_in_logical_order
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.29s
+
+error: test failed, to rerun pass `-p ax-engine-mlx --bin linear_mtp_state_oracle_probe`

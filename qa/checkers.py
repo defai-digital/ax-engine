@@ -15,6 +15,8 @@ from typing import Any, Optional
 
 from prompt_def import QaPrompt
 
+CHECKER_CONTRACT_VERSION = "ax.qa.complete_answers.v2"
+
 
 @dataclass
 class CheckResult:
@@ -174,7 +176,10 @@ def check_coherence(text: str, prompt: QaPrompt) -> CheckResult:
         return CheckResult("coherence", False, "empty output", 0.0, hard=True)
     # Closed-ended numeric / token answers ("2", "8", "H2O", JSON arrays) are
     # intentionally low-alpha; do not fail them on the prose alpha ratio.
-    if getattr(prompt, "exact_answer", None) or prompt.category in {
+    full_pattern_answer = bool(prompt.regex_patterns) and all(
+        re.fullmatch(pattern, text.strip(), re.IGNORECASE) for pattern in prompt.regex_patterns
+    )
+    if full_pattern_answer or getattr(prompt, "exact_answer", None) or prompt.category in {
         "math",
         "json",
         "format",
@@ -287,6 +292,11 @@ def _match_candidate(hay: str, needle: str, mode: str) -> bool:
     """Return True if needle matches hay under the given mode."""
     if not needle:
         return False
+    if mode == "comma_list":
+        # The whole ordered sequence is the answer; whitespace is presentation.
+        actual = [part.strip().casefold() for part in hay.split(",")]
+        expected = [part.strip().casefold() for part in needle.split(",")]
+        return all(actual) and all(expected) and actual == expected
     hay_n = _normalize_spaces(hay)
     needle_n = _normalize_spaces(needle)
     if mode == "full":
@@ -446,4 +456,16 @@ def run_all_checks(text: str, prompt: QaPrompt) -> QualityReport:
         manual_review=not hard_ok,
         output_preview=text[:500],
     )
+    return report
+
+
+def run_response_checks(text: str, prompt: QaPrompt, finish_reason: Optional[str]) -> QualityReport:
+    """A correct substring cannot make an unfinished answer pass QA."""
+    report = run_all_checks(text, prompt)
+    complete = finish_reason == "stop"
+    report.checks.append(CheckResult(
+        "completion", complete, f"finish_reason={finish_reason!r}", float(complete), hard=True,
+    ))
+    report.auto_pass = report.hard_pass
+    report.manual_review = not report.auto_pass
     return report

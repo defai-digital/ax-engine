@@ -297,27 +297,11 @@ impl MtpModelPolicy {
         matches!(self.kind, MtpModelPolicyKind::QwenCalibrated)
     }
 
-    /// Release gate for *default-on* model MTP. Every Qwen route that can be
-    /// reached without an explicit env opt-in additionally requires publisher
-    /// runtime certification (the `axquant_runtime.json` `"mtp"` block:
-    /// `enabled_by_default` plus either an `optimized` stamp or a measured
-    /// speedup >= 1.0x):
-    ///
-    /// - `QwenCalibrated` (dense Qwen, route 1) is default-on today.
-    /// - `QwenLinearCertificationCandidate*` (routes 2/3) are ALSO reached by
-    ///   default on every exact-eligible linear pack, because the exact
-    ///   profile auto-enables and `resolve_qwen_linear_certification_candidate`
-    ///   accepts the exact profile alone — the Qwen3.8-27B AXQ family
-    ///   (including the 0.96x 6-bit flagship) lives here, not on route 1.
-    ///   The explicit `AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE` env
-    ///   opt-in keeps default-on for the formal harness.
-    ///
-    /// Every other kind keeps its existing default: GLM/Gemma4 policies were
-    /// calibrated independently and their packs ship no AXQuant `mtp` block,
-    /// the DeepSeek V4 candidate kind is reachable only via env, fallback and
-    /// conflicting kinds are already route-blocked, and `None` has nothing to
-    /// gate. Explicit requests (`set_mtp_requested`, `MlxMtpPolicy::Required`)
-    /// are unaffected.
+    /// Release gate for Auto MTP. Linear Qwen candidates have no AX default
+    /// promotion: publisher speed/enable metadata cannot grant MTP-D approval.
+    /// An explicit certification env opt-in still enables the harness route.
+    /// Dense Qwen and other families retain their existing policy. Explicit
+    /// `MlxMtpPolicy::Required` requests remain subject to route safety.
     pub(super) const fn certified_default_on(self) -> bool {
         if self.is_qwen_calibrated() {
             return self.runtime_certification.default_on;
@@ -325,10 +309,7 @@ impl MtpModelPolicy {
         match self.kind {
             MtpModelPolicyKind::QwenLinearCertificationCandidateDepthOne
             | MtpModelPolicyKind::QwenLinearCertificationCandidateMultiDepth => {
-                self.runtime_certification.default_on
-                    || self.qwen_linear_certification_env_opt_in
-                    || (self.qwen_linear_throughput_default
-                        && self.runtime_certification.enabled_by_default)
+                self.qwen_linear_certification_env_opt_in
             }
             // Sidecar may attach automatically; only an explicit session
             // request (or the operator force override) may activate it.
@@ -552,6 +533,36 @@ mod tests {
     }
 
     #[test]
+    fn linear_qwen_publisher_speed_metadata_does_not_promote_auto_mtp() {
+        for depth in [1, 3] {
+            for throughput in [false, true] {
+                for publisher_certified in [false, true] {
+                    let inputs = MtpModelPolicyInputs {
+                        qwen_depth: Some(depth),
+                        qwen_linear_attention: true,
+                        qwen_linear_exact_enabled: !throughput,
+                        qwen_linear_projected_replay_enabled: true,
+                        qwen_linear_certification_candidate: true,
+                        qwen_linear_throughput_default: throughput,
+                        runtime_certification: certification(publisher_certified),
+                        ..Default::default()
+                    };
+                    let candidate = MtpModelPolicy::from_loaded(inputs);
+                    assert!(candidate.route_safe());
+                    assert!(candidate.has_attached_drafter());
+                    assert!(!candidate.certified_default_on());
+                    let explicit = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
+                        qwen_linear_certification_env_opt_in: true,
+                        ..inputs
+                    });
+                    assert!(explicit.route_safe());
+                    assert!(explicit.certified_default_on());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn certified_default_on_gates_default_reachable_qwen_routes() {
         // QwenCalibrated (dense Qwen, route 1) follows the pack certification.
         for (default_on, expect) in [(false, false), (true, true)] {
@@ -583,7 +594,7 @@ mod tests {
                 "exact-auto candidate route must be gated without env opt-in"
             );
 
-            // Pack certification turns default-on back on for the same route.
+            // Publisher speed certification cannot promote the default route.
             let certified = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
                 qwen_depth: Some(max_depth),
                 qwen_linear_attention: true,
@@ -592,7 +603,7 @@ mod tests {
                 runtime_certification: certification(true),
                 ..Default::default()
             });
-            assert!(certified.certified_default_on());
+            assert!(!certified.certified_default_on());
 
             // The explicit env opt-in preserves the formal-harness recipe on
             // an uncertified pack.
@@ -684,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen38_axq_throughput_pack_defaults_on_and_is_not_direct_fallback() {
+    fn qwen38_axq_throughput_pack_requires_opt_in_but_keeps_its_drafter() {
         let policy = MtpModelPolicy::from_loaded(MtpModelPolicyInputs {
             qwen_depth: Some(3),
             qwen_linear_attention: true,
@@ -702,7 +713,7 @@ mod tests {
         });
         assert!(!policy.is_qwen_linear_direct_fallback());
         assert!(policy.route_safe());
-        assert!(policy.certified_default_on());
+        assert!(!policy.certified_default_on());
         assert_eq!(policy.max_depth(), 3);
         assert!(policy.max_depth() > 0);
         assert_eq!(policy.qwen_gate_default(), Some(0.0));
@@ -741,7 +752,7 @@ mod tests {
         });
         assert!(!mixed.is_qwen_linear_direct_fallback());
         assert!(mixed.route_safe());
-        assert!(mixed.certified_default_on());
+        assert!(!mixed.certified_default_on());
         assert!(mixed.max_depth() > 0);
     }
 

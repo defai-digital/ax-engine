@@ -96,8 +96,8 @@ use crate::ngram_accel::{
     NgramDraftOutcome, NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable,
     THINK_SOFT_CLOSE_PROBE_RANK, ThinkSoftCloseProbe, classify_prompt_class,
     ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
-    recompute_committed_prefix_with_argmax, sequential_greedy_mtp_verify,
-    single_decode_with_sampling_buffers,
+    recompute_committed_prefix_with_argmax, revalidate_greedy_prefix_with_argmax,
+    sequential_greedy_mtp_verify, single_decode_with_sampling_buffers,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64, sample_categorical_into,
@@ -1644,8 +1644,8 @@ impl MlxRunner {
 
     /// Whether this pack is certified for *default-on* model MTP
     /// (`MlxMtpPolicy::Auto`). Dense QwenCalibrated still requires publisher
-    /// certification. Qwen linear sidecar packs default on via throughput MTP
-    /// when `enabled_by_default` is set. Explicit `MlxMtpPolicy::Required` and
+    /// certification. Linear Qwen candidates require an explicit opt-in until
+    /// AX default promotion; publisher speed metadata is insufficient. `MlxMtpPolicy::Required` and
     /// `AX_MLX_MTP_FORCE_REQUESTED` bypass this gate; route safety and
     /// speculation kill switches do not.
     pub fn mtp_certified_default_on(&self) -> bool {
@@ -6930,7 +6930,9 @@ impl MlxRunner {
     /// back at store time. `None` when the prompt end is already aligned
     /// (the exact-alignment store path handles it), when the boundary falls
     /// inside already-cached context, or when there is nothing to prefill.
-    fn linear_boundary_capture_head_len(
+    /// Return the aligned cache-only head used by linear prefix capture.
+    /// Diagnostics use this policy to reproduce the runner's prefill layout.
+    pub fn linear_boundary_capture_head_len(
         block_size: usize,
         prior_seq_len: usize,
         item_len: usize,
@@ -7218,6 +7220,9 @@ impl MlxRunner {
                 state.cache.seq_len()
             ),
         );
+        if state.cache.seq_len() != 0 {
+            return telemetry;
+        }
         // Shape-exact warm extension: a multi-token extension chunk whose
         // (offset, len) is off the cold chunk grid dispatches different
         // SDPA kernels than the cold baseline at the same absolute
@@ -7230,28 +7235,16 @@ impl MlxRunner {
         // under one chunk is cheaper than any drift risk. Restores that
         // need no multi-token extension (warm_repeat tails of <=1 token)
         // keep their full length.
-        let extension_tokens = item
-            .input_token_slice
-            .len()
-            .saturating_sub(reused_tokens.len());
-        let reused_tokens: &[u32] = if extension_tokens > 1 {
-            let chunk = self.prefill_chunk.max(1);
-            let grid_len = (reused_tokens.len() / chunk) * chunk;
-            if grid_len != reused_tokens.len() {
-                Self::pfx_dbg(
-                    "restore-grid-trim",
-                    &format!(
-                        "claim={} grid={} chunk={chunk}",
-                        reused_tokens.len(),
-                        grid_len
-                    ),
-                );
-            }
-            &reused_tokens[..grid_len]
-        } else {
-            reused_tokens
+        let Some(restore_len) =
+            grid_aligned_prefix_restore_len(item, reused_tokens.len(), self.prefill_chunk.max(1))
+        else {
+            // The scheduler already removed this prefix from the input slice.
+            // Recompute prefix+suffix together instead of leaving a context gap.
+            telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
+            return telemetry;
         };
-        if reused_tokens.is_empty() || state.cache.seq_len() != 0 {
+        let reused_tokens = &reused_tokens[..restore_len];
+        if reused_tokens.is_empty() {
             return telemetry;
         }
         let capture_prefill_output =
@@ -9413,6 +9406,15 @@ impl MlxRunner {
         let mut pending = state.mtp_pending_draft.clone();
         let token_offset = state.cache.seq_len();
         let has_linear_attention = self.cfg.linear_attention.is_some();
+        let replay_kill_switch = has_linear_attention
+            && std::env::var("AX_MLX_MTP_LINEAR_EXACT_REPLAY")
+                .map(|value| value != "0")
+                .unwrap_or(false);
+        let forced_greedy_replay = has_linear_attention
+            && forced_linear_mtp_greedy_revalidation(
+                replay_kill_switch || self.qwen_linear_mtp_force_replay,
+                sampling,
+            );
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
         // Draft log-probs are computed at T=1.0 (greedy path) or the draft
@@ -9470,9 +9472,8 @@ impl MlxRunner {
         //
         // Skip-state is only valid when there's no pending draft to verify
         // (otherwise we need to verify the pending draft first).
-        let skip_logits = state.mtp_skip_logits.take();
-        let skip_argmax = state.mtp_skip_argmax.take();
-        let skip_hidden = state.mtp_skip_hidden.take();
+        let (skip_logits, skip_argmax, skip_hidden) =
+            take_mtp_skip_state(state, forced_greedy_replay);
         let can_skip_qwen = skip_logits.is_some()
             && skip_hidden.is_some()
             && pending.is_empty()
@@ -9812,13 +9813,9 @@ impl MlxRunner {
                 // Exact profile + drafts within QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS
                 // use the lazy committed-prefix checkpoint (full accept adopts
                 // the verify cache; complete miss restores; partial recompute).
-                // AX_MLX_MTP_LINEAR_EXACT_REPLAY!=0 is a kill switch that forces
-                // singleton replay (diagnostic / fail-closed). ADR-020: keep
-                // the kill switch available, but formal Tier 2 measures with
-                // the checkpoint path (env=0) that previously cleared 1.20×.
-                let replay_kill_switch = std::env::var("AX_MLX_MTP_LINEAR_EXACT_REPLAY")
-                    .map(|value| value != "0")
-                    .unwrap_or(false);
+                // AX_MLX_MTP_LINEAR_EXACT_REPLAY!=0 forces singleton replay.
+                // Unprocessed greedy requests in this non-optimistic branch
+                // also revalidate accepted drafts before consuming them.
                 let projected_replay = linear_mtp_projected_replay_allowed(
                     pending.len(),
                     crate::fastpath::mtp_linear_projected_replay_enabled(),
@@ -10002,7 +9999,7 @@ impl MlxRunner {
                     pending = tokens;
                 }
                 let accept_started = Instant::now();
-                let predicted: Vec<u32> = predicted_arr
+                let mut predicted: Vec<u32> = predicted_arr
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
@@ -10015,7 +10012,7 @@ impl MlxRunner {
                     .saturating_add(elapsed_us(target_softmax_extract_started));
                 let target_distributions_cpu: Option<&[TokenDistribution]> = None;
 
-                let accept = mtp_accept_count(
+                let mut accept = mtp_accept_count(
                     &pending,
                     acceptance_log_probs,
                     &state.mtp_pending_draft_distributions,
@@ -10048,19 +10045,21 @@ impl MlxRunner {
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
                 let rollback_started = Instant::now();
-                // Without the exact profile, the batched verifier can differ
-                // from singleton production decode at BF16 tail ULPs, so full
-                // replay remains the default. The explicit projected-replay
-                // flag accepts that same non-bit-exact class as oMLX and keeps
-                // verification correctness while avoiding a backbone replay.
+                // Batched and singleton target arithmetic can disagree.
+                // Explicit forced greedy replay revalidates acceptance;
+                // other replay paths retain their existing state/correction
+                // contract, and projected replay avoids a backbone replay.
                 let recomputed_correction_argmax = if exact_linear_replay {
-                    Some(recompute_committed_prefix_with_argmax(
+                    Some(replay_linear_mtp_accepted_prefix(
                         &self.cfg,
                         &self.weights,
                         &mut state.cache,
                         verify_input[0],
-                        &pending[..ac],
+                        &pending,
                         token_offset,
+                        &mut accept,
+                        &mut predicted,
+                        forced_greedy_replay,
                     ))
                 } else if all_accepted {
                     // Keep the accepted cache lazy in the opt-in scheduling
@@ -10197,6 +10196,8 @@ impl MlxRunner {
                     ))
                 };
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                let ac = accept.accept_count;
+                let all_accepted = accept.all_accepted;
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 mtp_refold_hidden = Some(post_norm_all.clone());
                 let verifier_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
@@ -11897,6 +11898,7 @@ impl MlxRunner {
             // async_eval + slice work here is never consumed — so skip it entirely.
             // Includes Gemma 4 assistant MTP (vLLM/Lightning always-advance pattern).
             let can_capture_skip = self.mtp_skip_state
+                && !forced_greedy_replay
                 && state.mtp_pending_draft.is_empty()
                 && (self.weights.mtp.is_some()
                     || self.weights.glm_mtp.is_some()
@@ -13639,12 +13641,74 @@ fn select_linear_mtp_correction_token(
     }
 }
 
+fn forced_linear_mtp_greedy_revalidation(forced_replay: bool, sampling: MlxSamplingParams) -> bool {
+    forced_replay && sampling.temperature <= 0.0 && !sampling.uses_logits_processors()
+}
+
+/// Forced greedy replay must not reuse a batched row as the next primary.
+fn take_mtp_skip_state(
+    state: &mut RequestState,
+    forced_greedy_replay: bool,
+) -> (Option<MlxArray>, Option<MlxArray>, Option<MlxArray>) {
+    let captured = (
+        state.mtp_skip_logits.take(),
+        state.mtp_skip_argmax.take(),
+        state.mtp_skip_hidden.take(),
+    );
+    if forced_greedy_replay {
+        (None, None, None)
+    } else {
+        captured
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn replay_linear_mtp_accepted_prefix(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    primary: u32,
+    pending: &[u32],
+    token_offset: usize,
+    accept: &mut MtpAcceptOutcome,
+    predicted: &mut Vec<u32>,
+    revalidate_greedy: bool,
+) -> u32 {
+    if revalidate_greedy {
+        let replay = revalidate_greedy_prefix_with_argmax(
+            cfg,
+            weights,
+            cache,
+            primary,
+            &pending[..accept.accept_count],
+            token_offset,
+        );
+        *accept = MtpAcceptOutcome {
+            accept_count: replay.accept_count,
+            all_accepted: replay.accept_count == pending.len(),
+            rejection_correction: (replay.accept_count < pending.len())
+                .then_some(replay.correction_token),
+        };
+        *predicted = replay.predicted;
+        return replay.correction_token;
+    }
+    recompute_committed_prefix_with_argmax(
+        cfg,
+        weights,
+        cache,
+        primary,
+        &pending[..accept.accept_count],
+        token_offset,
+    )
+}
+
 /// Maximum draft length served by the exact lazy-checkpoint path.
 ///
 /// The invariant-projection arithmetic contract is validated for a 1-4 token
-/// verifier (up to three drafts plus the committed token). Longer drafts keep
-/// fail-closed singleton replay. `AX_MLX_MTP_LINEAR_EXACT_REPLAY!=0` forces
-/// singleton replay at any depth (diagnostic kill switch).
+/// verifier (up to three drafts plus the committed token). Longer drafts retain
+/// singleton state replay. `AX_MLX_MTP_LINEAR_EXACT_REPLAY!=0` also revalidates
+/// greedy acceptance without logits processors in the non-optimistic path;
+/// unforced replay alone does not establish singleton acceptance identity.
 const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
 
 /// Exact arithmetic is the speculative-verifier contract.
@@ -13780,7 +13844,7 @@ fn linear_mtp_requires_singleton_replay(
 ) -> bool {
     // Exact profile drafts within the validated verifier width ride the lazy
     // checkpoint path (fast accept/restore). Kill switch, empty drafts, or
-    // longer drafts keep fail-closed singleton recompute.
+    // longer drafts keep singleton state recompute.
     pending_len == 0
         || pending_len > QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS
         || !exact_profile_enabled
@@ -14425,6 +14489,31 @@ fn extend_prompt_prefix_tokens(
         state.prompt_prefix_tokens = item.reused_prefix_token_slice.clone();
     }
     state.prompt_prefix_tokens.extend_from_slice(token_ids);
+}
+
+/// Select a cold-grid restore boundary, or require a full scheduler-prefix replay.
+fn grid_aligned_prefix_restore_len(
+    item: &ax_engine_core::ExecutionItem,
+    candidate_len: usize,
+    chunk: usize,
+) -> Option<usize> {
+    let scheduler_claim = item.reused_prefix_token_slice.len();
+    let extension_tokens = if item.mode == ExecutionMode::Prefill && scheduler_claim > 0 {
+        // The scheduler input already contains only the uncached suffix.
+        item.input_token_slice.len()
+    } else {
+        item.input_token_slice.len().saturating_sub(candidate_len)
+    };
+    let restore_len = if extension_tokens > 1 {
+        candidate_len / chunk.max(1) * chunk.max(1)
+    } else {
+        candidate_len
+    };
+    if item.mode == ExecutionMode::Prefill && restore_len < scheduler_claim {
+        None
+    } else {
+        Some(restore_len)
+    }
 }
 
 fn full_prefill_recompute_tokens_for_warmup_fallback(
@@ -15592,6 +15681,263 @@ mod tests {
             select_linear_mtp_correction_token(0.0, Some(440), None, Some(13_661), 13_661),
             440
         );
+    }
+
+    fn forced_replay_test_model() -> (ModelConfig, ModelWeights) {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "qwen3".into();
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let array = |data: &[f32], shape: &[i32]| {
+            MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data),
+                shape,
+                MlxDtype::Float32,
+            )
+        };
+        let dense =
+            |data: &[f32], shape: &[i32]| QuantizedWeight::new(array(data, shape), None, None);
+        let mut layer = runner_test_layer();
+        layer.attn_norm = array(&[1.0; 4], &[4]);
+        layer.ffn_norm = array(&[1.0; 4], &[4]);
+        layer.q_proj = Some(dense(&[0.0; 16], &[4, 4]));
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        layer.k_proj = Some(dense(&identity, &[4, 4]));
+        layer.v_proj = Some(dense(&identity, &[4, 4]));
+        layer.o_proj = Some(dense(&[0.0; 16], &[4, 4]));
+        layer.gate_proj = Some(dense(&[0.0; 32], &[8, 4]));
+        layer.up_proj = Some(dense(&[0.0; 32], &[8, 4]));
+        layer.down_proj = Some(dense(&[0.0; 32], &[4, 8]));
+        let mut weights = runner_test_weights(vec![layer]);
+        let embedding: Vec<f32> = (0..16)
+            .flat_map(|token| [token as f32 + 1.0, 1.0, 1.0, 1.0])
+            .collect();
+        weights.token_embedding = dense(&embedding, &[16, 4]);
+        weights.final_norm = Some(array(&[1.0; 4], &[4]));
+        let mut head = [0.0; 64];
+        head[4..8].fill(1.0);
+        weights.lm_head = dense(&head, &[16, 4]);
+        (cfg, weights)
+    }
+
+    #[test]
+    fn forced_greedy_replay_rejects_before_consuming_batched_false_accepts() {
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
+        let _relaxed = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
+        let (cfg, weights) = forced_replay_test_model();
+        let mut base = MlxKVCache::new_contiguous(1);
+        assert_eq!(
+            recompute_committed_prefix_with_argmax(&cfg, &weights, &mut base, 4, &[5], 0),
+            1
+        );
+        // This dense fixture tests acceptance and real, input-dependent KV;
+        // it does not stand in for Qwen numerical qualification.
+        for (label, pending, batched, expected_count) in [
+            ("first mismatch", vec![2, 1, 1], vec![2, 1, 1, 1], 0),
+            ("later mismatch", vec![1, 2, 1], vec![1, 2, 1, 1], 1),
+            ("full accept", vec![1, 1, 1], vec![1, 1, 1, 1], 3),
+            ("empty", vec![], vec![1], 0),
+            ("batched rejection cap", vec![1, 1, 1], vec![1, 2, 1, 1], 1),
+        ] {
+            let sources = vec![MtpDraftSource::Mtp; pending.len()];
+            let mut predicted = batched;
+            let mut rng = Xorshift64::new(7);
+            let mut accept = mtp_accept_count(
+                &pending,
+                &[],
+                &[],
+                &sources,
+                None,
+                None,
+                &predicted,
+                &mut rng,
+                0.0,
+                0.0,
+                MtpModelAcceptanceMode::Greedy,
+                MtpNgramAcceptanceMode::Greedy,
+            );
+            let mut expected = base.clone();
+            assert_eq!(
+                recompute_committed_prefix_with_argmax(
+                    &cfg,
+                    &weights,
+                    &mut expected,
+                    3,
+                    &vec![1; expected_count],
+                    2,
+                ),
+                1
+            );
+            let mut cache = base.clone();
+            let _outer_exact = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+            let _outer_target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
+            let _outer_relaxed = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(true);
+            let _outer_trace = crate::fastpath::scoped_qwen_linear_mtp_whole_verify_trace(true);
+            let _outer_qmm = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true);
+            let correction = replay_linear_mtp_accepted_prefix(
+                &cfg,
+                &weights,
+                &mut cache,
+                3,
+                &pending,
+                2,
+                &mut accept,
+                &mut predicted,
+                forced_linear_mtp_greedy_revalidation(true, MlxSamplingParams::greedy()),
+            );
+            assert_eq!(accept.accept_count, expected_count, "{label}");
+            assert_eq!(
+                accept.all_accepted,
+                expected_count == pending.len(),
+                "{label}"
+            );
+            assert_eq!(correction, 1, "{label}");
+            assert_eq!(predicted, vec![1; expected_count + 1], "{label}");
+            assert_eq!(cache.seq_len(), 3 + expected_count, "{label}");
+            let (actual_k, actual_v) = cache.logical_layer_kv(0).expect("actual KV");
+            let (expected_k, expected_v) = expected.logical_layer_kv(0).expect("expected KV");
+            eval(&[&actual_k, &actual_v, &expected_k, &expected_v]);
+            assert_eq!(actual_k.shape(), expected_k.shape(), "{label}");
+            assert_eq!(actual_k.data_f32(), expected_k.data_f32(), "{label}");
+            assert_eq!(actual_v.data_f32(), expected_v.data_f32(), "{label}");
+            assert!(actual_v.data_f32().iter().any(|&value| value != 0.0));
+            // The runner uses this count for emission, hidden-row selection,
+            // draft-cache refolding and the acceptance counters.
+            let mut emitted = pending[..accept.accept_count].to_vec();
+            emitted.push(correction);
+            assert_eq!(emitted, vec![1; expected_count + 1], "{label}");
+            let rows: Vec<f32> = (0..=pending.len())
+                .flat_map(|row| [row as f32; 4])
+                .collect();
+            let post_norm = MlxArray::from_raw_data(
+                rows.as_ptr().cast(),
+                std::mem::size_of_val(rows.as_slice()),
+                &[1, pending.len() as i32 + 1, 4],
+                MlxDtype::Float32,
+            );
+            let hidden = slice_post_norm_hidden(&post_norm, accept.accept_count, 4);
+            eval(&[&hidden]);
+            assert_eq!(hidden.data_f32(), &[expected_count as f32; 4], "{label}");
+            let mut telemetry = MtpTelemetry::default();
+            telemetry.record_step(
+                pending.len(),
+                accept.accept_count,
+                &sources,
+                None,
+                accept.accept_count,
+            );
+            assert_eq!(telemetry.accepted_tokens, expected_count as u32, "{label}");
+            assert!(crate::fastpath::qwen_linear_mtp_exact_enabled());
+            assert!(crate::fastpath::qwen_linear_mtp_target_verify_enabled());
+            assert!(crate::fastpath::qwen_linear_mtp_relaxed_session_enabled());
+            assert!(crate::fastpath::qwen_linear_mtp_whole_verify_trace_enabled());
+        }
+    }
+
+    #[test]
+    fn forced_greedy_replay_discards_stale_skip_state() {
+        for forced in [false, true] {
+            let mut state = RequestState::new(1, 7, None);
+            let stale = MlxArray::from_f32_slice(&[0.0, 1.0, 8.0]);
+            state.mtp_skip_argmax = Some(argmax(&stale, None));
+            state.mtp_skip_logits = Some(stale);
+            state.mtp_skip_hidden = Some(mlx_sys::zeros(&[1, 1, 4], MlxDtype::Float32, None));
+            let (logits, argmax, hidden) = take_mtp_skip_state(
+                &mut state,
+                forced_linear_mtp_greedy_revalidation(forced, MlxSamplingParams::greedy()),
+            );
+            if forced {
+                assert!(
+                    logits.is_none(),
+                    "forced replay must not reuse batched logits"
+                );
+                assert!(argmax.is_none());
+                assert!(hidden.is_none());
+            } else {
+                let primary = skip_state_primary_token(
+                    &logits.expect("legacy skip logits"),
+                    argmax,
+                    3,
+                    MlxSamplingParams::greedy(),
+                    &mut state.rng,
+                    &mut state.sampling_probs_buf,
+                    &mut state.sampling_logits_buf,
+                    &mut state.sampling_candidates_buf,
+                );
+                assert_eq!(primary, 2, "control must expose the stale row's primary");
+                assert!(hidden.is_some());
+            }
+            assert!(state.mtp_skip_logits.is_none());
+            assert!(state.mtp_skip_argmax.is_none());
+            assert!(state.mtp_skip_hidden.is_none());
+            assert_eq!(state.cache.seq_len(), 0);
+        }
+    }
+
+    #[test]
+    fn forced_greedy_replay_excludes_default_sampled_and_processed_requests() {
+        let greedy = MlxSamplingParams::greedy();
+        assert!(forced_linear_mtp_greedy_revalidation(true, greedy));
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
+        let _relaxed = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
+        let (cfg, weights) = forced_replay_test_model();
+        let mut expected = MlxKVCache::new_contiguous(1);
+        let expected_correction =
+            recompute_committed_prefix_with_argmax(&cfg, &weights, &mut expected, 3, &[2], 0);
+        let (expected_k, expected_v) = expected.logical_layer_kv(0).expect("expected KV");
+        eval(&[&expected_k, &expected_v]);
+        for (forced, sampling) in [
+            (false, greedy),
+            (true, MlxSamplingParams::new(0.7, 1.0, 0)),
+            (true, greedy.with_repetition_penalty(1.2, None)),
+            (true, greedy.with_no_repeat_ngram(3, 128)),
+        ] {
+            let revalidate = forced_linear_mtp_greedy_revalidation(forced, sampling);
+            assert!(!revalidate);
+            let original_accept = MtpAcceptOutcome {
+                accept_count: 1,
+                all_accepted: false,
+                rejection_correction: Some(7),
+            };
+            let mut accept = original_accept;
+            let mut predicted = vec![2, 7, 1];
+            let mut cache = MlxKVCache::new_contiguous(1);
+            let correction = replay_linear_mtp_accepted_prefix(
+                &cfg,
+                &weights,
+                &mut cache,
+                3,
+                &[2, 3],
+                0,
+                &mut accept,
+                &mut predicted,
+                revalidate,
+            );
+            assert_eq!(accept, original_accept);
+            assert_eq!(predicted, [2, 7, 1]);
+            assert_eq!(correction, expected_correction);
+            assert_eq!(cache.seq_len(), 2);
+            let (k, v) = cache.logical_layer_kv(0).expect("actual KV");
+            eval(&[&k, &v]);
+            assert_eq!(k.data_f32(), expected_k.data_f32());
+            assert_eq!(v.data_f32(), expected_v.data_f32());
+            if sampling.temperature > 0.0 {
+                assert_eq!(
+                    select_linear_mtp_correction_token(
+                        sampling.temperature,
+                        Some(correction),
+                        Some(9),
+                        accept.rejection_correction,
+                        7,
+                    ),
+                    9
+                );
+            }
+        }
     }
 
     #[test]
@@ -17541,6 +17887,57 @@ mod tests {
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_enqueued".into(), 10)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_committed".into(), 8)));
         assert!(decisions.contains(&("ax_mlx_prefix_cache_disk_store_commit_failed".into(), 1)));
+    }
+
+    #[test]
+    fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
+        for (prefix_len, suffix_len, chunk, expected) in [
+            (4, 8, 8, None),
+            (12, 20, 8, None),
+            (12, 2, 8, None),
+            (8, 2, 8, Some(8)),
+            (12, 1, 8, Some(12)),
+            (0, 20, 8, Some(0)),
+        ] {
+            let item = ax_engine_core::ExecutionItem {
+                request_id: RequestId(21),
+                mode: ExecutionMode::Prefill,
+                planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+                input_token_slice: vec![2; suffix_len],
+                reused_prefix_token_slice: vec![1; prefix_len],
+                position_range: PositionRange {
+                    start: prefix_len as u32,
+                    end_exclusive: (prefix_len + suffix_len) as u32,
+                },
+                scheduled_token_count: suffix_len as u32,
+                block_table_ref: RequestId(21),
+                prefix_tokens_reused: prefix_len as u32,
+                prefix_blocks_reused: 1,
+            };
+            let selected = grid_aligned_prefix_restore_len(&item, prefix_len, chunk);
+            assert_eq!(
+                selected, expected,
+                "prefix={prefix_len}, suffix={suffix_len}"
+            );
+            if selected.is_none() {
+                let telemetry = MlxPrefixCacheTelemetry {
+                    warmup_tokens: prefix_len as u32,
+                    ..MlxPrefixCacheTelemetry::default()
+                };
+                let state = RequestState::new(2, 21, None);
+                let replay = full_prefill_recompute_tokens_for_warmup_fallback(
+                    &item,
+                    &item.input_token_slice,
+                    &telemetry,
+                    &state,
+                )
+                .expect("trimmed scheduler claims must replay the complete prompt");
+                assert_eq!(replay, [vec![1; prefix_len], vec![2; suffix_len]].concat());
+            }
+            if prefix_len == 0 {
+                assert_eq!(grid_aligned_prefix_restore_len(&item, 12, chunk), Some(8));
+            }
+        }
     }
 
     #[test]

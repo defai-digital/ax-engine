@@ -1,0 +1,162 @@
+{
+  "source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+  "runtime_source_sha256": "970f0b0297d1947d1953847067bc4bacf3155253c32ef59c0cb32677b3789e60",
+  "checks": [
+    {
+      "check": "bf16-regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--lib",
+        "decode_post_input_metal_preserves_bf16_rounding_boundaries"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "fmt",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "--force-warn",
+        "clippy::unwrap-used",
+        "--force-warn",
+        "clippy::expect-used",
+        "--force-warn",
+        "clippy::panic",
+        "--force-warn",
+        "clippy::dbg-macro",
+        "--force-warn",
+        "clippy::large-enum-variant"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "rust",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "maturin",
+      "command": [
+        "maturin",
+        "develop"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "python",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "qwen27b",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "flash_next",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "check": "claims",
+      "command": [
+        "python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "strict_clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 101
+  },
+  "strict_clippy_limit": "Unmodified ax-engine-core restriction-lint failures; first failure at tests/kv_rollback_after_eviction_repro.rs:13. CI-policy force-warn exceptions were not changed.",
+  "scripts": "passed",
+  "python": "209 passed, 26 skipped, 140 subtests passed",
+  "external_reviews": {
+    "scope": "Read-only suggestions independently source-checked; not qualification evidence",
+    "reviewers": [
+      {
+        "reviewer": "grok",
+        "exit_code": 0,
+        "timed_out": false,
+        "elapsed_seconds": 113.3,
+        "read_only_request": true,
+        "response_sha256": "1b0e282971aff6e6b7a51c9f04b86eadeb1fc9b7d3611a171562b32e96612529"
+      },
+      {
+        "reviewer": "qwen",
+        "exit_code": 0,
+        "timed_out": false,
+        "elapsed_seconds": 168.28,
+        "read_only_request": true,
+        "response_sha256": "13f9f119e457491ac4ceaa38780b6398e0abebef594c39c0238db820dba9fe2a"
+      }
+    ],
+    "source_check_sha256": "a0c0f5426a6eeadc8f66688654e18f074996f1a0c4ca07439a4c52eb93d5a7e4"
+  },
+  "raw_retained_logs_sha256": {
+    "bf16-regression.log": "b684e4cbd9c223d4f03a39e832290f081a3810b859c9dbe043bed320f74fe913",
+    "claims.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "clippy.log": "f505f8f6fcfa446e5cb69dbcc22ce3c672256abbde0dd6e3c8d768445074e403",
+    "flash_next.log": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+    "fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "maturin.log": "6f8e467508a3342b08c0c05ce7584fe70a8cb05aae19eb5f20248392a39e2099",
+    "python.log": "a10242bffa24eefd4f9f041a0a847d16eeb5f216ab902dba3879674e10740eb9",
+    "qwen27b.log": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+    "rust.log": "d8d1b9f16f2ec0f9ced21a7459ba0e8ddc6f6749b940d636b13afed34daec0b5",
+    "strict-clippy.log": "d1e4773904e330c4106fcd9439f00185a0506b42f2f1c8391d5ae9c335ba6a6c",
+    "scripts.log": "d3f136e7bb98f3f099857d145ff43ef5728e4238ac2ed8be0d6d80e41186ce00",
+    "wheel.log": "570ed9810a8f0d889f13e7c1df5db805b23ca04bbc8f7003d8f4d0b7182078b0"
+  }
+}

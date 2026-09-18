@@ -1,0 +1,393 @@
+diff --git a/crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs b/crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs
+index de3cb7d0..5c736a9b 100644
+--- a/crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs
++++ b/crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs
+@@ -1,5 +1,5 @@
+-//! Compare a two-token Qwen linear-attention verify graph with two singleton
+-//! synchronous singleton graphs on the same real checkpoint and cache state.
++//! Compare a two-token Qwen linear-attention verify graph with two synchronous
++//! singleton graphs on the same real checkpoint and cache state.
+ //!
+ //! Usage:
+ //!   linear_mtp_state_oracle_probe <model_dir> <prompt-tokens> [decode-prefix-tokens]
+@@ -85,33 +85,60 @@ fn materialized_argmax(logits: &MlxArray, cache: &MlxKVCache) -> u32 {
+     token.data_u32().first().copied().unwrap_or(0)
+ }
+ 
+-fn max_abs_diff(left: &MlxArray, right: &MlxArray) -> f32 {
+-    let left = astype(left, MlxDtype::Float32, None);
+-    let right = astype(right, MlxDtype::Float32, None);
+-    eval(&[&left, &right]);
+-    left.data_f32()
++fn materialized_f32_values(array: &MlxArray) -> Vec<f32> {
++    // A no-op dtype cast preserves strided Float32 cache and logit views.
++    // Raw MLX data access requires row-contiguous storage.
++    let array = mlx_sys::contiguous(&astype(array, MlxDtype::Float32, None), None);
++    eval(&[&array]);
++    array.data_f32().to_vec()
++}
++
++fn checked_max_abs_diff(left: &[f32], right: &[f32]) -> Result<f32, String> {
++    if left.is_empty() || left.len() != right.len() {
++        return Err(format!(
++            "comparison requires equal nonempty extents: left={}, right={}",
++            left.len(),
++            right.len()
++        ));
++    }
++    if !left.iter().chain(right).all(|value| value.is_finite()) {
++        return Err("comparison contains non-finite values".to_string());
++    }
++    let difference = left
+         .iter()
+-        .zip(right.data_f32())
++        .zip(right)
+         .fold(0.0_f32, |maximum, (left, right)| {
+             maximum.max((left - right).abs())
+-        })
++        });
++    if !difference.is_finite() {
++        return Err("comparison difference overflowed".to_string());
++    }
++    Ok(difference)
++}
++
++fn max_abs_diff(left: &MlxArray, right: &MlxArray) -> Result<f32, String> {
++    checked_max_abs_diff(
++        &materialized_f32_values(left),
++        &materialized_f32_values(right),
++    )
+ }
+ 
+-fn print_logit_comparison(label: &str, singleton: &MlxArray, batched: &MlxArray) {
+-    let singleton = astype(singleton, MlxDtype::Float32, None);
+-    let batched = astype(batched, MlxDtype::Float32, None);
+-    eval(&[&singleton, &batched]);
+-    for (route, logits) in [("singleton", &singleton), ("batched", &batched)] {
+-        let values = logits.data_f32();
++fn print_logit_comparison(
++    label: &str,
++    singleton: &MlxArray,
++    batched: &MlxArray,
++) -> Result<(), String> {
++    let singleton = materialized_f32_values(singleton);
++    let batched = materialized_f32_values(batched);
++    let difference = checked_max_abs_diff(&singleton, &batched)?;
++    for (route, values) in [("singleton", &singleton), ("batched", &batched)] {
+         let mut indices: Vec<usize> = (0..values.len()).collect();
+         indices.sort_by(|&left, &right| values[right].total_cmp(&values[left]));
+         let top: Vec<(usize, f32)> = indices.iter().take(2).map(|&i| (i, values[i])).collect();
+         println!("row={label} route={route} top2={top:?}");
+     }
+-    println!(
+-        "row={label} logits_max_abs={:.9e}",
+-        max_abs_diff(&singleton, &batched)
+-    );
++    println!("row={label} logits_max_abs={difference:.9e}");
++    Ok(())
+ }
+ 
+ fn validate_prefix_token(index: usize, expected: u32, actual: u32) -> Result<(), String> {
+@@ -149,7 +176,7 @@ fn print_first_layer_hidden_diff(
+     primary: u32,
+     draft: u32,
+     skip_ffn: bool,
+-) {
++) -> Result<(), String> {
+     let mut singleton_cache = base_cache.clone();
+     let singleton_first = if skip_ffn {
+         layer_forward_last_only(
+@@ -240,9 +267,10 @@ fn print_first_layer_hidden_diff(
+     println!(
+         "layer=0 stage={} hidden_first_max_abs={:.9e} hidden_second_max_abs={:.9e}",
+         if skip_ffn { "attention" } else { "full" },
+-        max_abs_diff(&singleton_first, &batched_first),
+-        max_abs_diff(&singleton_second, &batched_second),
++        max_abs_diff(&singleton_first, &batched_first)?,
++        max_abs_diff(&singleton_second, &batched_second)?,
+     );
++    Ok(())
+ }
+ 
+ fn run() -> Result<(), String> {
+@@ -265,8 +293,37 @@ fn run() -> Result<(), String> {
+     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir))
+         .map_err(|error| format!("failed to load model artifacts: {error}"))?;
+     let cfg = ModelConfig::from_manifest(artifacts.manifest());
+-    let weights =
+-        load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?;
++    let setup = env::var("AX_HISTORY_OBSERVER_SETUP").unwrap_or_default();
++    let _stream = if setup == "stream" {
++        mlx_sys::enable_compile();
++        let stream = mlx_sys::MlxStream::new_gpu();
++        stream.set_as_default();
++        Some(stream)
++    } else {
++        None
++    };
++    let mut runner_owner = None;
++    let weights = if setup == "runner" {
++        let shared = ax_engine_mlx::MlxSharedWeightsCell::new();
++        runner_owner = Some(
++            ax_engine_mlx::MlxRunner::from_artifacts_with_runtime_shares(
++                &artifacts,
++                DEFAULT_PREFILL_CHUNK,
++                true,
++                false,
++                None,
++                Some(&shared),
++            )
++            .map_err(|error| format!("runner startup failed: {error}"))?,
++        );
++        shared.get().ok_or("runner did not publish weights")?
++    } else {
++        std::sync::Arc::new(
++            load_weights(&artifacts).map_err(|error| format!("failed to load weights: {error}"))?,
++        )
++    };
++    let _runner_owner = runner_owner;
++    eprintln!("history_setup={setup:?}");
+     if cfg.linear_attention.is_none() {
+         return Err("probe requires a linear-attention checkpoint".to_string());
+     }
+@@ -357,7 +414,7 @@ fn run() -> Result<(), String> {
+         primary,
+         draft,
+         true,
+-    );
++    )?;
+     print_first_layer_hidden_diff(
+         &cfg,
+         &weights,
+@@ -366,7 +423,7 @@ fn run() -> Result<(), String> {
+         primary,
+         draft,
+         false,
+-    );
++    )?;
+ 
+     let mut singleton_cache = base_cache.clone();
+     let singleton_first = forward_argmax(
+@@ -412,18 +469,18 @@ fn run() -> Result<(), String> {
+     let vocab = cfg.vocab_size as i32;
+     let first_row = slice(&batched_logits, &[0, 0], &[1, vocab], &[1, 1], None);
+     let second_row = slice(&batched_logits, &[1, 0], &[2, vocab], &[1, 1], None);
+-    print_logit_comparison("first", &singleton_first, &first_row);
+-    print_logit_comparison("second", &singleton_second, &second_row);
++    print_logit_comparison("first", &singleton_first, &first_row)?;
++    print_logit_comparison("second", &singleton_second, &second_row)?;
+     for layer in 0..cfg.layer_count {
+         let (singleton_conv, singleton_recurrent) = singleton_cache.linear_state(layer);
+         let (batched_conv, batched_recurrent) = batched_cache.linear_state(layer);
+         let conv_diff = match (singleton_conv, batched_conv) {
+-            (Some(singleton), Some(batched)) => max_abs_diff(singleton, batched),
++            (Some(singleton), Some(batched)) => max_abs_diff(singleton, batched)?,
+             (None, None) => 0.0,
+             _ => f32::INFINITY,
+         };
+         let recurrent_diff = match (singleton_recurrent, batched_recurrent) {
+-            (Some(singleton), Some(batched)) => max_abs_diff(singleton, batched),
++            (Some(singleton), Some(batched)) => max_abs_diff(singleton, batched)?,
+             (None, None) => 0.0,
+             _ => f32::INFINITY,
+         };
+@@ -440,12 +497,12 @@ fn run() -> Result<(), String> {
+         let (singleton_conv, singleton_recurrent) = first_cache.linear_state(layer);
+         let (checkpoint_conv, checkpoint_recurrent) = batched_cache.linear_state(layer);
+         let conv_diff = match (singleton_conv, checkpoint_conv) {
+-            (Some(singleton), Some(checkpoint)) => max_abs_diff(singleton, checkpoint),
++            (Some(singleton), Some(checkpoint)) => max_abs_diff(singleton, checkpoint)?,
+             (None, None) => 0.0,
+             _ => f32::INFINITY,
+         };
+         let recurrent_diff = match (singleton_recurrent, checkpoint_recurrent) {
+-            (Some(singleton), Some(checkpoint)) => max_abs_diff(singleton, checkpoint),
++            (Some(singleton), Some(checkpoint)) => max_abs_diff(singleton, checkpoint)?,
+             (None, None) => 0.0,
+             _ => f32::INFINITY,
+         };
+@@ -473,6 +530,27 @@ fn main() -> ExitCode {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn comparison_reads_strided_float32_views_in_logical_order() {
++        let values = MlxArray::from_f32_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
++        let matrix = mlx_sys::reshape(&values, &[2, 3], None);
++        let transposed = mlx_sys::transpose(&matrix, &[1, 0], None);
++        let expected = MlxArray::from_f32_slice(&[0.0, 3.0, 1.0, 4.0, 2.0, 5.0]);
++        assert_eq!(max_abs_diff(&transposed, &expected).unwrap(), 0.0);
++    }
++
++    #[test]
++    fn comparison_rejects_truncated_empty_or_nonfinite_evidence() {
++        assert!(checked_max_abs_diff(&[1.0], &[1.0, 9.0]).is_err());
++        assert!(checked_max_abs_diff(&[], &[]).is_err());
++        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
++            assert!(checked_max_abs_diff(&[value], &[0.0]).is_err());
++            assert!(checked_max_abs_diff(&[0.0], &[value]).is_err());
++        }
++        assert!(checked_max_abs_diff(&[f32::MAX], &[-f32::MAX]).is_err());
++        assert_eq!(checked_max_abs_diff(&[1.0, 2.0], &[1.0, 5.0]).unwrap(), 3.0);
++    }
++
+     #[test]
+     fn replay_boundary_rejects_a_different_generated_prefix() {
+         assert!(validate_prefix_token(0, 42, 42).is_ok());
+diff --git a/crates/ax-engine-mlx/src/generate.rs b/crates/ax-engine-mlx/src/generate.rs
+index c191bc62..d12b2250 100644
+--- a/crates/ax-engine-mlx/src/generate.rs
++++ b/crates/ax-engine-mlx/src/generate.rs
+@@ -1404,6 +1404,7 @@ pub fn start_direct_pipeline(
+     cache: &mut MlxKVCache,
+ ) -> MlxArray {
+     let token_offset = cache.seq_len();
++    crate::history_observer::begin(cache, cfg.vocab_size, last_token);
+     let logits = forward_argmax(cfg, weights, &[last_token], cache, token_offset);
+     cache.advance(1);
+     // KV cache is in token_arr's computation graph; no extra refs needed.
+@@ -1465,6 +1466,7 @@ pub fn advance_direct_pipeline_with_timings(
+     let pending_read_started = Instant::now();
+     let tok = pending.first_u32_unchecked();
+     prepared.timings.pending_read_wall_us = elapsed_us(pending_read_started);
++    crate::history_observer::flush(cache.seq_len());
+ 
+     DirectPipelineAdvance {
+         token: tok,
+@@ -1496,6 +1498,7 @@ pub fn prepare_direct_pipeline_advance(
+         reset_forward_stage_timings();
+     }
+     let forward_started = Instant::now();
++    crate::history_observer::capture(cache);
+     let logits = forward_lazy_single_argmax(cfg, weights, pending, cache, token_offset);
+     let forward_wall_us = elapsed_us(forward_started);
+     let forward_stage = if stage_profile {
+diff --git a/crates/ax-engine-mlx/src/history_observer.rs b/crates/ax-engine-mlx/src/history_observer.rs
+new file mode 100644
+index 00000000..ea869e67
+--- /dev/null
++++ b/crates/ax-engine-mlx/src/history_observer.rs
+@@ -0,0 +1,100 @@
++// Observation-only build; no product policy changes.
++use crate::kv_cache::MlxKVCache;
++use mlx_sys::{MlxArray, MlxDtype, astype, eval};
++use std::cell::RefCell;
++thread_local! {
++    static CAPTURES: RefCell<Vec<MlxKVCache>> = const { RefCell::new(Vec::new()) };
++}
++fn first_split_hash(bytes: &[u8]) -> String {
++    use sha2::{Digest, Sha256};
++    format!("{:x}", Sha256::digest(bytes))
++}
++
++fn first_split_array(value: &MlxArray) -> Result<(serde_json::Value, Vec<f32>), String> {
++    let floats = mlx_sys::contiguous(&astype(value, MlxDtype::Float32, None), None);
++    eval(&[&floats]);
++    let values = floats.data_f32().to_vec();
++    if !values.iter().all(|value| value.is_finite()) {
++        return Err("non-finite diagnostic array".to_string());
++    }
++    let bytes: Vec<u8> = values
++        .iter()
++        .flat_map(|v| v.to_bits().to_le_bytes())
++        .collect();
++    Ok((
++        serde_json::json!({
++            "shape": value.shape(), "dtype": format!("{:?}", value.dtype()),
++            "elements": values.len(), "finite": true,
++            "f32_bits_le_sha256": first_split_hash(&bytes),
++        }),
++        values,
++    ))
++}
++
++fn first_split_cache(cache: &MlxKVCache, layer_count: usize) -> Result<serde_json::Value, String> {
++    let usage = cache.usage_snapshot();
++    if usage.rotated_ring_layers != 0
++        || usage.quantized_layers != 0
++        || cache.fa_block_pool_enabled()
++    {
++        return Err("diagnostic requires observed contiguous non-ring cache layout".to_string());
++    }
++    let mut arrays = Vec::new();
++    for layer in 0..layer_count {
++        if let Some((k, v)) = cache.logical_layer_kv(layer) {
++            for (kind, array) in [("key", k), ("value", v)] {
++                let (metadata, _) = first_split_array(&array)?;
++                arrays.push(serde_json::json!({"layer": layer, "kind": kind, "array": metadata}));
++            }
++        }
++        let (conv, recurrent) = cache.linear_state(layer);
++        for (kind, value) in [("conv", conv), ("recurrent", recurrent)] {
++            if let Some(array) = value {
++                let (metadata, _) = first_split_array(array)?;
++                arrays.push(serde_json::json!({"layer": layer, "kind": kind, "array": metadata}));
++            }
++        }
++    }
++    if usage.full_attention_layers != 16 || usage.linear_state_layers != 48 || arrays.len() != 128 {
++        return Err("unexpected cache layer or state-array count".to_string());
++    }
++    Ok(
++        serde_json::json!({"seq_len": cache.seq_len(), "rope_offset": cache.rope_offset,
++        "mrope_position_delta": cache.mrope_position_delta(),
++        "capacity_tokens": usage.capacity_tokens, "logical_arrays": arrays}),
++    )
++}
++
++pub fn begin(cache: &MlxKVCache, vocab: usize, token: u32) {
++    if cache.seq_len() == 409 && vocab == 248320 && token == 760 {
++        CAPTURES.with(|cell| *cell.borrow_mut() = vec![cache.clone()]);
++    }
++}
++pub fn capture(cache: &MlxKVCache) {
++    if [410, 411, 522, 524, 525, 526].contains(&cache.seq_len()) {
++        CAPTURES.with(|cell| {
++            let mut rows = cell.borrow_mut();
++            if !rows.is_empty() {
++                rows.push(cache.clone());
++            }
++        });
++    }
++}
++pub fn flush(cache_len: usize) {
++    if cache_len != 527 {
++        return;
++    }
++    let rows = CAPTURES.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
++    for cache in rows {
++        match first_split_cache(&cache, 64) {
++            Ok(value) => eprintln!(
++                "history_cache_probe {}",
++                serde_json::json!({"event":"cache", "value":value})
++            ),
++            Err(error) => eprintln!(
++                "history_cache_probe {}",
++                serde_json::json!({"event":"invalid", "error":error})
++            ),
++        }
++    }
++}
+diff --git a/crates/ax-engine-mlx/src/lib.rs b/crates/ax-engine-mlx/src/lib.rs
+index 91495c4d..43aa7228 100644
+--- a/crates/ax-engine-mlx/src/lib.rs
++++ b/crates/ax-engine-mlx/src/lib.rs
+@@ -67,3 +67,5 @@ pub fn clear_process_caches() {
+     per_layer_compile::clear_all_layer_decode_caches();
+     mlx_sys::clear_cache();
+ }
++
++mod history_observer;
+diff --git a/crates/ax-engine-mlx/src/runner/mod.rs b/crates/ax-engine-mlx/src/runner/mod.rs
+index ebe63e07..ceb83488 100644
+--- a/crates/ax-engine-mlx/src/runner/mod.rs
++++ b/crates/ax-engine-mlx/src/runner/mod.rs
+@@ -323,7 +323,7 @@ impl MlxSharedWeightsCell {
+         self.0.get().is_some()
+     }
+ 
+-    fn get(&self) -> Option<Arc<ModelWeights>> {
++    pub fn get(&self) -> Option<Arc<ModelWeights>> {
+         self.0.get().cloned()
+     }
+ 

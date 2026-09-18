@@ -1,0 +1,7 @@
+{
+  "full_192_fidelity": true,
+  "seven_cache_boundaries": true,
+  "prior_cache522_524_525_equal": true,
+  "events_sha256": "c47921500efb5a80097b0249e78325061c01492b5eb183a97ee4d8fe6e3fbe92",
+  "prior_events_sha256": "2e276036b5baabda2cd5aa67fd6954769ca572d021e47d0887dce3b527f3e194"
+}

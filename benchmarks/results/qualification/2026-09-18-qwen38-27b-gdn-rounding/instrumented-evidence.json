@@ -1,0 +1,5404 @@
+{
+  "schema": 1,
+  "status": "Source-bound instrumented diagnostics; not final-wheel qualification",
+  "hardware_class": "Mac mini M4 Pro 64 GB (Mac16,11)",
+  "checkpoint": {
+    "repository": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+  },
+  "installed_library_baseline": {
+    "source_commit": "4cbda8b54c77a75a3f65ee5ef920945e38bc5d81",
+    "dirty": false,
+    "wheel_sha256": "a1892e130e7ddce763fe06469ebffdd3dbc9b5e1a060b735e3d53de0b717121e",
+    "server_sha256": "5557e8cb425b7a6d1c5a9fa827f69400dd0a61b0a5f142571ba99724829a144f",
+    "bench_sha256": "aa677516fa2e0aae03001a2958e4c4956dc49ad490b0daefd3a2d903fb27d2af",
+    "cli_sha256": "b59cd68b7ab936c8b7bf51edab8ab4d0379f8efee54d83cbed369517aba67bd9"
+  },
+  "reference_snapshot": {
+    "scope": "Local design-reference snapshot; no reference implementation copied; not a latest-upstream claim",
+    "ax_engine_commit": "d0fbb3a76e1d6365d38df2be02c2c8bc666a0930",
+    "installed_mlx_version": "0.32.2",
+    "reference_mlx_head_is_not_the_installed_wheel": true,
+    "references": [
+      {
+        "reference": "MTPLX",
+        "head": "6459194642ba091ba7c17c3aba889b808340c3fc",
+        "tracked_changes": [],
+        "files_sha256": {
+          "mtplx/gdn_capture.py": "6d8aa6b8c34e23c6e8ba977a87ac78e8ad6a4564b0b163f34fb8f8489fa23e85",
+          "mtplx/cache_state.py": "6b4fa1934e74d8480b0b8adeba048acfaa7bf8ffcd0134c30be9a190fc0e5819",
+          "mtplx/a3b_compiled_target_prefix.py": "c922b9049d7d25aeace6b0f91775abd3ef842051dee136d1dbedbf382bf79409",
+          "mtplx/generation.py": "379b1ec541cdfd3168fe2233e234b8283aab2a64238d0ec28da502923aacc48f",
+          "docs/specs/2026-08-09-qwen35b-mtp-batch-numerics-profiles-design.md": "06be01c9bc263e1df85245768ee9248f3ed85fc22c46d2e9b32669d6a1f0be83"
+        }
+      },
+      {
+        "reference": "mlxcel",
+        "head": "0ef0a1a42a1203a267dfe93d743d29741dfcbdfb",
+        "tracked_changes": [],
+        "files_sha256": {
+          "src/models/qwen3_5.rs": "f89654714e269dc556d11647557022e6e3a67ae06a34d620c43ed471d4cce682",
+          "src/models/gated_delta.rs": "de7f7ebcf9aa2957a257350a56e46810c371f9a61c0e60f4b5f540ba9bea2530",
+          "src/lib/mlxcel-core/cpp/mlx_cxx_kernels.cpp": "070240fcf042c201ed4d047ca6faa52a51176de89d98766a6c920337d435fe24"
+        }
+      },
+      {
+        "reference": "omlx",
+        "head": "b18b4b0ff85951ba16e3ea9f183114bc14842588",
+        "tracked_changes": [],
+        "files_sha256": {
+          "omlx/speculative/vlm_mtp.py": "977915e933b2a0632b7888d9a04968b8ef49fc6a3d3d8e3b38e581f13d751348"
+        }
+      },
+      {
+        "reference": "ds4",
+        "head": "8db1d1d155cb0400a86a86b9c62d0defb3a6148b",
+        "tracked_changes": [],
+        "files_sha256": {
+          "docs/SPECULATIVE_DECODING.md": "11efe9d20b2d38eeafb72bbe08ef7a9bab8fd33715f8855770c00bbaf52ad34f",
+          "docs/QWEN38_FLASH_NEXT.md": "7eb901919e5764437ac96b417b8369fcccd8544115a47cceb58771d2265fdd8d",
+          "tests/test_qwen4_checkpoint_replay.py": "952c0ec8c05a0134bf2c82025fe3759ce19796c4475571b74254bcd6f08224a4"
+        }
+      },
+      {
+        "reference": "mlx",
+        "head": "c948334a51977a5f02a7b4b0c7170bcb2dfb2df9",
+        "tracked_changes": [],
+        "files_sha256": {
+          "python/tests/test_compile.py": "dbd7273f206c0bb7c419d95b35c17900dc9b2df0eb88c84bf247f3be6cca5c0e",
+          "mlx/backend/metal/kernels/unary_ops.h": "af710925f066b029f67289a0bbe4edd0ba6c5e7f51c9df609abb111216fa963f"
+        }
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "id": "pre_fix_instrumentation",
+      "scope": "Instrumented diagnostic only; not the final aa38f18b runtime or a release wheel",
+      "source": {
+        "base_commit": "d0fbb3a76e1d6365d38df2be02c2c8bc666a0930",
+        "dirty": true,
+        "patch_file": "post-input-stage.patch",
+        "patch_sha256": "411ea0dadb41eeecff6d2f34b942354096e9c14d766c347d5db1b9b661f06e73",
+        "binary_file": "post-input-stage-server",
+        "binary_sha256": "3a16934928ff14792e2ad74567feaaf412ad6d67625d1f3ceb6bdf3dcd4bec5e"
+      },
+      "retained_inputs": {
+        "provenance_sha256": "6920d88349f6de23ebaddd98336ad1a6db5eb0a044b932451f39bab4dfccbe56",
+        "results_sha256": "54197528918d7deb70d9e3ee617c01e90673d01bf3fc0131ec6c0ca5bf4823b6",
+        "trace_log_sha256": "a4d3a0c051a04f948502cd1f510fb365f1a91e9615d68dc9759a1204487f380d",
+        "trace_log_name": "COMPSEC-compsec-079-mtp-live-trace.log"
+      },
+      "request": {
+        "case": "COMPSEC:compsec-079",
+        "canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+        "prompt_tokens": 409,
+        "max_output_tokens": 192,
+        "sampling": {
+          "temperature": 0,
+          "seed": 0,
+          "repetition_penalty": 1,
+          "top_k": 0,
+          "top_p": 1
+        },
+        "same_as_old_production_request": true
+      },
+      "response": {
+        "output_tokens": [
+          760,
+          709,
+          1510,
+          7935,
+          68844,
+          16,
+          18,
+          13786,
+          63,
+          11036,
+          40278,
+          220,
+          16,
+          13,
+          18,
+          7189,
+          13,
+          198,
+          16,
+          13,
+          220,
+          2972,
+          9388,
+          82,
+          92217,
+          1368,
+          449,
+          4953,
+          369,
+          3816,
+          11,
+          279,
+          3511,
+          369,
+          7629,
+          13,
+          1061,
+          369,
+          5902,
+          13,
+          198,
+          17,
+          13,
+          220,
+          2972,
+          2239,
+          28692,
+          92217,
+          1049,
+          11988,
+          279,
+          1528,
+          5484,
+          364,
+          1510,
+          32099,
+          7561,
+          1510,
+          32099,
+          31547,
+          7561,
+          321,
+          1510,
+          24100,
+          27653,
+          198,
+          262,
+          348,
+          256,
+          1510,
+          32099,
+          63,
+          1411,
+          1510,
+          22916,
+          35709,
+          31547,
+          63,
+          198,
+          262,
+          348,
+          256,
+          1510,
+          32099,
+          31547,
+          63,
+          1411,
+          1510,
+          22916,
+          24100,
+          63,
+          198,
+          262,
+          348,
+          256,
+          1510,
+          24100,
+          63,
+          1411,
+          1510,
+          65914,
+          290,
+          63,
+          198,
+          262,
+          348,
+          256,
+          1061,
+          11870,
+          12083,
+          644,
+          47164,
+          279,
+          1906,
+          314,
+          55112,
+          6397,
+          364,
+          2849,
+          16163,
+          13,
+          198,
+          18,
+          13,
+          220,
+          2972,
+          4827,
+          1008,
+          92217,
+          1368,
+          279,
+          3150,
+          913,
+          369,
+          1510,
+          4827,
+          1008,
+          7561,
+          424,
+          6526,
+          1510,
+          70804,
+          8119,
+          41571,
+          37439,
+          1707,
+          27653,
+          271,
+          332,
+          760,
+          77348,
+          2803,
+          64700,
+          198,
+          760,
+          1970,
+          1503,
+          524,
+          1716,
+          279,
+          1428,
+          1528,
+          314,
+          279,
+          3511,
+          27718,
+          66,
+          397,
+          2374,
+          31789,
+          1518,
+          8427,
+          1510,
+          4827,
+          1008,
+          27653,
+          198,
+          623,
+          40278,
+          220,
+          16,
+          13,
+          18,
+          11,
+          3638,
+          795,
+          628,
+          381,
+          3106,
+          348,
+          14372,
+          9
+        ],
+        "canonical_output_tokens_sha256": "5a689c13544902f4aaf13beecdd649d8ad76d5e9640f2d1ceb4a376f0f24d0c2",
+        "output_count": 192,
+        "finish_reason": "max_output_tokens",
+        "same_as_old_production_mtp": true,
+        "first_difference_vs_old_production_mtp_zero_based": null,
+        "first_difference_vs_old_production_direct_zero_based": 46,
+        "first_difference_vs_independent_reference_prefix_zero_based": 46,
+        "reference_comparison_is_prefix_only": true
+      },
+      "route_observations": [
+        {
+          "layer": 0,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 1,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 2,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 4,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 5,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 6,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 8,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 9,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 10,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 12,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 13,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 14,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 16,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 17,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 18,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 20,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 21,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 22,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 24,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 25,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 26,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 28,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 29,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 30,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 32,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 33,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 34,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 36,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 37,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 38,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 40,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 41,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 42,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 44,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 45,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 46,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 48,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 49,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 50,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 52,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 53,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 54,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 56,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 57,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 58,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 60,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 61,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 62,
+          "route": "compiled_whole_linear"
+        }
+      ],
+      "parsed_statistics": {
+        "total_stage_comparisons": 509,
+        "compiled_vs_same_body_functional": {
+          "comparisons": 240,
+          "different_comparisons": 0
+        },
+        "by_stage": {
+          "a": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_a": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_hidden": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_qkv": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_recurrent": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_tape": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "conv_state": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "full_layer_same_input": {
+            "comparisons": 64,
+            "different_comparisons": 64,
+            "max_abs": 1.0,
+            "unequal_elements_total": 413866
+          },
+          "mode_0_logits": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "mode_1_logits": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "mode_2_logits": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.15625,
+            "unequal_elements_total": 644338
+          },
+          "mode_3_logits": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.15625,
+            "unequal_elements_total": 644338
+          },
+          "mode_4_logits": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "mode_5_logits": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.125,
+            "unequal_elements_total": 772664
+          },
+          "post_input_k": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.00390625,
+            "unequal_elements_total": 4642
+          },
+          "post_input_q": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.000244140625,
+            "unequal_elements_total": 4563
+          },
+          "post_input_v": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.03125,
+            "unequal_elements_total": 12798
+          },
+          "projection_a": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "projection_b": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "qkv": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "recurrent_state": {
+            "comparisons": 48,
+            "different_comparisons": 48,
+            "max_abs": 0.07229447365,
+            "unequal_elements_total": 37740298
+          },
+          "tape_vs_standard_state": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "tape_vs_standard_y": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          }
+        },
+        "layer_zero": [
+          {
+            "layer": 0,
+            "stage": "post_input_q",
+            "dtype": "Bfloat16",
+            "max_abs": 0.000244140625,
+            "max_abs_recorded": "2.441406250e-4",
+            "unequal_elements": 4563,
+            "shape": [
+              1,
+              4,
+              16,
+              128
+            ],
+            "source_log_line": 7
+          },
+          {
+            "layer": 0,
+            "stage": "post_input_k",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 4642,
+            "shape": [
+              1,
+              4,
+              16,
+              128
+            ],
+            "source_log_line": 9
+          },
+          {
+            "layer": 0,
+            "stage": "post_input_v",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 12798,
+            "shape": [
+              1,
+              4,
+              48,
+              128
+            ],
+            "source_log_line": 11
+          },
+          {
+            "layer": 0,
+            "stage": "tape_vs_standard_y",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48,
+              128
+            ],
+            "source_log_line": 13
+          },
+          {
+            "layer": 0,
+            "stage": "tape_vs_standard_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 15
+          },
+          {
+            "layer": 0,
+            "stage": "projection_a",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48
+            ],
+            "source_log_line": 17
+          },
+          {
+            "layer": 0,
+            "stage": "projection_b",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48
+            ],
+            "source_log_line": 19
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_hidden",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 21
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_qkv",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              10240
+            ],
+            "source_log_line": 23
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_a",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48
+            ],
+            "source_log_line": 25
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_tape",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48,
+              128
+            ],
+            "source_log_line": 27
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_recurrent",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 29
+          },
+          {
+            "layer": 0,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 11493,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 31
+          },
+          {
+            "layer": 0,
+            "stage": "qkv",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              10240
+            ],
+            "source_log_line": 33
+          },
+          {
+            "layer": 0,
+            "stage": "a",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48
+            ],
+            "source_log_line": 35
+          },
+          {
+            "layer": 0,
+            "stage": "conv_state",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              3,
+              10240
+            ],
+            "source_log_line": 37
+          },
+          {
+            "layer": 0,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.07229447365,
+            "max_abs_recorded": "7.229447365e-2",
+            "unequal_elements": 786401,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 39
+          }
+        ],
+        "per_layer_residuals": [
+          {
+            "layer": 0,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 11493,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 31
+          },
+          {
+            "layer": 0,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.07229447365,
+            "max_abs_recorded": "7.229447365e-2",
+            "unequal_elements": 786401,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 39
+          },
+          {
+            "layer": 1,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 10132,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 52
+          },
+          {
+            "layer": 1,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001141786575,
+            "max_abs_recorded": "1.141786575e-3",
+            "unequal_elements": 786403,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 60
+          },
+          {
+            "layer": 2,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 10724,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 73
+          },
+          {
+            "layer": 2,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001827150583,
+            "max_abs_recorded": "1.827150583e-3",
+            "unequal_elements": 786413,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 81
+          },
+          {
+            "layer": 3,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.000244140625,
+            "max_abs_recorded": "2.441406250e-4",
+            "unequal_elements": 4,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 83
+          },
+          {
+            "layer": 4,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.25,
+            "max_abs_recorded": "2.500000000e-1",
+            "unequal_elements": 8912,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 96
+          },
+          {
+            "layer": 4,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001500308514,
+            "max_abs_recorded": "1.500308514e-3",
+            "unequal_elements": 786396,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 104
+          },
+          {
+            "layer": 5,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 7956,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 117
+          },
+          {
+            "layer": 5,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001120448112,
+            "max_abs_recorded": "1.120448112e-3",
+            "unequal_elements": 786384,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 125
+          },
+          {
+            "layer": 6,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 8049,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 138
+          },
+          {
+            "layer": 6,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001808941364,
+            "max_abs_recorded": "1.808941364e-3",
+            "unequal_elements": 786393,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 146
+          },
+          {
+            "layer": 7,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.000244140625,
+            "max_abs_recorded": "2.441406250e-4",
+            "unequal_elements": 6,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 148
+          },
+          {
+            "layer": 8,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 9976,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 161
+          },
+          {
+            "layer": 8,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002005890012,
+            "max_abs_recorded": "2.005890012e-3",
+            "unequal_elements": 786378,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 169
+          },
+          {
+            "layer": 9,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 8156,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 182
+          },
+          {
+            "layer": 9,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001560866833,
+            "max_abs_recorded": "1.560866833e-3",
+            "unequal_elements": 786390,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 190
+          },
+          {
+            "layer": 10,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 7783,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 203
+          },
+          {
+            "layer": 10,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001606233418,
+            "max_abs_recorded": "1.606233418e-3",
+            "unequal_elements": 786374,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 211
+          },
+          {
+            "layer": 11,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0009765625,
+            "max_abs_recorded": "9.765625000e-4",
+            "unequal_elements": 30,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 213
+          },
+          {
+            "layer": 12,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 8221,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 226
+          },
+          {
+            "layer": 12,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002733241767,
+            "max_abs_recorded": "2.733241767e-3",
+            "unequal_elements": 786319,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 234
+          },
+          {
+            "layer": 13,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 7292,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 247
+          },
+          {
+            "layer": 13,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001964986324,
+            "max_abs_recorded": "1.964986324e-3",
+            "unequal_elements": 786396,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 255
+          },
+          {
+            "layer": 14,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 7714,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 268
+          },
+          {
+            "layer": 14,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.00240278244,
+            "max_abs_recorded": "2.402782440e-3",
+            "unequal_elements": 786390,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 276
+          },
+          {
+            "layer": 15,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0009765625,
+            "max_abs_recorded": "9.765625000e-4",
+            "unequal_elements": 8,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 278
+          },
+          {
+            "layer": 16,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 7788,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 291
+          },
+          {
+            "layer": 16,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001039594412,
+            "max_abs_recorded": "1.039594412e-3",
+            "unequal_elements": 786380,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 299
+          },
+          {
+            "layer": 17,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 8335,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 312
+          },
+          {
+            "layer": 17,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002169847488,
+            "max_abs_recorded": "2.169847488e-3",
+            "unequal_elements": 786404,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 320
+          },
+          {
+            "layer": 18,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 8476,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 333
+          },
+          {
+            "layer": 18,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.004350423813,
+            "max_abs_recorded": "4.350423813e-3",
+            "unequal_elements": 786398,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 341
+          },
+          {
+            "layer": 19,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 154,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 343
+          },
+          {
+            "layer": 20,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 8036,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 356
+          },
+          {
+            "layer": 20,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002259459347,
+            "max_abs_recorded": "2.259459347e-3",
+            "unequal_elements": 786392,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 364
+          },
+          {
+            "layer": 21,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 7915,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 377
+          },
+          {
+            "layer": 21,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.006112158298,
+            "max_abs_recorded": "6.112158298e-3",
+            "unequal_elements": 786331,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 385
+          },
+          {
+            "layer": 22,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 7978,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 398
+          },
+          {
+            "layer": 22,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.004748106003,
+            "max_abs_recorded": "4.748106003e-3",
+            "unequal_elements": 786416,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 406
+          },
+          {
+            "layer": 23,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 30,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 408
+          },
+          {
+            "layer": 24,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 8795,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 421
+          },
+          {
+            "layer": 24,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.003752887249,
+            "max_abs_recorded": "3.752887249e-3",
+            "unequal_elements": 786173,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 429
+          },
+          {
+            "layer": 25,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 9028,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 442
+          },
+          {
+            "layer": 25,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002580851316,
+            "max_abs_recorded": "2.580851316e-3",
+            "unequal_elements": 785474,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 450
+          },
+          {
+            "layer": 26,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 9279,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 463
+          },
+          {
+            "layer": 26,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.004683732986,
+            "max_abs_recorded": "4.683732986e-3",
+            "unequal_elements": 786377,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 471
+          },
+          {
+            "layer": 27,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 49,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 473
+          },
+          {
+            "layer": 28,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 9458,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 486
+          },
+          {
+            "layer": 28,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001618124545,
+            "max_abs_recorded": "1.618124545e-3",
+            "unequal_elements": 786370,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 494
+          },
+          {
+            "layer": 29,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 9290,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 507
+          },
+          {
+            "layer": 29,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001177549362,
+            "max_abs_recorded": "1.177549362e-3",
+            "unequal_elements": 786387,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 515
+          },
+          {
+            "layer": 30,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 9144,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 528
+          },
+          {
+            "layer": 30,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.009363949299,
+            "max_abs_recorded": "9.363949299e-3",
+            "unequal_elements": 786158,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 536
+          },
+          {
+            "layer": 31,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 54,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 538
+          },
+          {
+            "layer": 32,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 9583,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 551
+          },
+          {
+            "layer": 32,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0008072778583,
+            "max_abs_recorded": "8.072778583e-4",
+            "unequal_elements": 786340,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 559
+          },
+          {
+            "layer": 33,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 9749,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 572
+          },
+          {
+            "layer": 33,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002550557256,
+            "max_abs_recorded": "2.550557256e-3",
+            "unequal_elements": 786405,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 580
+          },
+          {
+            "layer": 34,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.25,
+            "max_abs_recorded": "2.500000000e-1",
+            "unequal_elements": 9742,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 593
+          },
+          {
+            "layer": 34,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002788186073,
+            "max_abs_recorded": "2.788186073e-3",
+            "unequal_elements": 786392,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 601
+          },
+          {
+            "layer": 35,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 7,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 603
+          },
+          {
+            "layer": 36,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 8319,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 616
+          },
+          {
+            "layer": 36,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001450836658,
+            "max_abs_recorded": "1.450836658e-3",
+            "unequal_elements": 786393,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 624
+          },
+          {
+            "layer": 37,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 7531,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 637
+          },
+          {
+            "layer": 37,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.004307389259,
+            "max_abs_recorded": "4.307389259e-3",
+            "unequal_elements": 786381,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 645
+          },
+          {
+            "layer": 38,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 7368,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 658
+          },
+          {
+            "layer": 38,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.004030615091,
+            "max_abs_recorded": "4.030615091e-3",
+            "unequal_elements": 786406,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 666
+          },
+          {
+            "layer": 39,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 36,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 668
+          },
+          {
+            "layer": 40,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 7850,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 681
+          },
+          {
+            "layer": 40,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002354383469,
+            "max_abs_recorded": "2.354383469e-3",
+            "unequal_elements": 783390,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 689
+          },
+          {
+            "layer": 41,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.25,
+            "max_abs_recorded": "2.500000000e-1",
+            "unequal_elements": 8644,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 702
+          },
+          {
+            "layer": 41,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002478480339,
+            "max_abs_recorded": "2.478480339e-3",
+            "unequal_elements": 786386,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 710
+          },
+          {
+            "layer": 42,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 8408,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 723
+          },
+          {
+            "layer": 42,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002505764365,
+            "max_abs_recorded": "2.505764365e-3",
+            "unequal_elements": 786370,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 731
+          },
+          {
+            "layer": 43,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 52,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 733
+          },
+          {
+            "layer": 44,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 9598,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 746
+          },
+          {
+            "layer": 44,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001652449369,
+            "max_abs_recorded": "1.652449369e-3",
+            "unequal_elements": 786375,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 754
+          },
+          {
+            "layer": 45,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 8726,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 767
+          },
+          {
+            "layer": 45,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001783803105,
+            "max_abs_recorded": "1.783803105e-3",
+            "unequal_elements": 786314,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 775
+          },
+          {
+            "layer": 46,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 9080,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 788
+          },
+          {
+            "layer": 46,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002638757229,
+            "max_abs_recorded": "2.638757229e-3",
+            "unequal_elements": 784533,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 796
+          },
+          {
+            "layer": 47,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 34,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 798
+          },
+          {
+            "layer": 48,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 9389,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 811
+          },
+          {
+            "layer": 48,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001424729824,
+            "max_abs_recorded": "1.424729824e-3",
+            "unequal_elements": 786320,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 819
+          },
+          {
+            "layer": 49,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 9475,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 832
+          },
+          {
+            "layer": 49,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.003492385149,
+            "max_abs_recorded": "3.492385149e-3",
+            "unequal_elements": 786384,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 840
+          },
+          {
+            "layer": 50,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.5,
+            "max_abs_recorded": "5.000000000e-1",
+            "unequal_elements": 9866,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 853
+          },
+          {
+            "layer": 50,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.001586407423,
+            "max_abs_recorded": "1.586407423e-3",
+            "unequal_elements": 786393,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 861
+          },
+          {
+            "layer": 51,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 56,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 863
+          },
+          {
+            "layer": 52,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 8409,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 876
+          },
+          {
+            "layer": 52,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.009009242058,
+            "max_abs_recorded": "9.009242058e-3",
+            "unequal_elements": 786381,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 884
+          },
+          {
+            "layer": 53,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.5,
+            "max_abs_recorded": "5.000000000e-1",
+            "unequal_elements": 8051,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 897
+          },
+          {
+            "layer": 53,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.004990756512,
+            "max_abs_recorded": "4.990756512e-3",
+            "unequal_elements": 786382,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 905
+          },
+          {
+            "layer": 54,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 7124,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 918
+          },
+          {
+            "layer": 54,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.002734959126,
+            "max_abs_recorded": "2.734959126e-3",
+            "unequal_elements": 786413,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 926
+          },
+          {
+            "layer": 55,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 10,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 928
+          },
+          {
+            "layer": 56,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 7028,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 941
+          },
+          {
+            "layer": 56,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.004733681679,
+            "max_abs_recorded": "4.733681679e-3",
+            "unequal_elements": 786397,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 949
+          },
+          {
+            "layer": 57,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 7341,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 962
+          },
+          {
+            "layer": 57,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.006962776184,
+            "max_abs_recorded": "6.962776184e-3",
+            "unequal_elements": 786425,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 970
+          },
+          {
+            "layer": 58,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 7339,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 983
+          },
+          {
+            "layer": 58,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.006441235542,
+            "max_abs_recorded": "6.441235542e-3",
+            "unequal_elements": 786415,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 991
+          },
+          {
+            "layer": 59,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 6,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 993
+          },
+          {
+            "layer": 60,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 1.0,
+            "max_abs_recorded": "1.000000000e0",
+            "unequal_elements": 8943,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 1006
+          },
+          {
+            "layer": 60,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.004216820002,
+            "max_abs_recorded": "4.216820002e-3",
+            "unequal_elements": 786411,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 1014
+          },
+          {
+            "layer": 61,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.125,
+            "max_abs_recorded": "1.250000000e-1",
+            "unequal_elements": 7253,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 1027
+          },
+          {
+            "layer": 61,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.003470003605,
+            "max_abs_recorded": "3.470003605e-3",
+            "unequal_elements": 786399,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 1035
+          },
+          {
+            "layer": 62,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.25,
+            "max_abs_recorded": "2.500000000e-1",
+            "unequal_elements": 8553,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 1048
+          },
+          {
+            "layer": 62,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.003281116486,
+            "max_abs_recorded": "3.281116486e-3",
+            "unequal_elements": 786396,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 1056
+          },
+          {
+            "layer": 63,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0625,
+            "max_abs_recorded": "6.250000000e-2",
+            "unequal_elements": 31,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 1058
+          }
+        ],
+        "mode_controls": [
+          {
+            "mode": 0,
+            "scope": "Live target output; comparison baseline",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 28692,
+                "score": 23.125
+              },
+              {
+                "token": 898,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 4,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_0_logits",
+              "dtype": "Float32",
+              "max_abs": 0.0,
+              "max_abs_recorded": "0.000000000e0",
+              "unequal_elements": 0,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 3
+            }
+          },
+          {
+            "mode": 1,
+            "scope": "Target replay with per-layer ordinary and same-body eager observations",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 28692,
+                "score": 23.125
+              },
+              {
+                "token": 898,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1061,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_1_logits",
+              "dtype": "Float32",
+              "max_abs": 0.0,
+              "max_abs_recorded": "0.000000000e0",
+              "unequal_elements": 0,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1060
+            }
+          },
+          {
+            "mode": 2,
+            "scope": "Whole-linear compiled closure bypass",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 28692,
+                "score": 23.125
+              },
+              {
+                "token": 898,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1064,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_2_logits",
+              "dtype": "Float32",
+              "max_abs": 0.15625,
+              "max_abs_recorded": "1.562500000e-1",
+              "unequal_elements": 644338,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1063
+            }
+          },
+          {
+            "mode": 3,
+            "scope": "Whole-linear and nested eligibility bypass",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 28692,
+                "score": 23.125
+              },
+              {
+                "token": 898,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1067,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_3_logits",
+              "dtype": "Float32",
+              "max_abs": 0.15625,
+              "max_abs_recorded": "1.562500000e-1",
+              "unequal_elements": 644338,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1066
+            }
+          },
+          {
+            "mode": 4,
+            "scope": "Same functional body without outer compile; tracing scope preserved",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 28692,
+                "score": 23.125
+              },
+              {
+                "token": 898,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1070,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_4_logits",
+              "dtype": "Float32",
+              "max_abs": 0.0,
+              "max_abs_recorded": "0.000000000e0",
+              "unequal_elements": 0,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1069
+            }
+          },
+          {
+            "mode": 5,
+            "scope": "Mode 4 with ordinary post-input scope",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 898,
+                "score": 23.0
+              },
+              {
+                "token": 28692,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1073,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_5_logits",
+              "dtype": "Float32",
+              "max_abs": 0.125,
+              "max_abs_recorded": "1.250000000e-1",
+              "unequal_elements": 772664,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1072
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "pre_fp16_fixed_instrumentation",
+      "scope": "Instrumented diagnostic only; not the final aa38f18b runtime or a release wheel",
+      "source": {
+        "base_commit": "d0fbb3a76e1d6365d38df2be02c2c8bc666a0930",
+        "dirty": true,
+        "patch_file": "stage.patch",
+        "patch_sha256": "ade8b7fa0685537945b5430605c6fd700bb06d1f51a119dfef37f2f795625b09",
+        "binary_file": "stage-server",
+        "binary_sha256": "fcdf3f3d0736452bae3b10c5ee098f1780ca800415783c8af8b8e57e5d03f0d1"
+      },
+      "retained_inputs": {
+        "provenance_sha256": "3bf7378d654e3f343a4849e82b451eb210925e15a015fdf0fb5dc2cde211eb97",
+        "results_sha256": "a22b0f9dc7c3bb1b4993bf5088b52020996486bfcc6ae12ed05ec3f9c1de9bf6",
+        "trace_log_sha256": "b61acaa2444c63eb65f9928eac4b7d3cf7bfca92ec0c03cc64db8eeef8f0e54c",
+        "trace_log_name": "COMPSEC-compsec-079-mtp-live-trace.log"
+      },
+      "request": {
+        "case": "COMPSEC:compsec-079",
+        "canonical_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+        "prompt_tokens": 409,
+        "max_output_tokens": 192,
+        "sampling": {
+          "temperature": 0,
+          "seed": 0,
+          "repetition_penalty": 1,
+          "top_k": 0,
+          "top_p": 1
+        },
+        "same_as_old_production_request": true
+      },
+      "response": {
+        "output_tokens": [
+          760,
+          709,
+          1510,
+          7935,
+          68844,
+          16,
+          18,
+          13786,
+          63,
+          11036,
+          40278,
+          220,
+          16,
+          13,
+          18,
+          7189,
+          13,
+          198,
+          16,
+          13,
+          220,
+          2972,
+          9388,
+          82,
+          92217,
+          1368,
+          449,
+          4953,
+          369,
+          3816,
+          11,
+          279,
+          3511,
+          369,
+          7629,
+          13,
+          1061,
+          369,
+          5902,
+          13,
+          198,
+          17,
+          13,
+          220,
+          2972,
+          2239,
+          898,
+          1982,
+          92217,
+          1049,
+          11988,
+          279,
+          1528,
+          5484,
+          364,
+          1510,
+          32099,
+          7561,
+          1510,
+          32099,
+          31547,
+          7561,
+          321,
+          1510,
+          24100,
+          27653,
+          198,
+          262,
+          348,
+          256,
+          1510,
+          32099,
+          63,
+          1411,
+          1510,
+          22916,
+          35709,
+          31547,
+          63,
+          198,
+          262,
+          348,
+          256,
+          1510,
+          32099,
+          31547,
+          63,
+          1411,
+          1510,
+          22916,
+          24100,
+          63,
+          198,
+          262,
+          348,
+          256,
+          1510,
+          24100,
+          63,
+          1411,
+          1510,
+          65914,
+          290,
+          63,
+          198,
+          262,
+          348,
+          256,
+          1061,
+          11870,
+          12083,
+          644,
+          47164,
+          279,
+          1906,
+          314,
+          6397,
+          303,
+          279,
+          40278,
+          220,
+          16,
+          13,
+          18,
+          55112,
+          364,
+          2849,
+          16163,
+          13,
+          198,
+          18,
+          13,
+          220,
+          2972,
+          4827,
+          2791,
+          92217,
+          198,
+          262,
+          348,
+          256,
+          6863,
+          220,
+          16,
+          23,
+          11988,
+          1510,
+          331,
+          318,
+          81,
+          4697,
+          606,
+          7093,
+          1008,
+          8,
+          27653,
+          198,
+          262,
+          348,
+          256,
+          6863,
+          220,
+          16,
+          24,
+          6526,
+          1510,
+          70804,
+          8119,
+          41571,
+          37439,
+          1707,
+          1290,
+          11,
+          427,
+          8,
+          27653,
+          198,
+          262,
+          348,
+          256,
+          2972,
+          15529,
+          1692,
+          518,
+          34094,
+          4109,
+          92217,
+          561,
+          1970,
+          1503,
+          2972,
+          1856
+        ],
+        "canonical_output_tokens_sha256": "51d26304951eecd29061ed6d90da649f7a25ad6c6f84d5315eaae71a79d098b1",
+        "output_count": 192,
+        "finish_reason": "max_output_tokens",
+        "same_as_old_production_mtp": false,
+        "first_difference_vs_old_production_mtp_zero_based": 46,
+        "first_difference_vs_old_production_direct_zero_based": 109,
+        "first_difference_vs_independent_reference_prefix_zero_based": 137,
+        "reference_comparison_is_prefix_only": true
+      },
+      "route_observations": [
+        {
+          "layer": 0,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 1,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 2,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 4,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 5,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 6,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 8,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 9,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 10,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 12,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 13,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 14,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 16,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 17,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 18,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 20,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 21,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 22,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 24,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 25,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 26,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 28,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 29,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 30,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 32,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 33,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 34,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 36,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 37,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 38,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 40,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 41,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 42,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 44,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 45,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 46,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 48,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 49,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 50,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 52,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 53,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 54,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 56,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 57,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 58,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 60,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 61,
+          "route": "compiled_whole_linear"
+        },
+        {
+          "layer": 62,
+          "route": "compiled_whole_linear"
+        }
+      ],
+      "parsed_statistics": {
+        "total_stage_comparisons": 509,
+        "compiled_vs_same_body_functional": {
+          "comparisons": 240,
+          "different_comparisons": 0
+        },
+        "by_stage": {
+          "a": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_a": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_hidden": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_qkv": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_recurrent": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "compiled_vs_functional_tape": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "conv_state": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "full_layer_same_input": {
+            "comparisons": 64,
+            "different_comparisons": 62,
+            "max_abs": 0.03125,
+            "unequal_elements_total": 4356
+          },
+          "mode_0_logits": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "mode_1_logits": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "mode_2_logits": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.125,
+            "unequal_elements_total": 738702
+          },
+          "mode_3_logits": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.125,
+            "unequal_elements_total": 738702
+          },
+          "mode_4_logits": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "mode_5_logits": {
+            "comparisons": 1,
+            "different_comparisons": 1,
+            "max_abs": 0.125,
+            "unequal_elements_total": 738702
+          },
+          "post_input_k": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "post_input_q": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "post_input_v": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "projection_a": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "projection_b": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "qkv": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "recurrent_state": {
+            "comparisons": 48,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "tape_vs_standard_state": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          },
+          "tape_vs_standard_y": {
+            "comparisons": 1,
+            "different_comparisons": 0,
+            "max_abs": 0.0,
+            "unequal_elements_total": 0
+          }
+        },
+        "layer_zero": [
+          {
+            "layer": 0,
+            "stage": "post_input_q",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              16,
+              128
+            ],
+            "source_log_line": 7
+          },
+          {
+            "layer": 0,
+            "stage": "post_input_k",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              16,
+              128
+            ],
+            "source_log_line": 9
+          },
+          {
+            "layer": 0,
+            "stage": "post_input_v",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48,
+              128
+            ],
+            "source_log_line": 11
+          },
+          {
+            "layer": 0,
+            "stage": "tape_vs_standard_y",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48,
+              128
+            ],
+            "source_log_line": 13
+          },
+          {
+            "layer": 0,
+            "stage": "tape_vs_standard_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 15
+          },
+          {
+            "layer": 0,
+            "stage": "projection_a",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48
+            ],
+            "source_log_line": 17
+          },
+          {
+            "layer": 0,
+            "stage": "projection_b",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48
+            ],
+            "source_log_line": 19
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_hidden",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 21
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_qkv",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              10240
+            ],
+            "source_log_line": 23
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_a",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48
+            ],
+            "source_log_line": 25
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_tape",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48,
+              128
+            ],
+            "source_log_line": 27
+          },
+          {
+            "layer": 0,
+            "stage": "compiled_vs_functional_recurrent",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 29
+          },
+          {
+            "layer": 0,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 3.051757812e-05,
+            "max_abs_recorded": "3.051757812e-5",
+            "unequal_elements": 2,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 31
+          },
+          {
+            "layer": 0,
+            "stage": "qkv",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              10240
+            ],
+            "source_log_line": 33
+          },
+          {
+            "layer": 0,
+            "stage": "a",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              48
+            ],
+            "source_log_line": 35
+          },
+          {
+            "layer": 0,
+            "stage": "conv_state",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              3,
+              10240
+            ],
+            "source_log_line": 37
+          },
+          {
+            "layer": 0,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 39
+          }
+        ],
+        "per_layer_residuals": [
+          {
+            "layer": 0,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 3.051757812e-05,
+            "max_abs_recorded": "3.051757812e-5",
+            "unequal_elements": 2,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 31
+          },
+          {
+            "layer": 0,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 39
+          },
+          {
+            "layer": 1,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.000244140625,
+            "max_abs_recorded": "2.441406250e-4",
+            "unequal_elements": 27,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 52
+          },
+          {
+            "layer": 1,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 60
+          },
+          {
+            "layer": 2,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00048828125,
+            "max_abs_recorded": "4.882812500e-4",
+            "unequal_elements": 12,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 73
+          },
+          {
+            "layer": 2,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 81
+          },
+          {
+            "layer": 3,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00048828125,
+            "max_abs_recorded": "4.882812500e-4",
+            "unequal_elements": 76,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 83
+          },
+          {
+            "layer": 4,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00048828125,
+            "max_abs_recorded": "4.882812500e-4",
+            "unequal_elements": 71,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 96
+          },
+          {
+            "layer": 4,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 104
+          },
+          {
+            "layer": 5,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00048828125,
+            "max_abs_recorded": "4.882812500e-4",
+            "unequal_elements": 17,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 117
+          },
+          {
+            "layer": 5,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 125
+          },
+          {
+            "layer": 6,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00048828125,
+            "max_abs_recorded": "4.882812500e-4",
+            "unequal_elements": 48,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 138
+          },
+          {
+            "layer": 6,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 146
+          },
+          {
+            "layer": 7,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0009765625,
+            "max_abs_recorded": "9.765625000e-4",
+            "unequal_elements": 31,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 148
+          },
+          {
+            "layer": 8,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 20,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 161
+          },
+          {
+            "layer": 8,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 169
+          },
+          {
+            "layer": 9,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 28,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 182
+          },
+          {
+            "layer": 9,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 190
+          },
+          {
+            "layer": 10,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0009765625,
+            "max_abs_recorded": "9.765625000e-4",
+            "unequal_elements": 29,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 203
+          },
+          {
+            "layer": 10,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 211
+          },
+          {
+            "layer": 11,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0009765625,
+            "max_abs_recorded": "9.765625000e-4",
+            "unequal_elements": 5,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 213
+          },
+          {
+            "layer": 12,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.000244140625,
+            "max_abs_recorded": "2.441406250e-4",
+            "unequal_elements": 1,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 226
+          },
+          {
+            "layer": 12,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 234
+          },
+          {
+            "layer": 13,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 247
+          },
+          {
+            "layer": 13,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 255
+          },
+          {
+            "layer": 14,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00048828125,
+            "max_abs_recorded": "4.882812500e-4",
+            "unequal_elements": 34,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 268
+          },
+          {
+            "layer": 14,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 276
+          },
+          {
+            "layer": 15,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 23,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 278
+          },
+          {
+            "layer": 16,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 53,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 291
+          },
+          {
+            "layer": 16,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 299
+          },
+          {
+            "layer": 17,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00048828125,
+            "max_abs_recorded": "4.882812500e-4",
+            "unequal_elements": 14,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 312
+          },
+          {
+            "layer": 17,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 320
+          },
+          {
+            "layer": 18,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0009765625,
+            "max_abs_recorded": "9.765625000e-4",
+            "unequal_elements": 11,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 333
+          },
+          {
+            "layer": 18,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 341
+          },
+          {
+            "layer": 19,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 59,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 343
+          },
+          {
+            "layer": 20,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 15,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 356
+          },
+          {
+            "layer": 20,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 364
+          },
+          {
+            "layer": 21,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 535,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 377
+          },
+          {
+            "layer": 21,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 385
+          },
+          {
+            "layer": 22,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 92,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 398
+          },
+          {
+            "layer": 22,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 406
+          },
+          {
+            "layer": 23,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 5,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 408
+          },
+          {
+            "layer": 24,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 3,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 421
+          },
+          {
+            "layer": 24,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 429
+          },
+          {
+            "layer": 25,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 34,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 442
+          },
+          {
+            "layer": 25,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 450
+          },
+          {
+            "layer": 26,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0009765625,
+            "max_abs_recorded": "9.765625000e-4",
+            "unequal_elements": 5,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 463
+          },
+          {
+            "layer": 26,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 471
+          },
+          {
+            "layer": 27,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 108,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 473
+          },
+          {
+            "layer": 28,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 142,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 486
+          },
+          {
+            "layer": 28,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 494
+          },
+          {
+            "layer": 29,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 48,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 507
+          },
+          {
+            "layer": 29,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 515
+          },
+          {
+            "layer": 30,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 36,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 528
+          },
+          {
+            "layer": 30,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 536
+          },
+          {
+            "layer": 31,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0009765625,
+            "max_abs_recorded": "9.765625000e-4",
+            "unequal_elements": 4,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 538
+          },
+          {
+            "layer": 32,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 57,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 551
+          },
+          {
+            "layer": 32,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 559
+          },
+          {
+            "layer": 33,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 985,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 572
+          },
+          {
+            "layer": 33,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 580
+          },
+          {
+            "layer": 34,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 593
+          },
+          {
+            "layer": 34,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 601
+          },
+          {
+            "layer": 35,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 30,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 603
+          },
+          {
+            "layer": 36,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 34,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 616
+          },
+          {
+            "layer": 36,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 624
+          },
+          {
+            "layer": 37,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 66,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 637
+          },
+          {
+            "layer": 37,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 645
+          },
+          {
+            "layer": 38,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 5,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 658
+          },
+          {
+            "layer": 38,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 666
+          },
+          {
+            "layer": 39,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 30,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 668
+          },
+          {
+            "layer": 40,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 31,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 681
+          },
+          {
+            "layer": 40,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 689
+          },
+          {
+            "layer": 41,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 1068,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 702
+          },
+          {
+            "layer": 41,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 710
+          },
+          {
+            "layer": 42,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 30,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 723
+          },
+          {
+            "layer": 42,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 731
+          },
+          {
+            "layer": 43,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.001953125,
+            "max_abs_recorded": "1.953125000e-3",
+            "unequal_elements": 16,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 733
+          },
+          {
+            "layer": 44,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 5,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 746
+          },
+          {
+            "layer": 44,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 754
+          },
+          {
+            "layer": 45,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 33,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 767
+          },
+          {
+            "layer": 45,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 775
+          },
+          {
+            "layer": 46,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 15,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 788
+          },
+          {
+            "layer": 46,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 796
+          },
+          {
+            "layer": 47,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 4,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 798
+          },
+          {
+            "layer": 48,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 38,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 811
+          },
+          {
+            "layer": 48,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 819
+          },
+          {
+            "layer": 49,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.00390625,
+            "max_abs_recorded": "3.906250000e-3",
+            "unequal_elements": 9,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 832
+          },
+          {
+            "layer": 49,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 840
+          },
+          {
+            "layer": 50,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 43,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 853
+          },
+          {
+            "layer": 50,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 861
+          },
+          {
+            "layer": 51,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 16,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 863
+          },
+          {
+            "layer": 52,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 10,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 876
+          },
+          {
+            "layer": 52,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 884
+          },
+          {
+            "layer": 53,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 32,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 897
+          },
+          {
+            "layer": 53,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 905
+          },
+          {
+            "layer": 54,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 43,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 918
+          },
+          {
+            "layer": 54,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 926
+          },
+          {
+            "layer": 55,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 4,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 928
+          },
+          {
+            "layer": 56,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 12,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 941
+          },
+          {
+            "layer": 56,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 949
+          },
+          {
+            "layer": 57,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 23,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 962
+          },
+          {
+            "layer": 57,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 970
+          },
+          {
+            "layer": 58,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.0078125,
+            "max_abs_recorded": "7.812500000e-3",
+            "unequal_elements": 15,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 983
+          },
+          {
+            "layer": 58,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 991
+          },
+          {
+            "layer": 59,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 25,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 993
+          },
+          {
+            "layer": 60,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 5,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 1006
+          },
+          {
+            "layer": 60,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 1014
+          },
+          {
+            "layer": 61,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.015625,
+            "max_abs_recorded": "1.562500000e-2",
+            "unequal_elements": 13,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 1027
+          },
+          {
+            "layer": 61,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 1035
+          },
+          {
+            "layer": 62,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 55,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 1048
+          },
+          {
+            "layer": 62,
+            "stage": "recurrent_state",
+            "dtype": "Float32",
+            "max_abs": 0.0,
+            "max_abs_recorded": "0.000000000e0",
+            "unequal_elements": 0,
+            "shape": [
+              1,
+              48,
+              128,
+              128
+            ],
+            "source_log_line": 1056
+          },
+          {
+            "layer": 63,
+            "stage": "full_layer_same_input",
+            "dtype": "Bfloat16",
+            "max_abs": 0.03125,
+            "max_abs_recorded": "3.125000000e-2",
+            "unequal_elements": 16,
+            "shape": [
+              1,
+              4,
+              5120
+            ],
+            "source_log_line": 1058
+          }
+        ],
+        "mode_controls": [
+          {
+            "mode": 0,
+            "scope": "Live target output; comparison baseline",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 898,
+                "score": 23.0
+              },
+              {
+                "token": 28692,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 4,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_0_logits",
+              "dtype": "Float32",
+              "max_abs": 0.0,
+              "max_abs_recorded": "0.000000000e0",
+              "unequal_elements": 0,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 3
+            }
+          },
+          {
+            "mode": 1,
+            "scope": "Target replay with per-layer ordinary and same-body eager observations",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 898,
+                "score": 23.0
+              },
+              {
+                "token": 28692,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1061,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_1_logits",
+              "dtype": "Float32",
+              "max_abs": 0.0,
+              "max_abs_recorded": "0.000000000e0",
+              "unequal_elements": 0,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1060
+            }
+          },
+          {
+            "mode": 2,
+            "scope": "Whole-linear compiled closure bypass",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 28692,
+                "score": 23.125
+              },
+              {
+                "token": 898,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1064,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_2_logits",
+              "dtype": "Float32",
+              "max_abs": 0.125,
+              "max_abs_recorded": "1.250000000e-1",
+              "unequal_elements": 738702,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1063
+            }
+          },
+          {
+            "mode": 3,
+            "scope": "Whole-linear and nested eligibility bypass",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 28692,
+                "score": 23.125
+              },
+              {
+                "token": 898,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1067,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_3_logits",
+              "dtype": "Float32",
+              "max_abs": 0.125,
+              "max_abs_recorded": "1.250000000e-1",
+              "unequal_elements": 738702,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1066
+            }
+          },
+          {
+            "mode": 4,
+            "scope": "Same functional body without outer compile; tracing scope preserved",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 898,
+                "score": 23.0
+              },
+              {
+                "token": 28692,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1070,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_4_logits",
+              "dtype": "Float32",
+              "max_abs": 0.0,
+              "max_abs_recorded": "0.000000000e0",
+              "unequal_elements": 0,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1069
+            }
+          },
+          {
+            "mode": 5,
+            "scope": "Mode 4 with ordinary post-input scope",
+            "window_offset": 452,
+            "row": 2,
+            "top_two": [
+              {
+                "token": 28692,
+                "score": 23.125
+              },
+              {
+                "token": 898,
+                "score": 23.0
+              }
+            ],
+            "source_log_line": 1073,
+            "versus_live_logits": {
+              "layer": 999,
+              "stage": "mode_5_logits",
+              "dtype": "Float32",
+              "max_abs": 0.125,
+              "max_abs_recorded": "1.250000000e-1",
+              "unequal_elements": 738702,
+              "shape": [
+                4,
+                248320
+              ],
+              "source_log_line": 1072
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "final_fix_boundary": {
+    "commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+    "runtime_source_sha256": "970f0b0297d1947d1953847067bc4bacf3155253c32ef59c0cb32677b3789e60",
+    "scope": "Final code additionally fixes FP16 intrinsic rounding; no final clean-wheel or final-build hardware result is included in these instrumented diagnostics",
+    "pre_fp16_patch_distinction": "stage.patch lines 65-66 use typed precise exp/division directly; final source lines 2534-2536 uses precise float32 exp/division with explicit activation-dtype output rounding",
+    "unit_test_log_records": [
+      {
+        "file": "precise-promotions.log",
+        "sha256": "298b3d439bf591448265153ae0b1575fb6f207942288f6bc1fa0f5c107323c27",
+        "scope": "Final v3 BF16 and FP16 post-input exact boundary tests passed",
+        "raw_retained_sha256": "9e6fc8fb3d3b69a1b6f9a1bef016f3585117f6ebc47832f7574e5e5a413bda75",
+        "published_sanitized": true
+      },
+      {
+        "file": "final-simd32.log",
+        "sha256": "755619397f7f0e23925d19983a0bdb399a0138c3491061fb2a176d8b1fe3468a",
+        "scope": "Final SIMD32 BF16 and FP16 post-input exact boundary tests passed",
+        "raw_retained_sha256": "b7ccd243c30fb0bf048123a8082885d9728d90d50aa5e8d2b82d0b753111288a",
+        "published_sanitized": true
+      },
+      {
+        "file": "final-fused.log",
+        "sha256": "e5f4414d1fa4207b9f6bb026c8991e280f70764fb5f13f6b6996e621084d5db6",
+        "scope": "Final BF16 D128 S2/S4 portable baseline checks for both fused verifier variants passed",
+        "raw_retained_sha256": "2a31d5c732874d61d3959184fdb88a63db601039fa0361f8274af43266a4510d",
+        "published_sanitized": true
+      }
+    ]
+  },
+  "limits": [
+    "Every per-layer comparison uses identical inputs within its own captured live window. The fixed run has a different state history from the original run.",
+    "Exact compiled/eager and same-QKV recurrence comparisons concern the recorded window, not every graph or trajectory.",
+    "Residual full-layer hidden differences remain after the pre-FP16 correction.",
+    "The first-difference indices compare pre-FP16 fixed MTP against an older production direct trace or a reference prefix, not same-build route equivalence.",
+    "No task-quality, throughput, latency, release-wheel portability, endurance, or MTP Tier 2 claim is made.",
+    "Final aa38f18b clean-build, installed-wheel qualification and unchanged quality evidence must be recorded separately."
+  ],
+  "documentation_correction": {
+    "case": "COMPSEC:compsec-086",
+    "authoritative_gold": "3,13-15",
+    "gold_line_set": [
+      3,
+      13,
+      14,
+      15
+    ],
+    "original_case_inventories": [
+      {
+        "role": "residual route inventory",
+        "file_name": "line-set-cases.json",
+        "sha256": "6ce468a7d7f97807797444cb48a143fc2e0cd991bd25b8bd6c99acc8631e0ca0",
+        "answer_line": 113
+      },
+      {
+        "role": "original mini qualification inventory",
+        "file_name": "line-set-cases.json",
+        "sha256": "6ce468a7d7f97807797444cb48a143fc2e0cd991bd25b8bd6c99acc8631e0ca0",
+        "answer_line": 113
+      }
+    ],
+    "preserved_reference": {
+      "artifact": "independent-reference.json",
+      "sha256": "23629af4ba2a6fbc2f27ab3fb31b1f83d925807cb3b1b4d147f65af2b62829ff",
+      "answer": "3",
+      "unchanged_gold_line": 1158,
+      "recorded_grade_preserved": true
+    },
+    "preserved_wording_diagnostic": {
+      "artifact": "span-wording-diagnostic.json",
+      "sha256": "1cff4da4eba5354a861c1d9bbfb22be2821d7a8b0ddfaef23579a507b57e8e4c",
+      "answer": "3",
+      "gold_line": 68,
+      "prompt_line": 56,
+      "recorded_grade_preserved": true,
+      "limitation": "The altered prompt asks for a contiguous span including intervening lines, but the unchanged gold is a non-contiguous set. This is not a clean control for wording effects."
+    },
+    "proposed_readme_correction": "Replace erroneous gold 3-6 with 3,13-15 and remove the claim that the two-case wording diagnostic resolves the prompt/scorer mismatch. Preserve all recorded grades and raw responses."
+  }
+}

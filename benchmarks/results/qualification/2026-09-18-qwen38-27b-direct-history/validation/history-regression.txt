@@ -1,0 +1,11 @@
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <repository>/.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+   Compiling ax-engine-mlx v7.4.0 (<repository>/crates/ax-engine-mlx)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.40s
+     Running unittests src/bin/linear_mtp_state_oracle_probe.rs (target/debug/deps/linear_mtp_state_oracle_probe-7ca0844b385b23bd)
+
+running 3 tests
+test tests::history_validation_requires_an_explicit_known_route_and_prefix ... ok
+test tests::replay_boundary_rejects_a_different_generated_prefix ... ok
+test tests::replay_tokens_require_a_nonempty_valid_sequence ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

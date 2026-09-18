@@ -7,6 +7,7 @@ import importlib.util
 import tempfile
 import socket
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,36 @@ def _load():
 
 
 class RunQaMatrixTests(unittest.TestCase):
+    def test_mtp_preflight_opt_in_is_scoped_to_the_child(self):
+        m = _load()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bench = root / 'bench'
+            bench.touch()
+            response = m.subprocess.CompletedProcess([], 0,
+                '{"route":{"crossover_decisions":{"ax_mtp_draft_tokens":3}}}', '')
+            with patch.dict(m.os.environ, {'QA_BENCH_BIN': str(bench)}, clear=True), \
+                    patch.object(m.subprocess, 'run', return_value=response) as run:
+                active, _, error = m.probe_mtp_route(root, root / 'probe.json',
+                                                    repo=root, timeout=1)
+                self.assertTrue(active, error)
+                self.assertEqual(run.call_args.kwargs['env']['AX_MLX_MTP_FORCE_REQUESTED'], '1')
+                self.assertNotIn('AX_MLX_MTP_FORCE_REQUESTED', m.os.environ)
+
+    def test_mtp_is_explicit_and_default_launch_keeps_normal_flags(self):
+        m = _load()
+        for mode in ('ngram', 'direct', 'mtp'):
+            command = m.build_server_cmd(
+                m.Cell(mode, 'qwen3.8-27b', Path('/fixture/model')), 'qwen3.8-27b',
+                server_bin=Path('/fixture/server'), host='127.0.0.1', port=1,
+            )
+            if mode == 'mtp':
+                self.assertEqual(command[command.index('--mlx-mtp-policy') + 1], 'required')
+                self.assertIn('--mlx-mtp-disable-ngram-stacking', command)
+            else:
+                self.assertNotIn('--mlx-mtp-policy', command)
+            self.assertEqual('--disable-ngram-acceleration' in command, mode == 'direct')
+
     def test_port_preflight_preserves_listener_and_allows_time_wait(self):
         m = _load()
         with socket.socket() as listener:

@@ -1,0 +1,196 @@
+{
+  "checks": [
+    {
+      "check": "history-regression",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--bin",
+        "linear_mtp_state_oracle_probe"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 10.094653625012143,
+      "log_file": "validation/history-regression.txt",
+      "raw_log_sha256": "22a242c2342a57728654359c4d9c88f4ee018f32be9039aa56b161166a48e6ed",
+      "published_log_sha256": "58e94b044b2f549236799abe90a3be32cf9b9a1e3286de424273cf46f9576024"
+    },
+    {
+      "check": "fmt",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 2.279089416988427,
+      "log_file": "validation/fmt.txt",
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "check": "strict-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 101,
+      "elapsed_seconds": 26.72803312499309,
+      "log_file": "validation/strict-clippy.txt",
+      "raw_log_sha256": "eede99920231461443fdb441ca0bd754ec9b4101cfe01b3841006c04eb4b95cb",
+      "published_log_sha256": "e5deda0dfaa022b51f3d943d93e33dbfbe6882b7c22486035629b09edb138411",
+      "log_excerpt": {
+        "first_lines": 100,
+        "last_lines": 40,
+        "total_source_lines": 18615
+      }
+    },
+    {
+      "check": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "--force-warn",
+        "clippy::unwrap-used",
+        "--force-warn",
+        "clippy::expect-used",
+        "--force-warn",
+        "clippy::panic",
+        "--force-warn",
+        "clippy::dbg-macro",
+        "--force-warn",
+        "clippy::large-enum-variant"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 56.460889333015075,
+      "log_file": "validation/clippy.txt",
+      "raw_log_sha256": "f4ea2cbba61605cee608aa00211fed21a93be3078336f48e0082379e558316e1",
+      "published_log_sha256": "1269a6a3b5b5b8e9c13ea5dd0a82bd6fff89b0863ad58f405256e28e3e5bdd61",
+      "log_excerpt": {
+        "first_lines": 100,
+        "last_lines": 40,
+        "total_source_lines": 73473
+      }
+    },
+    {
+      "check": "rust",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 215.0562466669944,
+      "log_file": "validation/rust.txt",
+      "raw_log_sha256": "35e2c0cb941213ee1a2aebc1d19e6e2629725cfb4f77a546f115291866ca428b",
+      "published_log_sha256": "35e2c0cb941213ee1a2aebc1d19e6e2629725cfb4f77a546f115291866ca428b"
+    },
+    {
+      "check": "maturin",
+      "command": [
+        "maturin",
+        "develop"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 101.60770487500122,
+      "log_file": "validation/maturin.txt",
+      "raw_log_sha256": "434c8b80d2c184938d6a8abbaa9370dcbd92af968fc75f1c68bd19a2cee8b58a",
+      "published_log_sha256": "9697e634e75af3b23d783e783375bf2f09bd7611c843a5a928ff0a2517bd28a1"
+    },
+    {
+      "check": "scripts",
+      "command": [
+        "bash",
+        "scripts/check-scripts.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 20.64925829099957,
+      "log_file": "validation/scripts.txt",
+      "raw_log_sha256": "414ebf3d5ac9647ccd25f0c160d5552e7525871ab60fbfff18bea2e4feaf3bf8",
+      "published_log_sha256": "f83f6fbf6b89930866ce010c3a127647e41f79313e0b3551976ccf4fdf911ba8"
+    },
+    {
+      "check": "python",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 8.142048749985406,
+      "log_file": "validation/python.txt",
+      "raw_log_sha256": "e9935e80b2d4874447b8082c0336ad4e78a3d54cfa65a17d44e914b6cf752f06",
+      "published_log_sha256": "e9935e80b2d4874447b8082c0336ad4e78a3d54cfa65a17d44e914b6cf752f06"
+    },
+    {
+      "check": "qwen27b",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.036437458998989314,
+      "log_file": "validation/qwen27b.txt",
+      "raw_log_sha256": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+      "published_log_sha256": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c"
+    },
+    {
+      "check": "flash_next",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.04089708300307393,
+      "log_file": "validation/flash_next.txt",
+      "raw_log_sha256": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+      "published_log_sha256": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707"
+    },
+    {
+      "check": "claims",
+      "command": [
+        "python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.12371133401757106,
+      "log_file": "validation/claims.txt",
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "published_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "source_before": {
+    "crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs": "a42bc8c4954df678aae2e5ca0cb70930b3bcbed12d3e4f008c32d4887fc98182",
+    "crates/ax-engine-mlx/src/runner/mod.rs": "cdea4eacf96b285e0ae3d9433c3bd2ebe02337b31839afde7c0f36d67ff74a6a",
+    "crates/ax-engine-mlx/src/ngram_accel.rs": "a390db47d6c1de5faa75dbc24b394dbc2be767c66e5766b15b5200dd3ccc487c"
+  },
+  "source_after": {
+    "crates/ax-engine-mlx/src/bin/linear_mtp_state_oracle_probe.rs": "a42bc8c4954df678aae2e5ca0cb70930b3bcbed12d3e4f008c32d4887fc98182",
+    "crates/ax-engine-mlx/src/runner/mod.rs": "cdea4eacf96b285e0ae3d9433c3bd2ebe02337b31839afde7c0f36d67ff74a6a",
+    "crates/ax-engine-mlx/src/ngram_accel.rs": "a390db47d6c1de5faa75dbc24b394dbc2be767c66e5766b15b5200dd3ccc487c"
+  },
+  "strict_clippy_baseline": "crates/ax-engine-core/tests/kv_rollback_after_eviction_repro.rs:13 pre-existing unwrap restriction",
+  "python_summary": "209 passed, 26 skipped, 140 subtests passed in 7.28s"
+}

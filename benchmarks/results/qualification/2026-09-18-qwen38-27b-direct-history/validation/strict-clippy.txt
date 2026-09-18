@@ -1,0 +1,142 @@
+   Compiling mlx-sys v7.4.0 (<repository>/crates/mlx-sys)
+   Compiling ax-engine-mlx v7.4.0 (<repository>/crates/ax-engine-mlx)
+    Checking ax-engine-core v7.4.0 (<repository>/crates/ax-engine-core)
+   Compiling ax-engine-microbench v7.4.0 (<repository>/crates/ax-engine-microbench)
+   Compiling ax-engine-sdk v7.4.0 (<repository>/crates/ax-engine-sdk)
+   Compiling ax-engine-pipeline v7.4.0 (<repository>/crates/ax-engine-pipeline)
+   Compiling ax-engine-bench v7.4.0 (<repository>/crates/ax-engine-bench)
+   Compiling ax-engine-server v7.4.0 (<repository>/crates/ax-engine-server)
+   Compiling ax-engine-py v7.4.0 (<repository>/crates/ax-engine-py)
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <repository>/.venv/lib/python3.12/site-packages/mlx/lib (PipWheel)
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/kv_rollback_after_eviction_repro.rs:13:5
+   |
+13 | /     manager
+14 | |         .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+15 | |         .unwrap();
+   | |_________________^
+   |
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+   = note: `-D clippy::unwrap-used` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::unwrap_used)]`
+
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/kv_rollback_after_eviction_repro.rs:16:5
+   |
+16 |     manager.allocate(RequestId(1), 8).unwrap();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/kv_rollback_after_eviction_repro.rs:17:5
+   |
+17 |     manager.free(RequestId(1)).unwrap();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/kv_rollback_after_eviction_repro.rs:21:5
+   |
+21 | /     manager
+22 | |         .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8, 9])
+23 | |         .unwrap();
+   | |_________________^
+   |
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/kv_rollback_after_eviction_repro.rs:24:18
+   |
+24 |       let lookup = manager
+   |  __________________^
+25 | |         .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+26 | |         .unwrap();
+   | |_________________^
+   |
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/kv_rollback_after_eviction_repro.rs:28:5
+   |
+28 |     manager.share_prefix(RequestId(2), &lookup).unwrap();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/kv_rollback_after_eviction_repro.rs:33:16
+   |
+33 |     let plan = manager.allocate(RequestId(2), 1).unwrap();
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/engine_step_err_after_shared_prefix_eviction.rs:31:5
+   |
+31 | /     engine
+32 | |         .submit(submission(1, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]))
+33 | |         .unwrap();
+   | |_________________^
+   |
+   = note: if this value is an `Err`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+   = note: `-D clippy::unwrap-used` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::unwrap_used)]`
+
+error: used `unwrap()` on a `Result` value
+  --> crates/ax-engine-core/tests/engine_step_err_after_shared_prefix_eviction.rs:35:9
+   |
+35 |         engine.step(16, true).unwrap();
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+[Excerpt: 18475 middle lines omitted; full raw log hash is retained in validation.json.]
+2271 |         let batch = schedule_plan.execution_batch.expect("batch");
+     |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: if this value is `None`, it will panic
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+
+error: used `expect_err()` on a `Result` value
+   --> crates/ax-engine-core/src/unlimited_ocr.rs:249:21
+    |
+249 |           let error = inputs
+    |  _____________________^
+250 | |             .validate_for_prompt_tokens(&prompt)
+251 | |             .expect_err("short RGB input must fail");
+    | |____________________________________________________^
+    |
+    = note: if this value is an `Ok`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+
+error: used `expect_err()` on a `Result` value
+   --> crates/ax-engine-core/src/unlimited_ocr.rs:260:21
+    |
+260 |           let error = inputs
+    |  _____________________^
+261 | |             .validate_for_prompt_tokens(&prompt)
+262 | |             .expect_err("split image token run must fail");
+    | |__________________________________________________________^
+    |
+    = note: if this value is an `Ok`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+
+error: used `unwrap()` on a `Result` value
+   --> crates/ax-engine-core/src/vl_geometry.rs:163:19
+    |
+163 |         let idx = scatter_merge_indices(&[5, 10], &[2, 2]).unwrap();
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: could not compile `ax-engine-core` (lib test) due to 1783 previous errors

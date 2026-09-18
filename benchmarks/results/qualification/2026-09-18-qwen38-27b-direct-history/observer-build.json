@@ -1,0 +1,23 @@
+{
+  "source_base": "85d55200dad956f0bf96ab9885ed7286cb237fe5",
+  "patch_sha256": "03d9a663c556d7f45786f36812ddd464ad2f8c77cd324f29dde5b965523530f3",
+  "command": [
+    "rustup",
+    "run",
+    "1.97.1",
+    "cargo",
+    "build",
+    "--locked",
+    "--profile",
+    "release-server",
+    "-p",
+    "ax-engine-server"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 272.44469058301183,
+  "source_files": {
+    "crates/ax-engine-mlx/src/runner/mod.rs": "834c0d63ae234cf271d22a7f7892043bdeb4e1b1e8b67ada03f6551046a5063c",
+    "crates/ax-engine-mlx/src/generate.rs": "40fc045e9e445c8c19930a156233f9bfe988199ca2f06a5e10c044030bbb3369"
+  },
+  "binary_sha256": "c06be503b4f41bde641e00c6b8d98997484db8765aa3a5f3ccb5a4ad71993135"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "claude",
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_seconds": 126.17243649999727,
+  "prompt_sha256": "429135604da3bddb997cc4b740363bfef9c70d9076dc8a1a43ac5a88b5b94fc2",
+  "log_sha256": "af3530efb23d483a722df0fa9491edcff25bf190833e76e2d1eb4ab6466a00cc"
+}

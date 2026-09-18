@@ -1,0 +1,38 @@
+I found no proven correctness defect in the new helper's acceptance and offset logic. There are integration gaps the patch can't show, and the tests prove less than the context claims. I didn't run any tools, as you asked.
+
+## Parts that check out
+
+- **Offsets:** the first recompute runs at `token_offset` and leaves the cache at `token_offset+1`. Each accepted draft then runs at `token_offset + accept_count` after the increment, so draft *k* lands at `token_offset+k`. The final seq_len is `token_offset+1+ac`, and the correction is not consumed. That is right for the next step's `token_offset = seq_len()`.
+- **Stop-before-consume and cap:** the draft is compared before it is fed in. The loop only walks `pending[..batched_ac]`, so revalidation can shrink acceptance but never grow it.
+- **Outcome rebuild:**
+  - `all_accepted` compares against the full `pending.len()`.
+  - `rejection_correction` is set only when `ac < len`.
+  - The empty-pending case gives `all_accepted = true` with `None`.
+  - `predicted.get(ac)` returns the recomputed correction or bonus token.
+- **Hidden row:** `slice_post_norm_hidden(.., ac)` reads a causal row whose input is a prefix of the revalidated tokens. Using it only for draft proposals is sound.
+- **Guards:** Rust drops locals in reverse order, so the five scopes restore last-in-first-out.
+- **Skip state:** capture is disabled and the take path discards the state, so no batched row can become the next primary token.
+
+## Source-level issues to fix or check
+
+1. **Revalidation and skip-state suppression are gated differently.** `forced_greedy_replay` is computed separately from `exact_linear_replay`, and it also turns on for `self.qwen_linear_mtp_force_replay`. The doc comment only mentions the env var. If a forced request goes through the projected-replay, lazy-checkpoint or optimistic path, skip state is dropped (a speed cost) but no revalidation happens, so false acceptance survives silently.
+   - Fix: revalidate on `forced_greedy_replay && exact_linear_replay`, or make the kill switch override projected replay. Add a `debug_assert` that a forced greedy request actually reached the revalidation arm.
+2. **Stale values in a window around the rollback.** `accept` and `predicted` are changed inside the rollback, but `ac` and `all_accepted` are only re-bound after it. Anything between `mtp_accept_count` and the new `let ac` still sees the batched count: n-gram feedback, per-source counters, rejection logs, draft-distribution bookkeeping. So does any later reader of `predicted_arr` or batched logits rows instead of `predicted`. The patch hides that region, so grep it.
+3. **`predicted` is now shorter.** It shrinks to `ac+1`. Any later `predicted[i]` with `i > ac` would panic, and diagnostic loops over `pending.len()` would misreport or panic.
+4. **Cap case skews telemetry.** In the "batched rejection cap" test, `rejection_correction == Some(1) == pending[1]`. The output is correct, but the step counts as a rejection and the n-gram feedback penalizes a draft that singleton decode accepts. This is a known limitation, but name it.
+5. **Scope of `uses_logits_processors()`.** If EOS/min-tokens suppression, logit bias or grammar masks are applied outside that predicate, raw-argmax revalidation could reject or emit tokens the real rule wouldn't. This is worth checking; I haven't shown it happens.
+
+## What the tests actually prove
+
+- **The false acceptance is injected, not reproduced.** "old count3 vs expected0" comes from a hand-written `batched` vector, not from batched arithmetic.
+- **The fixture's logits ignore the cache.** `q_proj`, `o_proj` and the FFN weights are zero, and only `lm_head` row 1 is nonzero, so argmax is always 1. The tests check bookkeeping and KV contents only. They cannot show that revalidation catches a real divergence, or that a wrong cache state would change predictions.
+- **Position checks depend on the fixture.** Offset position is only covered by comparing K values. If `runner_test_layer` K has no position dependence (RoPE), an off-by-one position error would still pass; `seq_len` only checks the count.
+- **Coverage gaps:** restore of `QwenMtpVerifyQmmGuard` isn't asserted. The runner call site isn't exercised, since the telemetry and hidden-row checks call helpers directly. If the scopes are process-global rather than thread-local, arming them off could leak into concurrent requests (unconfirmed).
+
+## Broader numerical issue (not proven)
+
+"Singleton" here means `recompute_committed_prefix_with_argmax` with one token. The patch makes acceptance match that reference, not necessarily the live decode kernels. Your SKU observation shows the gap:
+- The ordinary singleton run ties 279/2849/6397 at 21.75.
+- Live and ordinary-batch runs rank 6397 at 21.875.
+
+If argmax breaks ties by first index, revalidation would reject a 6397 draft and emit 279. That is correct against the recompute reference and a change against the batched path. Neither the patch nor that observation establishes which one matches production direct-cache identity, or isolates custom QMM. Keep the patch framed as fail-closed bookkeeping for the kill switch, with numerical identity still open.

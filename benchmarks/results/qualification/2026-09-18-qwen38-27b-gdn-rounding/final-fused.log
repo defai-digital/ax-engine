@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on build directory
+warning: mlx-sys@7.4.0: mlx-sys: linking MLX 0.32.2 from <local-build-path> (PipWheel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.56s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_mlx-980f9d8d1c5565f9)
+
+running 1 test
+test linear_attention_ops::tests::fused_gated_delta_verify_bf16_128d_matches_portable_prework ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1585 filtered out; finished in 2.39s

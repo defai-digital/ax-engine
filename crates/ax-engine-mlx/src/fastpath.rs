@@ -871,7 +871,8 @@ pub fn should_mtp_async_dual_gate_up_for(
 
 env_flag_default_on!(
     /// `AX_MLX_MTP_LA_OUT_PROJ_SILU_MUL_QMM` — fuse gated RMS output
-    /// preparation into the quantized linear-attention output projection
+    /// preparation with the quantized linear-attention output projection,
+    /// preserving float32 gating and the output cast before projection,
     /// during relaxed Qwen MTP request work. Ordinary direct sessions and
     /// row-exact verification retain their existing arithmetic.
     ///
@@ -887,12 +888,12 @@ env_flag_default_on!(
 pub const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH: usize = 3;
 
 env_flag_default_on!(
-    /// `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP` — default-on product path for
-    /// Qwen3.5/3.8 linear packs that ship an MTP sidecar: Auto MTP, recurrent
-    /// depth 3, projected-replay rollback, and stock (relaxed) target verify.
+    /// `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP` — optimization profile for
+    /// Qwen3.5/3.8 linear packs with an explicitly requested MTP sidecar:
+    /// recurrent depth 3, projected-replay rollback, and stock target verify.
     ///
     /// **Default: ON** (kill-switch `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP=0`
-    /// restores DirectFallback unless the pack is publisher-certified).
+    /// restores the exact/candidate policy). This does not promote Auto MTP.
     qwen_linear_throughput_mtp_enabled,
     "AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP"
 );

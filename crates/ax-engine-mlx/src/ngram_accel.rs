@@ -1423,6 +1423,57 @@ pub(crate) fn recompute_committed_prefix_with_argmax(
     direct_argmax.data_u32().first().copied().unwrap_or(0)
 }
 
+pub(crate) struct GreedyPrefixReplay {
+    pub(crate) accept_count: usize,
+    pub(crate) correction_token: u32,
+    pub(crate) predicted: Vec<u32>,
+}
+
+/// Revalidate a provisionally accepted prefix before consuming each draft.
+///
+/// The cache starts at `token_offset` and retains only the primary token plus
+/// drafts that match singleton production argmax. The returned correction is
+/// not consumed. This explicit greedy fallback disables verifier-only scopes;
+/// the caller retains its batched hidden rows solely for proposing new drafts.
+pub(crate) fn revalidate_greedy_prefix_with_argmax(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    primary: u32,
+    provisional_drafts: &[u32],
+    token_offset: usize,
+) -> GreedyPrefixReplay {
+    let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
+    let _relaxed = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
+    let _trace = crate::fastpath::scoped_qwen_linear_mtp_whole_verify_trace(false);
+    let _qmm = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(false);
+    let mut correction_token =
+        recompute_committed_prefix_with_argmax(cfg, weights, cache, primary, &[], token_offset);
+    let mut predicted = vec![correction_token];
+    let mut accept_count = 0;
+    for &draft in provisional_drafts {
+        if draft != correction_token {
+            break;
+        }
+        accept_count += 1;
+        correction_token = recompute_committed_prefix_with_argmax(
+            cfg,
+            weights,
+            cache,
+            draft,
+            &[],
+            token_offset + accept_count,
+        );
+        predicted.push(correction_token);
+    }
+    GreedyPrefixReplay {
+        accept_count,
+        correction_token,
+        predicted,
+    }
+}
+
 /// Greedy prefix accept count: how many leading draft tokens match the
 /// corresponding target predictions.
 ///

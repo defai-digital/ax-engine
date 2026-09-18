@@ -1,0 +1,129 @@
+{
+  "runtime_validation_source_commit": "030ba2882ebdcfa98cac5f82f9f18117c96b8a08",
+  "candidate_source_commit": "a142a5ed0652d98510700c71a1cc769bebb9bc42",
+  "compiled_sources_unchanged": true,
+  "unchanged_paths": [
+    "crates",
+    "metal",
+    "python",
+    "Cargo.toml",
+    "Cargo.lock"
+  ],
+  "harness_source_commit": "a142a5ed0652d98510700c71a1cc769bebb9bc42",
+  "harness_script_gate_exit": 0,
+  "reporting_source_commit": "b80ee67e",
+  "reporting_change": "Preserve checker metadata only; raw hardware artifacts use a142a5ed unchanged",
+  "reporting_tests": 89,
+  "transport_diagnostic_source_commit": "d5d6ba59",
+  "transport_diagnostic_tests": 12,
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 1.9195920829952229
+    },
+    {
+      "name": "clippy-ci",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "--force-warn",
+        "clippy::unwrap-used",
+        "--force-warn",
+        "clippy::expect-used",
+        "--force-warn",
+        "clippy::panic",
+        "--force-warn",
+        "clippy::dbg-macro",
+        "--force-warn",
+        "clippy::large-enum-variant"
+      ],
+      "exit_code": 0,
+      "seconds": 49.05843566701515
+    },
+    {
+      "name": "rust",
+      "command": [
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "seconds": 148.88389141700463
+    },
+    {
+      "name": "maturin",
+      "command": [
+        "maturin",
+        "develop"
+      ],
+      "exit_code": 0,
+      "seconds": 73.49481220802409
+    },
+    {
+      "name": "python",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0,
+      "seconds": 7.294258666021051
+    },
+    {
+      "name": "scripts",
+      "command": [
+        "bash",
+        "scripts/check-scripts.sh"
+      ],
+      "exit_code": 0,
+      "seconds": 17.8047892919858
+    },
+    {
+      "name": "qualify-27b",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "seconds": 0.036098333017434925
+    },
+    {
+      "name": "qualify-flash",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "seconds": 0.03342583400080912
+    },
+    {
+      "name": "claims",
+      "command": [
+        "python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.09707687501213513
+    }
+  ],
+  "strict_clippy_exit": 101,
+  "production_clippy_exit": 0,
+  "strict_clippy_scope": "Existing all-target test unwrap/expect/panic restrictions; CI warn-first command recorded separately",
+  "focused_tests": "26 qualification tests and 40 subtests; 19 MTP policy tests; SDK tri-state; 35 QA/fault tests and 2 subtests"
+}

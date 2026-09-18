@@ -6,7 +6,7 @@ Primary optimization target: **AXQ 6-bit MTP** (`qwen3.8-27b:axq`)
 
 Compact sibling: **AXQ 4-bit MTP** (`qwen3.8-27b:axq-4bit`)
 
-Last reviewed: **2026-09-17**
+Last reviewed: **2026-09-18**
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -14,6 +14,60 @@ This is the promotion record for the production-size Qwen 3.8 27B pack. It is
 the general-purpose default serve target. It is **not** MTP Tier 2 certified
 and it is **not** a 72-hour endurance pass. Super-class Qwen 3.8 (2.4T) is a
 different, experimental path and is out of this record.
+
+Latest product-health assessment: **the pinned 6-bit pack's installed CLI and
+local HTTP text-serving candidate passed qualification on Mac mini M4 Pro
+64 GB** at clean source `a142a5ed`. The bundled release-profile wheel passes
+isolated installation/import and doctor; actual default, explicit direct and
+explicit MTP each pass 32/32 sampled QA and 7/7 required API probes. The full 79-item
+bank in both streaming forms passes 158/158 hard checks per default/MTP route,
+with zero incomplete responses. Three fault rounds per route exercise actual
+backpressure, cancellation, resource return and repeatable recovery; MTP also
+exercises one bounded-backlog overflow. No silent MTP fallback is observed.
+
+This closes the recorded product-health scope and permits the candidate to
+enter the formal release workflow. Exact-source hosted CI, signed/notarized
+release-artifact verification and publication have **not** been completed for
+this candidate. Broad model accuracy, MTP-P and MTP-D are separate; Candidate
+status is unchanged. Original failed QA/pressure runs, the stricter completion
+checker, changed output budget and reporting-only follow-ups are retained in
+the [product qualification evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-product-default/).
+
+## What "MTP Tier 2 pending" means
+
+MTP certification is three independent gates, not one (internal decision
+ADR-033, which amends ADR-020). They are evidenced separately and pass or fail
+separately:
+
+| Gate | What it decides | This pack |
+| --- | --- | --- |
+| **MTP-S** — safety | In-path exactness: under one verifier state, every accepted draft equals the token that verifier's own greedy decision would select. Divergence from an *independent* direct graph at near-ties is disclosed, not treated as a defect | Satisfied for the verify/replay correctness mode |
+| **MTP-P** — performance claim | Licenses a scoped, reproducible public acceleration multiplier (weighted >= 1.20x, prompt-median >= 1.10x, two named authorizing workloads, short-answer negative control, full evidence binding). Changes no default | **Not evidenced on the default product path.** No public multiplier may be published for this pack until it is |
+| **MTP-D** — default promotion | Whether MTP becomes the product default. Requires 100% greedy parity on the default path with both arms sharing one deterministic tie-break rule, plus an aligned quality protocol, endurance and long-context decode-at-depth. Always a separate decision and a release tag, never automatic | **Not opened** |
+
+Two consequences for reading this record:
+
+- The paired direct/MTP greedy identity probe is a **debug probe**, not a ship
+  gate. Its results are published below as MTP-P disclosure. It does not block
+  Candidate status or opt-in availability.
+  The live qualification harness applies this policy to its 64-token probe:
+  schema 4 records token differences while still rejecting incomplete evidence,
+  failed QA or unproven routes. Its product-health pass does not assess MTP-S,
+  MTP-P or MTP-D; each requires separate evidence. Schema 4 additionally checks
+  the actual default launch without acceleration overrides; earlier versions
+  tested explicit direct/MTP arms only.
+- MTP routing stays fail-closed. Until MTP-D is opened and accepted, the product
+  default is direct decode, so enabling MTP is an explicit opt-in and existing
+  greedy tokens do not change silently. Use `--mlx-mtp-policy required` for
+  explicit MTP. Publisher speed certification and `enabled_by_default`
+  metadata do not constitute AX default promotion for linear Qwen.
+
+Current MTP-P disclosure for this pack: **2 of 4** paired 192-token default-path
+outputs are token-identical, with splits at output index **116** and **155**, and
+an observed near-tie logit margin of **<= 0.125** at the split state. A near-tie
+margin at that scale is floating-point reduction-order noise across differently
+shaped batch paths; it is not an accepted draft the verifier would reject, and no
+first cause has been identified.
 
 ## Pinned Checkpoints
 
@@ -34,12 +88,183 @@ cannot silently change what the selector loads.
 | Product focus | Primary optimization target (unique general-purpose default) |
 | Hub checkpoint | Tier 1 for 6-bit / 8-bit / MXFP4; 4-bit remains a compact candidate |
 | AX certification record | Candidate — gates open |
-| MTP | Sidecar present; Tier 2 performance certification pending |
+| MTP | Sidecar present; MTP-S satisfied, MTP-P not evidenced on the default path, MTP-D not opened |
 | Support tier | Family follows the Qwen 3.x Certified graph path; this *checkpoint* is not `release_ready` |
 
 ## Current Evidence
 
-Landed, labeled:
+Landed, labeled. Earlier dated assessments below retain their historical
+scope; the latest product-health assessment is above:
+
+- 2026-09-18 prefix-prefill diagnosis resolves the standalone oracle's output 117
+  disagreement: it omitted the runner's block-aligned cache-only head. For the
+  cold 409-token case, reproducing head 400 / tail 9 matches all 192 actual-server
+  IDs and all 128 logical cache arrays at each of seven observed boundaries.
+  Disabling only the clean server's prefix cache reproduces the old unsplit
+  output; restoring defaults restores the original output. The final CLI
+  exposes the layout explicitly and fixes strided Float32 comparison reads,
+  invalid numerical comparisons and asymmetric missing-state handling. These
+  are diagnostic repairs; production arithmetic and defaults are unchanged.
+  Existing MTP route differences, broad quality and promotion remain separate.
+  [Prefix-prefill controls, regressions and validation](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-prefix-prefill/).
+
+- 2026-09-18 direct-history diagnosis separates synchronous replay from the
+  production pipeline API sequence. Both standalone modes still reject the
+  actual direct-server prefix at output 117. On the actual direct cache at
+  input offset 524, lazy and synchronous replays match all 248,320 live logits,
+  materialized argmax and post-step cache. Three cold server arms preserve all
+  192 direct tokens. At boundary 522, the observed direct cache differs in all
+  128 logical array hashes from the earlier MTP snapshot despite matching
+  preceding token IDs and metadata. These separately versioned observations
+  do not identify the first cause of drift. Default numerical parity, quality
+  and Tier 2 remain open; **not ship-ready**.
+  [Direct-history diagnostics and evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-direct-history/).
+
+- 2026-09-18 actual first-split observation binds compsec-079 output index 116
+  (input position 524) to the live MTP window. All 192 output IDs are preserved;
+  a faithful replay matches all 993,280 logits, and three cache witnesses of
+  128 logical arrays remain unchanged. From that same MTP state, live and
+  ordinary-batch paths rank token 6397 at 21.875, while ordinary singleton
+  scores 279, 2849 and 6397 equally at 21.75. Selecting 279 uses the recorded
+  first-index tie rule; that control did not independently materialize MLX
+  argmax. This establishes a decision-relevant execution-path difference,
+  without identifying one kernel defect or proving actual direct-cache identity.
+  The standalone oracle now uses the direct prefill entry: the old/new/old
+  control changes a prefix rejection at 109 to validation through 116 and back.
+  Its subsequent prediction still differs from live direct, so it remains a
+  bounded diagnostic.
+  A separate forced-replay control-flow defect is repaired: explicitly forced,
+  unprocessed greedy replay revalidates drafts before consumption, updates the
+  committed count consistently, and discards stale experimental skip-state.
+  The injected false-accept and stale-state regressions fail before correction
+  and pass afterward with real input-dependent KV. Reference contract comparison
+  precedes this AX-owned change. Default relaxed acceptance and sampled behavior
+  remain unchanged; optimistic acceptance and whole-request direct equivalence
+  remain outside the guarantee. The clean bundled `22affab5` wheel passes
+  qualification on the selected mini: doctor/package identity, 32/32 hard QA
+  and 7/7 surfaces per route, active MTP and the paired 64-token probe. All
+  eight default 192-token outputs preserve the prior baseline; paired equality
+  remains 2/4, with splits at 116 and 155. Old/new forced replay both match
+  direct on 079, so this is preservation, not a measured quality gain.
+  Quality, numerical consistency and Tier 2 gates remain open;
+  **not ship-ready**.
+  [First-split observation and forced-replay regression evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-first-split-replay/).
+
+- 2026-09-18 reference comparison and actual-input FFN attribution locate the
+  first captured layer-zero difference at gate/up QMM, with BF16 activation
+  and metadata and no dense bias. The observation-only build preserves all
+  192 tokens, full live logits and 288 compiled/eager leaves. Nested SwiGLU
+  compilation is exact in this control. Disabling custom QMM does not restore
+  direct/reference identity; this earlier FFN probe does not itself locate the
+  later first-token split examined in the observation above.
+  Separate reproduced integration defects are repaired in `d121f107`: dense
+  Linear bias is applied once by each caller, and mixed affine metadata retains
+  stock dtype promotion. These repairs do not explain the captured bias-free,
+  same-dtype FFN difference. Defaults and numerical tolerances are unchanged.
+  The clean bundled `d121f107` wheel passes executable qualification on the
+  selected mini: doctor and installed-package identity, 32/32 hard QA and
+  7/7 surfaces per route, active MTP counters, and the paired 64-token probe.
+  This is version-bound qualification, not broad quality or Tier 2 acceptance.
+  [Reference comparison, regressions and version-bound validation](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-ffn-qmm-contract/).
+
+- **LINE_SET interpretation correction:** the imported source asks for a primary
+  bug location and its scorer accepts a nonempty subset of audited locations.
+  The historical source-file hashes confirm that contract was present when the
+  questions were imported. AX's exact-set score measures an additional,
+  stricter enumeration requirement. Its raw scores and gold sets remain
+  unchanged, but **0/24 full recall is not evidence that the original tasks
+  required every gold location**. On the retained `aa38f18b` twelve-case replay,
+  each route has seven accepted-location subset detections and five truncations,
+  while its exact-set score remains 0/12. Do not report that as twelve semantic
+  failures or population accuracy. An aligned quality protocol, remaining
+  truncation/recovery failures and broader qualification are still open.
+  A separate two-case complete-set prompt diagnostic returns `0` for 079 and
+  `3` for 086 on both AX routes and the pinned independent direct reference,
+  with full rendered prompt/input-token parity. The reused location keys are
+  not validated exhaustive causal annotations. This selected result does not
+  establish correctness, a quality repair or broader numerical equivalence.
+  [Source contract and diagnostic evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-ffn-qmm-contract/quality-contract.md).
+
+- 2026-09-18 GDN prework rounding repair (`aa38f18b`) restores intermediate
+  activation-dtype boundaries in fused convolution, SiLU, normalization, and
+  scaling. Exact BF16/FP16 prework and BF16 fused-verifier regressions pass.
+  Earlier instrumented observations, before the final FP16 refinement,
+  eliminate the captured post-input and same-input recurrent-state differences;
+  full-layer hidden differences remain. Clean final native-server controls on
+  the selected mini improve 192-token direct/MTP agreement from **0/4 to 2/4**;
+  compsec-079 and 087 still split at indices 116 and 155. Paired agreement is
+  not reference fidelity: final compsec-092 matches between AX routes but
+  differs from the independent reference, which old MTP matched.
+  The clean final bundled wheel passes executable qualification on the
+  selected SKU: doctor ready, installed-package identity, 32/32 hard QA and
+  7/7 surfaces per route, active MTP without silent fallback, and the paired
+  64-token greedy probe. This closes that version-bound scope only.
+  The final bundled wheel's unchanged twelve-case 512-token diagnostic remains
+  **0/12 exact-set passes per route**, with seven strict-wrong and five truncated responses
+  per route and **6/12** paired content matches. Truncation counts increase
+  from four direct / two MTP on the previous wheel. This failure subset is not
+  overall model accuracy, and the repair does not establish a quality gain.
+  Original long-thinking, saved recovery, broad route consistency, and MTP
+  Tier 2 remain open; **not ship-ready**.
+  [Rounding attribution, final controls and validation](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-gdn-rounding/).
+
+- 2026-09-18 residual-state investigation reproduces all four remaining route
+  differences in fresh processes on the unchanged `4cbda8b5` wheel. LA fusion
+  off, full checkpoint capture, and FA storage rebind off do not remove the
+  earliest split. The validated singleton oracle ties two target scores at
+  23.125; the live MTP verifier instead scores them 23.0 and 23.125 and follows
+  its actual argmax. An observation-only build preserves all 192 production
+  tokens. This establishes differing target scores, not an acceptance-rule
+  defect or a complete attribution of numerical drift. From the same live
+  MTP cache and identical four-row input, ordinary batched forwarding and
+  singleton replay both recover the tie, localizing this split to the
+  MTP-specific target path. Both controls preserve all 192 production tokens.
+  `c9a7ff97` adds a passing exact BF16 affine FFN regression; its small fixture
+  does not prove whole-layer or production-shape equivalence. The unchanged pinned
+  reference also differs from AX direct on these long prompts, and fails two
+  original strict line-set cases. An altered wording diagnostic retains two
+  failing grades, but its contiguous-span instruction conflicts with one
+  non-contiguous gold set and does not resolve the prompt/scorer mismatch.
+  `276bd1d4` improves the replay oracle without changing
+  production arithmetic. Quality and numerical-route gates remain open;
+  **not ship-ready**.
+  [Controls, state evidence and reference](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-residual-state/).
+
+- 2026-09-18 scheduler-prefix repair (`4cbda8b5`) closes a separate context
+  omission: cold-grid trimming could discard prefix tokens already removed
+  from the scheduler input without requesting their recomputation. The
+  identical selected-SKU cold/warm request changes from **4 versus 128 tokens**
+  to **4 versus 4 identical tokens**, while retaining the scheduler cache hit
+  and explicitly replaying the missing 96-token prefix. Cache/MTP defaults
+  remain unchanged. The clean bundled wheel again passes executable
+  qualification: 32/32 hard QA and all surfaces per route, doctor, package
+  identity and the paired 64-token probe, with active MTP verification.
+  Earlier warm-request quality failures cannot be attributed solely to model
+  capability because this context defect was present. The unchanged twelve-case
+  diagnostic now has **8/12** paired response matches, with direct four and MTP
+  two truncations, but strict complete-span grading remains **0/12 per route**.
+  This is a selected failure subset, not overall model accuracy. Four response
+  differences remain; original long-thinking/recovery and endurance were not
+  rerun on this build. Quality, broad route consistency and MTP Tier 2 remain
+  open; **not ship-ready**.
+  [Prefix replay evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-prefix-replay/).
+
+- 2026-09-18 linear-attention output correction (`21687d71`, completed by
+  `892c2fc9`) restores float32 gated normalization and shares the ordinary
+  target's layer-specific Metal gate policy. The dtype regression failed
+  before repair (BF16 S=2 maximum absolute error 0.015625); a second regression
+  showed why a portable-only repair was insufficient. Final BF16/FP16 exact
+  and relaxed gate-policy tests pass. On the selected mini, the fixed-token
+  compsec-092 split at output index 5 is closed; both predeclared raw controls
+  match direct/MTP under the 128-token cap. Clean final bundled-wheel
+  qualification passes 32/32 hard QA and 7/7 surfaces per route, doctor,
+  installed-package checks, active MTP telemetry and the paired 64-token probe.
+  However, the unchanged 512-token LINE_SET diagnostic still passes only
+  **1/12 per route** (direct nine truncations; MTP eight), and just **3/12**
+  response texts match. All twelve chat templates/token arrays match the
+  pinned tokenizer, ruling out a template mismatch for those inputs.
+  Broader sequence consistency and quality remain open; **not ship-ready**.
+  [Precision controls and final validation](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-la-precision/).
 
 - 2026-09-17 peer throughput campaign on the selected **Mac mini M4 Pro
   64 GB** SKU with the clean `ad999f3f` bundled wheel: `flappy` contract,
@@ -55,9 +280,9 @@ Landed, labeled:
   `ad999f3f`) preserves MLX BF16/FP16 tensor activation semantics in singleton
   gate/up and packed paths. On this 6-bit checkpoint the default runtime
   reaches only the packed dense path; the singleton matvec kernel admits
-  4-bit weights unless an opt-in flag is set. Two opt-in kernels (prefill
-  dual-QMM MMA, fused MoE expert block) keep the float-only activation and
-  remain off. A same-session A/B on the campaign laptop (M5 Max, peer-table
+  4-bit weights unless an opt-in flag is set. At that revision, two opt-in
+  kernels (prefill dual-QMM MMA, fused MoE expert block) still used float-only
+  activation; `483bc92a` subsequently corrected them with both flags still off. A same-session A/B on the campaign laptop (M5 Max, peer-table
   contract) shows decode within 0.3% of the 2026-09-15 binary and prefill
   0.5-1.4% lower; the README peer table is not refreshed by that check. An isolated exact-projection regression failed
   before repair (BF16 maximum absolute error 0.001953125); all 22 SwiGLU tests
@@ -148,13 +373,16 @@ Landed, labeled:
     full 32000-token cap (`finish_reason=max_output_tokens`). The continuation
     recovery pass recovered only 4/11 and 5/12 of those rows, so most
     budget-exhausted questions still fail after extension.
-  - **LINE_SET under-reporting.** All 24 `LINE_SET` rows across both packs were
+  - **LINE_SET scoring-contract mismatch.** All 24 `LINE_SET` rows across both packs were
     graded (none truncated), reported exactly **one** line each, and every
     reported line fell inside the gold span (detection 24/24, precision 24/24).
     Gold spans were 2-6 lines (median 3); full recall was **0/24** (median
     recall 0.33). The saved replies contain single-line answers; the grader
     accepts comma/range values. This rules out the proposed first-line
     truncation explanation for these replies, not every harness defect.
+    The source prompt and scorer permit accepted-location subsets; complete
+    enumeration is an additional AX metric, not the original task contract.
+    These counts therefore do not establish a model completeness defect.
     A later controlled diagnostic on the selected mini used 12 of these
     questions, a fixed answer-only system message, thinking disabled and a
     512-token cap. Original wording passed 0/12 direct and 1/12 MTP; a generic
@@ -179,18 +407,21 @@ Landed, labeled:
 
 Not claimed:
 
-- MTP Tier 2 / `release_ready`
+- MTP Tier 2 / `release_ready`. Under the three-gate vocabulary: MTP-P is not
+  evidenced on the default product path, so no public acceleration multiplier is
+  claimed for this pack, and MTP-D (default promotion) has not been opened
 - 8-hour or 72-hour endurance (the published 8.87h soak is
   [Qwen 3.6 27B AXQ](qwen3.6-27b-axq-6bit-8h-endurance-2026-08-08.md))
 - Multi-model `load_mode=add`
 - P0 multimodal quality for this pack
 - Long-context decode-at-depth
 - Clean-worktree replacement of the 2026-08-30 refresh
-- Any release-quality accuracy bar on the 2026-09-16/17 failed-pair retest; the
-  29.4% / 20.6% strict accuracy above is recorded as **evidence of an open
-  gap**, not as a passing qualification
-- `LINE_SET` enumeration completeness: original campaign full recall is 0/24
-  across both packs; the different diagnostic protocol above also has failures
+- Any release-quality accuracy bar on the 2026-09-16/17 failed-pair retest;
+  29.4% / 20.6% are strict selected-subset scores with the known LINE_SET
+  source-contract mismatch, not an aligned release-quality accuracy measure
+- Qualification under an aligned `LINE_SET` protocol: original full recall
+  remains 0/24 under the additional exact-set metric; stricter enumeration
+  diagnostics are separate tasks and do not replace the original contract
 - General immunity to generation stalls. The diagnosed oversized recovery
   prefill now reaches the existing KV starvation failure bound and delivers
   its terminal response. Target-mini recovery also completes with adequate

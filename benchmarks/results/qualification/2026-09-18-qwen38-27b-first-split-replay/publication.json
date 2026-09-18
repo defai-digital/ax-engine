@@ -1,0 +1,704 @@
+{
+  "schema": "ax.qwen38.first_split_evidence.v1",
+  "publication": "Curated diagnostic, runtime-regression and scoped final-wheel qualification evidence; no release acceptance",
+  "private_path_label": "<SKU_WORKSPACE>, <LOCAL_WORKSPACE>, <LOCAL_HOME>, <RUSTUP_HOME> and <LOCAL_TEMP> replace private execution paths; configured-provider replaces private review endpoint identity. Public CLI/model names are retained.",
+  "artifacts": {
+    "observer.patch": {
+      "published_sha256": "005cabe011f24d867978c6be41b46b962c6539cd29abc98bcbf5c747d56d67f2",
+      "raw_source_sha256": "005cabe011f24d867978c6be41b46b962c6539cd29abc98bcbf5c747d56d67f2",
+      "source_label": "first-split-observer.patch",
+      "transformation": "byte-exact retained source",
+      "bytes": 24633
+    },
+    "oracle-direct-prefill.patch": {
+      "published_sha256": "5cd63368dca5895d6bcceaeb69266390fe826a2d5257784088adee866ec2be23",
+      "raw_source_sha256": "5cd63368dca5895d6bcceaeb69266390fe826a2d5257784088adee866ec2be23",
+      "source_label": "oracle-direct-prefill.patch",
+      "transformation": "byte-exact retained source",
+      "bytes": 1145
+    },
+    "observer-build.json": {
+      "published_sha256": "89e142654ab2d5cbf7d860a3c58afa2d2cfca7f8b2aa30bd2f342564320a6f1f",
+      "raw_source_sha256": "89e142654ab2d5cbf7d860a3c58afa2d2cfca7f8b2aa30bd2f342564320a6f1f",
+      "source_label": "observer-build.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 888
+    },
+    "oracle-old-build.json": {
+      "published_sha256": "b490c35771e181df8e0c784f5472c76f1dcca15ffff749f66b4db9f5884d34d2",
+      "raw_source_sha256": "b490c35771e181df8e0c784f5472c76f1dcca15ffff749f66b4db9f5884d34d2",
+      "source_label": "oracle-build.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 501
+    },
+    "oracle-direct-prefill-build.json": {
+      "published_sha256": "184462b282798999121124dbc41cd6e9ce03b966437501cfe55f311b8675246b",
+      "raw_source_sha256": "184462b282798999121124dbc41cd6e9ce03b966437501cfe55f311b8675246b",
+      "source_label": "oracle-direct-prefill-build.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 586
+    },
+    "oracle-analysis.json": {
+      "published_sha256": "8e5e3c1fbb18ff3c9bc0679b99b6ead3e0c7c52c1caf37d8f29d50b2584d8213",
+      "raw_source_sha256": "8e5e3c1fbb18ff3c9bc0679b99b6ead3e0c7c52c1caf37d8f29d50b2584d8213",
+      "source_label": "oracle-prefill-analysis.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 12747
+    },
+    "case.json": {
+      "published_sha256": "d2caf547b35977481eb1a39f995cf99edbf9c7dc138bc925658eba777216d225",
+      "raw_source_sha256": "d2caf547b35977481eb1a39f995cf99edbf9c7dc138bc925658eba777216d225",
+      "source_label": "first-split-live-524/case.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 13778
+    },
+    "request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "first-split-live-524/clean-direct-request.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 2322
+    },
+    "observer-analysis.json": {
+      "published_sha256": "e4ab09a93fe0f2d7dd5471f5c61ea7fd28b1b2067d1fa9865410e45145c75259",
+      "raw_source_sha256": "5cc66af64c3c0c13031836224bc8075f2b97889f0c122346d66a9991919f0e95",
+      "source_label": "first-split-live-524/analysis.json",
+      "transformation": "private execution root replaced with <SKU_WORKSPACE>",
+      "bytes": 8690
+    },
+    "observer-provenance.json": {
+      "published_sha256": "ca1267636bd552d8fe1e4230880c8fe216093e5dc20335da4a85d7161f6a645b",
+      "raw_source_sha256": "4658a1c395a3070b5372346bfa20ea04364a4dc50139f66c96e1ab3f888d22a3",
+      "source_label": "first-split-live-524/provenance.json",
+      "transformation": "private execution root replaced with <SKU_WORKSPACE>",
+      "bytes": 7598
+    },
+    "observer.log": {
+      "published_sha256": "5e0a4785c8091726d8a86edd3ea9a27a327528378d5c656c750991d8388e6de1",
+      "raw_source_sha256": "f3e80f123fe5d4ead79ee01c31e75761da2d74bd9376c4a49dc04680b4b7d3ea",
+      "source_label": "first-split-live-524/observer-mtp.log",
+      "transformation": "private execution root replaced with <SKU_WORKSPACE>",
+      "bytes": 246004
+    },
+    "clean-direct-response.json": {
+      "published_sha256": "6289b074f11daa0e741e7d804fa9cafbae218c128297bf824aa986f851fcbd80",
+      "raw_source_sha256": "6289b074f11daa0e741e7d804fa9cafbae218c128297bf824aa986f851fcbd80",
+      "source_label": "first-split-live-524/clean-direct-response.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 19901
+    },
+    "clean-mtp-response.json": {
+      "published_sha256": "4e3d2c24ec51ceaaf24a6192d0d3a8284e226829ac3ba8bbec3cf98fb7c53745",
+      "raw_source_sha256": "4e3d2c24ec51ceaaf24a6192d0d3a8284e226829ac3ba8bbec3cf98fb7c53745",
+      "source_label": "first-split-live-524/clean-mtp-response.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 19938
+    },
+    "observer-mtp-response.json": {
+      "published_sha256": "ea9b2b44e3df36da76d15c70c5bbdb5ba35258d3be96b7ea3dd28bff36d0748b",
+      "raw_source_sha256": "ea9b2b44e3df36da76d15c70c5bbdb5ba35258d3be96b7ea3dd28bff36d0748b",
+      "source_label": "first-split-live-524/observer-mtp-response.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 19939
+    },
+    "oracle-old.log": {
+      "published_sha256": "947009302b3c75075e6028a63aeb46361ab1a6f93923fca6ccddfbe982bf0f4b",
+      "raw_source_sha256": "947009302b3c75075e6028a63aeb46361ab1a6f93923fca6ccddfbe982bf0f4b",
+      "source_label": "first-split-oracle-524/oracle.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 107
+    },
+    "oracle-old.json": {
+      "published_sha256": "ce6edc2173d2c74a6959d3aa9cc175fbbc1581628610a902b0234867712ce2a8",
+      "raw_source_sha256": "eab522294c00d65013b3b360ab2545b88d8452edff4fb9d90c604f622ffaaabf",
+      "source_label": "first-split-oracle-524/receipt.json",
+      "transformation": "private execution root replaced with <SKU_WORKSPACE>",
+      "bytes": 5898
+    },
+    "oracle-direct-prefill.log": {
+      "published_sha256": "c609d7bd60b9409a873e9e214ef8925215a6e95b166a0a5838a7bd4a8b37d7c6",
+      "raw_source_sha256": "c609d7bd60b9409a873e9e214ef8925215a6e95b166a0a5838a7bd4a8b37d7c6",
+      "source_label": "first-split-oracle-direct-prefill-524/oracle.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 7871
+    },
+    "oracle-direct-prefill.json": {
+      "published_sha256": "095bfb855c84d86fbd96a2a5974da975416cf7a3275f5535b39447fa9aee9622",
+      "raw_source_sha256": "7080010a05f32a0a7abf5af8babb039290484bdeed54e774538a91a9061ba57f",
+      "source_label": "first-split-oracle-direct-prefill-524/receipt.json",
+      "transformation": "private execution root replaced with <SKU_WORKSPACE>",
+      "bytes": 6001
+    },
+    "oracle-old-repeat.log": {
+      "published_sha256": "947009302b3c75075e6028a63aeb46361ab1a6f93923fca6ccddfbe982bf0f4b",
+      "raw_source_sha256": "947009302b3c75075e6028a63aeb46361ab1a6f93923fca6ccddfbe982bf0f4b",
+      "source_label": "first-split-oracle-old-repeat-524/oracle.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 107
+    },
+    "oracle-old-repeat.json": {
+      "published_sha256": "f6d093a7533458fd4ab14ed66f2d71a03b6820585f675cc3733bddc4a270a265",
+      "raw_source_sha256": "e4bafabc58981b76ffce9f524cf8b460e4f7db9beedede80527286098c8637cd",
+      "source_label": "first-split-oracle-old-repeat-524/receipt.json",
+      "transformation": "private execution root replaced with <SKU_WORKSPACE>",
+      "bytes": 5899
+    },
+    "runs.json": {
+      "published_sha256": "ac8ac45e9fe6a86d082b99073aef506fa5894cbd134fad825c338e0af3f56846",
+      "raw_source_sha256": "118e625362456fb07703814545b0ae2941d5d1db0d355ea20c8dbfb0b320893c",
+      "source_label": "first-split-live-524/results.json",
+      "transformation": "Private execution root replaced; duplicate request/response objects replaced with retained-file references; other fields unchanged",
+      "bytes": 3516
+    },
+    "README.md": {
+      "published_sha256": "65725fe52e0511c9e517566948475e4783cee894bbc1c4e45815848807fca802",
+      "raw_source_sha256": null,
+      "source_label": "final qualification curation",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 13574
+    },
+    "verify_evidence.py": {
+      "published_sha256": "da271185a0828ca162822c1e9445c4dce4877a36bde1cdabadd5c9c04ed3c81d",
+      "raw_source_sha256": null,
+      "source_label": "final qualification curation",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 18159
+    },
+    "regression/final.json": {
+      "published_sha256": "93390543de88a56e3f7ddb568e3f602d0dd35e36e8025262381664cc7e7597ff",
+      "raw_source_sha256": "93390543de88a56e3f7ddb568e3f602d0dd35e36e8025262381664cc7e7597ff",
+      "source_label": "exact-replay-regression/final.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 2472
+    },
+    "regression/final.patch": {
+      "published_sha256": "90814b94b24df7ddfafcec1f144676c1081c89c92118a49e2ec8bdb9a005098e",
+      "raw_source_sha256": "90814b94b24df7ddfafcec1f144676c1081c89c92118a49e2ec8bdb9a005098e",
+      "source_label": "exact-replay-regression/final.patch",
+      "transformation": "byte-exact retained source",
+      "bytes": 24641
+    },
+    "regression/before.json": {
+      "published_sha256": "0236ccacab3b560b4cba996c7ab48c6595ecabe6d60b54277a76a3484e03d844",
+      "raw_source_sha256": "a93f15a70724629192889ad667021fded4076b18f43e8f9f913310d0c7dd25ae",
+      "source_label": "exact-replay-regression/before.json",
+      "transformation": "unrelated inherited PATH entries replaced with pinned-toolchain/venv label; private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 887
+    },
+    "regression/before.log": {
+      "published_sha256": "a50399cef00599d5ffebb8dd52a8707fb50aba9e14f54513ca3a09b42d5139f3",
+      "raw_source_sha256": "be2863f03ddb1843ab1b2d4767de624e428fcf78af05edc1a3baaf8a3d47d2e6",
+      "source_label": "exact-replay-regression/before.log",
+      "transformation": "private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 1300
+    },
+    "regression/before.patch": {
+      "published_sha256": "25cef5d8b25b9e07e842cd2f121319b81c4453abec4dc893de7babf45bd23832",
+      "raw_source_sha256": "25cef5d8b25b9e07e842cd2f121319b81c4453abec4dc893de7babf45bd23832",
+      "source_label": "exact-replay-regression/before.patch",
+      "transformation": "byte-exact retained source",
+      "bytes": 12127
+    },
+    "regression/skip-before.json": {
+      "published_sha256": "40250230b916eb88468ad95883b3862460934c048e1a67cb64701a182e7f6d78",
+      "raw_source_sha256": "d31031faeabafefedbb05decee67556889aaca75583a618e2255ead19710451e",
+      "source_label": "exact-replay-regression/skip-before.json",
+      "transformation": "unrelated inherited PATH entries replaced with pinned-toolchain/venv label; private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 913
+    },
+    "regression/skip-before.log": {
+      "published_sha256": "7a071ef90348aa31aaed258fa305c10736af1f1bfdf73e305022fac0905ec641",
+      "raw_source_sha256": "c7bc1da93957b67ead7c64dbfe7d9fefb93e8cc5aa6be153f99b88102f5c785c",
+      "source_label": "exact-replay-regression/skip-before.log",
+      "transformation": "private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 1115
+    },
+    "regression/skip-before.patch": {
+      "published_sha256": "213333933e3c714aa2722dadccb94eb50c9644e61d241a8924483fb484db5bad",
+      "raw_source_sha256": "213333933e3c714aa2722dadccb94eb50c9644e61d241a8924483fb484db5bad",
+      "source_label": "exact-replay-regression/skip-before.patch",
+      "transformation": "byte-exact retained source",
+      "bytes": 22577
+    },
+    "regression/final-focused.json": {
+      "published_sha256": "2c7c54d59c09e61ae84c073b851648477cbb57019d10281832ea85cc50ac222b",
+      "raw_source_sha256": "2fce8b97ef10f3f0f4091d7566385677c6f0dae7148907b3397e52d79ec1755b",
+      "source_label": "exact-replay-regression/final-focused.json",
+      "transformation": "unrelated inherited PATH entries replaced with pinned-toolchain/venv label; private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 885
+    },
+    "regression/final-focused.log": {
+      "published_sha256": "060531f27103927ab6c91e10146e8feafe43bf6be667edffc424b910b00c2e6f",
+      "raw_source_sha256": "0882efa073e357657e7d19bf70aca8f0060c6b17ac99f5e51d047358fc014851",
+      "source_label": "exact-replay-regression/final-focused.log",
+      "transformation": "private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 886
+    },
+    "regression/final-linear-mtp.json": {
+      "published_sha256": "9a02514b22692fc7394f0127b9a5a85e2b4dff15fcf15ccaf3965fb20f46efcb",
+      "raw_source_sha256": "f31a93e2e11a1257c70c5cfcbd608ddf13953ecb6dbb5d3617b43648ffc90a7a",
+      "source_label": "exact-replay-regression/final-linear-mtp.json",
+      "transformation": "unrelated inherited PATH entries replaced with pinned-toolchain/venv label; private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 875
+    },
+    "regression/final-linear-mtp.log": {
+      "published_sha256": "4025d40a458e3d1f3f5e7c3ecf40db724d00656aa77f58c58c39b8044d0a3deb",
+      "raw_source_sha256": "7d140cb3a0a48dfc72b6036d5db3fe06c38d6cb8c99d6a3f16212079c0976854",
+      "source_label": "exact-replay-regression/final-linear-mtp.log",
+      "transformation": "private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 1590
+    },
+    "regression/final-ngram-tests.json": {
+      "published_sha256": "2112be230cc266de96364349d0617375f0fd32fc758cd6e22548868c7c9864a3",
+      "raw_source_sha256": "cabe1232c477324c4ed6869376bfab5956133b24de55fa492ae2007b4a9adc4e",
+      "source_label": "exact-replay-regression/final-ngram-tests.json",
+      "transformation": "unrelated inherited PATH entries replaced with pinned-toolchain/venv label; private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 883
+    },
+    "regression/final-ngram-tests.log": {
+      "published_sha256": "1f992909deab92a1a29f9f274d8981a5ebb19fa8cbed1319b6bc6d5f85b85659",
+      "raw_source_sha256": "8ab9721f6ca1de309f55df4b3010fb0ae6762791da2de65b03a18bbd7eaf3d21",
+      "source_label": "exact-replay-regression/final-ngram-tests.log",
+      "transformation": "private local path prefix replaced with <LOCAL_WORKSPACE>",
+      "bytes": 4616
+    },
+    "regression/reference-contract.md": {
+      "published_sha256": "d1d56522aa3d0553539a0a2e19c7182990e39032f6c717bb0950fd00c9f79ad0",
+      "raw_source_sha256": "d1d56522aa3d0553539a0a2e19c7182990e39032f6c717bb0950fd00c9f79ad0",
+      "source_label": "exact-replay-regression/reference-contract.md",
+      "transformation": "byte-exact retained source",
+      "bytes": 4514
+    },
+    "regression/reference-identity.json": {
+      "published_sha256": "149e4088d51a35084c5f657bdf8cadd68601dc02b98abc1547117026e92a2c2c",
+      "raw_source_sha256": "149e4088d51a35084c5f657bdf8cadd68601dc02b98abc1547117026e92a2c2c",
+      "source_label": "exact-replay-regression/reference-identity.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 1226
+    },
+    "regression/final-fmt.log": {
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_label": "exact-replay-regression/final-fmt.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 0
+    },
+    "regression/final-diff-check.log": {
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_label": "exact-replay-regression/final-diff-check.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 0
+    },
+    "regression/validation/replay-regression.log": {
+      "published_sha256": "2405fdbf4a84f6c45d43269872101e1a56861e9ac856aee7c51de79cc6f63022",
+      "raw_source_sha256": "5029e789689d4dd90560d1476aa827795fc17e4a69ab068e1955a304c52f8245",
+      "source_label": "validation/replay-regression.log",
+      "transformation": "private local/temp path and provider labels sanitized",
+      "bytes": 744
+    },
+    "regression/validation/fmt.log": {
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_label": "validation/fmt.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 0
+    },
+    "regression/validation/strict-clippy.log": {
+      "published_sha256": "a22f0a25d374c9eebb9cc7f3fb3826f170a4795f630605337d8c0def2e929019",
+      "raw_source_sha256": "2aa2704b0b2486f246c546fa93d3af42d6e9d9d64c25c58dcd0760ff2879e457",
+      "source_label": "validation/strict-clippy.log",
+      "transformation": "private local/temp path and provider labels sanitized; proof-relevant excerpt or advisory label normalization",
+      "bytes": 4305
+    },
+    "regression/validation/clippy.log": {
+      "published_sha256": "c0a95040fd553d208dddf1e8a1cb3ee1cd306b946bca8fe8ea7af32a1c199e9a",
+      "raw_source_sha256": "b55d4946d23c57fefe531f63e10666669f1e4c177bd605e62d4a068fa0dcef6a",
+      "source_label": "validation/clippy.log",
+      "transformation": "private local/temp path and provider labels sanitized; proof-relevant excerpt or advisory label normalization",
+      "bytes": 4765
+    },
+    "regression/validation/rust.log": {
+      "published_sha256": "4a7743911c5449eb53cfcfcfd7bc09247c39afcf28cdc3f734d7d01371a29c32",
+      "raw_source_sha256": "4a7743911c5449eb53cfcfcfd7bc09247c39afcf28cdc3f734d7d01371a29c32",
+      "source_label": "validation/rust.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 12466
+    },
+    "regression/validation/maturin.log": {
+      "published_sha256": "d3b5abf6900eeaf20e5a31ec68d4f624ba652065a2dd8dadd072396e61e0323c",
+      "raw_source_sha256": "add3dab7bae57d583997da299a9ca9b57bd0122ce064187ba9137122c85f2e22",
+      "source_label": "validation/maturin.log",
+      "transformation": "private local/temp path and provider labels sanitized",
+      "bytes": 1508
+    },
+    "regression/validation/scripts.log": {
+      "published_sha256": "c50510b8235db557a3015783b5b546ff2828bbca5e6306246c1f9ae60e4ad57f",
+      "raw_source_sha256": "38f64d5b12f273f0aa9dc670182a1b1ef572b46d714cc7715ec48535091b81aa",
+      "source_label": "validation/scripts.log",
+      "transformation": "private local/temp path and provider labels sanitized",
+      "bytes": 111786
+    },
+    "regression/validation/python.log": {
+      "published_sha256": "462107560c15de1cfd6deef98f769f111385f814d15dda677c3b126f51d1cdeb",
+      "raw_source_sha256": "462107560c15de1cfd6deef98f769f111385f814d15dda677c3b126f51d1cdeb",
+      "source_label": "validation/python.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 377
+    },
+    "regression/validation/qwen27b.log": {
+      "published_sha256": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+      "raw_source_sha256": "9d1c374bc7a4dbbd126b90a2f77b89a4fb90aed2ccce86d1d49ca9447bb5368c",
+      "source_label": "validation/qwen27b.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 1075
+    },
+    "regression/validation/flash_next.log": {
+      "published_sha256": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+      "raw_source_sha256": "e56610e8deb5951456599f279ba6607e035e2cd2065ad9f96a9498a5efb60707",
+      "source_label": "validation/flash_next.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 519
+    },
+    "regression/validation/claims.log": {
+      "published_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "raw_source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_label": "validation/claims.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 0
+    },
+    "regression/validation/source-before.json": {
+      "published_sha256": "bd41d03e5930831cf02940023ee5053abe357780a4fa5f5830ea09709ee59624",
+      "raw_source_sha256": "bd41d03e5930831cf02940023ee5053abe357780a4fa5f5830ea09709ee59624",
+      "source_label": "validation/source-before.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 363
+    },
+    "regression/validation/source-after.json": {
+      "published_sha256": "bd41d03e5930831cf02940023ee5053abe357780a4fa5f5830ea09709ee59624",
+      "raw_source_sha256": "bd41d03e5930831cf02940023ee5053abe357780a4fa5f5830ea09709ee59624",
+      "source_label": "validation/source-after.json",
+      "transformation": "byte-exact retained source",
+      "bytes": 363
+    },
+    "regression/validation/results.json": {
+      "published_sha256": "ebdde0ca39a094fcdf1a6d140d3b9cbde47456c87f170223405174f1a249c421",
+      "raw_source_sha256": "20156ebcafa48208d7d47ff96fb6760ea10da9faca324ab850b5a885436e8b8e",
+      "source_label": "validation/results.json",
+      "transformation": "private local/temp path and provider labels sanitized",
+      "bytes": 2669
+    },
+    "regression/validation/run_gates.py": {
+      "published_sha256": "402f906dca0baa977276d7dbb27a572e7857fce92e6eea1d21987513e9149bf6",
+      "raw_source_sha256": "402f906dca0baa977276d7dbb27a572e7857fce92e6eea1d21987513e9149bf6",
+      "source_label": "run_gates.py",
+      "transformation": "byte-exact retained source",
+      "bytes": 2732
+    },
+    "regression/advisory-1.json": {
+      "published_sha256": "3860a4694812cf9dc59cf9019202093884cba3d6dfdabcf699d46f4059c47ab9",
+      "raw_source_sha256": "3860a4694812cf9dc59cf9019202093884cba3d6dfdabcf699d46f4059c47ab9",
+      "source_label": "claude-fix-review.json",
+      "transformation": "byte-exact retained source; public reviewer identity preserved",
+      "bytes": 275
+    },
+    "regression/advisory-1.log": {
+      "published_sha256": "af3530efb23d483a722df0fa9491edcff25bf190833e76e2d1eb4ab6466a00cc",
+      "raw_source_sha256": "af3530efb23d483a722df0fa9491edcff25bf190833e76e2d1eb4ab6466a00cc",
+      "source_label": "advisory/advisory-1.log",
+      "transformation": "byte-exact retained source",
+      "bytes": 5191
+    },
+    "regression/advisory-2.json": {
+      "published_sha256": "c61a4a73293a6e3e8889d0300e86885ad32a91df229fec91fd6d1905fbeb715e",
+      "raw_source_sha256": "c61a4a73293a6e3e8889d0300e86885ad32a91df229fec91fd6d1905fbeb715e",
+      "source_label": "grok-fix-review.json",
+      "transformation": "byte-exact retained source; public reviewer identity preserved",
+      "bytes": 273
+    },
+    "regression/advisory-3.json": {
+      "published_sha256": "030c1de061d9c5f64287eb0a23032531579788797772f3a0d449f745eb357f1b",
+      "raw_source_sha256": "030c1de061d9c5f64287eb0a23032531579788797772f3a0d449f745eb357f1b",
+      "source_label": "qwen-fix-review.json",
+      "transformation": "byte-exact retained source; public reviewer identity preserved",
+      "bytes": 273
+    },
+    "regression/advisory-2-short.json": {
+      "published_sha256": "d5160588d79e9ea87d8a7de709fd1eb0df8bf70c6096bc952e9ba8c6b37fb6bb",
+      "raw_source_sha256": "d5160588d79e9ea87d8a7de709fd1eb0df8bf70c6096bc952e9ba8c6b37fb6bb",
+      "source_label": "grok-fix-short.json",
+      "transformation": "byte-exact retained source; public reviewer identity preserved",
+      "bytes": 274
+    },
+    "regression/advisory-3-short.json": {
+      "published_sha256": "e563780939073ec8e2954e2f662b7f9d19c559a901b87301c9fa382c16f894c3",
+      "raw_source_sha256": "e563780939073ec8e2954e2f662b7f9d19c559a901b87301c9fa382c16f894c3",
+      "source_label": "qwen-fix-short.json",
+      "transformation": "byte-exact retained source; public reviewer identity preserved",
+      "bytes": 274
+    },
+    "regression/advisory-assessment.md": {
+      "published_sha256": "3dc4ea017a48e043be0dc61712b5267ef27bacfc60d9309c2c070c50234f261a",
+      "raw_source_sha256": "3dc4ea017a48e043be0dc61712b5267ef27bacfc60d9309c2c070c50234f261a",
+      "source_label": "fix-review-assessment.md",
+      "transformation": "Added completed short-retry timeout outcome; public reviewer identities preserved",
+      "bytes": 2847
+    },
+    "regression/README.md": {
+      "published_sha256": "8df269b0eb143df52601f685afe0b237d523cf406c9c9bd4b496e32f286035a3",
+      "bytes": 2731,
+      "transformation": "New or updated English curation/validation artifact"
+    },
+    "source-validation.json": {
+      "published_sha256": "f0f975583d37f48fa045244c46af7d440319d5929ddbc1a145f3902b9bdf61c7",
+      "raw_source_sha256": null,
+      "source_label": "final qualification curation",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 14321
+    },
+    "final-build.json": {
+      "published_sha256": "abf54330db0dc824693e9745ed1779b35bd73cc4bbd0a6df46e5109245ff563d",
+      "raw_source_sha256": "7b196886789cd6aa7703a2422a92ce92348cb2e0e0f689cea695ac7549f912f8",
+      "source_label": "build-manifest-forced-replay-installed.json",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 8155
+    },
+    "qualification.json": {
+      "published_sha256": "fb55bb410bdc3b9e90531d8a9871edccac1982a7985c1c961fb5fcdb5dc1deb7",
+      "raw_source_sha256": "6c9b36593e03f960d3a1da8993d28364f6bb2e694060e1082149b9fee384fc64",
+      "source_label": "qualification-forced-replay-installed/qualification.json",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 62483
+    },
+    "cold-controls.json": {
+      "published_sha256": "3d67b80a49d9513866a888c12571f0547a0307d3a2a4a9d43593426a1fa53734",
+      "raw_source_sha256": "4e0851de1cf6b7ff1049d017797fa53050dba4b8df46e09e762a47a7a4c1c7db",
+      "source_label": "forced-replay-cold-controls/results.json",
+      "transformation": "Derived or updated after final installed-wheel qualification; private paths labeled",
+      "bytes": 842270
+    },
+    "cold/COMPSEC-compsec-087-mtp-response.json": {
+      "published_sha256": "aabed393223f541acbbd11e7d8de9e5407348b846c2a9c848b03dac30a91badb",
+      "raw_source_sha256": "aabed393223f541acbbd11e7d8de9e5407348b846c2a9c848b03dac30a91badb",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-087-mtp-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20327
+    },
+    "cold/COMPSEC-compsec-079-old-forced-response.json": {
+      "published_sha256": "95b9f27675aa6fa49d0c96f07a5e4a4849191ef165b43e8c48d8ca5bb04341bb",
+      "raw_source_sha256": "95b9f27675aa6fa49d0c96f07a5e4a4849191ef165b43e8c48d8ca5bb04341bb",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-old-forced-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20034
+    },
+    "cold/COMPSEC-compsec-079-old-forced-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-old-forced-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-077-mtp-request.json": {
+      "published_sha256": "e7a2945cc045b3e5d79204a2f01697b29e27c2db96160f882b53b5ad2d09a003",
+      "raw_source_sha256": "e7a2945cc045b3e5d79204a2f01697b29e27c2db96160f882b53b5ad2d09a003",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-077-mtp-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2170
+    },
+    "cold/COMPSEC-compsec-087-direct-response.json": {
+      "published_sha256": "fc73802f31c2ad5106be6cd89f49bbeff9e3e0ada04c2bfe59b4ebc28dfb9cdc",
+      "raw_source_sha256": "fc73802f31c2ad5106be6cd89f49bbeff9e3e0ada04c2bfe59b4ebc28dfb9cdc",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-087-direct-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20285
+    },
+    "cold/COMPSEC-compsec-079-mtp-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-mtp-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-079-new-forced-skip-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-new-forced-skip-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-079-new-forced-skip-response.json": {
+      "published_sha256": "96b903c4cbcd62f3dbb769e7673e36e970a04413534eabf56c1ae7b56620fb28",
+      "raw_source_sha256": "96b903c4cbcd62f3dbb769e7673e36e970a04413534eabf56c1ae7b56620fb28",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-new-forced-skip-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20040
+    },
+    "cold/COMPSEC-compsec-079-new-forced-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-new-forced-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-079-mtp-response.json": {
+      "published_sha256": "2757a4d7f33b017287391fc65e0a548371c63e20c478c1c7f4e018808f392aa3",
+      "raw_source_sha256": "2757a4d7f33b017287391fc65e0a548371c63e20c478c1c7f4e018808f392aa3",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-mtp-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20013
+    },
+    "cold/COMPSEC-compsec-079-new-forced-response.json": {
+      "published_sha256": "81e3b0a6ab40d638f2ef4f98621df172ba7b8e9bd792bb2cc90e3610fe9417e3",
+      "raw_source_sha256": "81e3b0a6ab40d638f2ef4f98621df172ba7b8e9bd792bb2cc90e3610fe9417e3",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-new-forced-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 20034
+    },
+    "cold/COMPSEC-compsec-092-direct-request.json": {
+      "published_sha256": "6dc7ec2c46246b26e990d1b074a7ec5a92766f3b974fbc3d0e4a73f7ce796048",
+      "raw_source_sha256": "6dc7ec2c46246b26e990d1b074a7ec5a92766f3b974fbc3d0e4a73f7ce796048",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-092-direct-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 1984
+    },
+    "cold/COMPSEC-compsec-077-direct-response.json": {
+      "published_sha256": "39d77739fb35a4b2011f488971a44c5dcb3d0d3d6e5201b7f76ac98799473389",
+      "raw_source_sha256": "39d77739fb35a4b2011f488971a44c5dcb3d0d3d6e5201b7f76ac98799473389",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-077-direct-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19766
+    },
+    "cold/COMPSEC-compsec-087-mtp-request.json": {
+      "published_sha256": "9cba90326a6a971c859854d20d737a06a5f6aed7ea3724d7eed5590036abce47",
+      "raw_source_sha256": "9cba90326a6a971c859854d20d737a06a5f6aed7ea3724d7eed5590036abce47",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-087-mtp-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2750
+    },
+    "cold/COMPSEC-compsec-079-direct-request.json": {
+      "published_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "raw_source_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-direct-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2322
+    },
+    "cold/COMPSEC-compsec-087-direct-request.json": {
+      "published_sha256": "9cba90326a6a971c859854d20d737a06a5f6aed7ea3724d7eed5590036abce47",
+      "raw_source_sha256": "9cba90326a6a971c859854d20d737a06a5f6aed7ea3724d7eed5590036abce47",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-087-direct-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2750
+    },
+    "cold/COMPSEC-compsec-092-direct-response.json": {
+      "published_sha256": "6b224186bef1cea142f866c538ba7323fe598548d9a4e0f964635ee4d4f74af1",
+      "raw_source_sha256": "6b224186bef1cea142f866c538ba7323fe598548d9a4e0f964635ee4d4f74af1",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-092-direct-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19635
+    },
+    "cold/COMPSEC-compsec-077-direct-request.json": {
+      "published_sha256": "e7a2945cc045b3e5d79204a2f01697b29e27c2db96160f882b53b5ad2d09a003",
+      "raw_source_sha256": "e7a2945cc045b3e5d79204a2f01697b29e27c2db96160f882b53b5ad2d09a003",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-077-direct-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 2170
+    },
+    "cold/COMPSEC-compsec-077-mtp-response.json": {
+      "published_sha256": "a41cf5c5e7881a63e1e39cc158e04452af9900d891970a5f6116869cff806591",
+      "raw_source_sha256": "a41cf5c5e7881a63e1e39cc158e04452af9900d891970a5f6116869cff806591",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-077-mtp-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19816
+    },
+    "cold/COMPSEC-compsec-092-mtp-request.json": {
+      "published_sha256": "6dc7ec2c46246b26e990d1b074a7ec5a92766f3b974fbc3d0e4a73f7ce796048",
+      "raw_source_sha256": "6dc7ec2c46246b26e990d1b074a7ec5a92766f3b974fbc3d0e4a73f7ce796048",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-092-mtp-request.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 1984
+    },
+    "cold/COMPSEC-compsec-092-mtp-response.json": {
+      "published_sha256": "d7698c018da91be4b88e54908241c8144e9573d16dbd8507b69d4d3ea7412f9e",
+      "raw_source_sha256": "d7698c018da91be4b88e54908241c8144e9573d16dbd8507b69d4d3ea7412f9e",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-092-mtp-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19685
+    },
+    "cold/COMPSEC-compsec-079-direct-response.json": {
+      "published_sha256": "87b16ec8943948037295fa4751db1eba3832afb05fb266200523830eeb504a5b",
+      "raw_source_sha256": "87b16ec8943948037295fa4751db1eba3832afb05fb266200523830eeb504a5b",
+      "source_label": "forced-replay-cold-controls/COMPSEC-compsec-079-direct-response.json",
+      "transformation": "byte-exact final cold HTTP body",
+      "bytes": 19977
+    }
+  },
+  "source_receipts": {
+    "first-split-live-524/events.json": {
+      "raw_sha256": "01fe39c472083f3ba2200541c3330e5d0e39313558a714440907430d7d0e60c9",
+      "retained_as_file": false
+    },
+    "first-split-live-524/summary.json": {
+      "raw_sha256": "53f08179a02d485275f054101675576527659bd1d803c0024f2d82216eef336f",
+      "retained_as_file": false
+    },
+    "first-split-live-524/clean-direct.log": {
+      "raw_sha256": "011c7d88116ffa5bf71e7b78558e098669b64b33f05160188df50ba3d222c99b",
+      "retained_as_file": false
+    },
+    "first-split-live-524/clean-mtp.log": {
+      "raw_sha256": "011c7d88116ffa5bf71e7b78558e098669b64b33f05160188df50ba3d222c99b",
+      "retained_as_file": false
+    },
+    "first-split-live-524/clean-mtp-request.json": {
+      "raw_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "retained_as_file": false
+    },
+    "first-split-live-524/observer-mtp-request.json": {
+      "raw_sha256": "9507b383f71b71c3c437cadf45295e7bad442844104a0ec5d3dd5ae6e045e73a",
+      "retained_as_file": false
+    },
+    "observer_remote.py": {
+      "raw_sha256": "ce30e1926a5693703690603d670453509cb6b22577242f5056785c7583f83403",
+      "retained_as_file": false
+    },
+    "preparation.json": {
+      "raw_sha256": "65df3795c824b002b2764fd9deea8c1109234cd6ffb6e585490ec78faf3ac433",
+      "retained_as_file": false
+    },
+    "observer-remote-preparation.json": {
+      "raw_sha256": "8e9f8d11ae4034cad39ca0a776adb4a36665027e37859b40339b264e05f6c1fd",
+      "retained_as_file": false
+    },
+    "exact-replay-regression/final-focused.patch": {
+      "raw_sha256": "90814b94b24df7ddfafcec1f144676c1081c89c92118a49e2ec8bdb9a005098e",
+      "retained_as_file": false,
+      "identical_published_file": "regression/final.patch"
+    },
+    "exact-replay-regression/final-linear-mtp.patch": {
+      "raw_sha256": "90814b94b24df7ddfafcec1f144676c1081c89c92118a49e2ec8bdb9a005098e",
+      "retained_as_file": false,
+      "identical_published_file": "regression/final.patch"
+    },
+    "exact-replay-regression/final-ngram-tests.patch": {
+      "raw_sha256": "90814b94b24df7ddfafcec1f144676c1081c89c92118a49e2ec8bdb9a005098e",
+      "retained_as_file": false,
+      "identical_published_file": "regression/final.patch"
+    },
+    "exact-replay-regression/README.md": {
+      "raw_sha256": "0655e61b7d7e4a3f1ec42a0cff1f28885599c7b60fb2131a89d945e150fcf6f7",
+      "retained_as_file": false
+    }
+  },
+  "curation_checks": {
+    "private_host_path_credential_pattern_scrub": "passed",
+    "english_only_no_cjk": "passed",
+    "python_syntax": "passed",
+    "runtime_source_difference_between_d121f107_and_0f7f2d2d": false,
+    "tensor_dump_retained": false,
+    "raw_tensor_comparisons_recomputed_offline": false,
+    "scope": "Recorded witnesses and exact retained HTTP/token data only",
+    "forced_replay_source_validation": "11 completed commands; strict Clippy101 retained, other10 pass; source unchanged",
+    "final_installed_qualification": "passed on clean22affab5 wheel; bounded scope only",
+    "final_cold_controls": "eleven complete arms; eight default outputs preserved; default pair2/4 unchanged"
+  }
+}

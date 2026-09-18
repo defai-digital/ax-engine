@@ -1,0 +1,152 @@
+{
+  "schema": "ax.qwen38.selected_reference_diagnostic.v1",
+  "scope": "Two complete-set prompts on a pinned independent direct reference; selected diagnostic, not population accuracy or release acceptance.",
+  "experiment_complete": true,
+  "quality_acceptance_claim": false,
+  "ax_source_commit": "d121f107999e3b8627f60455a79bdd0dad7ada6c",
+  "ax_wheel_sha256": "89d43b038bbd11950e43472e41175c15b2e8a6854d4dcbdfe908c392fb280b29",
+  "ax_server_sha256": "9d2cbc61584d89ce2e6e55a64c9b910d6dee5327e4345202be688a2a49b26f31",
+  "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+  "model_file_count_freshly_rehashed": 22,
+  "same_pack_as_ax": true,
+  "reference_versions": {
+    "mlx": "0.32.2",
+    "mlx-lm": "0.31.3",
+    "transformers": "5.15.0",
+    "tokenizers": "0.22.2"
+  },
+  "reference_mlx_metal_version": "0.32.2",
+  "reference_record_verified_file_count": 2810,
+  "reference_runtime_overrides": {},
+  "max_tokens": 512,
+  "thinking": false,
+  "seed": 0,
+  "sampler": "Unchanged generate_step default argmax, seed 0, no logits processors, fresh process and fresh KV per case",
+  "prefill_step_size": 2048,
+  "input_control": "Actual AX apply-template and tokenize results must equal pinned reference rendering and every input token before inference.",
+  "response_adapter": "Decode non-EOS output tokens with the loaded tokenizer; EOS maps to stop, budget exhaustion maps to length; unchanged AX grade.",
+  "runner_sha256": "140474f30f4a5c2808598758b8f72b8051260e7889254023d022e475be034308",
+  "shared_helper_sha256": "0ee3fa313d97c37d851425ba024ff8867780b566c7c2a13de116a975ffc05c98",
+  "prior_runner_sha256": "8c64fe15187ce8f0f19d1918868834384a57221e0cdeb77f8ca4b4d5a947d409",
+  "prior_provenance_sha256": "15a93e14b140824ca43dd896b0eca0efb08305c97600a9a77c49738f83039976",
+  "variant_bank_sha256": "0543fd232ac438db87e29b36a30855c365ba6ce8d64cef98d369a4cdfc251704",
+  "limits": {
+    "AX_readiness_seconds": 180,
+    "AX_endpoint_seconds": 30,
+    "AX_template_watchdog_seconds": 300,
+    "reference_worker_seconds": 420
+  },
+  "template_server_stopped_before_reference_workers": true,
+  "cells": [
+    {
+      "key": "COMPSEC:compsec-079",
+      "variant": "complete_set_v1",
+      "prompt_tokens": 436,
+      "prompt_utf8_sha256": "a482fdf7b93d3bbd93a466b01aa11dcfdf26015e9ee69309b875d5d2833fb958",
+      "input_tokens_canonical_sha256": "25c2f732de7f2e0f6037a189257bddb01186e80c7f701006f097bfc7c5965e7a",
+      "request_canonical_sha256": "0d293d7541b44198fabe407734c0b63f37a701381023a2d77416176f8573911b",
+      "full_prompt_bytes_equal": true,
+      "every_input_token_equal": true,
+      "fresh_process": true,
+      "fresh_kv": true,
+      "reference_visible_text": "Answer: 0",
+      "reference_non_eos_output_count": 4,
+      "reference_output_tokens_canonical_sha256": "168f5df85383fdfa1af10c9d5ab91d6ff2af26c4afa9916f07bcf6ec3a36a5f7",
+      "reference_eos_token": 248046,
+      "reference_finish_reason": "stop",
+      "unchanged_ax_grade": {
+        "status": "wrong",
+        "answer": "0",
+        "detection": false,
+        "span_reported": 1,
+        "span_expected": null,
+        "span_recall": null
+      },
+      "ax_comparisons": [
+        {
+          "route": "direct",
+          "response_body_sha256": "918c58256d037d1111163cd0bf21d3b7cd78aec30053b37649f0af491a214fcf",
+          "request_equal": true,
+          "visible_text_equal": true,
+          "finish_reason_equal": true,
+          "non_eos_completion_count_equal": true,
+          "unchanged_grade_equal": true
+        },
+        {
+          "route": "mtp",
+          "response_body_sha256": "26ed0728802314ceb2646624da665ab9ec5516bd0130767d30fab6c99c7de3a4",
+          "request_equal": true,
+          "visible_text_equal": true,
+          "finish_reason_equal": true,
+          "non_eos_completion_count_equal": true,
+          "unchanged_grade_equal": true
+        }
+      ]
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "variant": "complete_set_v1",
+      "prompt_tokens": 408,
+      "prompt_utf8_sha256": "43d8be2772102413bb2d5f3ac208eb6bad62ec4546d746ece84bc55678dfa62e",
+      "input_tokens_canonical_sha256": "155d2408bc2afa0a3b72e7539b61c0512d46251911a607ba1063649fb33b0bf5",
+      "request_canonical_sha256": "89e742085dec1a30ee4ad2f0199e058bb69ee3fc21f7c33ca264f4be9edb8d6c",
+      "full_prompt_bytes_equal": true,
+      "every_input_token_equal": true,
+      "fresh_process": true,
+      "fresh_kv": true,
+      "reference_visible_text": "Answer: 3",
+      "reference_non_eos_output_count": 4,
+      "reference_output_tokens_canonical_sha256": "9db1a1ceb6aaecb5a92c72b1895795bd05fdac897330d62d78751ac7c923652e",
+      "reference_eos_token": 248046,
+      "reference_finish_reason": "stop",
+      "unchanged_ax_grade": {
+        "status": "wrong",
+        "answer": "3",
+        "detection": true,
+        "span_reported": 1,
+        "span_expected": 4,
+        "span_recall": 0.25
+      },
+      "ax_comparisons": [
+        {
+          "route": "direct",
+          "response_body_sha256": "77814607fd00ecaf4ef99e795a51d667bdfef8a29496ce814578daaa19dfce57",
+          "request_equal": true,
+          "visible_text_equal": true,
+          "finish_reason_equal": true,
+          "non_eos_completion_count_equal": true,
+          "unchanged_grade_equal": true
+        },
+        {
+          "route": "mtp",
+          "response_body_sha256": "db9f3160fc59b5cefaa98a668553da06616b280b7af55313e445b3ad5b0470fa",
+          "request_equal": true,
+          "visible_text_equal": true,
+          "finish_reason_equal": true,
+          "non_eos_completion_count_equal": true,
+          "unchanged_grade_equal": true
+        }
+      ]
+    }
+  ],
+  "raw_artifact_sha256": {
+    "ax-template-process.json": "cc993b67b6b4fd241f087f46500aee1d177590ef8c4f9dc5bb22ed5582259c14",
+    "ax-template-server.log": "1d48835286fed5ce294a9e74a5e43dfdf8257f6cfd15f86594c54264768cf011",
+    "inputs.json": "b3b905a1de5da0942618cd715e8c2691e722fb440a66dc9d74a21895afe0c755",
+    "provenance.json": "9ac6f7a3ed168f4b0aa175ad055f09eefab8ed3e40c6026305c9909af02bf483",
+    "reference-0.json": "48451e9c58eb69bda658cabb3fa10fd791d99e1610fb1af87eb1c30f40dca497",
+    "reference-0.log": "449ca2054fbc7fe98a6825aa452ceaddfa2c71e3db93f8ab812371f0b9f297fc",
+    "reference-1.json": "6faaadcf6325a5810b80ba0c018d42a6eb5bb43c716e46c2c91b790f77ed011c",
+    "reference-1.log": "424eb211b83e5ed2b540c2e23a04707ed60e75bd8ebd0adf2dc9c0b0400fce49",
+    "results.json": "558536b5da750e77139812cbacaa6b85bf76cb0d70edae66ef1e4ed1e2e0e590",
+    "summary.json": "bde0e267f4c4b10543ce7e6201ac593ccaa52a03f119c4285b0340e2b7128fd4"
+  },
+  "interpretation": "Both selected stricter-prompt answers also occur in the pinned independent reference under identical input IDs. This does not establish correctness, broader route fidelity, or a release-quality gain.",
+  "limitations": [
+    "Only two complete_set_v1 prompts were tested; the original twelve-case quality suite was not rerun on this source.",
+    "The unchanged accepted-location keys have not been validated as exhaustive causal-line annotations for the stricter task.",
+    "AX chat responses expose visible text and completion counts, not raw generated token IDs. Output comparisons here do not assert raw AX/reference token identity.",
+    "Exact template-endpoint parity and matching chat prompt counts do not instrument the chat handler's internal token array.",
+    "This is not a speed benchmark and does not attribute the retained longer direct/MTP split."
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "checks": [
+    {
+      "detail": "<SKU_WORKSPACE>/product-final-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server ok",
+      "id": "server_binary",
+      "status": "pass"
+    },
+    {
+      "detail": "<SKU_WORKSPACE>/product-final-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-bench ok",
+      "id": "bench_binary",
+      "status": "pass"
+    },
+    {
+      "detail": "Apple M4 Pro (macos/aarch64)",
+      "id": "host",
+      "status": "pass"
+    },
+    {
+      "detail": "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds",
+      "id": "metal_toolchain",
+      "status": "pass"
+    },
+    {
+      "detail": "Bundled MLX runtime assets available",
+      "id": "mlx_runtime",
+      "status": "pass"
+    },
+    {
+      "id": "model",
+      "path": "<SKU_WORKSPACE>/model",
+      "selected": true,
+      "status": "ready"
+    }
+  ],
+  "details_command": "ax-engine-bench doctor",
+  "host": {
+    "arch": "arm64",
+    "cpu_cores": {
+      "efficiency": 4,
+      "logical": 14,
+      "performance": 10,
+      "physical": 14,
+      "summary": "14 (10 Performance and 4 Efficiency)",
+      "types": {
+        "efficiency": 4,
+        "performance": 10
+      }
+    },
+    "gpu_cores": 20,
+    "os": "darwin",
+    "os_build": "25G83",
+    "os_version": "26.6.2",
+    "ram_bytes": 68719476736,
+    "ram_gib": 64
+  },
+  "install": {
+    "cwd": "<SKU_WORKSPACE>/product-final-lifecycle",
+    "mode": "installed_tools",
+    "version": "7.4.0"
+  },
+  "issues": [],
+  "model_issues": [],
+  "next_actions": [
+    "ax-engine serve <SKU_WORKSPACE>/model --port 31418"
+  ],
+  "ready_for": [
+    "serve",
+    "python_sdk",
+    "model_checks"
+  ],
+  "result": "ready",
+  "schema_version": "ax.engine.doctor.v1",
+  "source": {
+    "details_command": "ax-engine-bench doctor --json",
+    "schema_version": "ax.engine_bench.doctor.v1",
+    "status": "ready"
+  }
+}

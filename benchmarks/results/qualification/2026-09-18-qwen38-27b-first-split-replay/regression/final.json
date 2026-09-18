@@ -1,0 +1,92 @@
+{
+  "base_revision": "0f7f2d2d0ae6e66a80c7d6f746fbb058efd2a951",
+  "patch_sha256": "90814b94b24df7ddfafcec1f144676c1081c89c92118a49e2ec8bdb9a005098e",
+  "checks": [
+    {
+      "label": "final-fmt",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "label": "final-diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "source_sha256": {
+    "crates/ax-engine-mlx/src/runner/mod.rs": "cdea4eacf96b285e0ae3d9433c3bd2ebe02337b31839afde7c0f36d67ff74a6a",
+    "crates/ax-engine-mlx/src/ngram_accel.rs": "a390db47d6c1de5faa75dbc24b394dbc2be767c66e5766b15b5200dd3ccc487c"
+  },
+  "tests": [
+    {
+      "label": "final-focused",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--lib",
+        "forced_greedy_replay",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "log_sha256": "0882efa073e357657e7d19bf70aca8f0060c6b17ac99f5e51d047358fc014851",
+      "summary": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1589 filtered out; finished in 0.09s"
+    },
+    {
+      "label": "final-linear-mtp",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--lib",
+        "linear_mtp",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "log_sha256": "7d140cb3a0a48dfc72b6036d5db3fe06c38d6cb8c99d6a3f16212079c0976854",
+      "summary": "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 1579 filtered out; finished in 0.05s"
+    },
+    {
+      "label": "final-ngram-tests",
+      "command": [
+        "rustup",
+        "run",
+        "1.97.1",
+        "cargo",
+        "test",
+        "-p",
+        "ax-engine-mlx",
+        "--lib",
+        "ngram_accel::tests",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "log_sha256": "8ab9721f6ca1de309f55df4b3010fb0ae6762791da2de65b03a18bbd7eaf3d21",
+      "summary": "test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 1542 filtered out; finished in 0.03s"
+    }
+  ]
+}

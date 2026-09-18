@@ -1,0 +1,530 @@
+{
+  "actual_direct_offset": 524,
+  "actual_direct_input": 314,
+  "actual_direct_next_argmax": 279,
+  "cache522_unequal_arrays": [
+    {
+      "layer": 0,
+      "kind": "conv"
+    },
+    {
+      "layer": 0,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 1,
+      "kind": "conv"
+    },
+    {
+      "layer": 1,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 2,
+      "kind": "conv"
+    },
+    {
+      "layer": 2,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 3,
+      "kind": "key"
+    },
+    {
+      "layer": 3,
+      "kind": "value"
+    },
+    {
+      "layer": 4,
+      "kind": "conv"
+    },
+    {
+      "layer": 4,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 5,
+      "kind": "conv"
+    },
+    {
+      "layer": 5,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 6,
+      "kind": "conv"
+    },
+    {
+      "layer": 6,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 7,
+      "kind": "key"
+    },
+    {
+      "layer": 7,
+      "kind": "value"
+    },
+    {
+      "layer": 8,
+      "kind": "conv"
+    },
+    {
+      "layer": 8,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 9,
+      "kind": "conv"
+    },
+    {
+      "layer": 9,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 10,
+      "kind": "conv"
+    },
+    {
+      "layer": 10,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 11,
+      "kind": "key"
+    },
+    {
+      "layer": 11,
+      "kind": "value"
+    },
+    {
+      "layer": 12,
+      "kind": "conv"
+    },
+    {
+      "layer": 12,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 13,
+      "kind": "conv"
+    },
+    {
+      "layer": 13,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 14,
+      "kind": "conv"
+    },
+    {
+      "layer": 14,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 15,
+      "kind": "key"
+    },
+    {
+      "layer": 15,
+      "kind": "value"
+    },
+    {
+      "layer": 16,
+      "kind": "conv"
+    },
+    {
+      "layer": 16,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 17,
+      "kind": "conv"
+    },
+    {
+      "layer": 17,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 18,
+      "kind": "conv"
+    },
+    {
+      "layer": 18,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 19,
+      "kind": "key"
+    },
+    {
+      "layer": 19,
+      "kind": "value"
+    },
+    {
+      "layer": 20,
+      "kind": "conv"
+    },
+    {
+      "layer": 20,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 21,
+      "kind": "conv"
+    },
+    {
+      "layer": 21,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 22,
+      "kind": "conv"
+    },
+    {
+      "layer": 22,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 23,
+      "kind": "key"
+    },
+    {
+      "layer": 23,
+      "kind": "value"
+    },
+    {
+      "layer": 24,
+      "kind": "conv"
+    },
+    {
+      "layer": 24,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 25,
+      "kind": "conv"
+    },
+    {
+      "layer": 25,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 26,
+      "kind": "conv"
+    },
+    {
+      "layer": 26,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 27,
+      "kind": "key"
+    },
+    {
+      "layer": 27,
+      "kind": "value"
+    },
+    {
+      "layer": 28,
+      "kind": "conv"
+    },
+    {
+      "layer": 28,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 29,
+      "kind": "conv"
+    },
+    {
+      "layer": 29,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 30,
+      "kind": "conv"
+    },
+    {
+      "layer": 30,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 31,
+      "kind": "key"
+    },
+    {
+      "layer": 31,
+      "kind": "value"
+    },
+    {
+      "layer": 32,
+      "kind": "conv"
+    },
+    {
+      "layer": 32,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 33,
+      "kind": "conv"
+    },
+    {
+      "layer": 33,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 34,
+      "kind": "conv"
+    },
+    {
+      "layer": 34,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 35,
+      "kind": "key"
+    },
+    {
+      "layer": 35,
+      "kind": "value"
+    },
+    {
+      "layer": 36,
+      "kind": "conv"
+    },
+    {
+      "layer": 36,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 37,
+      "kind": "conv"
+    },
+    {
+      "layer": 37,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 38,
+      "kind": "conv"
+    },
+    {
+      "layer": 38,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 39,
+      "kind": "key"
+    },
+    {
+      "layer": 39,
+      "kind": "value"
+    },
+    {
+      "layer": 40,
+      "kind": "conv"
+    },
+    {
+      "layer": 40,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 41,
+      "kind": "conv"
+    },
+    {
+      "layer": 41,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 42,
+      "kind": "conv"
+    },
+    {
+      "layer": 42,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 43,
+      "kind": "key"
+    },
+    {
+      "layer": 43,
+      "kind": "value"
+    },
+    {
+      "layer": 44,
+      "kind": "conv"
+    },
+    {
+      "layer": 44,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 45,
+      "kind": "conv"
+    },
+    {
+      "layer": 45,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 46,
+      "kind": "conv"
+    },
+    {
+      "layer": 46,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 47,
+      "kind": "key"
+    },
+    {
+      "layer": 47,
+      "kind": "value"
+    },
+    {
+      "layer": 48,
+      "kind": "conv"
+    },
+    {
+      "layer": 48,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 49,
+      "kind": "conv"
+    },
+    {
+      "layer": 49,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 50,
+      "kind": "conv"
+    },
+    {
+      "layer": 50,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 51,
+      "kind": "key"
+    },
+    {
+      "layer": 51,
+      "kind": "value"
+    },
+    {
+      "layer": 52,
+      "kind": "conv"
+    },
+    {
+      "layer": 52,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 53,
+      "kind": "conv"
+    },
+    {
+      "layer": 53,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 54,
+      "kind": "conv"
+    },
+    {
+      "layer": 54,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 55,
+      "kind": "key"
+    },
+    {
+      "layer": 55,
+      "kind": "value"
+    },
+    {
+      "layer": 56,
+      "kind": "conv"
+    },
+    {
+      "layer": 56,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 57,
+      "kind": "conv"
+    },
+    {
+      "layer": 57,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 58,
+      "kind": "conv"
+    },
+    {
+      "layer": 58,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 59,
+      "kind": "key"
+    },
+    {
+      "layer": 59,
+      "kind": "value"
+    },
+    {
+      "layer": 60,
+      "kind": "conv"
+    },
+    {
+      "layer": 60,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 61,
+      "kind": "conv"
+    },
+    {
+      "layer": 61,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 62,
+      "kind": "conv"
+    },
+    {
+      "layer": 62,
+      "kind": "recurrent"
+    },
+    {
+      "layer": 63,
+      "kind": "key"
+    },
+    {
+      "layer": 63,
+      "kind": "value"
+    }
+  ],
+  "cache522_equal_metadata": true,
+  "actual_direct_cache525_equal_to_both_replays": true,
+  "historical_mtp_log_sha256": "5e0a4785c8091726d8a86edd3ea9a27a327528378d5c656c750991d8388e6de1",
+  "historical_mtp_source": "0f7f2d2d0ae6e66a80c7d6f746fbb058efd2a951",
+  "direct_observer_source": "85d55200dad956f0bf96ab9885ed7286cb237fe5",
+  "limits": [
+    "Historical MTP snapshot and current direct snapshot have different source bases; frozen builds and unchanged default outputs are recorded.",
+    "128 differing array hashes establish unequal observed histories; they do not locate when each state first diverged.",
+    "The live direct singleton controls are bit-exact at524 only; batch verification remains a separate arithmetic path.",
+    "Default MTP, quality, Tier2 and endurance gates remain open."
+  ]
+}

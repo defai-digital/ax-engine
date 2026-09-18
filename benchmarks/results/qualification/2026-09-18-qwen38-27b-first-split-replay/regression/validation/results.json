@@ -1,0 +1,142 @@
+[
+  {
+    "check": "replay-regression",
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "ax-engine-mlx",
+      "--lib",
+      "forced_greedy_replay",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 19.673558042006334
+  },
+  {
+    "check": "fmt",
+    "command": [
+      "rustup",
+      "run",
+      "1.97.1",
+      "cargo",
+      "fmt",
+      "--check"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 2.099688582995441
+  },
+  {
+    "check": "strict-clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 101,
+    "elapsed_seconds": 27.227839125000173
+  },
+  {
+    "check": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings",
+      "--force-warn",
+      "clippy::unwrap-used",
+      "--force-warn",
+      "clippy::expect-used",
+      "--force-warn",
+      "clippy::panic",
+      "--force-warn",
+      "clippy::dbg-macro",
+      "--force-warn",
+      "clippy::large-enum-variant"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 71.14233408300788
+  },
+  {
+    "check": "rust",
+    "command": [
+      "rustup",
+      "run",
+      "1.97.1",
+      "cargo",
+      "test",
+      "--quiet",
+      "--no-fail-fast"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 206.3071236249816
+  },
+  {
+    "check": "maturin",
+    "command": [
+      "maturin",
+      "develop"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 89.09614112498821
+  },
+  {
+    "check": "scripts",
+    "command": [
+      "bash",
+      "scripts/check-scripts.sh"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 19.39969337498769
+  },
+  {
+    "check": "python",
+    "command": [
+      "<LOCAL_WORKSPACE>/.venv/bin/python",
+      "-m",
+      "pytest",
+      "python/tests",
+      "-q"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 8.527514207991771
+  },
+  {
+    "check": "qwen27b",
+    "command": [
+      "<LOCAL_WORKSPACE>/.venv/bin/python",
+      "scripts/qualify_qwen38_27b.py",
+      "--dry-run"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.041304832993773744
+  },
+  {
+    "check": "flash_next",
+    "command": [
+      "<LOCAL_WORKSPACE>/.venv/bin/python",
+      "scripts/qualify_qwen38_flash_next.py",
+      "--dry-run"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.038748791004763916
+  },
+  {
+    "check": "claims",
+    "command": [
+      "<LOCAL_WORKSPACE>/.venv/bin/python",
+      "scripts/check_qwen38_primary_claims.py"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.12391720799496397
+  }
+]

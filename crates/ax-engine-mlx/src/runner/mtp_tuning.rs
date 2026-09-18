@@ -685,11 +685,10 @@ pub(super) fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
 /// Publisher-declared MTP runtime certification, parsed from the optional
 /// `"mtp"` block of `axquant_runtime.json` in the pack root.
 ///
-/// This is the fail-closed release gate for default-on MTP: a pack only gets
-/// MTP enabled by default when its publisher has *measured* the pack and
-/// stamped it as optimized (or recorded a >= 1.0x speedup). Absent, missing,
-/// or malformed metadata all resolve to `default_on == false`; explicit
-/// requests (`MlxMtpPolicy::Required`, env overrides) are unaffected.
+/// These are publisher inputs to the family-specific promotion policy, not
+/// AX default-promotion approval. Linear Qwen candidates ignore this verdict
+/// for Auto MTP. Absent or malformed metadata resolves to `default_on == false`;
+/// explicit requests (`MlxMtpPolicy::Required`, env overrides) are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct MtpRuntimeCertification {
     /// `mtp.enabled_by_default` as published (false when absent/malformed).

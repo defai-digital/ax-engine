@@ -1,0 +1,1025 @@
+{
+  "status": "Candidate; not ship-ready",
+  "scope": "Same-input S4 layer-zero FFN attribution at historical offset452/row2 (absolute454), not proof of the final direct/MTP first split at116",
+  "case": "COMPSEC:compsec-079",
+  "hardware_class": "Mac mini M4 Pro 64 GB (Mac16,11)",
+  "model": {
+    "id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+    "case_prompt_tokens": 409,
+    "request_sha256": "a9a431402b07e8bd4b2485d3d027f46f1108bea8af21f5fa99ae87dd90d5e3bc",
+    "sampling": {
+      "temperature": 0,
+      "seed": 0,
+      "repetition_penalty": 1,
+      "top_k": 0,
+      "top_p": 1
+    }
+  },
+  "diagnostic_source": {
+    "base_source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+    "dirty": true,
+    "patch_file": "ffn-observer.patch",
+    "patch_sha256": "0d4ec75fd61d04c71b8e76fabcd394eba90f61cbb3532b6a07f664b1370db1de",
+    "binary_sha256": "53f9e4f4edb022ab2d7a80d04fbeda75e66f535f1ff2336db43ad966e200e92b",
+    "final_gdn_runtime_source_sha256": "970f0b0297d1947d1953847067bc4bacf3155253c32ef59c0cb32677b3789e60",
+    "profile": "release-server",
+    "not_a_release_artifact": true
+  },
+  "clean_installed_wheel": {
+    "source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+    "dirty": false,
+    "wheel_sha256": "8177d8a18b986dfe6d0997db7802feb8f908397e067be3e71f731cdea99d9cbb",
+    "server_sha256": "a207feffa31afa9cb5d65c02573e01b853fd063913a69bb59d35279b9d7115a7"
+  },
+  "native_libraries": {
+    "build_files_sha256": {
+      "libmlx.dylib": "d24c7a9b9d55a76bfd3bbcd1d042251a185cbadcb6340c3244a6ffa3dcb7c7e8",
+      "libjaccl.dylib": "9cfd72679ff35c593a1d46fd30d995cc4a131eed15733617efb1118001e74084",
+      "mlx.metallib": "dc59d1cceb1a5c7e578232e6e41e28e2c73c9463ac6dbc3886c3ee17ffc270ed"
+    },
+    "loaded_files_sha256": {
+      "libmlx.dylib": "ac88606127e925e3d405dadcdc599b6197bc73b3c5a7587cc877542e7fe2fef3",
+      "libjaccl.dylib": "4200b690fb963346ccea751d971408fe63a1b5570aa6357989ad64217dfc0e66",
+      "mlx.metallib": "dc59d1cceb1a5c7e578232e6e41e28e2c73c9463ac6dbc3886c3ee17ffc270ed"
+    },
+    "note": "Build and bundled dylib hashes differ after packaging transformations. Both arms load the recorded installed files."
+  },
+  "observer_fidelity": {
+    "production_output_tokens": 192,
+    "same_request_clean_vs_observer": true,
+    "all_production_tokens_exact": true,
+    "prior_clean_native_mtp_tokens_exact": true,
+    "full_logit_controls": [
+      {
+        "line": 4,
+        "layer": 999,
+        "stage": "mode_0_logits",
+        "max_abs": 0.0,
+        "unequal": 0,
+        "shape": [
+          4,
+          248320
+        ],
+        "dtype": "Float32",
+        "scope": null
+      },
+      {
+        "line": 1237,
+        "layer": 999,
+        "stage": "mode_1_logits",
+        "max_abs": 0.0,
+        "unequal": 0,
+        "shape": [
+          4,
+          248320
+        ],
+        "dtype": "Float32",
+        "scope": "ordinary_same_input"
+      },
+      {
+        "line": 1240,
+        "layer": 999,
+        "stage": "mode_4_logits",
+        "max_abs": 0.0,
+        "unequal": 0,
+        "shape": [
+          4,
+          248320
+        ],
+        "dtype": "Float32",
+        "scope": "ordinary_same_input"
+      }
+    ],
+    "compiled_eager_leaf_count": 288,
+    "all_six_leaves_exact": true,
+    "linear_layers": 48,
+    "leaves_per_layer": [
+      "hidden",
+      "conv",
+      "recurrent",
+      "qkv",
+      "a",
+      "tape"
+    ],
+    "ordered_cut_count": 23
+  },
+  "window": {
+    "offset": 452,
+    "row": 2,
+    "inputs": [
+      220,
+      2972,
+      2239,
+      28692
+    ]
+  },
+  "first_measured_ffn_boundary": "gate_up_projection",
+  "layer_zero_cuts": [
+    {
+      "line": 68,
+      "layer": 0,
+      "stage": "hidden_layer_input",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        5120
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 70,
+      "layer": 0,
+      "stage": "hidden_attention_input",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        5120
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 72,
+      "layer": 0,
+      "stage": "hidden_conv_state_input",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        3,
+        10240
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 74,
+      "layer": 0,
+      "stage": "hidden_recurrent_state_input",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        48,
+        128,
+        128
+      ],
+      "dtype": "Float32"
+    },
+    {
+      "line": 76,
+      "layer": 0,
+      "stage": "hidden_projection_qkv",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        10240
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 78,
+      "layer": 0,
+      "stage": "hidden_projection_z",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        48,
+        128
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 80,
+      "layer": 0,
+      "stage": "hidden_projection_a",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        48
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 82,
+      "layer": 0,
+      "stage": "hidden_projection_b",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        48
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 84,
+      "layer": 0,
+      "stage": "hidden_post_input_q",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        16,
+        128
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 86,
+      "layer": 0,
+      "stage": "hidden_post_input_k",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        16,
+        128
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 88,
+      "layer": 0,
+      "stage": "hidden_post_input_v",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        48,
+        128
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 90,
+      "layer": 0,
+      "stage": "hidden_recurrent_y",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        48,
+        128
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 92,
+      "layer": 0,
+      "stage": "hidden_recurrent_state",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        48,
+        128,
+        128
+      ],
+      "dtype": "Float32"
+    },
+    {
+      "line": 94,
+      "layer": 0,
+      "stage": "hidden_attention_gated",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        48,
+        128
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 96,
+      "layer": 0,
+      "stage": "hidden_attention_projection",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        5120
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 98,
+      "layer": 0,
+      "stage": "hidden_attention_residual",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        5120
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 100,
+      "layer": 0,
+      "stage": "hidden_ffn_input",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        5120
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 102,
+      "layer": 0,
+      "stage": "hidden_ffn_gate",
+      "max_abs": 0.0001220703125,
+      "unequal": 5,
+      "shape": [
+        1,
+        4,
+        17408
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 104,
+      "layer": 0,
+      "stage": "hidden_ffn_up",
+      "max_abs": 0.00048828125,
+      "unequal": 13,
+      "shape": [
+        1,
+        4,
+        17408
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 106,
+      "layer": 0,
+      "stage": "hidden_ffn_activation",
+      "max_abs": 1.907348633e-06,
+      "unequal": 15,
+      "shape": [
+        1,
+        4,
+        17408
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 108,
+      "layer": 0,
+      "stage": "hidden_ffn_down",
+      "max_abs": 3.051757812e-05,
+      "unequal": 32,
+      "shape": [
+        1,
+        4,
+        5120
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 110,
+      "layer": 0,
+      "stage": "hidden_ffn_output",
+      "max_abs": 3.051757812e-05,
+      "unequal": 32,
+      "shape": [
+        1,
+        4,
+        5120
+      ],
+      "dtype": "Bfloat16"
+    },
+    {
+      "line": 112,
+      "layer": 0,
+      "stage": "hidden_layer_output",
+      "max_abs": 3.051757812e-05,
+      "unequal": 2,
+      "shape": [
+        1,
+        4,
+        5120
+      ],
+      "dtype": "Bfloat16"
+    }
+  ],
+  "actual_projection_dispatches": [
+    {
+      "line": 8,
+      "scope": "target_functional_eager",
+      "role": null,
+      "alternate": false,
+      "route": "mlx_quantized_matmul_with_wrappers",
+      "input_shape": [
+        1,
+        4,
+        6144
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        5120,
+        768
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 32,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "output_shape": [
+        1,
+        4,
+        5120
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 13,
+      "scope": "target_functional_eager",
+      "role": "gate",
+      "alternate": false,
+      "route": "verify_qmm_return",
+      "input_shape": [
+        1,
+        4,
+        5120
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        17408,
+        640
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 64,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "output_shape": [
+        1,
+        4,
+        17408
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 15,
+      "scope": "target_functional_eager",
+      "role": "gate",
+      "alternate": true,
+      "route": "mlx_quantized_matmul_with_wrappers",
+      "input_shape": [
+        1,
+        4,
+        5120
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        17408,
+        640
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 64,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "parent_line": 13,
+      "output_shape": [
+        1,
+        4,
+        17408
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 20,
+      "scope": "target_functional_eager",
+      "role": "up",
+      "alternate": false,
+      "route": "verify_qmm_return",
+      "input_shape": [
+        1,
+        4,
+        5120
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        17408,
+        640
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 64,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "output_shape": [
+        1,
+        4,
+        17408
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 22,
+      "scope": "target_functional_eager",
+      "role": "up",
+      "alternate": true,
+      "route": "mlx_quantized_matmul_with_wrappers",
+      "input_shape": [
+        1,
+        4,
+        5120
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        17408,
+        640
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 64,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "parent_line": 20,
+      "output_shape": [
+        1,
+        4,
+        17408
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 29,
+      "scope": "target_functional_eager",
+      "role": "down",
+      "alternate": false,
+      "route": "mlx_quantized_matmul_with_wrappers",
+      "input_shape": [
+        1,
+        4,
+        17408
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        5120,
+        2176
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 64,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "output_shape": [
+        1,
+        4,
+        5120
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 50,
+      "scope": "ordinary_same_input",
+      "role": null,
+      "alternate": false,
+      "route": "mlx_quantized_matmul_with_wrappers",
+      "input_shape": [
+        1,
+        4,
+        6144
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        5120,
+        768
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 32,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "output_shape": [
+        1,
+        4,
+        5120
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 55,
+      "scope": "ordinary_same_input",
+      "role": "gate",
+      "alternate": false,
+      "route": "mlx_quantized_matmul_with_wrappers",
+      "input_shape": [
+        1,
+        4,
+        5120
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        17408,
+        640
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 64,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "output_shape": [
+        1,
+        4,
+        17408
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 58,
+      "scope": "ordinary_same_input",
+      "role": "up",
+      "alternate": false,
+      "route": "mlx_quantized_matmul_with_wrappers",
+      "input_shape": [
+        1,
+        4,
+        5120
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        17408,
+        640
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 64,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "output_shape": [
+        1,
+        4,
+        17408
+      ],
+      "output_dtype": "Bfloat16"
+    },
+    {
+      "line": 63,
+      "scope": "ordinary_same_input",
+      "role": "down",
+      "alternate": false,
+      "route": "mlx_quantized_matmul_with_wrappers",
+      "input_shape": [
+        1,
+        4,
+        17408
+      ],
+      "input_dtype": "Bfloat16",
+      "weight_shape": [
+        5120,
+        2176
+      ],
+      "weight_dtype": "Uint32",
+      "scales_dtype": "Some(Bfloat16)",
+      "group_bias_dtype": "Some(Bfloat16)",
+      "quant_mode": "Affine",
+      "bits": 4,
+      "group_size": 64,
+      "linear_bias": "false",
+      "linear_bias_dtype": "None",
+      "output_shape": [
+        1,
+        4,
+        5120
+      ],
+      "output_dtype": "Bfloat16"
+    }
+  ],
+  "ffn_routes": [
+    {
+      "line": 11,
+      "scope": "target_functional_eager",
+      "route": "split_gate_up_projection"
+    },
+    {
+      "line": 12,
+      "scope": "target_functional_eager",
+      "route": "split_gate_qw"
+    },
+    {
+      "line": 14,
+      "scope": "target_functional_eager",
+      "route": "alternate_verify_qmm_guard_off_begin"
+    },
+    {
+      "line": 17,
+      "scope": "target_functional_eager",
+      "route": "alternate_verify_qmm_guard_off_end"
+    },
+    {
+      "line": 19,
+      "scope": "target_functional_eager",
+      "route": "split_up_qw"
+    },
+    {
+      "line": 21,
+      "scope": "target_functional_eager",
+      "route": "alternate_verify_qmm_guard_off_begin"
+    },
+    {
+      "line": 24,
+      "scope": "target_functional_eager",
+      "route": "alternate_verify_qmm_guard_off_end"
+    },
+    {
+      "line": 26,
+      "scope": "target_functional_eager",
+      "route": "generic_dense_activation"
+    },
+    {
+      "line": 27,
+      "scope": "target_functional_eager",
+      "route": "swiglu_compiled_return"
+    },
+    {
+      "line": 28,
+      "scope": "target_functional_eager",
+      "route": "generic_down_projection"
+    },
+    {
+      "line": 53,
+      "scope": "ordinary_same_input",
+      "route": "split_gate_up_projection"
+    },
+    {
+      "line": 54,
+      "scope": "ordinary_same_input",
+      "route": "split_gate_qw"
+    },
+    {
+      "line": 57,
+      "scope": "ordinary_same_input",
+      "route": "split_up_qw"
+    },
+    {
+      "line": 60,
+      "scope": "ordinary_same_input",
+      "route": "generic_dense_activation"
+    },
+    {
+      "line": 61,
+      "scope": "ordinary_same_input",
+      "route": "swiglu_compiled_return"
+    },
+    {
+      "line": 62,
+      "scope": "ordinary_same_input",
+      "route": "generic_down_projection"
+    }
+  ],
+  "ffn_selections": [
+    {
+      "scope": "target_functional_eager",
+      "seq": "4",
+      "leading": "4",
+      "use_packed": "false",
+      "prefer_split": "false",
+      "has_packed": "false",
+      "has_split": "true",
+      "input_dtype": "Bfloat16",
+      "input_shape": "[1, 4, 5120]"
+    },
+    {
+      "scope": "ordinary_same_input",
+      "seq": "4",
+      "leading": "4",
+      "use_packed": "false",
+      "prefer_split": "false",
+      "has_packed": "false",
+      "has_split": "true",
+      "input_dtype": "Bfloat16",
+      "input_shape": "[1, 4, 5120]"
+    }
+  ],
+  "alternate_controls": [
+    {
+      "line": 44,
+      "layer": 0,
+      "stage": "alternate_verify_qmm_vs_guard_off",
+      "max_abs": 0.0001220703125,
+      "unequal": 5,
+      "shape": [
+        1,
+        4,
+        17408
+      ],
+      "dtype": "Bfloat16",
+      "scope": "target_functional_eager"
+    },
+    {
+      "line": 46,
+      "layer": 0,
+      "stage": "alternate_verify_qmm_vs_guard_off",
+      "max_abs": 0.00048828125,
+      "unequal": 13,
+      "shape": [
+        1,
+        4,
+        17408
+      ],
+      "dtype": "Bfloat16",
+      "scope": "target_functional_eager"
+    },
+    {
+      "line": 48,
+      "layer": 0,
+      "stage": "alternate_swiglu_compiled_vs_eager",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        17408
+      ],
+      "dtype": "Bfloat16",
+      "scope": "target_functional_eager"
+    },
+    {
+      "line": 66,
+      "layer": 0,
+      "stage": "alternate_swiglu_compiled_vs_eager",
+      "max_abs": 0.0,
+      "unequal": 0,
+      "shape": [
+        1,
+        4,
+        17408
+      ],
+      "dtype": "Bfloat16",
+      "scope": "ordinary_same_input"
+    }
+  ],
+  "guard_off_vs_ordinary_direct_tensor_comparison": "not captured; matching summary statistics do not prove equality",
+  "negative_qmm_floor_control": {
+    "executed_server": "clean installed wheel",
+    "source_commit": "aa38f18bd4c7f6894cbd346372f42dd1717d1bf0",
+    "server_sha256": "a207feffa31afa9cb5d65c02573e01b853fd063913a69bb59d35279b9d7115a7",
+    "numerical_override": {
+      "AX_MLX_MTP_VERIFY_QMM_MIN_N": "2147483647"
+    },
+    "same_unchanged_request": true,
+    "output_tokens": 192,
+    "status": "finished",
+    "finish_reason": "max_output_tokens",
+    "mtp": {
+      "available": true,
+      "requested": true,
+      "active": true,
+      "direct_fallback_steps": 0,
+      "draft_tokens": 196,
+      "accepted_tokens": 122,
+      "decode_steps": 71
+    },
+    "comparisons": {
+      "default_mtp": {
+        "first_difference_zero_based": 109,
+        "compared_prefix_tokens": 192,
+        "floor_token_at_difference": 8240,
+        "baseline_token_at_difference": 11870,
+        "floor_output_tokens_sha256": "f61435901432392148102cb2ba9cc5d5cf0dfe28ac50dd0ad7bfa5f404f141f0",
+        "baseline_output_tokens_sha256": "51d26304951eecd29061ed6d90da649f7a25ad6c6f84d5315eaae71a79d098b1",
+        "baseline_output_tokens": 192
+      },
+      "clean_native_direct": {
+        "first_difference_zero_based": 109,
+        "compared_prefix_tokens": 192,
+        "floor_token_at_difference": 8240,
+        "baseline_token_at_difference": 11870,
+        "floor_output_tokens_sha256": "f61435901432392148102cb2ba9cc5d5cf0dfe28ac50dd0ad7bfa5f404f141f0",
+        "baseline_output_tokens_sha256": "284d71277d6f3595e6183ca37666361cbe7d6e9b4f0b4c3bc8ff75a626316a1f",
+        "baseline_output_tokens": 192
+      },
+      "reference_prefix": {
+        "first_difference_zero_based": 109,
+        "compared_prefix_tokens": 192,
+        "floor_token_at_difference": 8240,
+        "baseline_token_at_difference": 11870,
+        "floor_output_tokens_sha256": "f61435901432392148102cb2ba9cc5d5cf0dfe28ac50dd0ad7bfa5f404f141f0",
+        "baseline_output_tokens_sha256": "a20002e92a85e984eefbf32396779ff2324bab4d622e2a1f5dd02d4fc846fd1b",
+        "baseline_output_tokens": 450
+      }
+    },
+    "reference": {
+      "versions": {
+        "mlx": "0.32.2",
+        "mlx-lm": "0.31.3",
+        "transformers": "5.15.0",
+        "tokenizers": "0.22.2"
+      },
+      "requested_max_output_tokens": 512,
+      "returned_output_tokens": 450,
+      "comparison": "first192 prefix only; differing output budgets are explicit"
+    },
+    "interpretation": "Disabling custom-QMM eligibility did not recover direct or reference identity; no default change is supported by this selected control.",
+    "receipt_limit": "The floor probe provenance also retained an unused earlier diagnostic-build receipt. The executed arm used the installed server, independently recorded above.",
+    "raw_results_sha256": "a8387587ea7b879bef54c4c03049eba25554f1c2c24f36a9655f6f406d51d4c2",
+    "raw_provenance_sha256": "2e5138951ffd93cb449d6e99221064b46c9434655e3a3ada802dbe87401125e1",
+    "raw_log_sha256": "011c7d88116ffa5bf71e7b78558e098669b64b33f05160188df50ba3d222c99b",
+    "probe_source_sha256": "a12a3f24898b1206e3679d0e08c81b0d5b0c703eb26ab04e79512b58afde7718"
+  },
+  "references": [
+    {
+      "project": "MTPLX",
+      "revision": "6459194642ba091ba7c17c3aba889b808340c3fc",
+      "files_sha256": {
+        "mtplx/gdn_capture.py": "6d8aa6b8c34e23c6e8ba977a87ac78e8ad6a4564b0b163f34fb8f8489fa23e85"
+      },
+      "use": "semantic design comparison only; no source copied"
+    },
+    {
+      "project": "mlxcel",
+      "revision": "0ef0a1a42a1203a267dfe93d743d29741dfcbdfb",
+      "files_sha256": {
+        "src/models/qwen3_5.rs": "f89654714e269dc556d11647557022e6e3a67ae06a34d620c43ed471d4cce682",
+        "src/models/qwen3_next.rs": "84aceafa9aa8964de62b47f9139292c6dfbb47f419552bf91daa8c1760cbb4bd",
+        "src/models/qwen3.rs": "de205725bd15373816c1a0a5421839662c73eafee4b5c2068db638016de9f110"
+      },
+      "use": "semantic design comparison only; no source copied"
+    },
+    {
+      "project": "MLX",
+      "revision": "1f8e74e3f12f31365464a6867c6579f0e9b29d85",
+      "files_sha256": {
+        "mlx/ops.cpp": "6eae219354d0f9be37a064cb327c863fc3a12dba6668fd61d428e8d09d6baaf2"
+      },
+      "use": "semantic design comparison only; no source copied"
+    }
+  ],
+  "artifacts": {
+    "observer_log": {
+      "file": "ffn-observer.log",
+      "raw_sha256": "b8beb1ca0159054d8494a71652373c69c52680ce9eb47230af46fee59c61357b",
+      "published_sha256": "b8beb1ca0159054d8494a71652373c69c52680ce9eb47230af46fee59c61357b",
+      "sanitization": "Private-path/host scan passed; no substitutions required; bytes unchanged."
+    },
+    "observer_patch": {
+      "file": "ffn-observer.patch",
+      "raw_sha256": "0d4ec75fd61d04c71b8e76fabcd394eba90f61cbb3532b6a07f664b1370db1de",
+      "published_sha256": "0d4ec75fd61d04c71b8e76fabcd394eba90f61cbb3532b6a07f664b1370db1de",
+      "bytes_unchanged": true
+    },
+    "raw_results_sha256": "9075050893be580cde5e5527d828328037aa9f760835a10c856b0282098af5a9",
+    "raw_provenance_sha256": "32f735ceae7c7bb74a28ea5278c249dc97569e576be03c6486f11326ba61a815",
+    "strict_analyzer_sha256": "97f43523a62fcf3f56f661f3eb80be6fad88849de418422b7f094b0d4d0dd567"
+  },
+  "limits": [
+    "Same-input captured-window evidence only; no universal numerical equivalence claim.",
+    "Matching guard-off and ordinary difference summaries do not prove the two alternate tensors are identical.",
+    "All observed FFN input/scales/group-bias/output dtypes are BF16 and dense linear bias is absent; separate generic mixed-dtype/bias contract issues do not explain this fixture.",
+    "Different reductions are a numerical-route difference, not automatically an arithmetic bug.",
+    "No quality, performance, endurance, release-wheel qualification, or final-token-causality promotion."
+  ]
+}

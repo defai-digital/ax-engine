@@ -1,0 +1,22 @@
+[
+  {
+    "case": "tampered-cache",
+    "rejected": true
+  },
+  {
+    "case": "mislabeled-control",
+    "rejected": true
+  },
+  {
+    "case": "failed-http-control",
+    "rejected": true
+  },
+  {
+    "case": "stale-source",
+    "rejected": true
+  },
+  {
+    "case": "false-release-claim",
+    "rejected": true
+  }
+]

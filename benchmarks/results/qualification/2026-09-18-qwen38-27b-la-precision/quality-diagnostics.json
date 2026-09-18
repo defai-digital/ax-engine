@@ -1,0 +1,386 @@
+{
+  "schema": 1,
+  "scope": "Selected failure diagnostics; not population accuracy or a replacement for the original 32k thinking campaign",
+  "build": {
+    "source_commit": "892c2fc9649abbea82a7549ae7adcdfed430ff4e",
+    "wheel_sha256": "0fc41f348679b733b8aae2ec3d68c43f51db869933e091b72e47fee1115d90c8",
+    "server_sha256": "fa2afd79748bd3957657abbf497863c9927b79acfcc822b21e8f99272bc87ea1",
+    "model_revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+  },
+  "protocol": {
+    "cases_per_route": 12,
+    "wording": "original",
+    "gold": "unchanged",
+    "thinking": false,
+    "max_output_tokens": 512,
+    "system": "Return exactly one line: Answer: <answer>. Do not include an explanation.",
+    "temperature": 0,
+    "top_p": 1,
+    "seed": 0
+  },
+  "counts": {
+    "direct": {
+      "wrong": 2,
+      "truncated": 9,
+      "correct": 1
+    },
+    "mtp": {
+      "wrong": 3,
+      "truncated": 8,
+      "correct": 1
+    }
+  },
+  "cases": [
+    {
+      "key": "COMPSEC:compsec-076",
+      "mode": "direct",
+      "gold": "17-20",
+      "grade": {
+        "status": "wrong",
+        "answer": "20",
+        "detection": true,
+        "span_reported": 1,
+        "span_expected": 4,
+        "span_recall": 0.25
+      },
+      "error": null,
+      "finish_reason": "stop",
+      "request_sha256": "fdc1dbefc6ff23b8522c29738de3d150cc1735389f648765a841e9a9727c9270",
+      "response_sha256": "b7d6f1540476d992bb42ae0cd11678ddcf607d798f8eb6ff8d39de4a82c6e853"
+    },
+    {
+      "key": "COMPSEC:compsec-077",
+      "mode": "direct",
+      "gold": "18-20",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "8747a16cab9d8beaeffba68a37c000b6ed9769d336f14d13a9325b20bfd47120",
+      "response_sha256": "1c0e88447454c975d7f735453cb4bf2d240c9d0d3658454bd48d4375e8d12b51"
+    },
+    {
+      "key": "COMPSEC:compsec-079",
+      "mode": "direct",
+      "gold": "18-19",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "2d7d46f7cb498bfc2be6b572c786470d1f84aad39a7ebbff0c19d8a1a006b190",
+      "response_sha256": "bfdc56f4380527105f45fe2a7c8f8c506edbba9bdecf61244636002557aed432"
+    },
+    {
+      "key": "COMPSEC:compsec-080",
+      "mode": "direct",
+      "gold": "5-6",
+      "grade": {
+        "status": "correct",
+        "answer": "5,6",
+        "detection": true,
+        "span_reported": 2,
+        "span_expected": 2,
+        "span_recall": 1.0
+      },
+      "error": null,
+      "finish_reason": "stop",
+      "request_sha256": "3411f9698dc59c34178f15c0a48de998fe89ba59aa0244da50aa114cb748a59d",
+      "response_sha256": "e2fb5f10813c65a3394ec771db99022bbd8e0f10be1bc50c3aed33332e460f19"
+    },
+    {
+      "key": "COMPSEC:compsec-081",
+      "mode": "direct",
+      "gold": "10-15",
+      "grade": {
+        "status": "wrong",
+        "answer": "0",
+        "detection": false,
+        "span_reported": 1,
+        "span_expected": null,
+        "span_recall": null
+      },
+      "error": null,
+      "finish_reason": "stop",
+      "request_sha256": "62d278677495e24f1cddbf2588a88421b28bca4236f277fd283040724551544d",
+      "response_sha256": "6e59b552aa8174d54e0e61893a2b252cf1f48c5e7c408ac4feecb3e596ef2e3b"
+    },
+    {
+      "key": "COMPSEC:compsec-083",
+      "mode": "direct",
+      "gold": "9-11",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "d00b60a452332a24f5d9ce4df4aac26e6b41578d0ae0cdc84520f5380a6df1b5",
+      "response_sha256": "a05b2e95a2be256295dc0876cb1b525ce30c27e64c7ddb82ecb32b12dcf81f97"
+    },
+    {
+      "key": "COMPSEC:compsec-084",
+      "mode": "direct",
+      "gold": "6-7",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "3a70f2d3b8d4d4e86d3b37b586a5383318662dcc12955febbe5581c41ff587b0",
+      "response_sha256": "bb0d6a87ca0abb992640d1c3b17067d814badef647ce07d444e595a000757ad8"
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "mode": "direct",
+      "gold": "3,13-15",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "3f1e06a82c6cab28e6b12651ad980798dc71dffc4fdd1dae65a4f330bbd85c9c",
+      "response_sha256": "a019a55115ae3fbe1b8ee0f4bb3eae1fff148ce8ae9bff6c9dbd1e6df2bb41cd"
+    },
+    {
+      "key": "COMPSEC:compsec-087",
+      "mode": "direct",
+      "gold": "8,20-22",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "0d0ac80dcc91ac181f5b5b8169b6113d8a1c55cab19a2894bcc5286c67fddf85",
+      "response_sha256": "eb70c8187712ab05e5087f5d76976e363b72f97b08f60e74bd1d80fe259fd7de"
+    },
+    {
+      "key": "COMPSEC:compsec-090",
+      "mode": "direct",
+      "gold": "12-13",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "11d2ee8fd78fd271819b47461dcca5598d8a39fa2df735c8d28ea44d409bda0b",
+      "response_sha256": "572736af5489ecc6daca1c5deccfbc0cb921dcc23ff58c147534b5aa0c7e63e4"
+    },
+    {
+      "key": "COMPSEC:compsec-092",
+      "mode": "direct",
+      "gold": "10-14",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "21e894f582699a3e28f0d80a90a0fd6cd2dbb16fa2ead27f4a2677f7508eb9ca",
+      "response_sha256": "78235c6070a1514e1263082c259cd7aa5830e3d7215b74db6496480e3fc2b9a2"
+    },
+    {
+      "key": "NIST Juliet:juliet-cwe121-array-index-01",
+      "mode": "direct",
+      "gold": "3-4",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "fa743062c67870e692779b5bdd8cd97e7317d945e5a52f29ed611c8891311b11",
+      "response_sha256": "818b13fb052dd118da7be72b8a7680fcdb6a64199f82be58b95f705a3e6356cb"
+    },
+    {
+      "key": "COMPSEC:compsec-076",
+      "mode": "mtp",
+      "gold": "17-20",
+      "grade": {
+        "status": "wrong",
+        "answer": "20",
+        "detection": true,
+        "span_reported": 1,
+        "span_expected": 4,
+        "span_recall": 0.25
+      },
+      "error": null,
+      "finish_reason": "stop",
+      "request_sha256": "fdc1dbefc6ff23b8522c29738de3d150cc1735389f648765a841e9a9727c9270",
+      "response_sha256": "0a8066670407df4668688905ad153d638c2e6330758c7baab60270594de5f7c6"
+    },
+    {
+      "key": "COMPSEC:compsec-077",
+      "mode": "mtp",
+      "gold": "18-20",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "8747a16cab9d8beaeffba68a37c000b6ed9769d336f14d13a9325b20bfd47120",
+      "response_sha256": "e63c80681a4b434d7cefd4cec649e12070bba8c4617385dd31ad80e0d3101287"
+    },
+    {
+      "key": "COMPSEC:compsec-079",
+      "mode": "mtp",
+      "gold": "18-19",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "2d7d46f7cb498bfc2be6b572c786470d1f84aad39a7ebbff0c19d8a1a006b190",
+      "response_sha256": "252e9288e87f2f09e783b1fa7a50a21af8993922aad64d9f156bf287a2b93149"
+    },
+    {
+      "key": "COMPSEC:compsec-080",
+      "mode": "mtp",
+      "gold": "5-6",
+      "grade": {
+        "status": "correct",
+        "answer": "5,6",
+        "detection": true,
+        "span_reported": 2,
+        "span_expected": 2,
+        "span_recall": 1.0
+      },
+      "error": null,
+      "finish_reason": "stop",
+      "request_sha256": "3411f9698dc59c34178f15c0a48de998fe89ba59aa0244da50aa114cb748a59d",
+      "response_sha256": "a235f4f9ff09ad396aaa724bc50fa8fbbd3cd00cc47e4d1e0dfb05a6a7a83a91"
+    },
+    {
+      "key": "COMPSEC:compsec-081",
+      "mode": "mtp",
+      "gold": "10-15",
+      "grade": {
+        "status": "wrong",
+        "answer": "0",
+        "detection": false,
+        "span_reported": 1,
+        "span_expected": null,
+        "span_recall": null
+      },
+      "error": null,
+      "finish_reason": "stop",
+      "request_sha256": "62d278677495e24f1cddbf2588a88421b28bca4236f277fd283040724551544d",
+      "response_sha256": "abbd2084bbc713b4115a46f083c5c944b2fd0479bb22d67766f7c786010bde6b"
+    },
+    {
+      "key": "COMPSEC:compsec-083",
+      "mode": "mtp",
+      "gold": "9-11",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "d00b60a452332a24f5d9ce4df4aac26e6b41578d0ae0cdc84520f5380a6df1b5",
+      "response_sha256": "e0d2620fcdc835edc4fc6256dcc2cca4107918de6308bfe000fc32bd37b7add8"
+    },
+    {
+      "key": "COMPSEC:compsec-084",
+      "mode": "mtp",
+      "gold": "6-7",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "3a70f2d3b8d4d4e86d3b37b586a5383318662dcc12955febbe5581c41ff587b0",
+      "response_sha256": "d272fa4bdaa2f90faa1fb2c1e628a9adec76b5808fb80e904892c15077ac42cb"
+    },
+    {
+      "key": "COMPSEC:compsec-086",
+      "mode": "mtp",
+      "gold": "3,13-15",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "3f1e06a82c6cab28e6b12651ad980798dc71dffc4fdd1dae65a4f330bbd85c9c",
+      "response_sha256": "3ca0682afa8bb477a9b034d7ff2a90fd13dd2f6aa4f9f15daf914e077f459bf9"
+    },
+    {
+      "key": "COMPSEC:compsec-087",
+      "mode": "mtp",
+      "gold": "8,20-22",
+      "grade": {
+        "status": "wrong",
+        "answer": "21,22",
+        "detection": true,
+        "span_reported": 2,
+        "span_expected": 4,
+        "span_recall": 0.5
+      },
+      "error": null,
+      "finish_reason": "stop",
+      "request_sha256": "0d0ac80dcc91ac181f5b5b8169b6113d8a1c55cab19a2894bcc5286c67fddf85",
+      "response_sha256": "259c346f2649ce69b7654a7364749fb2df07e96463c4914e35672401d1a8d52a"
+    },
+    {
+      "key": "COMPSEC:compsec-090",
+      "mode": "mtp",
+      "gold": "12-13",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "11d2ee8fd78fd271819b47461dcca5598d8a39fa2df735c8d28ea44d409bda0b",
+      "response_sha256": "e101bc09f1925df59286c78af24ac52f083fba381dbae4796cd375038b28955d"
+    },
+    {
+      "key": "COMPSEC:compsec-092",
+      "mode": "mtp",
+      "gold": "10-14",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "21e894f582699a3e28f0d80a90a0fd6cd2dbb16fa2ead27f4a2677f7508eb9ca",
+      "response_sha256": "a8470fd316ef69edbb64024a44559c197460d2b9b6286160ca4288ac170184fa"
+    },
+    {
+      "key": "NIST Juliet:juliet-cwe121-array-index-01",
+      "mode": "mtp",
+      "gold": "3-4",
+      "grade": {
+        "status": "truncated",
+        "answer": null
+      },
+      "error": null,
+      "finish_reason": "length",
+      "request_sha256": "fa743062c67870e692779b5bdd8cd97e7317d945e5a52f29ed611c8891311b11",
+      "response_sha256": "bbd85f0591d7fda0b468f5580a1b69d073c8935d93e52e3e6b0381cf753de605"
+    }
+  ],
+  "recovery": "Not rerun on this build; prior saved continuation remains a separate failure",
+  "limitations": [
+    "A 512-token answer-only diagnostic cannot replace the original 32000-token thinking campaign.",
+    "The original LINE_SET wording asks for a single best line or smallest adjacent set, whereas some gold spans include guards and blank lines. No gold or grade was changed.",
+    "Recovery replays a saved 32851-token continuation; it is not a fresh-question accuracy evaluation."
+  ],
+  "paired_content_equal": 3,
+  "raw_artifact_sha256": {
+    "provenance.json": "215fa4e55ca4a329296ff93796910513fb2a9a38897074a4933f67d2375b50ea",
+    "results.json": "745ac5e4abb5221ffba320e70510b1706cedd60c7f4fd6e3bd74b677a6e1abea"
+  }
+}

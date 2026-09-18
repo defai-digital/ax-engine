@@ -30,32 +30,66 @@ def validate_host(host: dict) -> None:
 def validate_cells(cells: list[dict]) -> None:
     if len(cells) != 2 or {c.get('mode') for c in cells} != {'direct', 'mtp'}:
         raise ValueError('exactly one direct and one MTP result are required')
-    if any(c.get('status') != 'ok' or c.get('surface_passed') is not True
-           or c.get('qa_items', 0) < 32 or c.get('qa_hard_passed') != c.get('qa_items')
-           for c in cells):
-        raise ValueError('QA failed, skipped, partial, incomplete, or missing surface evidence')
     for cell in cells:
-        draft, verify = cell.get('mtp_draft_tokens', 0), cell.get('mtp_verify_tokens', 0)
-        if (cell['mode'] == 'mtp' and (draft <= 0 or verify <= 0)) or (
-            cell['mode'] == 'direct' and (draft != 0 or verify != 0)
-        ):
-            raise ValueError('server telemetry does not prove the requested route')
+        validate_cell(cell, expect_mtp=cell['mode'] == 'mtp')
+
+
+def validate_cell(cell: dict, *, expect_mtp: bool) -> None:
+    if (cell.get('status') != 'ok' or cell.get('surface_passed') is not True
+            or cell.get('qa_items', 0) < 32 or cell.get('qa_hard_passed') != cell.get('qa_items')):
+        raise ValueError('QA failed, skipped, partial, incomplete, or missing surface evidence')
+    draft, verify = cell.get('mtp_draft_tokens', 0), cell.get('mtp_verify_tokens', 0)
+    if (expect_mtp and (draft <= 0 or verify <= 0)) or (
+        not expect_mtp and (draft != 0 or verify != 0)
+    ):
+        raise ValueError('server telemetry does not prove the requested route')
+
+
+def validate_greedy_probe(response: dict, mode: str) -> None:
+    tokens = response.get("output_tokens")
+    if (response.get("status") != "finished"
+            or response.get("prompt_tokens") != list(range(1, 17))
+            or not isinstance(tokens, list) or len(tokens) != 64
+            or any(type(token) is not int or token < 0 for token in tokens)):
+        raise ValueError(f"{mode} greedy probe is missing, failed, or incomplete")
+
+
+def validate_default_route(cell: dict, response: dict) -> None:
+    if cell.get('mode') != 'ngram':
+        raise ValueError('default launch must preserve the normal acceleration policy')
+    validate_cell(cell, expect_mtp=False)
+    validate_greedy_probe(response, 'default')
+    mtp = (response.get('performance') or {}).get('mtp') or {}
+    if (mtp.get('requested') is not False or mtp.get('active') is not False
+            or any(mtp.get(key) != 0 for key in (
+                'direct_fallback_steps', 'draft_tokens', 'accepted_tokens', 'decode_steps'))):
+        raise ValueError('default launch must not request or activate unpromoted MTP')
+
+
+def validate_explicit_mtp_route(response: dict) -> None:
+    validate_greedy_probe(response, 'mtp')
+    mtp = (response.get('performance') or {}).get('mtp') or {}
+    if (mtp.get('requested') is not True or mtp.get('active') is not True
+            or mtp.get('direct_fallback_steps') != 0):
+        raise ValueError('explicit MTP must be active with zero direct fallback steps')
 
 
 def validate_paired_greedy(direct: dict, mtp: dict) -> dict:
-    """Reject a route split even when the separate product-health suites pass."""
+    """Require complete probes; disclose cross-route differences without promotion."""
     for mode, response in (("direct", direct), ("mtp", mtp)):
-        tokens = response.get("output_tokens")
-        if (response.get("status") != "finished"
-                or response.get("prompt_tokens") != list(range(1, 17))
-                or not isinstance(tokens, list) or len(tokens) != 64
-                or any(type(token) is not int or token < 0 for token in tokens)):
-            raise ValueError(f"{mode} greedy probe is missing, failed, or incomplete")
-    for index, (left, right) in enumerate(zip(direct["output_tokens"], mtp["output_tokens"])):
-        if left != right:
-            raise ValueError(f"direct/MTP greedy probe differs at output index {index}")
-    return {"matched": True, "prompt_tokens": 16, "output_tokens": 64,
-            "scope": "One pinned raw-token probe; not broad accuracy or MTP Tier 2"}
+        validate_greedy_probe(response, mode)
+    differences = [
+        {"index": index, "direct_token": left, "mtp_token": right}
+        for index, (left, right) in enumerate(zip(direct["output_tokens"], mtp["output_tokens"]))
+        if left != right
+    ]
+    return {"matched": not differences, "prompt_tokens": 16, "output_tokens": 64,
+            "classification": "diagnostic_only", "release_blocking": False,
+            "first_divergence": differences[0]["index"] if differences else None,
+            "divergence_count": len(differences), "differences": differences,
+            # The HTTP token probe does not capture either route's full logits.
+            "logit_margins": None,
+            "scope": "One paired raw-token diagnostic; not MTP-S, MTP-P or MTP-D certification"}
 
 
 def run_live(args, contract: dict, repo: Path) -> int:
@@ -63,7 +97,9 @@ def run_live(args, contract: dict, repo: Path) -> int:
 
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    result = {'schema': 2, 'status': 'failed', 'contract': contract, 'cells': []}
+    result = {'schema': 4, 'status': 'failed', 'contract': contract, 'cells': [],
+              'scope': 'Primary SKU product-health qualification; not MTP certification',
+              'mtp_certification': {gate: 'not_assessed' for gate in ('MTP-S', 'MTP-P', 'MTP-D')}}
     try:
         def capture(command: list[str]) -> str:
             return subprocess.check_output(command, text=True, cwd=repo, timeout=30).strip()
@@ -138,6 +174,23 @@ def run_live(args, contract: dict, repo: Path) -> int:
         os.environ['QA_BENCH_BIN'] = str(args.bench_bin)
         os.environ['AX_ALLOW_UNSUPPORTED_HOST'] = '0'
         result['enforced_environment'] = {'AX_ALLOW_UNSUPPORTED_HOST': '0', 'QA_BENCH_BIN': str(args.bench_bin)}
+        # The ngram cell uses the normal launch with no acceleration flags.
+        # Explicit direct/required-MTP cells alone cannot prove the product default.
+        default = matrix.run_cell(
+            matrix.Cell('ngram', 'qwen3.8-27b', args.model_dir), repo=repo, scratch=out,
+            server_bin=args.server_bin, host='127.0.0.1', port=args.port,
+            seed=20260917, sample=16, timeout=180, ready_max=420,
+            run_surface=True, streams='both', verify_live_route=True,
+        )
+        result['default_route'] = asdict(default)
+        result['default_route_artifacts'] = {
+            path.name: digest(path) for path in (
+                out / 'server-route-ngram-qwen3.8-27b.json',
+                out / 'server-route-request-ngram-qwen3.8-27b.json',
+            )
+        }
+        validate_default_route(result['default_route'], json.loads(
+            (out / 'server-route-ngram-qwen3.8-27b.json').read_text()))
         for mode in ('direct', 'mtp'):
             cell = matrix.run_cell(
                 matrix.Cell(mode, 'qwen3.8-27b', args.model_dir), repo=repo, scratch=out,
@@ -154,6 +207,8 @@ def run_live(args, contract: dict, repo: Path) -> int:
                          out / f'server-route-request-{mode}-qwen3.8-27b.json')
         }
         validate_cells(result['cells'])
+        validate_explicit_mtp_route(json.loads(
+            (out / 'server-route-mtp-qwen3.8-27b.json').read_text()))
         result['paired_greedy'] = validate_paired_greedy(
             json.loads((out / 'server-route-direct-qwen3.8-27b.json').read_text()),
             json.loads((out / 'server-route-mtp-qwen3.8-27b.json').read_text()),
