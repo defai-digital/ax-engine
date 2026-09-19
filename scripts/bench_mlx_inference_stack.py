@@ -2662,6 +2662,7 @@ def start_axengine(
     direct_linear_attention_post_input_route: bool = False,
     gemma4_assistant_mtp: bool = False,
     mtp_max_depth: int | None = None,
+    mtp_policy: str | None = None,
     mtp_disable_ngram_stacking: bool = False,
     mtp_approximate_optimistic: bool = False,
     mtp_fast_tail_topk_sampling: bool = False,
@@ -2682,6 +2683,8 @@ def start_axengine(
     ]
     if direct_mode:
         cmd.append("--disable-ngram-acceleration")
+    if mtp_policy is not None:
+        cmd.extend(["--mlx-mtp-policy", "disabled" if direct_mode else mtp_policy])
     if mtp_disable_ngram_stacking:
         cmd.append("--mlx-mtp-disable-ngram-stacking")
     if prefill_chunk is not None:
@@ -2689,6 +2692,10 @@ def start_axengine(
     if max_batch_tokens is not None:
         cmd.extend(["--max-batch-tokens", str(max_batch_tokens)])
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
+    if mtp_policy is not None:
+        # Explicit per-server policy replaces the process-wide certification
+        # bypass used by older experimental benchmarks.
+        env.pop("AX_MLX_MTP_FORCE_REQUESTED", None)
     if direct_mode:
         # Publication pure-direct contract: force greedy double-buffer pipeline,
         # full route telemetry (so effective_route cannot be mis-labeled), and
@@ -5603,6 +5610,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-mtp-policy",
+        choices=["auto", "disabled", "required"],
+        default=None,
+        help=(
+            "Use an explicit server MTP policy for speculative rows. Direct rows "
+            "use disabled. Replaces inherited AX_MLX_MTP_FORCE_REQUESTED; required "
+            "tests bundled MTP without promoting the model's auto policy."
+        ),
+    )
+    parser.add_argument(
         "--ax-mtp-disable-ngram-stacking",
         action="store_true",
         help=(
@@ -6284,6 +6301,7 @@ def main() -> None:
                     ),
                     gemma4_assistant_mtp=gemma4_assistant_mtp,
                     mtp_max_depth=args.ax_mtp_max_depth,
+                    mtp_policy=args.ax_mtp_policy,
                     mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
                     mtp_approximate_optimistic=args.ax_mtp_approximate_optimistic,
                     mtp_fast_tail_topk_sampling=args.ax_mtp_fast_tail_topk_sampling,
@@ -6489,6 +6507,7 @@ def main() -> None:
         "prefill_step_size": args.prefill_step_size,
         "ax_mtp_max_depth": args.ax_mtp_max_depth,
         "ax_mtp_disable_ngram_stacking": bool(args.ax_mtp_disable_ngram_stacking),
+        "ax_mtp_policy": args.ax_mtp_policy,
         "ax_mtp_approximate_optimistic": bool(args.ax_mtp_approximate_optimistic),
         "ax_mtp_fast_tail_topk_sampling": bool(args.ax_mtp_fast_tail_topk_sampling),
         "ax_qwen_linear_mtp_exact": opt_in_env_enabled(

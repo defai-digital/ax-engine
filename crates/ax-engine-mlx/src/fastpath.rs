@@ -42,6 +42,18 @@ pub fn mtp_fixed_draft_depth() -> Option<usize> {
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MTP_FIXED_DRAFT_DEPTH"))
 }
 
+/// Opt-in acceptance-prefix depth control for the three-token throughput
+/// profile after at least 32 observations at each of the first two draft
+/// positions, with acceptance below 75% and 50% respectively. Partial
+/// acceptance shrinks the next proposal to the accepted
+/// prefix (at least one); a full window grows by one. Successful workloads
+/// retain the existing controller. Explicit fixed depth takes precedence.
+/// This does not enable MTP or alter target verification.
+pub fn mtp_conservative_depth_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_bool_env("AX_MLX_MTP_CONSERVATIVE_DEPTH"))
+}
+
 /// `AX_MLX_MTP_DEPTH3_HYSTERESIS` — keep a three-token proposal window after
 /// accepting its first two drafts. Also engaged by throughput MTP.
 pub fn mtp_depth3_hysteresis_enabled() -> bool {

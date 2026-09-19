@@ -4452,6 +4452,26 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(env["AX_MLX_GEMMA4_ASSISTANT_MTP"], "1")
         self.assertEqual(env["AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH"], "1")
 
+    def test_explicit_mtp_policy_replaces_force_override_and_keeps_direct_disabled(self) -> None:
+        for direct, expected in [(False, "required"), (True, "disabled")]:
+            with (
+                self.subTest(direct=direct),
+                patch.dict(os.environ, {"AX_MLX_MTP_FORCE_REQUESTED": "1"}),
+                patch.object(bench, "ensure_port_available"),
+                patch.object(bench.subprocess, "Popen") as popen,
+            ):
+                bench.start_axengine(
+                    Path("/tmp/ax-engine-server"),
+                    Path("/tmp/model"),
+                    19091,
+                    model_id="test-model",
+                    direct_mode=direct,
+                    mtp_policy="required",
+                )
+                command = popen.call_args.args[0]
+                self.assertEqual(command[command.index("--mlx-mtp-policy") + 1], expected)
+                self.assertNotIn("AX_MLX_MTP_FORCE_REQUESTED", popen.call_args.kwargs["env"])
+
     def test_axengine_command_can_enable_direct_linear_attention_routes(self) -> None:
         with (
             patch.object(bench, "ensure_port_available"),

@@ -220,6 +220,8 @@ The development Tiel packs are available as `tiel-coder-35b:axq` and
 `cyber-tiel-coder-35b:axq`. Both include a depth-1 HF per-expert MTP sidecar;
 serve with `--mlx-mtp-policy required` to require native MTP admission. The
 default `auto` policy does not promote these unqualified linear-Qwen packs.
+An [optional acceptance-based depth controller](mtp/tiel-adaptive-depth.md)
+can reduce wasted verification on low-acceptance requests; it is default-off.
 
 Best practice is to keep the default Hugging Face Hub cache destination. That
 cache is shared with `mlx-lm` and `huggingface_hub`, and its location is

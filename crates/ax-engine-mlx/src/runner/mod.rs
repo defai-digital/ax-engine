@@ -3241,7 +3241,7 @@ impl MlxRunner {
             );
             row.state.ngram.feed(&result);
 
-            row.state.mtp_adaptive_max_depth = mtp_next_adaptive_depth(
+            let (next_depth, _) = mtp_next_adaptive_depth(
                 row.state.mtp_adaptive_max_depth,
                 self.mtp_max_depth(),
                 row.pending.len(),
@@ -3257,7 +3257,9 @@ impl MlxRunner {
                     && row.state.generated_tokens.len() < 24,
                 crate::fastpath::mtp_depth3_miss_backoff_enabled(),
                 crate::fastpath::mtp_depth3_hysteresis_enabled(),
+                None, // Coalesced Gemma assistant MTP is outside this policy.
             );
+            row.state.mtp_adaptive_max_depth = next_depth;
             if accept_count == 0 {
                 row.state.mtp_consecutive_misses =
                     row.state.mtp_consecutive_misses.saturating_add(1);
@@ -10924,6 +10926,7 @@ impl MlxRunner {
             .as_ref()
             .and_then(|cache| cache.seq_len().checked_sub(pending.len().saturating_sub(1)));
         let mut committed_fold_lazy: Option<crate::mtp::MtpLazyDraft> = None;
+        let mut committed_fold_depth = None;
         let refolded_history = if has_linear_attention
             && pure_qwen_mtp_pending
             && crate::fastpath::mtp_refold_accepted_history_enabled()
@@ -10949,7 +10952,7 @@ impl MlxRunner {
                         state.mtp_draft_gate_x1000,
                     );
                 if combined_fold {
-                    let next_depth = mtp_next_adaptive_depth(
+                    let (next_depth, _) = mtp_next_adaptive_depth(
                         state.mtp_adaptive_max_depth,
                         self.mtp_max_depth(),
                         pending.len(),
@@ -10958,7 +10961,13 @@ impl MlxRunner {
                         false,
                         crate::fastpath::mtp_depth3_miss_backoff_enabled(),
                         crate::fastpath::mtp_depth3_hysteresis_enabled(),
+                        Some(mtp_depth_observations_after_step(
+                            &state.mtp_telemetry,
+                            pending.len(),
+                            accept_count,
+                        )),
                     );
+                    committed_fold_depth = Some(next_depth);
                     let committed_hidden = slice(
                         hidden,
                         &[0, 0, 0],
@@ -11197,7 +11206,7 @@ impl MlxRunner {
         // Use true acceptance for adaptive depth so auto-optimistic's inflated
         // accept_count doesn't create a permanent depth-increase feedback loop.
         let adaptive_depth_accept = ewma_accept_count.unwrap_or(accept_count);
-        state.mtp_adaptive_max_depth = mtp_next_adaptive_depth(
+        let (next_depth, conservative_depth) = mtp_next_adaptive_depth(
             state.mtp_adaptive_max_depth,
             mtp_max_depth,
             pending.len(),
@@ -11213,7 +11222,23 @@ impl MlxRunner {
                 && state.generated_tokens.len() < 24,
             crate::fastpath::mtp_depth3_miss_backoff_enabled(),
             crate::fastpath::mtp_depth3_hysteresis_enabled(),
+            (has_linear_attention && self.weights.mtp.is_some()).then_some((
+                state.mtp_telemetry.drafted_by_depth[0],
+                state.mtp_telemetry.accepted_by_depth[0],
+                state.mtp_telemetry.drafted_by_depth[1],
+                state.mtp_telemetry.accepted_by_depth[1],
+            )),
         );
+        state.mtp_adaptive_max_depth = next_depth;
+        if committed_fold_lazy.is_some() {
+            debug_assert_eq!(committed_fold_depth, Some(next_depth));
+        }
+        if conservative_depth {
+            state.mtp_telemetry.conservative_depth_decisions = state
+                .mtp_telemetry
+                .conservative_depth_decisions
+                .saturating_add(1);
+        }
         if adaptive_depth_accept == 0 && !pending.is_empty() {
             state.mtp_consecutive_misses = state.mtp_consecutive_misses.saturating_add(1);
         } else if adaptive_depth_accept > 0 {
@@ -13101,8 +13126,15 @@ fn mtp_next_adaptive_depth(
     aggressive_miss_to_zero: bool,
     depth3_miss_backoff_enabled: bool,
     depth3_hysteresis_enabled: bool,
-) -> usize {
-    mtp_next_adaptive_depth_with_policy(
+    draft_observations: Option<(u32, u32, u32, u32)>,
+) -> (usize, bool) {
+    let fixed_depth = crate::fastpath::mtp_fixed_draft_depth();
+    let conservative_depth = crate::fastpath::mtp_conservative_depth_enabled()
+        && draft_observations.is_some_and(mtp_conservative_depth_admitted)
+        && depth3_miss_backoff_enabled
+        && max_depth == 3
+        && fixed_depth.is_none();
+    let depth = mtp_next_adaptive_depth_with_policy(
         current_depth,
         max_depth,
         pending_len,
@@ -13110,16 +13142,52 @@ fn mtp_next_adaptive_depth(
         consecutive_misses,
         aggressive_miss_to_zero,
         MtpAdaptiveDepthPolicy {
-            fixed_depth: crate::fastpath::mtp_fixed_draft_depth(),
+            fixed_depth,
+            conservative_depth,
             depth3_miss_backoff: depth3_miss_backoff_enabled,
             depth3_hysteresis: depth3_hysteresis_enabled,
         },
+    );
+    (depth, conservative_depth)
+}
+
+/// The async committed fold schedules the next draft before record_step;
+/// predict its first two position counters so both depth decisions consume
+/// the same observations. An empty window contributes no evidence.
+fn mtp_depth_observations_after_step(
+    telemetry: &MtpTelemetry,
+    pending_len: usize,
+    accept_count: usize,
+) -> (u32, u32, u32, u32) {
+    (
+        telemetry.drafted_by_depth[0].saturating_add(u32::from(pending_len > 0)),
+        telemetry.accepted_by_depth[0]
+            .saturating_add(u32::from(pending_len > 0 && accept_count > 0)),
+        telemetry.drafted_by_depth[1].saturating_add(u32::from(pending_len > 1)),
+        telemetry.accepted_by_depth[1]
+            .saturating_add(u32::from(pending_len > 1 && accept_count > 1)),
     )
+}
+
+fn mtp_conservative_depth_admitted(
+    (first_drafted, first_accepted, second_drafted, second_accepted): (u32, u32, u32, u32),
+) -> bool {
+    // A moderately reliable first proposal can still justify deeper windows
+    // when the second proposal usually survives (as in Cyber-Tiel). Count
+    // only actually attempted positions; depth-one windows do not dilute
+    // the second-position estimate or permanently lock the policy shallow.
+    // Wait for a meaningful sample: eight early misses can misclassify a
+    // request whose later deep proposals are consistently useful.
+    first_drafted >= 32
+        && second_drafted >= 32
+        && u64::from(first_accepted) * 4 < u64::from(first_drafted) * 3
+        && u64::from(second_accepted) * 2 < u64::from(second_drafted)
 }
 
 #[derive(Clone, Copy)]
 struct MtpAdaptiveDepthPolicy {
     fixed_depth: Option<usize>,
+    conservative_depth: bool,
     depth3_miss_backoff: bool,
     depth3_hysteresis: bool,
 }
@@ -13142,6 +13210,23 @@ fn mtp_next_adaptive_depth_with_policy(
     }
 
     if policy.depth3_miss_backoff && max_depth == 3 {
+        if policy.conservative_depth {
+            let depth = current_depth.clamp(1, max_depth);
+            if pending_len == 0 {
+                return depth;
+            }
+            // Never let a clipped final window increase the requested depth.
+            // Acceptance still comes exclusively from the existing verifier.
+            return if accept_count >= pending_len {
+                if pending_len >= depth {
+                    depth.saturating_add(1).min(max_depth)
+                } else {
+                    depth
+                }
+            } else {
+                accept_count.clamp(1, max_depth)
+            };
+        }
         if pending_len == 0 {
             return if current_depth == 0 { 3 } else { current_depth };
         }
@@ -17209,6 +17294,7 @@ mod tests {
     fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
         let policy = MtpAdaptiveDepthPolicy {
             fixed_depth: None,
+            conservative_depth: false,
             depth3_miss_backoff: false,
             depth3_hysteresis: false,
         };
@@ -17243,6 +17329,7 @@ mod tests {
     fn mtp_adaptive_depth_progressive_floor_on_consecutive_misses() {
         let policy = MtpAdaptiveDepthPolicy {
             fixed_depth: None,
+            conservative_depth: false,
             depth3_miss_backoff: false,
             depth3_hysteresis: false,
         };
@@ -17300,6 +17387,7 @@ mod tests {
     fn mtp_adaptive_depth_applies_explicit_throughput_policy() {
         let throughput = MtpAdaptiveDepthPolicy {
             fixed_depth: None,
+            conservative_depth: false,
             depth3_miss_backoff: true,
             depth3_hysteresis: true,
         };
@@ -17318,12 +17406,132 @@ mod tests {
 
         let fixed = MtpAdaptiveDepthPolicy {
             fixed_depth: Some(4),
+            conservative_depth: false,
             depth3_miss_backoff: false,
             depth3_hysteresis: false,
         };
         assert_eq!(
             mtp_next_adaptive_depth_with_policy(1, 3, 1, 0, 0, false, fixed),
             3
+        );
+    }
+
+    #[test]
+    fn mtp_conservative_depth_waits_for_evidence_and_preserves_successful_workloads() {
+        assert!(!mtp_conservative_depth_admitted((0, 0, 0, 0)));
+        assert!(!mtp_conservative_depth_admitted((8, 0, 8, 0)));
+        assert!(!mtp_conservative_depth_admitted((31, 0, 31, 0)));
+        assert!(!mtp_conservative_depth_admitted((36, 0, 31, 0)));
+        assert!(mtp_conservative_depth_admitted((32, 23, 32, 15)));
+        assert!(!mtp_conservative_depth_admitted((32, 24, 32, 15)));
+        assert!(!mtp_conservative_depth_admitted((32, 23, 32, 16)));
+        assert!(!mtp_conservative_depth_admitted((32, 32, 32, 32)));
+        assert!(mtp_conservative_depth_admitted((u32::MAX, 0, u32::MAX, 0)));
+        assert!(!mtp_conservative_depth_admitted((
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX
+        )));
+        // Cyber-Tiel's measured moderate first-position yield still pays for
+        // deep windows: almost every surviving first proposal accepts a second.
+        assert!(!mtp_conservative_depth_admitted((43, 31, 43, 30)));
+        assert!(mtp_conservative_depth_admitted((69, 35, 69, 15)));
+
+        // The combined async fold runs before telemetry records this window.
+        // Compare predictions with actual record_step, including clipped and
+        // empty windows so missing second proposals cannot bias that estimate.
+        let mut telemetry = MtpTelemetry::default();
+        for (pending, accepted) in [(3, 0), (1, 1), (2, 1), (0, 0), (3, 2), (2, 2), (1, 0)] {
+            let predicted = mtp_depth_observations_after_step(&telemetry, pending, accepted);
+            telemetry.record_step(
+                pending,
+                accepted,
+                &vec![MtpDraftSource::Mtp; pending],
+                None,
+                accepted,
+            );
+            let actual = (
+                telemetry.drafted_by_depth[0],
+                telemetry.accepted_by_depth[0],
+                telemetry.drafted_by_depth[1],
+                telemetry.accepted_by_depth[1],
+            );
+            assert_eq!(predicted, actual);
+            assert_eq!(
+                mtp_conservative_depth_admitted(predicted),
+                mtp_conservative_depth_admitted(actual)
+            );
+        }
+        assert_eq!(
+            mtp_depth_observations_after_step(&telemetry, 0, 0),
+            (6, 4, 4, 2)
+        );
+        assert_eq!(
+            mtp_depth_observations_after_step(&telemetry, 1, 1),
+            (7, 5, 4, 2)
+        );
+    }
+
+    #[test]
+    fn mtp_conservative_depth_recovers_after_rejection_without_repeating_deep_misses() {
+        let policy = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            conservative_depth: true,
+            depth3_miss_backoff: true,
+            depth3_hysteresis: true,
+        };
+        let mut depth = 3;
+        // Two misses, then useful prefixes, then full acceptance: maintain
+        // a live one-token probe and recover only as actual windows succeed.
+        for (submitted, accepted, expected) in [
+            (3, 0, 1),
+            (1, 0, 1),
+            (1, 1, 2),
+            (2, 1, 1),
+            (1, 1, 2),
+            (2, 2, 3),
+        ] {
+            depth = mtp_next_adaptive_depth_with_policy(
+                depth, 3, submitted, accepted, 0, false, policy,
+            );
+            assert_eq!(depth, expected);
+        }
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 3, 3, 2, 0, false, policy),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 3, 0, 0, 0, false, policy),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 3, 1, 1, 0, false, policy),
+            2
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(3, 0, 3, 0, 0, false, policy),
+            0
+        );
+
+        let fixed = MtpAdaptiveDepthPolicy {
+            fixed_depth: Some(3),
+            ..policy
+        };
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(1, 3, 1, 0, 0, false, fixed),
+            3
+        );
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(1, 1, 1, 0, 0, false, fixed),
+            1
+        );
+
+        // Other profiles retain their stop-loss behavior even if the opt-in
+        // is set globally; this policy only covers three-token throughput.
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy(2, 2, 2, 0, 0, true, policy),
+            0
         );
     }
 

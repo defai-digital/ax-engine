@@ -52,6 +52,8 @@ pub(super) struct MtpTelemetry {
     pub(super) draft_tokens: u32,
     pub(super) accepted_tokens: u32,
     pub(super) decode_steps: u32,
+    /// Next-window decisions made by the admitted conservative controller.
+    pub(super) conservative_depth_decisions: u32,
     pub(super) full_accept_steps: u32,
     pub(super) partial_reject_steps: u32,
     pub(super) complete_miss_steps: u32,
@@ -600,6 +602,9 @@ impl MtpTelemetry {
         self.draft_tokens = self.draft_tokens.saturating_add(other.draft_tokens);
         self.accepted_tokens = self.accepted_tokens.saturating_add(other.accepted_tokens);
         self.decode_steps = self.decode_steps.saturating_add(other.decode_steps);
+        self.conservative_depth_decisions = self
+            .conservative_depth_decisions
+            .saturating_add(other.conservative_depth_decisions);
         self.full_accept_steps = self
             .full_accept_steps
             .saturating_add(other.full_accept_steps);
@@ -915,6 +920,10 @@ impl MtpTelemetry {
             ("ax_mtp_draft_tokens", self.draft_tokens),
             ("ax_mtp_accepted_tokens", self.accepted_tokens),
             ("ax_mtp_decode_steps", self.decode_steps),
+            (
+                "ax_mtp_conservative_depth_decisions",
+                self.conservative_depth_decisions,
+            ),
             ("ax_mtp_full_accept_steps", self.full_accept_steps),
             ("ax_mtp_partial_reject_steps", self.partial_reject_steps),
             ("ax_mtp_complete_miss_steps", self.complete_miss_steps),
@@ -1171,6 +1180,22 @@ impl MtpTelemetry {
         decisions.upsert_route_decision(
             "ax_mtp_adaptive_gate_enabled",
             u32::from(adaptive_gate_enabled_from_env()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_conservative_depth_code",
+            u32::from(crate::fastpath::mtp_conservative_depth_enabled()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_conservative_depth_admission_code",
+            u32::from(
+                crate::fastpath::mtp_conservative_depth_enabled()
+                    && mtp_conservative_depth_admitted((
+                        self.drafted_by_depth[0],
+                        self.accepted_by_depth[0],
+                        self.drafted_by_depth[1],
+                        self.accepted_by_depth[1],
+                    )),
+            ),
         );
         let profitability_config = mtp_profitability_config_from_env();
         decisions.upsert_route_decision(
