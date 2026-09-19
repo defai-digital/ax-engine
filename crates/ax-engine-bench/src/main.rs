@@ -163,6 +163,7 @@ use ax_engine_sdk::{HostReport, MetalToolchainReport, ToolStatusReport};
 
 mod commands;
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests;
 
 fn main() -> ExitCode {

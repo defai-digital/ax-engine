@@ -927,6 +927,7 @@ fn ggml_type_name(t: u32) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::io::Cursor;

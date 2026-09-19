@@ -157,6 +157,7 @@ pub(super) fn grpc_embedding_prompt_tokens(inputs: &[Vec<u32>]) -> u32 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::app_state::{AppState, build_app_state};

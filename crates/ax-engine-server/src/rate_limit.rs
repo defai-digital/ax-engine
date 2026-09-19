@@ -148,6 +148,7 @@ fn hash_token(token: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use axum::body::Body;

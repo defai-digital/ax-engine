@@ -115,6 +115,7 @@ impl Drop for InFlightGrpcRequestGuard {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::sync::atomic::Ordering;
 

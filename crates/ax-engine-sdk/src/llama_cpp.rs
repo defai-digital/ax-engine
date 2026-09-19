@@ -1034,6 +1034,7 @@ fn llama_cpp_server_completion_route(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

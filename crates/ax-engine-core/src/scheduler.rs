@@ -921,6 +921,7 @@ fn route_seed(snapshot: &RequestSnapshot) -> RouteMetadata {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::ids::{ModelId, SequenceNo};

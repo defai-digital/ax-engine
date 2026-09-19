@@ -625,6 +625,7 @@ pub fn default_generation_for_family(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use std::collections::BTreeSet;
 

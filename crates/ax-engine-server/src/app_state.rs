@@ -1507,6 +1507,7 @@ pub(crate) fn build_app_state(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod step_metrics_tests {
     use super::*;
 
@@ -1698,6 +1699,7 @@ mod step_metrics_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc as std_mpsc;

@@ -212,6 +212,7 @@ fn guess_private_ipv4() -> Option<Ipv4Addr> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

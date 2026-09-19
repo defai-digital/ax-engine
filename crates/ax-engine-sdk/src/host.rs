@@ -399,6 +399,7 @@ fn unsupported_host_override_enabled() -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::{
         HostSupport, classify_host, command_stdout_with_reason, parse_apple_m_series_generation,

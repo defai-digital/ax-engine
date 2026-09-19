@@ -873,6 +873,7 @@ pub(super) fn terminal_stop_reason_from_finish_reason(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::generate::GenerateFinishReason;

@@ -5374,6 +5374,7 @@ fn validate_quantized_source_path(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;

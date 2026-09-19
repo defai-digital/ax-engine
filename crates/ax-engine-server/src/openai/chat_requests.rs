@@ -4648,6 +4648,7 @@ fn gemma4_unified_error_response(error: Gemma4UnifiedError) -> HttpErrorResponse
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod media_tests {
     use super::*;
     use serde_json::json;
@@ -4894,6 +4895,7 @@ mod media_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod deepseek_dsml_contract_tests {
     use super::*;
 

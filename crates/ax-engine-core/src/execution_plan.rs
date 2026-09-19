@@ -76,6 +76,7 @@ fn attention_route_label(model_slug: &str, phase: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::ids::{ModelId, RequestId, SequenceNo};

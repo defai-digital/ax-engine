@@ -755,6 +755,7 @@ pub struct RunnerApplySummary {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::ids::{ModelId, SequenceNo, StepId};

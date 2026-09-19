@@ -409,6 +409,7 @@ fn keyword_u64(schema: &Map<String, Value>, keyword: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use serde_json::json;
 

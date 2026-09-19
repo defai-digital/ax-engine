@@ -1998,6 +1998,7 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod expert_stream_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};

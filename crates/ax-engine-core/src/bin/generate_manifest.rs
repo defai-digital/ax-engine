@@ -104,6 +104,7 @@ fn validate_manifest(model_dir: &std::path::Path) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

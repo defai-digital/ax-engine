@@ -747,6 +747,7 @@ impl Drop for ManifestTempGuard {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 pub(crate) fn with_real_model_manifest_lock<T>(body: impl FnOnce() -> T) -> T {
     use std::sync::{Mutex, OnceLock};
 
@@ -818,6 +819,7 @@ pub(crate) use qwen4_exp_layout::{
 };
 mod tensor_mapping;
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests;
 
 mod deepseek_v4_chat;

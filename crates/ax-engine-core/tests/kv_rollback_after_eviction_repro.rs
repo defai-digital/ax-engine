@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 // Repro: eviction of retained-cache entries that back a live shared prefix
 // makes the sharer the sole block owner; the engine's InsufficientCapacity
 // rollback path (engine.rs resolve_kv_schedule_plan) then hits an

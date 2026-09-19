@@ -1585,4 +1585,5 @@ fn initial_stream_request_report(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests;

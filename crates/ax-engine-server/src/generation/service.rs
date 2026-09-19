@@ -2285,6 +2285,7 @@ impl Drop for WorkerExitGuard<'_> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc as std_mpsc;

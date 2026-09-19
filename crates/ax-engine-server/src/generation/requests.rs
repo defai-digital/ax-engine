@@ -70,6 +70,7 @@ pub(crate) fn build_generate_request(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use ax_engine_sdk::{Gemma4UnifiedModality, Gemma4UnifiedTokenSpan};
     use serde_json::json;
