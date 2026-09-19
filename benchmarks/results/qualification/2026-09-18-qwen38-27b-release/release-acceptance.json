@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "source_commit": "a430eb9a82cfb77ffacf45c8a2332b4bb17681a9",
+  "tag": "v7.4.0",
+  "published": true,
+  "independent_verification_passed": true,
+  "github_release": "https://github.com/defai-digital/ax-engine/releases/tag/v7.4.0",
+  "published_at": "2026-09-18T23:52:27Z",
+  "ci_run": "https://github.com/defai-digital/ax-engine/actions/runs/35402097234",
+  "candidate_run": "https://github.com/defai-digital/ax-engine/actions/runs/35402889454",
+  "wheel": {
+    "name": "ax_engine-7.4.0-cp312-abi3-macosx_26_0_arm64.whl",
+    "sha256": "666d8c41b45fb94366bbda6ba94a5000889ebb5371efbe34a8de217cff678fbc",
+    "public_pypi_matches_qualified_candidate": true,
+    "fresh_install_packages": [
+      {
+        "name": "ax-engine",
+        "version": "7.4.0"
+      },
+      {
+        "name": "pip",
+        "version": "26.1.2"
+      }
+    ],
+    "doctor": "ready",
+    "mlx_libraries": "package-local"
+  },
+  "archive": {
+    "name": "ax-engine-v7.4.0-macos-arm64.tar.gz",
+    "sha256": "f01467bcd7ac6214263eb02f3bac9f5ddc508c48c0729ca2e7dc4e7c628a229d",
+    "download_url": "https://github.com/defai-digital/ax-engine/releases/download/v7.4.0/ax-engine-v7.4.0-macos-arm64.tar.gz"
+  },
+  "released_manifest_sha256": "1a2d2cac9203c99d14a8b1e0188abeb610f898eeccaadfdf2d7f179f059300bc",
+  "homebrew": {
+    "repository": "defai-digital/homebrew-tap",
+    "formula_blob_sha": "b5e6044707871e7b5e5eb0a1da53a24e64565f6a",
+    "version": "7.4.0",
+    "archive_sha256": "f01467bcd7ac6214263eb02f3bac9f5ddc508c48c0729ca2e7dc4e7c628a229d"
+  },
+  "notarization": {
+    "status": "Accepted",
+    "status_code": 0,
+    "issues": null
+  },
+  "sku": {
+    "chip": "Apple M4 Pro",
+    "model": "Mac16,11",
+    "memory_bytes": 68719476736,
+    "macos": "26.6.2",
+    "build": "25G83"
+  },
+  "qualification": {
+    "sampled_qa_hard_per_route": "32/32",
+    "required_api_per_route": "7/7",
+    "sampled_routes": [
+      "default",
+      "direct",
+      "mtp"
+    ],
+    "full_qa_hard_per_route": "158/158",
+    "full_qa_routes": [
+      "default",
+      "mtp"
+    ],
+    "soft_keyword_failures_per_full_route": 6,
+    "incomplete_responses": 0,
+    "fault_rounds_per_route": 3,
+    "default_buffer_peak": 223,
+    "mtp_buffer_peak": 241,
+    "mtp_backlog_overflows": 1,
+    "silent_mtp_fallbacks": 0,
+    "independent_qa_regrades": 412
+  },
+  "published_standalone": {
+    "cases": [
+      "default_alias",
+      "explicit_mtp_alias",
+      "local_directory_without_python"
+    ],
+    "passed": 3,
+    "output_tokens_per_case": 64,
+    "matches_qualified_wheel": true,
+    "owned_servers_reaped": true,
+    "payload_sha256": {
+      "ax-engine": "7b8dc6853b8c6dc12cd9fc005522a560ab5a75c6d04946bcbfcd3685d012ae82",
+      "ax-engine-server": "91637ac63e1aca11c71c4e53ffce1b40aa5a762aeeca8dad781eb67cf70ee5d7",
+      "ax-engine-bench": "f8058f09bbfc27afb36fde15575b537dd36161f55421532d10b9fea70473d7f1",
+      "libmlx.dylib": "b1538ac17244d067823d20f261a4bf4d49666999c0c90fcf804acc6d8811d203",
+      "libjaccl.dylib": "5996e9dbe78dfe6dcd7513d4bbb4768eeb0c1a5e72ce8cd0cfcfcfcf10822d5a"
+    }
+  },
+  "helper_requirements": "Native inference from a ready local directory needs no Python. Alias resolution and preparation use Python 3.12+; online downloads additionally require huggingface-hub.",
+  "limits": [
+    "Product-health qualification does not certify broad model accuracy.",
+    "MTP remains explicit opt-in; MTP-P and MTP-D are not promoted.",
+    "This is not an 8-hour or 72-hour endurance qualification.",
+    "Six soft keyword checks fail per full QA route and are retained."
+  ]
+}

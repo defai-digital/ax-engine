@@ -110,6 +110,15 @@ The original 256-token failures and pressure workload without observed
 backpressure remain failed records. Reproduction commands and an offline
 evidence/grade verifier are included with the artifacts.
 
+The [v7.4.0 release qualification](../benchmarks/results/qualification/2026-09-18-qwen38-27b-release/)
+repeats this protocol against the exact-source hosted wheel and binds its digest
+to the public PyPI artifact. Both routes again pass 158/158 hard checks, with
+zero incomplete responses and six soft keyword failures each. It also verifies
+fresh installation on the SKU and all three public signed standalone launch
+controls (default alias, explicit MTP alias, and local directory without Python).
+This closes the recorded product-health and publication scope without promoting
+MTP-P or MTP-D or claiming broad accuracy or 8h/72h endurance.
+
 The live path expects a clean worktree, `ax-engine doctor` ready, surface QA
 for default, direct and explicit MTP, and a short direct + MTP check against the last published
 refresh. Full stack claims still use

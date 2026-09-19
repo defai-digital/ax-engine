@@ -82,8 +82,11 @@ ax-engine doctor
 Homebrew is the primary install path for the CLI, server, and bench tools.
 The self-contained release formula installs the release's pinned
 `libmlx.dylib`, `libjaccl.dylib`, and precompiled `mlx.metallib`; it does not
-build MLX from source. End users therefore do not need Python, Xcode, or the
-Metal Toolchain.
+build MLX from source. Native inference from a ready local model directory
+needs no Python, Xcode, or Metal Toolchain. Model aliases and preparation helpers
+use Python 3.12+; online downloads also require `huggingface-hub`. Follow the
+[Homebrew helper setup](docs/GETTING-STARTED.md#homebrew-model-helpers) before
+downloading or serving an alias.
 
 ### Python SDK (pip)
 

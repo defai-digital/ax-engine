@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "kind": "surface_probes",
+  "base_url": "http://127.0.0.1:31494",
+  "model": "qwen3.8-27b",
+  "hard_passed": true,
+  "summary": "surface hard 7/7 passed (0 skipped)",
+  "results": [
+    {
+      "name": "concurrent_chat",
+      "passed": true,
+      "detail": "3 parallel chat completions ok",
+      "hard": true,
+      "elapsed_ms": 1546.7176249949262,
+      "skipped": false
+    },
+    {
+      "name": "stream_nonstream",
+      "passed": true,
+      "detail": "non-stream chars=1; sse_bytes=632 stream_chars=1 usage=True done=True parity=ok",
+      "hard": true,
+      "elapsed_ms": 1265.3338329400867,
+      "skipped": false
+    },
+    {
+      "name": "cancel_request",
+      "passed": true,
+      "detail": "state=cancelled cancel_requested=True",
+      "hard": true,
+      "elapsed_ms": 0.6047500064596534,
+      "skipped": false
+    },
+    {
+      "name": "tools_schema",
+      "passed": true,
+      "detail": "content_null=True tool_calls=True",
+      "hard": true,
+      "elapsed_ms": 3177.304167067632,
+      "skipped": false
+    },
+    {
+      "name": "remote_media_rejected",
+      "passed": true,
+      "detail": "remote media rejected HTTP 400",
+      "hard": true,
+      "elapsed_ms": 17.04008295200765,
+      "skipped": false
+    },
+    {
+      "name": "multimodal_video",
+      "passed": true,
+      "detail": "advertised video: HTTP 200, prompt_tokens=22, text_only_prompt_tokens=16, content='There is **1 frame** shown \u2014 a single, completely black image.\\n\\n'",
+      "hard": true,
+      "elapsed_ms": 1817.3521669814363,
+      "skipped": false
+    },
+    {
+      "name": "multimodal_image",
+      "passed": true,
+      "detail": "image chat returned 11 chars (require_image=True)",
+      "hard": true,
+      "elapsed_ms": 612.4885410536081,
+      "skipped": false
+    }
+  ]
+}

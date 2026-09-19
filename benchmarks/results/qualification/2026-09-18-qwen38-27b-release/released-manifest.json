@@ -1,0 +1,108 @@
+{
+  "schema_version": "ax.github_release_manifest.v3",
+  "project": "ax-engine",
+  "repository": "defai-digital/ax-engine",
+  "tag": "v7.4.0",
+  "version": "7.4.0",
+  "git_commit": "a430eb9a82cfb77ffacf45c8a2332b4bb17681a9",
+  "generated_at": "2026-09-18T23:52:07.922597Z",
+  "platform": "macos-arm64",
+  "archive": {
+    "name": "ax-engine-v7.4.0-macos-arm64.tar.gz",
+    "sha256": "f01467bcd7ac6214263eb02f3bac9f5ddc508c48c0729ca2e7dc4e7c628a229d",
+    "download_url": "https://github.com/defai-digital/ax-engine/releases/download/v7.4.0/ax-engine-v7.4.0-macos-arm64.tar.gz"
+  },
+  "binaries": [
+    "ax-engine",
+    "ax-engine-server",
+    "ax-engine-bench"
+  ],
+  "helpers": [
+    "ax-engine-download-model.py",
+    "ax-engine-prepare-mtp-sidecar.py",
+    "ax-engine-prepare-gemma4-assistant-mtp.py",
+    "ax-engine-prepare-glm-mtp-sidecar.py",
+    "ax-engine-prepare-qwen36-mtp-sidecar.py",
+    "ax-engine-check-mtp-sidecar-provenance.py"
+  ],
+  "payload": [
+    "ax-engine",
+    "ax-engine-server",
+    "ax-engine-bench",
+    "ax-engine-download-model.py",
+    "ax-engine-prepare-mtp-sidecar.py",
+    "ax-engine-prepare-gemma4-assistant-mtp.py",
+    "ax-engine-prepare-glm-mtp-sidecar.py",
+    "ax-engine-prepare-qwen36-mtp-sidecar.py",
+    "ax-engine-check-mtp-sidecar-provenance.py",
+    "libmlx.dylib",
+    "libjaccl.dylib",
+    "mlx.metallib",
+    "MLX-LICENSE.txt"
+  ],
+  "mlx_runtime": {
+    "version": "0.32.2",
+    "layout": "colocated",
+    "rpaths": [
+      "@loader_path",
+      "@loader_path/../libexec"
+    ],
+    "source": {
+      "kind": "pinned-pypi-wheel",
+      "assets": {
+        "libmlx.dylib": {
+          "path": "libmlx.dylib",
+          "sha256": "d24c7a9b9d55a76bfd3bbcd1d042251a185cbadcb6340c3244a6ffa3dcb7c7e8",
+          "size": 21942544
+        },
+        "libjaccl.dylib": {
+          "path": "libjaccl.dylib",
+          "sha256": "9cfd72679ff35c593a1d46fd30d995cc4a131eed15733617efb1118001e74084",
+          "size": 1555552
+        },
+        "mlx.metallib": {
+          "path": "mlx.metallib",
+          "sha256": "dc59d1cceb1a5c7e578232e6e41e28e2c73c9463ac6dbc3886c3ee17ffc270ed",
+          "size": 182351120
+        }
+      }
+    },
+    "assets": {
+      "libmlx.dylib": {
+        "path": "libmlx.dylib",
+        "sha256": "b1538ac17244d067823d20f261a4bf4d49666999c0c90fcf804acc6d8811d203",
+        "size": 21833216
+      },
+      "libjaccl.dylib": {
+        "path": "libjaccl.dylib",
+        "sha256": "5996e9dbe78dfe6dcd7513d4bbb4768eeb0c1a5e72ce8cd0cfcfcfcf10822d5a",
+        "size": 1564784
+      },
+      "mlx.metallib": {
+        "path": "mlx.metallib",
+        "sha256": "dc59d1cceb1a5c7e578232e6e41e28e2c73c9463ac6dbc3886c3ee17ffc270ed",
+        "size": 182351120
+      }
+    },
+    "derivation": {
+      "private_copy": true,
+      "dylib_load_commands_preserved": true,
+      "metallib_byte_identical": true,
+      "library_signature": "developer-id"
+    }
+  },
+  "third_party_licenses": {
+    "MLX-LICENSE.txt": {
+      "path": "MLX-LICENSE.txt",
+      "sha256": "ccfab7ccb2ea306f71531c8ca77bb55507606cd90768b1e32b8b52ab5b48cf01",
+      "size": 1066
+    }
+  },
+  "code_signing": {
+    "apple_developer_id": true,
+    "identity": "Developer ID Application: DEFAI PRIVATE LIMITED (N5ZUZDUJS6)",
+    "notarized": true,
+    "notarization_submission_id": "0f9cc7ce-11ac-4758-bb25-1bee14e6e40d",
+    "disable_library_validation": false
+  }
+}

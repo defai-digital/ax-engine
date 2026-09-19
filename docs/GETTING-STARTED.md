@@ -100,8 +100,26 @@ helper scripts onto your `PATH`.
 > [!NOTE]
 > The self-contained release formula installs the release's pinned,
 > precompiled MLX runtime. It does not depend on or build the tap's `mlx` /
-> `mlx-c` formulas, so end users do not need Python, Xcode, or the Metal
-> Toolchain.
+> `mlx-c` formulas. Native inference from a ready local model directory needs
+> no Python, Xcode, or Metal Toolchain. Model aliases and preparation helpers
+> use Python 3.12+; online downloads also require `huggingface-hub`.
+
+#### Homebrew model helpers
+
+Configure a separate Python environment for alias resolution, model preparation,
+and downloads. `AX_ENGINE_PYTHON` selects the helper interpreter while keeping
+the native Homebrew CLI on your `PATH`:
+
+```bash
+brew install python@3.12
+python3.12 -m venv "$HOME/.local/share/ax-engine/download-env"
+"$HOME/.local/share/ax-engine/download-env/bin/python" -m pip install huggingface-hub
+export AX_ENGINE_PYTHON="$HOME/.local/share/ax-engine/download-env/bin/python"
+```
+
+Keep that export in shells running the CLI. Offline aliases still use the Python
+helpers; serving an already prepared directory with `ax-engine serve /path/to/model`
+does not. The helper environment does not require the AX Engine wheel or Python MLX.
 
 #### Homebrew troubleshooting
 
