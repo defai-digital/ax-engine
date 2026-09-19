@@ -94,8 +94,32 @@ def contract() -> dict[str, Any]:
         "experimental_2bit_opt_in": "AX_ENGINE_2BIT_EXPERIMENTAL=1",
         "mtp": (
             "sidecar attaches when mtp.safetensors is present; "
-            "certified_default_on remains false; greedy identity until documented ties"
+            "certified_default_on remains false; MTP-S, MTP-P and MTP-D require separate evidence"
         ),
+        "mtp_gates": {
+            "MTP-S": (
+                "Shipping safety: every accepted draft equals the same-state verifier greedy "
+                "decision, with zero invalid acceptances; not assessed by cross-route parity"
+            ),
+            "MTP-P": (
+                "Scoped acceleration claims: weighted >= 1.20x and prompt-median >= 1.10x "
+                "on two named authorizing workloads, a negative control, full source/build/"
+                "pack/SKU/runtime evidence and divergence indices/logit-margin disclosures; "
+                "passing does not change defaults"
+            ),
+            "MTP-D": (
+                "Separate promotion decision and release tag after MTP-S/P; default-product-"
+                "path greedy parity with shared deterministic tie-breaking, quality, endurance "
+                "and long-context decode-at-depth; diagnostic arithmetic profiles do not qualify"
+            ),
+        },
+        "mtp_certification": {
+            gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")
+        },
+        "diagnostic_only": [
+            "Independent direct/MTP token differences must be disclosed; they alone neither "
+            "fail nor establish MTP-S. A near-tie explanation requires measured logits.",
+        ],
         "not": [
             "qwen3.8-27b:axq",
             "qwen3_5",
@@ -126,6 +150,9 @@ def _print_contract(as_json: bool) -> None:
     print("target admission: MXFP4/group32 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
     print("existing affine admission: 4-bit/group64 and 6-bit/group64; not target qualification")
     print("fail-closed: convert must not remap onto qwen3_5")
+    print("MTP gates (metadata preflight assesses none):")
+    for gate, requirement in payload["mtp_gates"].items():
+        print(f"  {gate} [{payload['mtp_certification'][gate]}]: {requirement}")
 
 
 def _expert_layouts(manifest: dict[str, Any]) -> list[tuple[str, int, int]]:

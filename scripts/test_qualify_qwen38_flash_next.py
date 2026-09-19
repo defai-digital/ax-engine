@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -147,6 +149,36 @@ class QualifyFlashNextTest(unittest.TestCase):
         self.assertFalse(mod.contract()["release_ready"])
         self.assertFalse(mod.contract()["qualification"])
         self.assertIn("metadata only", mod.contract()["validation_scope"])
+
+    def test_mtp_gates_remain_unassessed_after_ready_metadata_preflight(self) -> None:
+        expected = {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config.json").write_text("{}")
+            (root / "model-manifest.json").write_text(json.dumps(_product_manifest()))
+            mod._live_preflight(root)
+        payload = mod.contract()
+        self.assertEqual(payload["mtp_certification"], expected)
+        self.assertEqual(set(payload["mtp_gates"]), set(expected))
+        self.assertFalse(payload["qualification"])
+        self.assertFalse(payload["release_ready"])
+        self.assertIn("same-state verifier", payload["mtp_gates"]["MTP-S"])
+        self.assertIn("does not change defaults", payload["mtp_gates"]["MTP-P"])
+        self.assertIn("release tag", payload["mtp_gates"]["MTP-D"])
+        self.assertIn("neither fail nor establish MTP-S", payload["diagnostic_only"][0])
+
+    def test_both_dry_run_formats_disclose_unassessed_mtp_gates(self) -> None:
+        for as_json in (False, True):
+            with self.subTest(as_json=as_json), contextlib.redirect_stdout(io.StringIO()) as out:
+                mod._print_contract(as_json)
+            text = out.getvalue()
+            if as_json:
+                self.assertEqual(json.loads(text)["mtp_certification"], {
+                    gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")
+                })
+            else:
+                for gate in ("MTP-S", "MTP-P", "MTP-D"):
+                    self.assertIn(f"{gate} [not_assessed]", text)
 
     def test_ready_flag_cannot_hide_other_blockers(self) -> None:
         with tempfile.TemporaryDirectory() as td:
