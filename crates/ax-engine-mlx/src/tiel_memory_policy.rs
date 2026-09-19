@@ -69,18 +69,18 @@ fn decide_clear_wired_residency(inputs: &ResidencyDecision) -> bool {
     if inputs.expert_streaming_active {
         return false;
     }
-    // Guard 4: config digest must match the tested export configuration.
+    // Guard 3: config digest must match the tested export configuration.
     if inputs.config_sha256.as_deref() != Some(CONFIG_SHA256) {
         return false;
     }
-    // Guard 5: manifest digest must match the Tiel or Cyber pack.
+    // Guard 4: manifest digest must match the Tiel or Cyber pack.
     if !matches!(
         inputs.manifest_sha256.as_deref(),
         Some(TIEL_MANIFEST_SHA256) | Some(CYBER_MANIFEST_SHA256)
     ) {
         return false;
     }
-    // Guard 3: hardware (>= 128 GiB and exactly `Apple M5 Max`).
+    // Guard 5: hardware (>= 128 GiB and exactly `Apple M5 Max`).
     let enough_memory = inputs
         .unified_memory_bytes
         .is_some_and(|bytes| bytes >= MIN_UNIFIED_MEMORY_BYTES);
@@ -103,6 +103,13 @@ fn decide_clear_wired_residency(inputs: &ResidencyDecision) -> bool {
 pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: bool) {
     let wired_limit_scale_override = wired_limit_scale_override();
     if wired_limit_scale_override.is_some() || expert_streaming_active {
+        tracing::debug!(
+            target: "ax_engine_mlx::runner",
+            policy = POLICY_ID,
+            operator_override = wired_limit_scale_override.is_some(),
+            expert_streaming_active,
+            "automatic no-wire residency skipped: operator override or expert streaming"
+        );
         return;
     }
     // Metadata digests gate the hardware probe: an unknown or modified export
@@ -117,6 +124,11 @@ pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: 
             Some(TIEL_MANIFEST_SHA256) | Some(CYBER_MANIFEST_SHA256)
         )
     {
+        tracing::debug!(
+            target: "ax_engine_mlx::runner",
+            policy = POLICY_ID,
+            "automatic no-wire residency skipped: export metadata is unknown or unreadable"
+        );
         return;
     }
 
@@ -131,6 +143,13 @@ pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: 
         cpu_brand_string: cpu_brand_string(),
     };
     if !decide_clear_wired_residency(&inputs) {
+        tracing::debug!(
+            target: "ax_engine_mlx::runner",
+            policy = POLICY_ID,
+            unified_memory_bytes = ?inputs.unified_memory_bytes,
+            cpu_brand = ?inputs.cpu_brand_string,
+            "automatic no-wire residency skipped: hardware is unknown or outside the audited target"
+        );
         return;
     }
 
@@ -138,7 +157,7 @@ pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: 
     tracing::info!(
         target: "ax_engine_mlx::runner",
         policy = POLICY_ID,
-        "automatic no-wire residency policy applied; cleared wired residency after load"
+        "automatic no-wire residency policy applied; cleared process-wide wired residency after load"
     );
 }
 

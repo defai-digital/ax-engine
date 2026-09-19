@@ -1,0 +1,3847 @@
+{
+  "base": "22a82562755ba14197f14a840be118f3be457f2a",
+  "hardware": {
+    "chip": "Apple M5 Max",
+    "memory_bytes": 137438953472
+  },
+  "extensions": {
+    "baseline": "014f9bf73848b08a4331e04a88eb4924e6df5ecb1706048b31347ac71cd26368",
+    "candidate": "bbb312b6e1f067fe928e66ec3c1068e513a6fa67be3f8464dc5966e92e224bba"
+  },
+  "source_sha256": {
+    "crates/ax-engine-mlx/src/tiel_memory_policy.rs": "4e560b720019ab35a95af74976ebd4caa6c7829d15f44705d9ec3fb333b3796a",
+    "benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-19-boundaries/probe.py": "69d4455d98cee1df044488a032cb2c9e3c4752aa08d5507a3e11f22ce975875f"
+  },
+  "runs": [
+    {
+      "name": "tiel-baseline",
+      "started": 1789859509.677672,
+      "ended": 1789859517.919855,
+      "exit_code": 0,
+      "model": "AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+      "prompts": {
+        "coding": [
+          248045,
+          8678,
+          198,
+          15666,
+          5774,
+          321,
+          3413,
+          284,
+          943,
+          13,
+          20052,
+          279,
+          4087,
+          440,
+          1132,
+          1092,
+          424,
+          3749,
+          310,
+          381,
+          4252,
+          321,
+          38606,
+          13,
+          198,
+          25320,
+          25,
+          1724,
+          440,
+          86377,
+          466,
+          6879,
+          43873,
+          4395,
+          26,
+          311,
+          2374,
+          279,
+          3296,
+          26,
+          884,
+          52870,
+          32480,
+          26,
+          40289,
+          440,
+          16817,
+          24745,
+          26,
+          466,
+          12771,
+          264,
+          1406,
+          488,
+          2908,
+          2582,
+          1801,
+          13,
+          198,
+          35865,
+          25,
+          2426,
+          7326,
+          7123,
+          11,
+          24580,
+          1798,
+          11,
+          66441,
+          11,
+          321,
+          46737,
+          1892,
+          2496,
+          5758,
+          55404,
+          466,
+          264,
+          4221,
+          9663,
+          364,
+          193288,
+          477,
+          13,
+          13262,
+          279,
+          1534,
+          4087,
+          15192,
+          13,
+          5272,
+          279,
+          3140,
+          5759,
+          421,
+          384,
+          47612,
+          424,
+          318,
+          20139,
+          58655,
+          948,
+          2716,
+          26,
+          11140,
+          466,
+          1970,
+          1132,
+          948,
+          781,
+          7005,
+          836,
+          1925,
+          553,
+          1368,
+          34032,
+          33955,
+          11,
+          1910,
+          748,
+          321,
+          10033,
+          3069,
+          1892,
+          2496,
+          49325,
+          25969,
+          364,
+          279,
+          23708,
+          314,
+          193288,
+          477,
+          13,
+          198,
+          2592,
+          264,
+          1156,
+          1622,
+          369,
+          34032,
+          52920,
+          11,
+          2466,
+          264,
+          16724,
+          3296,
+          11,
+          1459,
+          914,
+          7692,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          60856,
+          264,
+          4368,
+          53269,
+          436,
+          34810,
+          6297,
+          303,
+          12654,
+          440,
+          615,
+          321,
+          2113,
+          5245,
+          11,
+          264,
+          8097,
+          8390,
+          11,
+          321,
+          4821,
+          6813,
+          13,
+          79091,
+          6607,
+          4886,
+          25899,
+          13,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ],
+        "single": [
+          42
+        ]
+      },
+      "valid": [
+        {
+          "prompt": "coding",
+          "budget": 1,
+          "repeat": 0,
+          "tokens": [
+            2
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 1,
+          "repeat": 1,
+          "tokens": [
+            2
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 2,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 526,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 2,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 528,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 3,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487,
+            53269
+          ],
+          "batches": [
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 537,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 3,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487,
+            53269
+          ],
+          "batches": [
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 537,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 4,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 2,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 545,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 4,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 2,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 532,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 5,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436,
+            34810
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 2,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 521,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 5,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436,
+            34810
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 2,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 534,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 16,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436,
+            34810,
+            18887,
+            303,
+            12654,
+            271,
+            550,
+            29806,
+            271,
+            71093,
+            12305,
+            198,
+            464
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            3,
+            1,
+            3,
+            4,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 4,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 9,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+            "ax_mtp_source_mtp_proposed_tokens": 16,
+            "ax_mtp_source_mtp_proposer_wall_us": 547,
+            "ax_mtp_source_mtp_rejected_tokens": 3,
+            "ax_mtp_source_mtp_submitted_tokens": 16
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 16,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436,
+            34810,
+            18887,
+            303,
+            12654,
+            271,
+            550,
+            29806,
+            271,
+            71093,
+            12305,
+            198,
+            464
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            3,
+            1,
+            3,
+            4,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 4,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 9,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+            "ax_mtp_source_mtp_proposed_tokens": 16,
+            "ax_mtp_source_mtp_proposer_wall_us": 539,
+            "ax_mtp_source_mtp_rejected_tokens": 3,
+            "ax_mtp_source_mtp_submitted_tokens": 16
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 1,
+          "repeat": 0,
+          "tokens": [
+            13
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 1,
+          "repeat": 1,
+          "tokens": [
+            13
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 2,
+          "repeat": 0,
+          "tokens": [
+            13,
+            710
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 533,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 2,
+          "repeat": 1,
+          "tokens": [
+            13,
+            710
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 547,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 4,
+          "repeat": 0,
+          "tokens": [
+            13,
+            710,
+            13,
+            443
+          ],
+          "batches": [
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 1,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 1,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 514,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 4,
+          "repeat": 1,
+          "tokens": [
+            13,
+            710,
+            13,
+            443
+          ],
+          "batches": [
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 1,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 1,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 516,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 5,
+          "repeat": 0,
+          "tokens": [
+            13,
+            710,
+            13,
+            443,
+            1264
+          ],
+          "batches": [
+            1,
+            1,
+            2,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 2,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 1,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 6,
+            "ax_mtp_source_mtp_proposer_wall_us": 513,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 6
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 5,
+          "repeat": 1,
+          "tokens": [
+            13,
+            710,
+            13,
+            443,
+            1264
+          ],
+          "batches": [
+            1,
+            1,
+            2,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 2,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 1,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 6,
+            "ax_mtp_source_mtp_proposer_wall_us": 545,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 6
+          }
+        }
+      ],
+      "rejected": [
+        {
+          "case": "zero_budget",
+          "type": "ValueError",
+          "message": "generate request max_output_tokens must be greater than zero",
+          "recovery": {
+            "tokens": [
+              2,
+              8487,
+              53269,
+              436,
+              34810,
+              18887,
+              303,
+              12654,
+              271,
+              550,
+              29806,
+              271,
+              71093,
+              12305,
+              198,
+              464
+            ],
+            "batches": [
+              1,
+              1,
+              1,
+              3,
+              1,
+              3,
+              4,
+              2
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+              "ax_mtp_source_mtp_proposed_tokens": 16,
+              "ax_mtp_source_mtp_proposer_wall_us": 559,
+              "ax_mtp_source_mtp_rejected_tokens": 3,
+              "ax_mtp_source_mtp_submitted_tokens": 16
+            }
+          }
+        },
+        {
+          "case": "empty_prompt",
+          "type": "ValueError",
+          "message": "generate request requires input_tokens or input_text",
+          "recovery": {
+            "tokens": [
+              2,
+              8487,
+              53269,
+              436,
+              34810,
+              18887,
+              303,
+              12654,
+              271,
+              550,
+              29806,
+              271,
+              71093,
+              12305,
+              198,
+              464
+            ],
+            "batches": [
+              1,
+              1,
+              1,
+              3,
+              1,
+              3,
+              4,
+              2
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+              "ax_mtp_source_mtp_proposed_tokens": 16,
+              "ax_mtp_source_mtp_proposer_wall_us": 537,
+              "ax_mtp_source_mtp_rejected_tokens": 3,
+              "ax_mtp_source_mtp_submitted_tokens": 16
+            }
+          }
+        },
+        {
+          "case": "negative_budget",
+          "type": "OverflowError",
+          "message": "out of range integral type conversion attempted",
+          "recovery": {
+            "tokens": [
+              2,
+              8487,
+              53269,
+              436,
+              34810,
+              18887,
+              303,
+              12654,
+              271,
+              550,
+              29806,
+              271,
+              71093,
+              12305,
+              198,
+              464
+            ],
+            "batches": [
+              1,
+              1,
+              1,
+              3,
+              1,
+              3,
+              4,
+              2
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+              "ax_mtp_source_mtp_proposed_tokens": 16,
+              "ax_mtp_source_mtp_proposer_wall_us": 548,
+              "ax_mtp_source_mtp_rejected_tokens": 3,
+              "ax_mtp_source_mtp_submitted_tokens": 16
+            }
+          }
+        },
+        {
+          "case": "overflow_budget",
+          "type": "OverflowError",
+          "message": "out of range integral type conversion attempted",
+          "recovery": {
+            "tokens": [
+              2,
+              8487,
+              53269,
+              436,
+              34810,
+              18887,
+              303,
+              12654,
+              271,
+              550,
+              29806,
+              271,
+              71093,
+              12305,
+              198,
+              464
+            ],
+            "batches": [
+              1,
+              1,
+              1,
+              3,
+              1,
+              3,
+              4,
+              2
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+              "ax_mtp_source_mtp_proposed_tokens": 16,
+              "ax_mtp_source_mtp_proposer_wall_us": 527,
+              "ax_mtp_source_mtp_rejected_tokens": 3,
+              "ax_mtp_source_mtp_submitted_tokens": 16
+            }
+          }
+        }
+      ],
+      "extension_sha256": "014f9bf73848b08a4331e04a88eb4924e6df5ecb1706048b31347ac71cd26368",
+      "complete": true
+    },
+    {
+      "name": "cyber-baseline",
+      "started": 1789859517.9201732,
+      "ended": 1789859526.1872551,
+      "exit_code": 0,
+      "model": "AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+      "prompts": {
+        "coding": [
+          248045,
+          8678,
+          198,
+          2523,
+          513,
+          32499,
+          9009,
+          12656,
+          7415,
+          4175,
+          11,
+          264,
+          11096,
+          314,
+          84811,
+          402,
+          12,
+          16,
+          13,
+          20,
+          12,
+          18,
+          20,
+          33,
+          6481,
+          18,
+          33,
+          13,
+          21134,
+          5774,
+          321,
+          3413,
+          284,
+          943,
+          13,
+          20052,
+          279,
+          4087,
+          440,
+          1132,
+          1092,
+          424,
+          3749,
+          310,
+          381,
+          4252,
+          321,
+          38606,
+          13,
+          198,
+          25320,
+          25,
+          1724,
+          440,
+          86377,
+          466,
+          6879,
+          43873,
+          4395,
+          26,
+          311,
+          2374,
+          279,
+          3296,
+          26,
+          884,
+          52870,
+          32480,
+          26,
+          40289,
+          440,
+          16817,
+          24745,
+          26,
+          466,
+          12771,
+          264,
+          1406,
+          488,
+          2908,
+          2582,
+          1801,
+          13,
+          198,
+          35865,
+          25,
+          2426,
+          7326,
+          7123,
+          11,
+          24580,
+          1798,
+          11,
+          66441,
+          11,
+          321,
+          46737,
+          1892,
+          2496,
+          5758,
+          55404,
+          466,
+          264,
+          4221,
+          9663,
+          364,
+          193288,
+          477,
+          13,
+          13262,
+          279,
+          1534,
+          4087,
+          15192,
+          13,
+          5272,
+          279,
+          3140,
+          5759,
+          421,
+          384,
+          47612,
+          424,
+          318,
+          20139,
+          58655,
+          948,
+          2716,
+          26,
+          11140,
+          466,
+          1970,
+          1132,
+          948,
+          781,
+          7005,
+          836,
+          1925,
+          553,
+          1368,
+          34032,
+          33955,
+          11,
+          1910,
+          748,
+          321,
+          10033,
+          3069,
+          1892,
+          2496,
+          49325,
+          25969,
+          364,
+          279,
+          23708,
+          314,
+          193288,
+          477,
+          13,
+          198,
+          2592,
+          264,
+          1156,
+          1622,
+          369,
+          34032,
+          52920,
+          11,
+          2466,
+          264,
+          16724,
+          3296,
+          11,
+          1459,
+          914,
+          7692,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          60856,
+          264,
+          4368,
+          53269,
+          436,
+          34810,
+          6297,
+          303,
+          12654,
+          440,
+          615,
+          321,
+          2113,
+          5245,
+          11,
+          264,
+          8097,
+          8390,
+          11,
+          321,
+          4821,
+          6813,
+          13,
+          79091,
+          6607,
+          4886,
+          25899,
+          13,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ],
+        "single": [
+          42
+        ]
+      },
+      "valid": [
+        {
+          "prompt": "coding",
+          "budget": 1,
+          "repeat": 0,
+          "tokens": [
+            71093
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 1,
+          "repeat": 1,
+          "tokens": [
+            71093
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 2,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 543,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 2,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 541,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 3,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305,
+            198
+          ],
+          "batches": [
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 553,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 3,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305,
+            198
+          ],
+          "batches": [
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 535,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 4,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464
+          ],
+          "batches": [
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 526,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 4,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464
+          ],
+          "batches": [
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 543,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 5,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464,
+            29174
+          ],
+          "batches": [
+            1,
+            1,
+            3
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 545,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 5,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464,
+            29174
+          ],
+          "batches": [
+            1,
+            1,
+            3
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 554,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 16,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464,
+            29174,
+            198,
+            1445,
+            14856,
+            1120,
+            51425,
+            1358,
+            1005,
+            43072,
+            5287,
+            1714,
+            25
+          ],
+          "batches": [
+            1,
+            1,
+            4,
+            4,
+            2,
+            1,
+            3
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 4,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 9,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 14,
+            "ax_mtp_source_mtp_proposer_wall_us": 556,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 14
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 16,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464,
+            29174,
+            198,
+            1445,
+            14856,
+            1120,
+            51425,
+            1358,
+            1005,
+            43072,
+            5287,
+            1714,
+            25
+          ],
+          "batches": [
+            1,
+            1,
+            4,
+            4,
+            2,
+            1,
+            3
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 4,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 9,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 14,
+            "ax_mtp_source_mtp_proposer_wall_us": 549,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 14
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 1,
+          "repeat": 0,
+          "tokens": [
+            2075
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 1,
+          "repeat": 1,
+          "tokens": [
+            2075
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 2,
+          "repeat": 0,
+          "tokens": [
+            2075,
+            8350
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 524,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 2,
+          "repeat": 1,
+          "tokens": [
+            2075,
+            8350
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 542,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 4,
+          "repeat": 0,
+          "tokens": [
+            2075,
+            8350,
+            84,
+            19454
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 551,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 4,
+          "repeat": 1,
+          "tokens": [
+            2075,
+            8350,
+            84,
+            19454
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 528,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 5,
+          "repeat": 0,
+          "tokens": [
+            2075,
+            8350,
+            84,
+            19454,
+            318
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+            "ax_mtp_source_mtp_proposed_tokens": 7,
+            "ax_mtp_source_mtp_proposer_wall_us": 522,
+            "ax_mtp_source_mtp_rejected_tokens": 3,
+            "ax_mtp_source_mtp_submitted_tokens": 7
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 5,
+          "repeat": 1,
+          "tokens": [
+            2075,
+            8350,
+            84,
+            19454,
+            318
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+            "ax_mtp_source_mtp_proposed_tokens": 7,
+            "ax_mtp_source_mtp_proposer_wall_us": 520,
+            "ax_mtp_source_mtp_rejected_tokens": 3,
+            "ax_mtp_source_mtp_submitted_tokens": 7
+          }
+        }
+      ],
+      "rejected": [
+        {
+          "case": "zero_budget",
+          "type": "ValueError",
+          "message": "generate request max_output_tokens must be greater than zero",
+          "recovery": {
+            "tokens": [
+              71093,
+              12305,
+              198,
+              464,
+              29174,
+              198,
+              1445,
+              14856,
+              1120,
+              51425,
+              1358,
+              1005,
+              43072,
+              5287,
+              1714,
+              25
+            ],
+            "batches": [
+              1,
+              1,
+              4,
+              4,
+              2,
+              1,
+              3
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+              "ax_mtp_source_mtp_proposed_tokens": 14,
+              "ax_mtp_source_mtp_proposer_wall_us": 596,
+              "ax_mtp_source_mtp_rejected_tokens": 2,
+              "ax_mtp_source_mtp_submitted_tokens": 14
+            }
+          }
+        },
+        {
+          "case": "empty_prompt",
+          "type": "ValueError",
+          "message": "generate request requires input_tokens or input_text",
+          "recovery": {
+            "tokens": [
+              71093,
+              12305,
+              198,
+              464,
+              29174,
+              198,
+              1445,
+              14856,
+              1120,
+              51425,
+              1358,
+              1005,
+              43072,
+              5287,
+              1714,
+              25
+            ],
+            "batches": [
+              1,
+              1,
+              4,
+              4,
+              2,
+              1,
+              3
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+              "ax_mtp_source_mtp_proposed_tokens": 14,
+              "ax_mtp_source_mtp_proposer_wall_us": 554,
+              "ax_mtp_source_mtp_rejected_tokens": 2,
+              "ax_mtp_source_mtp_submitted_tokens": 14
+            }
+          }
+        },
+        {
+          "case": "negative_budget",
+          "type": "OverflowError",
+          "message": "out of range integral type conversion attempted",
+          "recovery": {
+            "tokens": [
+              71093,
+              12305,
+              198,
+              464,
+              29174,
+              198,
+              1445,
+              14856,
+              1120,
+              51425,
+              1358,
+              1005,
+              43072,
+              5287,
+              1714,
+              25
+            ],
+            "batches": [
+              1,
+              1,
+              4,
+              4,
+              2,
+              1,
+              3
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+              "ax_mtp_source_mtp_proposed_tokens": 14,
+              "ax_mtp_source_mtp_proposer_wall_us": 551,
+              "ax_mtp_source_mtp_rejected_tokens": 2,
+              "ax_mtp_source_mtp_submitted_tokens": 14
+            }
+          }
+        },
+        {
+          "case": "overflow_budget",
+          "type": "OverflowError",
+          "message": "out of range integral type conversion attempted",
+          "recovery": {
+            "tokens": [
+              71093,
+              12305,
+              198,
+              464,
+              29174,
+              198,
+              1445,
+              14856,
+              1120,
+              51425,
+              1358,
+              1005,
+              43072,
+              5287,
+              1714,
+              25
+            ],
+            "batches": [
+              1,
+              1,
+              4,
+              4,
+              2,
+              1,
+              3
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+              "ax_mtp_source_mtp_proposed_tokens": 14,
+              "ax_mtp_source_mtp_proposer_wall_us": 549,
+              "ax_mtp_source_mtp_rejected_tokens": 2,
+              "ax_mtp_source_mtp_submitted_tokens": 14
+            }
+          }
+        }
+      ],
+      "extension_sha256": "014f9bf73848b08a4331e04a88eb4924e6df5ecb1706048b31347ac71cd26368",
+      "complete": true
+    },
+    {
+      "name": "tiel-candidate",
+      "started": 1789859569.2560902,
+      "ended": 1789859577.778489,
+      "exit_code": 0,
+      "model": "AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+      "prompts": {
+        "coding": [
+          248045,
+          8678,
+          198,
+          15666,
+          5774,
+          321,
+          3413,
+          284,
+          943,
+          13,
+          20052,
+          279,
+          4087,
+          440,
+          1132,
+          1092,
+          424,
+          3749,
+          310,
+          381,
+          4252,
+          321,
+          38606,
+          13,
+          198,
+          25320,
+          25,
+          1724,
+          440,
+          86377,
+          466,
+          6879,
+          43873,
+          4395,
+          26,
+          311,
+          2374,
+          279,
+          3296,
+          26,
+          884,
+          52870,
+          32480,
+          26,
+          40289,
+          440,
+          16817,
+          24745,
+          26,
+          466,
+          12771,
+          264,
+          1406,
+          488,
+          2908,
+          2582,
+          1801,
+          13,
+          198,
+          35865,
+          25,
+          2426,
+          7326,
+          7123,
+          11,
+          24580,
+          1798,
+          11,
+          66441,
+          11,
+          321,
+          46737,
+          1892,
+          2496,
+          5758,
+          55404,
+          466,
+          264,
+          4221,
+          9663,
+          364,
+          193288,
+          477,
+          13,
+          13262,
+          279,
+          1534,
+          4087,
+          15192,
+          13,
+          5272,
+          279,
+          3140,
+          5759,
+          421,
+          384,
+          47612,
+          424,
+          318,
+          20139,
+          58655,
+          948,
+          2716,
+          26,
+          11140,
+          466,
+          1970,
+          1132,
+          948,
+          781,
+          7005,
+          836,
+          1925,
+          553,
+          1368,
+          34032,
+          33955,
+          11,
+          1910,
+          748,
+          321,
+          10033,
+          3069,
+          1892,
+          2496,
+          49325,
+          25969,
+          364,
+          279,
+          23708,
+          314,
+          193288,
+          477,
+          13,
+          198,
+          2592,
+          264,
+          1156,
+          1622,
+          369,
+          34032,
+          52920,
+          11,
+          2466,
+          264,
+          16724,
+          3296,
+          11,
+          1459,
+          914,
+          7692,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          60856,
+          264,
+          4368,
+          53269,
+          436,
+          34810,
+          6297,
+          303,
+          12654,
+          440,
+          615,
+          321,
+          2113,
+          5245,
+          11,
+          264,
+          8097,
+          8390,
+          11,
+          321,
+          4821,
+          6813,
+          13,
+          79091,
+          6607,
+          4886,
+          25899,
+          13,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ],
+        "single": [
+          42
+        ]
+      },
+      "valid": [
+        {
+          "prompt": "coding",
+          "budget": 1,
+          "repeat": 0,
+          "tokens": [
+            2
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 1,
+          "repeat": 1,
+          "tokens": [
+            2
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 2,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 541,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 2,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 526,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 3,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487,
+            53269
+          ],
+          "batches": [
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 522,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 3,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487,
+            53269
+          ],
+          "batches": [
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 528,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 4,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 2,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 538,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 4,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 2,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 564,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 5,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436,
+            34810
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 2,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 543,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 5,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436,
+            34810
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 2,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 2,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 539,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 16,
+          "repeat": 0,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436,
+            34810,
+            18887,
+            303,
+            12654,
+            271,
+            550,
+            29806,
+            271,
+            71093,
+            12305,
+            198,
+            464
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            3,
+            1,
+            3,
+            4,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 4,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 9,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+            "ax_mtp_source_mtp_proposed_tokens": 16,
+            "ax_mtp_source_mtp_proposer_wall_us": 527,
+            "ax_mtp_source_mtp_rejected_tokens": 3,
+            "ax_mtp_source_mtp_submitted_tokens": 16
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 16,
+          "repeat": 1,
+          "tokens": [
+            2,
+            8487,
+            53269,
+            436,
+            34810,
+            18887,
+            303,
+            12654,
+            271,
+            550,
+            29806,
+            271,
+            71093,
+            12305,
+            198,
+            464
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            3,
+            1,
+            3,
+            4,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 4,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 9,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+            "ax_mtp_source_mtp_proposed_tokens": 16,
+            "ax_mtp_source_mtp_proposer_wall_us": 546,
+            "ax_mtp_source_mtp_rejected_tokens": 3,
+            "ax_mtp_source_mtp_submitted_tokens": 16
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 1,
+          "repeat": 0,
+          "tokens": [
+            13
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 1,
+          "repeat": 1,
+          "tokens": [
+            13
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 2,
+          "repeat": 0,
+          "tokens": [
+            13,
+            710
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 523,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 2,
+          "repeat": 1,
+          "tokens": [
+            13,
+            710
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 535,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 4,
+          "repeat": 0,
+          "tokens": [
+            13,
+            710,
+            13,
+            443
+          ],
+          "batches": [
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 1,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 1,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 541,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 4,
+          "repeat": 1,
+          "tokens": [
+            13,
+            710,
+            13,
+            443
+          ],
+          "batches": [
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 1,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 1,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 537,
+            "ax_mtp_source_mtp_rejected_tokens": 1,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 5,
+          "repeat": 0,
+          "tokens": [
+            13,
+            710,
+            13,
+            443,
+            1264
+          ],
+          "batches": [
+            1,
+            1,
+            2,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 2,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 1,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 6,
+            "ax_mtp_source_mtp_proposer_wall_us": 544,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 6
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 5,
+          "repeat": 1,
+          "tokens": [
+            13,
+            710,
+            13,
+            443,
+            1264
+          ],
+          "batches": [
+            1,
+            1,
+            2,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 2,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 1,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 6,
+            "ax_mtp_source_mtp_proposer_wall_us": 537,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 6
+          }
+        }
+      ],
+      "rejected": [
+        {
+          "case": "zero_budget",
+          "type": "ValueError",
+          "message": "generate request max_output_tokens must be greater than zero",
+          "recovery": {
+            "tokens": [
+              2,
+              8487,
+              53269,
+              436,
+              34810,
+              18887,
+              303,
+              12654,
+              271,
+              550,
+              29806,
+              271,
+              71093,
+              12305,
+              198,
+              464
+            ],
+            "batches": [
+              1,
+              1,
+              1,
+              3,
+              1,
+              3,
+              4,
+              2
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+              "ax_mtp_source_mtp_proposed_tokens": 16,
+              "ax_mtp_source_mtp_proposer_wall_us": 595,
+              "ax_mtp_source_mtp_rejected_tokens": 3,
+              "ax_mtp_source_mtp_submitted_tokens": 16
+            }
+          }
+        },
+        {
+          "case": "empty_prompt",
+          "type": "ValueError",
+          "message": "generate request requires input_tokens or input_text",
+          "recovery": {
+            "tokens": [
+              2,
+              8487,
+              53269,
+              436,
+              34810,
+              18887,
+              303,
+              12654,
+              271,
+              550,
+              29806,
+              271,
+              71093,
+              12305,
+              198,
+              464
+            ],
+            "batches": [
+              1,
+              1,
+              1,
+              3,
+              1,
+              3,
+              4,
+              2
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+              "ax_mtp_source_mtp_proposed_tokens": 16,
+              "ax_mtp_source_mtp_proposer_wall_us": 544,
+              "ax_mtp_source_mtp_rejected_tokens": 3,
+              "ax_mtp_source_mtp_submitted_tokens": 16
+            }
+          }
+        },
+        {
+          "case": "negative_budget",
+          "type": "OverflowError",
+          "message": "out of range integral type conversion attempted",
+          "recovery": {
+            "tokens": [
+              2,
+              8487,
+              53269,
+              436,
+              34810,
+              18887,
+              303,
+              12654,
+              271,
+              550,
+              29806,
+              271,
+              71093,
+              12305,
+              198,
+              464
+            ],
+            "batches": [
+              1,
+              1,
+              1,
+              3,
+              1,
+              3,
+              4,
+              2
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+              "ax_mtp_source_mtp_proposed_tokens": 16,
+              "ax_mtp_source_mtp_proposer_wall_us": 530,
+              "ax_mtp_source_mtp_rejected_tokens": 3,
+              "ax_mtp_source_mtp_submitted_tokens": 16
+            }
+          }
+        },
+        {
+          "case": "overflow_budget",
+          "type": "OverflowError",
+          "message": "out of range integral type conversion attempted",
+          "recovery": {
+            "tokens": [
+              2,
+              8487,
+              53269,
+              436,
+              34810,
+              18887,
+              303,
+              12654,
+              271,
+              550,
+              29806,
+              271,
+              71093,
+              12305,
+              198,
+              464
+            ],
+            "batches": [
+              1,
+              1,
+              1,
+              3,
+              1,
+              3,
+              4,
+              2
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+              "ax_mtp_source_mtp_proposed_tokens": 16,
+              "ax_mtp_source_mtp_proposer_wall_us": 531,
+              "ax_mtp_source_mtp_rejected_tokens": 3,
+              "ax_mtp_source_mtp_submitted_tokens": 16
+            }
+          }
+        }
+      ],
+      "extension_sha256": "bbb312b6e1f067fe928e66ec3c1068e513a6fa67be3f8464dc5966e92e224bba",
+      "complete": true
+    },
+    {
+      "name": "cyber-candidate",
+      "started": 1789859577.778811,
+      "ended": 1789859586.0096982,
+      "exit_code": 0,
+      "model": "AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+      "prompts": {
+        "coding": [
+          248045,
+          8678,
+          198,
+          2523,
+          513,
+          32499,
+          9009,
+          12656,
+          7415,
+          4175,
+          11,
+          264,
+          11096,
+          314,
+          84811,
+          402,
+          12,
+          16,
+          13,
+          20,
+          12,
+          18,
+          20,
+          33,
+          6481,
+          18,
+          33,
+          13,
+          21134,
+          5774,
+          321,
+          3413,
+          284,
+          943,
+          13,
+          20052,
+          279,
+          4087,
+          440,
+          1132,
+          1092,
+          424,
+          3749,
+          310,
+          381,
+          4252,
+          321,
+          38606,
+          13,
+          198,
+          25320,
+          25,
+          1724,
+          440,
+          86377,
+          466,
+          6879,
+          43873,
+          4395,
+          26,
+          311,
+          2374,
+          279,
+          3296,
+          26,
+          884,
+          52870,
+          32480,
+          26,
+          40289,
+          440,
+          16817,
+          24745,
+          26,
+          466,
+          12771,
+          264,
+          1406,
+          488,
+          2908,
+          2582,
+          1801,
+          13,
+          198,
+          35865,
+          25,
+          2426,
+          7326,
+          7123,
+          11,
+          24580,
+          1798,
+          11,
+          66441,
+          11,
+          321,
+          46737,
+          1892,
+          2496,
+          5758,
+          55404,
+          466,
+          264,
+          4221,
+          9663,
+          364,
+          193288,
+          477,
+          13,
+          13262,
+          279,
+          1534,
+          4087,
+          15192,
+          13,
+          5272,
+          279,
+          3140,
+          5759,
+          421,
+          384,
+          47612,
+          424,
+          318,
+          20139,
+          58655,
+          948,
+          2716,
+          26,
+          11140,
+          466,
+          1970,
+          1132,
+          948,
+          781,
+          7005,
+          836,
+          1925,
+          553,
+          1368,
+          34032,
+          33955,
+          11,
+          1910,
+          748,
+          321,
+          10033,
+          3069,
+          1892,
+          2496,
+          49325,
+          25969,
+          364,
+          279,
+          23708,
+          314,
+          193288,
+          477,
+          13,
+          198,
+          2592,
+          264,
+          1156,
+          1622,
+          369,
+          34032,
+          52920,
+          11,
+          2466,
+          264,
+          16724,
+          3296,
+          11,
+          1459,
+          914,
+          7692,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          60856,
+          264,
+          4368,
+          53269,
+          436,
+          34810,
+          6297,
+          303,
+          12654,
+          440,
+          615,
+          321,
+          2113,
+          5245,
+          11,
+          264,
+          8097,
+          8390,
+          11,
+          321,
+          4821,
+          6813,
+          13,
+          79091,
+          6607,
+          4886,
+          25899,
+          13,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ],
+        "single": [
+          42
+        ]
+      },
+      "valid": [
+        {
+          "prompt": "coding",
+          "budget": 1,
+          "repeat": 0,
+          "tokens": [
+            71093
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 1,
+          "repeat": 1,
+          "tokens": [
+            71093
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 2,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 542,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 2,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 559,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 3,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305,
+            198
+          ],
+          "batches": [
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 553,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 3,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305,
+            198
+          ],
+          "batches": [
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 528,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 4,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464
+          ],
+          "batches": [
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 533,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 4,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464
+          ],
+          "batches": [
+            1,
+            1,
+            2
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 559,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 5,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464,
+            29174
+          ],
+          "batches": [
+            1,
+            1,
+            3
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 561,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 5,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464,
+            29174
+          ],
+          "batches": [
+            1,
+            1,
+            3
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 3,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 3,
+            "ax_mtp_source_mtp_proposer_wall_us": 530,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 3
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 16,
+          "repeat": 0,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464,
+            29174,
+            198,
+            1445,
+            14856,
+            1120,
+            51425,
+            1358,
+            1005,
+            43072,
+            5287,
+            1714,
+            25
+          ],
+          "batches": [
+            1,
+            1,
+            4,
+            4,
+            2,
+            1,
+            3
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 4,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 9,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 14,
+            "ax_mtp_source_mtp_proposer_wall_us": 552,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 14
+          }
+        },
+        {
+          "prompt": "coding",
+          "budget": 16,
+          "repeat": 1,
+          "tokens": [
+            71093,
+            12305,
+            198,
+            464,
+            29174,
+            198,
+            1445,
+            14856,
+            1120,
+            51425,
+            1358,
+            1005,
+            43072,
+            5287,
+            1714,
+            25
+          ],
+          "batches": [
+            1,
+            1,
+            4,
+            4,
+            2,
+            1,
+            3
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 4,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 9,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 14,
+            "ax_mtp_source_mtp_proposer_wall_us": 533,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 14
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 1,
+          "repeat": 0,
+          "tokens": [
+            2075
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 1,
+          "repeat": 1,
+          "tokens": [
+            2075
+          ],
+          "batches": [
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 0,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 2,
+          "repeat": 0,
+          "tokens": [
+            2075,
+            8350
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 554,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 2,
+          "repeat": 1,
+          "tokens": [
+            2075,
+            8350
+          ],
+          "batches": [
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 0,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 0,
+            "ax_mtp_source_mtp_proposed_tokens": 0,
+            "ax_mtp_source_mtp_proposer_wall_us": 533,
+            "ax_mtp_source_mtp_rejected_tokens": 0,
+            "ax_mtp_source_mtp_submitted_tokens": 0
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 4,
+          "repeat": 0,
+          "tokens": [
+            2075,
+            8350,
+            84,
+            19454
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 547,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 4,
+          "repeat": 1,
+          "tokens": [
+            2075,
+            8350,
+            84,
+            19454
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+            "ax_mtp_source_mtp_proposed_tokens": 5,
+            "ax_mtp_source_mtp_proposer_wall_us": 556,
+            "ax_mtp_source_mtp_rejected_tokens": 2,
+            "ax_mtp_source_mtp_submitted_tokens": 5
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 5,
+          "repeat": 0,
+          "tokens": [
+            2075,
+            8350,
+            84,
+            19454,
+            318
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+            "ax_mtp_source_mtp_proposed_tokens": 7,
+            "ax_mtp_source_mtp_proposer_wall_us": 548,
+            "ax_mtp_source_mtp_rejected_tokens": 3,
+            "ax_mtp_source_mtp_submitted_tokens": 7
+          }
+        },
+        {
+          "prompt": "single",
+          "budget": 5,
+          "repeat": 1,
+          "tokens": [
+            2075,
+            8350,
+            84,
+            19454,
+            318
+          ],
+          "batches": [
+            1,
+            1,
+            1,
+            1,
+            1
+          ],
+          "finish_reason": "max_output_tokens",
+          "mtp": {
+            "ax_mtp_drafted_depth2": 1,
+            "ax_mtp_requested": 1,
+            "ax_mtp_source_mtp_accepted_tokens": 0,
+            "ax_mtp_source_mtp_cascade_rejected_tokens": 4,
+            "ax_mtp_source_mtp_proposed_tokens": 7,
+            "ax_mtp_source_mtp_proposer_wall_us": 559,
+            "ax_mtp_source_mtp_rejected_tokens": 3,
+            "ax_mtp_source_mtp_submitted_tokens": 7
+          }
+        }
+      ],
+      "rejected": [
+        {
+          "case": "zero_budget",
+          "type": "ValueError",
+          "message": "generate request max_output_tokens must be greater than zero",
+          "recovery": {
+            "tokens": [
+              71093,
+              12305,
+              198,
+              464,
+              29174,
+              198,
+              1445,
+              14856,
+              1120,
+              51425,
+              1358,
+              1005,
+              43072,
+              5287,
+              1714,
+              25
+            ],
+            "batches": [
+              1,
+              1,
+              4,
+              4,
+              2,
+              1,
+              3
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+              "ax_mtp_source_mtp_proposed_tokens": 14,
+              "ax_mtp_source_mtp_proposer_wall_us": 565,
+              "ax_mtp_source_mtp_rejected_tokens": 2,
+              "ax_mtp_source_mtp_submitted_tokens": 14
+            }
+          }
+        },
+        {
+          "case": "empty_prompt",
+          "type": "ValueError",
+          "message": "generate request requires input_tokens or input_text",
+          "recovery": {
+            "tokens": [
+              71093,
+              12305,
+              198,
+              464,
+              29174,
+              198,
+              1445,
+              14856,
+              1120,
+              51425,
+              1358,
+              1005,
+              43072,
+              5287,
+              1714,
+              25
+            ],
+            "batches": [
+              1,
+              1,
+              4,
+              4,
+              2,
+              1,
+              3
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+              "ax_mtp_source_mtp_proposed_tokens": 14,
+              "ax_mtp_source_mtp_proposer_wall_us": 552,
+              "ax_mtp_source_mtp_rejected_tokens": 2,
+              "ax_mtp_source_mtp_submitted_tokens": 14
+            }
+          }
+        },
+        {
+          "case": "negative_budget",
+          "type": "OverflowError",
+          "message": "out of range integral type conversion attempted",
+          "recovery": {
+            "tokens": [
+              71093,
+              12305,
+              198,
+              464,
+              29174,
+              198,
+              1445,
+              14856,
+              1120,
+              51425,
+              1358,
+              1005,
+              43072,
+              5287,
+              1714,
+              25
+            ],
+            "batches": [
+              1,
+              1,
+              4,
+              4,
+              2,
+              1,
+              3
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+              "ax_mtp_source_mtp_proposed_tokens": 14,
+              "ax_mtp_source_mtp_proposer_wall_us": 559,
+              "ax_mtp_source_mtp_rejected_tokens": 2,
+              "ax_mtp_source_mtp_submitted_tokens": 14
+            }
+          }
+        },
+        {
+          "case": "overflow_budget",
+          "type": "OverflowError",
+          "message": "out of range integral type conversion attempted",
+          "recovery": {
+            "tokens": [
+              71093,
+              12305,
+              198,
+              464,
+              29174,
+              198,
+              1445,
+              14856,
+              1120,
+              51425,
+              1358,
+              1005,
+              43072,
+              5287,
+              1714,
+              25
+            ],
+            "batches": [
+              1,
+              1,
+              4,
+              4,
+              2,
+              1,
+              3
+            ],
+            "finish_reason": "max_output_tokens",
+            "mtp": {
+              "ax_mtp_drafted_depth2": 4,
+              "ax_mtp_requested": 1,
+              "ax_mtp_source_mtp_accepted_tokens": 9,
+              "ax_mtp_source_mtp_cascade_rejected_tokens": 3,
+              "ax_mtp_source_mtp_proposed_tokens": 14,
+              "ax_mtp_source_mtp_proposer_wall_us": 519,
+              "ax_mtp_source_mtp_rejected_tokens": 2,
+              "ax_mtp_source_mtp_submitted_tokens": 14
+            }
+          }
+        }
+      ],
+      "extension_sha256": "bbb312b6e1f067fe928e66ec3c1068e513a6fa67be3f8464dc5966e92e224bba",
+      "complete": true
+    }
+  ]
+}

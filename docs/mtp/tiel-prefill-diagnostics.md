@@ -79,3 +79,12 @@ builds used a PATH-only memory probe, which could silently disable this
 residency optimization. The [PATH regression evidence](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-19-path/README.md)
 compares both launch environments on the two audited packs. Unknown or
 unparseable memory still does not qualify for automatic unwiring.
+
+To inspect skipped application in native CLI/server logs, enable
+`RUST_LOG=ax_engine_mlx::runner=debug`. Startup debug events distinguish an
+operator override or active expert streaming, unknown/unreadable export
+metadata, and unknown/unqualified hardware. Hardware skips include detected
+memory and CPU brand; these events contain no model paths or metadata hashes.
+They describe the existing guards and do not change admission. Non-Tiel loads
+can also emit the metadata-skip event at debug level. Embedded library users
+need a tracing subscriber; the environment variable alone does not install one.
