@@ -16,20 +16,24 @@ reader = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reader)
 
 
-def tensor(shape):
+def tensor(shape, dtype=10, value_bits=None):
     count = 1
     for n in shape:
         count *= n
-    return (struct.pack("<BB6x4iQ", 10, len(shape), *(shape + [0] * (4 - len(shape))), count * 4)
-            + struct.pack(f"<{count}f", *([0.5] * count)))
+    if value_bits is None:
+        value_bits = {9: 0x3800, 10: 0x3F000000, 12: 0x3F00}[dtype]
+    value = struct.pack("<I" if dtype == 10 else "<H", value_bits)
+    return (struct.pack("<BB6x4iQ", dtype, len(shape),
+                        *(shape + [0] * (4 - len(shape))), count * len(value))
+            + value * count)
 
 
-def snapshot(tokens):
+def snapshot(tokens, dtype=10, value_bits=None):
     p = len(tokens)
     out = b"AXKB" + struct.pack("<IQQQIi", 4, p, 0, 0, 2, 0)
     layer = bytes([4]) + bytes(7) + struct.pack("<Q", 123)
     # One GDN layer carrying PLE, then one QSA layer with index state.
-    out += layer + bytes([0, 1]) + tensor([1, 2]) + tensor([1, 2])
+    out += layer + bytes([0, 1]) + tensor([1, 2], dtype, value_bits) + tensor([1, 2])
     out += bytes([1, 1]) + tensor([1, 2]) + struct.pack("<I2I", 2, *tokens[-2:][::-1])
     out += layer + bytes([1, 1]) + tensor([1, p, 1, 2]) * 2
     out += bytes([1]) + tensor([1, p, 1, 2]) + bytes([0])
@@ -163,6 +167,43 @@ class ReaderTests(unittest.TestCase):
                 row["logits_f32_le"] = self.blob("continuation.mtp.logits.f32", struct.pack(f"<{len(values)}f", *values))
                 with self.assertRaises(ValueError):
                     self.verify()
+
+    def test_identical_nonfinite_states_cannot_pass_with_valid_hashes(self):
+        pair = self.data["aligned_states"][0]
+        for dtype, patterns in (
+            (9, (0x7C00, 0xFC00, 0x7E00, 0x7C01, 0xFE01)),
+            (10, (0x7F800000, 0xFF800000, 0x7FC00000, 0x7F800001, 0xFFC00001)),
+            (12, (0x7F80, 0xFF80, 0x7FC0, 0x7F81, 0xFFC1)),
+        ):
+            for pattern in patterns:
+                with self.subTest(dtype=dtype, bits=hex(pattern)):
+                    raw = snapshot((self.prompt + self.tokens)[:5], dtype, pattern)
+                    for mode in ("direct", "mtp"):
+                        pair[mode] = self.blob(pair[mode]["file"], raw)
+                    with self.assertRaisesRegex(ValueError, "Nonfinite state tensor"):
+                        self.verify()
+
+    def test_finite_state_extremes_and_subnormals_are_valid(self):
+        for dtype, patterns in (
+            (9, (0, 0x8000, 1, 0x8001, 0x7BFF, 0xFBFF)),
+            (10, (0, 0x80000000, 1, 0x80000001, 0x7F7FFFFF, 0xFF7FFFFF)),
+            (12, (0, 0x8000, 1, 0x8001, 0x7F7F, 0xFF7F)),
+        ):
+            for pattern in patterns:
+                with self.subTest(dtype=dtype, bits=hex(pattern)):
+                    raw = snapshot(self.prompt, dtype, pattern)
+                    self.assertEqual(len(reader.state_layout(
+                        raw, 3, self.prompt, [[99, 99], None])), 2)
+
+    def test_continuation_last_tensor_is_also_checked(self):
+        pair = self.data["continuation"]["state"]
+        for mode in ("direct", "mtp"):
+            raw = bytearray((self.root / pair[mode]["file"]).read_bytes())
+            # Last QSA index value, immediately before the absent-PLE tag.
+            raw[-5:-1] = struct.pack("<I", 0x7FC00000)
+            pair[mode] = self.blob(pair[mode]["file"], raw)
+        with self.assertRaisesRegex(ValueError, "Nonfinite state tensor"):
+            self.verify()
 
 
 if __name__ == "__main__":

@@ -59,7 +59,13 @@ def state_layout(raw, position, tokens, initial_histories):
         require(dtype in (9, 10, 12) and 1 <= ndim <= 4, "Invalid state tensor type")
         require(all(n > 0 for n in shape[:ndim]) and not any(shape[ndim:]), "Invalid tensor shape")
         require(size == math.prod(shape[:ndim]) * (4 if dtype == 10 else 2), "Tensor size mismatch")
-        take(size)
+        payload = take(size)
+        # Check exponent bits directly, including BF16 and signaling NaNs.
+        # Equality alone would admit two identically invalid checkpoints.
+        fmt, exponent = {9: ("<H", 0x7C00), 10: ("<I", 0x7F800000),
+                         12: ("<H", 0x7F80)}[dtype]
+        require(all(bits & exponent != exponent for bits, in struct.iter_unpack(fmt, payload)),
+                "Nonfinite state tensor")
         return (dtype, shape[:ndim])
 
     require(take(4) == b"AXKB", "Not AXKB")
