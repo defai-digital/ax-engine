@@ -214,6 +214,11 @@ missing or an alias is unknown, `download` prints the same target list. The
 JSON form of `download --list` emits an `ax.download_options.v1` document for
 automation.
 
+The development Tiel packs are available as `tiel-coder-35b:axq` and
+`cyber-tiel-coder-35b:axq`. Both include a depth-1 HF per-expert MTP sidecar;
+serve with `--mlx-mtp-policy required` to require native MTP admission. The
+default `auto` policy does not promote these unqualified linear-Qwen packs.
+
 Best practice is to keep the default Hugging Face Hub cache destination. That
 cache is shared with `mlx-lm` and `huggingface_hub`, and its location is
 controlled by `HF_HUB_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`. Use `--dest` only

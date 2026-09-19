@@ -789,6 +789,34 @@ AUTOMATOSX_MODEL_PROFILES = (
         ),
         preset="ornith-35b",
     ),
+    # Tiel 35B-A3B MXFP4 packs use the same qwen3_5_moe trunk and complete
+    # 785-tensor HF per-expert MTP sidecar contract as Ornith 1.5.
+    _automatosx_profile(
+        "ax-tiel-coder-35b",
+        "AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        (
+            "ax-tiel-coder-35b-a3b",
+            "ax-tiel-coder-35b-mxfp4",
+            "tiel-coder-35b",
+            "tiel-coder-35b-a3b",
+            "tiel-coder-35b:axq",
+            "tiel-coder-35b:axq-mxfp4",
+        ),
+        preset="ornith-35b",
+    ),
+    _automatosx_profile(
+        "ax-cyber-tiel-coder-35b",
+        "AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        (
+            "ax-cyber-tiel-coder-35b-a3b",
+            "ax-cyber-tiel-coder-35b-mxfp4",
+            "cyber-tiel-coder-35b",
+            "cyber-tiel-coder-35b-a3b",
+            "cyber-tiel-coder-35b:axq",
+            "cyber-tiel-coder-35b:axq-mxfp4",
+        ),
+        preset="ornith-35b",
+    ),
     # Muse-Glimmer 30B AXQ packs: dense image-text agent, no MTP.
     # Development / not certified — pin revisions like other AXQ candidates.
     _automatosx_profile(
@@ -1133,6 +1161,12 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP": (
         "22cbca366b6b4f767bb7e71f9e6105f932878f42"
     ),
+    "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP": (
+        "5ab39b24bfd7f65203be9b7823b1840486f58b6d"
+    ),
+    "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP": (
+        "fe05e871ec69ad9ae8eac01fd285555514ac7daf"
+    ),
     "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit": (
         "bcfb0b748fc44487c1657fb6ae190592d515398b"
     ),
@@ -1180,6 +1214,8 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",

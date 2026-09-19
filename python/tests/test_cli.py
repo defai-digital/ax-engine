@@ -57,6 +57,8 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
     "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
     "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
@@ -126,7 +128,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 90)
+        self.assertEqual(len(targets), 92)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -136,6 +138,19 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertTrue(
             all(not target["repo_id"].startswith("mlx-community/") for target in targets)
         )
+        by_alias = {target["alias"]: target for target in targets}
+        for alias, revision in (
+            ("ax-tiel-coder-35b", "5ab39b24bfd7f65203be9b7823b1840486f58b6d"),
+            (
+                "ax-cyber-tiel-coder-35b",
+                "fe05e871ec69ad9ae8eac01fd285555514ac7daf",
+            ),
+        ):
+            target = by_alias[alias]
+            self.assertEqual(target["revision"], revision)
+            self.assertEqual(target["preset"], "ornith-35b")
+            self.assertEqual(target["certification"], "candidate")
+            self.assertTrue(target["mtp_included"])
 
     def test_secondary_profile_aliases_resolve_repos(self) -> None:
         cases = {
@@ -277,6 +292,16 @@ class AxEngineCliTests(unittest.TestCase):
                 "22cbca366b6b4f767bb7e71f9e6105f932878f42",
                 "candidate",
             ),
+            "tiel-coder-35b:axq": (
+                "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+                "5ab39b24bfd7f65203be9b7823b1840486f58b6d",
+                "candidate",
+            ),
+            "cyber-tiel-coder-35b:axq": (
+                "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+                "fe05e871ec69ad9ae8eac01fd285555514ac7daf",
+                "candidate",
+            ),
             "muse-glimmer-30b:axq": (
                 "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
                 "367745bd05b77bf82188f3799677e4beba543e8d",
@@ -401,6 +426,10 @@ class AxEngineCliTests(unittest.TestCase):
             ("ornith-35b:axq", "ornith-35b"),
             ("ornith-1.5-35b:axq", "ornith-35b"),
             ("ax-ornith-1.5-35b", "ornith-35b"),
+            ("tiel-coder-35b:axq", "ornith-35b"),
+            ("ax-tiel-coder-35b", "ornith-35b"),
+            ("cyber-tiel-coder-35b:axq", "ornith-35b"),
+            ("ax-cyber-tiel-coder-35b", "ornith-35b"),
             ("muse-glimmer-30b:axq", "muse-glimmer-30b"),
             ("ax-holo3-35b", "holo3-35b"),
             ("ax-ornith-35b", "ornith-35b"),
@@ -1676,7 +1705,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 36)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 38)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

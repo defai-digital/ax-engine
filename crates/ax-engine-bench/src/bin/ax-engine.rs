@@ -135,6 +135,12 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP" => {
             Some("22cbca366b6b4f767bb7e71f9e6105f932878f42")
         }
+        "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP" => {
+            Some("5ab39b24bfd7f65203be9b7823b1840486f58b6d")
+        }
+        "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP" => {
+            Some("fe05e871ec69ad9ae8eac01fd285555514ac7daf")
+        }
         "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit" => {
             Some("93d9991a3636c6c46cb92e711d11f1be5de96b6a")
         }
@@ -193,6 +199,8 @@ fn profile_certification(profile: ModelProfile) -> Option<&'static str> {
         | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit"
         | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP"
         | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP"
+        | "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP"
+        | "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP"
         | "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP"
         | "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP"
         | "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP"
@@ -1215,6 +1223,36 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         ],
         downloadable: true,
         approx_size_bytes: Some(33822830592),
+    },
+    ModelProfile {
+        label: "ax-tiel-coder-35b",
+        preset: Some("ornith-35b"),
+        repo_id: "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        aliases: &[
+            "ax-tiel-coder-35b-a3b",
+            "ax-tiel-coder-35b-mxfp4",
+            "tiel-coder-35b",
+            "tiel-coder-35b-a3b",
+            "tiel-coder-35b:axq",
+            "tiel-coder-35b:axq-mxfp4",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(22042136231),
+    },
+    ModelProfile {
+        label: "ax-cyber-tiel-coder-35b",
+        preset: Some("ornith-35b"),
+        repo_id: "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        aliases: &[
+            "ax-cyber-tiel-coder-35b-a3b",
+            "ax-cyber-tiel-coder-35b-mxfp4",
+            "cyber-tiel-coder-35b",
+            "cyber-tiel-coder-35b-a3b",
+            "cyber-tiel-coder-35b:axq",
+            "cyber-tiel-coder-35b:axq-mxfp4",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(22042136509),
     },
     ModelProfile {
         label: "ax-qwen3-asr-1.7b",
@@ -4482,7 +4520,7 @@ mod tests {
         assert!(!value.to_string().contains('\n'));
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 78] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 80] = [
         "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
@@ -4514,6 +4552,8 @@ mod tests {
         "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit",
         "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit",
         "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP",
+        "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
         "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
         "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
         "AutomatosX/AX-Qwen3-Coder-Next-MLX-4bit",
@@ -4578,12 +4618,31 @@ mod tests {
         assert_eq!(actual, expected);
         assert_eq!(targets.len(), EXPECTED_AUTOMATOSX_REPOS.len());
         assert!(targets.iter().all(|target| target["alias"] != "gemma4-12b"));
+        for (alias, revision) in [
+            (
+                "ax-tiel-coder-35b",
+                "5ab39b24bfd7f65203be9b7823b1840486f58b6d",
+            ),
+            (
+                "ax-cyber-tiel-coder-35b",
+                "fe05e871ec69ad9ae8eac01fd285555514ac7daf",
+            ),
+        ] {
+            let target = targets
+                .iter()
+                .find(|target| target["alias"] == alias)
+                .expect("Tiel target must be present");
+            assert_eq!(target["revision"], revision);
+            assert_eq!(target["preset"], "ornith-35b");
+            assert_eq!(target["certification"], "candidate");
+            assert_eq!(target["mtp_included"], true);
+        }
         assert_eq!(
             targets
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            33
+            35
         );
     }
 

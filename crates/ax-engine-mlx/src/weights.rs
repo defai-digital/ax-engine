@@ -2872,8 +2872,8 @@ fn mtp_take_mxfp4_experts(
 /// (`{mlp}.experts.{N}.{gate,up,down}_proj`) into packed `gate_up_exps` +
 /// `down_exps`.
 ///
-/// AXQuant Ornith 1.5 / Qwen3.5-MoE sidecars ship one BF16 projection per
-/// expert instead of stacked `mlp.gate_proj` or fused
+/// AXQuant Qwen3.5-MoE sidecars (including Ornith 1.5 and Tiel) ship one BF16
+/// projection per expert instead of stacked `mlp.gate_proj` or fused
 /// `mlp.experts.gate_up_proj`. Layout 1/2 miss that naming and previously
 /// dropped the whole MTP head (`return None`). Fail closed on a gap in the
 /// expert index, mixed quantization, or a count that does not match the
@@ -3367,6 +3367,28 @@ fn load_vision_sidecar(
     Ok(Some(info))
 }
 
+/// Normalize the namespace emitted by Qwen3.5-MoE HF MTP sidecars.
+fn normalize_mtp_sidecar_namespace(
+    tensors: HashMap<String, MlxArray>,
+) -> Option<HashMap<String, MlxArray>> {
+    let mut normalized = HashMap::with_capacity(tensors.len());
+    for (name, tensor) in tensors {
+        let normalized_name = name
+            .strip_prefix("language_model.mtp.")
+            .map(|suffix| format!("mtp.{suffix}"))
+            .unwrap_or(name);
+        if normalized.insert(normalized_name.clone(), tensor).is_some() {
+            tracing::error!(
+                target = "ax_engine_mlx",
+                tensor = normalized_name,
+                "MTP sidecar namespace normalization produced a duplicate tensor"
+            );
+            return None;
+        }
+    }
+    Some(normalized)
+}
+
 /// Load the MTP sidecar file (`mtp.safetensors`) if present alongside the main model.
 ///
 /// Adds sidecar tensors into `name_map` and returns
@@ -3411,9 +3433,12 @@ fn load_mtp_sidecar(
     if !sidecar.exists() {
         return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
-    let tensors = match load_safetensors(&sidecar, None) {
-        Ok(t) => t,
-        Err(_) => return (0, default_draft, None, None, MtpNormLayout::Auto),
+    let tensors = match load_safetensors(&sidecar, None)
+        .ok()
+        .and_then(normalize_mtp_sidecar_namespace)
+    {
+        Some(t) => t,
+        None => return (0, default_draft, None, None, MtpNormLayout::Auto),
     };
     if !tensors.is_empty() {
         let refs: Vec<&MlxArray> = tensors.values().collect();
@@ -3959,7 +3984,7 @@ fn load_mtp(
     //   1) mlp.{gate,up,down}_proj stacked experts (legacy / HF-style)
     //   2) mlp.experts.gate_up_proj + mlp.experts.down_proj (Qwen3.5/3.6 MoE
     //      A3B sidecars from axquant; matches main-model FfnGateUpExpsPacked)
-    //   3) mlp.experts.{N}.{gate,up,down}_proj (HF per-expert; Ornith 1.5)
+    //   3) mlp.experts.{N}.{gate,up,down}_proj (HF per-expert Qwen3.5 MoE)
     let mut gate_exps = mtp_take_weight(name_map, &format!("{p}.mlp.gate_proj"), bits);
     let mut up_exps = mtp_take_weight(name_map, &format!("{p}.mlp.up_proj"), bits);
     let mut down_exps = mtp_take_weight(name_map, &format!("{p}.mlp.down_proj"), bits)
@@ -9455,28 +9480,84 @@ mod tests {
     }
 
     #[test]
-    fn load_mtp_attaches_real_ornith_per_expert_sidecar_when_configured() {
+    fn normalize_mtp_sidecar_namespace_accepts_tiel_language_model_prefix() {
+        let tensors = HashMap::from([
+            (
+                "language_model.mtp.fc.weight".to_string(),
+                zeros(&[2, 2], MlxDtype::Bfloat16, None),
+            ),
+            (
+                "mtp.norm.weight".to_string(),
+                zeros(&[2], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+        let normalized = normalize_mtp_sidecar_namespace(tensors)
+            .expect("Tiel MTP namespace must normalize without ambiguity");
+
+        assert!(normalized.contains_key("mtp.fc.weight"));
+        assert!(normalized.contains_key("mtp.norm.weight"));
+        assert!(!normalized.contains_key("language_model.mtp.fc.weight"));
+    }
+
+    #[test]
+    fn normalize_mtp_sidecar_namespace_rejects_duplicate_canonical_key() {
+        let tensors = HashMap::from([
+            (
+                "language_model.mtp.fc.weight".to_string(),
+                zeros(&[2, 2], MlxDtype::Bfloat16, None),
+            ),
+            (
+                "mtp.fc.weight".to_string(),
+                zeros(&[2, 2], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+
+        assert!(
+            normalize_mtp_sidecar_namespace(tensors).is_none(),
+            "ambiguous MTP sidecar namespaces must fail closed"
+        );
+    }
+
+    #[test]
+    fn load_mtp_attaches_real_qwen35_per_expert_sidecar_when_configured() {
         if std::env::var("AX_ENGINE_MLX_LOAD_REAL_WEIGHTS").as_deref() != Ok("1") {
             return;
         }
         let Ok(model_dir) = std::env::var("AX_ENGINE_MLX_REAL_MODEL_DIR") else {
             return;
         };
-        let sidecar = Path::new(&model_dir).join("mtp.safetensors");
-        let mut name_map = load_safetensors(&sidecar, None).expect("real MTP sidecar should load");
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": "ax.native_model.v1",
+                "model_family": "qwen3_5_moe",
+                "tensor_format": "safetensors",
+                "layer_count": 40,
+                "hidden_size": 2048,
+                "attention_head_count": 16,
+                "attention_head_dim": 256,
+                "kv_head_count": 2,
+                "vocab_size": 248320,
+                "tensors": []
+            }))
+            .expect("minimal Qwen3.5-MoE manifest fixture should deserialize");
+        let mut name_map = HashMap::new();
+        let (max_depth, draft_sampling, sidecar_bits, draft_lm_head, norm_layout) =
+            load_mtp_sidecar(Path::new(&model_dir), &mut name_map, &manifest);
+        assert!(max_depth >= 1);
+        assert_eq!(norm_layout, MtpNormLayout::RawHfDelta);
         let hidden = 2048i32;
         let lm_head =
             QuantizedWeight::new(zeros(&[16, hidden], MlxDtype::Bfloat16, None), None, None);
         let mtp = load_mtp(
             &mut name_map,
             &lm_head,
-            1,
-            MlxSamplingParams::new(0.0, 1.0, 0),
-            None,
-            None,
-            MtpNormLayout::Auto,
+            max_depth,
+            draft_sampling,
+            sidecar_bits,
+            draft_lm_head,
+            norm_layout,
         )
-        .expect("Ornith 1.5 HF per-expert MTP sidecar must attach");
+        .expect("Qwen3.5-MoE HF per-expert MTP sidecar must attach");
         assert!(mtp.ffn_layer.router_proj.is_some());
         let packed = mtp
             .ffn_layer
