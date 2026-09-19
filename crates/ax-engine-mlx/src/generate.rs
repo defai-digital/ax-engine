@@ -466,6 +466,33 @@ fn prefill_time_debug_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1"))
 }
 
+/// AX_MLX_PREFILL_TIME_DEBUG phase-mark helpers for the MTP-history prefill
+/// path (`chunked_prefill_with_mtp_history_and_sampling_buffers`). The mark
+/// is `None` unless the diagnostic is enabled, so the off path never
+/// constructs an `Instant`.
+fn mtp_time_mark(enabled: bool) -> Option<std::time::Instant> {
+    enabled.then(std::time::Instant::now)
+}
+
+/// Elapsed microseconds since the mark was armed, re-arming the mark at the
+/// split point so consecutive phases account sequentially. 0 when the
+/// diagnostic is off.
+fn mtp_time_split_us(mark: &mut Option<std::time::Instant>) -> u128 {
+    match mark.take() {
+        Some(t) => {
+            let us = t.elapsed().as_micros();
+            *mark = Some(std::time::Instant::now());
+            us
+        }
+        None => 0,
+    }
+}
+
+/// Total microseconds since a start mark; 0 when the diagnostic is off.
+fn mtp_time_elapsed_us(started: &Option<std::time::Instant>) -> u128 {
+    started.as_ref().map_or(0, |t| t.elapsed().as_micros())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn chunked_prefill_with_sampling_buffers(
     cfg: &ModelConfig,
@@ -1036,6 +1063,15 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
 
+    // AX_MLX_PREFILL_TIME_DEBUG=1 phase timing (diagnostic only): one
+    // fixed-key stderr row per chunk plus a final summary row. No evals,
+    // graph, sampling, or history changes are introduced; with the env off
+    // no Instant is constructed on this path.
+    let time_debug = crate::fastpath::prefill_time_debug_env();
+    let dbg_fn_started = mtp_time_mark(time_debug);
+    let mut dbg_chunks = 0usize;
+    let mut dbg_retained_chunks = 0usize;
+
     // Retain exactly the prompt suffix requested by the MTP warmup policy.
     // Previously the mlx-lm-style n-1 cache-only path returned only the last
     // prompt row, so AX_MLX_MTP_WARMUP_CAP=0 did not actually preserve full
@@ -1062,8 +1098,12 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
     while offset < cache_only_end {
         let end = (offset + chunk_size).min(cache_only_end);
         let chunk = &prompt_tokens[offset..end];
+        let dbg_chunk_started = mtp_time_mark(time_debug);
+        let mut dbg_mark = mtp_time_mark(time_debug);
         let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
         cache.advance(chunk.len());
+        let dbg_build_us = mtp_time_split_us(&mut dbg_mark);
+        let mut dbg_eval_us = 0u128;
         if end == cache_only_end || crate::fastpath::cache_only_chunk_eval_enabled() {
             let is_final = end == cache_only_end;
             if crate::fastpath::cache_only_chunk_should_async_eval(is_final) {
@@ -1071,6 +1111,19 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             } else {
                 eval_kv_refs(cache);
             }
+            dbg_eval_us = mtp_time_split_us(&mut dbg_mark);
+        }
+        if time_debug {
+            dbg_chunks += 1;
+            eprintln!(
+                "AX_PREFILL_TIME_DEBUG mtp_chunk phase=cache_only prompt_len={} chunk_len={} chunk_offset={} graph_build_us={} history_prep_us=0 eval_wait_us={} sample_us=0 retained_mat_us=0 clear_cache_us=0 chunk_total_us={}",
+                total,
+                chunk.len(),
+                offset,
+                dbg_build_us,
+                dbg_eval_us,
+                mtp_time_elapsed_us(&dbg_chunk_started),
+            );
         }
         offset = end;
     }
@@ -1081,6 +1134,9 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
         let chunk = &prompt_tokens[offset..end];
         let is_final_chunk = end == total;
         let chunk_offset = cache.seq_len();
+
+        let dbg_chunk_started = mtp_time_mark(time_debug);
+        let mut dbg_mark = mtp_time_mark(time_debug);
 
         if is_final_chunk || end > history_start {
             // Use last-position-only lm_head to avoid seq×vocab matmul on
@@ -1093,6 +1149,7 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
                 chunk_offset,
             );
             cache.advance(chunk.len());
+            let dbg_build_us = mtp_time_split_us(&mut dbg_mark);
 
             let keep_from = history_start.max(offset);
             let retained_hidden = if keep_from == offset {
@@ -1108,13 +1165,38 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
                 )
             };
             retained_hidden_chunks.push(retained_hidden);
+            let dbg_hist_us = mtp_time_split_us(&mut dbg_mark);
+            if time_debug {
+                dbg_retained_chunks += 1;
+            }
 
             if !is_final_chunk {
                 maybe_async_eval_intermediate_qwen_prefill(cfg, cache, false);
+                let dbg_eval_us = mtp_time_split_us(&mut dbg_mark);
+                if time_debug {
+                    dbg_chunks += 1;
+                    eprintln!(
+                        "AX_PREFILL_TIME_DEBUG mtp_chunk phase=retained_mid prompt_len={} chunk_len={} chunk_offset={} graph_build_us={} history_prep_us={} eval_wait_us={} sample_us=0 retained_mat_us=0 clear_cache_us=0 chunk_total_us={}",
+                        total,
+                        chunk.len(),
+                        offset,
+                        dbg_build_us,
+                        dbg_hist_us,
+                        dbg_eval_us,
+                        mtp_time_elapsed_us(&dbg_chunk_started),
+                    );
+                }
                 offset = end;
                 continue;
             }
 
+            // Sampling boundary for the retained_final row: sample_us spans
+            // the existing final-chunk barrier sequence only —
+            // eval_with_kv_refs materializes the final logits (plus final
+            // chunk KV refs), then argmax or sample_prefill_token_gpu_first
+            // runs (its GPU-first path may eval the logits again). Nothing
+            // is added, removed, or reordered; only the wall is observed,
+            // so eval_wait_us stays 0 on this row by construction.
             let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
                 eval_with_kv_refs(&last_logits, cache);
                 sample_prefill_token_gpu_first(
@@ -1132,6 +1214,10 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
                 eval_with_kv_refs(&token_arr, cache);
                 token_arr.data_u32()[0]
             };
+            let dbg_sample_us = mtp_time_split_us(&mut dbg_mark);
+            // retained_mat_us spans: retained concat (or single-chunk move),
+            // history token vec build, debug shape assert, and the
+            // eval(&[&retained_hidden]) materialization barrier.
             let retained_hidden = if retained_hidden_chunks.len() == 1 {
                 retained_hidden_chunks.swap_remove(0)
             } else {
@@ -1148,7 +1234,36 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             // Materialize retained history before clear_cache() so decode can
             // slice it safely while priming the MTP head cache.
             eval(&[&retained_hidden]);
+            let dbg_mat_us = mtp_time_split_us(&mut dbg_mark);
             clear_cache();
+            let dbg_clear_us = mtp_time_split_us(&mut dbg_mark);
+            if time_debug {
+                dbg_chunks += 1;
+                eprintln!(
+                    "AX_PREFILL_TIME_DEBUG mtp_chunk phase=retained_final prompt_len={} chunk_len={} chunk_offset={} graph_build_us={} history_prep_us={} eval_wait_us=0 sample_us={} retained_mat_us={} clear_cache_us={} chunk_total_us={}",
+                    total,
+                    chunk.len(),
+                    offset,
+                    dbg_build_us,
+                    dbg_hist_us,
+                    dbg_sample_us,
+                    dbg_mat_us,
+                    dbg_clear_us,
+                    mtp_time_elapsed_us(&dbg_chunk_started),
+                );
+                eprintln!(
+                    "AX_PREFILL_TIME_DEBUG mtp_final prompt_len={} cache_only_prefix_len={} cache_only_end={} history_cap={} history_start={} chunk_size={} chunks={} retained_chunks={} total_us={}",
+                    total,
+                    cache_only_prefix_len,
+                    cache_only_end,
+                    history_cap,
+                    history_start,
+                    chunk_size,
+                    dbg_chunks,
+                    dbg_retained_chunks,
+                    mtp_time_elapsed_us(&dbg_fn_started),
+                );
+            }
             return (tok, retained_hidden, history_tokens);
         } else {
             // Non-final chunk: skip lm_head. Qwen 3.6 27B p2048 is two 1024
@@ -1157,7 +1272,21 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             // Other families keep the lazy chain until the final barrier.
             let _hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
             cache.advance(chunk.len());
+            let dbg_build_us = mtp_time_split_us(&mut dbg_mark);
             maybe_async_eval_intermediate_qwen_prefill(cfg, cache, false);
+            let dbg_eval_us = mtp_time_split_us(&mut dbg_mark);
+            if time_debug {
+                dbg_chunks += 1;
+                eprintln!(
+                    "AX_PREFILL_TIME_DEBUG mtp_chunk phase=cache_mid prompt_len={} chunk_len={} chunk_offset={} graph_build_us={} history_prep_us=0 eval_wait_us={} sample_us=0 retained_mat_us=0 clear_cache_us=0 chunk_total_us={}",
+                    total,
+                    chunk.len(),
+                    offset,
+                    dbg_build_us,
+                    dbg_eval_us,
+                    mtp_time_elapsed_us(&dbg_chunk_started),
+                );
+            }
             offset = end;
         }
     }
@@ -1682,6 +1811,33 @@ pub fn decode_step_with_sampling_buffers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mtp_time_helpers_off_path_never_construct_instants() {
+        // Off-path guarantee for the AX_MLX_PREFILL_TIME_DEBUG phase timing:
+        // a disabled mark is None and splits read as 0 without any clock.
+        let mark = mtp_time_mark(false);
+        assert!(mark.is_none());
+        let mut mark = mark;
+        assert_eq!(mtp_time_split_us(&mut mark), 0);
+        assert_eq!(mtp_time_elapsed_us(&mark), 0);
+        // Enabled marks are Some and split re-arms in place. Instead of
+        // sleeping, backdate the arm point by 2 ms via checked_sub (no
+        // unwrap) so the split is deterministically >= 2000 us. Do NOT
+        // compare two consecutive intervals for monotonicity — the clock is
+        // monotonic, per-interval durations are not — and do not assert a
+        // fresh arm splits at exactly 0 (scheduling can inflate any single
+        // interval). Timing boundaries themselves are unchanged.
+        let mut on = mtp_time_mark(true);
+        assert!(on.is_some());
+        if let Some(mark) = on.as_mut()
+            && let Some(backdated) = mark.checked_sub(std::time::Duration::from_millis(2))
+        {
+            *mark = backdated;
+        }
+        assert!(mtp_time_split_us(&mut on) >= 2000);
+        assert!(on.is_some(), "split must re-arm an enabled mark");
+    }
 
     #[test]
     fn mlx_lm_style_prefill_leaves_final_prompt_token_for_step() {
