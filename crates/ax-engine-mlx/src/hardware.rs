@@ -176,7 +176,6 @@ fn detect_silicon_generation() -> Option<u32> {
         return None;
     }
     sysctl_string(&["-n", "machdep.cpu.brand_string"])
-        .or_else(|| command_stdout("/usr/sbin/sysctl", &["-n", "machdep.cpu.brand_string"]))
         .and_then(|brand| parse_apple_m_series_generation(&brand))
 }
 
@@ -185,13 +184,13 @@ fn detect_macos_version() -> (Option<u32>, Option<u32>) {
         return (None, None);
     }
     let raw = sysctl_string(&["-n", "kern.osproductversion"])
-        .or_else(|| command_stdout("/usr/sbin/sysctl", &["-n", "kern.osproductversion"]))
         .or_else(|| command_stdout("/usr/bin/sw_vers", &["-productVersion"]));
     raw.map(|version| parse_macos_major_minor(&version))
         .unwrap_or((None, None))
 }
 
-fn sysctl_string(args: &[&str]) -> Option<String> {
+/// Read a sysctl value even when a service's PATH omits /usr/sbin.
+pub(crate) fn sysctl_string(args: &[&str]) -> Option<String> {
     command_stdout("sysctl", args).or_else(|| command_stdout("/usr/sbin/sysctl", args))
 }
 

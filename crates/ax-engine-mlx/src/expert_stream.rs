@@ -347,18 +347,9 @@ pub fn stream_experts_requested() -> bool {
 
 /// Host unified-memory size (`hw.memsize` on macOS). `None` when unknown.
 pub fn unified_memory_bytes() -> Option<u64> {
-    unified_memory_bytes_from_sysctl()
-}
-
-fn unified_memory_bytes_from_sysctl() -> Option<u64> {
-    let output = std::process::Command::new("sysctl")
-        .args(["-n", "hw.memsize"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+    crate::hardware::sysctl_string(&["-n", "hw.memsize"])?
+        .parse()
+        .ok()
 }
 
 pub fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
@@ -947,6 +938,62 @@ impl ExpertLayerSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unified_memory_probe_without_sbin() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD: &str = "AX_TEST_MEMORY_PROBE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(
+                unified_memory_bytes().is_some_and(|bytes| bytes > 0),
+                "macOS memory detection must work without /usr/sbin in PATH"
+            );
+            assert!(crate::hardware::sysctl_string(&["-n", "machdep.cpu.brand_string"]).is_some());
+            assert!(
+                crate::hardware::sysctl_string(&["-n", "ax_engine.nonexistent_test_key"]).is_none()
+            );
+            return;
+        }
+        // Isolate PATH in a child: mutating the parent environment would race
+        // other tests and requires unsafe in Rust 2024.
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("ax-memory-probe-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let shim = dir.join("sysctl");
+        for script in [
+            None,
+            Some("#!/bin/sh\nexit 1\n"),
+            Some("#!/bin/sh\nexit 0\n"),
+        ] {
+            if let Some(script) = script {
+                std::fs::write(&shim, script).unwrap();
+                std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "expert_stream::tests::unified_memory_probe_without_sbin",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("PATH", &dir)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "memory probe subprocess failed ({script:?}): {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn write_fixture(dir: &Path, name: &str, value: &serde_json::Value) -> PathBuf {
         let path = dir.join(name);

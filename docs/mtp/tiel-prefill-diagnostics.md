@@ -71,3 +71,11 @@ not contention or mixed-model co-residency. MLX wired limits have process scope.
 Re-exported or modified metadata will not match the audited fingerprints and
 will keep previous wiring until separately evaluated. The metadata check is a
 performance-policy selector, not authentication of every weight byte.
+
+Hardware probes fall back to `/usr/sbin/sysctl` when the command cannot be
+found through `PATH`, fails, or returns empty output. This keeps the memory
+guard effective in service environments with a restricted `PATH`. Earlier
+builds used a PATH-only memory probe, which could silently disable this
+residency optimization. The [PATH regression evidence](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-19-path/README.md)
+compares both launch environments on the two audited packs. Unknown or
+unparseable memory still does not qualify for automatic unwiring.
