@@ -67,6 +67,14 @@ checks and owned-process cleanup pass. This selected-route diagnostic retains
 MTP-S/P/D as `not_assessed`; installed/default and full product qualification
 remain open. Earlier results below retain their original source and failures.
 
+[Current-source installed lifecycle](../../benchmarks/results/qualification/2026-09-19-flash-next-mxfp4-installed-lifecycle/README.md)
+also passes its fourteen-action contract on source `5f583018`: default and
+required MTP complete SSE, budgets, stop, active-producer disconnect and
+identical recovery. Original payload/runtime integrity and clean owned-process
+exit pass. This uses the installed paging defaults within experimental family
+admission. Full QA, broader numerical coverage, memory, performance and fresh
+delivery remain separate; MTP-S/P/D are still `not_assessed`.
+
 [Target native MTP controls](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-mtp/README.md)
 are also complete and **failed exact identity**. Real-head acceptance is
 94/116 (81.03%), while the permuted head accepts 0/209. Both use 104 inputs
