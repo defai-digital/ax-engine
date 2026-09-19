@@ -8,6 +8,9 @@ use crate::kv_cache::MlxKVCache;
 use crate::weights::QuantizedWeight;
 use std::path::PathBuf;
 
+#[path = "qwen4_exp_mtp_transaction_evidence.rs"]
+mod transaction_evidence;
+
 struct TargetHooks;
 
 impl TargetHooks {

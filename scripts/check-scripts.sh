@@ -223,6 +223,8 @@ bash scripts/check-qa.sh
   scripts/test_qualify_qwen38_flash_next.py \
   scripts/verify_flash_next_runner_states.py \
   scripts/test_verify_flash_next_runner_states.py \
+  scripts/verify_flash_next_mtp_transactions.py \
+  scripts/test_verify_flash_next_mtp_transactions.py \
   scripts/test_qwen38_primary_alias.py \
   scripts/check_no_turboquant_references.py \
   scripts/test_check_no_turboquant_references.py \
@@ -309,6 +311,7 @@ bash scripts/check-qa.sh
   scripts/test_curate_flash_next_evidence.py \
   scripts/test_qualify_qwen38_flash_next.py \
   scripts/test_verify_flash_next_runner_states.py \
+  scripts/test_verify_flash_next_mtp_transactions.py \
   scripts/test_qwen38_primary_alias.py \
   scripts/test_check_no_turboquant_references.py \
   scripts/test_check_disk_prefix_cache_promotion.py \
