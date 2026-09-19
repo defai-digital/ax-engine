@@ -11,6 +11,8 @@ use ax_engine_core::{
 };
 use std::path::PathBuf;
 
+mod aligned_state_tests;
+
 fn artifacts() -> NativeModelArtifacts {
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
     let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
