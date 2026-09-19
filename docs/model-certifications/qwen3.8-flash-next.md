@@ -48,8 +48,19 @@ tokens). These four requests do not establish full QA, numerical certification,
 or throughput. The required Auto request includes intrusive stack sampling;
 its elapsed time is not benchmark evidence.
 
-[Full installed target QA](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-target-qa/README.md)
-has now collected all 105 original inputs in each mode, with 210 normal stops
+[Current-source installed QA](../../benchmarks/results/qualification/2026-09-19-flash-next-mxfp4-installed-qa/README.md)
+on source `5f583018` completes all 105 original inputs in each mode, with 210
+normal stops and 105/105 identical direct/MTP text pairs. Each mode still has
+102 quality passes and three original failures: alphabet comma spacing, the
+gravity answer `9`, and the water formula's subscript representation. Both modes
+return `1734` for the 29,774-token lookup. Original payload/runtime integrity
+and owned-process cleanup pass; the original QA verdict remains **failed**.
+The portable evidence reader independently replays the unchanged checkers.
+These request timings do not establish MTP acceleration, and text identity
+does not by itself establish same-state MTP-S safety.
+
+The [earlier installed target QA](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-target-qa/README.md)
+retains its separate historical result: all 105 original inputs in each mode, with 210 normal stops
 and clean shutdowns. Each mode has 102 quality passes and three retained
 failures. Direct/MTP text matches on 103/105 pairs; two reasoning answers
 differ despite identical checker results. Both modes pass the 29,774-token
@@ -72,8 +83,9 @@ also passes its fourteen-action contract on source `5f583018`: default and
 required MTP complete SSE, budgets, stop, active-producer disconnect and
 identical recovery. Original payload/runtime integrity and clean owned-process
 exit pass. This uses the installed paging defaults within experimental family
-admission. Full QA, broader numerical coverage, memory, performance and fresh
-delivery remain separate; MTP-S/P/D are still `not_assessed`.
+admission. The current QA collection above is complete with retained quality
+failures; broader numerical coverage, memory, performance and fresh delivery
+remain open. MTP-S/P/D are still `not_assessed`.
 
 [Target native MTP controls](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-mtp/README.md)
 are also complete and **failed exact identity**. Real-head acceptance is
