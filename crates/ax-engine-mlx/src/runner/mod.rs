@@ -1952,6 +1952,15 @@ impl MlxRunner {
                 loaded
             }
         };
+        // Apply the guarded wired-residency policy: after weights are
+        // loaded and `weights.expert_stream` is known, clear wired residency
+        // for the exactly tested Tiel/Cyber export configuration on M5 Max
+        // 128 GiB. Memory/cache limits and the default MTP route/certification
+        // are unchanged; see `crate::tiel_memory_policy`.
+        crate::tiel_memory_policy::maybe_clear_wired_residency(
+            artifacts.root_dir(),
+            weights.expert_stream.is_some(),
+        );
         let has_mxfp4_linears = artifacts.tensor_specs().iter().any(|tensor| {
             tensor
                 .quantization

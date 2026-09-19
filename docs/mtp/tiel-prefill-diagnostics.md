@@ -39,8 +39,8 @@ geometry and timing rather than prompt text or token IDs.
 
 The [M5 Max evidence](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-19-prefill/README.md)
 records phase attribution, default-off regression controls, matched MTPLX
-comparisons, and rejected performance experiments. None of the tested runtime
-changes met the predeclared 10% TTFT improvement target. They were reverted.
+comparisons, and rejected performance experiments. None of that diagnostic
+campaign's runtime experiments met its 10% TTFT target; they were reverted.
 The diagnostic does not change MTP defaults, certify performance, or establish
 a hardware/driver root cause.
 
@@ -50,3 +50,24 @@ revision, and timing boundaries identical when comparing engines. Report
 native-call-to-last-token completion, TTFT, and decode excluding the first
 emitted batch separately. A shorter idle interval is a workload change, not
 an engine optimization.
+
+## Residency policy for the audited M5 Max exports
+
+The subsequent [residency campaign](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-19-wired/README.md)
+measures a separate runtime change: releasing wired residency after model load.
+It applies automatically only when the audited Tiel/Cyber export metadata
+fingerprints match, the CPU is Apple M5 Max with at least 128 GiB, expert
+streaming is inactive, and no numeric `AX_MLX_WIRED_LIMIT_SCALE` override is set.
+Unknown metadata or hardware retain the previous wiring policy. The startup
+trace event identifies application as `tiel-auto-no-wire-v1`.
+
+This reduces idle-to-submit waiting. It does not add GPU keepalive work or
+change sampling, buffer-cache limits, allocation limits, or MTP certification.
+To retain the previous wiring, set `AX_MLX_WIRED_LIMIT_SCALE=0.9` before process
+startup. `0` explicitly disables wiring. Unwired buffers can be evicted under
+competing memory pressure; the evidence covers one resident model in isolation,
+not contention or mixed-model co-residency. MLX wired limits have process scope.
+
+Re-exported or modified metadata will not match the audited fingerprints and
+will keep previous wiring until separately evaluated. The metadata check is a
+performance-policy selector, not authentication of every weight byte.
