@@ -1,0 +1,90 @@
+{
+  "source_id": "ornith-ai/Ornith-1.5-35B-A3B",
+  "source_revision": "10fbf86fed7ecee4a061f8b499a618f46001cac1",
+  "norms": [
+    {
+      "tensor": "mtp.layers.0.input_layernorm.weight",
+      "source_sha256": "d99c27fe4dc86c2259a705e7d6b9978e5890d6eae6e01b479429237eb048b506",
+      "converted_sha256": "e349e745ded6daef66a5f3ce75af7f78df8f0fdcd0dca432621ad93685aeba61",
+      "source_mean": -0.09502467513084412,
+      "converted_mean": 0.9049186706542969,
+      "raw_equal": false,
+      "shifted_bf16_equal": true,
+      "max_abs_from_raw_plus_one": 0.00390625,
+      "cyber_converted_sha256": "e349e745ded6daef66a5f3ce75af7f78df8f0fdcd0dca432621ad93685aeba61",
+      "cyber_equal_tiel": true
+    },
+    {
+      "tensor": "mtp.layers.0.post_attention_layernorm.weight",
+      "source_sha256": "03f1d8971f0e2378806ee9269f4ef91115d5d97e2ff6460fe4af3ab9ff1fd12a",
+      "converted_sha256": "1a67140f1097b7ce4b186d562bce4c08287b994a29fd8eadc87c34430c9a02ba",
+      "source_mean": 0.86859130859375,
+      "converted_mean": 1.8684616088867188,
+      "raw_equal": false,
+      "shifted_bf16_equal": true,
+      "max_abs_from_raw_plus_one": 0.0078125,
+      "cyber_converted_sha256": "1a67140f1097b7ce4b186d562bce4c08287b994a29fd8eadc87c34430c9a02ba",
+      "cyber_equal_tiel": true
+    },
+    {
+      "tensor": "mtp.layers.0.self_attn.k_norm.weight",
+      "source_sha256": "1b6879f2ea212339ded7247186de87130f1f5bb513eb374d7a24be95765ab158",
+      "converted_sha256": "a799901174bc3813d8ad23649af16e6ca333da5d679ecd3e5ba7175598a9cb9e",
+      "source_mean": 0.7417898178100586,
+      "converted_mean": 1.7418060302734375,
+      "raw_equal": false,
+      "shifted_bf16_equal": true,
+      "max_abs_from_raw_plus_one": 0.0078125,
+      "cyber_converted_sha256": "a799901174bc3813d8ad23649af16e6ca333da5d679ecd3e5ba7175598a9cb9e",
+      "cyber_equal_tiel": true
+    },
+    {
+      "tensor": "mtp.layers.0.self_attn.q_norm.weight",
+      "source_sha256": "c57bdab3a6844454085b1df4991bc46443ae2495c4a620ec22e0d1b93c27fbba",
+      "converted_sha256": "133f5303347a02b2b8af943aabd11e3bb6a38d3054a09a680515c2f626e7f1c6",
+      "source_mean": 0.7672481536865234,
+      "converted_mean": 1.7670440673828125,
+      "raw_equal": false,
+      "shifted_bf16_equal": true,
+      "max_abs_from_raw_plus_one": 0.0078125,
+      "cyber_converted_sha256": "133f5303347a02b2b8af943aabd11e3bb6a38d3054a09a680515c2f626e7f1c6",
+      "cyber_equal_tiel": true
+    },
+    {
+      "tensor": "mtp.norm.weight",
+      "source_sha256": "b56452e89857beaee0724b4f9c1341295754c015ba6e671cb929320f6ecd5271",
+      "converted_sha256": "a21773d6fbf451cdab0d98db469f6615d654aac5079a93e0953e35a2bce375b8",
+      "source_mean": 1.9251255989074707,
+      "converted_mean": 2.9253082275390625,
+      "raw_equal": false,
+      "shifted_bf16_equal": true,
+      "max_abs_from_raw_plus_one": 0.0078125,
+      "cyber_converted_sha256": "a21773d6fbf451cdab0d98db469f6615d654aac5079a93e0953e35a2bce375b8",
+      "cyber_equal_tiel": true
+    },
+    {
+      "tensor": "mtp.pre_fc_norm_embedding.weight",
+      "source_sha256": "84325b14732a2089a5c20cbedcbd9ddda28ed45d58ccd79027d4afd318d51484",
+      "converted_sha256": "41dcb86fded13583c10c73b60bb2b8108c909c2d6079bf3969040b9f8370a6e7",
+      "source_mean": -0.7266464233398438,
+      "converted_mean": 0.27335166931152344,
+      "raw_equal": false,
+      "shifted_bf16_equal": true,
+      "max_abs_from_raw_plus_one": 0.001953125,
+      "cyber_converted_sha256": "41dcb86fded13583c10c73b60bb2b8108c909c2d6079bf3969040b9f8370a6e7",
+      "cyber_equal_tiel": true
+    },
+    {
+      "tensor": "mtp.pre_fc_norm_hidden.weight",
+      "source_sha256": "cb75a5bf24170a507acd29b9a5e6f7d53657d37e7ce7ecf87dd4acad69456672",
+      "converted_sha256": "d025835f36bb5b5d21d70e158cc2d37b530447f5bb91ffd8fe7e50b653aad2f8",
+      "source_mean": -0.50629723072052,
+      "converted_mean": 0.4937019348144531,
+      "raw_equal": false,
+      "shifted_bf16_equal": true,
+      "max_abs_from_raw_plus_one": 0.003173828125,
+      "cyber_converted_sha256": "d025835f36bb5b5d21d70e158cc2d37b530447f5bb91ffd8fe7e50b653aad2f8",
+      "cyber_equal_tiel": true
+    }
+  ]
+}

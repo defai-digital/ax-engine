@@ -214,6 +214,8 @@ missing or an alias is unknown, `download` prints the same target list. The
 JSON form of `download --list` emits an `ax.download_options.v1` document for
 automation.
 
+For the initial Tiel pack revisions, see the [hash-bound MTP norm correction](mtp/tiel-norm-compatibility.md).
+
 The development Tiel packs are available as `tiel-coder-35b:axq` and
 `cyber-tiel-coder-35b:axq`. Both include a depth-1 HF per-expert MTP sidecar;
 serve with `--mlx-mtp-policy required` to require native MTP admission. The

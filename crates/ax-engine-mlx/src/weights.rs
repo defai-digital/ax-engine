@@ -3433,6 +3433,7 @@ fn load_mtp_sidecar(
     if !sidecar.exists() {
         return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
+    let sidecar_before_load = std::fs::metadata(&sidecar).ok();
     let tensors = match load_safetensors(&sidecar, None)
         .ok()
         .and_then(normalize_mtp_sidecar_namespace)
@@ -3465,6 +3466,16 @@ fn load_mtp_sidecar(
         };
         let sidecar_bits = parse_mtp_sidecar_bits_hint(&v);
         let depth = apply_mtp_depth_policy(raw_depth, sidecar_bits);
+        let norm_layout = resolve_mtp_norm_layout(root, &v);
+        if norm_layout != parse_mtp_norm_layout(&v)
+            && !mtp_sidecar_file_unchanged(
+                sidecar_before_load.as_ref(),
+                std::fs::metadata(&sidecar).ok().as_ref(),
+            )
+        {
+            tracing::error!(target: "ax_mlx::weights", "MTP sidecar changed during load and verification; refusing compatibility override");
+            return (0, default_draft, None, None, MtpNormLayout::Auto);
+        }
         return (
             depth,
             apply_draft_temperature_override(draft_sampling),
@@ -3474,7 +3485,7 @@ fn load_mtp_sidecar(
             } else {
                 draft_lm_head_spec_from_env()
             },
-            parse_mtp_norm_layout(&v),
+            norm_layout,
         );
     }
     (
@@ -3903,6 +3914,98 @@ fn parse_mtp_norm_layout(v: &serde_json::Value) -> MtpNormLayout {
             MtpNormLayout::Auto
         }
         None => MtpNormLayout::Auto,
+    }
+}
+
+fn mtp_sidecar_file_unchanged(
+    before: Option<&std::fs::Metadata>,
+    after: Option<&std::fs::Metadata>,
+) -> bool {
+    let (Some(before), Some(after)) = (before, after) else {
+        return false;
+    };
+    if before.len() != after.len()
+        || before.modified().ok().is_none()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Repair the two byte-identical-to-audited Tiel exports whose AXQuant runtime
+/// metadata incorrectly labels already converted MLX norms as raw HF deltas.
+/// Do not infer a convention from a model name, source format, or norm magnitude.
+/// A content hash binds this compatibility exception to the inspected sidecar;
+/// every other artifact retains its declared layout, including genuine raw HF.
+/// Audit: all seven stored norms equal BF16(raw + 1) from Ornith revision
+/// 10fbf86fed7ecee4a061f8b499a618f46001cac1. Remove after corrected pack
+/// revisions replace these pinned exports in supported client catalogs.
+fn resolve_mtp_norm_layout(root: &std::path::Path, runtime: &serde_json::Value) -> MtpNormLayout {
+    let declared = parse_mtp_norm_layout(runtime);
+    if declared != MtpNormLayout::RawHfDelta {
+        return declared;
+    }
+    let manifest = std::fs::read(root.join("axquant_mtp_sidecar_manifest.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let Some(expected) = manifest.as_ref().and_then(known_tiel_mtp_export_digest) else {
+        return declared;
+    };
+    match file_sha256_hex(&root.join("mtp.safetensors")) {
+        Ok(actual) if actual == expected => {
+            tracing::warn!(
+                target: "ax_mlx::weights",
+                sha256 = expected,
+                "Correcting known AXQuant Tiel MTP norm metadata: using existing MLX multipliers; artifact files unchanged"
+            );
+            MtpNormLayout::MlxMultiplier
+        }
+        _ => {
+            tracing::warn!(target: "ax_mlx::weights", "Known Tiel MTP export identity has different sidecar bytes; retaining declared norm layout, repack with corrected metadata");
+            declared
+        }
+    }
+}
+
+fn known_tiel_mtp_export_digest(manifest: &serde_json::Value) -> Option<&str> {
+    if manifest.get("schema_version")?.as_str()? != "axquant.protected-tensor-sidecar.v1"
+        || manifest.get("role")?.as_str()? != "mtp"
+        || manifest.get("tensor_count")?.as_u64()? != 785
+        || manifest.pointer("/source_model/format")?.as_str()? != "mlx"
+        || manifest.pointer("/source_model/architecture")?.as_str()?
+            != "Qwen3_5MoeForConditionalGeneration"
+        || manifest.pointer("/output/path")?.as_str()? != "mtp.safetensors"
+        || manifest.pointer("/output/size_bytes")?.as_u64()? != 1_689_387_928
+    {
+        return None;
+    }
+    let source = manifest.pointer("/source_model/model_id")?.as_str()?;
+    let revision = manifest.pointer("/source_model/revision")?.as_str()?;
+    let digest = manifest.pointer("/output/sha256")?.as_str()?;
+    match (source, revision, digest) {
+        (
+            "peculiar-ragdoll/Tiel-Coder-35B-A3B-MLX-oQ6e-MTP",
+            "88625754ac91b542280a5602239ce6b2166366f0",
+            "0ced87b0462269a98bd393a808e1c9c02ace7054801c0e2745dd9dd9a4077915",
+        )
+        | (
+            "peculiar-ragdoll/Cyber-Tiel-Coder-35B-A3B-MLX-oQ6e-MTP",
+            "a443d4e30fd5228942cb7695f916f4b14a88fae9",
+            "590e87c9c3fbbaa370c8dddbcc22611f00bbc78019d28e3192f180841c030527",
+        ) => Some(digest),
+        _ => None,
     }
 }
 
@@ -9689,6 +9792,109 @@ mod tests {
             parse_mtp_norm_layout(&serde_json::json!({"mtp_depth_max": 1})),
             MtpNormLayout::Auto
         );
+    }
+
+    fn tiel_mtp_export_fixture(cyber: bool) -> serde_json::Value {
+        let (source, revision, digest) = if cyber {
+            (
+                "peculiar-ragdoll/Cyber-Tiel-Coder-35B-A3B-MLX-oQ6e-MTP",
+                "a443d4e30fd5228942cb7695f916f4b14a88fae9",
+                "590e87c9c3fbbaa370c8dddbcc22611f00bbc78019d28e3192f180841c030527",
+            )
+        } else {
+            (
+                "peculiar-ragdoll/Tiel-Coder-35B-A3B-MLX-oQ6e-MTP",
+                "88625754ac91b542280a5602239ce6b2166366f0",
+                "0ced87b0462269a98bd393a808e1c9c02ace7054801c0e2745dd9dd9a4077915",
+            )
+        };
+        serde_json::json!({
+            "schema_version": "axquant.protected-tensor-sidecar.v1", "role": "mtp", "tensor_count": 785,
+            "source_model": {"format": "mlx", "architecture": "Qwen3_5MoeForConditionalGeneration", "model_id": source, "revision": revision},
+            "output": {"path": "mtp.safetensors", "size_bytes": 1_689_387_928_u64, "sha256": digest}
+        })
+    }
+
+    #[test]
+    fn tiel_mtp_norm_compatibility_requires_exact_export_identity() {
+        for cyber in [false, true] {
+            let fixture = tiel_mtp_export_fixture(cyber);
+            assert!(known_tiel_mtp_export_digest(&fixture).is_some());
+            for (pointer, value) in [
+                ("/schema_version", serde_json::json!("unknown")),
+                ("/role", serde_json::json!("vision")),
+                ("/tensor_count", serde_json::json!(15)),
+                ("/source_model/format", serde_json::json!("hf")),
+                (
+                    "/source_model/architecture",
+                    serde_json::json!("Qwen3_5ForConditionalGeneration"),
+                ),
+                (
+                    "/source_model/model_id",
+                    serde_json::json!("other/Tiel-Coder-35B-A3B-MLX-oQ6e-MTP"),
+                ),
+                ("/source_model/revision", serde_json::json!("main")),
+                ("/output/path", serde_json::json!("other.safetensors")),
+                ("/output/size_bytes", serde_json::json!(1)),
+                ("/output/sha256", serde_json::json!("0".repeat(64))),
+            ] {
+                let mut changed = fixture.clone();
+                *changed.pointer_mut(pointer).unwrap() = value;
+                assert!(
+                    known_tiel_mtp_export_digest(&changed).is_none(),
+                    "{pointer}"
+                );
+            }
+        }
+        assert!(known_tiel_mtp_export_digest(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn tiel_mtp_norm_compatibility_rejects_file_replacement() {
+        let dir = vision_sidecar_test_dir("tiel-mtp-replace");
+        let path = dir.join("mtp.safetensors");
+        std::fs::write(&path, b"first").unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        assert!(mtp_sidecar_file_unchanged(Some(&before), Some(&before)));
+        assert!(!mtp_sidecar_file_unchanged(None, Some(&before)));
+        let replacement = dir.join("replacement");
+        std::fs::write(&replacement, b"other").unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        assert!(!mtp_sidecar_file_unchanged(
+            Some(&before),
+            std::fs::metadata(&path).ok().as_ref()
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn tiel_mtp_norm_compatibility_does_not_trust_manifest_hash_alone() {
+        let dir = vision_sidecar_test_dir("tiel-mtp-hash");
+        std::fs::write(
+            dir.join("axquant_mtp_sidecar_manifest.json"),
+            serde_json::to_vec(&tiel_mtp_export_fixture(false)).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("mtp.safetensors"), b"different sidecar").unwrap();
+        assert_eq!(
+            resolve_mtp_norm_layout(
+                &dir,
+                &serde_json::json!({"mtp_norm_layout": "raw_hf_delta"})
+            ),
+            MtpNormLayout::RawHfDelta
+        );
+        assert_eq!(
+            resolve_mtp_norm_layout(
+                &dir,
+                &serde_json::json!({"mtp_norm_layout": "mlx_multiplier"})
+            ),
+            MtpNormLayout::MlxMultiplier
+        );
+        assert_eq!(
+            resolve_mtp_norm_layout(&dir, &serde_json::json!({})),
+            MtpNormLayout::Auto
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
