@@ -65,8 +65,12 @@ This reduces idle-to-submit waiting. It does not add GPU keepalive work or
 change sampling, buffer-cache limits, allocation limits, or MTP certification.
 To retain the previous wiring, set `AX_MLX_WIRED_LIMIT_SCALE=0.9` before process
 startup. `0` explicitly disables wiring. Unwired buffers can be evicted under
-competing memory pressure; the evidence covers one resident model in isolation,
-not contention or mixed-model co-residency. MLX wired limits have process scope.
+competing memory pressure; the speed comparison covers one resident model in
+isolation. A separate [co-residency probe](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-19-coexistence/README.md)
+checks these two packs together with up to 32 GiB of retained competing memory.
+Its 48 GiB attempt triggers a compressor-growth guard and is not a passed
+sustained-load result. Mixed families and high-pressure/endurance behavior
+remain unqualified. MLX wired limits have process scope.
 
 Re-exported or modified metadata will not match the audited fingerprints and
 will keep previous wiring until separately evaluated. The metadata check is a
