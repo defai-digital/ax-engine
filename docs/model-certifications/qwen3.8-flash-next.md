@@ -5,7 +5,7 @@ Status: **Candidate; release qualification open**
 Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 Target SKU: **MacBook Pro M5 Max, 128 GB**. Target pack: **MXFP4 MTP**.
-Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-18**.
+Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-19**.
 
 "MTP Tier 2 pending" here uses the same three-gate vocabulary as the
 [Qwen 3.8 27B record](qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means):
@@ -56,6 +56,16 @@ differ despite identical checker results. Both modes pass the 29,774-token
 lookup. The frozen supervisor completed all pre/post integrity checks, but
 the overall QA verdict is **failed**. Generated token IDs and logit margins
 were not recorded by this endpoint; a near-tie explanation is not established.
+
+[Current-source native controls](../../benchmarks/results/qualification/2026-09-19-flash-next-mxfp4-native-controls/README.md)
+pass their original bounded contract on source `5f583018`: real-head acceptance
+is 95/117 and the permuted control is 0/209, with all 104 paired outputs equal.
+Independent same-state trace reconstruction finds zero invalid acceptances.
+The state control covers two steps and 109 arrays; the three-token runner
+control does not compare stored state. All original payload/runtime integrity
+checks and owned-process cleanup pass. This selected-route diagnostic retains
+MTP-S/P/D as `not_assessed`; installed/default and full product qualification
+remain open. Earlier results below retain their original source and failures.
 
 [Target native MTP controls](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-mtp/README.md)
 are also complete and **failed exact identity**. Real-head acceptance is

@@ -1,0 +1,77 @@
+{
+  "artifacts": {
+    "native-controls.json.gz": {
+      "bytes": 87027,
+      "sha256": "01cf6d2486aa53cb54fafe893370c1c04710ddaea1bfd51b987034d08b44b5d5"
+    },
+    "review_same_state.py": {
+      "bytes": 8790,
+      "sha256": "153ce2a3da66cbee0f33b25400e5f30aa4244af13cc569be27b460faaba82a4e"
+    },
+    "state_control.py": {
+      "bytes": 1890,
+      "sha256": "e6aa0cd890f642cb83b59e85d2eda09339f9e0564af7eec6732672f5ec26fc6f"
+    },
+    "test_verify_evidence.py": {
+      "bytes": 2626,
+      "sha256": "0ee7b474efee909936824a7e560a92033855d23b81aa502e84144be93080441b"
+    },
+    "validate_pair.py": {
+      "bytes": 5176,
+      "sha256": "5d2ada804aeb80ad09fe82d918a1fa9c2c725dbb8a94bfd27ef732e3b0aaad33"
+    },
+    "verify_evidence.py": {
+      "bytes": 4937,
+      "sha256": "fef5dd86ec65f6dc26c148450451e5a3d3af3338f33005450f1542b0e2b99a2b"
+    }
+  },
+  "binary_sha256": "f06165d173ce260bf3f24b4a10e1e3bb5a4bf518d53e29466c6dd4cc2b416629",
+  "contract_sha256": "bb28e3125d404186af8323a69a3c6c8adf3aa22765529a7bd31b88eee96fa3a8",
+  "head_summary": {
+    "permuted_head": {
+      "acceptance_rate": 0.0,
+      "accepted": 0,
+      "contributing_requests": 49,
+      "excluded_short_requests": 55,
+      "proposed": 209,
+      "requests": 104
+    },
+    "real_head": {
+      "acceptance_rate": 0.811965811965812,
+      "accepted": 95,
+      "contributing_requests": 49,
+      "excluded_short_requests": 55,
+      "proposed": 117,
+      "requests": 104
+    }
+  },
+  "installed_runtime_files": 52,
+  "invalid_same_state_acceptances": {
+    "permuted_head": 0,
+    "real_head": 0
+  },
+  "mtp_certification": {
+    "MTP-D": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-S": "not_assessed"
+  },
+  "original_payload_prepost_files": 47,
+  "original_root_review_sha256": "ee7c670ca0ea06e1993536510f22190a0a045da01eb0a31800d6628232115aa5",
+  "owned_processes_absent": 6,
+  "paired_greedy_identity": true,
+  "profile": "Experimental family admission, forced expert paging, one-layer expert cache, selected expert/prefill routes, canonical singleton MTP candidate",
+  "qualification": false,
+  "release_ready": false,
+  "result": "PASS_BOUNDED_NATIVE_CONTROLS_ONLY",
+  "runner_compared_tokens": 3,
+  "runner_decode_state_compared": false,
+  "runner_prefill_state_compared": false,
+  "same_state_scope": "Recorded canonical decisions and committed output only; rejected draft logits are not independently recomputed",
+  "schema": "ax.flash_next.current_native_controls_summary.v1",
+  "source_commit": "5f583018032c406cd3016c6c1c016612dd8b2fbd",
+  "state_arrays": 109,
+  "state_compared_generated_tokens": 4,
+  "state_compared_steps": 2,
+  "target": "MacBook Pro M5 Max 128 GiB; MXFP4 MTP; NAS over SMB",
+  "wheel_sha256": "06c65e8069431258e77490be0eefd9067adcb262cdea156e0c126c0525f0cd14"
+}
