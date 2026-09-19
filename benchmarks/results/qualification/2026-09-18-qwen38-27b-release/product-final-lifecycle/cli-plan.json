@@ -1,0 +1,36 @@
+{
+  "command": "serve",
+  "input": "qwen3.8-27b:axq",
+  "resolved": {
+    "certification": null,
+    "download": {
+      "compatibility_flag": false,
+      "dry_run": true,
+      "offline": true,
+      "required": false
+    },
+    "kind": "model_resolution_plan",
+    "model": "qwen3.8-27b:axq",
+    "path": "<qualification-root>/product-final-cache/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1",
+    "preset": "qwen3.8-27b",
+    "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+    "resolution": "local_cache_then_download",
+    "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+  },
+  "schema_version": "ax.local_serve_plan.v1",
+  "server": {
+    "argv": [
+      "<qualification-root>/product-final-venv/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "31418",
+      "--mlx",
+      "--preset",
+      "qwen3.8-27b",
+      "--mlx-model-artifacts-dir",
+      "<qualification-root>/product-final-cache/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1"
+    ],
+    "url": "http://127.0.0.1:31418"
+  }
+}

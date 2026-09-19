@@ -1,0 +1,10 @@
+[
+  {
+    "name": "ax-engine",
+    "version": "7.4.0"
+  },
+  {
+    "name": "pip",
+    "version": "26.1.2"
+  }
+]

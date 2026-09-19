@@ -1,0 +1,7 @@
+{
+  "ax-engine": "7b8dc6853b8c6dc12cd9fc005522a560ab5a75c6d04946bcbfcd3685d012ae82",
+  "ax-engine-server": "91637ac63e1aca11c71c4e53ffce1b40aa5a762aeeca8dad781eb67cf70ee5d7",
+  "ax-engine-bench": "f8058f09bbfc27afb36fde15575b537dd36161f55421532d10b9fea70473d7f1",
+  "libmlx.dylib": "b1538ac17244d067823d20f261a4bf4d49666999c0c90fcf804acc6d8811d203",
+  "libjaccl.dylib": "5996e9dbe78dfe6dcd7513d4bbb4768eeb0c1a5e72ce8cd0cfcfcfcf10822d5a"
+}

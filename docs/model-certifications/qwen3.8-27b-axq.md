@@ -15,23 +15,32 @@ the general-purpose default serve target. It is **not** MTP Tier 2 certified
 and it is **not** a 72-hour endurance pass. Super-class Qwen 3.8 (2.4T) is a
 different, experimental path and is out of this record.
 
-Latest product-health assessment: **the pinned 6-bit pack's installed CLI and
-local HTTP text-serving candidate passed qualification on Mac mini M4 Pro
-64 GB** at clean source `a142a5ed`. The bundled release-profile wheel passes
+Latest product-health assessment: **AX Engine v7.4.0 is published on GitHub,
+PyPI and Homebrew with the pinned 6-bit pack qualified for installed CLI and
+local HTTP text serving on Mac mini M4 Pro 64 GB**, at release source
+`a430eb9a82cfb77ffacf45c8a2332b4bb17681a9`. The hosted release-profile wheel passes
 isolated installation/import and doctor; actual default, explicit direct and
 explicit MTP each pass 32/32 sampled QA and 7/7 required API probes. The full 79-item
 bank in both streaming forms passes 158/158 hard checks per default/MTP route,
-with zero incomplete responses. Three fault rounds per route exercise actual
+with zero incomplete responses and six soft keyword failures per route. Three fault rounds per route exercise actual
 backpressure, cancellation, resource return and repeatable recovery; MTP also
 exercises one bounded-backlog overflow. No silent MTP fallback is observed.
 
-This closes the recorded product-health scope and permits the candidate to
-enter the formal release workflow. Exact-source hosted CI, signed/notarized
-release-artifact verification and publication have **not** been completed for
-this candidate. Broad model accuracy, MTP-P and MTP-D are separate; Candidate
-status is unchanged. Original failed QA/pressure runs, the stricter completion
-checker, changed output budget and reporting-only follow-ups are retained in
-the [product qualification evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-product-default/).
+Exact-source hosted CI and the formal release workflow passed. The public PyPI
+wheel matches the qualified candidate byte-for-byte and passes fresh isolated
+installation, import and doctor on the SKU. The public Developer ID signed,
+Apple-notarized standalone passes default alias, explicit MTP alias and local
+directory generation; all three match the wheel's 64-token controls. The local
+directory control runs without Python on PATH; alias helpers use an empty Python
+3.12 environment without AX Engine or Python MLX.
+[Release receipts and independent verifier](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-release/).
+
+This closes the recorded product-health and publication scope. Broad model
+accuracy, MTP-P, MTP-D and 8h/72h endurance are separate; Candidate status is
+unchanged and MTP remains explicit opt-in. Original failed QA/pressure runs,
+the stricter completion checker, changed output budget and reporting-only
+follow-ups remain in the
+[earlier product qualification evidence](../../benchmarks/results/qualification/2026-09-18-qwen38-27b-product-default/).
 
 ## What "MTP Tier 2 pending" means
 

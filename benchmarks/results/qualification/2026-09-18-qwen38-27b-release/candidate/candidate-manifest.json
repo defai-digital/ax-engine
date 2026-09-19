@@ -1,0 +1,57 @@
+{
+  "schema_version": "ax.release_candidate.v2",
+  "project": "ax-engine",
+  "tag": "v7.4.0",
+  "version": "7.4.0",
+  "git_commit": "a430eb9a82cfb77ffacf45c8a2332b4bb17681a9",
+  "generated_at": "2026-09-18T23:03:13.737062Z",
+  "platform": "macos-arm64",
+  "binaries": {
+    "ax-engine": {
+      "path": "bin/ax-engine",
+      "sha256": "3d856017704298a528c0efca3c9db64b9d640f7e1b2c669076382b51e71a0d0d",
+      "size": 1753040
+    },
+    "ax-engine-server": {
+      "path": "bin/ax-engine-server",
+      "sha256": "57c5a39b1bfdf863575ad3e10c004abf2e38bb2fabc8fcc5836cd19bf8230c4f",
+      "size": 21271088
+    },
+    "ax-engine-bench": {
+      "path": "bin/ax-engine-bench",
+      "sha256": "7d4cad68ff4bdad0f05e18dc45a512d1c064e3fc21eb789908ed2cc08cf4cda4",
+      "size": 11114848
+    }
+  },
+  "mlx_runtime": {
+    "version": "0.32.2",
+    "assets": {
+      "libmlx.dylib": {
+        "path": "runtime/libmlx.dylib",
+        "sha256": "d24c7a9b9d55a76bfd3bbcd1d042251a185cbadcb6340c3244a6ffa3dcb7c7e8",
+        "size": 21942544
+      },
+      "libjaccl.dylib": {
+        "path": "runtime/libjaccl.dylib",
+        "sha256": "9cfd72679ff35c593a1d46fd30d995cc4a131eed15733617efb1118001e74084",
+        "size": 1555552
+      },
+      "mlx.metallib": {
+        "path": "runtime/mlx.metallib",
+        "sha256": "dc59d1cceb1a5c7e578232e6e41e28e2c73c9463ac6dbc3886c3ee17ffc270ed",
+        "size": 182351120
+      }
+    },
+    "license": {
+      "path": "runtime/MLX-LICENSE.txt",
+      "sha256": "ccfab7ccb2ea306f71531c8ca77bb55507606cd90768b1e32b8b52ab5b48cf01",
+      "size": 1066
+    }
+  },
+  "wheel": {
+    "name": "ax_engine-7.4.0-cp312-abi3-macosx_26_0_arm64.whl",
+    "path": "wheel/ax_engine-7.4.0-cp312-abi3-macosx_26_0_arm64.whl",
+    "sha256": "666d8c41b45fb94366bbda6ba94a5000889ebb5371efbe34a8de217cff678fbc",
+    "size": 82031951
+  }
+}

@@ -38,7 +38,11 @@ class AxEngine < Formula
       ax-engine binaries for this release are Developer ID signed and notarized
       by Apple. The formula installs the release's pinned, prebuilt MLX runtime
       beside its mlx.metallib without rewriting the signed Mach-O files.
-      End users do not need Python, Homebrew MLX, Xcode, or the Metal Toolchain.
+      Native inference from a ready local model directory needs no Python,
+      Homebrew MLX, Xcode, or Metal Toolchain. Model aliases and preparation
+      helpers use Python 3.12+; online downloads also require huggingface-hub.
+      Set AX_ENGINE_PYTHON to the helper environment's Python interpreter.
+      Setup: https://github.com/defai-digital/ax-engine/blob/main/docs/GETTING-STARTED.md#homebrew-model-helpers
     EOS
   end
 
