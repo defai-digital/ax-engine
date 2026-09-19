@@ -1,0 +1,22 @@
+{
+  "extracted_owned_functions": [
+    "item_to_prompt",
+    "checker_spec",
+    "_last_line",
+    "_parse_set",
+    "_parse_ordered",
+    "evaluate_checker"
+  ],
+  "files": {
+    "checkers.py": "67c9d1909a6a940634ff8f4f9d0c97eaeb22cf4580eb176357d1654631c26e4f",
+    "closed_checks.py": "4854a20c460bc072fd4d0fbae51528ca4eb6d9147c30290a17e4b7f6eb477cf8",
+    "full-qa-inputs.json": "e1e8234c02ee02a4a4d8b96acef0e88d128ebaae9ef5e904e86050c51ff283e4",
+    "full-qa-items.json": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
+    "prompt_def.py": "5e5d288edf046bd4f5a0577237a643cf1d7573e627a8792d6bc4807f64328118"
+  },
+  "original_helper_sha256": "b6ccd85582d7870285f59e6b9b47e1e56c30f221fb19abc9e5d9e0b1a161f436",
+  "original_reader_sha256": "ce730f5a3ce7fb2e95601e7f6dcc8b7bdba5d441a1fede7b76da5e0c0ca760c2",
+  "qualification": false,
+  "release_ready": false,
+  "schema": "ax.flash_next.offline_qa_inputs.v1"
+}
