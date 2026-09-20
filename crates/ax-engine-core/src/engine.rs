@@ -1515,7 +1515,11 @@ impl EngineCore {
             let Some(record) = self.request_manager.record(request_id) else {
                 continue;
             };
-            if record.state.is_terminal() {
+            // Only requests whose update was accepted this step. A request
+            // still Running after a partial apply had its update rejected
+            // (the step error arm fails it), so its pushed tokens must not
+            // earn KV; terminal requests are released by cleanup.
+            if record.state != RequestState::Runnable {
                 continue;
             }
             // The newest sampled token is not in KV until the next step
@@ -3181,13 +3185,14 @@ mod tests {
 
     #[test]
     fn step_error_keeps_progress_of_requests_already_resolved() {
-        // Request 20 (max 10) accepts two tokens fine; request 21 (max 1)
-        // cannot take two, so apply_execution_results errors on it after 20
-        // was already resolved. 20 must keep its tokens and stay Runnable.
+        // Request 20 (max 10) accepts four tokens fine; request 21 (max 1)
+        // cannot, so apply_execution_results errors on it after 20 was
+        // already resolved. 20 must keep its tokens, stay Runnable, and have
+        // its multi-token KV surplus reconciled; 21 must be failed and freed.
         let mut engine = EngineCore::with_runtime_components(
             KvManagerConfig::validated(CacheGroupId(2), 4, 16),
             MultiTokenDecodeRunner {
-                extra_tokens: 1,
+                extra_tokens: 3,
                 stop_on_decode: None,
             },
             PanicSampler,
@@ -3204,8 +3209,9 @@ mod tests {
 
         let ok = engine.request_manager().snapshot(RequestId(20)).unwrap();
         assert_eq!(ok.state, RequestState::Runnable);
-        assert_eq!(ok.generated_tokens, vec![50, 51]);
-        // The kept request's KV accounting was reconciled despite the error.
+        assert_eq!(ok.generated_tokens, vec![50, 51, 52, 53]);
+        // The kept request's KV accounting was reconciled despite the error:
+        // one token was allocated before dispatch, two more are surplus.
         let table = engine
             .kv_manager()
             .block_table_snapshot(RequestId(20))
@@ -3216,6 +3222,13 @@ mod tests {
         );
         let failed = engine.request_manager().snapshot(RequestId(21)).unwrap();
         assert_eq!(failed.state, RequestState::Failed);
+        assert!(
+            engine
+                .kv_manager()
+                .block_table_snapshot(RequestId(21))
+                .is_err(),
+            "the rejected request must not keep a live block table"
+        );
     }
 
     #[test]
