@@ -46,6 +46,38 @@ UNEARNED_TIER2_RE = re.compile(
     r"|(?:mtp\s+)?tier\s*2\s+certified[\s\S]{0,160}qwen\s*3\.8",
     re.IGNORECASE,
 )
+TIER2_CERTIFIED_RE = re.compile(r"(?:mtp\s+)?tier\s*2\s+certified", re.IGNORECASE)
+# A "Tier 2 certified" phrase is a disclosure, not a claim, when its clause is
+# negated or describes the gate itself ("is not MTP Tier 2 certified",
+# "fails if docs ... claim MTP Tier 2 certified").
+NEGATION_CUE_RE = re.compile(
+    r"\b(?:not|never|isn't|aren't|without|nor|until|before|unearned|fails?\s+if|"
+    r"must\s+not|do\s+not|reject\w*|forbid\w*|refuse\w*)\b",
+    re.IGNORECASE,
+)
+CLAUSE_BREAK_RE = re.compile(r"[.;:!?]\s")
+
+
+def _has_unearned_tier2_claim(folded: str) -> bool:
+    """True when a Qwen 3.8 'Tier 2 certified' phrase appears un-negated.
+
+    The check is per phrase, so a file that also carries the canonical
+    "MTP Tier 2 pending" sentence cannot smuggle a positive claim past it.
+    Only the phrase's own clause (back to the previous sentence break, at
+    most 160 characters) is inspected for a negation cue.
+    """
+    for match in UNEARNED_TIER2_RE.finditer(folded):
+        window = folded[match.start() : match.end()]
+        for phrase in TIER2_CERTIFIED_RE.finditer(window):
+            absolute_start = match.start() + phrase.start()
+            preceding = folded[max(0, absolute_start - 160) : absolute_start]
+            breaks = list(CLAUSE_BREAK_RE.finditer(preceding))
+            if breaks:
+                preceding = preceding[breaks[-1].end() :]
+            clause = preceding.replace("*", " ").replace("_", " ").replace("`", " ")
+            if not NEGATION_CUE_RE.search(clause):
+                return True
+    return False
 
 
 class PrimaryClaimError(RuntimeError):
@@ -149,7 +181,7 @@ def find_primary_claim_issues(root: Path) -> list[Hit]:
                     )
                 )
         folded = " ".join(text.splitlines())
-        if UNEARNED_TIER2_RE.search(folded) and "MTP Tier 2 pending" not in text:
+        if _has_unearned_tier2_claim(folded):
             hits.append(
                 Hit(
                     path=relative,

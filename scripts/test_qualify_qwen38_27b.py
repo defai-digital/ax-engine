@@ -288,6 +288,23 @@ class QualifyQwen38Test(unittest.TestCase):
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["alias"], "qwen3.8-27b:axq")
 
+    def test_live_preflight_json_keeps_stdout_pure_json(self) -> None:
+        # Human preflight lines must not precede the JSON document on stdout.
+        with tempfile.TemporaryDirectory() as td:
+            model_dir = Path(td) / mod.PRIMARY_REVISION
+            model_dir.mkdir()
+            (model_dir / "config.json").write_text("{}", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(MODULE_PATH), "--model-dir", str(model_dir), "--json"],
+                check=True,
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+            )
+        payload = json.loads(proc.stdout)
+        self.assertEqual(payload["alias"], "qwen3.8-27b:axq")
+        self.assertIn("live preflight ok", proc.stderr)
+
     def test_live_preflight_rejects_wrong_revision(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             model_dir = Path(td) / "wrongrev"

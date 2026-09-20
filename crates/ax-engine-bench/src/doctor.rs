@@ -1741,11 +1741,13 @@ fn doctor_model_performance_advice(hint: &DoctorModelArtifactsHint) -> Vec<Docto
                 "Qwen gated-delta prefill remains a known architecture-sensitive path; do not substitute a SwiftLM prefill plus AX decode claim without a new runtime contract.",
             ));
         }
-        "qwen3_5" | "qwen3_5_moe" | "qwen3_5_text" => advice.push(DoctorAdvice::info(
-            "qwen_gated_delta_prefill_scope",
-            "Keep Qwen gated-delta prefill/decode comparisons inside the MLX inference-stack harness.",
-            "Qwen gated-delta prefill remains architecture-sensitive; use paired baseline rows before changing runtime policy.",
-        )),
+        "qwen3_5" | "qwen3_5_moe" | "qwen3_5_text" | "qwen3_5_moe_text" => {
+            advice.push(DoctorAdvice::info(
+                "qwen_gated_delta_prefill_scope",
+                "Keep Qwen gated-delta prefill/decode comparisons inside the MLX inference-stack harness.",
+                "Qwen gated-delta prefill remains architecture-sensitive; use paired baseline rows before changing runtime policy.",
+            ))
+        }
         _ => advice.push(DoctorAdvice::info(
             "model_specific_policy_unknown",
             "No model-family-specific performance policy is available.",

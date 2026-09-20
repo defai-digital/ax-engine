@@ -180,6 +180,19 @@ class QualifyFlashNextTest(unittest.TestCase):
                 for gate in ("MTP-S", "MTP-P", "MTP-D"):
                     self.assertIn(f"{gate} [not_assessed]", text)
 
+    def test_live_preflight_json_keeps_stdout_pure_json(self) -> None:
+        # Human preflight lines must not precede the JSON document on stdout.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config.json").write_text("{}")
+            (root / "model-manifest.json").write_text(json.dumps(_product_manifest()))
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = mod.main(["--model-dir", str(root), "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["family"], mod.contract()["family"])
+        self.assertIn("live preflight ok", err.getvalue())
+
     def test_ready_flag_cannot_hide_other_blockers(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

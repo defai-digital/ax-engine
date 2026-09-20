@@ -7,38 +7,48 @@ use crate::error::CliError;
 
 pub(crate) fn detect_system_model() -> Option<String> {
     match env::consts::OS {
-        "macos" => command_stdout("sysctl", &["-n", "hw.model"]),
+        "macos" => sysctl_stdout(&["-n", "hw.model"]),
         _ => None,
     }
 }
 
 pub(crate) fn detect_soc() -> Option<String> {
     match env::consts::OS {
-        "macos" => command_stdout("sysctl", &["-n", "machdep.cpu.brand_string"]),
+        "macos" => sysctl_stdout(&["-n", "machdep.cpu.brand_string"]),
         _ => None,
     }
 }
 
 pub(crate) fn detect_memory_bytes() -> Option<u64> {
     match env::consts::OS {
-        "macos" => command_stdout("sysctl", &["-n", "hw.memsize"])
-            .and_then(|value| value.parse::<u64>().ok()),
+        "macos" => sysctl_stdout(&["-n", "hw.memsize"]).and_then(|value| value.parse::<u64>().ok()),
         _ => None,
     }
 }
 
 pub(crate) fn detect_os_version() -> Option<String> {
     match env::consts::OS {
-        "macos" => command_stdout("sw_vers", &["-productVersion"]),
+        "macos" => sw_vers_stdout(&["-productVersion"]),
         _ => None,
     }
 }
 
 pub(crate) fn detect_os_build() -> Option<String> {
     match env::consts::OS {
-        "macos" => command_stdout("sw_vers", &["-buildVersion"]),
+        "macos" => sw_vers_stdout(&["-buildVersion"]),
         _ => None,
     }
+}
+
+/// `sysctl` lives in /usr/sbin, which launchd services and other
+/// minimal-PATH environments omit; fall back to the absolute path so the
+/// benchmark environment record agrees with `ax-engine doctor` (issue #73).
+fn sysctl_stdout(args: &[&str]) -> Option<String> {
+    command_stdout("sysctl", args).or_else(|| command_stdout("/usr/sbin/sysctl", args))
+}
+
+fn sw_vers_stdout(args: &[&str]) -> Option<String> {
+    command_stdout("sw_vers", args).or_else(|| command_stdout("/usr/bin/sw_vers", args))
 }
 
 pub(crate) fn detect_kernel_release() -> Option<String> {

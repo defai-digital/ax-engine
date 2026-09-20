@@ -86,6 +86,27 @@ class CheckQwen38PrimaryClaimsTest(unittest.TestCase):
         ):
             checker.check_qwen38_primary_claims(self.root)
 
+    def test_unearned_tier2_claim_fails_even_beside_pending_sentence(self) -> None:
+        # The exemption is per phrase: the canonical pending sentence in the
+        # same file must not shield a positive certified claim.
+        self.seed_required()
+        self.write(
+            "README.md",
+            BODY + "Qwen 3.8 MTP Tier 2 certified, ready to ship.\n",
+        )
+        with self.assertRaisesRegex(
+            checker.PrimaryClaimError, "unearned Qwen 3.8 MTP Tier 2"
+        ):
+            checker.check_qwen38_primary_claims(self.root)
+
+    def test_negated_tier2_claim_is_a_disclosure(self) -> None:
+        self.seed_required()
+        self.write(
+            "docs/FAQ.md",
+            BODY + "Qwen 3.8 27B is not MTP Tier 2 certified yet.\n",
+        )
+        checker.check_qwen38_primary_claims(self.root)
+
     def test_missing_flash_next_status_sentence_fails(self) -> None:
         self.seed_required()
         self.write(

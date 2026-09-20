@@ -11,6 +11,7 @@ or release qualification; the native loader remains authoritative.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -249,7 +250,10 @@ def _live_preflight(model_dir: Path) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.model_dir is not None and not args.dry_run:
-        _live_preflight(args.model_dir)
+        # With --json, stdout must stay a single JSON document; the human
+        # preflight lines go to stderr.
+        with contextlib.redirect_stdout(sys.stderr if args.json else sys.stdout):
+            _live_preflight(args.model_dir)
         if args.json:
             _print_contract(True)
         return 0

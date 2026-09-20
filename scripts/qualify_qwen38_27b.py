@@ -8,6 +8,7 @@ A live `--model-dir` run belongs on Mac mini M4 Pro 64 GB with a clean checkout.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -164,7 +165,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from qwen38_live_gate import run_live
         return run_live(args, contract(), Path(__file__).resolve().parents[1])
     if args.model_dir is not None and not args.dry_run:
-        _live_preflight(args.model_dir)
+        # With --json, stdout must stay a single JSON document; the human
+        # preflight lines go to stderr.
+        with contextlib.redirect_stdout(sys.stderr if args.json else sys.stdout):
+            _live_preflight(args.model_dir)
         if args.json:
             _print_contract(True)
         return 0
