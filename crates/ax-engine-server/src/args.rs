@@ -489,13 +489,11 @@ impl ServerArgs {
     /// Falls back to [`Self::resolved_request_timeout`] when unset, so the
     /// gRPC server keeps today's shared-timeout behavior by default.
     pub(crate) fn resolved_grpc_request_timeout(&self) -> Option<std::time::Duration> {
-        super::routes::parse_request_timeout_secs(
-            self.grpc_request_timeout_secs
-                .map(|value| value.to_string())
-                .or_else(|| std::env::var(GRPC_REQUEST_TIMEOUT_SECS_ENV).ok()),
-        )
-        .map(std::time::Duration::from_secs)
-        .or_else(|| self.resolved_request_timeout())
+        let configured = self
+            .grpc_request_timeout_secs
+            .map(|value| value.to_string())
+            .or_else(|| std::env::var(GRPC_REQUEST_TIMEOUT_SECS_ENV).ok());
+        grpc_request_timeout_from_raw(configured.as_deref(), self.resolved_request_timeout())
     }
 
     pub(crate) fn resolved_rate_limit(&self) -> Option<crate::rate_limit::RateLimitConfig> {
@@ -574,16 +572,42 @@ impl ServerArgs {
             .generate_max_duration_secs
             .map(|secs| secs.to_string())
             .or_else(|| std::env::var(GENERATE_MAX_DURATION_SECS_ENV).ok());
-        let Some(raw) = configured else {
-            return Some(std::time::Duration::from_secs(
-                DEFAULT_GENERATE_MAX_DURATION_SECS,
-            ));
-        };
-        raw.trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|secs| *secs > 0)
-            .map(std::time::Duration::from_secs)
+        generate_max_duration_from_raw(configured.as_deref())
+    }
+}
+
+/// Only an explicit, parseable `0` disables the non-streaming deadline. An
+/// empty or unparseable value (a typo in the env var) keeps the built-in
+/// backstop: silently removing the one default-on hang protection is the
+/// wrong failure mode for a configuration mistake.
+pub(crate) fn generate_max_duration_from_raw(raw: Option<&str>) -> Option<std::time::Duration> {
+    let backstop = Some(std::time::Duration::from_secs(
+        DEFAULT_GENERATE_MAX_DURATION_SECS,
+    ));
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return backstop;
+    };
+    match raw.parse::<u64>() {
+        Ok(0) => None,
+        Ok(secs) => Some(std::time::Duration::from_secs(secs)),
+        Err(_) => backstop,
+    }
+}
+
+/// gRPC timeout resolution: an explicit, parseable `0` means unbounded (the
+/// divergence the flag exists for), a positive value is used as-is, and an
+/// unset, empty, or unparseable value falls back to the shared HTTP timeout.
+pub(crate) fn grpc_request_timeout_from_raw(
+    raw: Option<&str>,
+    shared: Option<std::time::Duration>,
+) -> Option<std::time::Duration> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return shared;
+    };
+    match raw.parse::<u64>() {
+        Ok(0) => None,
+        Ok(secs) => Some(std::time::Duration::from_secs(secs)),
+        Err(_) => shared,
     }
 }
 

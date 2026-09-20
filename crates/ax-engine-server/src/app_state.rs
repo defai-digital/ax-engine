@@ -170,7 +170,13 @@ impl AppState {
         if !path_matches {
             return None;
         }
-        parked.remove(model_id)
+        let live = parked.remove(model_id)?;
+        // A parked generation carries the `last_used` stamp from before it was
+        // idle-evicted, which is by construction older than the idle timeout.
+        // Republishing must grant the same grace period a fresh build gets, or
+        // the next evictor sweep unloads a model the operator just loaded.
+        live.last_used.store(unix_now_secs(), Ordering::Relaxed);
+        Some(live)
     }
 
     /// Clone all live-model fields atomically. The read lock is held only for

@@ -1430,6 +1430,57 @@ fn generate_max_duration_override_and_disable() {
 }
 
 #[test]
+fn generate_max_duration_keeps_backstop_for_empty_or_invalid_values() {
+    use std::time::Duration;
+    let backstop = Some(Duration::from_secs(3600));
+    assert_eq!(super::generate_max_duration_from_raw(None), backstop);
+    assert_eq!(super::generate_max_duration_from_raw(Some("")), backstop);
+    assert_eq!(super::generate_max_duration_from_raw(Some("   ")), backstop);
+    // A typo must not silently remove the hang protection.
+    assert_eq!(
+        super::generate_max_duration_from_raw(Some("360O")),
+        backstop
+    );
+    assert_eq!(super::generate_max_duration_from_raw(Some("-5")), backstop);
+    // Only an explicit, parseable zero disables it.
+    assert_eq!(super::generate_max_duration_from_raw(Some("0")), None);
+    assert_eq!(
+        super::generate_max_duration_from_raw(Some(" 900 ")),
+        Some(Duration::from_secs(900))
+    );
+}
+
+#[test]
+fn grpc_request_timeout_explicit_zero_means_unbounded() {
+    use std::time::Duration;
+    let shared = Some(Duration::from_secs(30));
+    assert_eq!(super::grpc_request_timeout_from_raw(None, shared), shared);
+    assert_eq!(
+        super::grpc_request_timeout_from_raw(Some(""), shared),
+        shared
+    );
+    assert_eq!(
+        super::grpc_request_timeout_from_raw(Some("abc"), shared),
+        shared
+    );
+    // Explicit 0 diverges gRPC to unbounded instead of inheriting HTTP's cap.
+    assert_eq!(
+        super::grpc_request_timeout_from_raw(Some("0"), shared),
+        None
+    );
+    assert_eq!(
+        super::grpc_request_timeout_from_raw(Some("120"), shared),
+        Some(Duration::from_secs(120))
+    );
+    let args = ServerArgs {
+        request_timeout_secs: Some(30),
+        grpc_request_timeout_secs: Some(0),
+        ..base_args()
+    };
+    assert_eq!(args.resolved_grpc_request_timeout(), None);
+}
+
+#[test]
 fn grpc_request_timeout_overrides_shared_timeout_when_set() {
     let args = ServerArgs {
         request_timeout_secs: Some(30),
