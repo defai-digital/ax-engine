@@ -154,7 +154,7 @@ impl PipelineTopology {
         let destination = self
             .assignment(frame.destination_rank)
             .ok_or(PipelineContractError::UnknownRank(frame.destination_rank))?;
-        if frame.destination_rank != frame.source_rank.saturating_add(1)
+        if Some(frame.destination_rank) != frame.source_rank.checked_add(1)
             || source.layers.end != destination.layers.start
             || frame.layer_boundary != source.layers.end
         {
@@ -221,7 +221,9 @@ impl ActivationFrameHeader {
         if self.request_id == 0 || self.request_sequence == 0 {
             return Err(PipelineContractError::ZeroRequestIdentity);
         }
-        if self.destination_rank != self.source_rank.saturating_add(1) {
+        // `checked_add`: a saturating add would let rank u16::MAX route to
+        // itself and pass as a hop to the next rank.
+        if Some(self.destination_rank) != self.source_rank.checked_add(1) {
             return Err(PipelineContractError::InvalidActivationRoute);
         }
         if self.token_count == 0 || self.shape.len() != 3 {
@@ -609,6 +611,18 @@ mod tests {
         assert_eq!(topology.validate(), Ok(()));
         assert_eq!(topology.validate_frame_route(&frame), Ok(()));
         assert_eq!(frame.verify_payload(&payload), Ok(()));
+    }
+
+    #[test]
+    fn last_rank_cannot_route_to_itself() {
+        let payload = [0_u8; 16];
+        let mut frame = frame(&payload);
+        frame.source_rank = u16::MAX;
+        frame.destination_rank = u16::MAX;
+        assert_eq!(
+            frame.validate(),
+            Err(PipelineContractError::InvalidActivationRoute)
+        );
     }
 
     #[test]
