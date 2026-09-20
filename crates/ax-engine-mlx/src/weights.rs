@@ -1448,6 +1448,11 @@ pub(crate) fn load_weights_with_session_budget(
         );
         tied.group_size = token_embedding.group_size;
         tied.bits = token_embedding.bits;
+        // Keep the embedding's quantization mode: an MXFP8/NVFP4 embedding
+        // has scales but no group biases, and defaulting the head to affine
+        // would make the first matmul demand biases that do not exist.
+        tied.mode.clone_from(&token_embedding.mode);
+        tied.linear_bias = token_embedding.linear_bias.clone();
         tied
     } else {
         take_weight(
@@ -2671,10 +2676,14 @@ fn mtp_take_weight(
             // This holds for both power-of-two (4, 8) and non-power-of-two (3, 5, 6) bit widths.
             let real_cols = (w_shape[1] as usize) * 32 / bits as usize;
             let scale_cols = s_shape[1] as usize;
-            let inferred = real_cols / scale_cols;
-            if inferred == 0 { 64 } else { inferred as i32 }
+            // The group size must divide the logical width exactly; a
+            // remainder means the sidecar does not match the weight.
+            if real_cols == 0 || !real_cols.is_multiple_of(scale_cols) {
+                return None;
+            }
+            (real_cols / scale_cols) as i32
         } else {
-            64
+            return None;
         };
         (gs, bits)
     } else {
@@ -2950,12 +2959,15 @@ fn mtp_take_per_expert_qwen_moe(
 
     let mut gate_up_weights = Vec::with_capacity(expert_count);
     let mut gate_up_scales = Vec::with_capacity(expert_count);
+    let mut gate_up_biases = Vec::with_capacity(expert_count);
     let mut down_weights = Vec::with_capacity(expert_count);
     let mut down_scales = Vec::with_capacity(expert_count);
+    let mut down_biases = Vec::with_capacity(expert_count);
     let mut bits = 0i32;
     let mut group_size = 0i32;
     let mut mode = String::new();
     let mut saw_scales: Option<bool> = None;
+    let mut saw_biases: Option<bool> = None;
 
     for expert in 0..expert_count {
         let gate = mtp_take_weight(
@@ -2988,7 +3000,15 @@ fn mtp_take_per_expert_qwen_moe(
                 mode = gate.mode.clone();
             }
             Some(previous) if previous != expert_has_scales => return None,
-            Some(_) if gate.bits != bits || up.bits != bits || down.bits != bits => return None,
+            // Every expert must share the full descriptor, not just bits: the
+            // stacked tensor carries one group size and mode for all rows.
+            Some(_)
+                if [&gate, &up, &down]
+                    .iter()
+                    .any(|w| w.bits != bits || w.group_size != group_size || w.mode != mode) =>
+            {
+                return None;
+            }
             Some(_) => {}
         }
         if gate.weight.shape() != up.weight.shape() {
@@ -3004,6 +3024,29 @@ fn mtp_take_per_expert_qwen_moe(
             }
             gate_up_scales.push(concatenate(&[gate_scale, up_scale], 0, None));
             down_scales.push(down.scales?);
+            // Affine group biases travel with the scales; dropping them
+            // would leave a scales-only affine weight that panics on use.
+            let expert_has_biases =
+                gate.biases.is_some() && up.biases.is_some() && down.biases.is_some();
+            let expert_no_biases =
+                gate.biases.is_none() && up.biases.is_none() && down.biases.is_none();
+            if !expert_has_biases && !expert_no_biases {
+                return None;
+            }
+            match saw_biases {
+                None => saw_biases = Some(expert_has_biases),
+                Some(previous) if previous != expert_has_biases => return None,
+                Some(_) => {}
+            }
+            if expert_has_biases {
+                let gate_bias = gate.biases.as_ref()?;
+                let up_bias = up.biases.as_ref()?;
+                if gate_bias.shape() != up_bias.shape() {
+                    return None;
+                }
+                gate_up_biases.push(concatenate(&[gate_bias, up_bias], 0, None));
+                down_biases.push(down.biases?);
+            }
         }
     }
 
@@ -3017,7 +3060,12 @@ fn mtp_take_per_expert_qwen_moe(
         } else {
             None
         },
-        biases: None,
+        biases: if saw_biases == Some(true) {
+            let refs: Vec<&MlxArray> = gate_up_biases.iter().collect();
+            Some(stack(&refs, 0, None))
+        } else {
+            None
+        },
         group_size,
         bits,
         mode: mode.clone(),
@@ -3035,7 +3083,12 @@ fn mtp_take_per_expert_qwen_moe(
         } else {
             None
         },
-        biases: None,
+        biases: if saw_biases == Some(true) {
+            let refs: Vec<&MlxArray> = down_biases.iter().collect();
+            Some(stack(&refs, 0, None))
+        } else {
+            None
+        },
         group_size,
         bits,
         mode,
@@ -3462,12 +3515,27 @@ fn load_mtp_sidecar(
         return (0, default_draft, None, None, MtpNormLayout::Auto);
     }
     let sidecar_before_load = std::fs::metadata(&sidecar).ok();
-    let tensors = match load_safetensors(&sidecar, None)
-        .ok()
-        .and_then(normalize_mtp_sidecar_namespace)
-    {
-        Some(t) => t,
-        None => return (0, default_draft, None, None, MtpNormLayout::Auto),
+    let loaded = match load_safetensors(&sidecar, None) {
+        Ok(tensors) => tensors,
+        Err(error) => {
+            // A present-but-unreadable sidecar must not look like "no
+            // sidecar": the operator would otherwise lose MTP silently.
+            tracing::error!(
+                target: "ax_mlx::weights",
+                path = %sidecar.display(),
+                error = %error,
+                "MTP sidecar exists but failed to load; continuing without MTP"
+            );
+            return (0, default_draft, None, None, MtpNormLayout::Auto);
+        }
+    };
+    let Some(tensors) = normalize_mtp_sidecar_namespace(loaded) else {
+        tracing::error!(
+            target: "ax_mlx::weights",
+            path = %sidecar.display(),
+            "MTP sidecar has no recognizable tensor namespace; continuing without MTP"
+        );
+        return (0, default_draft, None, None, MtpNormLayout::Auto);
     };
     if !tensors.is_empty() {
         let refs: Vec<&MlxArray> = tensors.values().collect();
@@ -6902,6 +6970,29 @@ fn take_weight_spec(
             "{base}.scales"
         )));
     }
+    if let Some(quantization) = spec.quantization.as_ref() {
+        // These narrow to i32 for the MLX FFI; reject values that would wrap
+        // or that no kernel supports instead of carrying garbage forward.
+        if !(1..=32).contains(&quantization.bits)
+            || quantization.group_size == 0
+            || i32::try_from(quantization.group_size).is_err()
+        {
+            return Err(WeightLoadError::InvalidLayer(format!(
+                "tensor {name} has unsupported quantization descriptor bits={} group_size={}",
+                quantization.bits, quantization.group_size
+            )));
+        }
+        // Affine dequantization needs group biases; a scales-only affine
+        // tensor loads fine and then panics inside MLX on first use. The one
+        // tolerated shape is the 4/32 pack that labels MXFP4 as affine.
+        let affine = quantization.mode.is_empty() || quantization.mode == "affine";
+        let mxfp4_compat = quantization.bits == 4 && quantization.group_size == 32;
+        if affine && scales.is_some() && quant_biases.is_none() && !mxfp4_compat {
+            return Err(WeightLoadError::QuantizationMissing(format!(
+                "{base}.biases"
+            )));
+        }
+    }
 
     Ok(
         QuantizedWeight::with_quantization(
@@ -6935,14 +7026,21 @@ fn try_take_plain(
     role: NativeTensorRole,
     layer_index: Option<u32>,
 ) -> Result<Option<MlxArray>, WeightLoadError> {
-    let Some(name) = specs
+    let Some(spec) = specs
         .iter()
         .find(|s| s.role == role && s.layer_index == layer_index)
-        .map(|s| s.name.clone())
     else {
         return Ok(None);
     };
-    Ok(name_map.remove(&name))
+    // A plain role must not be backed by a quantized tensor: the packed
+    // bytes would be consumed as dense values and the sidecars orphaned.
+    if spec.source_quantized || spec.quantization.is_some() {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "tensor {} is quantized but role {role:?} is loaded as a plain tensor",
+            spec.name
+        )));
+    }
+    Ok(name_map.remove(&spec.name))
 }
 
 /// Load openai/gpt-oss native fused MXFP4 experts and sanitize to split
@@ -7092,6 +7190,14 @@ fn load_mxfp4_blocks_scales(
         .ok_or(WeightLoadError::TensorMissing(scales_name))?;
 
     // Sanitize: u8 blocks → u32 view, flatten last two dims (mlx-lm gpt_oss.sanitize).
+    let blocks_shape = blocks.shape();
+    let last = blocks_shape.last().copied().unwrap_or(0);
+    if blocks.dtype() != MlxDtype::Uint8 || blocks_shape.len() < 2 || last <= 0 || last % 4 != 0 {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "{label}_blocks[{layer_index:?}] must be a u8 tensor of rank >= 2 whose last dim is a multiple of 4, got {:?} {blocks_shape:?}",
+            blocks.dtype()
+        )));
+    }
     let blocks_u32 = view(&blocks, MlxDtype::Uint32, None);
     let ndim = blocks_u32.ndim();
     let blocks_flat = flatten(&blocks_u32, (ndim - 2) as i32, (ndim - 1) as i32, None);
@@ -8862,11 +8968,19 @@ mod tests {
                 zeros(&[16, 1], MlxDtype::Bfloat16, None),
             ),
             (
+                "language_model.model.layers.0.mlp.gate_proj.biases".into(),
+                zeros(&[16, 1], MlxDtype::Bfloat16, None),
+            ),
+            (
                 "language_model.model.layers.0.mlp.up_proj.weight".into(),
                 zeros(&[16, 2], MlxDtype::Uint32, None),
             ),
             (
                 "language_model.model.layers.0.mlp.up_proj.scales".into(),
+                zeros(&[16, 1], MlxDtype::Bfloat16, None),
+            ),
+            (
+                "language_model.model.layers.0.mlp.up_proj.biases".into(),
                 zeros(&[16, 1], MlxDtype::Bfloat16, None),
             ),
         ]);
@@ -9131,6 +9245,10 @@ mod tests {
                 "model.layers.0.router.proj.scales".to_string(),
                 zeros(&[128, 44], MlxDtype::Bfloat16, None),
             ),
+            (
+                "model.layers.0.router.proj.biases".to_string(),
+                zeros(&[128, 44], MlxDtype::Bfloat16, None),
+            ),
         ]);
 
         let weight = take_weight(
@@ -9145,6 +9263,102 @@ mod tests {
         assert_eq!(weight.group_size, 64);
         assert_eq!(weight.bits, 8);
         assert!(weight.scales.is_some());
+    }
+
+    #[test]
+    fn take_weight_rejects_scales_only_affine_tensor() {
+        // Affine dequant needs group biases; without them MLX panics on the
+        // first matmul, so the loader must refuse the tensor up front.
+        let mut router = spec(NativeTensorRole::FfnGateInp);
+        router.name = "model.layers.0.router.proj.weight".to_string();
+        router.dtype = NativeTensorDataType::U32;
+        router.source_quantized = true;
+        router.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 8,
+        });
+        let specs = vec![router];
+        let mut name_map = HashMap::from([
+            (
+                "model.layers.0.router.proj.weight".to_string(),
+                zeros(&[128, 704], MlxDtype::Uint32, None),
+            ),
+            (
+                "model.layers.0.router.proj.scales".to_string(),
+                zeros(&[128, 44], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+        let Err(error) = take_weight(
+            &specs,
+            &mut name_map,
+            NativeTensorRole::FfnGateInp,
+            Some(0),
+            "router_proj",
+        ) else {
+            panic!("scales-only affine tensor must be rejected");
+        };
+        assert!(
+            matches!(error, WeightLoadError::QuantizationMissing(ref name) if name.ends_with(".biases")),
+            "{error}"
+        );
+
+        // The 4/32 pack that labels MXFP4 as affine stays accepted.
+        let mut mxfp4_compat = spec(NativeTensorRole::FfnGateInp);
+        mxfp4_compat.name = "model.layers.0.router.proj.weight".to_string();
+        mxfp4_compat.dtype = NativeTensorDataType::U32;
+        mxfp4_compat.source_quantized = true;
+        mxfp4_compat.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 32,
+            bits: 4,
+        });
+        let mut name_map = HashMap::from([
+            (
+                "model.layers.0.router.proj.weight".to_string(),
+                zeros(&[128, 352], MlxDtype::Uint32, None),
+            ),
+            (
+                "model.layers.0.router.proj.scales".to_string(),
+                zeros(&[128, 88], MlxDtype::Bfloat16, None),
+            ),
+        ]);
+        assert!(
+            take_weight(
+                &[mxfp4_compat],
+                &mut name_map,
+                NativeTensorRole::FfnGateInp,
+                Some(0),
+                "router_proj",
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn plain_roles_reject_quantized_specs() {
+        let mut norm = spec(NativeTensorRole::AttentionQNorm);
+        norm.name = "model.layers.0.self_attn.q_norm.weight".to_string();
+        norm.dtype = NativeTensorDataType::U32;
+        norm.source_quantized = true;
+        norm.quantization = Some(NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 4,
+        });
+        let mut name_map = HashMap::from([(
+            "model.layers.0.self_attn.q_norm.weight".to_string(),
+            zeros(&[16], MlxDtype::Uint32, None),
+        )]);
+        let Err(error) = try_take_plain(
+            &[norm],
+            &mut name_map,
+            NativeTensorRole::AttentionQNorm,
+            Some(0),
+        ) else {
+            panic!("quantized tensor must not load as a plain norm");
+        };
+        assert!(matches!(error, WeightLoadError::InvalidLayer(_)), "{error}");
     }
 
     #[test]
