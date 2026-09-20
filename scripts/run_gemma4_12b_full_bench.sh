@@ -15,7 +15,19 @@ cd "$(dirname "$0")/.."
 DATE=2026-06-09
 PY=python3
 # AX-ready base snapshot (the one carrying model-manifest.json).
-BASE_DIR=$(dirname "$(ls "$HOME"/.cache/huggingface/hub/models--mlx-community--gemma-4-12B-it-4bit/snapshots/*/model-manifest.json | head -1)")
+# Resolve the current snapshot from refs/main (newest by mtime as a fallback)
+# rather than the alphabetically first one, which goes stale after any update.
+HF_REPO_DIR="$HOME/.cache/huggingface/hub/models--mlx-community--gemma-4-12B-it-4bit"
+if [[ -f "$HF_REPO_DIR/refs/main" ]]; then
+    BASE_DIR="$HF_REPO_DIR/snapshots/$(cat "$HF_REPO_DIR/refs/main")"
+else
+    BASE_DIR="$(ls -td "$HF_REPO_DIR"/snapshots/*/ | head -1)"
+    BASE_DIR="${BASE_DIR%/}"
+fi
+if [[ ! -f "$BASE_DIR/model-manifest.json" ]]; then
+    echo "error: $BASE_DIR has no model-manifest.json (run ax-engine download first)" >&2
+    exit 1
+fi
 
 # Fair-quant AX artifact: the upstream mlx-community 4bit snapshot keeps the FFN
 # at 8-bit (overrides every mlp.{gate,up,down}_proj to bits:8), so it weighs

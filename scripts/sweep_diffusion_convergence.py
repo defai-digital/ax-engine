@@ -180,10 +180,10 @@ def run_one(
         command,
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         env=env,
     )
-    log_path.write_text(result.stdout, encoding="utf-8")
+    log_path.write_text(result.stdout + result.stderr, encoding="utf-8")
     if result.returncode != 0:
         raise RuntimeError(
             f"benchmark failed p={prompt_tokens} {grid.label()} {phase}#{index}; "

@@ -75,7 +75,9 @@ version = getattr(core, "__version__", "unknown")
 print(f"{version} {root} dylib={'yes' if dylib.is_file() else 'no'}")
 PY
 )"
-    DYLIB="$("$PYTHON_BIN" -c 'import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]) / "lib" / "libmlx.dylib")')"
+    # Tolerate a missing mlx here so the import-failed branch below can
+    # print its guidance instead of a raw traceback under `set -e`.
+    DYLIB="$("$PYTHON_BIN" -c 'import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]) / "lib" / "libmlx.dylib")' 2>/dev/null || true)"
 fi
 echo "==> resolved: ${RESOLVED}"
 

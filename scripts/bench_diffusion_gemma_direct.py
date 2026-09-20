@@ -443,9 +443,9 @@ def run_one(
     ]
     log_path = log_dir / f"p{prompt_tokens}-{phase}-{index}.log"
     started = time.time()
-    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     elapsed_s = time.time() - started
-    log_path.write_text(result.stdout, encoding="utf-8")
+    log_path.write_text(result.stdout + result.stderr, encoding="utf-8")
     if result.returncode != 0:
         raise RuntimeError(
             f"benchmark command failed for prompt={prompt_tokens} {phase}#{index}; "

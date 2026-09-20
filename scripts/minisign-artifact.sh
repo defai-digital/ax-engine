@@ -314,7 +314,7 @@ if [[ -n "$SIGNATURE_DIR" ]]; then
 fi
 
 echo "Secret key: $SECRET_KEY"
-if [[ "$VERIFY" = true && -z "$DRY_RUN" ]]; then
+if [[ "$VERIFY" = true && "$DRY_RUN" != true ]]; then
     if [[ -n "$PUBLIC_KEY_STRING" ]]; then
         echo "Public key (string): $PUBLIC_KEY_STRING"
     elif [[ -f "$PUBLIC_KEY" ]]; then

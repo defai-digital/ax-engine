@@ -125,11 +125,13 @@ def run_one(
         command,
         text=True,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         env=env,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"bench failed for {prompt_name}/{config_name}: {result.stdout}")
+        raise RuntimeError(
+            f"bench failed for {prompt_name}/{config_name}: {result.stdout}{result.stderr}"
+        )
     response = json.loads(result.stdout)
     counters = response.get("route", {}).get("crossover_decisions", {})
 

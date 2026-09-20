@@ -21,6 +21,9 @@
 #   - .venv with ax_engine + mlx_lm + numpy installed
 #   - target/release/{ax-engine-server, examples/embed_rust_bench, examples/cold_start_bench}
 set -uo pipefail
+# Any failed stage is recorded here so the script exits non-zero at the end
+# instead of printing a success line over a summary full of placeholders.
+FAILED=0
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -86,7 +89,7 @@ for spec in "${MODELS[@]}"; do
     mkdir -p "$sub"
 
     echo "  $label"
-    PYTHONUNBUFFERED=1 python - "$model_dir" "$label" "$sub" "$BATCH_LENS" <<'PYEND' >"$sub/log.txt" 2>&1 || true
+    PYTHONUNBUFFERED=1 python - "$model_dir" "$label" "$sub" "$BATCH_LENS" <<'PYEND' >"$sub/log.txt" 2>&1 || { echo "  [bench] stage failed; see $sub/log.txt" >&2; FAILED=1; }
 import json, statistics, sys, time
 import mlx.core as mx
 from mlx_lm import load
@@ -153,7 +156,8 @@ PYEND
         --model-dir "$model_dir" \
         --batch "$BATCH_LENS" \
         --warmup 5 --trials 15 \
-        >"$sub/rust.txt" 2>"$sub/rust.err"
+        >"$sub/rust.txt" 2>"$sub/rust.err" \
+        || { echo "  [bench] embed_rust_bench failed; see $sub/rust.err" >&2; FAILED=1; }
 done
 
 # ---------------------------------------------------------------------------
@@ -186,7 +190,7 @@ for spec in "${MODELS[@]}"; do
         continue
     fi
 
-    PYTHONUNBUFFERED=1 python - "$label" "$sub" "$BATCH_LENS" "$port" <<'PYEND' >"$sub/log.txt" 2>&1 || true
+    PYTHONUNBUFFERED=1 python - "$label" "$sub" "$BATCH_LENS" "$port" <<'PYEND' >"$sub/log.txt" 2>&1 || { echo "  [bench] stage failed; see $sub/log.txt" >&2; FAILED=1; }
 import json, statistics, sys, time
 import http.client
 from concurrent.futures import ThreadPoolExecutor
@@ -274,12 +278,14 @@ for spec in "${MODELS[@]}"; do
     : >"$sub/c_loader.txt"; : >"$sub/mmap.txt"
     for _ in 1 2 3; do
         AX_MMAP_WEIGHTS=0 ./target/release/examples/cold_start_bench \
-            --model-dir "$model_dir" >>"$sub/c_loader.txt" 2>/dev/null
+            --model-dir "$model_dir" >>"$sub/c_loader.txt" 2>/dev/null \
+            || { echo "  [bench] cold_start_bench (c_loader) failed" >&2; FAILED=1; }
         sleep 1
     done
     for _ in 1 2 3; do
         AX_MMAP_WEIGHTS=1 ./target/release/examples/cold_start_bench \
-            --model-dir "$model_dir" >>"$sub/mmap.txt" 2>/dev/null
+            --model-dir "$model_dir" >>"$sub/mmap.txt" 2>/dev/null \
+            || { echo "  [bench] cold_start_bench (mmap) failed" >&2; FAILED=1; }
         sleep 1
     done
 done
@@ -440,4 +446,8 @@ print(f"wrote {outdir/'summary.md'}")
 PYEND
 
 echo ""
+if [[ "$FAILED" -ne 0 ]]; then
+    echo "[bench] FAILED: one or more stages failed; $SUMMARY is incomplete" >&2
+    exit 1
+fi
 echo "[bench] done; see $SUMMARY"

@@ -133,8 +133,14 @@ mkdir -p "$ROOT_DIR/docs/assets"
 
 # VHS may leave a directory named *.png if Output points at a .png path; clean
 # any stale still before / after render.
-STILL_PNG="docs/assets/tui-demo.png"
-GIF_OUT="docs/assets/tui-demo.gif"
+# The GIF path comes from the tape's own `Output` directive so a custom
+# --tape is validated against the file it actually renders.
+GIF_OUT="$(grep -E '^Output[[:space:]]+.*\.gif[[:space:]]*$' "$TAPE_PATH" | head -1 | awk '{print $2}')"
+if [[ -z "$GIF_OUT" ]]; then
+    echo "error: tape $TAPE_REL declares no .gif Output" >&2
+    exit 1
+fi
+STILL_PNG="${GIF_OUT%.gif}.png"
 if [[ -d "$STILL_PNG" ]]; then
     rm -rf "$STILL_PNG"
 fi
