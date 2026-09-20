@@ -6125,6 +6125,7 @@ impl MlxRunner {
                         &self.weights,
                         &full_prompt_tokens,
                         &image_views,
+                        inputs.image_token_id,
                         &mut state.cache,
                         MlxSamplingRequest::new(sampling, &repetition_history),
                         &mut state.rng,

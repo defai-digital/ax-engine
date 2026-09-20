@@ -239,6 +239,7 @@ fn run() -> Result<(), String> {
         &weights,
         &prompt,
         &image,
+        DEFAULT_IMAGE_TOKEN_ID,
         &mut cache,
         MlxSamplingRequest::new(MlxSamplingParams::greedy(), &prompt),
         &mut rng,

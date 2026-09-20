@@ -645,7 +645,9 @@ fn normalized_image_batch(images: &[RgbImage]) -> Result<MlxArray, UnlimitedOcrE
 fn global_letterbox(source: &RgbImage) -> RgbImage {
     let target = IMAGE_SIZE as u32;
     let (width, height) = source.dimensions();
-    let (new_width, new_height) = if width * target > height * target {
+    // Compare the raw dimensions: scaling both sides by `target` overflowed
+    // u32 for widths above 2^22 and could flip the branch.
+    let (new_width, new_height) = if width > height {
         (
             target,
             (f64::from(height) / f64::from(width) * f64::from(target)).round() as u32,
@@ -1242,6 +1244,7 @@ pub fn build_embeddings_with_image(
     weights: &ModelWeights,
     token_ids: &[u32],
     views: &UnlimitedOcrImageViews,
+    image_token_id: u32,
 ) -> Result<MlxArray, UnlimitedOcrError> {
     let vision = weights
         .unlimited_ocr_vision
@@ -1254,11 +1257,14 @@ pub fn build_embeddings_with_image(
     }
     let features = encode_document_image(vision, views)?;
     let features = astype(&features, hidden.dtype(), None);
+    // The request carries its own image token id (the client resolves it from
+    // the checkpoint's config or tokenizer); the weight struct's constant is
+    // only a default for callers without a request.
     overwrite_image_token_positions(
         hidden,
         &features,
         token_ids,
-        vision.image_token_id,
+        image_token_id,
         cfg.hidden_size,
     )
 }

@@ -941,6 +941,7 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
     weights: &ModelWeights,
     prompt_tokens: &[u32],
     image_views: &UnlimitedOcrImageViews,
+    image_token_id: u32,
     cache: &mut MlxKVCache,
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
@@ -949,8 +950,9 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
     let sampling = sampling_request.params;
-    let hidden = build_embeddings_with_image(cfg, weights, prompt_tokens, image_views)
-        .map_err(|e| e.to_string())?;
+    let hidden =
+        build_embeddings_with_image(cfg, weights, prompt_tokens, image_views, image_token_id)
+            .map_err(|e| e.to_string())?;
     // Unlimited-OCR uses ordinary causal attention for the complete prefill.
     // Its R-SWA cache only starts replacing generated decode entries after the
     // full prompt has been retained.  In particular, image soft tokens are not
