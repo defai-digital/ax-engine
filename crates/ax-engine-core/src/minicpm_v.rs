@@ -117,8 +117,22 @@ impl MiniCpmV46RuntimeInputs {
         &self,
         prompt_len: usize,
     ) -> Result<(), MiniCpmV46RuntimeInputError> {
+        let mut spans = Vec::with_capacity(self.images.len());
         for image in &self.images {
             image.validate(prompt_len)?;
+            spans.push((image.placeholder_index, image.soft_token_count as usize));
+        }
+        // Slices must not claim the same prompt tokens: later feature writes
+        // would clobber earlier ones.
+        spans.sort_unstable();
+        for pair in spans.windows(2) {
+            let (previous_start, previous_count) = pair[0];
+            let (next_start, _) = pair[1];
+            if previous_start + previous_count > next_start {
+                return Err(MiniCpmV46RuntimeInputError::InvalidGeometry(format!(
+                    "placeholder span starting at {previous_start} overlaps the span starting at {next_start}"
+                )));
+            }
         }
         Ok(())
     }
@@ -159,8 +173,22 @@ mod tests {
             spatial_downsample_factor: 4,
         };
         assert!(image.validate(8).is_ok());
-        let mut invalid = image;
+        let mut invalid = image.clone();
         invalid.soft_token_count = 3;
         assert!(invalid.validate(8).is_err());
+
+        // Spans [2, 6) and [4, 8) overlap; [2, 6) and [6, 10) are adjacent.
+        let mut overlapping = image.clone();
+        overlapping.placeholder_index = 4;
+        let inputs = MiniCpmV46RuntimeInputs {
+            images: vec![image.clone(), overlapping],
+        };
+        assert!(inputs.validate_for_prompt_len(8).is_err());
+        let mut adjacent = image.clone();
+        adjacent.placeholder_index = 6;
+        let inputs = MiniCpmV46RuntimeInputs {
+            images: vec![image, adjacent],
+        };
+        assert!(inputs.validate_for_prompt_len(10).is_ok());
     }
 }
