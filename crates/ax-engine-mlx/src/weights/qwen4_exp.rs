@@ -110,7 +110,9 @@ pub(crate) fn load_artifacts(
     load_with_schedule_admission(
         artifacts.root_dir(),
         artifacts.manifest(),
-        crate::expert_stream::stream_experts_mode(),
+        // Admission path: an invalid AX_STREAM_EXPERTS must fail closed, not
+        // silently page (or not) under a substituted Auto.
+        crate::expert_stream::stream_experts_mode_checked()?,
         crate::expert_stream::expert_layer_budget(),
         artifacts.audited_qwen4_exp_mxfp4(),
     )

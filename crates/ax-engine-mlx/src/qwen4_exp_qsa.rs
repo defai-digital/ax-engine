@@ -756,19 +756,47 @@ fn validate_projection(
         }
         return ensure_floating(tensor, projection.weight.dtype());
     };
-    if projection.group_size <= 0 || projection.bits <= 0 {
-        return Err(QsaError::InvalidQuantization {
-            tensor,
-            group_size: projection.group_size,
-            bits: projection.bits,
-        });
+    // Same contract as `qwen4_exp_residual::validate_projection`: the packed
+    // width, weight/scale dtypes, mode/bias pairing, and the bits/group
+    // allowlist must all hold, or a truncated or mislabeled sidecar loads
+    // and is misread at the first forward.
+    let invalid_quantization = || QsaError::InvalidQuantization {
+        tensor,
+        group_size: projection.group_size,
+        bits: projection.bits,
+    };
+    let valid_mode = match projection.mode.as_str() {
+        "" | "affine" => {
+            matches!(projection.bits, 2 | 3 | 4 | 5 | 6 | 8)
+                && matches!(projection.group_size, 32 | 64 | 128)
+                && projection.biases.as_ref().is_some_and(|bias| {
+                    bias.shape() == scales.shape() && bias.dtype() == scales.dtype()
+                })
+                && matches!(
+                    scales.dtype(),
+                    MlxDtype::Float32 | MlxDtype::Float16 | MlxDtype::Bfloat16
+                )
+        }
+        "mxfp4" | "mxfp8" => {
+            projection.bits == if projection.mode == "mxfp4" { 4 } else { 8 }
+                && projection.group_size == 32
+                && projection.biases.is_none()
+                && scales.dtype() == MlxDtype::Uint8
+        }
+        _ => false,
+    };
+    let packed_bits = in_dim.checked_mul(projection.bits);
+    if !valid_mode || in_dim <= 0 || out_dim <= 0 || projection.weight.dtype() != MlxDtype::Uint32 {
+        return Err(invalid_quantization());
+    }
+    if packed_bits.is_none_or(|bits| bits % 32 != 0 || bits / 32 != shape[1]) {
+        return Err(shape_error(shape));
     }
     let scales_shape = scales.shape();
-    if scales_shape.len() != 2 || scales_shape[0] != out_dim {
-        return Err(shape_error(scales_shape));
-    }
-    let logical_in = scales_shape[1].checked_mul(projection.group_size);
-    if logical_in != Some(in_dim) {
+    let logical_in = scales_shape
+        .get(1)
+        .and_then(|groups| groups.checked_mul(projection.group_size));
+    if scales_shape.len() != 2 || scales_shape[0] != out_dim || logical_in != Some(in_dim) {
         return Err(shape_error(scales_shape));
     }
     Ok(())
