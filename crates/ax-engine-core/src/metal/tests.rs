@@ -52,7 +52,10 @@ fn skip_metal_heavy_test_unless_opted_in(test_name: &str) -> bool {
 #[cfg(target_os = "macos")]
 #[test]
 fn direct_decode_token_indices_use_checked_arithmetic() {
-    assert_eq!(direct_decode_token_indices(2, 4, 3), Some((8, 12, 4)));
+    // A 3-token item starting at scheduled index 2 samples from scheduled token 4,
+    // so both the attention row and the hidden state come from index 4.
+    assert_eq!(direct_decode_token_indices(2, 4, 3), Some((16, 20, 4)));
+    assert_eq!(direct_decode_token_indices(2, 4, 1), Some((8, 12, 2)));
     assert_eq!(advance_direct_decode_attention_index(2, 3), Some(5));
 
     assert!(direct_decode_token_indices(usize::MAX, 2, 1).is_none());

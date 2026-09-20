@@ -3178,8 +3178,15 @@ fn build_dispatch_kv_metadata(
         scheduled_cu_seq_lens.push(next_scheduled_cu_seq_len);
 
         let mut gather_row = Vec::with_capacity(block_table.block_ids.len().max(1));
-        for &block_id in &block_table.block_ids {
-            let block_base = block_id.0 * block_size_tokens;
+        for (block_index, &block_id) in block_table.block_ids.iter().enumerate() {
+            let Some(block_base) = block_id.0.checked_mul(block_size_tokens) else {
+                return Err(MetalRuntimeError::InvalidDispatchInput {
+                    message: format!(
+                        "request {} block table entry {} (block id {}) overflows the slot space at block size {}",
+                        item.request_id.0, block_index, block_id.0, block_size_tokens
+                    ),
+                });
+            };
             gather_row.push(block_base);
         }
         if gather_row.is_empty() {
@@ -3201,7 +3208,18 @@ fn build_dispatch_kv_metadata(
                     ),
                 });
             };
-            let slot = block_id.0 * block_size_tokens + block_offset;
+            let Some(slot) = block_id
+                .0
+                .checked_mul(block_size_tokens)
+                .and_then(|base| base.checked_add(block_offset))
+            else {
+                return Err(MetalRuntimeError::InvalidDispatchInput {
+                    message: format!(
+                        "request {} position {} maps to block id {} which overflows the slot space at block size {}",
+                        item.request_id.0, position, block_id.0, block_size_tokens
+                    ),
+                });
+            };
             slot_mapping.push(slot);
             attention_block_table.push(slot);
         }
@@ -3572,11 +3590,13 @@ fn direct_decode_token_indices(
     scheduled_token_count: u32,
 ) -> Option<(usize, usize, usize)> {
     let scheduled_token_count = scheduled_token_count as usize;
-    let token_base = attention_index.checked_mul(token_width)?;
-    let token_end = token_base.checked_add(token_width)?;
+    // Attention output rows and hidden states are both laid out per scheduled
+    // token, so a sampleable item must read both from its last scheduled token.
     let hidden_index = attention_index
         .checked_add(scheduled_token_count)?
         .checked_sub(1)?;
+    let token_base = hidden_index.checked_mul(token_width)?;
+    let token_end = token_base.checked_add(token_width)?;
     Some((token_base, token_end, hidden_index))
 }
 
@@ -3644,12 +3664,12 @@ fn derive_model_bound_direct_decode_result_from_hidden_states_batched(
     let mut prepared = Vec::new();
 
     for item in &input.execution_batch.items {
-        let token_base = attention_index.checked_mul(token_width)?;
         if sampleable_request_ids.contains(&item.request_id) {
-            let token_end = token_base.checked_add(token_width)?;
-            let hidden_index = attention_index
-                .checked_add(item.scheduled_token_count as usize)?
-                .checked_sub(1)?;
+            let (token_base, token_end, hidden_index) = direct_decode_token_indices(
+                attention_index,
+                token_width,
+                item.scheduled_token_count,
+            )?;
             let bits = attention_output_bits.get(token_base..token_end)?;
             let attention_output = decode_attention_output_values(bits)?;
             let final_layer_hidden_state = hidden_states.get(hidden_index)?;
