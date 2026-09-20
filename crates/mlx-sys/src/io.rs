@@ -205,14 +205,22 @@ fn load_safetensors_mmap_filtered(
             .get("shape")
             .and_then(|v| v.as_array())
             .ok_or_else(|| format!("tensor entry {name} missing shape"))?;
-        let shape: Vec<i32> = shape_json
-            .iter()
-            .map(|v| {
-                v.as_u64()
-                    .ok_or_else(|| format!("shape dim is not a u64 in {name}"))
-                    .map(|x| x as i32)
-            })
-            .collect::<Result<_, _>>()?;
+        let mut shape: Vec<i32> = Vec::with_capacity(shape_json.len());
+        let mut numel: usize = 1;
+        for (i, v) in shape_json.iter().enumerate() {
+            let d = v
+                .as_u64()
+                .ok_or_else(|| format!("shape dim is not a u64 in {name}"))?;
+            let dim = i32::try_from(d)
+                .map_err(|_| format!("tensor entry {name}: shape dim {i}={d} exceeds i32::MAX"))?;
+            shape.push(dim);
+            numel = numel.checked_mul(d as usize).ok_or_else(|| {
+                format!("tensor entry {name}: shape {shape_json:?} overflows usize")
+            })?;
+        }
+        let expected_byte_len = numel
+            .checked_mul(dtype.size_bytes())
+            .ok_or_else(|| format!("tensor entry {name}: byte length overflows usize"))?;
         let offsets = entry_obj
             .get("data_offsets")
             .and_then(|v| v.as_array())
@@ -254,6 +262,15 @@ fn load_safetensors_mmap_filtered(
             ));
         }
         let byte_len = absolute_end - absolute_start;
+        // A payload shorter than the shape would trip the copy-time assert in
+        // `from_raw_data` and abort the process; a longer one would silently
+        // load the wrong tensor. Fail closed like the strict row reader.
+        if byte_len != expected_byte_len {
+            return Err(format!(
+                "tensor entry {name}: data_offsets byte length {byte_len} does not match \
+                 shape {shape:?} dtype {dtype_str} expected {expected_byte_len}"
+            ));
+        }
         let ptr = unsafe { mmap.as_ptr().add(absolute_start) };
 
         // We use the copy-on-create C entry (`mlx_array_new_data` via
@@ -380,6 +397,55 @@ mod tests {
         assert_eq!(mb.data_f32(), &[10.0, 20.0, 30.0, 40.0]);
 
         // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn write_safetensors_header_only(
+        path: &std::path::Path,
+        header: &serde_json::Value,
+        payload: &[u8],
+    ) {
+        let header_bytes = serde_json::to_vec(header).unwrap();
+        let mut file = std::fs::File::create(path).unwrap();
+        std::io::Write::write_all(&mut file, &(header_bytes.len() as u64).to_le_bytes()).unwrap();
+        std::io::Write::write_all(&mut file, &header_bytes).unwrap();
+        std::io::Write::write_all(&mut file, payload).unwrap();
+    }
+
+    #[test]
+    fn mmap_load_rejects_payloads_that_disagree_with_the_shape() {
+        // A short payload would trip the copy-time assert and abort the
+        // process; an oversized dim would truncate to a wrong i32 shape.
+        let dir = std::env::temp_dir().join("ax_shim_io_shape_mismatch_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let short = dir.join("short.safetensors");
+        write_safetensors_header_only(
+            &short,
+            &serde_json::json!({"t": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 4]}}),
+            &[0u8; 4],
+        );
+        let error = load_safetensors_mmap(&short).expect_err("short payload must fail closed");
+        assert!(error.contains("does not match"), "{error}");
+
+        let long = dir.join("long.safetensors");
+        write_safetensors_header_only(
+            &long,
+            &serde_json::json!({"t": {"dtype": "F32", "shape": [1], "data_offsets": [0, 8]}}),
+            &[0u8; 8],
+        );
+        assert!(load_safetensors_mmap(&long).is_err());
+
+        let huge = dir.join("huge.safetensors");
+        write_safetensors_header_only(
+            &huge,
+            &serde_json::json!({"t": {"dtype": "U8", "shape": [4294967297u64, 2], "data_offsets": [0, 2]}}),
+            &[0u8; 2],
+        );
+        let error = load_safetensors_mmap(&huge).expect_err("oversized dim must fail closed");
+        assert!(error.contains("exceeds i32::MAX"), "{error}");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -237,7 +237,11 @@ pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: 
 /// A valid numeric `AX_MLX_WIRED_LIMIT_SCALE` value, when present. Absent or
 /// non-numeric values are not an operator override.
 fn wired_limit_scale_override() -> Option<f64> {
-    std::env::var("AX_MLX_WIRED_LIMIT_SCALE").ok()?.parse().ok()
+    std::env::var("AX_MLX_WIRED_LIMIT_SCALE")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Read a small metadata file, bounded to [`MAX_METADATA_BYTES`]. Returns

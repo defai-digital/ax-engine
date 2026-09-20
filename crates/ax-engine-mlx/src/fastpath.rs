@@ -29,7 +29,7 @@ pub fn mtp_warmup_cap() -> usize {
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_MTP_WARMUP_CAP")
             .ok()
-            .and_then(|value| value.parse::<usize>().ok())
+            .and_then(|value| value.trim().parse::<usize>().ok())
             .unwrap_or(256)
     })
 }
@@ -1727,7 +1727,7 @@ env_flag!(
 /// `generate.rs`). Diagnostic only.
 pub fn prefill_time_debug_env() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1"))
+    *ENABLED.get_or_init(|| parse_bool_env("AX_MLX_PREFILL_TIME_DEBUG"))
 }
 
 /// Multi-model (sibling-resident) prefill-rotation hint.
@@ -2812,10 +2812,8 @@ pub fn parse_pipeline_granularity(raw: &str) -> PipelineGranularity {
     if trimmed.eq_ignore_ascii_case("layer") {
         return PipelineGranularity::PerLayer;
     }
-    if let Some(rest) = trimmed
-        .strip_prefix("block:")
-        .or_else(|| trimmed.strip_prefix("BLOCK:"))
-        .or_else(|| trimmed.strip_prefix("Block:"))
+    if let Some((prefix, rest)) = trimmed.split_once(':')
+        && prefix.trim().eq_ignore_ascii_case("block")
     {
         let n = rest.trim().parse::<usize>().unwrap_or(4).max(1);
         return PipelineGranularity::PerBlock(n);
@@ -8265,6 +8263,11 @@ mod tests {
         assert_eq!(
             parse_pipeline_granularity("block:4"),
             PipelineGranularity::PerBlock(4)
+        );
+        // Prefix casing follows the eval-granularity parser.
+        assert_eq!(
+            parse_pipeline_granularity("bLoCk:2"),
+            PipelineGranularity::PerBlock(2)
         );
         assert_eq!(
             parse_pipeline_granularity("block:1"),

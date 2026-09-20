@@ -180,7 +180,24 @@ impl ExpertStreamManifest {
                 "tensors list is empty".to_string(),
             ));
         }
+        let mut seen_slots: std::collections::HashSet<(u32, ExpertProj)> =
+            std::collections::HashSet::new();
         for tensor in &mut manifest.tensors {
+            // Shards are resolved as `root.join(file)`: an absolute path would
+            // replace the root and `..` would escape it, so a manifest must
+            // never point outside its own pack.
+            if tensor.file.is_absolute()
+                || tensor
+                    .file
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(ExpertStreamError::InvalidManifest(format!(
+                    "tensor {}: file {} must be a relative path inside the pack",
+                    tensor.name,
+                    tensor.file.display()
+                )));
+            }
             let Some(proj) = ExpertProj::parse(&tensor.proj) else {
                 return Err(ExpertStreamError::InvalidManifest(format!(
                     "tensor {}: unknown proj {:?} (expected one of gate_up, gate, up, down)",
@@ -198,6 +215,22 @@ impl ExpertStreamManifest {
                 return Err(ExpertStreamError::InvalidManifest(format!(
                     "tensor {}: bits and group_size must be positive",
                     tensor.name
+                )));
+            }
+            if i32::try_from(tensor.bits).is_err() || i32::try_from(tensor.group_size).is_err() {
+                return Err(ExpertStreamError::InvalidManifest(format!(
+                    "tensor {}: bits {} / group_size {} exceed the supported range",
+                    tensor.name, tensor.bits, tensor.group_size
+                )));
+            }
+            // A second entry for the same slot would silently replace the
+            // first when the layer is paged in.
+            if !is_quantization_sidecar_name(&tensor.name)
+                && !seen_slots.insert((tensor.layer, proj))
+            {
+                return Err(ExpertStreamError::InvalidManifest(format!(
+                    "tensor {}: duplicate {:?} projection for layer {}",
+                    tensor.name, tensor.proj, tensor.layer
                 )));
             }
         }
@@ -565,7 +598,8 @@ pub fn infer_layer_stack_manifest(
             parsed_proj: Some(proj),
         });
         expert_bytes = expert_bytes.saturating_add(spec.length_bytes);
-        *layer_bytes.entry(layer).or_insert(0) += spec.length_bytes;
+        let entry = layer_bytes.entry(layer).or_insert(0);
+        *entry = entry.saturating_add(spec.length_bytes);
     }
     if tensors.is_empty() {
         return Err(ExpertStreamError::ManifestMissing);
@@ -906,8 +940,18 @@ impl ExpertStackPager {
                 weight,
                 scales,
                 biases,
-                group_size: tensor.group_size as i32,
-                bits: tensor.bits as i32,
+                group_size: i32::try_from(tensor.group_size).map_err(|_| {
+                    ExpertStreamError::Paging(format!(
+                        "tensor {}: group_size {} out of range",
+                        tensor.name, tensor.group_size
+                    ))
+                })?,
+                bits: i32::try_from(tensor.bits).map_err(|_| {
+                    ExpertStreamError::Paging(format!(
+                        "tensor {}: bits {} out of range",
+                        tensor.name, tensor.bits
+                    ))
+                })?,
                 mode: "affine".to_string(),
                 linear_bias,
                 decode_weight_t: None,
@@ -1204,6 +1248,60 @@ mod tests {
         let mut value = manifest_json(true);
         value["tensors"][0]["proj"] = serde_json::json!("sideways");
         assert!(ExpertStreamManifest::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn shard_paths_outside_the_pack_fail_closed() {
+        for file in [
+            "/tmp/evil.safetensors",
+            "../evil.safetensors",
+            "sub/../../evil.safetensors",
+        ] {
+            let mut value = manifest_json(true);
+            value["tensors"][0]["file"] = serde_json::json!(file);
+            let error =
+                ExpertStreamManifest::parse(&serde_json::to_vec(&value).unwrap()).expect_err(file);
+            assert!(
+                matches!(&error, ExpertStreamError::InvalidManifest(msg) if msg.contains("inside the pack")),
+                "{file}: {error}"
+            );
+        }
+        let mut value = manifest_json(true);
+        value["tensors"][0]["file"] = serde_json::json!("shards/model-00001.safetensors");
+        assert!(ExpertStreamManifest::parse(&serde_json::to_vec(&value).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn quantization_params_outside_i32_fail_closed() {
+        let mut value = manifest_json(true);
+        value["tensors"][0]["bits"] = serde_json::json!(2_147_483_649_u64);
+        assert!(ExpertStreamManifest::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+        let mut value = manifest_json(true);
+        value["tensors"][0]["group_size"] = serde_json::json!(4_294_967_295_u64);
+        assert!(ExpertStreamManifest::parse(&serde_json::to_vec(&value).unwrap()).is_err());
+    }
+
+    #[test]
+    fn duplicate_layer_projection_fails_closed() {
+        let mut value = manifest_json(true);
+        let mut duplicate = value["tensors"][0].clone();
+        duplicate["name"] = serde_json::json!("model.layers.0.mlp.switch_mlp.other.weight");
+        duplicate["file"] = serde_json::json!("model-00002-of-00080.safetensors");
+        value["tensors"].as_array_mut().unwrap().push(duplicate);
+        let error = ExpertStreamManifest::parse(&serde_json::to_vec(&value).unwrap())
+            .expect_err("duplicate slot must fail closed");
+        assert!(
+            matches!(&error, ExpertStreamError::InvalidManifest(msg) if msg.contains("duplicate")),
+            "{error}"
+        );
+
+        // The same projection on a different layer is a distinct slot.
+        let mut value = manifest_json(true);
+        let mut other_layer = value["tensors"][0].clone();
+        other_layer["name"] = serde_json::json!("model.layers.1.mlp.switch_mlp.gate_proj.weight");
+        other_layer["layer"] = serde_json::json!(1);
+        value["tensors"].as_array_mut().unwrap().push(other_layer);
+        assert!(ExpertStreamManifest::parse(&serde_json::to_vec(&value).unwrap()).is_ok());
     }
 
     #[test]
