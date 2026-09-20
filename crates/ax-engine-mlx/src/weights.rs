@@ -3459,6 +3459,7 @@ fn load_mtp_sidecar(
         let refs: Vec<&MlxArray> = tensors.values().collect();
         eval(&refs);
     }
+    let sidecar_tensor_names: Vec<String> = tensors.keys().cloned().collect();
     name_map.extend(tensors);
 
     // Parse depth, draft sampling, and sidecar quantization bits from MTPLX runtime config.
@@ -3480,14 +3481,22 @@ fn load_mtp_sidecar(
         };
         let sidecar_bits = parse_mtp_sidecar_bits_hint(&v);
         let depth = apply_mtp_depth_policy(raw_depth, sidecar_bits);
+        let declared_layout = parse_mtp_norm_layout(&v);
         let norm_layout = resolve_mtp_norm_layout(root, &v);
-        if norm_layout != parse_mtp_norm_layout(&v)
-            && !mtp_sidecar_file_unchanged(
-                sidecar_before_load.as_ref(),
-                std::fs::metadata(&sidecar).ok().as_ref(),
-            )
-        {
+        // The compatibility digest is computed from the on-disk file after the
+        // tensors were materialized. If the file changed in between, the digest
+        // no longer describes the loaded tensors, whether or not it matched:
+        // a skipped override on the audited export would double-shift the
+        // norms just like an applied override on a genuine raw-HF export.
+        if mtp_sidecar_verification_is_stale(
+            declared_layout,
+            sidecar_before_load.as_ref(),
+            std::fs::metadata(&sidecar).ok().as_ref(),
+        ) {
             tracing::error!(target: "ax_mlx::weights", "MTP sidecar changed during load and verification; refusing compatibility override");
+            for name in &sidecar_tensor_names {
+                name_map.remove(name);
+            }
             return (0, default_draft, None, None, MtpNormLayout::Auto);
         }
         return (
@@ -3929,6 +3938,19 @@ fn parse_mtp_norm_layout(v: &serde_json::Value) -> MtpNormLayout {
         }
         None => MtpNormLayout::Auto,
     }
+}
+
+/// Whether the post-load digest check in [`resolve_mtp_norm_layout`] may have
+/// inspected different bytes than the tensors already in memory. Only the
+/// declared raw-HF layout consults the digest, so only that layout can be
+/// misdescribed by a file replaced mid-load; the result is independent of
+/// whether the override ended up applied.
+fn mtp_sidecar_verification_is_stale(
+    declared: MtpNormLayout,
+    before: Option<&std::fs::Metadata>,
+    after: Option<&std::fs::Metadata>,
+) -> bool {
+    declared == MtpNormLayout::RawHfDelta && !mtp_sidecar_file_unchanged(before, after)
 }
 
 fn mtp_sidecar_file_unchanged(
@@ -9874,9 +9896,30 @@ mod tests {
         let replacement = dir.join("replacement");
         std::fs::write(&replacement, b"other").unwrap();
         std::fs::rename(replacement, &path).unwrap();
-        assert!(!mtp_sidecar_file_unchanged(
+        let after = std::fs::metadata(&path).ok();
+        assert!(!mtp_sidecar_file_unchanged(Some(&before), after.as_ref()));
+        // A replaced file invalidates the digest check for the declared
+        // raw-HF layout even when the override was not applied; other
+        // declared layouts never consult the digest and are unaffected.
+        assert!(mtp_sidecar_verification_is_stale(
+            MtpNormLayout::RawHfDelta,
             Some(&before),
-            std::fs::metadata(&path).ok().as_ref()
+            after.as_ref()
+        ));
+        assert!(!mtp_sidecar_verification_is_stale(
+            MtpNormLayout::RawHfDelta,
+            Some(&before),
+            Some(&before)
+        ));
+        assert!(!mtp_sidecar_verification_is_stale(
+            MtpNormLayout::MlxMultiplier,
+            Some(&before),
+            after.as_ref()
+        ));
+        assert!(!mtp_sidecar_verification_is_stale(
+            MtpNormLayout::Auto,
+            None,
+            after.as_ref()
         ));
         std::fs::remove_dir_all(dir).unwrap();
     }
