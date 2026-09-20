@@ -1703,6 +1703,7 @@ pub fn sample_token_from_prefill_logits(
         && !sampling.uses_logits_processors()
         && sampling.top_k == 0
         && sampling.top_p >= 1.0
+        && !sampling.uses_min_p()
     {
         sample_categorical_gpu(logits, sampling.temperature)
     } else if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
@@ -1768,6 +1769,7 @@ pub fn decode_step_with_sampling_buffers(
         && !sampling.uses_logits_processors()
         && sampling.top_k == 0
         && sampling.top_p >= 1.0
+        && !sampling.uses_min_p()
     {
         // GPU-side sampling: no logits transfer to CPU.
         sample_categorical_gpu(&logits, sampling.temperature)

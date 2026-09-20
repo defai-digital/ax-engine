@@ -53,7 +53,7 @@ pub enum BatchedSamplingClass {
 /// branch order exactly so the batched token equals the single-sequence token.
 ///
 /// Returns `None` for the **pure-temperature** branch (`temperature > 0`, no
-/// top-k/top-p, no repetition penalty), which the single decode routes through
+/// top-k/top-p/min-p, no repetition penalty), which the single decode routes through
 /// `sample_categorical_gpu` → `random_categorical`. That uses MLX's global RNG,
 /// not the request's `Xorshift64`, so it is neither reproducible per request nor
 /// batchable token-exact; such requests must stay on the per-item path.
@@ -71,7 +71,12 @@ pub fn batched_sampling_class(
     let uses_processors = sampling.uses_logits_processors();
     // Branch 1 (single decode): pure temperature → GPU `random_categorical`.
     // Non-reproducible / not batchable token-exact → ineligible.
-    if temp_positive && !uses_processors && sampling.top_k == 0 && sampling.top_p >= 1.0 {
+    if temp_positive
+        && !uses_processors
+        && sampling.top_k == 0
+        && sampling.top_p >= 1.0
+        && !sampling.uses_min_p()
+    {
         return None;
     }
     // Branch 2 (single decode): host `sample_categorical_into`.
@@ -298,6 +303,16 @@ mod tests {
         assert_eq!(
             batched_sampling_class(MlxSamplingParams::new(0.8, 1.0, 0), false),
             None
+        );
+        // Branch 2d: temperature + min-p only → host sampler. The GPU
+        // `random_categorical` path cannot apply min-p, so this must not be
+        // classified as pure temperature.
+        assert_eq!(
+            batched_sampling_class(
+                MlxSamplingParams::new(0.8, 1.0, 0).with_min_p(Some(0.2)),
+                false
+            ),
+            Some(BatchedSamplingClass::HostSampled)
         );
         // A repetition penalty of exactly 1.0 is a no-op, so temperature-only
         // with rep==1.0 is still the pure-temperature (ineligible) branch.

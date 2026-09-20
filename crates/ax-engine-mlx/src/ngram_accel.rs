@@ -1767,6 +1767,7 @@ pub fn single_decode_with_sampling_buffers(
         && !sampling.uses_logits_processors()
         && sampling.top_k == 0
         && sampling.top_p >= 1.0
+        && !sampling.uses_min_p()
     {
         // GPU-side sampling: no logits transfer to CPU.
         // The forward pass already updated the KV cache (it's in logits' graph);

@@ -795,6 +795,8 @@ pub fn full_vocab_token_logprob(logits: &[f32], token: u32, temperature: f32) ->
 /// - `temperature > 0.0`
 /// - No repetition penalty (`sampling.uses_repetition_penalty() == false`)
 /// - No top-k/top-p filtering (`sampling.top_k == 0 && sampling.top_p >= 1.0`)
+/// - No min-p filtering (`sampling.uses_min_p() == false`); `random_categorical`
+///   samples the full distribution, so min-p requests must use the host sampler
 ///
 /// When any of these constraints are violated, fall back to `sample_categorical`.
 pub fn sample_categorical_gpu(logits: &MlxArray, temperature: f32) -> u32 {
