@@ -4368,6 +4368,20 @@ fn load_mtp(
 /// `scripts/quantize_rotated_weights.py --apply`. Fail-closed: if Apply mode
 /// is selected but the rotated checkpoint is missing / incomplete / not
 /// applicable, return an error rather than silently running with broken math.
+/// The activation-side rotation (`maybe_apply_rotation_identity`) is an
+/// identity for inner dims that are not a power of two, so a rotated weight
+/// on such a dim would compute `x @ (W R)^T` with no matching `x R`. Fail
+/// closed instead of silently transforming every FFN output.
+fn require_rotation_eligible_dim(key: &str, inner_dim: i64) -> Result<(), WeightLoadError> {
+    let eligible = usize::try_from(inner_dim).is_ok_and(|dim| dim >= 2 && dim.is_power_of_two());
+    if eligible {
+        return Ok(());
+    }
+    Err(WeightLoadError::RotatedCheckpointInvalid(format!(
+        "{key}: inner dim {inner_dim} is not a power of two, so the activation-side rotation cannot be applied; rotation is unsupported for this model"
+    )))
+}
+
 fn apply_rotated_checkpoint(
     model: &mut ModelWeights,
     artifacts: &NativeModelArtifacts,
@@ -4470,6 +4484,7 @@ fn apply_rotated_checkpoint(
                         "{key}: inferred bits={bits_calc} outside 2..=8"
                     )));
                 }
+                require_rotation_eligible_dim(&key, logical_inner)?;
                 target.weight = rotated_w.clone();
                 target.scales = Some(scales.clone());
                 target.biases = Some(biases.clone());
@@ -4478,6 +4493,8 @@ fn apply_rotated_checkpoint(
             } else {
                 // f32 path: cast to bf16, drop scales/biases, forward picks
                 // the plain matmul branch.
+                let inner = i64::from(*rotated_w.shape().last().unwrap_or(&0));
+                require_rotation_eligible_dim(&key, inner)?;
                 let cast = astype(rotated_w, MlxDtype::Bfloat16, None);
                 target.weight = cast;
                 target.scales = None;
