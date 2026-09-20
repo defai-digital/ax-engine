@@ -490,6 +490,36 @@ mod tests {
     }
 
     #[test]
+    fn closure_body_metadata_reads_on_a_poisoned_array_do_not_unwind() {
+        use std::sync::atomic::AtomicBool;
+
+        // After an in-body op failure the array handle is null; reading its
+        // dtype/ndim/nbytes must record the failure and continue rather than
+        // panic (an unwind here is a SIGABRT under the release profile).
+        let reached_after_reads = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&reached_after_reads);
+        let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+            let x = inputs.get(0);
+            let bad = crate::ops::reshape(&x, &[999], None);
+            let _ = bad.dtype();
+            let _ = bad.ndim();
+            let _ = bad.nbytes();
+            let _ = bad.shape();
+            flag.store(true, Ordering::SeqCst);
+            vec![bad]
+        });
+        let x = const_f32_1d(&[1.0, 2.0, 3.0]);
+        let _ = crate::error::take_last_error();
+        let result = closure.try_apply(&[&x]);
+        assert!(result.is_err(), "the poisoned apply must still fail");
+        assert!(
+            reached_after_reads.load(Ordering::SeqCst),
+            "metadata reads on a poisoned array must poison-and-continue"
+        );
+        let _ = crate::error::take_last_error();
+    }
+
+    #[test]
     fn compiled_closure_rejects_cross_thread_apply_before_mlx_abort() {
         let compiled = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
             let x = inputs.get(0);

@@ -3019,9 +3019,10 @@ mod tests {
         let path = cache.path_for(&key);
         let pristine = fs::read(&path).expect("read");
 
-        // Unknown flag bit set (offset 12..16).
+        // Unknown flag bit set (offset 12..16). Bit 0 is the defined
+        // page-manifest flag; bit 1 is reserved and must fail closed.
         let mut flagged = pristine.clone();
-        flagged[12] |= 0x01;
+        flagged[12] |= 0x02;
         fs::write(&path, &flagged).expect("write");
         assert!(
             cache.get(&key).expect("get").is_none(),

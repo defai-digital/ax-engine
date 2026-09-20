@@ -27,6 +27,17 @@ pub struct MlxArray {
 unsafe impl Send for MlxArray {}
 unsafe impl Sync for MlxArray {}
 
+/// Inside a compiled-closure body an FFI failure must not unwind (the C++
+/// trampoline aborts under `panic = "abort"`); record it for the post-apply
+/// drain and let the caller return a neutral value instead.
+fn poison_in_body(operation: &str) -> bool {
+    if crate::error::in_closure_body() {
+        crate::error::ensure_error_slot(operation);
+        return true;
+    }
+    false
+}
+
 impl MlxArray {
     /// Create from a raw `mlx_array`. Takes ownership — caller must not free.
     pub(crate) unsafe fn from_raw(inner: ffi::mlx_array) -> Self {
@@ -184,6 +195,9 @@ impl MlxArray {
             ensure_error_handler();
             let n = ffi::mlx_array_ndim(self.inner);
             if n == usize::MAX {
+                if poison_in_body("mlx_array_ndim") {
+                    return 0;
+                }
                 panic!("{}", last_error_message("mlx_array_ndim"));
             }
             n
@@ -195,6 +209,9 @@ impl MlxArray {
             ensure_error_handler();
             let ndim = ffi::mlx_array_ndim(self.inner);
             if ndim == usize::MAX {
+                if poison_in_body("mlx_array_ndim") {
+                    return vec![];
+                }
                 panic!("{}", last_error_message("mlx_array_ndim"));
             }
             let ptr = ffi::mlx_array_shape(self.inner);
@@ -220,6 +237,12 @@ impl MlxArray {
             if d == ffi::mlx_dtype_::MLX_BOOL
                 && let Some(msg) = take_last_error()
             {
+                if crate::error::in_closure_body() {
+                    // Keep the failure in the slot for the post-apply drain
+                    // and hand back a neutral dtype the caller cannot misuse.
+                    crate::error::poison_slot(msg);
+                    return MlxDtype::Bool;
+                }
                 panic!("mlx_array_dtype failed: {msg}");
             }
             MlxDtype::from_ffi(d)
@@ -231,6 +254,9 @@ impl MlxArray {
             ensure_error_handler();
             let n = ffi::mlx_array_nbytes(self.inner);
             if n == usize::MAX {
+                if poison_in_body("mlx_array_nbytes") {
+                    return 0;
+                }
                 panic!("{}", last_error_message("mlx_array_nbytes"));
             }
             n
@@ -249,6 +275,10 @@ impl MlxArray {
             let ptr = ffi::mlx_array_data_float32(self.inner);
             if ptr.is_null() {
                 if let Some(msg) = take_last_error() {
+                    if crate::error::in_closure_body() {
+                        crate::error::poison_slot(msg);
+                        return &[];
+                    }
                     panic!("mlx_array_data_float32 failed: {msg}");
                 }
                 return &[];
@@ -273,6 +303,10 @@ impl MlxArray {
             let ptr = ffi::mlx_array_data_uint32(self.inner);
             if ptr.is_null() {
                 if let Some(msg) = take_last_error() {
+                    if crate::error::in_closure_body() {
+                        crate::error::poison_slot(msg);
+                        return &[];
+                    }
                     panic!("mlx_array_data_uint32 failed: {msg}");
                 }
                 return &[];
@@ -297,6 +331,10 @@ impl MlxArray {
             let ptr = ffi::mlx_array_data_int64(self.inner);
             if ptr.is_null() {
                 if let Some(msg) = take_last_error() {
+                    if crate::error::in_closure_body() {
+                        crate::error::poison_slot(msg);
+                        return &[];
+                    }
                     panic!("mlx_array_data_int64 failed: {msg}");
                 }
                 return &[];
@@ -329,6 +367,12 @@ impl MlxArray {
                 // caller's stream — the exact failure class of the skip-state
                 // corruption. The shim records why the read failed (including
                 // "array not evaluated"); surface it.
+                if crate::error::in_closure_body() {
+                    // Poison mode: the post-apply drain fails the whole
+                    // apply, so a neutral 0 here can never reach a caller.
+                    crate::error::ensure_error_slot("first_u32_unchecked");
+                    return 0;
+                }
                 match take_last_error() {
                     Some(msg) => panic!("first_u32_unchecked failed: {msg}"),
                     None => panic!("first_u32_unchecked: null data pointer"),

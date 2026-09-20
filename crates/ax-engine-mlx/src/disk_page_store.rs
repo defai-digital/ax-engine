@@ -268,9 +268,29 @@ impl PageStore {
 
     pub(crate) fn reader(&self, manifest: PageManifest) -> PagePayloadReader {
         debug_assert!(manifest.page_bytes > 0);
+        // Readers hold no directory lock, and eviction GC keys blob lifetime
+        // off the publish mtime. Open every page up front (best effort) so an
+        // unlinked blob stays readable through this restore; a page that
+        // fails to open here is retried lazily by `open_current`.
+        let preopened = manifest
+            .pages
+            .iter()
+            .map(|descriptor| {
+                let path =
+                    self.dir
+                        .join(format!("{}.{}", hash_hex(&descriptor.hash), PAGE_EXTENSION));
+                fs::symlink_metadata(&path)
+                    .ok()
+                    .filter(|meta| {
+                        meta.file_type().is_file() && meta.len() == u64::from(descriptor.len)
+                    })
+                    .and_then(|_| fs::File::open(&path).ok())
+            })
+            .collect();
         PagePayloadReader {
             page_dir: self.dir.clone(),
             manifest,
+            preopened,
             page_index: 0,
             page_read: 0,
             current: None,
@@ -365,6 +385,8 @@ pub(crate) struct PageReadStats {
 pub(crate) struct PagePayloadReader {
     page_dir: PathBuf,
     manifest: PageManifest,
+    /// Page handles opened when the reader was created (see `PageStore::reader`).
+    preopened: Vec<Option<fs::File>>,
     page_index: usize,
     page_read: usize,
     current: Option<fs::File>,
@@ -401,15 +423,25 @@ impl PagePayloadReader {
             .pages
             .get(self.page_index)
             .ok_or_else(invalid_data)?;
-        let path = self
-            .page_dir
-            .join(format!("{}.{}", hash_hex(&descriptor.hash), PAGE_EXTENSION));
         let started = std::time::Instant::now();
-        let meta = fs::symlink_metadata(&path)?;
-        if !meta.file_type().is_file() || meta.len() != u64::from(descriptor.len) {
-            return Err(invalid_data());
+        if let Some(file) = self
+            .preopened
+            .get_mut(self.page_index)
+            .and_then(Option::take)
+        {
+            // Length was verified at open time; the handle keeps the blob
+            // readable even if GC unlinked it since.
+            self.current = Some(file);
+        } else {
+            let path =
+                self.page_dir
+                    .join(format!("{}.{}", hash_hex(&descriptor.hash), PAGE_EXTENSION));
+            let meta = fs::symlink_metadata(&path)?;
+            if !meta.file_type().is_file() || meta.len() != u64::from(descriptor.len) {
+                return Err(invalid_data());
+            }
+            self.current = Some(fs::File::open(path)?);
         }
-        self.current = Some(fs::File::open(path)?);
         self.stats.read_wall_us = self.stats.read_wall_us.saturating_add(elapsed_us(started));
         self.page_read = 0;
         self.page_hasher = Some(page_hasher());

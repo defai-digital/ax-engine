@@ -223,7 +223,7 @@ pub(crate) fn poison_slot(message: String) {
 
 /// Ensure the error slot is non-empty after an in-body op failure, without
 /// overwriting a richer message the C++ handler already recorded.
-fn ensure_error_slot(operation: &str) {
+pub(crate) fn ensure_error_slot(operation: &str) {
     LAST_ERROR.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_none() {
