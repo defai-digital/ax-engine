@@ -13,6 +13,7 @@
 package axengine
 
 import (
+	"errors"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -232,10 +233,18 @@ func (c *Client) StreamCompletion(ctx context.Context, req OpenAiCompletionReque
 	go func() {
 		defer close(ch)
 		defer close(errCh)
+		// The server always terminates OpenAI streams with `data: [DONE]`, on
+		// success and after an `error` event alike, so a clean EOF without it
+		// means the connection was cut mid-generation.
+		sawDone := false
 		if err := c.streamChunks(ctx, "/v1/completions", req, func(data string) error {
 			v, done, err := decodeSSEData[OpenAiCompletionChunk](data)
-			if err != nil || done {
+			if err != nil {
 				return err
+			}
+			if done {
+				sawDone = true
+				return nil
 			}
 			select {
 			case ch <- v:
@@ -245,6 +254,8 @@ func (c *Client) StreamCompletion(ctx context.Context, req OpenAiCompletionReque
 			return nil
 		}); err != nil {
 			errCh <- err
+		} else if !sawDone {
+			errCh <- errStreamTruncated
 		}
 	}()
 	return ch, errCh
@@ -260,10 +271,18 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req OpenAiChatComplet
 	go func() {
 		defer close(ch)
 		defer close(errCh)
+		// The server always terminates OpenAI streams with `data: [DONE]`, on
+		// success and after an `error` event alike, so a clean EOF without it
+		// means the connection was cut mid-generation.
+		sawDone := false
 		if err := c.streamChunks(ctx, "/v1/chat/completions", req, func(data string) error {
 			v, done, err := decodeSSEData[OpenAiChatCompletionChunk](data)
-			if err != nil || done {
+			if err != nil {
 				return err
+			}
+			if done {
+				sawDone = true
+				return nil
 			}
 			select {
 			case ch <- v:
@@ -273,6 +292,8 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req OpenAiChatComplet
 			return nil
 		}); err != nil {
 			errCh <- err
+		} else if !sawDone {
+			errCh <- errStreamTruncated
 		}
 	}()
 	return ch, errCh
@@ -356,6 +377,10 @@ func (c *Client) streamChunks(ctx context.Context, path string, body interface{}
 		return handle(ev.Data)
 	})
 }
+
+// errStreamTruncated is returned when an OpenAI-compatible stream ends
+// without the `[DONE]` sentinel the server always sends.
+var errStreamTruncated = errors.New("ax-engine: stream ended without [DONE]")
 
 // sseStreamError converts a server "error" SSE event payload into an error.
 // The payload matches the non-stream error body: {"error":{"message":...}}.

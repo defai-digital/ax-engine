@@ -1,6 +1,7 @@
 package axengine
 
 import (
+	"errors"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -361,6 +362,34 @@ func TestStreamChatCompletionOK(t *testing.T) {
 		}
 		if texts[0] != "Hello" || texts[1] != " world" {
 			t.Errorf("text: got %v", texts)
+		}
+	})
+}
+
+func TestStreamChatCompletionTruncatedWithoutDoneIsAnError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		// One chunk, then the connection closes with no [DONE].
+		fmt.Fprint(w, "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n")
+		flusher.Flush()
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		ch, errCh := client.StreamChatCompletion(context.Background(), OpenAiChatCompletionRequest{
+			Messages: []OpenAiChatMessage{{Role: "user", Content: "Hi"}},
+		})
+		var count int
+		for range ch {
+			count++
+		}
+		err := <-errCh
+		if !errors.Is(err, errStreamTruncated) {
+			t.Fatalf("expected truncation error, got %v", err)
+		}
+		if count != 1 {
+			t.Errorf("chunks before truncation: got %d want 1", count)
 		}
 	})
 }

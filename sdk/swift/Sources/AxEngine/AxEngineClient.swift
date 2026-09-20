@@ -181,7 +181,7 @@ public final class AxEngineClient: @unchecked Sendable {
     /// ```
     public func streamChatCompletion(_ request: OpenAiChatCompletionRequest) -> AsyncThrowingStream<OpenAiChatCompletionChunk, Error> {
         var req = request; req.stream = true
-        return stream("/v1/chat/completions", body: req) { [decoder] event in
+        return stream("/v1/chat/completions", body: req, requiresDoneSentinel: true) { [decoder] event in
             try decoder.decode(OpenAiChatCompletionChunk.self, from: Data(event.data.utf8))
         }
     }
@@ -189,7 +189,7 @@ public final class AxEngineClient: @unchecked Sendable {
     /// Stream POST /v1/completions (stream: true) — yields SSE chunks.
     public func streamCompletion(_ request: OpenAiCompletionRequest) -> AsyncThrowingStream<OpenAiCompletionChunk, Error> {
         var req = request; req.stream = true
-        return stream("/v1/completions", body: req) { [decoder] event in
+        return stream("/v1/completions", body: req, requiresDoneSentinel: true) { [decoder] event in
             try decoder.decode(OpenAiCompletionChunk.self, from: Data(event.data.utf8))
         }
     }
@@ -227,9 +227,15 @@ public final class AxEngineClient: @unchecked Sendable {
         return try decoder.decode(R.self, from: data)
     }
 
+    /// `requiresDoneSentinel` is set for the OpenAI-compatible endpoints, which
+    /// always terminate with `data: [DONE]` (on success and after an `error`
+    /// event alike); a clean EOF without it means the connection was cut and
+    /// is surfaced as an error instead of a normal end of stream. The native
+    /// `/v1/generate/stream` ends on plain EOF and passes `false`.
     private func stream<T: Sendable>(
         _ path: String,
         body: some Encodable,
+        requiresDoneSentinel: Bool = false,
         decode: @escaping @Sendable (SSEEvent) throws -> T
     ) -> AsyncThrowingStream<T, Error> {
         AsyncThrowingStream { continuation in
@@ -251,12 +257,19 @@ public final class AxEngineClient: @unchecked Sendable {
                         return
                     }
                     try self.validate(response: response, data: nil)
-                    for try await event in SSEParser(bytes: asyncBytes) {
+                    var iterator = SSEParser(bytes: asyncBytes).makeAsyncIterator()
+                    while let event = try await iterator.next() {
                         if event.event == "error" {
                             throw Self.streamError(from: event.data)
                         }
                         let value = try decode(event)
                         continuation.yield(value)
+                    }
+                    if requiresDoneSentinel && !iterator.sawDone {
+                        throw AxEngineStreamError(
+                            message: "stream ended without [DONE]",
+                            payload: ""
+                        )
                     }
                     continuation.finish()
                 } catch {

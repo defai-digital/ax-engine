@@ -320,6 +320,28 @@ final class AxEngineClientTests: XCTestCase {
         XCTAssertEqual(chunks[1].choices.first?.finishReason, "stop")
     }
 
+    func testStreamChatCompletionTruncatedWithoutDoneThrows() async throws {
+        // One chunk, then the body ends with no [DONE] sentinel.
+        let sse = """
+        data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3_dense","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+        """
+        MockURLProtocol.handler = { _ in sseResponse(sse) }
+
+        var chunks = 0
+        do {
+            for try await _ in makeClient().streamChatCompletion(.init(
+                messages: [.init(role: "user", content: "Hi")]
+            )) {
+                chunks += 1
+            }
+            XCTFail("Expected AxEngineStreamError for a truncated stream")
+        } catch let err as AxEngineStreamError {
+            XCTAssertTrue(err.message.contains("[DONE]"))
+        }
+        XCTAssertEqual(chunks, 1)
+    }
+
     func testStreamChatCompletionSetsStreamTrue() async throws {
         var captured: [String: Any] = [:]
         MockURLProtocol.handler = { req in

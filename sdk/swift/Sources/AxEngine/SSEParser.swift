@@ -24,6 +24,9 @@ struct SSEParser: AsyncSequence {
         var eventName = "message"
         var dataLines: [String] = []
         var done = false
+        /// True once the `[DONE]` sentinel has been consumed, so callers can
+        /// tell a completed OpenAI stream from a connection cut at EOF.
+        private(set) var sawDone = false
         var lineBuffer = [UInt8]()
 
         mutating func next() async throws -> SSEEvent? {
@@ -45,7 +48,7 @@ struct SSEParser: AsyncSequence {
                     let name = eventName
                     eventName = "message"
                     dataLines = []
-                    if data == "[DONE]" { done = true; return nil }
+                    if data == "[DONE]" { done = true; sawDone = true; return nil }
                     return SSEEvent(event: name, data: data)
                 }
 
@@ -63,7 +66,7 @@ struct SSEParser: AsyncSequence {
                 let data = dataLines.joined(separator: "\n")
                 dataLines = []
                 done = true
-                if data == "[DONE]" { return nil }
+                if data == "[DONE]" { sawDone = true; return nil }
                 return SSEEvent(event: eventName, data: data)
             }
 
