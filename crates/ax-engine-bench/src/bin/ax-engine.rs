@@ -1862,6 +1862,7 @@ fn user_doctor_report(bench: &Value) -> Value {
         ],
         "issues": issues,
         "model_issues": model_issues,
+        "expert_stream": bench.get("model_artifacts").and_then(|v| v.get("expert_stream")),
         "next_actions": next_actions,
         "details_command": "ax-engine-bench doctor",
         "source": {
@@ -2227,6 +2228,20 @@ fn format_user_doctor_report(report: &Value) -> String {
     lines.push("Issues:".to_string());
     append_string_array(&mut lines, report.get("issues").and_then(Value::as_array));
     lines.push(String::new());
+    if let Some(stream) = report.get("expert_stream").filter(|v| v.is_object()) {
+        let reason = stream.get("decision_reason").and_then(Value::as_str);
+        let message = if reason == Some("required_pack_rejects_off") {
+            "Model loading: blocked; this pack requires expert paging."
+        } else if stream.get("enabled").and_then(Value::as_bool) == Some(true) {
+            "Model loading: expert paging selected for capacity; replies may be slower."
+        } else if reason == Some("unknown_host_capacity") {
+            "Model loading: full weights selected; host memory capacity is unknown."
+        } else {
+            "Model loading: full weights selected; this is separate from wired memory."
+        };
+        lines.push(message.to_string());
+        lines.push(String::new());
+    }
     lines.push("Model issues:".to_string());
     append_string_array(
         &mut lines,
@@ -5188,6 +5203,37 @@ mod tests {
         fs::write(snapshot.join("model-00002-of-00002.safetensors"), b"second").unwrap();
         assert!(snapshot_has_complete_weights(&snapshot));
         let _ = fs::remove_dir_all(snapshot);
+    }
+
+    #[test]
+    fn user_doctor_explains_paging_without_claiming_weights_are_loaded() {
+        for (reason, enabled, expected) in [
+            (
+                "full_weights_plus_headroom_exceeds_capacity",
+                true,
+                "expert paging selected for capacity",
+            ),
+            (
+                "full_weights_plus_headroom_fits_capacity",
+                false,
+                "full weights selected",
+            ),
+            (
+                "unknown_host_capacity",
+                false,
+                "host memory capacity is unknown",
+            ),
+            (
+                "required_pack_rejects_off",
+                false,
+                "blocked; this pack requires expert paging",
+            ),
+        ] {
+            let text = format_user_doctor_report(&json!({
+                "expert_stream": {"enabled": enabled, "decision_reason": reason}
+            }));
+            assert!(text.contains(expected), "{text}");
+        }
     }
 
     #[test]

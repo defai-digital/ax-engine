@@ -14,6 +14,7 @@ pub mod ids;
 pub mod kv;
 pub mod loop_detection;
 pub mod media_digest;
+pub mod memory_budget;
 pub mod mempressure;
 pub mod metal;
 pub mod minicpm_v;

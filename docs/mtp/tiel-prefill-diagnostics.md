@@ -139,3 +139,38 @@ memory and CPU brand; these events contain no model paths or metadata hashes.
 They describe the existing guards and do not change admission. Non-Tiel loads
 can also emit the metadata-skip event at debug level. Embedded library users
 need a tracing subscriber; the environment variable alone does not install one.
+
+
+## Inspect the load decision without loading weights
+
+Run `ax-engine doctor --mlx-model-artifacts-dir /path/to/model --verbose --json` to
+inspect `model_artifacts.expert_stream`. Doctor now resolves the same Auto
+capacity rule as the loader, including optional plans inferred from native
+expert tensor roles when `ax_expert_stream.json` is absent. `enabled` means
+paging would be selected; it does not mean weights have been loaded.
+
+The report includes the selected mode, plan source, decision reason, full
+weight estimate, physical RAM and the 48 GiB Auto accounting allowance.
+Physical RAM is not live free memory; the allowance is not an allocation.
+Unknown host capacity is labelled unknown rather than described as a fit.
+Required packs still reject explicit Off.
+
+`resident_estimate` applies the shared server footprint formula to the plan's
+full weight estimate and the **default session KV pool**. It does not inspect
+a running server's custom pool. `kv_pool_bytes: null` means unknown geometry,
+not zero KV memory; the legacy fallback floor is retained. This baseline
+excludes other loaded models, current host pressure and independently measured
+prefill peaks. It is not a whole-system fit guarantee or a replacement for
+server admission, and it does not alter Auto or wiring defaults.
+
+
+## Idle GPU-touch screening
+
+The [four-host native idle screening](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-idle/README.md)
+compares wired, explicitly unwired and disclosed same-thread GPU-touch arms.
+All arms retain full model weights. Touch lowers median TTFT in the eight
+short coding cells, but M2 Cyber-Tiel decode regresses about 3.7% versus
+unwired, exceeding the 3% regression screen. No server keepalive or automatic
+policy expansion was introduced. Server latency, longer idle, long context,
+pressure and lifecycle qualification remain separate work. Energy saving is
+not the acceptance gate; latency, sustained throughput and stability are.

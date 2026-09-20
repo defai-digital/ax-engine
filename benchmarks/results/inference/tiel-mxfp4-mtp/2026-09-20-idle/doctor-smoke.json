@@ -1,0 +1,45 @@
+{
+  "purpose": "metadata-only doctor smoke; not model inference throughput",
+  "host": "Apple M4 Pro",
+  "physical_memory_gib": 64,
+  "build_profile": "dev",
+  "rust": "1.97.1",
+  "binary_sha256": "db7fb695eac2e0eb5d8c2e3bb8f70b5599f43ecaa07ce0a5c421f91b3310957e",
+  "max_rss_bytes": 34258944,
+  "auto": {
+    "enabled": true,
+    "required": false,
+    "resident_bytes": 4913119968,
+    "max_layer_bytes": 427819008,
+    "cached_layers": 0,
+    "mode": "auto",
+    "source": "ax_expert_stream.json",
+    "decision_reason": "full_weights_plus_headroom_exceeds_capacity",
+    "full_resident_bytes": 22025880288,
+    "unified_memory_bytes": 68719476736,
+    "auto_headroom_bytes": 51539607552,
+    "resident_estimate": {
+      "assumed_kv_pool_tokens": 16384,
+      "kv_pool_bytes": 335544320,
+      "full_resident_footprint_bytes": 25651530556
+    }
+  },
+  "off": {
+    "enabled": false,
+    "required": false,
+    "resident_bytes": 4913119968,
+    "max_layer_bytes": 427819008,
+    "cached_layers": 0,
+    "mode": "off",
+    "source": "ax_expert_stream.json",
+    "decision_reason": "forced_resident",
+    "full_resident_bytes": 22025880288,
+    "unified_memory_bytes": 68719476736,
+    "auto_headroom_bytes": 51539607552,
+    "resident_estimate": {
+      "assumed_kv_pool_tokens": 16384,
+      "kv_pool_bytes": 335544320,
+      "full_resident_footprint_bytes": 25651530556
+    }
+  }
+}

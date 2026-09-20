@@ -183,8 +183,8 @@ pub(crate) struct DoctorModelArtifactsReport {
     pub(crate) quantization: Option<DoctorQuantizationHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) axquant: Option<DoctorAxquantReport>,
-    /// SSD expert streaming state from `ax_expert_stream.json`
-    /// (`axquant.expert-stream.v1`). Absent when the pack has no manifest.
+    /// Load-time expert paging decision from the pack manifest or native roles.
+    /// Doctor reads metadata only; it does not load weights or measure residency.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) expert_stream: Option<DoctorExpertStreamReport>,
     pub(crate) issues: Vec<String>,
@@ -193,8 +193,7 @@ pub(crate) struct DoctorModelArtifactsReport {
 /// Contract fields for `ax_expert_stream.json` surfaced in doctor JSON.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct DoctorExpertStreamReport {
-    /// Whether this process would admit streaming (`--stream-experts` or
-    /// `AX_STREAM_EXPERTS=1`).
+    /// Whether the loader would select expert paging under the current mode.
     pub(crate) enabled: bool,
     /// Manifest `required`: loading without admission is a hard error.
     pub(crate) required: bool,
@@ -204,6 +203,32 @@ pub(crate) struct DoctorExpertStreamReport {
     pub(crate) max_layer_bytes: u64,
     /// Layer stacks resident at report time (doctor loads no weights: 0).
     pub(crate) cached_layers: usize,
+    #[serde(default)]
+    pub(crate) mode: String,
+    #[serde(default)]
+    pub(crate) source: String,
+    #[serde(default)]
+    pub(crate) decision_reason: String,
+    #[serde(default)]
+    pub(crate) full_resident_bytes: u64,
+    /// Physical capacity, not currently available memory.
+    #[serde(default)]
+    pub(crate) unified_memory_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) auto_headroom_bytes: u64,
+    /// Baseline only: excludes other models and transient host pressure.
+    #[serde(default)]
+    pub(crate) resident_estimate: Option<DoctorResidentEstimate>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub(crate) struct DoctorResidentEstimate {
+    /// Default session KV pool; not an inspected running server's config.
+    pub(crate) assumed_kv_pool_tokens: u64,
+    /// None means unknown geometry, not zero KV use.
+    pub(crate) kv_pool_bytes: Option<u64>,
+    /// Shared server formula applied to the stream manifest's full weight estimate.
+    pub(crate) full_resident_footprint_bytes: u64,
 }
 
 impl DoctorModelArtifactsReport {
@@ -807,35 +832,105 @@ fn doctor_expert_stream_report(
     path: &Path,
     issues: &mut Vec<String>,
 ) -> Option<DoctorExpertStreamReport> {
-    use ax_engine_mlx::expert_stream;
-    let manifest_path = path.join(expert_stream::EXPERT_STREAM_MANIFEST_FILE);
-    if !manifest_path.is_file() {
-        return None;
-    }
-    match expert_stream::ExpertStreamManifest::read_from_dir(path) {
-        Ok(Some(manifest)) => {
-            let mode = expert_stream::stream_experts_mode();
-            let enabled = !matches!(mode, expert_stream::StreamExpertsMode::Off);
-            if manifest.required && matches!(mode, expert_stream::StreamExpertsMode::Off) {
-                issues.push(format!(
-                    "pack requires SSD expert streaming (ax_expert_stream.json required=true); serve/load with --stream-experts or {}=1 (full-resident load needs ~{} bytes)",
-                    expert_stream::STREAM_EXPERTS_ENV,
-                    manifest.estimated_full_resident_bytes
-                ));
+    use ax_engine_mlx::expert_stream::{self, ExpertStreamError, StreamExpertsMode};
+    let mode = expert_stream::stream_experts_mode();
+    let (manifest, source) = match expert_stream::ExpertStreamManifest::read_from_dir(path) {
+        Ok(Some(manifest)) => (manifest, "ax_expert_stream.json"),
+        Ok(None) => {
+            // Match the loader's metadata-only inference for optional MoE packs.
+            // Off does not need inference to load, but doctor may describe the
+            // potential plan without activating it or reading tensor payloads.
+            let artifacts = ax_engine_core::NativeModelArtifacts::from_dir(path).ok()?;
+            match expert_stream::infer_layer_stack_manifest(
+                artifacts.tensor_specs(),
+                artifacts
+                    .manifest()
+                    .moe
+                    .experts_per_token
+                    .unwrap_or(1)
+                    .max(1),
+            ) {
+                Ok(manifest) => (manifest, "native_tensor_roles"),
+                Err(ExpertStreamError::ManifestMissing) => return None,
+                Err(error) => {
+                    if mode != StreamExpertsMode::Off {
+                        issues.push(format!("expert streaming inference failed: {error}"));
+                    }
+                    return None;
+                }
             }
-            Some(DoctorExpertStreamReport {
-                enabled,
-                required: manifest.required,
-                resident_bytes: manifest.estimated_resident_bytes,
-                max_layer_bytes: manifest.estimated_max_layer_expert_bytes,
-                cached_layers: 0,
-            })
         }
-        Ok(None) => None,
         Err(error) => {
             issues.push(format!("ax_expert_stream.json is invalid: {error}"));
-            None
+            return None;
         }
+    };
+    let mut report = doctor_expert_stream_decision(
+        manifest,
+        source,
+        mode,
+        expert_stream::unified_memory_bytes(),
+        issues,
+    );
+    let pool = ax_engine_sdk::EngineSessionConfig::default().kv_config;
+    let pool_tokens = u64::from(pool.total_blocks) * u64::from(pool.block_size_tokens);
+    let kv_bytes = fs::read(path.join("model-manifest.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|geometry| {
+            ax_engine_core::memory_budget::estimated_kv_pool_bytes(&geometry, pool_tokens)
+        });
+    report.resident_estimate = Some(DoctorResidentEstimate {
+        assumed_kv_pool_tokens: pool_tokens,
+        kv_pool_bytes: kv_bytes,
+        full_resident_footprint_bytes: ax_engine_core::memory_budget::estimated_footprint_bytes(
+            report.full_resident_bytes,
+            kv_bytes,
+        ),
+    });
+    Some(report)
+}
+
+fn doctor_expert_stream_decision(
+    manifest: ax_engine_mlx::expert_stream::ExpertStreamManifest,
+    source: &str,
+    mode: ax_engine_mlx::expert_stream::StreamExpertsMode,
+    unified_memory_bytes: Option<u64>,
+    issues: &mut Vec<String>,
+) -> DoctorExpertStreamReport {
+    use ax_engine_mlx::expert_stream::{self, StreamExpertsMode};
+    let decision = expert_stream::resolve_expert_stream(
+        mode,
+        Some(manifest.clone()),
+        || Err(expert_stream::ExpertStreamError::ManifestMissing),
+        unified_memory_bytes,
+    );
+    let enabled = matches!(&decision, Ok(Some(_)));
+    let reason = match &decision {
+        Err(error) => {
+            issues.push(format!("expert streaming admission failed: {error}"));
+            "required_pack_rejects_off"
+        }
+        _ if mode == StreamExpertsMode::Off => "forced_resident",
+        _ if mode == StreamExpertsMode::On => "forced_paging",
+        _ if manifest.required => "required_pack",
+        _ if enabled => "full_weights_plus_headroom_exceeds_capacity",
+        _ if unified_memory_bytes.is_none() => "unknown_host_capacity",
+        _ => "full_weights_plus_headroom_fits_capacity",
+    };
+    DoctorExpertStreamReport {
+        enabled,
+        required: manifest.required,
+        resident_bytes: manifest.estimated_resident_bytes,
+        max_layer_bytes: manifest.estimated_max_layer_expert_bytes,
+        cached_layers: 0,
+        mode: mode.as_str().to_string(),
+        source: source.to_string(),
+        decision_reason: reason.to_string(),
+        full_resident_bytes: manifest.estimated_full_resident_bytes,
+        unified_memory_bytes,
+        auto_headroom_bytes: expert_stream::AUTO_RESIDENT_HEADROOM_BYTES,
+        resident_estimate: None,
     }
 }
 
@@ -1863,6 +1958,38 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
         ),
     ];
 
+    if let Some(stream) = &report.model_artifacts.expert_stream {
+        lines.push(format!(
+            "  - Expert paging: {} (mode={}, reason={}, source={})",
+            if stream.enabled {
+                "selected"
+            } else {
+                "not selected"
+            },
+            stream.mode,
+            stream.decision_reason,
+            stream.source,
+        ));
+        lines.push(format!(
+            "  - Full weights: {} bytes; Auto headroom: {} bytes; physical RAM: {}",
+            stream.full_resident_bytes,
+            stream.auto_headroom_bytes,
+            stream
+                .unified_memory_bytes
+                .map_or_else(|| "unknown".to_string(), |v| format!("{v} bytes")),
+        ));
+        if let Some(estimate) = &stream.resident_estimate {
+            lines.push(format!(
+                "  - Resident baseline estimate: {} bytes with assumed default KV pool {} tokens (KV: {}); not a whole-system fit guarantee",
+                estimate.full_resident_footprint_bytes,
+                estimate.assumed_kv_pool_tokens,
+                estimate.kv_pool_bytes.map_or_else(|| "unknown; fallback floor".to_string(), |v| format!("{v} bytes")),
+            ));
+        }
+        if stream.enabled {
+            lines.push("  - Paging trades latency for capacity. This is separate from wired memory; doctor loads no weights.".to_string());
+        }
+    }
     lines.push(format!(
         "  - AXQuant metadata: {}",
         yes_no(report.model_artifacts.axquant.is_some())
@@ -1999,6 +2126,8 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
 
 #[cfg(test)]
 mod expert_stream_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2011,6 +2140,133 @@ mod expert_stream_tests {
             "ax-engine-doctor-{label}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    fn stream_manifest(
+        required: bool,
+        full_gib: u64,
+    ) -> ax_engine_mlx::expert_stream::ExpertStreamManifest {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "generated_by": "test", "required": required, "mode": "layer-stack",
+            "num_experts": 8, "experts_per_tok": 2,
+            "estimated_resident_bytes": 1024,
+            "estimated_full_resident_bytes": full_gib * 1024 * 1024 * 1024,
+            "estimated_max_layer_expert_bytes": 1024,
+            "resident_roles": ["embedding"], "streamed_roles": ["expert"],
+            "tensors": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn doctor_auto_reports_the_actual_capacity_decision() {
+        use ax_engine_mlx::expert_stream::StreamExpertsMode;
+        // Exact boundary is resident. Tiel-sized optional packs page on 64
+        // GiB under the current 48 GiB rule; Flash Next stays paged at 128.
+        for (full_gib, ram_gib, required, enabled, reason) in [
+            (
+                16,
+                64,
+                false,
+                false,
+                "full_weights_plus_headroom_fits_capacity",
+            ),
+            (
+                22,
+                64,
+                false,
+                true,
+                "full_weights_plus_headroom_exceeds_capacity",
+            ),
+            (
+                22,
+                128,
+                false,
+                false,
+                "full_weights_plus_headroom_fits_capacity",
+            ),
+            (
+                124,
+                128,
+                false,
+                true,
+                "full_weights_plus_headroom_exceeds_capacity",
+            ),
+            (
+                115,
+                192,
+                false,
+                false,
+                "full_weights_plus_headroom_fits_capacity",
+            ),
+            (1, 512, true, true, "required_pack"),
+        ] {
+            let mut issues = Vec::new();
+            let report = doctor_expert_stream_decision(
+                stream_manifest(required, full_gib),
+                "native_tensor_roles",
+                StreamExpertsMode::Auto,
+                Some(ram_gib * 1024 * 1024 * 1024),
+                &mut issues,
+            );
+            assert_eq!(report.enabled, enabled, "full={full_gib}, RAM={ram_gib}");
+            assert_eq!(report.decision_reason, reason);
+            assert_eq!(report.source, "native_tensor_roles");
+            assert_eq!(report.cached_layers, 0);
+            assert!(issues.is_empty());
+        }
+    }
+
+    #[test]
+    fn doctor_does_not_call_unknown_capacity_a_fit() {
+        use ax_engine_mlx::expert_stream::StreamExpertsMode;
+        let mut issues = Vec::new();
+        let report = doctor_expert_stream_decision(
+            stream_manifest(false, 22),
+            "ax_expert_stream.json",
+            StreamExpertsMode::Auto,
+            None,
+            &mut issues,
+        );
+        assert!(!report.enabled);
+        assert_eq!(report.decision_reason, "unknown_host_capacity");
+        assert_eq!(report.unified_memory_bytes, None);
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn doctor_preserves_forced_modes_and_required_off_rejection() {
+        use ax_engine_mlx::expert_stream::StreamExpertsMode;
+        for (mode, required, enabled, reason, rejected) in [
+            (
+                StreamExpertsMode::Off,
+                false,
+                false,
+                "forced_resident",
+                false,
+            ),
+            (StreamExpertsMode::On, false, true, "forced_paging", false),
+            (
+                StreamExpertsMode::Off,
+                true,
+                false,
+                "required_pack_rejects_off",
+                true,
+            ),
+        ] {
+            let mut issues = Vec::new();
+            let report = doctor_expert_stream_decision(
+                stream_manifest(required, 22),
+                "ax_expert_stream.json",
+                mode,
+                Some(128 * 1024 * 1024 * 1024),
+                &mut issues,
+            );
+            assert_eq!(report.enabled, enabled);
+            assert_eq!(report.decision_reason, reason);
+            assert_eq!(!issues.is_empty(), rejected);
+        }
     }
 
     #[test]
@@ -2059,6 +2315,16 @@ mod expert_stream_tests {
         assert_eq!(stream.resident_bytes, 40_000_000_000);
         assert_eq!(stream.max_layer_bytes, 10_000_000_000);
         assert_eq!(stream.cached_layers, 0);
+        let estimate = stream
+            .resident_estimate
+            .as_ref()
+            .expect("baseline estimate");
+        assert_eq!(estimate.kv_pool_bytes, None);
+        assert_eq!(estimate.assumed_kv_pool_tokens, 16384);
+        assert_eq!(
+            estimate.full_resident_footprint_bytes,
+            stream.full_resident_bytes + stream.full_resident_bytes / 8 + 768 * 1024 * 1024
+        );
         // Doctor defaults to Auto, which will stream a required pack. Only
         // `--stream-experts off` is an admission problem.
         assert!(

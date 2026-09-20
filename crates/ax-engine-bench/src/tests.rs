@@ -3139,6 +3139,84 @@ fn doctor_report_surfaces_ready_model_artifacts() {
 }
 
 #[test]
+fn doctor_infers_optional_expert_plan_without_loading_tensor_payloads() {
+    let root = unique_test_dir("doctor-inferred-experts");
+    fs::create_dir_all(&root).expect("create fixture");
+    fs::write(root.join("config.json"), r#"{"model_type":"qwen3"}"#).expect("config");
+    write_doctor_safetensors(&root);
+    let mut manifest = valid_native_model_manifest();
+    manifest.moe.expert_count = Some(8);
+    manifest.moe.experts_per_token = Some(2);
+    manifest.moe.expert_intermediate_size = Some(4096);
+    for (name, role, shape) in [
+        (
+            "router",
+            ax_engine_core::NativeTensorRole::FfnGateInp,
+            vec![8, 2048],
+        ),
+        (
+            "gate_proj",
+            ax_engine_core::NativeTensorRole::FfnGateExps,
+            vec![8, 4096, 2048],
+        ),
+        (
+            "up_proj",
+            ax_engine_core::NativeTensorRole::FfnUpExps,
+            vec![8, 4096, 2048],
+        ),
+        (
+            "down_proj",
+            ax_engine_core::NativeTensorRole::FfnDownExps,
+            vec![8, 2048, 4096],
+        ),
+    ] {
+        manifest.tensors.push(native_model_tensor(
+            &format!("model.layers.0.mlp.switch_mlp.{name}.weight"),
+            role,
+            Some(0),
+            shape,
+        ));
+    }
+    fs::write(
+        root.join("model-manifest.json"),
+        serde_json::to_vec(&manifest).expect("serialize"),
+    )
+    .expect("manifest");
+    let report = build_doctor_report_for_model(
+        doctor_host_fixture(true, false, Some("Apple M4 Pro")),
+        doctor_metal_toolchain_fixture(true, true, true),
+        Some(&root),
+    );
+    assert!(
+        report.model_artifacts.issues.is_empty(),
+        "{:?}",
+        report.model_artifacts.issues
+    );
+    let stream = report
+        .model_artifacts
+        .expert_stream
+        .as_ref()
+        .expect("inferred plan");
+    assert_eq!(stream.source, "native_tensor_roles");
+    assert!(!stream.required);
+    assert_eq!(stream.cached_layers, 0);
+    let estimate = stream
+        .resident_estimate
+        .as_ref()
+        .expect("resident baseline");
+    assert_eq!(estimate.assumed_kv_pool_tokens, 16384);
+    assert_eq!(estimate.kv_pool_bytes, Some(16384 * 8 * 128 * 4));
+    // The marker is not a valid safetensors payload: success establishes a
+    // metadata-only diagnostic, with no weight loading or GPU evaluation.
+    assert!(
+        report.model_artifacts.issues.is_empty(),
+        "{:?}",
+        report.model_artifacts.issues
+    );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn doctor_report_rejects_malformed_manifest_and_safetensors_directory() {
     let root = unique_test_dir("doctor-invalid-model-artifacts");
     let model_dir = root.join("invalid-mlx-snapshot");
