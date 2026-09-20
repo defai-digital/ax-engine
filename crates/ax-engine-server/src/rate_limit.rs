@@ -106,8 +106,11 @@ impl ClientRateLimiter {
             // dropping a recently exhausted bucket would hand that client a
             // fresh burst. Fall back to plain LRU only if too few are idle.
             let now = Instant::now();
+            // `burst / rps` can overflow to infinity for tiny rates; a refill
+            // that cannot finish inside a Duration means "never idle".
             let full_refill = if cfg.rps > 0.0 {
-                std::time::Duration::from_secs_f64(cfg.burst / cfg.rps)
+                std::time::Duration::try_from_secs_f64(cfg.burst / cfg.rps)
+                    .unwrap_or(std::time::Duration::MAX)
             } else {
                 std::time::Duration::MAX
             };

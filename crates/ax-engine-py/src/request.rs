@@ -76,12 +76,23 @@ fn unlimited_ocr_inputs_from_py(
     let Some(root_value) = payload.get_item("unlimited_ocr")? else {
         return Ok(None);
     };
-    // The shortcut builds OCR-only inputs, so any sibling provider key would be
-    // silently dropped instead of failing closed like the JSON path does.
-    if payload.len() != 1 {
-        return Err(PyValueError::new_err(
-            "multimodal request may select only one provider schema",
-        ));
+    // The shortcut builds OCR-only inputs, so a populated sibling provider
+    // would be silently dropped instead of failing closed like the JSON path
+    // does. Mirror that path's semantics: only a known provider key with a
+    // non-null value counts; `None` and unknown keys are ignored.
+    for (key, value) in payload.iter() {
+        let name: String = key.extract()?;
+        if name != "unlimited_ocr"
+            && matches!(
+                name.as_str(),
+                "gemma4_unified" | "qwen3_vl" | "minicpm_v46" | "nemotron_omni"
+            )
+            && !value.is_none()
+        {
+            return Err(PyValueError::new_err(
+                "multimodal request may select only one provider schema",
+            ));
+        }
     }
     let root = root_value.cast::<PyDict>().map_err(|_| {
         PyValueError::new_err("multimodal_inputs.unlimited_ocr must be a dictionary")

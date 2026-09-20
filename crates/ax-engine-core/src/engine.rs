@@ -995,11 +995,26 @@ impl EngineCore {
             .iter()
             .map(|sampled| sampled.request_id)
             .collect::<Vec<_>>();
-        let runner_summary = self.request_manager.apply_execution_results(
+        let runner_summary = match self.request_manager.apply_execution_results(
             &runner_output,
             &sampled_tokens,
             &sampled_request_ids,
-        )?;
+        ) {
+            Ok(summary) => summary,
+            Err(error) => {
+                // Requests resolved before the failing update keep their
+                // multi-token progress, which still needs KV accounting; do
+                // that best-effort without masking the original error.
+                if let Err(reconcile_error) = self.reconcile_runner_appended_kv(&execution_batch) {
+                    error!(
+                        error = %reconcile_error,
+                        original_error = %error,
+                        "KV reconcile failed after a partial apply"
+                    );
+                }
+                return Err(error.into());
+            }
+        };
         self.reconcile_runner_appended_kv(&execution_batch)?;
 
         execution_batch.route_metadata = runner_output.route_metadata.clone();
@@ -3190,6 +3205,15 @@ mod tests {
         let ok = engine.request_manager().snapshot(RequestId(20)).unwrap();
         assert_eq!(ok.state, RequestState::Runnable);
         assert_eq!(ok.generated_tokens, vec![50, 51]);
+        // The kept request's KV accounting was reconciled despite the error.
+        let table = engine
+            .kv_manager()
+            .block_table_snapshot(RequestId(20))
+            .unwrap();
+        assert_eq!(
+            table.logical_token_count,
+            ok.prompt_len + ok.generated_len - 1
+        );
         let failed = engine.request_manager().snapshot(RequestId(21)).unwrap();
         assert_eq!(failed.state, RequestState::Failed);
     }
