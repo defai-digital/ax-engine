@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::app_state::{AppState, LiveState};
-use crate::embeddings::{parse_embedding_pooling, parse_embedding_timeout_ms};
+use crate::embeddings::{
+    parse_embedding_max_tokens, parse_embedding_pooling, parse_embedding_timeout_ms,
+};
 use crate::errors::{
     ErrorResponse, admission_error_response, error_response, map_generation_service_error,
 };
@@ -130,7 +132,24 @@ pub(crate) async fn embedding_records(
         .iter()
         .map(|chunk| chunk.token_ids.clone())
         .collect::<Vec<_>>();
-    let token_count = chunks.iter().map(|chunk| chunk.token_count).sum();
+    let token_count: usize = chunks.iter().map(|chunk| chunk.token_count).sum();
+    // Same total-token guard as /v1/embeddings: the runner does not bound
+    // input length itself, and one oversized chunk would stall the shared
+    // worker or exhaust memory.
+    let max_tokens = parse_embedding_max_tokens(
+        std::env::var("AX_ENGINE_EMBED_MAX_TOKENS").ok(),
+        crate::openai::embeddings::DEFAULT_EMBED_MAX_TOKENS,
+    );
+    if token_count > max_tokens {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "total chunk token count ({token_count}) exceeds maximum ({max_tokens}); \
+                 set AX_ENGINE_EMBED_MAX_TOKENS to override"
+            ),
+        ));
+    }
     let generation_service = live.generation_service.clone();
     let timeout_ms = parse_embedding_timeout_ms(
         std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS").ok(),

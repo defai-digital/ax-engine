@@ -245,16 +245,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio_stream::wrappers::TcpListenerStream::new(grpc_listener),
                 shutdown_signal(),
             );
-        let http_handle = tokio::spawn(http_server.into_future());
-        let grpc_handle = tokio::spawn(grpc_server);
+        let mut http_handle = tokio::spawn(http_server.into_future());
+        let mut grpc_handle = tokio::spawn(grpc_server);
         // Either server failing takes the process down; the other one must
-        // not keep serving behind a ready line that claims both are up.
+        // not keep serving behind a ready line that claims both are up. A
+        // clean exit (graceful shutdown) is different: both servers drain
+        // concurrently, and returning as soon as the faster one finishes
+        // would tear down the runtime under the slower one's in-flight
+        // requests, so await the peer before returning.
         tokio::select! {
-            http_result = http_handle => {
+            http_result = &mut http_handle => {
                 http_result??;
+                grpc_handle.await?.map_err(std::io::Error::other)?;
             }
-            grpc_result = grpc_handle => {
+            grpc_result = &mut grpc_handle => {
                 grpc_result?.map_err(std::io::Error::other)?;
+                http_handle.await??;
             }
         }
     } else {
