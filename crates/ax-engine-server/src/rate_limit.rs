@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ConnectInfo;
@@ -73,33 +74,50 @@ impl TokenBucket {
     }
 }
 
-/// Per-client token buckets keyed by API key or peer IP.
+/// Per-client token buckets keyed by the verified API key or peer IP.
 pub(crate) struct ClientRateLimiter {
     buckets: Mutex<HashMap<String, TokenBucket>>,
     initial_tokens: f64,
+    /// The server's configured API key. Only a bearer token that matches it
+    /// gets a key bucket; any other `Authorization` value is client-chosen
+    /// and must not mint a fresh bucket that escapes the per-IP limit.
+    api_key: Option<Arc<String>>,
 }
 
 impl ClientRateLimiter {
-    pub(crate) fn new(initial_tokens: f64) -> Self {
+    pub(crate) fn new(initial_tokens: f64, api_key: Option<Arc<String>>) -> Self {
         Self {
             buckets: Mutex::new(HashMap::new()),
             initial_tokens,
+            api_key,
         }
     }
 
     /// Attempt to acquire one token for the client identified by `request`.
     pub(crate) fn try_acquire<B>(&self, request: &Request<B>, cfg: &RateLimitConfig) -> bool {
-        let key = client_key(request);
+        let key = client_key(request, self.api_key.as_deref().map(String::as_str));
         let mut buckets = self.buckets.lock();
         if buckets.len() >= MAX_CLIENT_BUCKETS && !buckets.contains_key(&key) {
             // Evict ~25% of entries when the map is full so a single noisy
             // client population cannot grow memory unboundedly.
             let evict = (MAX_CLIENT_BUCKETS / 4).max(1);
-            // Evict least-recently-used buckets to preserve active clients.
+            // Prefer buckets idle long enough to have refilled completely:
+            // recreating those at `initial_tokens` changes nothing, whereas
+            // dropping a recently exhausted bucket would hand that client a
+            // fresh burst. Fall back to plain LRU only if too few are idle.
+            let now = Instant::now();
+            let full_refill = if cfg.rps > 0.0 {
+                std::time::Duration::from_secs_f64(cfg.burst / cfg.rps)
+            } else {
+                std::time::Duration::MAX
+            };
             let mut entries: Vec<(String, Instant)> =
                 buckets.iter().map(|(k, v)| (k.clone(), v.last)).collect();
             entries.sort_by_key(|(_, last)| *last);
-            for (victim, _) in entries.into_iter().take(evict) {
+            let (idle, active): (Vec<_>, Vec<_>) = entries
+                .into_iter()
+                .partition(|(_, last)| now.saturating_duration_since(*last) >= full_refill);
+            for (victim, _) in idle.into_iter().chain(active).take(evict) {
                 buckets.remove(&victim);
             }
         }
@@ -112,29 +130,25 @@ impl ClientRateLimiter {
 
 /// Resolve the rate-limit key for a request.
 ///
-/// Prefer the bearer token (per-API-key fairness when keys are shared across
-/// many IPs), then the peer IP from `ConnectInfo`, then a shared default so
-/// `oneshot` tests without connect info still share a single bucket.
+/// Prefer the verified bearer token (per-API-key fairness when keys are
+/// shared across many IPs), then the peer IP from `ConnectInfo`, then a
+/// shared default so `oneshot` tests without connect info still share a
+/// single bucket. A bearer that does not match the configured key (or any
+/// bearer when no key is configured) is client-chosen and is ignored: it
+/// must not let a client mint unlimited fresh buckets.
 ///
 /// Security: the raw token is hashed so API keys never appear in bucket map
 /// keys, debug traces, or metrics labels.
-pub(crate) fn client_key<B>(request: &Request<B>) -> String {
-    if let Some(auth) = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
+pub(crate) fn client_key<B>(request: &Request<B>, api_key: Option<&str>) -> String {
+    if let (Some(auth), Some(api_key)) = (
+        request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        api_key,
+    ) && crate::routes::bearer_value_matches(auth, api_key)
     {
-        // Match the auth middleware's scheme handling (`bearer_value_matches`
-        // is case-insensitive) so `BEARER <key>` shares the key bucket instead
-        // of falling through to a per-IP bucket.
-        let token = auth
-            .split_once(' ')
-            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
-            .map(|(_, token)| token.trim())
-            .filter(|token| !token.is_empty());
-        if let Some(token) = token {
-            return format!("key:{}", hash_token(token));
-        }
+        return format!("key:{}", hash_token(api_key));
     }
     if let Some(ConnectInfo(addr)) = request.extensions().get::<ConnectInfo<SocketAddr>>() {
         return format!("ip:{}", addr.ip());
@@ -187,7 +201,7 @@ mod tests {
             rps: 1.0,
             burst: 2.0,
         };
-        let limiter = ClientRateLimiter::new(cfg.burst);
+        let limiter = ClientRateLimiter::new(cfg.burst, None);
         let request = empty_request();
         assert!(limiter.try_acquire(&request, &cfg));
         assert!(limiter.try_acquire(&request, &cfg));
@@ -232,9 +246,12 @@ mod tests {
             rps: 0.0,
             burst: 1.0,
         };
-        let limiter = ClientRateLimiter::new(cfg.burst);
-        let alice = request_with_bearer("alice");
-        let bob = request_with_bearer("bob");
+        // Separate clients are told apart by peer address; a bearer that the
+        // server did not issue is not an identity (see
+        // `unverified_bearer_cannot_escape_the_peer_ip_bucket`).
+        let limiter = ClientRateLimiter::new(cfg.burst, None);
+        let alice = request_with_peer("10.0.0.1");
+        let bob = request_with_peer("10.0.0.2");
         assert!(limiter.try_acquire(&alice, &cfg));
         assert!(
             !limiter.try_acquire(&alice, &cfg),
@@ -252,7 +269,7 @@ mod tests {
             rps: 0.0,
             burst: 1.0,
         };
-        let limiter = ClientRateLimiter::new(cfg.burst);
+        let limiter = ClientRateLimiter::new(cfg.burst, None);
         let a = request_with_peer("10.0.0.1");
         let b = request_with_peer("10.0.0.2");
         assert!(limiter.try_acquire(&a, &cfg));
@@ -262,7 +279,7 @@ mod tests {
 
     #[test]
     fn bearer_scheme_is_case_insensitive_like_auth() {
-        let canonical = client_key(&request_with_bearer("shared"));
+        let canonical = client_key(&request_with_bearer("shared"), Some("shared"));
         assert!(canonical.starts_with("key:"));
         for scheme in ["bearer", "BEARER", "BeArEr"] {
             let request = Request::builder()
@@ -271,7 +288,7 @@ mod tests {
                 .header(header::AUTHORIZATION, format!("{scheme} shared"))
                 .body(Body::empty())
                 .unwrap();
-            assert_eq!(client_key(&request), canonical, "{scheme}");
+            assert_eq!(client_key(&request, Some("shared")), canonical, "{scheme}");
         }
         let basic = Request::builder()
             .method("GET")
@@ -279,7 +296,7 @@ mod tests {
             .header(header::AUTHORIZATION, "Basic shared")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(client_key(&basic), "default");
+        assert_eq!(client_key(&basic, Some("shared")), "default");
     }
 
     #[test]
@@ -288,7 +305,7 @@ mod tests {
             rps: 0.0,
             burst: 1.0,
         };
-        let limiter = ClientRateLimiter::new(cfg.burst);
+        let limiter = ClientRateLimiter::new(cfg.burst, Some(Arc::new("shared".to_string())));
         let mut from_a = request_with_bearer("shared");
         from_a
             .extensions_mut()
@@ -310,7 +327,7 @@ mod tests {
             rps: 1000.0,
             burst: 1.0,
         };
-        let limiter = ClientRateLimiter::new(0.0);
+        let limiter = ClientRateLimiter::new(0.0, None);
         assert!(
             !limiter.try_acquire(&empty_request(), &cfg),
             "should start with no tokens"
@@ -323,7 +340,7 @@ mod tests {
             rps: 1000.0,
             burst: 1.0,
         };
-        let limiter = ClientRateLimiter::new(0.0);
+        let limiter = ClientRateLimiter::new(0.0, None);
         let request = empty_request();
         assert!(!limiter.try_acquire(&request, &cfg), "starts empty");
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -339,7 +356,7 @@ mod tests {
             rps: 10_000.0,
             burst: 1.0,
         };
-        let limiter = ClientRateLimiter::new(1.0);
+        let limiter = ClientRateLimiter::new(1.0, None);
         let request = empty_request();
         std::thread::sleep(std::time::Duration::from_millis(10));
         // Even though elapsed time * rps would produce many tokens, the
@@ -352,7 +369,34 @@ mod tests {
     }
 
     #[test]
+    fn unverified_bearer_cannot_escape_the_peer_ip_bucket() {
+        let cfg = RateLimitConfig {
+            rps: 0.0,
+            burst: 1.0,
+        };
+        // No API key configured: every bearer is client-chosen and ignored.
+        let limiter = ClientRateLimiter::new(cfg.burst, None);
+        let mut first = request_with_bearer("attacker-1");
+        first
+            .extensions_mut()
+            .insert(ConnectInfo("10.0.0.1:1".parse::<SocketAddr>().unwrap()));
+        let mut second = request_with_bearer("attacker-2");
+        second
+            .extensions_mut()
+            .insert(ConnectInfo("10.0.0.1:2".parse::<SocketAddr>().unwrap()));
+        assert!(limiter.try_acquire(&first, &cfg));
+        assert!(
+            !limiter.try_acquire(&second, &cfg),
+            "a made-up bearer must share the peer IP bucket"
+        );
+        // A key is configured but the bearer does not match: same rule.
+        let limiter = ClientRateLimiter::new(cfg.burst, Some(Arc::new("real".to_string())));
+        assert!(limiter.try_acquire(&first, &cfg));
+        assert!(!limiter.try_acquire(&second, &cfg));
+    }
+
+    #[test]
     fn client_key_default_without_auth_or_peer() {
-        assert_eq!(client_key(&empty_request()), "default");
+        assert_eq!(client_key(&empty_request(), None), "default");
     }
 }

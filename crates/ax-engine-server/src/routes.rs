@@ -81,7 +81,7 @@ pub(crate) fn build_router_with_rate_limit(state: AppState, rate_limited: bool) 
     // HTTP response.
     let router = match state.limits.rate_limit.filter(|_| rate_limited) {
         Some(cfg) => {
-            let limiter = Arc::new(ClientRateLimiter::new(cfg.burst));
+            let limiter = Arc::new(ClientRateLimiter::new(cfg.burst, state.api_key.clone()));
             router.layer(middleware::from_fn(move |request: Request, next: Next| {
                 let limiter = Arc::clone(&limiter);
                 async move {
