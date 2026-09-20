@@ -470,6 +470,22 @@ impl BatchedDecodeSession {
             }
         }
 
+        // A recurrent (gated-delta) state cannot be truncated to `seed_len`:
+        // it already absorbed every token the prefill fed, so re-appending a
+        // token the KV slice dropped would apply it twice to the recurrent
+        // state while the full-attention layers stay exact. Only accept a
+        // shortened seed when no layer carries linear state.
+        if let Some(seed_len) = seed_len
+            && seed_len < prefill.seq_len()
+        {
+            let has_linear_state = (0..self.cache.num_layers())
+                .any(|layer| matches!(prefill.linear_state(layer), (Some(_), Some(_))));
+            assert!(
+                !has_linear_state,
+                "batched decode: seed_len truncation is full-attention only; a hybrid prefill with linear state must seed its whole cache"
+            );
+        }
+
         let slot = self.cache.add_active_row();
         // Linear-attention layers' recurrent state, in linear-layer order, seeded
         // into `lin_state` after the loop (one `add_row` per joining request).
