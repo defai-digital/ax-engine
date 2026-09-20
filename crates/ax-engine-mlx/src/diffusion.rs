@@ -257,7 +257,17 @@ fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> Converg
 // - **Exponential**: `temp = start * (end / start)^t` — drops temperature faster
 //   in early steps, which can reduce denoise iterations on in-distribution
 //   prompts by reaching exploitation temperature sooner.
+/// Floor for the denoise temperature. Both denoise paths divide logits by
+/// the schedule value, so a schedule that reaches zero (temp_start 0, or a
+/// linear schedule crossing zero) would turn the softmax into NaN and, with
+/// self-conditioning on, poison every later step.
+const MIN_DENOISE_TEMPERATURE: f32 = 1e-4;
+
 fn temperature_at_step(step: usize, cfg: &DiffusionConfig) -> f32 {
+    unclamped_temperature_at_step(step, cfg).max(MIN_DENOISE_TEMPERATURE)
+}
+
+fn unclamped_temperature_at_step(step: usize, cfg: &DiffusionConfig) -> f32 {
     let t = step as f32 / cfg.max_denoise_steps.max(1) as f32;
     match cfg.temperature_schedule {
         crate::model::DiffusionTemperatureSchedule::Linear => {
@@ -330,6 +340,10 @@ fn denoise_step(
 ) {
     let temperature = temperature_at_step(step, diff_cfg);
     let is_check_step = step.is_multiple_of(diff_cfg.convergence_check_interval);
+    // `check_convergence` gates acceptance on `step > 0` and plateau on
+    // `step >= 8`, so the canvas must carry the current step before the
+    // check runs, not the previous one.
+    canvas.step = step;
     let forward_started = Instant::now();
 
     // When the full-pipeline compiled closure is available, it fuses
@@ -421,7 +435,6 @@ fn denoise_step(
 
                 canvas.argmax_canvas = Some(argmax_1d);
                 canvas.tokens_gpu = new_tokens;
-                canvas.step = step;
 
                 // Skip self-conditioning when the block has converged: the
                 // embedding is only needed for the next denoise step.
@@ -658,7 +671,6 @@ fn denoise_step(
     // Store current argmax for next step's stability comparison.
     canvas.argmax_canvas = Some(argmax_1d);
     canvas.tokens_gpu = new_tokens;
-    canvas.step = step;
 
     // Self-conditioning: GPU matmul of prob × embed_table.
     // prob: [1, canvas_size, vocab_size]
@@ -1313,10 +1325,12 @@ pub fn embedding_cache_counters() -> (u64, u64) {
 // Caches the output of `compute_per_layer_inputs_arr` across denoise steps.
 // When token IDs are unchanged (high acceptance rate), the cached embeddings
 // are reused, saving 46 embedding dispatches per cache hit. Token change
-// detection uses a GPU-side sum fingerprint (2 dispatches + 1 eval).
+// detection compares the full token vector (1 eval): a sum fingerprint let
+// distinct canvases with equal sums (or sums beyond f32 precision) alias and
+// serve stale embeddings.
 struct EmbeddingCache {
-    /// Sum of token IDs from the last cached computation (fingerprint).
-    token_sum: f32,
+    /// Token IDs from the last cached computation.
+    token_ids: Vec<u32>,
     /// Cached per-layer embedding inputs.
     per_layer_inputs: Option<Vec<MlxArray>>,
 }
@@ -1324,30 +1338,27 @@ struct EmbeddingCache {
 impl EmbeddingCache {
     fn new() -> Self {
         Self {
-            token_sum: f32::NAN,
+            token_ids: Vec::new(),
             per_layer_inputs: None,
         }
     }
 
-    /// Check whether tokens have changed using a sum fingerprint.
-    /// Returns true when the cache should be refreshed.
+    /// Check whether tokens have changed. Returns true when the cache should
+    /// be refreshed.
     fn needs_refresh(&self, token_ids: &MlxArray) -> bool {
         if self.per_layer_inputs.is_none() {
             return true;
         }
-        let token_sum_f32 = astype(token_ids, MlxDtype::Float32, None);
-        let sum = sum_axis(&token_sum_f32, -1, false, None);
-        eval(&[&sum]);
-        let current_sum = sum.data_f32()[0];
-        (current_sum - self.token_sum).abs() > 0.5
+        let current = astype(token_ids, MlxDtype::Uint32, None);
+        eval(&[&current]);
+        current.data_u32() != self.token_ids.as_slice()
     }
 
     /// Update the cache with new per-layer inputs.
     fn update(&mut self, token_ids: &MlxArray, inputs: Vec<MlxArray>) {
-        let token_sum_f32 = astype(token_ids, MlxDtype::Float32, None);
-        let sum = sum_axis(&token_sum_f32, -1, false, None);
-        eval(&[&sum]);
-        self.token_sum = sum.data_f32()[0];
+        let current = astype(token_ids, MlxDtype::Uint32, None);
+        eval(&[&current]);
+        self.token_ids = current.data_u32().to_vec();
         self.per_layer_inputs = Some(inputs);
     }
 }
@@ -1767,7 +1778,7 @@ mod tests {
     fn embedding_cache_initial_state_needs_refresh() {
         let cache = EmbeddingCache::new();
         assert!(cache.per_layer_inputs.is_none());
-        assert!(cache.token_sum.is_nan());
+        assert!(cache.token_ids.is_empty());
         // needs_refresh returns true when cache is empty.
         let dummy = MlxArray::from_f32(42.0);
         assert!(cache.needs_refresh(&dummy));
@@ -1835,6 +1846,40 @@ mod tests {
     // ── Full pipeline / KV buffer flag tests ──────────────────────────
 
     // ── Temperature schedule tests ─────────────────────────────────────
+
+    #[test]
+    fn temperature_never_reaches_zero() {
+        let mut cfg = default_diff_cfg();
+        cfg.temperature_schedule = crate::model::DiffusionTemperatureSchedule::Linear;
+        cfg.temp_start = 0.0;
+        cfg.temp_end = 0.4;
+        assert!(temperature_at_step(0, &cfg) >= MIN_DENOISE_TEMPERATURE);
+        // A schedule that crosses zero mid-way is clamped there too.
+        cfg.temp_start = 0.8;
+        cfg.temp_end = -0.4;
+        assert!(temperature_at_step(32, &cfg) >= MIN_DENOISE_TEMPERATURE);
+        assert!(temperature_at_step(48, &cfg) >= MIN_DENOISE_TEMPERATURE);
+    }
+
+    #[test]
+    fn embedding_cache_distinguishes_equal_sum_canvases() {
+        let first = [10_u32, 20, 30];
+        let second = [20_u32, 20, 20];
+        let as_array = |ids: &[u32; 3]| {
+            MlxArray::from_raw_data(
+                ids.as_ptr().cast(),
+                std::mem::size_of_val(ids),
+                &[3],
+                MlxDtype::Uint32,
+            )
+        };
+        let mut cache = EmbeddingCache::new();
+        assert!(cache.needs_refresh(&as_array(&first)));
+        cache.update(&as_array(&first), Vec::new());
+        assert!(!cache.needs_refresh(&as_array(&first)));
+        // Same sum (60), different tokens: must miss.
+        assert!(cache.needs_refresh(&as_array(&second)));
+    }
 
     #[test]
     fn temperature_linear_schedule_midpoint() {
@@ -1912,9 +1957,11 @@ mod tests {
             (temp_mid - 0.4).abs() < 1e-6,
             "exp zero end midpoint should match linear fallback: got {temp_mid}"
         );
+        // The last step reaches the schedule's zero, which the divide-by-T
+        // floor clamps to the minimum usable temperature.
         let temp_end = temperature_at_step(48, &cfg);
         assert!(
-            (temp_end - 0.0).abs() < 1e-6,
+            (temp_end - MIN_DENOISE_TEMPERATURE).abs() < 1e-6,
             "exp zero end step max: got {temp_end}"
         );
     }
