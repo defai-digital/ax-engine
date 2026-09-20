@@ -151,6 +151,8 @@ pub enum ExpertStreamError {
     ManifestMissing,
     #[error("invalid expert stream manifest: {0}")]
     InvalidManifest(String),
+    #[error("invalid {env} value: {0}", env = STREAM_EXPERTS_ENV)]
+    InvalidMode(String),
     #[error("expert stream paging failed: {0}")]
     Paging(String),
 }
@@ -263,19 +265,29 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
     )
 }
 
-pub fn stream_experts_mode_from_env(value: Option<&str>) -> Option<StreamExpertsMode> {
-    let raw = value?.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    StreamExpertsMode::parse(raw).ok()
+/// Parse `AX_STREAM_EXPERTS`. `Ok(None)` means the variable is unset or empty
+/// (no operator intent); `Err` means it is set to a value this build does not
+/// understand. An invalid value is never silently equivalent to unset: a typo
+/// such as `offf` must not quietly replace an operator's explicit `off` with
+/// Auto paging. Admission paths propagate the error and fail closed, matching
+/// the Python binding's `ValueError` contract for the same variable.
+pub fn stream_experts_mode_from_env(
+    value: Option<&str>,
+) -> Result<Option<StreamExpertsMode>, ExpertStreamError> {
+    let Some(raw) = value.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Ok(None);
+    };
+    StreamExpertsMode::parse(raw)
+        .map(Some)
+        .map_err(ExpertStreamError::InvalidMode)
 }
 
 /// Whether `AX_STREAM_EXPERTS` force-enables streaming (`1`/`true`/`on`).
+/// An invalid value is not `on`.
 pub fn stream_experts_env_enabled() -> bool {
     matches!(
-        stream_experts_mode_from_env(std::env::var(STREAM_EXPERTS_ENV).ok().as_deref()),
-        Some(StreamExpertsMode::On)
+        stream_experts_mode_from_env(std::env::var(STREAM_EXPERTS_ENV).ok().as_deref()).ok(),
+        Some(Some(StreamExpertsMode::On))
     )
 }
 
@@ -329,15 +341,30 @@ pub fn set_stream_experts_override(enabled: bool) {
     }
 }
 
-/// Effective mode: CLI/SDK override, else `AX_STREAM_EXPERTS`, else Auto.
-pub fn stream_experts_mode() -> StreamExpertsMode {
+/// Effective mode: CLI/SDK override, else `AX_STREAM_EXPERTS`, else Auto. An
+/// explicit override wins and the environment is not parsed at all, so an
+/// operator's explicit `--stream-experts auto` is never rejected because of an
+/// unrelated invalid environment value.
+///
+/// Load admission must use this checked form: an invalid `AX_STREAM_EXPERTS`
+/// is an error, not a silent Auto.
+pub fn stream_experts_mode_checked() -> Result<StreamExpertsMode, ExpertStreamError> {
     if let Some(mode) =
         mode_from_u8(STREAM_EXPERTS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed))
     {
-        return mode;
+        return Ok(mode);
     }
-    stream_experts_mode_from_env(std::env::var(STREAM_EXPERTS_ENV).ok().as_deref())
-        .unwrap_or(StreamExpertsMode::Auto)
+    Ok(
+        stream_experts_mode_from_env(std::env::var(STREAM_EXPERTS_ENV).ok().as_deref())?
+            .unwrap_or(StreamExpertsMode::Auto),
+    )
+}
+
+/// Lenient mode for diagnostics that must still render a report when the
+/// environment is misconfigured. Never use this on an admission path; use
+/// [`stream_experts_mode_checked`] so an invalid value fails closed.
+pub fn stream_experts_mode() -> StreamExpertsMode {
+    stream_experts_mode_checked().unwrap_or(StreamExpertsMode::Auto)
 }
 
 /// Whether the current mode force-enables streaming.
@@ -957,6 +984,92 @@ impl ExpertLayerSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_experts_env_unset_and_blank_carry_no_operator_intent() {
+        for raw in [None, Some(""), Some("   "), Some("\t\n")] {
+            assert!(
+                matches!(stream_experts_mode_from_env(raw), Ok(None)),
+                "{raw:?} must read as unset, not as a mode"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_experts_env_accepts_documented_aliases_with_trim_and_case() {
+        for raw in ["off", "0", "false", "no", " OFF ", "Off"] {
+            assert!(
+                matches!(
+                    stream_experts_mode_from_env(Some(raw)),
+                    Ok(Some(StreamExpertsMode::Off))
+                ),
+                "{raw:?}"
+            );
+        }
+        for raw in ["auto", " AUTO "] {
+            assert!(
+                matches!(
+                    stream_experts_mode_from_env(Some(raw)),
+                    Ok(Some(StreamExpertsMode::Auto))
+                ),
+                "{raw:?}"
+            );
+        }
+        for raw in ["on", "1", "true", "yes", " On "] {
+            assert!(
+                matches!(
+                    stream_experts_mode_from_env(Some(raw)),
+                    Ok(Some(StreamExpertsMode::On))
+                ),
+                "{raw:?}"
+            );
+        }
+    }
+
+    /// Regression: an invalid value used to parse to `None`, which the mode
+    /// resolver mapped to Auto. A typo for `off` therefore silently became a
+    /// paging policy instead of failing closed, contradicting the Python
+    /// binding's `ValueError` contract for the same variable.
+    #[test]
+    fn stream_experts_env_rejects_invalid_values_instead_of_degrading_to_auto() {
+        for raw in [
+            "offf",
+            "onn",
+            "2",
+            "automatic",
+            "disabled",
+            "maybe",
+            "-1",
+            "o n",
+        ] {
+            match stream_experts_mode_from_env(Some(raw)) {
+                Err(ExpertStreamError::InvalidMode(reported)) => {
+                    assert_eq!(reported, StreamExpertsMode::parse(raw).unwrap_err());
+                    // The rendered message must name the variable and the bad
+                    // value so an operator can find and correct it.
+                    let message = ExpertStreamError::InvalidMode(reported).to_string();
+                    assert!(
+                        message.contains(STREAM_EXPERTS_ENV) && message.contains(raw),
+                        "error {message:?} must name {STREAM_EXPERTS_ENV} and {raw:?}"
+                    );
+                }
+                other => panic!("{raw:?} must be InvalidMode, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stream_experts_env_enabled_is_false_for_invalid_values() {
+        // `on`-only query: an invalid value is never "force streaming".
+        assert!(!matches!(
+            stream_experts_mode_from_env(Some("onn")),
+            Ok(Some(StreamExpertsMode::On))
+        ));
+        assert!(matches!(
+            stream_experts_mode_from_env(Some("on")),
+            Ok(Some(StreamExpertsMode::On))
+        ));
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

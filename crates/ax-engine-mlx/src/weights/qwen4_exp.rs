@@ -85,7 +85,9 @@ pub(crate) fn load(
     load_with_paging_policy(
         root,
         manifest,
-        crate::expert_stream::stream_experts_mode(),
+        // Fail closed on an invalid AX_STREAM_EXPERTS rather than paging under
+        // a silently substituted Auto.
+        crate::expert_stream::stream_experts_mode_checked()?,
         crate::expert_stream::expert_layer_budget(),
     )
 }

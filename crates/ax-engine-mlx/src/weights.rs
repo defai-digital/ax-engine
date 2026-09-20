@@ -1256,7 +1256,9 @@ pub(crate) fn load_weights_with_session_budget(
     // Resolve explicit modes and required/optional plans before any tensor load.
     // Auto normally uses the physical-capacity reserve; an admitted session may
     // apply the scoped Tiel residency exception below. Off rejects required packs.
-    let stream_mode = crate::expert_stream::stream_experts_mode();
+    // An invalid AX_STREAM_EXPERTS fails closed here instead of degrading to
+    // Auto, so a typo cannot silently drop an operator's residency intent.
+    let stream_mode = crate::expert_stream::stream_experts_mode_checked()?;
     let file_manifest = crate::expert_stream::ExpertStreamManifest::read_from_dir(&root)
         .map_err(WeightLoadError::ExpertStream)?;
     let experts_per_tok = artifacts
