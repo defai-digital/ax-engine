@@ -112,12 +112,17 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        body = exc.read()
-        try:
-            detail = json.loads(body).get("error", {}).get("message", "")
-        except Exception:
-            detail = body.decode(errors="replace")
-        raise RuntimeError(f"ax-engine HTTP {exc.code}: {detail or exc.reason}") from exc
+        raise _http_error_to_runtime(exc) from exc
+
+
+def _http_error_to_runtime(exc: urllib.error.HTTPError) -> RuntimeError:
+    """Map an HTTP failure to the SDK's RuntimeError with the server message."""
+    body = exc.read()
+    try:
+        detail = json.loads(body).get("error", {}).get("message", "")
+    except Exception:
+        detail = body.decode(errors="replace")
+    return RuntimeError(f"ax-engine HTTP {exc.code}: {detail or exc.reason}")
 
 
 def _parse_sse_block(block: bytes) -> tuple[str | None, str] | None:
@@ -161,7 +166,13 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
         headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    # Same HTTP failure contract as the blocking path: a 4xx/5xx on the
+    # streaming route must surface as RuntimeError, not a raw HTTPError.
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        raise _http_error_to_runtime(exc) from exc
+    with resp:
         buffer = b""
         while True:
             # HTTPResponse.read(n) waits for n bytes or EOF, which can buffer a
@@ -195,8 +206,12 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                     )
                 try:
                     yield json.loads(raw_data)
-                except json.JSONDecodeError:
-                    continue
+                except json.JSONDecodeError as exc:
+                    # A non-JSON data frame is a broken stream, not a keepalive
+                    # (those are `:` comment lines); do not report success.
+                    raise RuntimeError(
+                        f"ax-engine stream returned a non-JSON event: {raw_data[:120]!r}"
+                    ) from exc
 
         # Flush a trailing event if the server closed without a final blank line.
         if buffer.strip():

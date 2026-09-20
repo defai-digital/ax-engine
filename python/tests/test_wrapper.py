@@ -2591,15 +2591,13 @@ class WrapperContractTests(unittest.TestCase):
             ],
             tool_choice="auto",
         )
-        self.assertIn("You have access to the following tools:", qwen36_tool_prompt)
-        self.assertIn("<function>\n<name>read_file</name>", qwen36_tool_prompt)
-        self.assertIn("<description>Read a workspace file</description>", qwen36_tool_prompt)
-        self.assertIn("If you choose to call a tool ONLY reply", qwen36_tool_prompt)
+        # Hub Qwen3.6 templates match Qwen3.5: JSON tool schemas + function=
+        # calls (server chat_requests.rs), not Coder-Next XML declarations.
+        self.assertIn("You have access to the following functions:", qwen36_tool_prompt)
+        self.assertNotIn("<function>\n<name>read_file</name>", qwen36_tool_prompt)
+        self.assertIn('{"name":"read_file"', qwen36_tool_prompt)
+        self.assertIn("If you choose to call a function ONLY reply", qwen36_tool_prompt)
         self.assertIn("<function=example_function_name>", qwen36_tool_prompt)
-        self.assertIn(
-            "the tool calling block MUST begin with an opening <tool_call> tag",
-            qwen36_tool_prompt,
-        )
         self.assertTrue(
             qwen36_tool_prompt.endswith(openai_server.QWEN_CHATML_ASSISTANT_GENERATION_PROMPT)
         )
@@ -3175,6 +3173,34 @@ hello
         )
         self.assertNotIn("<|im_start|>tool", sdk_prompt)
         self.assertNotIn("<|im_start|>function", sdk_prompt)
+
+    def test_openai_mlx_shim_tool_contract_style_matches_server(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        self.assertEqual(openai_server.qwen_tool_contract_style("qwen3-coder-next"), "coder_xml")
+        for model_id in ("mlx-community/Qwen3.6-35B-A3B-4bit", "qwen3.5-9b", "ornith-35b"):
+            self.assertEqual(openai_server.qwen_tool_contract_style(model_id), "function_xml")
+        self.assertEqual(openai_server.qwen_tool_contract_style("qwen3"), "json_tools")
+
+    def test_openai_mlx_shim_tool_choice_none_disables_tools(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+        for choice in ("none", "NONE", "off", "disabled", False):
+            self.assertFalse(openai_server.openai_tools_are_enabled(tools, choice))
+            self.assertIsNone(openai_server.render_tool_contract_system_message(tools, choice))
+        self.assertTrue(openai_server.openai_tools_are_enabled(tools, "auto"))
+
+    def test_openai_mlx_shim_applies_client_stop_sequences(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        self.assertEqual(openai_server.client_stop_sequences({}), [])
+        self.assertEqual(openai_server.client_stop_sequences({"stop": "END"}), ["END"])
+        self.assertEqual(
+            openai_server.client_stop_sequences({"stop": ["", "A", 3, "B"]}), ["A", "B"]
+        )
+        self.assertEqual(
+            openai_server.truncate_at_stop("hello STOP tail", ["STOP", "tail"]),
+            ("hello ", True),
+        )
+        self.assertEqual(openai_server.truncate_at_stop("hello", ["STOP"]), ("hello", False))
 
     def test_openai_mlx_shim_builds_mlx_session_with_artifacts_dir(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

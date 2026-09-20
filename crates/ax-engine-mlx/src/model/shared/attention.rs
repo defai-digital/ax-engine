@@ -270,7 +270,13 @@ fn reused_neox_cos_sin(
 /// YaRN / Gemma proportional), so a host round-trip is cheap and keeps the
 /// table exact.
 fn rope_divisors_to_inv_freq(freqs: &MlxArray) -> MlxArray {
-    eval(&[freqs]);
+    // The divisor arrays are host-built (`from_f32_slice`), so this is a
+    // no-op materialization; `try_eval` keeps the fallible-step boundary
+    // (P0-C) instead of panicking the worker on an MLX failure.
+    if let Err(error) = mlx_sys::try_eval(&[freqs]) {
+        tracing::warn!(%error, "rope divisor table could not be materialized; using it unchanged");
+        return freqs.clone();
+    }
     let inverted: Vec<f32> = freqs
         .data_f32()
         .iter()

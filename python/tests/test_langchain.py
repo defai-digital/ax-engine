@@ -548,6 +548,19 @@ class TestAXEngineChatModel(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             chat.invoke([HumanMessage(content="x")])
 
+    def test_stream_http_error_raises_runtime_error(self):
+        # The streaming route must map a 5xx like the blocking route does.
+        self.srv.set_response(None)
+        chat = self._make_chat()
+        with self.assertRaises(RuntimeError):
+            list(chat.stream([HumanMessage(content="x")]))
+
+    def test_stream_non_json_frame_is_an_error_not_success(self):
+        self.srv.set_response("data: decode failed\n\ndata: [DONE]\n\n")
+        chat = self._make_chat()
+        with self.assertRaises(RuntimeError):
+            list(chat.stream([HumanMessage(content="x")]))
+
 
 @unittest.skipIf(_SKIP, _SKIP_REASON)
 class TestAXEngineLLM(unittest.TestCase):

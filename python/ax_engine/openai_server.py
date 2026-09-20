@@ -205,22 +205,31 @@ def is_qwen_coder_model(model_id: str) -> bool:
 
 
 def uses_qwen_coder_xml_tool_contract(model_id: str) -> bool:
-    if is_qwen_non_thinking_only_model(model_id):
-        return True
+    """Coder-Next only: XML tool declarations (server chat.rs)."""
+    return is_qwen_coder_model(model_id)
+
+
+def is_qwen35_class_named_finetune(model_id: str) -> bool:
     normalized = model_id.lower()
-    return (
-        "qwen3.6" in normalized
-        or "qwen3_6" in normalized
-        or "qwen3-6" in normalized
-        or "qwen36" in normalized
-    )
+    return "holo3" in normalized or "holo-3" in normalized or "ornith" in normalized
 
 
 def qwen_tool_contract_style(model_id: str) -> str:
+    """Mirror `qwen_tool_contract_style` in the server's chat_requests.rs.
+
+    Hub Qwen3.6 templates match Qwen3.5 (JSON tool schemas + `function=`
+    calls), not the Coder-Next XML declarations.
+    """
     normalized = normalize_model_id_token(model_id)
     if uses_qwen_coder_xml_tool_contract(model_id):
         return "coder_xml"
-    if any(marker in normalized for marker in ("qwen3-next", "qwen3-5", "qwen35")):
+    if (
+        any(
+            marker in normalized
+            for marker in ("qwen3-next", "qwen3-5", "qwen35", "qwen3-6", "qwen36")
+        )
+        or is_qwen35_class_named_finetune(model_id)
+    ):
         return "function_xml"
     return "json_tools"
 
@@ -229,10 +238,19 @@ def normalize_model_id_token(model_id: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in model_id.lower())
 
 
+def tool_choice_disables_tools(value: Any) -> bool:
+    """Mirror `openai_tool_choice_disables_tools` in the server."""
+    if value is False:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"none", "false", "off", "disabled"}
+    return False
+
+
 def render_tool_contract_system_message(
     tools: Any, tool_choice: Any, style: str = "json_tools"
 ) -> str | None:
-    if not openai_value_is_present(tools):
+    if not openai_value_is_present(tools) or tool_choice_disables_tools(tool_choice):
         return None
     if style == "function_xml":
         return render_qwen_function_tool_contract_system_message(tools, tool_choice)
@@ -491,7 +509,34 @@ def normalize_tool_arguments(arguments: Any) -> Any:
 
 
 def openai_tools_are_enabled(tools: Any, tool_choice: Any) -> bool:
+    if tool_choice_disables_tools(tool_choice):
+        return False
     return openai_value_is_present(tools) or tool_choice_forces_tool_call(tool_choice)
+
+
+def client_stop_sequences(payload: dict[str, Any]) -> list[str]:
+    """Normalize OpenAI `stop` (string or list) into non-empty strings."""
+    raw = payload.get("stop")
+    if raw is None:
+        return []
+    values = [raw] if isinstance(raw, str) else list(raw) if isinstance(raw, list) else []
+    return [value for value in values if isinstance(value, str) and value]
+
+
+def truncate_at_stop(text: str, stops: list[str]) -> tuple[str, bool]:
+    """Cut `text` at the earliest client stop string; `True` when one matched.
+
+    The native MLX session does not apply stop strings at decode (the Rust
+    server truncates post-decode too), so the shim must enforce them here.
+    """
+    cut = None
+    for stop in stops:
+        index = text.find(stop)
+        if index != -1 and (cut is None or index < cut):
+            cut = index
+    if cut is None:
+        return text, False
+    return text[:cut], True
 
 
 def tool_choice_forces_tool_call(value: Any) -> bool:
@@ -771,6 +816,7 @@ def create_app(
                     top_k=int(payload.get("top_k", 0)),
                     repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
                     seed=int(payload.get("seed", 0)),
+                    stop_sequences=client_stop_sequences(payload) or None,
                     metadata=payload.get("metadata"),
                 )
 
@@ -779,6 +825,7 @@ def create_app(
         # included.
         result = await anyio.to_thread.run_sync(_blocking_completion)
         text = tokenizer.decode(list(result.output_tokens))
+        text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
         return {
             "id": f"cmpl-{result.request_id}",
             "object": "text_completion",
@@ -788,7 +835,7 @@ def create_app(
                 {
                     "index": 0,
                     "text": text,
-                    "finish_reason": finish_reason(result.finish_reason),
+                    "finish_reason": "stop" if stop_hit else finish_reason(result.finish_reason),
                 }
             ],
             "usage": usage(input_tokens, list(result.output_tokens)),
@@ -837,6 +884,7 @@ def create_app(
                                 payload.get("repetition_penalty", default_rp)
                             ),
                             seed=int(payload.get("seed", 0)),
+                            stop_sequences=client_stop_sequences(payload) or None,
                             metadata=payload.get("metadata"),
                         )
 
@@ -844,11 +892,18 @@ def create_app(
                 # handler for rationale.
                 result = await anyio.to_thread.run_sync(_blocking_tool_chat)
                 text = tokenizer.decode(list(result.output_tokens))
+                # Client stops apply to visible content only; a parsed tool
+                # call is never truncated (same contract as the Rust server).
+                buffered_finish = finish_reason(result.finish_reason)
+                if not extract_tool_calls(text)[1]:
+                    text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
+                    if stop_hit:
+                        buffered_finish = "stop"
                 events = stream_buffered_tool_chat_chunks(
                     model_id,
                     result.request_id,
                     text,
-                    finish_reason(result.finish_reason),
+                    buffered_finish,
                 )
                 return StreamingResponse(events, media_type="text/event-stream")
             events = stream_completion_chunks(
@@ -876,6 +931,7 @@ def create_app(
                     top_k=int(payload.get("top_k", 0)),
                     repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
                     seed=int(payload.get("seed", 0)),
+                    stop_sequences=client_stop_sequences(payload) or None,
                     metadata=payload.get("metadata"),
                 )
 
@@ -883,8 +939,9 @@ def create_app(
         # for rationale.
         result = await anyio.to_thread.run_sync(_blocking_chat)
         text = tokenizer.decode(list(result.output_tokens))
+        text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
         message: dict[str, Any] = {"role": "assistant", "content": text}
-        response_finish_reason = finish_reason(result.finish_reason)
+        response_finish_reason = "stop" if stop_hit else finish_reason(result.finish_reason)
         if parse_tool_calls:
             content, tool_calls = extract_tool_calls(text)
             if tool_calls:
@@ -988,6 +1045,9 @@ def stream_completion_chunks(
     accumulated_tokens: list[int] = []
     prev_text_len = 0
     role_emitted = False
+    stops = client_stop_sequences(payload)
+    emitted_text = ""
+    stop_hit = False
     # Hold the lock for the full stream lifetime so a concurrent stream_generate
     # cannot enter while this generator is still iterating. The native session
     # also rejects concurrent streams, but Python-side serialization keeps the
@@ -1001,6 +1061,7 @@ def stream_completion_chunks(
             top_k=int(payload.get("top_k", 0)),
             repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
             seed=int(payload.get("seed", 0)),
+            stop_sequences=stops or None,
             metadata=payload.get("metadata"),
         )
         for event in generator:
@@ -1018,7 +1079,14 @@ def stream_completion_chunks(
                     full_text = tokenizer.decode(accumulated_tokens)
                     new_text = full_text[prev_text_len:]
                     prev_text_len = len(full_text)
+                if new_text and stops:
+                    # Client stop strings are enforced on the visible text:
+                    # emit only up to the match, then finish with "stop".
+                    candidate = emitted_text + new_text
+                    truncated, stop_hit = truncate_at_stop(candidate, stops)
+                    new_text = truncated[len(emitted_text) :]
                 if new_text:
+                    emitted_text += new_text
                     emit_role = kind == "chat" and not role_emitted
                     role_emitted = role_emitted or emit_role
                     yield sse_chunk(
@@ -1030,6 +1098,13 @@ def stream_completion_chunks(
                         kind,
                         emit_role=emit_role,
                     )
+                if stop_hit:
+                    if kind == "chat" and not role_emitted:
+                        yield sse_chunk(
+                            stream_id, created, model_id, "", None, kind, emit_role=True
+                        )
+                    yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
+                    break
             elif event.event == "response" and event.response is not None:
                 # Flush any remaining text from incomplete UTF-8 sequences when
                 # the stream path did not supply delta_text (legacy fallback).

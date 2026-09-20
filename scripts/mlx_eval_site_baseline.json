@@ -63,7 +63,8 @@
   },
   "crates/ax-engine-mlx/src/model/shared/attention.rs": {
     "async_eval": 2,
-    "eval": 3
+    "eval": 3,
+    "try_eval": 1
   },
   "crates/ax-engine-mlx/src/model/shared/deepseek_v4_compressor.rs": {
     "eval": 2
