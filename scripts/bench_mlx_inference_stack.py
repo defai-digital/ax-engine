@@ -1581,6 +1581,8 @@ def canonical_sampler_signature(sampler: dict[str, Any] | None) -> str:
         parts.append(f"top_k={int(k)}")
     if (rp := sampler.get("repetition_penalty")) is not None:
         parts.append(f"repetition_penalty={float(rp)}")
+    if (nr := sampler.get("no_repeat_ngram_size")) is not None:
+        parts.append(f"no_repeat_ngram_size={int(nr)}")
     return "sampling[" + ",".join(parts) + "]"
 
 
@@ -1781,6 +1783,13 @@ def _sampler_breaks_greedy_exactness(sampler: dict[str, Any] | None) -> bool:
         return True
     rep_pen = sampler.get("repetition_penalty")
     if rep_pen is not None and float(rep_pen) != 1.0:
+        return True
+    # Mirror `MlxSamplingParams::uses_logits_processors`: it is
+    # repetition-penalty OR no-repeat-ngram. A no-repeat-ngram row is not
+    # argmax-exact, so it must never collapse into the greedy equivalence
+    # class or earn a distribution-exact claim mode.
+    no_repeat = sampler.get("no_repeat_ngram_size")
+    if no_repeat is not None and int(no_repeat) > 0:
         return True
     return False
 

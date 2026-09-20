@@ -1244,6 +1244,52 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "historical_full_logits_prefill_or_sampler_required",
         )
 
+    def test_no_repeat_ngram_breaks_greedy_exactness_and_claim_mode(self) -> None:
+        # Regression test, sibling of the prefill-contract case above. The same
+        # MlxSamplingParams::uses_logits_processors() rule (repetition_penalty
+        # OR no_repeat_ngram_size) was applied to ax_prefill_work_contract but
+        # not to _sampler_breaks_greedy_exactness, so a no-repeat-ngram row
+        # collapsed into the "greedy" sampler equivalence class and earned a
+        # distribution-exact claim mode while the prefill contract for that very
+        # row simultaneously said a sampler was required.
+        sampler = {"temperature": 0.0, "no_repeat_ngram_size": 3}
+        self.assertTrue(bench._sampler_breaks_greedy_exactness(sampler))
+
+        # The signature must neither collapse to "greedy" nor degrade to an
+        # empty "sampling[]" that collides across different ngram sizes.
+        signature = bench.canonical_sampler_signature(sampler)
+        self.assertNotEqual(signature, "greedy")
+        self.assertIn("no_repeat_ngram_size=3", signature)
+        self.assertNotEqual(
+            signature,
+            bench.canonical_sampler_signature({"no_repeat_ngram_size": 4}),
+        )
+
+        # A logits processor means the row is not argmax-exact on either route,
+        # so PRD 7.1 forbids the distribution-exact claim modes.
+        self.assertEqual(
+            bench.ax_decode_claim_mode(True, sampler=sampler),
+            "direct_sampling_not_distribution_exact",
+        )
+        self.assertEqual(
+            bench.ax_decode_claim_mode(False, sampler=sampler),
+            "ngram_sampling_not_distribution_exact",
+        )
+
+        # The knob must be positive to engage; zero stays greedy-equivalent so
+        # the same-policy promotion gate still pairs those rows.
+        self.assertFalse(bench._sampler_breaks_greedy_exactness({"no_repeat_ngram_size": 0}))
+        self.assertEqual(
+            bench.canonical_sampler_signature({"no_repeat_ngram_size": 0}),
+            "greedy",
+        )
+
+        # The claim mode and the prefill contract must now agree on the same row.
+        self.assertEqual(
+            bench.ax_prefill_work_contract(2048, sampler=sampler),
+            "historical_full_logits_prefill_or_sampler_required",
+        )
+
     def test_axengine_one_run_records_client_wall_ttft_from_first_output(self) -> None:
         class FakeResponse:
             status = 200
