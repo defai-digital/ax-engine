@@ -3405,6 +3405,67 @@ fn doctor_report_rejects_axquant_plan_content_digest_mismatch() {
 }
 
 #[test]
+fn doctor_report_excludes_invalid_assignments_from_precision_summary() {
+    // Regression: bit widths were recorded before the method/group-size
+    // validity gate, so an assignment the plan never validly used (here 3-bit
+    // paired with a `bf16` method) still entered `precision_bits` and
+    // `unsupported_plan_bits`. That reported a single-precision plan as mixed
+    // and warned about an experimental bit width for an already-rejected record.
+    let root = unique_test_dir("doctor-axquant-invalid-assignment-bits");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    let plan_path = model_dir.join("axquant_plan.json");
+    let mut plan: Value =
+        serde_json::from_slice(&fs::read(&plan_path).expect("AXQuant plan should read"))
+            .expect("AXQuant plan should parse");
+    let assignments = plan["assignments"]
+        .as_array_mut()
+        .expect("fixture plan should carry assignments");
+    assignments.push(json!({
+        "tensor": "rejected.weight",
+        "module_path": "rejected",
+        "bits": 3,
+        "method": "bf16",
+        "group_size": 64
+    }));
+    rewrite_doctor_axquant_bound_json(&model_dir, "axquant_plan.json", &plan);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    // The rejected 3-bit assignment is still counted and reported as invalid...
+    assert!(
+        axquant.issues.iter().any(|issue| issue
+            .contains("1 assignments with invalid module, method, group-size, or bit metadata")),
+        "invalid assignment must still be reported: {:?}",
+        axquant.issues
+    );
+    // ...but it must not contribute to the precision summary. The fixture's
+    // four valid assignments are 4/6/8/16-bit.
+    assert_eq!(axquant.precision_bits, vec![4, 6, 8, 16]);
+    assert!(
+        axquant.mixed_precision,
+        "the four valid widths are genuinely mixed; 3 must not be what makes it so"
+    );
+    assert!(
+        !axquant
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("3-bit affine quantization")),
+        "no experimental-bits warning for a rejected assignment: {:?}",
+        axquant.warnings
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
 fn doctor_report_rejects_axquant_execution_coverage_drift() {
     let root = unique_test_dir("doctor-axquant-execution-coverage-drift");
     let model_dir = root.join("axquant-qwen36");

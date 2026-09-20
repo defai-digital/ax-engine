@@ -835,7 +835,18 @@ fn doctor_expert_stream_report(
     issues: &mut Vec<String>,
 ) -> Option<DoctorExpertStreamReport> {
     use ax_engine_mlx::expert_stream::{self, ExpertStreamError, StreamExpertsMode};
-    let mode = expert_stream::stream_experts_mode();
+    // Doctor still renders a report when the environment is misconfigured, but
+    // it must say so: load admission fails closed on the same value, so a
+    // silently substituted Auto here would disagree with the loader.
+    let mode = match expert_stream::stream_experts_mode_checked() {
+        Ok(mode) => mode,
+        Err(error) => {
+            issues.push(format!(
+                "{error}; model loading fails closed on this value (this report assumes auto)"
+            ));
+            StreamExpertsMode::Auto
+        }
+    };
     let (manifest, source) = match expert_stream::ExpertStreamManifest::read_from_dir(path) {
         Ok(Some(manifest)) => (manifest, "ax_expert_stream.json"),
         Ok(None) => {
@@ -1123,8 +1134,6 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                     invalid_assignments += 1;
                     continue;
                 };
-                precision_bits.insert(bits);
-                unsupported_plan_bits.insert(bits);
 
                 let module_path = assignment
                     .get("module_path")
@@ -1149,6 +1158,14 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                     invalid_assignments += 1;
                     continue;
                 }
+                // Record bit widths only for assignments that survived every
+                // validity gate. Inserting earlier let a rejected assignment
+                // (for example 3-bit paired with a `bf16` method) contribute to
+                // `precision_bits`, which could report a single-precision plan
+                // as mixed and emit an experimental-bits warning for a record
+                // already counted invalid.
+                precision_bits.insert(bits);
+                unsupported_plan_bits.insert(bits);
                 if !seen_modules.insert(module_path) {
                     duplicate_modules += 1;
                 }
@@ -1405,7 +1422,6 @@ fn validate_axquant_execution_coverage(
             malformed += 1;
             continue;
         };
-        unsupported_bits.insert(bits);
         if success.is_none()
             || fallback.is_none()
             || (bits < 16 && group_size.is_none())
@@ -1414,6 +1430,10 @@ fn validate_axquant_execution_coverage(
             malformed += 1;
             continue;
         }
+        // Only a well-formed execution record describes bits the runtime really
+        // used, so the runtime-support warning must not fire for a record that
+        // was already rejected as malformed.
+        unsupported_bits.insert(bits);
 
         if !seen.insert(module_path.to_string()) {
             duplicates += 1;
