@@ -109,6 +109,7 @@ class FakeNativeSession:
         llama_server_url: str | None = None,
         mlx_lm_server_url: str | None = None,
         mlx_model_artifacts_dir: str | None = None,
+        mlx_stream_experts: str | None = None,
         delegated_http_connect_timeout_secs: int = 30,
         delegated_http_read_timeout_secs: int = 300,
         delegated_http_write_timeout_secs: int = 300,
@@ -121,6 +122,7 @@ class FakeNativeSession:
         self.llama_server_url = llama_server_url
         self.mlx_lm_server_url = mlx_lm_server_url
         self.mlx_model_artifacts_dir = mlx_model_artifacts_dir
+        self.mlx_stream_experts = mlx_stream_experts
         self.delegated_http_connect_timeout_secs = delegated_http_connect_timeout_secs
         self.delegated_http_read_timeout_secs = delegated_http_read_timeout_secs
         self.delegated_http_write_timeout_secs = delegated_http_write_timeout_secs
@@ -756,6 +758,16 @@ class WrapperContractTests(unittest.TestCase):
                 del sys.modules[name]
         if str(SOURCE_ROOT) in sys.path:
             sys.path.remove(str(SOURCE_ROOT))
+
+    def test_stream_experts_mode_is_forwarded_without_losing_explicit_auto(self) -> None:
+        for mode in (None, "auto", "off", "on"):
+            with self.subTest(mode=mode):
+                with self.ax_engine.Session(
+                    mlx=True,
+                    mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
+                    mlx_stream_experts=mode,
+                ):
+                    self.assertEqual(FakeNativeSession.instances[-1].mlx_stream_experts, mode)
 
     def test_native_import_recovers_from_stale_mlx_rpath(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

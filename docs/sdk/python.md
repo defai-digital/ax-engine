@@ -152,6 +152,30 @@ print(runtime.mlx_model)
 `Session(mlx=True)` without a path raises `ValueError` with a download hint
 rather than propagating a cryptic Rust error.
 
+For expert residency, pass `mlx_stream_experts="auto"`, `"on"`, or `"off"`.
+Omitting it (or passing `None`) reads `AX_STREAM_EXPERTS`, then falls back to
+`auto`. An explicit argument, including `"auto"`, takes precedence over the
+environment. Invalid selected values raise `ValueError` before model loading.
+This repairs earlier Python builds that silently overrode the environment
+with Auto; callers with invalid environment values must now correct them.
+
+Auto streams required packs, or when estimated full residency plus the
+48 GiB reserve exceeds physical RAM. `off` requests full residency but still
+rejects packs marked `required=true`; it does not bypass that admission guard.
+For example, an explicit resident comparison uses:
+
+```python
+session = ax_engine.Session(
+    mlx=True,
+    mlx_model_artifacts_dir="/path/to/mlx-model-artifacts",
+    mlx_stream_experts="off",
+)
+```
+
+Expert streaming and wired memory are separate controls: the former pages
+expert tensors; the latter controls whether allocated buffers stay resident.
+See [Tiel residency diagnostics](../mtp/tiel-prefill-diagnostics.md).
+
 If you want a repo-owned smoke check that bootstraps a temporary virtualenv,
 installs `maturin`, builds the extension, runs the checked-in examples, and
 then runs both the installed-package preview tests and the Python wrapper

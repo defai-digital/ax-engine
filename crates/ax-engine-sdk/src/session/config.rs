@@ -38,6 +38,19 @@ pub enum MlxStreamExpertsMode {
     On,
 }
 
+#[cfg(feature = "mlx-native")]
+impl MlxStreamExpertsMode {
+    /// Parse with the native admission parser so aliases and validation agree.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        use ax_engine_mlx::expert_stream::StreamExpertsMode;
+        StreamExpertsMode::parse(raw).map(|mode| match mode {
+            StreamExpertsMode::Off => Self::Off,
+            StreamExpertsMode::Auto => Self::Auto,
+            StreamExpertsMode::On => Self::On,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MlxMtpPolicy {
     /// Use MTP when the loaded artifacts contain a validated drafter, otherwise

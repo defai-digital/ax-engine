@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ax_engine_sdk::{
-    EngineSession, EngineSessionConfig, GenerateSampling, PreviewBackendRequest,
-    PreviewSessionConfigRequest, preview_support_tier_from_label,
+    EngineSession, EngineSessionConfig, GenerateSampling, MlxStreamExpertsMode,
+    PreviewBackendRequest, PreviewSessionConfigRequest, preview_support_tier_from_label,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -30,11 +30,24 @@ pub(crate) enum SessionSlot {
     Closed,
 }
 
+// Resolve before native admission so the Python default cannot hide an operator
+// override. Explicit Auto is intentional and takes precedence over the environment.
+fn resolve_stream_experts(
+    explicit: Option<&str>,
+    environment: Option<&str>,
+) -> PyResult<MlxStreamExpertsMode> {
+    MlxStreamExpertsMode::parse(explicit.or(environment).unwrap_or("auto")).map_err(|_| {
+        PyValueError::new_err(
+            "invalid mlx_stream_experts / AX_STREAM_EXPERTS value (expected off, auto, or on)",
+        )
+    })
+}
+
 #[pymethods]
 impl Session {
     #[new]
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (model_id="qwen3".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_lm_server_url=None, mlx_model_artifacts_dir=None, delegated_http_connect_timeout_secs=30, delegated_http_read_timeout_secs=300, delegated_http_write_timeout_secs=300))]
+    #[pyo3(signature = (model_id="qwen3".to_string(), *, deterministic=true, max_batch_tokens=2048, cache_group_id=0, block_size_tokens=16, total_blocks=1024, mlx=false, support_tier="llama_cpp", llama_cli_path="llama-cli".to_string(), llama_model_path=None, llama_server_url=None, mlx_lm_server_url=None, mlx_model_artifacts_dir=None, delegated_http_connect_timeout_secs=30, delegated_http_read_timeout_secs=300, delegated_http_write_timeout_secs=300, mlx_stream_experts=None))]
     fn new(
         model_id: String,
         deterministic: bool,
@@ -52,7 +65,14 @@ impl Session {
         delegated_http_connect_timeout_secs: u64,
         delegated_http_read_timeout_secs: u64,
         delegated_http_write_timeout_secs: u64,
+        mlx_stream_experts: Option<&str>,
     ) -> PyResult<Self> {
+        let stream_env = if mlx && mlx_stream_experts.is_none() {
+            std::env::var("AX_STREAM_EXPERTS").ok()
+        } else {
+            None
+        };
+        let mlx_stream_experts = resolve_stream_experts(mlx_stream_experts, stream_env.as_deref())?;
         let support_tier = preview_support_tier_from_label(support_tier)
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let delegated_http_timeouts = delegated_http_timeouts_from_secs(
@@ -101,6 +121,7 @@ impl Session {
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
             mlx_prefill_chunk: None,
+            mlx_stream_experts,
             ..PreviewSessionConfigRequest::default()
         })
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
@@ -567,6 +588,43 @@ fn sampling_from_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_experts_resolves_explicit_then_environment_then_auto() {
+        assert!(matches!(
+            resolve_stream_experts(None, None),
+            Ok(MlxStreamExpertsMode::Auto)
+        ));
+        for raw in ["off", "0", "false", "no", " OFF "] {
+            assert!(matches!(
+                resolve_stream_experts(None, Some(raw)),
+                Ok(MlxStreamExpertsMode::Off)
+            ));
+        }
+        for raw in ["on", "1", "true", "yes", " ON "] {
+            assert!(matches!(
+                resolve_stream_experts(Some(raw), Some("off")),
+                Ok(MlxStreamExpertsMode::On)
+            ));
+        }
+        assert!(matches!(
+            resolve_stream_experts(Some("auto"), Some("off")),
+            Ok(MlxStreamExpertsMode::Auto)
+        ));
+        assert!(matches!(
+            resolve_stream_experts(Some("off"), Some("invalid")),
+            Ok(MlxStreamExpertsMode::Off)
+        ));
+    }
+
+    #[test]
+    fn stream_experts_rejects_invalid_selected_values() {
+        init_python();
+        for raw in ["", "2", "automatic", "invalid"] {
+            assert!(resolve_stream_experts(Some(raw), Some("off")).is_err());
+            assert!(resolve_stream_experts(None, Some(raw)).is_err());
+        }
+    }
     use crate::dicts::test_support::{
         dict_string, dict_tokens, normalize_measurement_fields, py_dict_to_json,
         sdk_request_report_json, sdk_stream_event_json,
@@ -680,6 +738,7 @@ mod tests {
             DelegatedHttpTimeouts::default_connect_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
+            None,
         )
         .expect("llama.cpp session should build")
     }
@@ -702,6 +761,7 @@ mod tests {
             DelegatedHttpTimeouts::default_connect_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
+            None,
         )
         .expect("llama.cpp session should build")
     }
@@ -726,6 +786,7 @@ mod tests {
             DelegatedHttpTimeouts::default_connect_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
+            None,
         )
         .expect("default llama.cpp session should build");
 
@@ -756,6 +817,7 @@ mod tests {
             DelegatedHttpTimeouts::default_connect_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
+            None,
         )
         .expect("GGUF session should build");
 
@@ -786,6 +848,7 @@ mod tests {
             DelegatedHttpTimeouts::default_connect_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
             DelegatedHttpTimeouts::default_io_secs(),
+            None,
         )
         .expect("mlx-lm delegated session should build");
 

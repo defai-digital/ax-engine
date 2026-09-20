@@ -327,6 +327,7 @@ class Session:
         llama_server_url: str | None = None,
         mlx_lm_server_url: str | None = None,
         mlx_model_artifacts_dir: str | None = None,
+        mlx_stream_experts: str | None = None,
         delegated_http_connect_timeout_secs: int = 30,
         delegated_http_read_timeout_secs: int = 300,
         delegated_http_write_timeout_secs: int = 300,
