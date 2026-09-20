@@ -225,6 +225,8 @@ pub(crate) struct DoctorExpertStreamReport {
 pub(crate) struct DoctorResidentEstimate {
     /// Default session KV pool; not an inspected running server's config.
     pub(crate) assumed_kv_pool_tokens: u64,
+    #[serde(default)]
+    pub(crate) assumed_prefill_chunk: usize,
     /// None means unknown geometry, not zero KV use.
     pub(crate) kv_pool_bytes: Option<u64>,
     /// Shared server formula applied to the stream manifest's full weight estimate.
@@ -866,7 +868,7 @@ fn doctor_expert_stream_report(
         }
     };
     let mut report = doctor_expert_stream_decision(
-        manifest,
+        manifest.clone(),
         source,
         mode,
         expert_stream::unified_memory_bytes(),
@@ -880,8 +882,28 @@ fn doctor_expert_stream_report(
         .and_then(|geometry| {
             ax_engine_core::memory_budget::estimated_kv_pool_bytes(&geometry, pool_tokens)
         });
+    // Report the default SDK/server session, not the raw load_weights entry
+    // point, which has no admitted KV pool. No tensor payloads are loaded.
+    let prefill_chunk = ax_engine_mlx::generate::DEFAULT_PREFILL_CHUNK;
+    if report.enabled
+        && mode == StreamExpertsMode::Auto
+        && !manifest.required
+        && let Ok(artifacts) = ax_engine_core::NativeModelArtifacts::from_dir(path)
+        && expert_stream::session_auto_resident_fits(
+            &artifacts,
+            expert_stream::SessionResidencyBudget {
+                kv_pool_tokens: pool_tokens,
+                prefill_chunk,
+            },
+            &manifest,
+        )
+    {
+        report.enabled = false;
+        report.decision_reason = "audited_tiel_default_session_fits_budget".to_string();
+    }
     report.resident_estimate = Some(DoctorResidentEstimate {
         assumed_kv_pool_tokens: pool_tokens,
+        assumed_prefill_chunk: prefill_chunk,
         kv_pool_bytes: kv_bytes,
         full_resident_footprint_bytes: ax_engine_core::memory_budget::estimated_footprint_bytes(
             report.full_resident_bytes,

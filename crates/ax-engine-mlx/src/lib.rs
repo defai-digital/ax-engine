@@ -48,6 +48,7 @@ pub mod runner;
 pub mod sampling;
 pub mod speculation_profile;
 mod tiel_memory_policy;
+mod tiel_resident_budget;
 pub mod weight_rotation;
 pub mod weights;
 

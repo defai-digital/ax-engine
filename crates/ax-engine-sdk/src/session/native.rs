@@ -128,13 +128,14 @@ fn build_mlx_core(
         .map(|n| n.max(1))
         .unwrap_or(DEFAULT_PREFILL_CHUNK);
 
-    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+    let mut runner = MlxRunner::from_artifacts_with_session_budget(
         &artifacts,
         prefill_chunk,
         config.mlx_disable_ngram_acceleration,
         config.mlx_mtp_disable_ngram_stacking,
         prefix_cache_store,
         shared_weights,
+        u64::from(config.kv_config.block_size_tokens) * u64::from(config.kv_config.total_blocks),
     )
     .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))

@@ -79,8 +79,8 @@ requests from reversed-order blocks after two warmups per block.
 
 This is explicit throughput-MTP with cold KV and full-resident weights, not
 server-default or certification evidence. M4 Pro has **64 GiB physical RAM**;
-the **48 GiB** number is AX's Auto headroom reserve. Auto pages these packs at
-that capacity, so the resident comparison explicitly selects expert-stream
+the **48 GiB** number is AX's Auto headroom reserve. The tested Auto build paged these packs at
+that capacity, so the resident comparison explicitly selected expert-stream
 Off. The short Auto diagnostic is separate. Normal wiring and explicit no-wire
 controls also remain separate; M2/M3/M4 measurements do not expand the automatic
 M5-only tuning policy. Read the per-host background-load and memory caveats

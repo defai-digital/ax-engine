@@ -1208,6 +1208,13 @@ pub fn mmap_weights_enabled() -> bool {
 }
 
 pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, WeightLoadError> {
+    load_weights_with_session_budget(artifacts, None)
+}
+
+pub(crate) fn load_weights_with_session_budget(
+    artifacts: &NativeModelArtifacts,
+    session_budget: Option<crate::expert_stream::SessionResidencyBudget>,
+) -> Result<ModelWeights, WeightLoadError> {
     maybe_raise_metal_buffer_caps(artifacts);
     if artifacts.manifest().model_family == "qwen4_exp" {
         let dedicated = qwen4_exp::load(artifacts.root_dir(), artifacts.manifest())?;
@@ -1246,12 +1253,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         });
     }
     let root = artifacts.root_dir().to_path_buf();
-    // SSD expert streaming admission (ax_expert_stream.json). A pack marked
-    // `required=true` fails closed without --stream-experts /
-    // AX_STREAM_EXPERTS=1; requesting streaming without a manifest also
-    // fails closed. Default resident loads (certified Qwen 3.6 / GPT-OSS /
-    // Gemma paths) are untouched: with no manifest this returns None and
-    // streaming stays off.
+    // Resolve explicit modes and required/optional plans before any tensor load.
+    // Auto normally uses the physical-capacity reserve; an admitted session may
+    // apply the scoped Tiel residency exception below. Off rejects required packs.
     let stream_mode = crate::expert_stream::stream_experts_mode();
     let file_manifest = crate::expert_stream::ExpertStreamManifest::read_from_dir(&root)
         .map_err(WeightLoadError::ExpertStream)?;
@@ -1262,13 +1266,21 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         .unwrap_or(1)
         .max(1);
     let specs = artifacts.tensor_specs();
-    let expert_stream_manifest = crate::expert_stream::resolve_expert_stream(
+    let mut expert_stream_manifest = crate::expert_stream::resolve_expert_stream(
         stream_mode,
         file_manifest,
         || crate::expert_stream::infer_layer_stack_manifest(specs, experts_per_tok),
         crate::expert_stream::unified_memory_bytes(),
     )
     .map_err(WeightLoadError::ExpertStream)?;
+    // A session supplies its admitted KV/prefill bounds before the first tensor
+    // load. Required and explicit modes always retain resolver precedence.
+    if stream_mode == crate::expert_stream::StreamExpertsMode::Auto
+        && let (Some(budget), Some(manifest)) = (session_budget, expert_stream_manifest.as_ref())
+        && crate::expert_stream::session_auto_resident_fits(artifacts, budget, manifest)
+    {
+        expert_stream_manifest = None;
+    }
     let expert_stream_skip: Option<std::collections::HashSet<String>> = expert_stream_manifest
         .as_ref()
         .map(crate::expert_stream::streamed_skip_names);

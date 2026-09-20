@@ -352,6 +352,25 @@ pub fn unified_memory_bytes() -> Option<u64> {
         .ok()
 }
 
+/// Session bounds known before loading weights. Raw weight loaders have no
+/// admitted KV pool and retain the general Auto policy.
+#[derive(Clone, Copy, Debug)]
+pub struct SessionResidencyBudget {
+    pub kv_pool_tokens: u64,
+    pub prefill_chunk: usize,
+}
+
+/// Whether the bounded Tiel session exception permits residency. This probes
+/// metadata and current hardware/allocator state, but never loads weights.
+/// Explicit modes and required packs must still pass the normal resolver.
+pub fn session_auto_resident_fits(
+    artifacts: &ax_engine_core::NativeModelArtifacts,
+    budget: SessionResidencyBudget,
+    manifest: &ExpertStreamManifest,
+) -> bool {
+    crate::tiel_memory_policy::session_auto_resident_fits(artifacts, budget, manifest)
+}
+
 pub fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
     match available_bytes {
         None => false,

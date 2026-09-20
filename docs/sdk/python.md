@@ -160,7 +160,10 @@ This repairs earlier Python builds that silently overrode the environment
 with Auto; callers with invalid environment values must now correct them.
 
 Auto streams required packs, or when estimated full residency plus the
-48 GiB reserve exceeds physical RAM. `off` requests full residency but still
+48 GiB reserve exceeds physical RAM. The two audited Tiel exports have a
+[bounded session exception on M4 Pro 64 GiB](../mtp/tiel-prefill-diagnostics.md#bounded-default-session-residency):
+known KV/prefill bounds and a fitting working set can retain optional experts
+without an explicit `off`. `off` requests full residency but still
 rejects packs marked `required=true`; it does not bypass that admission guard.
 For example, an explicit resident comparison uses:
 

@@ -382,10 +382,12 @@ reports both packs separately on M5 Max 128 GiB, M4 Pro 64 GiB, M2 Ultra
 192 GiB and M3 Ultra 512 GiB. It uses identical model files and prompt tokens, fixed output counts,
 cold KV, two reversed-order blocks, and completion throughput including TTFT.
 These are explicit throughput-MTP, full-resident native API measurements.
-On the 64 GiB mini, resident mode requires `mlx_stream_experts="off"`;
-Auto keeps its 48 GiB reserve and pages experts. Wired/unwired controls and
+That campaign explicitly used `mlx_stream_experts="off"` on the 64 GiB mini;
+the tested Auto build retained a 48 GiB reserve and paged experts. Wired/unwired controls and
 Auto diagnostics are reported separately. These results do not promote MTP,
-change defaults or certify either pack.
+change defaults or certify either pack. The subsequent
+[bounded M4 default-session residency change](docs/mtp/tiel-prefill-diagnostics.md#bounded-default-session-residency)
+has separate server acceptance evidence.
 
 ### Campaign host: Apple M5 Max 128 GB (2026-09-15)
 

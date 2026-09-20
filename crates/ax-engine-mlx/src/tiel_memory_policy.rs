@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Residency policy for the two audited Tiel MXFP4 exports on M5 Max.
+//! Bounded residency policies for the two audited Tiel MXFP4 exports.
+//!
+//! M4 Pro 64 GiB sessions may retain optional experts when their known load
+//! budget fits. M5 Max has a separate post-load wired-residency policy.
 //!
 //! Releasing wired residency reduced the idle-to-first-submit wait in the
 //! M5 Max campaign without changing token output. This policy runs after
@@ -91,6 +94,76 @@ fn decide_clear_wired_residency(inputs: &ResidencyDecision) -> bool {
         return false;
     }
     true
+}
+
+/// Exact metadata identity shared by the two independent residency policies.
+fn audited_export(root: &Path) -> bool {
+    let config = read_metadata_bounded(&root.join("config.json"))
+        .map(|bytes| ax_engine_core::sha256_hex(&bytes));
+    let manifest = read_metadata_bounded(&root.join("axquant_manifest.json"))
+        .map(|bytes| ax_engine_core::sha256_hex(&bytes));
+    config.as_deref() == Some(CONFIG_SHA256)
+        && matches!(
+            manifest.as_deref(),
+            Some(TIEL_MANIFEST_SHA256) | Some(CYBER_MANIFEST_SHA256)
+        )
+}
+
+pub(crate) fn session_auto_resident_fits(
+    artifacts: &ax_engine_core::NativeModelArtifacts,
+    budget: crate::expert_stream::SessionResidencyBudget,
+    manifest: &crate::expert_stream::ExpertStreamManifest,
+) -> bool {
+    use crate::tiel_resident_budget::{ResidentBudgetInputs, permits_resident_load};
+    use ax_engine_core::memory_budget::{estimated_footprint_bytes, estimated_kv_pool_bytes};
+
+    // Keep unsupported models and required packs out before hardware/MLX probes.
+    if manifest.required || !audited_export(artifacts.root_dir()) {
+        return false;
+    }
+    let brand = cpu_brand_string();
+    let physical = crate::expert_stream::unified_memory_bytes();
+    if brand.as_deref() != Some("Apple M4 Pro") || physical != Some(64 * 1024 * 1024 * 1024) {
+        return false;
+    }
+    let geometry = serde_json::to_value(artifacts.manifest())
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok());
+    let kv = geometry
+        .as_ref()
+        .and_then(|geometry| estimated_kv_pool_bytes(geometry, budget.kv_pool_tokens));
+    // Do not trust a smaller sidecar estimate over the actual tensor inventory.
+    let tensor_bytes = artifacts
+        .tensor_specs()
+        .iter()
+        .fold(0u64, |sum, tensor| sum.saturating_add(tensor.length_bytes));
+    let weights = tensor_bytes.max(manifest.estimated_full_resident_bytes);
+    let inputs = ResidentBudgetInputs {
+        audited_export: true,
+        required: manifest.required,
+        cpu_brand: brand,
+        physical_bytes: physical,
+        pressure_level: crate::hardware::sysctl_string(&[
+            "-n",
+            "kern.memorystatus_vm_pressure_level",
+        ])
+        .and_then(|value| value.parse().ok()),
+        working_set_bytes: mlx_sys::device_recommended_working_set_bytes(),
+        active_bytes: mlx_sys::device_active_bytes(),
+        kv_pool_tokens: budget.kv_pool_tokens,
+        prefill_chunk: budget.prefill_chunk,
+        footprint_bytes: kv.map(|bytes| estimated_footprint_bytes(weights, Some(bytes))),
+    };
+    let permitted = permits_resident_load(&inputs);
+    tracing::info!(
+        target: "ax_engine_mlx::runner", policy = "tiel-session-resident-v1",
+        permitted, kv_pool_tokens = budget.kv_pool_tokens,
+        prefill_chunk = budget.prefill_chunk,
+        footprint_bytes = ?inputs.footprint_bytes, active_bytes = ?inputs.active_bytes,
+        working_set_bytes = ?inputs.working_set_bytes, pressure_level = ?inputs.pressure_level,
+        "evaluated bounded Tiel session residency"
+    );
+    permitted
 }
 
 /// Evaluate and apply the automatic no-wire residency policy after weights

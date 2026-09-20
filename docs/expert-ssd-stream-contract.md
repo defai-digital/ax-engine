@@ -151,7 +151,9 @@ Implement in `/Users/akiralam/code/_ssd-stream/ax-engine`.
 2. **Admission**
    - Flag: `--stream-experts off|auto|on` (default **auto**; bare `--stream-experts` is `on`).
      Env `AX_STREAM_EXPERTS=off|auto|on` (also `0`/`1`). Auto streams required packs
-     and packs that cannot fit in unified memory plus 48 GiB headroom.
+     and packs that cannot fit in unified memory plus 48 GiB headroom. The
+     [audited Tiel session exception](mtp/tiel-prefill-diagnostics.md#bounded-default-session-residency)
+     can retain optional experts on M4 Pro 64 GiB within known session bounds.
    - If manifest `required=true` and streaming is off → fail closed
      (`ExpertStreamRequired`) with estimated_full_resident_bytes in the
      message. Never fall through to full `load_weights`.

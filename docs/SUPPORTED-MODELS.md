@@ -386,9 +386,10 @@ serve them through the idempotent resolution flow:
 
 The two Tiel exports use the general M2-or-newer/macOS 26+ host admission;
 their automatic no-wire tuning is limited to audited M5 Max/128 GiB exports.
-On a 64 GiB host, Auto expert streaming selects paging under the 48 GiB
-reserve rule. Explicit full-resident benchmarks do not change that default
-or the Candidate status. See [Tiel residency and expert-stream controls](mtp/tiel-prefill-diagnostics.md).
+On M4 Pro 64 GiB, default sessions can retain these two audited exports
+under the bounded known-KV residency policy. Required packs, unknown inputs,
+other hardware and raw loaders without a session budget retain the general
+Auto rule. This memory policy does not promote MTP or change Candidate status. See [Tiel residency and expert-stream controls](mtp/tiel-prefill-diagnostics.md).
 
 The unqualified `:axq` selector intentionally means 6-bit. Bare family
 aliases (`qwen3.6-27b`, `gemma4-12b`) stay mlx-community, and `ax-<family>`

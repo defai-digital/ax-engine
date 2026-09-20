@@ -1763,6 +1763,32 @@ impl MlxRunner {
             disable_mtp_ngram_stacking,
             prefix_cache_store,
             shared_weights,
+            None,
+        )
+    }
+
+    /// Build a session with its admitted KV pool available to load-time Auto
+    /// residency. Existing raw constructors retain conservative admission.
+    pub fn from_artifacts_with_session_budget(
+        artifacts: &NativeModelArtifacts,
+        prefill_chunk: usize,
+        disable_ngram_acceleration: bool,
+        disable_mtp_ngram_stacking: bool,
+        prefix_cache_store: Option<MlxPrefixCacheStore>,
+        shared_weights: Option<&MlxSharedWeightsCell>,
+        kv_pool_tokens: u64,
+    ) -> Result<Self, MlxRunnerError> {
+        Self::from_artifacts_inner(
+            artifacts,
+            prefill_chunk,
+            disable_ngram_acceleration,
+            disable_mtp_ngram_stacking,
+            prefix_cache_store,
+            shared_weights,
+            Some(crate::expert_stream::SessionResidencyBudget {
+                kv_pool_tokens,
+                prefill_chunk,
+            }),
         )
     }
 
@@ -1790,6 +1816,7 @@ impl MlxRunner {
             prefill_chunk,
             disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
+            None,
             None,
             None,
         )
@@ -1824,6 +1851,7 @@ impl MlxRunner {
             disable_mtp_ngram_stacking,
             Some(prefix_cache_store),
             None,
+            None,
         )
     }
 
@@ -1835,6 +1863,7 @@ impl MlxRunner {
         disable_mtp_ngram_stacking: bool,
         prefix_cache_store: Option<MlxPrefixCacheStore>,
         shared_weights: Option<&MlxSharedWeightsCell>,
+        session_budget: Option<crate::expert_stream::SessionResidencyBudget>,
     ) -> Result<Self, MlxRunnerError> {
         // Admission and all CPU-only manifest contracts must pass before any
         // process-global MLX setup. Otherwise a rejected first artifact could
@@ -1945,7 +1974,10 @@ impl MlxRunner {
         let weights = match preloaded_weights {
             Some(weights) => weights,
             None => {
-                let loaded = Arc::new(load_weights(artifacts).map_err(MlxRunnerError::Weights)?);
+                let loaded = Arc::new(
+                    crate::weights::load_weights_with_session_budget(artifacts, session_budget)
+                        .map_err(MlxRunnerError::Weights)?,
+                );
                 if let Some(cell) = shared_weights {
                     cell.publish(Arc::clone(&loaded));
                 }
