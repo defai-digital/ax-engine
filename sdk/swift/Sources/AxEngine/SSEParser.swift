@@ -69,7 +69,7 @@ struct SSEParser: AsyncSequence {
                 guard !dataLines.isEmpty else { return nil }
                 let data = dataLines.joined(separator: "\n")
                 dataLines = []
-                if data == "[DONE]" { done = true; sawDone = true; return nil }
+                if name != "error" && data == "[DONE]" { done = true; sawDone = true; return nil }
                 return SSEEvent(event: name, data: data)
             }
             if line.hasPrefix(":") { return nil }

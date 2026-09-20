@@ -682,3 +682,66 @@ test("native streams reject EOF without a complete response", async () => {
     assert.deepEqual(events, [{ event: "step", data: {} }]);
   }
 });
+
+for (const ending of ["\r", "\r\n", "\n"]) {
+  test(`SSE handles ${JSON.stringify(ending)} lines with bytewise UTF-8 chunks`, async () => {
+    const wire = new TextEncoder().encode(
+      '\uFEFFevent: step' + ending + 'data: {"text":"caf\u00e9"}' + ending + ending +
+      'data: [DONE]' + ending + ending,
+    );
+    const client = new AxEngineClient({ fetch: async () => new Response(new ReadableStream({
+      start(controller) {
+        for (const byte of wire) controller.enqueue(new Uint8Array([byte]));
+        controller.close();
+      },
+    })) });
+    const events = [];
+    for await (const event of client.streamCompletion({ prompt: "test" })) events.push(event);
+    assert.deepEqual(events, [{ event: "step", data: { text: "caf\u00e9" } }]);
+  });
+}
+
+test("SSE handles mixed line endings and exact field values", async () => {
+  const wire = 'event: error\r\r\nevent:  custom \ndata: first\r\ndata\rdata: third\n\r' +
+    'event:\rdata: empty-name\r\r' + 'data: [DONE]\n\n';
+  const client = new AxEngineClient({ fetch: async () => new Response(wire) });
+  const events = [];
+  for await (const event of client.streamCompletion({ prompt: "test" })) events.push(event);
+  assert.deepEqual(events, [
+    { event: " custom ", data: "first\n\nthird" },
+    { event: "message", data: "empty-name" },
+  ]);
+});
+
+test("SSE dispatches CR-terminated completion without another read", async () => {
+  let reads = 0;
+  let cancelled = false;
+  const client = new AxEngineClient({ fetch: async () => ({ ok: true, body: {
+    getReader: () => ({
+      read: async () => {
+        assert.equal(++reads, 1, "complete CR event must not wait for more data");
+        return { value: new TextEncoder().encode('data: {"ok":true}\r\rdata: [DONE]\r\r'), done: false };
+      },
+      cancel: async () => { cancelled = true; },
+      releaseLock() {},
+    }),
+  } }) });
+  const events = [];
+  for await (const event of client.streamCompletion({ prompt: "test" })) events.push(event);
+  assert.deepEqual(events, [{ event: "message", data: { ok: true } }]);
+  assert.equal(cancelled, true);
+});
+
+test("SSE handles empty fields and preserves event-name whitespace", async () => {
+  for (const [wire, expected] of [
+    ['data\n\n', { event: "message", data: "" }],
+    ['event:\ndata: text\n\n', { event: "message", data: "text" }],
+    ['event:  error \ndata: text\n\n', { event: " error ", data: "text" }],
+    ['event: error\n\ndata: text\n\n', { event: "message", data: "text" }],
+  ]) {
+    const client = new AxEngineClient({ fetch: async () => new Response(wire + 'data: [DONE]\n\n') });
+    const events = [];
+    for await (const event of client.streamCompletion({ prompt: "test" })) events.push(event);
+    assert.deepEqual(events, [expected]);
+  }
+});

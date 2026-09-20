@@ -1,6 +1,4 @@
 const DEFAULT_BASE_URL = "http://127.0.0.1:31418";
-const SSE_EVENT_FIELD = "event:";
-const SSE_DATA_FIELD = "data:";
 
 function trimTrailingSlash(value) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
@@ -61,29 +59,45 @@ function isReadableStream(value) {
   return value && typeof value.getReader === "function";
 }
 
-function parseSseBlock(block) {
-  const lines = block.split(/\r?\n/);
-  let event = "message";
-  const dataLines = [];
-  for (const line of lines) {
-    if (!line || line.startsWith(":")) {
-      continue;
-    }
-    if (line.startsWith(SSE_EVENT_FIELD)) {
-      event = line.slice(SSE_EVENT_FIELD.length).trim();
-      continue;
-    }
-    if (line.startsWith(SSE_DATA_FIELD)) {
-      dataLines.push(line.slice(SSE_DATA_FIELD.length).replace(/^ /, ""));
+class SseParser {
+  constructor() {
+    this.buffer = "";
+    this.skipLF = false;
+    this.event = "message";
+    this.dataLines = [];
+  }
+
+  *feed(text) {
+    this.buffer += text;
+    while (this.buffer.length > 0) {
+      if (this.skipLF) {
+        this.skipLF = false;
+        if (this.buffer.startsWith("\n")) this.buffer = this.buffer.slice(1);
+      }
+      const boundary = this.buffer.search(/[\r\n]/);
+      if (boundary === -1) return;
+      const line = this.buffer.slice(0, boundary);
+      // Dispatch CR immediately; suppress only its optional following LF,
+      // including when that LF arrives in the next transport chunk.
+      this.skipLF = this.buffer[boundary] === "\r";
+      this.buffer = this.buffer.slice(boundary + 1);
+      if (line === "") {
+        const event = this.event || "message";
+        this.event = "message";
+        if (this.dataLines.length === 0) continue;
+        const data = this.dataLines.join("\n");
+        this.dataLines = [];
+        yield { event, data };
+        continue;
+      }
+      if (line.startsWith(":")) continue;
+      const colon = line.indexOf(":");
+      const field = colon === -1 ? line : line.slice(0, colon);
+      const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "");
+      if (field === "event") this.event = value;
+      if (field === "data") this.dataLines.push(value);
     }
   }
-  if (dataLines.length === 0) {
-    return null;
-  }
-  return {
-    event,
-    data: dataLines.join("\n"),
-  };
 }
 
 function decodeSseData(data) {
@@ -287,7 +301,7 @@ export class AxEngineClient {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = "";
+    const parser = new SseParser();
     let streamEnded = false;
     let sawResponse = false;
 
@@ -298,23 +312,7 @@ export class AxEngineClient {
           streamEnded = true;
           break;
         }
-        buffer += decoder.decode(value, { stream: true });
-
-        while (true) {
-          const boundary = buffer.search(/\r?\n\r?\n/);
-          if (boundary === -1) {
-            break;
-          }
-          const block = buffer.slice(0, boundary);
-          const separatorMatch = buffer.slice(boundary).match(/^\r?\n\r?\n/);
-          const separatorLength = separatorMatch ? separatorMatch[0].length : 2;
-          buffer = buffer.slice(boundary + separatorLength);
-
-          const parsed = parseSseBlock(block);
-          if (!parsed) {
-            continue;
-          }
-
+        for (const parsed of parser.feed(decoder.decode(value, { stream: true }))) {
           const decoded = decodeSseData(parsed.data);
           if (parsed.event === "error") {
             throw streamErrorFrom(decoded.data);

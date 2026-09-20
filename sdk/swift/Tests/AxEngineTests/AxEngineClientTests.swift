@@ -478,6 +478,17 @@ final class AxEngineClientTests: XCTestCase {
         }
     }
 
+    func testExplicitErrorDoneIsNotSuccessfulCompletion() async throws {
+        MockURLProtocol.handler = { _ in sseResponse("event: error\ndata: [DONE]\n\n") }
+        do {
+            for try await _ in makeClient().streamCompletion(.init(prompt: "test")) {}
+            XCTFail("Expected explicit stream error")
+        } catch let error as AxEngineStreamError {
+            XCTAssertEqual(error.message, "[DONE]")
+            XCTAssertEqual(error.payload, "[DONE]")
+        }
+    }
+
     func testStreamErrorEventFallbackMessage() async throws {
         let sse = """
         event: error

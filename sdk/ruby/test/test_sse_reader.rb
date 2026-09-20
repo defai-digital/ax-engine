@@ -97,4 +97,63 @@ class TestSseReader < Minitest::Test
     r.flush { |e| events << e }
     assert_equal 0, events.length
   end
+
+  def test_all_line_endings_with_bytewise_utf8_and_bom
+    ["\r", "\r\n", "\n"].each do |ending|
+      input = "\uFEFFevent: step#{ending}data: {\"text\":\"caf\u00E9\"}#{ending}#{ending}data: [DONE]#{ending}#{ending}"
+      r = reader
+      events = []
+      input.bytes.each do |byte|
+        # HTTP can split a Unicode scalar between chunks.
+        r.feed(byte.chr.force_encoding(Encoding::UTF_8)) { |e| events << e }
+      end
+      assert_equal [{ "event" => "step", "data" => { "text" => "caf\u00E9" } }], events
+      assert r.done?
+    end
+  end
+
+  def test_mixed_line_endings_and_exact_field_values
+    input = "event: error\r\r\nevent:  custom \ndata: first\r\ndata\rdata: third\n\r" \
+      "event:\rdata: empty-name\r\rdata: [DONE]\n\n"
+    r = reader
+    assert_equal [
+      { "event" => " custom ", "data" => "first\n\nthird" },
+      { "event" => "message", "data" => "empty-name" }
+    ], collect(r, input)
+    assert r.done?
+  end
+
+  def test_cr_terminated_event_dispatches_immediately
+    r = reader
+    assert_equal [{ "event" => "message", "data" => { "ok" => true } }],
+      collect(r, "data: {\"ok\":true}\r\r")
+    assert_empty collect(r, "data: [DONE]\r\r")
+    assert r.done?
+  end
+
+  def test_empty_data_field_dispatches_empty_string
+    assert_equal [{ "event" => "message", "data" => "" }], collect(reader, "data\n\n")
+  end
+
+
+  def test_flush_discards_complete_lines_without_blank_line
+    ["\r", "\r\n", "\n"].each do |ending|
+      r = reader
+      assert_empty collect(r, "event: error#{ending}data: stale#{ending}")
+      r.flush
+      assert_equal [{ "event" => "message", "data" => "fresh" }], collect(r, "data: fresh\n\n")
+    end
+  end
+
+
+  def test_binary_chunks_decode_plain_text_as_utf8
+    r = reader
+    events = []
+    "data: caf\u00E9\n\n".bytes.each do |byte|
+      r.feed(byte.chr(Encoding::ASCII_8BIT)) { |event| events << event }
+    end
+    assert_equal [{ "event" => "message", "data" => "caf\u00E9" }], events
+    assert_equal Encoding::UTF_8, events.first.fetch("data").encoding
+  end
+
 end
