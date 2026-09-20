@@ -265,6 +265,20 @@ fn reused_neox_cos_sin(
     })
 }
 
+/// Invert the `mlx_fast_rope` divisor array into inverse frequencies for a
+/// cos/sin table. The divisor arrays are small CPU-built vectors (Llama 3 /
+/// YaRN / Gemma proportional), so a host round-trip is cheap and keeps the
+/// table exact.
+fn rope_divisors_to_inv_freq(freqs: &MlxArray) -> MlxArray {
+    eval(&[freqs]);
+    let inverted: Vec<f32> = freqs
+        .data_f32()
+        .iter()
+        .map(|divisor| 1.0 / divisor)
+        .collect();
+    MlxArray::from_f32_slice(&inverted)
+}
+
 pub(crate) fn build_neox_rope_cos_sin(
     token_offset: i32,
     seq: i32,
@@ -281,7 +295,9 @@ pub(crate) fn build_neox_rope_cos_sin(
     );
     let half = rope_dims / 2;
     let inv_freq = if let Some(freqs) = rope_freqs {
-        freqs.clone()
+        // `rope_freqs` follow the `mlx_fast_rope` convention (wavelength
+        // divisors: theta = position / freqs); the table needs the inverse.
+        rope_divisors_to_inv_freq(freqs)
     } else {
         let base = rope_base.unwrap_or(10_000.0);
         let data: Vec<f32> = (0..half)
@@ -396,7 +412,9 @@ pub(crate) fn apply_dynamic_neox_rope(
     let positions = add(&relative_positions, &token_offset, None);
     let half = rope_dims / 2;
     let inv_freq = if let Some(freqs) = rope_freqs {
-        freqs.clone()
+        // `rope_freqs` follow the `mlx_fast_rope` convention (wavelength
+        // divisors: theta = position / freqs); the table needs the inverse.
+        rope_divisors_to_inv_freq(freqs)
     } else {
         let base = rope_base.unwrap_or(10_000.0);
         let data: Vec<f32> = (0..half)
@@ -1775,6 +1793,23 @@ fn media_prefix_mask_array(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn neox_rope_table_treats_rope_freqs_as_divisors() {
+        // With a divisor of 2 at position 4, theta must be 4 / 2 = 2, not 8.
+        let freqs = mlx_sys::MlxArray::from_f32_slice(&[2.0]);
+        let (cos_h, _sin_h) = super::build_neox_rope_cos_sin(4, 1, 2, None, Some(&freqs));
+        mlx_sys::eval(&[&cos_h]);
+        let value = cos_h.data_f32()[0];
+        assert!(
+            (value - 2.0f32.cos()).abs() < 1e-5,
+            "got cos(theta) = {value}"
+        );
+        assert!(
+            (value - 8.0f32.cos()).abs() > 1e-3,
+            "table treated the divisor as inv_freq"
+        );
+    }
+
     use super::{
         apply_dynamic_neox_rope, apply_reused_neox_rope, build_bidirectional_canvas_mask,
         build_layer_masks_with_media_ranges, fixed_capacity_causal_mask, full_precision_attention,

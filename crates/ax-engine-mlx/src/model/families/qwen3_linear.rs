@@ -178,12 +178,22 @@ pub(crate) fn layer_forward(
             cfg.rms_norm_eps,
         )));
     }
+    // A residual deferred by the previous layer must be consumed on every
+    // branch; the fused-norm paths take `hidden` as-is, so add it back here
+    // instead of leaving it orphaned in the thread-local slot.
+    let pending_ffn =
+        fastpath::should_qwen_prefill_interlayer_add_rms(&cfg.model_family, seq as i32)
+            .then(take_qwen_prefill_pending_ffn)
+            .flatten();
+    let completed_hidden = match (&pending_ffn, fuse_la_norm || fold_exact_attn_norm) {
+        (Some(ffn), true) => Some(mlx_sys::add(hidden, ffn, None)),
+        _ => None,
+    };
+    let hidden = completed_hidden.as_ref().unwrap_or(hidden);
     let (hidden_owned, normed) = if fuse_la_norm || fold_exact_attn_norm {
         (hidden.clone(), hidden.clone())
-    } else if fastpath::should_qwen_prefill_interlayer_add_rms(&cfg.model_family, seq as i32)
-        && let Some(ffn) = take_qwen_prefill_pending_ffn()
-    {
-        apply_qwen_prefill_pending_ffn(hidden, &ffn, &w.attn_norm, cfg.rms_norm_eps)
+    } else if let Some(ffn) = pending_ffn.as_ref() {
+        apply_qwen_prefill_pending_ffn(hidden, ffn, &w.attn_norm, cfg.rms_norm_eps)
     } else {
         let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
         (hidden.clone(), normed)

@@ -1120,6 +1120,10 @@ fn layer_forward_internal(
             Some("last_query")
         } else if mrope.is_some() {
             Some("mrope")
+        } else if cfg.attn_output_gate {
+            // The fused kernels neither split the `[q|gate|k|v]` projection
+            // nor apply the sigmoid output gate; the portable path does.
+            Some("attn_output_gate")
         } else if !offset_chunk && ring_layout.is_some() {
             Some("ring_layout")
         } else if protected_prefix_window.is_some() {
@@ -1912,11 +1916,14 @@ fn layer_forward_internal(
         } else {
             match ring_layout {
                 Some(ring) if ring.needs_mask(query_seq) && key_len == ring.capacity => {
+                    // When the query was sliced to its last `query_seq` rows,
+                    // row 0 is absolute position `write_start + (seq - query_seq)`;
+                    // the mask's write_end is derived from that start too.
                     Some(create_ring_sliding_mask(
                         query_seq,
                         ring.window,
                         ring.capacity,
-                        ring.write_start,
+                        ring.write_start + seq.saturating_sub(query_seq),
                     ))
                 }
                 _ => attention_mask_array(query_seq, key_len, sliding_window),

@@ -703,6 +703,21 @@ pub(super) fn validate_qwen_gated_delta_linear_attention(
             "linear_attention.value_head_dim must be configured".to_string(),
         ));
     }
+    // Head grouping divides by num_key_heads deep inside the forward pass; a
+    // zero or non-divisible group count must be a validation error, not a
+    // divide-by-zero or reshape panic.
+    if let (Some(value_heads), Some(key_heads)) = (cfg.num_value_heads, cfg.num_key_heads) {
+        if key_heads == 0 || value_heads == 0 {
+            return Err(MlxRunnerError::UnsupportedFeature(
+                "linear_attention.num_value_heads and num_key_heads must be positive".to_string(),
+            ));
+        }
+        if value_heads % key_heads != 0 {
+            return Err(MlxRunnerError::UnsupportedFeature(format!(
+                "linear_attention.num_value_heads {value_heads} must be divisible by num_key_heads {key_heads}"
+            )));
+        }
+    }
     if cfg.conv_kernel_dim.is_none() {
         return Err(MlxRunnerError::UnsupportedFeature(
             "linear_attention.conv_kernel_dim must be configured".to_string(),
