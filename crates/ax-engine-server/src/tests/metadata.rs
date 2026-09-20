@@ -98,6 +98,10 @@ async fn models_advertises_reasoning_for_openclaw_qwen_thinking_variants() {
         ("qwen3.6-27b-mtp", true),
         ("qwen3-vl-8b-thinking", true),
         ("qwen3-vl-8b-instruct", false),
+        // Renders with the Gemma 4 template but never prefills a thought
+        // channel: must not advertise reasoning.
+        ("diffusiongemma-2b-it", false),
+        ("gemma-4-12b-it", true),
     ] {
         let app = build_router(native_mlx_openai_builder_state(model_id, &artifact_dir));
         let (status, json) = json_response(
@@ -387,7 +391,12 @@ async fn models_advertises_processed_gemma4_unified_modalities_for_native_mlx() 
     assert_eq!(model["capabilities"]["input"]["text"], json!(true));
     assert_eq!(model["capabilities"]["input"]["audio"], json!(true));
     assert_eq!(model["capabilities"]["input"]["image"], json!(true));
-    assert_eq!(model["capabilities"]["input"]["video"], json!(false));
+    // Unified packs carry the per-frame video path (SUPPORTED-MODELS P2).
+    assert_eq!(model["capabilities"]["input"]["video"], json!(true));
+    assert_eq!(
+        model["ax_engine"]["gemma4_unified_multimodal_input_supported"],
+        json!(true)
+    );
     assert_eq!(model["capabilities"]["output"]["text"], json!(true));
     assert_eq!(model["capabilities"]["output"]["audio"], json!(false));
     assert_eq!(model["capabilities"]["output"]["image"], json!(false));
@@ -456,6 +465,11 @@ async fn models_advertises_gemma4_vl_encoder_tower_image_and_video() {
         "gemma4_vl encoder-VL per-frame ViT path must advertise video when env allows"
     );
     assert_eq!(
+        model["ax_engine"]["gemma4_unified_multimodal_input_supported"],
+        json!(false),
+        "an encoder-VL pack does not accept the Gemma 4 unified processed-tensor payload"
+    );
+    assert_eq!(
         model["ax_engine"]["native_multimodal_input_supported"],
         json!(true)
     );
@@ -522,7 +536,9 @@ async fn models_advertises_named_qwen_and_minicpm_media_towers() {
 }
 
 fn write_gemma4_unified_manifest(artifact_dir: &Path) {
+    // Production-shaped: convert writes `model_family: "gemma4_unified"`.
     let manifest = json!({
+        "model_family": "gemma4_unified",
         "tensors": [
             {"role": "gemma4_unified_vision_patch_dense"},
             {"role": "gemma4_unified_vision_patch_dense_bias"},

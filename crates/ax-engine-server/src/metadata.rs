@@ -97,6 +97,9 @@ struct NativeProcessedMultimodalSupport {
     image: bool,
     audio: bool,
     video: bool,
+    /// The Gemma 4 unified (processed-tensor) vision contract specifically;
+    /// encoder-VL / Qwen3-VL / MiniCPM-V packs take a different payload.
+    gemma4_unified: bool,
 }
 
 impl NativeProcessedMultimodalSupport {
@@ -294,7 +297,10 @@ fn ax_engine_model_metadata(
         openai_tool_calling_supported: openai_tool_calling,
         openai_text_input_supported: openai_text,
         native_multimodal_input_supported: native_multimodal_input,
-        gemma4_unified_multimodal_input_supported: native_multimodal_input,
+        // Only packs with the unified processed-tensor vision roles accept
+        // the Gemma 4 unified payload; other native multimodal families
+        // must not be advertised as such.
+        gemma4_unified_multimodal_input_supported: native_multimodal.gemma4_unified,
         openai_tokenized_multimodal_input_supported: native_multimodal_input,
         primary_use: if whisper {
             "speech_recognition"
@@ -312,6 +318,9 @@ fn ax_engine_model_metadata(
 fn openai_reasoning_supported_live(live: &LiveState, openai_text: bool) -> bool {
     openai_text
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
+        // DiffusionGemma renders with the Gemma 4 template but never prefills
+        // a thought channel, so it must not advertise reasoning.
+        && !chat::is_diffusion_gemma(live.model_id.as_ref())
         && (chat::is_qwen_thinking_model(live.model_id.as_ref())
             || chat::is_deepseek_model(live.model_id.as_ref())
             || matches!(
@@ -439,6 +448,7 @@ fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessed
         image,
         audio,
         video,
+        gemma4_unified: gemma4_unified_image,
     }
 }
 
