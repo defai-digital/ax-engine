@@ -197,9 +197,12 @@ fn drive_openai_stream_state<N>(
         OpenAiStreamKind::Completion => None,
     };
     let reasoning = match reasoning_family {
-        Some(StreamReasoningFamily::QwenThink) => {
-            Some(StreamReasoningMode::QwenThink(ThinkTagScanner::new()))
-        }
+        // Qwen thinking prompts pre-fill `<think>\n`: the stream may start
+        // inside the block, so an absent opener must not pass reasoning
+        // through as content.
+        Some(StreamReasoningFamily::QwenThink) => Some(StreamReasoningMode::QwenThink(
+            ThinkTagScanner::new_lead_or_inside_think(),
+        )),
         Some(StreamReasoningFamily::DeepSeekThink) => Some(StreamReasoningMode::QwenThink(
             ThinkTagScanner::new_inside_think(),
         )),
@@ -519,6 +522,15 @@ impl OpenAiStreamDriver {
                     }
                 }
                 ToolScanEvent::Call(call) => {
+                    // Text withheld by the stop scanner precedes the call in
+                    // the model output; release it first so a stop string can
+                    // never be assembled across the tool-call boundary.
+                    if let Some(pending) = self.pipeline.stop_scanner.as_mut().map(|s| s.finish())
+                        && !pending.is_empty()
+                        && !self.send_content_chunk(tx, request_id, model_id, pending)
+                    {
+                        return false;
+                    }
                     let role = next_chat_delta_role(&mut self.chat_role_emitted);
                     let chunk = chat_single_tool_call_delta_chunk(
                         request_id,

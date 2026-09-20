@@ -134,8 +134,14 @@ impl ToolCallStreamScanner {
                                 self.buffer = remaining;
                             }
                             None => {
-                                // Closer present but not a valid call: flush
-                                // the span through the closer and resume.
+                                // Closer present but the body does not parse
+                                // yet: an argument string may contain the
+                                // marker, so keep withholding until more data
+                                // (or the true closer) arrives; only the end
+                                // of the stream flushes the span as content.
+                                if !at_end {
+                                    return events;
+                                }
                                 let end = close_at + closer.len();
                                 let content = self.buffer[..end].to_string();
                                 self.buffer.drain(..end);
@@ -396,6 +402,23 @@ mod tests {
         events.extend(scanner.finish());
         assert!(calls(&events).is_empty());
         assert_eq!(content(&events), "<|tool_call>not a call<tool_call|>tail");
+    }
+
+    #[test]
+    fn xml_call_with_closer_inside_argument_string_survives_chunking() {
+        let mut scanner = scanner();
+        let first =
+            scanner.push("<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"a</tool_call>");
+        assert!(calls(&first).is_empty());
+        assert!(
+            content(&first).is_empty(),
+            "inner marker must stay withheld"
+        );
+        let mut events = scanner.push("b\"}}</tool_call>");
+        events.extend(scanner.finish());
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].function.arguments.contains("a</tool_call>b"));
     }
 
     #[test]

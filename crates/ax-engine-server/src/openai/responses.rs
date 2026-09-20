@@ -218,6 +218,15 @@ fn split_reasoning_content(text: &str, include_reasoning: bool) -> (String, Opti
     if let Some((content, reasoning)) = split_tagged_reasoning(text, "<think>", "</think>") {
         return (content, Some(reasoning));
     }
+    // Thinking prompts pre-fill the opener, so the decoded output may carry
+    // only the close tag: everything before it is the reasoning body.
+    if let Some(close_at) = text.find("</think>")
+        && !text[..close_at].contains("<think>")
+    {
+        let reasoning = text[..close_at].trim().to_string();
+        let content = text[close_at + "</think>".len()..].trim().to_string();
+        return (content, Some(reasoning));
+    }
     if let Some((content, reasoning)) =
         split_tagged_reasoning(text, "<|channel>thought\n", "<channel|>")
     {

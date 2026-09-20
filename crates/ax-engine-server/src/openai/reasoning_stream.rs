@@ -30,6 +30,9 @@ pub(crate) struct ThinkScanStep {
 pub(crate) struct ThinkTagScanner {
     state: ThinkScanState,
     buffer: String,
+    /// Treat leading text without an opener as reasoning (see
+    /// [`Self::new_lead_or_inside_think`]).
+    fallback_inside_think: bool,
 }
 
 impl ThinkTagScanner {
@@ -37,6 +40,7 @@ impl ThinkTagScanner {
         Self {
             state: ThinkScanState::Lead,
             buffer: String::new(),
+            fallback_inside_think: false,
         }
     }
 
@@ -46,6 +50,18 @@ impl ThinkTagScanner {
         Self {
             state: ThinkScanState::InThink,
             buffer: String::new(),
+            fallback_inside_think: false,
+        }
+    }
+
+    /// Qwen thinking prompts pre-fill `<think>\n`, so the model may either
+    /// re-emit the opener or start straight into the reasoning body. Accept
+    /// an explicit opener, and otherwise treat the leading text as reasoning
+    /// instead of passing the whole stream through as content.
+    pub(crate) fn new_lead_or_inside_think() -> Self {
+        Self {
+            fallback_inside_think: true,
+            ..Self::new()
         }
     }
 
@@ -74,6 +90,11 @@ impl ThinkTagScanner {
                     if rest.is_empty() {
                         // Only whitespace so far; hold (it may precede a tag).
                         return step;
+                    }
+                    if self.fallback_inside_think {
+                        // No opener: the prompt already opened the block.
+                        self.state = ThinkScanState::InThink;
+                        continue;
                     }
                     self.state = ThinkScanState::Passed;
                     step.content.push_str(&self.buffer);
@@ -224,5 +245,29 @@ mod tests {
         let step = scanner.push("\n<think>x</think>y");
         assert_eq!(step.content, "\ny");
         assert_eq!(step.reasoning, "x");
+    }
+}
+
+#[cfg(test)]
+mod lead_or_inside_tests {
+    use super::ThinkTagScanner;
+
+    #[test]
+    fn qwen_prefilled_think_streams_reasoning_without_an_opener() {
+        let mut scanner = ThinkTagScanner::new_lead_or_inside_think();
+        let first = scanner.push("Let me check the files\n");
+        assert_eq!(first.reasoning, "Let me check the files\n");
+        assert!(first.content.is_empty());
+        let second = scanner.push("</think>The answer is 42");
+        assert!(second.reasoning.is_empty());
+        assert_eq!(second.content, "The answer is 42");
+    }
+
+    #[test]
+    fn qwen_re_emitted_opener_is_still_honored() {
+        let mut scanner = ThinkTagScanner::new_lead_or_inside_think();
+        let step = scanner.push("<think>plan</think>done");
+        assert_eq!(step.reasoning, "plan");
+        assert_eq!(step.content, "done");
     }
 }

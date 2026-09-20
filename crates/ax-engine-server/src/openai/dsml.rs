@@ -118,6 +118,12 @@ fn find_dsml_open_tag(text: &str, from: usize, kind: &str) -> Option<(usize, usi
         let at = search + rel;
         if let Some(attrs_from) = match_dsml_open_head(&text[at..], kind) {
             let gt_rel = text[at + attrs_from..].find('>')?;
+            // An unterminated head must not borrow the next tag's `>`:
+            // well-formed attributes never contain `<`.
+            if text[at + attrs_from..at + attrs_from + gt_rel].contains('<') {
+                search = at + 1;
+                continue;
+            }
             return Some((at, at + attrs_from + gt_rel));
         }
         search = at + 1;
