@@ -1803,7 +1803,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
             code, stdout = self.capture_main(["ui-downloader"])
 
         self.assertEqual(code, 0)
-        download.assert_called_once_with("ax-gemma4-12b", dest=None, force=False, progress=True)
+        download.assert_called_once_with(
+            "ax-gemma4-12b", dest=None, force=False, progress=True, local_only=False
+        )
         self.assertIn("Status: ready", stdout)
 
     def test_wizard_non_mtp_snapshot_uses_standard_download(self) -> None:
@@ -1824,7 +1826,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         download.assert_called_once_with(
-            "ax-qwen3-coder-next", dest=None, force=False, progress=True
+            "ax-qwen3-coder-next", dest=None, force=False, progress=True, local_only=False
         )
         self.assertIn("Status: ready", stdout)
 

@@ -1749,8 +1749,17 @@ def _confirm_interactive(prompt: str) -> bool:
     return raw in {"", "y", "yes"}
 
 
-def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
-    dest = _select_dest_interactive()
+def _run_interactive_direct_download(
+    profile: ModelProfile,
+    force: bool,
+    *,
+    local_only: bool = False,
+    dest: str | None = None,
+) -> int:
+    # An explicit --dest skips the destination prompt; --local-only must
+    # reach the helper, otherwise the wizard silently downloads.
+    if dest is None:
+        dest = _select_dest_interactive()
     if dest is not None:
         _validate_dest_writable(dest)
 
@@ -1760,7 +1769,9 @@ def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
         return 130
 
     print()
-    code, summary, stderr = _download_summary(profile.label, dest=dest, force=force, progress=True)
+    code, summary, stderr = _download_summary(
+        profile.label, dest=dest, force=force, progress=True, local_only=local_only
+    )
     if stderr:
         sys.stderr.write(stderr)
     if summary is None:
@@ -1769,13 +1780,15 @@ def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
     return code
 
 
-def _run_interactive_download(force: bool) -> int:
+def _run_interactive_download(
+    force: bool, *, local_only: bool = False, dest: str | None = None
+) -> int:
     profile = _select_profile_interactive()
     if profile is None:
         print("Cancelled.")
         return 130
 
-    return _run_interactive_direct_download(profile, force)
+    return _run_interactive_direct_download(profile, force, local_only=local_only, dest=dest)
 
 
 def _cmd_ui_downloader(args: argparse.Namespace) -> int:
@@ -2050,11 +2063,16 @@ def _cmd_download(args: argparse.Namespace) -> int:
     if args.progress_json and not args.model:
         raise SystemExit("--progress-json requires a model alias or repo id")
 
+    if args.interactive and not _supports_interactive():
+        raise SystemExit(
+            "ax-engine download --interactive needs an interactive terminal. "
+            "Use: ax-engine download <model>"
+        )
     interactive = args.interactive or (
         not args.model and not args.no_interactive and not args.json and _supports_interactive()
     )
     if interactive:
-        return _run_interactive_download(args.force)
+        return _run_interactive_download(args.force, local_only=args.local_only, dest=args.dest)
 
     if not args.model:
         if args.json:
@@ -2497,7 +2515,7 @@ def _user_doctor_report(bench_report: dict) -> dict:
         next_actions.append(f"ax-engine serve {model_path or '<model-dir>'} --port 31418")
     else:
         next_actions.append("ax-engine serve qwen36-35b --port 31418")
-        next_actions.append("ax-engine models list")
+        next_actions.append("ax-engine download --list")
 
     host_detail = (
         f"{_value_str(bench_report, ('host', 'detected_soc'), 'unknown Apple Silicon')} "
