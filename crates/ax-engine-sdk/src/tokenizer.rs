@@ -46,6 +46,27 @@ impl std::fmt::Debug for EngineTokenizer {
     }
 }
 
+/// `eos_token_id` in HF configs is a number or a list of numbers (the first
+/// entry is the canonical EOS); some multimodal packs nest it under
+/// `text_config`. A present-but-unusable field yields `None`.
+fn parse_eos_token_id(config: &serde_json::Value) -> Option<u32> {
+    fn from_value(value: &serde_json::Value) -> Option<u32> {
+        match value {
+            serde_json::Value::Number(number) => {
+                number.as_u64().and_then(|id| u32::try_from(id).ok())
+            }
+            serde_json::Value::Array(items) => items.first().and_then(from_value),
+            _ => None,
+        }
+    }
+    config.get("eos_token_id").and_then(from_value).or_else(|| {
+        config
+            .get("text_config")
+            .and_then(|text| text.get("eos_token_id"))
+            .and_then(from_value)
+    })
+}
+
 impl EngineTokenizer {
     /// Load from a `tokenizer.json` file. `model_dir` is the model
     /// artifacts directory; this looks for `tokenizer.json` inside it.
@@ -65,8 +86,7 @@ impl EngineTokenizer {
         let eos_token_id = std::fs::read_to_string(model_dir.join("config.json"))
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("eos_token_id").and_then(|x| x.as_u64()))
-            .map(|id| id as u32);
+            .and_then(|v| parse_eos_token_id(&v));
 
         Ok(Self {
             inner,
@@ -90,7 +110,9 @@ impl EngineTokenizer {
     /// first request per model pays the parse. The returned value is a cheap
     /// clone (the inner tokenizer is `Arc`-shared).
     pub fn from_model_dir_cached(model_dir: &Path) -> Result<Self, EngineTokenizerError> {
-        type CacheKey = (PathBuf, Option<SystemTime>);
+        // The EOS id comes from config.json, so both files' mtimes identify
+        // the cached value; a config-only rewrite must not serve a stale EOS.
+        type CacheKey = (PathBuf, Option<SystemTime>, Option<SystemTime>);
         static CACHE: Mutex<Option<HashMap<CacheKey, EngineTokenizer>>> = Mutex::new(None);
 
         let canonical = model_dir
@@ -99,7 +121,10 @@ impl EngineTokenizer {
         let mtime = std::fs::metadata(canonical.join("tokenizer.json"))
             .and_then(|m| m.modified())
             .ok();
-        let cache_key = (canonical, mtime);
+        let config_mtime = std::fs::metadata(canonical.join("config.json"))
+            .and_then(|m| m.modified())
+            .ok();
+        let cache_key = (canonical, mtime, config_mtime);
 
         // A panic elsewhere while holding this lock must not permanently
         // poison the shared tokenizer cache for every later request; recover
@@ -129,7 +154,15 @@ impl EngineTokenizer {
         }
         // Stale entries for the same directory (older mtime) are dropped so
         // a hot-swapped model directory does not grow the map unboundedly.
-        cache.retain(|(path, _), _| path != &cache_key.0);
+        // A slower load that snapshotted an older mtime must not clobber an
+        // entry a faster racer inserted for a newer file: keep the newest.
+        let newer_exists = cache.iter().any(|((path, tok_mtime, cfg_mtime), _)| {
+            path == &cache_key.0 && (tok_mtime, cfg_mtime) > (&cache_key.1, &cache_key.2)
+        });
+        if newer_exists {
+            return Ok(loaded);
+        }
+        cache.retain(|(path, _, _), _| path != &cache_key.0);
         cache.insert(cache_key, loaded.clone());
         Ok(loaded)
     }
@@ -228,6 +261,20 @@ impl EngineTokenizer {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    #[test]
+    fn eos_token_id_accepts_scalar_array_and_text_config_forms() {
+        use super::parse_eos_token_id;
+        let scalar = serde_json::json!({"eos_token_id": 151645});
+        assert_eq!(parse_eos_token_id(&scalar), Some(151645));
+        let array = serde_json::json!({"eos_token_id": [151645, 151643]});
+        assert_eq!(parse_eos_token_id(&array), Some(151645));
+        let nested = serde_json::json!({"text_config": {"eos_token_id": [1, 106]}});
+        assert_eq!(parse_eos_token_id(&nested), Some(1));
+        let unusable = serde_json::json!({"eos_token_id": "eos"});
+        assert_eq!(parse_eos_token_id(&unusable), None);
+        assert_eq!(parse_eos_token_id(&serde_json::json!({})), None);
+    }
+
     use super::*;
     use std::path::Path;
 

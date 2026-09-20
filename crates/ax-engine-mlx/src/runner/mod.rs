@@ -2872,7 +2872,15 @@ impl MlxRunner {
                 row.max_output,
                 terminal,
             );
-            if stop_reason.is_none() {
+            // Same loop-detection tail as the per-item decode, so a grouped
+            // row stops exactly where its solo decode would.
+            let (sampled, stop_reason) = apply_loop_detection_stop(
+                sampled,
+                stop_reason,
+                &row.state.generated_tokens,
+                loop_detection_for_request(row.ignore_eos, &self.cfg.model_family),
+            );
+            if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
                 for &token in &sampled {
                     row.state.generated_tokens.push(token);
                     update_ngram_think_state(&self.cfg, &mut row.state.ngram_in_think, token);
@@ -6681,6 +6689,9 @@ impl MlxRunner {
             // trace the forced close token just interrupted; they point at
             // the wrong continuation and must not be served.
             state.bonus_queue.clear();
+            // The forced close token is what `generated_tokens` will record,
+            // so it is also what the next step must feed.
+            state.next_model_last_token = forced_tokens.last().copied();
             (forced_tokens, forced_stop)
         } else {
             (sampled_tokens, stop_reason)
@@ -8773,6 +8784,10 @@ impl MlxRunner {
             }
             DirectPipelineStep::Bootstrap => self.run_direct_pipeline_bootstrap(state, last_token),
         };
+        // The latch always wins over the scheduler feed, so it must track the
+        // token this step emitted: a stale value from an earlier n-gram/MTP
+        // step would be fed a second time by the next bootstrap.
+        state.next_model_last_token = Some(tok);
         if feed_ngram {
             state.ngram.feed(&[tok]);
         }
@@ -9112,6 +9127,11 @@ impl MlxRunner {
             .decode_telemetry
             .record_single_decode(elapsed_us(branch_started));
         state.decode_telemetry.record_production_decode_eval();
+        // See `run_direct_pipeline_decode`: keep the latch on the last token
+        // this step produced so the next step feeds it, not an older one.
+        if let Some(last) = result.last().copied() {
+            state.next_model_last_token = Some(last);
+        }
         result
     }
 
@@ -18290,42 +18310,6 @@ mod tests {
             )
             .is_none(),
             "decode still needs a warmed prefix KV and optional prefill output token",
-        );
-    }
-
-    #[test]
-    fn prefill_clears_bonus_and_last_token() {
-        let mut state = RequestState::new(2, 0, None);
-        state.bonus_queue.push_back(99);
-        state.bonus_queue.push_back(100);
-        state.next_model_last_token = Some(5);
-        state.ngram_disabled_steps = 3;
-        state.linear_ngram_no_draft_streak = 7;
-        state.ngram_acceleration_disabled_for_request = true;
-        state.mtp_bypassed = true;
-
-        // Simulate the prefill reset branch of run_item.
-        state.bonus_queue.clear();
-        state.next_model_last_token = None;
-        state.ngram_disabled_steps = 0;
-        state.linear_ngram_no_draft_streak = 0;
-        state.ngram_acceleration_disabled_for_request = false;
-        state.mtp_bypassed = false;
-
-        assert!(
-            state.bonus_queue.is_empty(),
-            "bonus queue must be cleared on prefill"
-        );
-        assert!(
-            state.next_model_last_token.is_none(),
-            "last_token pointer must be reset on prefill"
-        );
-        assert_eq!(state.ngram_disabled_steps, 0);
-        assert_eq!(state.linear_ngram_no_draft_streak, 0);
-        assert!(!state.ngram_acceleration_disabled_for_request);
-        assert!(
-            !state.mtp_bypassed,
-            "MTP bypass must be cleared on prefill so the next request gets a fresh MTP attempt"
         );
     }
 
