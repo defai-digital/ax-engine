@@ -105,14 +105,44 @@ impl Qwen3VlImageRuntimeInput {
                 self.spatial_merge_size
             )));
         }
-        let expected_patches = self.grid_t.saturating_mul(grid_h).saturating_mul(grid_w);
+        let expected_patches = self
+            .grid_t
+            .checked_mul(grid_h)
+            .and_then(|value| value.checked_mul(grid_w))
+            .ok_or_else(|| {
+                Qwen3VlRuntimeInputError::InvalidGeometry(format!(
+                    "grid {}x{grid_h}x{grid_w} overflows the patch count",
+                    self.grid_t
+                ))
+            })?;
         if self.num_patches != expected_patches {
             return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
                 "num_patches {} != grid_t*grid_h*grid_w {}",
                 self.num_patches, expected_patches
             )));
         }
-        let expected = (self.num_patches as usize).saturating_mul(self.patch_dim as usize);
+        // One soft token per merged grid cell per temporal entry; the vision
+        // tower produces exactly this many rows and the scatter reserves
+        // `soft_token_count` prompt slots, so the two must agree up front.
+        let merge = self.spatial_merge_size;
+        let expected_soft_tokens = self
+            .grid_t
+            .checked_mul(grid_h / merge)
+            .and_then(|value| value.checked_mul(grid_w / merge))
+            .ok_or_else(|| {
+                Qwen3VlRuntimeInputError::InvalidGeometry("soft token count overflow".into())
+            })?;
+        if self.soft_token_count != expected_soft_tokens {
+            return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
+                "soft_token_count {} != grid_t*(grid_h/merge)*(grid_w/merge) {expected_soft_tokens}",
+                self.soft_token_count
+            )));
+        }
+        let expected = (self.num_patches as usize)
+            .checked_mul(self.patch_dim as usize)
+            .ok_or_else(|| {
+                Qwen3VlRuntimeInputError::InvalidGeometry("patch tensor size overflow".into())
+            })?;
         if self.patches.len() != expected {
             return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
                 "patches len {} != num_patches*patch_dim {}",
@@ -139,8 +169,15 @@ impl Qwen3VlRuntimeInputs {
         &self,
         prompt_len: usize,
     ) -> Result<(), Qwen3VlRuntimeInputError> {
+        let mut placeholders = std::collections::HashSet::with_capacity(self.images.len());
         for image in &self.images {
             image.validate(prompt_len)?;
+            if !placeholders.insert(image.placeholder_index) {
+                return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
+                    "placeholder_index {} is used by more than one image",
+                    image.placeholder_index
+                )));
+            }
         }
         Ok(())
     }
@@ -182,6 +219,49 @@ mod tests {
             spatial_merge_size: 1,
             is_video: false,
         }
+    }
+
+    #[test]
+    fn soft_token_count_must_match_merged_grid() {
+        // 28x28 with patch 14 is a 2x2 patch grid; merge 2 collapses it to one
+        // soft token, so claiming four is rejected.
+        let image = Qwen3VlImageRuntimeInput {
+            spatial_merge_size: 2,
+            ..sample_image()
+        };
+        let error = image.validate(8).expect_err("merged grid mismatch");
+        assert!(error.to_string().contains("soft_token_count"), "{error}");
+        let image = Qwen3VlImageRuntimeInput {
+            spatial_merge_size: 2,
+            soft_token_count: 1,
+            ..sample_image()
+        };
+        assert!(image.validate(8).is_ok());
+    }
+
+    #[test]
+    fn duplicate_placeholders_and_overflowing_grids_are_rejected() {
+        let inputs = Qwen3VlRuntimeInputs {
+            images: vec![sample_image(), sample_image()],
+        };
+        let error = inputs
+            .validate_for_prompt_len(8)
+            .expect_err("two images cannot share a placeholder");
+        assert!(error.to_string().contains("placeholder_index"), "{error}");
+
+        let image = Qwen3VlImageRuntimeInput {
+            grid_t: 2,
+            height: 65_536,
+            width: 32_768,
+            patch_size: 1,
+            spatial_merge_size: 1,
+            num_patches: u32::MAX,
+            patch_dim: 1,
+            patches: vec![0.0; 8],
+            ..sample_image()
+        };
+        let error = image.validate(8).expect_err("grid product overflow");
+        assert!(error.to_string().contains("overflow"), "{error}");
     }
 
     #[test]
