@@ -2230,9 +2230,14 @@ fn format_user_doctor_report(report: &Value) -> String {
     lines.push(String::new());
     if let Some(stream) = report.get("expert_stream").filter(|v| v.is_object()) {
         let reason = stream.get("decision_reason").and_then(Value::as_str);
+        let enabled = stream.get("enabled").and_then(Value::as_bool) == Some(true);
         let message = if reason == Some("required_pack_rejects_off") {
             "Model loading: blocked; this pack requires expert paging."
-        } else if stream.get("enabled").and_then(Value::as_bool) == Some(true) {
+        } else if enabled && reason == Some("forced_paging") {
+            "Model loading: expert paging forced by --stream-experts on; replies may be slower."
+        } else if enabled && reason == Some("required_pack") {
+            "Model loading: expert paging selected because this pack requires it; replies may be slower."
+        } else if enabled {
             "Model loading: expert paging selected for capacity; replies may be slower."
         } else if reason == Some("unknown_host_capacity") {
             "Model loading: full weights selected; host memory capacity is unknown."
@@ -5227,6 +5232,16 @@ mod tests {
                 "required_pack_rejects_off",
                 false,
                 "blocked; this pack requires expert paging",
+            ),
+            (
+                "forced_paging",
+                true,
+                "expert paging forced by --stream-experts on",
+            ),
+            (
+                "required_pack",
+                true,
+                "expert paging selected because this pack requires it",
             ),
         ] {
             let text = format_user_doctor_report(&json!({
