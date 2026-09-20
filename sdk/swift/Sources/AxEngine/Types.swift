@@ -149,6 +149,9 @@ public struct GenerateResponse: Decodable, Sendable {
     public var promptTokens: [Int]
     public var promptText: String?
     public var outputTokens: [Int]
+    /// Per-token log probabilities aligned with `outputTokens` (nil entries
+    /// where the runtime reported none).
+    public var outputTokenLogprobs: [Double?]?
     public var outputText: String?
     public var status: String
     public var finishReason: String?
@@ -164,6 +167,7 @@ public struct RequestReport: Decodable, Sendable {
     public var promptTokens: [Int]
     public var processedPromptTokens: Int
     public var outputTokens: [Int]
+    public var outputTokenLogprobs: [Double?]?
     public var promptLen: Int
     public var outputLen: Int
     public var maxOutputTokens: Int
@@ -306,9 +310,22 @@ public struct OpenAiChatMessageResponse: Decodable, Sendable {
     public var toolCalls: [OpenAiToolCall]?
 }
 
+public struct OpenAiChatTokenLogprob: Decodable, Sendable {
+    public var token: String
+    public var logprob: Double
+    public var bytes: [UInt8]?
+}
+
+/// `logprobs` payload of a chat completion choice, present when the request
+/// set `logprobs`.
+public struct OpenAiChatLogprobs: Decodable, Sendable {
+    public var content: [OpenAiChatTokenLogprob]
+}
+
 public struct OpenAiChatCompletionChoice: Decodable, Sendable {
     public var index: Int
     public var message: OpenAiChatMessageResponse
+    public var logprobs: OpenAiChatLogprobs?
     public var finishReason: String?
 }
 
@@ -643,6 +660,7 @@ public struct GenerateStreamStepEvent: Decodable, Sendable {
     public var request: RequestReport
     public var step: StepReport
     public var deltaTokens: [Int]?
+    public var deltaTokenLogprobs: [Double?]?
     public var deltaText: String?
 }
 

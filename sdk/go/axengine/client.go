@@ -219,6 +219,11 @@ func (c *Client) Models(ctx context.Context) (ModelsResponse, error) {
 // StreamCompletion streams POST /v1/completions with stream=true. The caller
 // receives chunks over the returned channel; when the channel is closed the
 // stream is done. The errCh channel delivers at most one error.
+//
+// The producer goroutine blocks on the unbuffered channel until the caller
+// reads or ctx is cancelled. Callers that stop reading before the channel is
+// closed must cancel ctx, otherwise the goroutine and its HTTP connection
+// stay pinned for the life of the process; use context.WithCancel.
 func (c *Client) StreamCompletion(ctx context.Context, req OpenAiCompletionRequest) (<-chan OpenAiCompletionChunk, <-chan error) {
 	t := true
 	req.Stream = &t
@@ -246,6 +251,7 @@ func (c *Client) StreamCompletion(ctx context.Context, req OpenAiCompletionReque
 }
 
 // StreamChatCompletion streams POST /v1/chat/completions with stream=true.
+// As with StreamCompletion, cancel ctx when stopping before the channel closes.
 func (c *Client) StreamChatCompletion(ctx context.Context, req OpenAiChatCompletionRequest) (<-chan OpenAiChatCompletionChunk, <-chan error) {
 	t := true
 	req.Stream = &t
@@ -275,6 +281,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req OpenAiChatComplet
 // StreamGenerate streams POST /v1/generate/stream (ax-engine native SSE API).
 // The channel delivers typed events: check the Event field ("request", "step",
 // "response") and read the corresponding non-nil field on GenerateStreamEvent.
+// As with StreamCompletion, cancel ctx when stopping before the channel closes.
 func (c *Client) StreamGenerate(ctx context.Context, req PreviewGenerateRequest) (<-chan GenerateStreamEvent, <-chan error) {
 	ch := make(chan GenerateStreamEvent)
 	errCh := make(chan error, 1)

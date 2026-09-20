@@ -629,3 +629,18 @@ func TestStreamChatCompletionErrorEvent(t *testing.T) {
 		}
 	})
 }
+
+func TestChatCompletionDecodesLogprobs(t *testing.T) {
+	body := `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"logprobs":{"content":[{"token":"hi","logprob":-0.25,"bytes":[104,105],"top_logprobs":[]}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	var resp OpenAiChatCompletionResponse
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	lp := resp.Choices[0].Logprobs
+	if lp == nil || len(lp.Content) != 1 {
+		t.Fatalf("logprobs must be decoded, got %+v", lp)
+	}
+	if lp.Content[0].Token != "hi" || lp.Content[0].Logprob != -0.25 {
+		t.Fatalf("unexpected token logprob %+v", lp.Content[0])
+	}
+}

@@ -196,10 +196,26 @@ type OpenAiChatMessageResponse struct {
 	ToolCalls        []OpenAiToolCall `json:"tool_calls,omitempty"`
 }
 
+// OpenAiChatTokenLogprob is one token's log probability entry
+// (server schema: OpenAiChatTokenLogprob).
+type OpenAiChatTokenLogprob struct {
+	Token       string        `json:"token"`
+	Logprob     float64       `json:"logprob"`
+	Bytes       []byte        `json:"bytes,omitempty"`
+	TopLogprobs []interface{} `json:"top_logprobs"`
+}
+
+// OpenAiChatLogprobs is the `logprobs` payload of a chat completion choice,
+// present when the request set Logprobs.
+type OpenAiChatLogprobs struct {
+	Content []OpenAiChatTokenLogprob `json:"content"`
+}
+
 // OpenAiChatCompletionChoice is a single chat completion choice.
 type OpenAiChatCompletionChoice struct {
 	Index        int                       `json:"index"`
 	Message      OpenAiChatMessageResponse `json:"message"`
+	Logprobs     *OpenAiChatLogprobs       `json:"logprobs,omitempty"`
 	FinishReason *string                   `json:"finish_reason"`
 }
 
