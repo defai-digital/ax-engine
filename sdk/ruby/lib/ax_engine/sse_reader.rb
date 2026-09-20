@@ -6,11 +6,17 @@ module AxEngine
 
     def initialize
       @buffer = +""
-      @event  = "message"
+      @done = false
+    end
+
+    def done?
+      @done
     end
 
     # Feed raw bytes into the buffer. Yields parsed event hashes.
     def feed(chunk)
+      return if @done
+
       @buffer << chunk
       loop do
         boundary = @buffer.index(/\r?\n\r?\n/)
@@ -25,7 +31,11 @@ module AxEngine
 
         event, data = parse_block(block)
         next if data.nil?
-        next if data == DONE_SENTINEL
+        if data == DONE_SENTINEL && event != "error"
+          @done = true
+          @buffer.clear
+          return
+        end
 
         parsed = begin
           JSON.parse(data)
@@ -37,25 +47,9 @@ module AxEngine
       end
     end
 
-    # Flush any trailing event not terminated by a blank line.
-    # Servers may close the connection without a final \n\n separator,
-    # leaving the last event in the buffer.
-    def flush
-      return if @buffer.empty?
-
-      block  = @buffer
-      @buffer = +""
-      event, data = parse_block(block)
-      return if data.nil?
-      return if data == DONE_SENTINEL
-
-      parsed = begin
-        JSON.parse(data)
-      rescue JSON::ParserError
-        data
-      end
-
-      yield({ "event" => event, "data" => parsed })
+    # EOF discards a partial event; only a blank-line terminator dispatches it.
+    def flush(&_block)
+      @buffer.clear
     end
 
     private
@@ -70,7 +64,7 @@ module AxEngine
         if line.start_with?("event:")
           event = line[6..].strip
         elsif line.start_with?("data:")
-          data_lines << line[5..].lstrip
+          data_lines << line[5..].sub(/\A /, "")
         end
       end
 

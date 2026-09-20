@@ -231,7 +231,7 @@ public final class AxEngineClient: @unchecked Sendable {
     /// always terminate with `data: [DONE]` (on success and after an `error`
     /// event alike); a clean EOF without it means the connection was cut and
     /// is surfaced as an error instead of a normal end of stream. The native
-    /// `/v1/generate/stream` ends on plain EOF and passes `false`.
+    /// `/v1/generate/stream` requires a terminal `response` event instead.
     private func stream<T: Sendable>(
         _ path: String,
         body: some Encodable,
@@ -258,16 +258,24 @@ public final class AxEngineClient: @unchecked Sendable {
                     }
                     try self.validate(response: response, data: nil)
                     var iterator = SSEParser(bytes: asyncBytes).makeAsyncIterator()
+                    var sawResponse = false
                     while let event = try await iterator.next() {
                         if event.event == "error" {
                             throw Self.streamError(from: event.data)
                         }
                         let value = try decode(event)
+                        if event.event == "response" { sawResponse = true }
                         continuation.yield(value)
                     }
                     if requiresDoneSentinel && !iterator.sawDone {
                         throw AxEngineStreamError(
                             message: "stream ended without [DONE]",
+                            payload: ""
+                        )
+                    }
+                    if !requiresDoneSentinel && !sawResponse {
+                        throw AxEngineStreamError(
+                            message: "stream ended without terminal response",
                             payload: ""
                         )
                     }

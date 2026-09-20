@@ -416,6 +416,22 @@ final class AxEngineClientTests: XCTestCase {
         XCTAssertEqual(texts, ["Once"])
     }
 
+    func testNativeStreamRequiresTerminalResponse() async throws {
+        for trailer in ["", "event: response\ndata: {}\n", "data: [DONE]\n\n"] {
+            MockURLProtocol.handler = { _ in sseResponse("event: heartbeat\ndata: {}\n\n" + trailer) }
+            var count = 0
+            do {
+                for try await _ in makeClient().streamGenerate(.init(inputTokens: [1], maxOutputTokens: 1)) {
+                    count += 1
+                }
+                XCTFail("Missing native response must fail")
+            } catch let error as AxEngineStreamError {
+                XCTAssertTrue(error.message.contains("response"))
+            }
+            XCTAssertEqual(count, 1)
+        }
+    }
+
     func testStreamGenerate() async throws {
         let sse = """
         event: request

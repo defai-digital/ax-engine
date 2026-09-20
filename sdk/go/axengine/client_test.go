@@ -700,3 +700,77 @@ func TestStreamCompletionDoneFraming(t *testing.T) {
 		})
 	}
 }
+
+type doneBoundaryTransport struct{ body *doneBoundaryBody }
+
+func (t doneBoundaryTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: t.body}, nil
+}
+
+type doneBoundaryBody struct {
+	payload string
+	reads   int
+	closed  bool
+}
+
+func (b *doneBoundaryBody) Read(p []byte) (int, error) {
+	b.reads++
+	if b.reads > 1 {
+		return 0, errors.New("unexpected read after DONE")
+	}
+	return copy(p, b.payload), nil
+}
+func (b *doneBoundaryBody) Close() error { b.closed = true; return nil }
+
+func TestOpenAIStreamsStopReadingAtDone(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		for _, trailer := range []string{"", "data: {\"choices\":[]}\n\n", "event: error\ndata: late error\n\n"} {
+			body := &doneBoundaryBody{payload: "data: [DONE]\n\n" + trailer}
+			c := NewClient(&ClientOptions{HTTPClient: &http.Client{Transport: doneBoundaryTransport{body}}})
+			var errCh <-chan error
+			count := 0
+			if chat {
+				var ch <-chan OpenAiChatCompletionChunk
+				ch, errCh = c.StreamChatCompletion(context.Background(), OpenAiChatCompletionRequest{})
+				for range ch {
+					count++
+				}
+			} else {
+				var ch <-chan OpenAiCompletionChunk
+				ch, errCh = c.StreamCompletion(context.Background(), OpenAiCompletionRequest{Prompt: "x"})
+				for range ch {
+					count++
+				}
+			}
+			if err := <-errCh; err != nil {
+				t.Errorf("chat=%v trailer=%q: %v", chat, trailer, err)
+			}
+			if count != 0 || body.reads != 1 || !body.closed {
+				t.Errorf("chat=%v: chunks=%d reads=%d closed=%v", chat, count, body.reads, body.closed)
+			}
+		}
+	}
+}
+
+func TestNativeStreamRequiresTerminalResponse(t *testing.T) {
+	for _, trailer := range []string{"", "event: response\ndata: {}\n"} {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v1/generate/stream", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "event: step\ndata: {}\n\n"+trailer)
+		})
+		startServer(t, mux, func(baseURL string) {
+			c := NewClient(&ClientOptions{BaseURL: baseURL})
+			ch, errs := c.StreamGenerate(context.Background(), PreviewGenerateRequest{})
+			count := 0
+			for range ch {
+				count++
+			}
+			if err := <-errs; err == nil || !strings.Contains(err.Error(), "response") {
+				t.Errorf("expected missing response error, got %v", err)
+			}
+			if count != 1 {
+				t.Errorf("expected one complete step, got %d", count)
+			}
+		})
+	}
+}

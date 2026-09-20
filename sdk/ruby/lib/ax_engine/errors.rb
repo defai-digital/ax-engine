@@ -10,7 +10,7 @@ module AxEngine
     end
   end
 
-  # Raised when the server emits an `error` event mid-stream.
+  # Raised for a server `error` event or a truncated stream.
   class StreamError < StandardError
     attr_reader :payload
 

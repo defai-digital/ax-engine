@@ -13,10 +13,10 @@
 package axengine
 
 import (
-	"errors"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -244,7 +244,7 @@ func (c *Client) StreamCompletion(ctx context.Context, req OpenAiCompletionReque
 			}
 			if done {
 				sawDone = true
-				return nil
+				return errStreamDone
 			}
 			select {
 			case ch <- v:
@@ -282,7 +282,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req OpenAiChatComplet
 			}
 			if done {
 				sawDone = true
-				return nil
+				return errStreamDone
 			}
 			select {
 			case ch <- v:
@@ -309,6 +309,7 @@ func (c *Client) StreamGenerate(ctx context.Context, req PreviewGenerateRequest)
 	go func() {
 		defer close(ch)
 		defer close(errCh)
+		sawResponse := false
 		if err := c.streamEvents(ctx, "/v1/generate/stream", req, func(ev *SSEEvent) error {
 			if ev.Event == "error" {
 				return sseStreamError(ev.Data)
@@ -334,6 +335,7 @@ func (c *Client) StreamGenerate(ctx context.Context, req PreviewGenerateRequest)
 					return fmt.Errorf("ax-engine: decode response event: %w", err)
 				}
 				out.Response = &r
+				sawResponse = true
 			}
 			select {
 			case ch <- out:
@@ -343,6 +345,8 @@ func (c *Client) StreamGenerate(ctx context.Context, req PreviewGenerateRequest)
 			return nil
 		}); err != nil {
 			errCh <- err
+		} else if !sawResponse {
+			errCh <- errors.New("ax-engine: stream ended without terminal response")
 		}
 	}()
 	return ch, errCh
@@ -363,6 +367,9 @@ func (c *Client) streamEvents(ctx context.Context, path string, body interface{}
 			break
 		}
 		if err := handle(ev); err != nil {
+			if errors.Is(err, errStreamDone) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -377,6 +384,9 @@ func (c *Client) streamChunks(ctx context.Context, path string, body interface{}
 		return handle(ev.Data)
 	})
 }
+
+// errStreamDone stops reading at an OpenAI protocol boundary and closes the body.
+var errStreamDone = errors.New("ax-engine: stream completed")
 
 // errStreamTruncated is returned when an OpenAI-compatible stream ends
 // without the `[DONE]` sentinel the server always sends.

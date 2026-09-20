@@ -2,15 +2,17 @@ require "minitest/autorun"
 require "json"
 require "socket"
 require "thread"
+require "timeout"
 require_relative "../lib/ax_engine"
 
 # Minimal single-threaded TCP server for testing.
 class MockServer
-  attr_reader :last_method, :last_path, :last_body
+  attr_reader :last_method, :last_path, :last_body, :disconnects
 
   def initialize
     @server      = TCPServer.new("127.0.0.1", 0)
     @response    = nil
+    @disconnects = Queue.new
     @last_method = nil
     @last_path   = nil
     @last_body   = nil
@@ -26,8 +28,8 @@ class MockServer
     "http://127.0.0.1:#{port}"
   end
 
-  def set_response(status: 200, content_type: "application/json", body:)
-    @response = { status: status, content_type: content_type, body: body }
+  def set_response(status: 200, content_type: "application/json", body:, wait_for_disconnect: false)
+    @response = { status: status, content_type: content_type, body: body, wait_for_disconnect: wait_for_disconnect }
   end
 
   def close
@@ -73,10 +75,12 @@ class MockServer
       raw_body = resp[:body].is_a?(String) ? resp[:body] : JSON.generate(resp[:body])
       client.write "HTTP/1.1 #{resp[:status]} OK\r\n"
       client.write "Content-Type: #{resp[:content_type]}\r\n"
-      client.write "Content-Length: #{raw_body.bytesize}\r\n"
+      length = raw_body.bytesize + (resp[:wait_for_disconnect] ? 1024 : 0)
+      client.write "Content-Length: #{length}\r\n"
       client.write "Connection: close\r\n"
       client.write "\r\n"
       client.write raw_body
+      @disconnects << client.read(1) if resp[:wait_for_disconnect]
     else
       client.write "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     end
@@ -268,4 +272,74 @@ class TestClient < Minitest::Test
     end
     assert_equal "something went wrong", err.message
   end
+
+  def test_openai_streams_reject_incomplete_done
+    [:stream_completion, :stream_chat_completion].each do |method|
+      ["", "data: [DONE]", "data: [DONE]\n"].each do |trailer|
+        @srv.set_response(content_type: "text/event-stream", body: "data: {\"id\":1}\n\n#{trailer}")
+        events = []
+        error = assert_raises(AxEngine::StreamError) do
+          @client.public_send(method, {}) { |event| events << event }
+        end
+        assert_match(/\[DONE\]/, error.message)
+        assert_equal [{ "event" => "message", "data" => { "id" => 1 } }], events
+      end
+    end
+  end
+
+  def test_done_stops_before_late_data_or_error
+    @srv.set_response(content_type: "text/event-stream", body: "data: [DONE]\n\nevent: error\ndata: late error\n\n")
+    events = []
+    @client.stream_completion(prompt: "x") { |event| events << event }
+    assert_empty events
+  end
+
+
+  def test_done_closes_an_unfinished_http_body
+    @srv.set_response(content_type: "text/event-stream", body: "data: [DONE]\n\n", wait_for_disconnect: true)
+    Timeout.timeout(2) do
+      @client.stream_completion(prompt: "x") { |_event| flunk "unexpected event" }
+      assert_nil @srv.disconnects.pop
+    end
+  end
+
+  def test_error_event_cannot_be_hidden_by_done_data
+    @srv.set_response(content_type: "text/event-stream", body: "event: error\ndata: [DONE]\n\n")
+    error = assert_raises(AxEngine::StreamError) do
+      @client.stream_completion(prompt: "x") { |_event| }
+    end
+    assert_equal "[DONE]", error.message
+  end
+
+
+  def test_extra_data_space_cannot_manufacture_done
+    @srv.set_response(content_type: "text/event-stream", body: "data:  [DONE]\n\n")
+    events = []
+    assert_raises(AxEngine::StreamError) do
+      @client.stream_completion(prompt: "x") { |event| events << event }
+    end
+    assert_equal [{ "event" => "message", "data" => " [DONE]" }], events
+  end
+
+
+  def test_native_stream_discards_partial_trailer_without_requiring_done
+    @srv.set_response(content_type: "text/event-stream", body: "event: response\ndata: {\"id\":1}\n\nevent: response\ndata: {\"id\":2}")
+    events = []
+    @client.stream_generate(input_tokens: [1]) { |event| events << event }
+    assert_equal [{ "event" => "response", "data" => { "id" => 1 } }], events
+  end
+
+
+  def test_native_stream_requires_a_complete_response
+    ["", "event: response\ndata: {}\n", "data: [DONE]\n\n"].each do |trailer|
+      @srv.set_response(content_type: "text/event-stream", body: "event: step\ndata: {}\n\n#{trailer}")
+      events = []
+      error = assert_raises(AxEngine::StreamError) do
+        @client.stream_generate(input_tokens: [1]) { |event| events << event }
+      end
+      assert_match(/response/, error.message)
+      assert_equal [{ "event" => "step", "data" => {} }], events
+    end
+  end
+
 end

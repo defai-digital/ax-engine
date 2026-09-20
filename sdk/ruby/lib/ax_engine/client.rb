@@ -104,12 +104,12 @@ module AxEngine
 
     # Stream POST /v1/completions (stream: true) — yields SSE event hashes.
     def stream_completion(request = nil, **kwargs, &block)
-      stream("/v1/completions", request_body(request, kwargs).merge(stream: true), &block)
+      stream("/v1/completions", request_body(request, kwargs).merge(stream: true), requires_done: true, &block)
     end
 
     # Stream POST /v1/chat/completions (stream: true) — yields SSE event hashes.
     def stream_chat_completion(request = nil, **kwargs, &block)
-      stream("/v1/chat/completions", request_body(request, kwargs).merge(stream: true), &block)
+      stream("/v1/chat/completions", request_body(request, kwargs).merge(stream: true), requires_done: true, &block)
     end
 
     private
@@ -141,7 +141,7 @@ module AxEngine
       execute(uri, req)
     end
 
-    def stream(path, body)
+    def stream(path, body, requires_done: false)
       uri = URI("#{@base_url}#{path}")
       req = Net::HTTP::Post.new(uri)
       apply_headers(req)
@@ -150,33 +150,44 @@ module AxEngine
       req.body             = JSON.generate(body)
 
       reader = SseReader.new
+      saw_response = false
       use_ssl = uri.scheme == "https"
 
-      Net::HTTP.start(
-        uri.host,
-        uri.port,
-        open_timeout: @timeout,
-        read_timeout: @timeout,
-        use_ssl: use_ssl
-      ) do |http|
-        http.request(req) do |response|
-          raise_on_error(response, path)
-          response.read_body do |chunk|
-            reader.feed(chunk) do |event|
-              if event["event"] == "error"
-                message = extract_error_message(event["data"])
-                raise StreamError.new(message, payload: event["data"])
+      # Catch outside Net::HTTP.start so its ensure closes the connection
+      # immediately, even when a peer keeps sending after the sentinel.
+      done_tag = Object.new
+      catch(done_tag) do
+        Net::HTTP.start(
+          uri.host,
+          uri.port,
+          open_timeout: @timeout,
+          read_timeout: @timeout,
+          use_ssl: use_ssl
+        ) do |http|
+          http.request(req) do |response|
+            raise_on_error(response, path)
+            response.read_body do |chunk|
+              reader.feed(chunk) do |event|
+                if event["event"] == "error"
+                  message = extract_error_message(event["data"])
+                  raise StreamError.new(message, payload: event["data"])
+                end
+                saw_response = true if event["event"] == "response"
+                yield event
               end
-              yield event
+              if reader.done?
+                unless requires_done || saw_response
+                  raise StreamError.new("stream ended without terminal response")
+                end
+                throw done_tag
+              end
             end
-          end
-          # Flush any trailing event not terminated by a blank line.
-          reader.flush do |event|
-            if event["event"] == "error"
-              message = extract_error_message(event["data"])
-              raise StreamError.new(message, payload: event["data"])
+            reader.flush
+            if requires_done
+              raise StreamError.new("stream ended without [DONE]")
+            elsif !saw_response
+              raise StreamError.new("stream ended without terminal response")
             end
-            yield event
           end
         end
       end

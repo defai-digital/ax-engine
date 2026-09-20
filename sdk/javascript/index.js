@@ -74,7 +74,7 @@ function parseSseBlock(block) {
       continue;
     }
     if (line.startsWith(SSE_DATA_FIELD)) {
-      dataLines.push(line.slice(SSE_DATA_FIELD.length).trimStart());
+      dataLines.push(line.slice(SSE_DATA_FIELD.length).replace(/^ /, ""));
     }
   }
   if (dataLines.length === 0) {
@@ -230,11 +230,11 @@ export class AxEngineClient {
   }
 
   async *streamCompletion(request, options = {}) {
-    yield* this.#stream("/v1/completions", { ...request, stream: true }, options);
+    yield* this.#stream("/v1/completions", { ...request, stream: true }, options, true);
   }
 
   async *streamChatCompletion(request, options = {}) {
-    yield* this.#stream("/v1/chat/completions", { ...request, stream: true }, options);
+    yield* this.#stream("/v1/chat/completions", { ...request, stream: true }, options, true);
   }
 
   async #requestJson(path, init) {
@@ -271,7 +271,7 @@ export class AxEngineClient {
     return response;
   }
 
-  async *#stream(path, body, options = {}) {
+  async *#stream(path, body, options = {}, requiresDone = false) {
     const response = await this.#request(path, {
       method: "POST",
       body,
@@ -289,6 +289,7 @@ export class AxEngineClient {
     const decoder = new TextDecoder();
     let buffer = "";
     let streamEnded = false;
+    let sawResponse = false;
 
     try {
       while (true) {
@@ -319,8 +320,12 @@ export class AxEngineClient {
             throw streamErrorFrom(decoded.data);
           }
           if (decoded.done) {
+            if (!requiresDone && !sawResponse) {
+              throw new AxEngineStreamError("stream ended without terminal response");
+            }
             return;
           }
+          if (parsed.event === "response") sawResponse = true;
 
           yield {
             event: parsed.event,
@@ -329,19 +334,12 @@ export class AxEngineClient {
         }
       }
 
-      buffer += decoder.decode();
-      const trailing = parseSseBlock(buffer.trim());
-      if (trailing) {
-        const decoded = decodeSseData(trailing.data);
-        if (trailing.event === "error") {
-          throw streamErrorFrom(decoded.data);
-        }
-        if (!decoded.done) {
-          yield {
-            event: trailing.event,
-            data: decoded.data,
-          };
-        }
+      // Only blank-line-terminated events are complete. Never promote an
+      // incomplete payload or [DONE] trailer when the transport reaches EOF.
+      if (requiresDone || !sawResponse) {
+        throw new AxEngineStreamError(requiresDone
+          ? "stream ended without [DONE]"
+          : "stream ended without terminal response");
       }
     } finally {
       if (!streamEnded) {

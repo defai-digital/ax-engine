@@ -634,3 +634,51 @@ test("non-2xx responses raise AxEngineHttpError with payload", async () => {
     );
   });
 });
+
+
+test("OpenAI streams reject truncated completion events after a valid payload", async () => {
+  for (const method of ["streamCompletion", "streamChatCompletion"]) {
+    for (const trailer of ["", "data: [DONE]", "data: [DONE]\n"]) {
+      const client = new AxEngineClient({ fetch: async () => new Response(
+        'data: {"id":"first"}\n\n' + trailer,
+        { headers: { "content-type": "text/event-stream" } },
+      ) });
+      const events = [];
+      await assert.rejects(async () => {
+        for await (const event of client[method]({})) events.push(event);
+      }, (error) => error instanceof AxEngineStreamError && /\[DONE\]/.test(error.message));
+      assert.deepEqual(events, [{ event: "message", data: { id: "first" } }]);
+    }
+  }
+});
+
+test("native streams discard incomplete trailers and require no DONE", async () => {
+  const client = new AxEngineClient({ fetch: async () => new Response(
+    'event: response\ndata: {"id":1}\n\nevent: response\ndata: {"id":2}',
+  ) });
+  const events = [];
+  for await (const event of client.streamGenerate({})) events.push(event);
+  assert.deepEqual(events, [{ event: "response", data: { id: 1 } }]);
+});
+
+
+test("extra data whitespace cannot manufacture a DONE sentinel", async () => {
+  const client = new AxEngineClient({ fetch: async () => new Response("data:  [DONE]\n\n") });
+  const events = [];
+  await assert.rejects(async () => {
+    for await (const event of client.streamCompletion({})) events.push(event);
+  }, AxEngineStreamError);
+  assert.deepEqual(events, [{ event: "message", data: " [DONE]" }]);
+});
+
+
+test("native streams reject EOF without a complete response", async () => {
+  for (const trailer of ["", 'event: response\ndata: {}\n', "data: [DONE]\n\n"]) {
+    const client = new AxEngineClient({ fetch: async () => new Response('event: step\ndata: {}\n\n' + trailer) });
+    const events = [];
+    await assert.rejects(async () => {
+      for await (const event of client.streamGenerate({})) events.push(event);
+    }, (error) => error instanceof AxEngineStreamError && /response/.test(error.message));
+    assert.deepEqual(events, [{ event: "step", data: {} }]);
+  }
+});
