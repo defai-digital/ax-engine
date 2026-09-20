@@ -558,7 +558,9 @@ async fn step_error_cancels_request_and_releases_admission() {
             .unwrap(),
     )
     .await;
-    assert_eq!(step_status, StatusCode::SERVICE_UNAVAILABLE);
+    // The delegated stream ended before a stop: an upstream backend failure,
+    // reported as 502 rather than a host-capability 503.
+    assert_eq!(step_status, StatusCode::BAD_GATEWAY);
     assert_eq!(state.admission.active_jobs(), 0);
     assert_no_pending_jobs(&state).await;
 

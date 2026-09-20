@@ -124,10 +124,13 @@ pub(crate) fn client_key<B>(request: &Request<B>) -> String {
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
     {
+        // Match the auth middleware's scheme handling (`bearer_value_matches`
+        // is case-insensitive) so `BEARER <key>` shares the key bucket instead
+        // of falling through to a per-IP bucket.
         let token = auth
-            .strip_prefix("Bearer ")
-            .or_else(|| auth.strip_prefix("bearer "))
-            .map(str::trim)
+            .split_once(' ')
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+            .map(|(_, token)| token.trim())
             .filter(|token| !token.is_empty());
         if let Some(token) = token {
             return format!("key:{}", hash_token(token));
@@ -254,6 +257,28 @@ mod tests {
         assert!(limiter.try_acquire(&a, &cfg));
         assert!(!limiter.try_acquire(&a, &cfg));
         assert!(limiter.try_acquire(&b, &cfg));
+    }
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive_like_auth() {
+        let canonical = client_key(&request_with_bearer("shared"));
+        assert!(canonical.starts_with("key:"));
+        for scheme in ["bearer", "BEARER", "BeArEr"] {
+            let request = Request::builder()
+                .method("GET")
+                .uri("/health")
+                .header(header::AUTHORIZATION, format!("{scheme} shared"))
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(client_key(&request), canonical, "{scheme}");
+        }
+        let basic = Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header(header::AUTHORIZATION, "Basic shared")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(client_key(&basic), "default");
     }
 
     #[test]

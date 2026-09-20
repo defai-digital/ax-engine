@@ -113,19 +113,13 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
                 error.to_string(),
             )
         }
+        // Upstream adapter transport and protocol failures: the host and the
+        // configuration are fine, the delegated backend misbehaved.
         EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingCompletionChoice { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::MissingCompletionChoice { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. }) => {
-            error_response(StatusCode::BAD_GATEWAY, "backend_error", error.to_string())
-        }
-        EngineSessionError::BackendContract(_)
-        | EngineSessionError::MissingLlamaCppConfig { .. }
-        | EngineSessionError::MissingMlxLmConfig
-        | EngineSessionError::MissingDelegatedRuntime { .. }
+        | EngineSessionError::MlxLm(MlxLmBackendError::MissingStreamChoice { .. })
         | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
-        | EngineSessionError::MlxRuntimeArtifactsRequired
-        | EngineSessionError::WhisperUnavailable
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandTimedOut { .. })
@@ -140,7 +134,15 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::InvalidResponseJson { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::SseRead { .. })
-        | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. })
+        | EngineSessionError::MlxLm(MlxLmBackendError::InvalidStreamChunk { .. }) => {
+            error_response(StatusCode::BAD_GATEWAY, "backend_error", error.to_string())
+        }
+        EngineSessionError::BackendContract(_)
+        | EngineSessionError::MissingLlamaCppConfig { .. }
+        | EngineSessionError::MissingMlxLmConfig
+        | EngineSessionError::MissingDelegatedRuntime { .. }
+        | EngineSessionError::MlxRuntimeArtifactsRequired
+        | EngineSessionError::WhisperUnavailable
         | EngineSessionError::UnsupportedHostHardware { .. } => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "unsupported_host",
@@ -259,5 +261,33 @@ mod tests {
         assert_eq!(body.error.code.as_deref(), Some("invalid_request"));
         assert_eq!(body.error.error_type, "invalid_request_error");
         assert!(body.error.message.contains("no_repeat_ngram_size=4"));
+    }
+
+    #[test]
+    fn upstream_backend_failures_map_to_bad_gateway_not_unsupported_host() {
+        for error in [
+            EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpStatus {
+                endpoint: "http://127.0.0.1:1/completion".to_string(),
+                status: 500,
+                body: "boom".to_string(),
+            }),
+            EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus {
+                endpoint: "http://127.0.0.1:1/v1/chat/completions".to_string(),
+                status: 500,
+                body: "boom".to_string(),
+            }),
+            EngineSessionError::LlamaCppStreamEndedBeforeStop {
+                request_id: 7,
+                selected_backend: ax_engine_sdk::SelectedBackend::LlamaCpp,
+            },
+        ] {
+            let (status, body) = map_session_error(error);
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert_eq!(body.0.error.code.as_deref(), Some("backend_error"));
+        }
+
+        let (status, body) = map_session_error(EngineSessionError::MlxRuntimeArtifactsRequired);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.0.error.code.as_deref(), Some("unsupported_host"));
     }
 }

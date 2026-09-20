@@ -5,7 +5,9 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 pub(crate) struct AdmissionController {
     active_jobs: AtomicUsize,
-    draining: parking_lot::Mutex<bool>,
+    /// Number of open drain guards; admission stays closed while any drain
+    /// is in progress so overlapping drains cannot reopen each other.
+    draining: parking_lot::Mutex<usize>,
     idle_notify: Notify,
     semaphore: Option<Arc<Semaphore>>,
 }
@@ -14,7 +16,7 @@ impl AdmissionController {
     pub(crate) fn new(limit: Option<usize>) -> Self {
         Self {
             active_jobs: AtomicUsize::new(0),
-            draining: parking_lot::Mutex::new(false),
+            draining: parking_lot::Mutex::new(0),
             idle_notify: Notify::new(),
             semaphore: limit.map(|limit| Arc::new(Semaphore::new(limit))),
         }
@@ -22,7 +24,7 @@ impl AdmissionController {
 
     pub(crate) fn try_admit(self: &Arc<Self>) -> Result<AdmissionPermit, AdmissionError> {
         let draining = self.draining.lock();
-        if *draining {
+        if *draining > 0 {
             return Err(AdmissionError::Draining);
         }
         let semaphore_permit = self
@@ -46,7 +48,7 @@ impl AdmissionController {
     }
 
     pub(crate) fn begin_drain(self: &Arc<Self>) -> AdmissionDrainGuard {
-        *self.draining.lock() = true;
+        *self.draining.lock() += 1;
         AdmissionDrainGuard {
             controller: Arc::clone(self),
         }
@@ -111,7 +113,8 @@ pub(crate) struct AdmissionDrainGuard {
 
 impl Drop for AdmissionDrainGuard {
     fn drop(&mut self) {
-        *self.controller.draining.lock() = false;
+        let mut draining = self.controller.draining.lock();
+        *draining = draining.saturating_sub(1);
     }
 }
 
@@ -218,6 +221,22 @@ mod tests {
         drop(permit);
         controller.wait_for_idle().await;
         drop(drain);
+        assert!(controller.try_admit().is_ok());
+    }
+
+    #[test]
+    fn overlapping_drains_reopen_only_after_the_last_guard_drops() {
+        let controller = Arc::new(AdmissionController::new(None));
+        let first = controller.begin_drain();
+        let second = controller.begin_drain();
+        assert_eq!(controller.try_admit().err(), Some(AdmissionError::Draining));
+        drop(first);
+        assert_eq!(
+            controller.try_admit().err(),
+            Some(AdmissionError::Draining),
+            "an outer drain must not reopen admission for an inner drain"
+        );
+        drop(second);
         assert!(controller.try_admit().is_ok());
     }
 }

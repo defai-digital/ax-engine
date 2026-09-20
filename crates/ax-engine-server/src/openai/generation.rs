@@ -18,7 +18,8 @@ use crate::errors::{ErrorResponse, admission_error_response, error_response, map
 use crate::generation::native::run_stateless_generate_request;
 use crate::generation::streaming::{StreamEvent, build_keep_alive_stream};
 use crate::openai::chunks::{
-    chat_delta_chunk, chat_final_chunk, chat_tool_calls_delta_chunk, chat_tool_calls_final_chunk,
+    chat_delta_chunk, chat_final_chunk_with_finish_reason, chat_tool_calls_delta_chunk,
+    chat_tool_calls_final_chunk,
 };
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
@@ -265,7 +266,9 @@ async fn stream_buffered_openai_tool_chat_response(
     let final_chunk = if choice.finish_reason == Some("tool_calls") {
         chat_tool_calls_final_chunk(request_id, chat_response.model)
     } else {
-        chat_final_chunk(request_id, chat_response.model, response.finish_reason)
+        // The buffered choice already applied client stop sequences, so its
+        // finish_reason is the same contract the non-stream response reports.
+        chat_final_chunk_with_finish_reason(request_id, chat_response.model, choice.finish_reason)
     };
     send_openai_chunk_async(&tx, &final_chunk).await;
     if include_stream_usage && let Some(usage) = crate::openai::responses::openai_usage(&response) {

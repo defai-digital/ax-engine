@@ -206,6 +206,16 @@ pub(crate) fn chat_final_chunk(
     model: String,
     finish_reason: Option<GenerateFinishReason>,
 ) -> OpenAiChatCompletionChunk {
+    chat_final_chunk_with_finish_reason(request_id, model, openai_finish_reason(finish_reason))
+}
+
+/// Terminal chunk carrying an already-resolved OpenAI finish reason (for
+/// example one that a buffered choice derived after client stop truncation).
+pub(crate) fn chat_final_chunk_with_finish_reason(
+    request_id: u64,
+    model: String,
+    finish_reason: Option<&'static str>,
+) -> OpenAiChatCompletionChunk {
     OpenAiChatCompletionChunk {
         id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
         object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
@@ -215,7 +225,7 @@ pub(crate) fn chat_final_chunk(
         choices: vec![OpenAiChatCompletionChunkChoice {
             index: 0,
             delta: OpenAiChatDelta::default(),
-            finish_reason: openai_finish_reason(finish_reason),
+            finish_reason,
         }],
     }
 }

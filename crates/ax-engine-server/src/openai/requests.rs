@@ -461,6 +461,11 @@ fn build_openai_chat_request_with_control(
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
     let prompt_options = openai_chat_prompt_render_options_for_live(&request, live);
+    // Reasoning extraction must follow the prompt's resolved thinking state.
+    // The prompt falls back to the live model id when `model` is omitted; a
+    // default-thinking model would otherwise render `<think>` into the prompt
+    // while the response treated the whole output as content.
+    response_options.include_reasoning = prompt_options.enable_thinking;
     let sampling_params = default_deepseek_thinking_sampling_adjustments(
         live,
         prompt_options.enable_thinking,
@@ -671,7 +676,11 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
-    let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    // Same live-model fallback as the native route: an omitted `model` on a
+    // default-thinking model must still split reasoning from content.
+    response_options.include_reasoning =
+        openai_chat_prompt_render_options_for_live(&request, live).enable_thinking;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
         request.tools.as_ref(),
@@ -716,7 +725,11 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
-    let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    // Same live-model fallback as the native route: an omitted `model` on a
+    // default-thinking model must still split reasoning from content.
+    response_options.include_reasoning =
+        openai_chat_prompt_render_options_for_live(&request, live).enable_thinking;
     reject_gemma4_tools_when_ax_cannot_render_them(
         live.model_id.as_ref(),
         request.tools.as_ref(),
