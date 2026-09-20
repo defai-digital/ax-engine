@@ -192,6 +192,29 @@ async fn rate_limit_sheds_load_after_burst_is_exhausted() {
 }
 
 #[tokio::test]
+async fn warmup_router_bypasses_the_client_rate_limiter() {
+    // Startup warm-up must not spend the operator key's bucket before the
+    // first real client; the warm router is built without the limiter.
+    let state = llama_cpp_state().with_limits(ServerLimits {
+        rate_limit: Some(RateLimitConfig {
+            rps: 0.0001,
+            burst: 1.0,
+        }),
+        ..Default::default()
+    });
+    let app = crate::routes::build_router_with_rate_limit(state, false);
+    for _ in 0..3 {
+        let request = Request::builder()
+            .method("GET")
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _, _) = text_response(&app, request).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+}
+
+#[tokio::test]
 async fn default_limits_preserve_unlimited_behavior() {
     let app = build_router(llama_cpp_state());
 

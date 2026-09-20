@@ -17,7 +17,7 @@ use crate::openai::schema::{
 };
 use crate::openai::validation::select_model;
 
-const DEFAULT_EMBED_MAX_TOKENS: usize = 8192;
+pub(crate) const DEFAULT_EMBED_MAX_TOKENS: usize = 8192;
 const DEFAULT_EMBED_TIMEOUT_MS: u64 = 30_000;
 
 pub(crate) async fn openai_embeddings(

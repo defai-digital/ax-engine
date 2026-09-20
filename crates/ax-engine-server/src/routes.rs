@@ -29,6 +29,12 @@ use super::openai::responses_api::openai_responses;
 use crate::rate_limit::ClientRateLimiter;
 
 pub(crate) fn build_router(state: AppState) -> Router {
+    build_router_with_rate_limit(state, true)
+}
+
+/// `build_router` with the per-client rate limiter optionally disabled
+/// (startup warm-up only; production routing always keeps it on).
+pub(crate) fn build_router_with_rate_limit(state: AppState, rate_limited: bool) -> Router {
     let router = Router::new()
         .route("/health", get(health))
         .route("/healthz", get(health))
@@ -73,7 +79,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
     // starve others. Engine concurrency is enforced inside generation/embedding
     // handlers so its permit follows the real blocking job rather than the
     // HTTP response.
-    let router = match state.limits.rate_limit {
+    let router = match state.limits.rate_limit.filter(|_| rate_limited) {
         Some(cfg) => {
             let limiter = Arc::new(ClientRateLimiter::new(cfg.burst));
             router.layer(middleware::from_fn(move |request: Request, next: Next| {

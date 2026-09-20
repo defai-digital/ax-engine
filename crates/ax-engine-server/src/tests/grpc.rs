@@ -71,6 +71,25 @@ async fn grpc_models_reports_stable_ax_engine_owner() {
     assert_eq!(model.owned_by, "ax-engine");
 }
 
+#[tokio::test]
+async fn grpc_embeddings_rejects_unknown_pooling_like_http() {
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let service = AxEngineGrpcService::new(state);
+
+    let status = service
+        .embeddings(tonic::Request::new(proto::EmbeddingsRequest {
+            model: String::new(),
+            input: vec![1, 2, 3],
+            pooling: "avg".to_string(),
+            normalize: true,
+            inputs: Vec::new(),
+        }))
+        .await
+        .expect_err("unknown pooling must not fall back to last-token pooling");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(status.message().contains("pooling"), "{status}");
+}
+
 /// Regression for gRPC unary chat/completion/generate: native MLX leaves
 /// `output_text` unset; the unary handlers must call
 /// `populate_native_mlx_output_text` so clients receive decoded content.

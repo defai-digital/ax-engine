@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use ax_engine_sdk::EmbeddingPooling;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -322,11 +321,12 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let live = grpc_model(&self.state, &req.model)?;
         let model_id = live.model_id.to_string();
-        let pooling = match req.pooling.as_str() {
-            "mean" => EmbeddingPooling::Mean,
-            "cls" => EmbeddingPooling::Cls,
-            _ => EmbeddingPooling::Last,
-        };
+        // Same rails as /v1/embeddings: unknown pooling is an error, not a
+        // silent last-token fallback, and the token cap applies.
+        let pooling = crate::embeddings::parse_embedding_pooling(
+            Some(req.pooling.as_str()).filter(|value| !value.is_empty()),
+        )
+        .map_err(Status::invalid_argument)?;
         let batch = if req.inputs.is_empty() {
             vec![req.input]
         } else {
@@ -339,6 +339,17 @@ impl AxEngine for AxEngineGrpcService {
             return Err(Status::invalid_argument(
                 "embedding input must not be empty",
             ));
+        }
+        let max_tokens = crate::embeddings::parse_embedding_max_tokens(
+            std::env::var("AX_ENGINE_EMBED_MAX_TOKENS").ok(),
+            crate::openai::embeddings::DEFAULT_EMBED_MAX_TOKENS,
+        );
+        let token_count: usize = batch.iter().map(Vec::len).sum();
+        if token_count > max_tokens {
+            return Err(Status::invalid_argument(format!(
+                "input token count ({token_count}) exceeds maximum ({max_tokens}); \
+                 set AX_ENGINE_EMBED_MAX_TOKENS to override"
+            )));
         }
         let permit = self.state.try_admit(&live).map_err(admission_status)?;
         let prompt_tokens = grpc_embedding_prompt_tokens(&batch);

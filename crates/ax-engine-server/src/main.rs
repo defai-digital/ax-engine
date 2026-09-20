@@ -118,7 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // prefill/decode) before advertising readiness. Fresh-process flip
     // contracts measure first-client TTFT; without this, first request pays
     // ~80 ms of path setup that internal EngineSession warm-up does not cover.
-    warm_http_completions_path(&app, &state, &model_id).await;
+    // Warm through a router without the client rate limiter so the startup
+    // probes never spend the operator key's bucket before the first client.
+    let warm_app = routes::build_router_with_rate_limit(state.clone(), false);
+    warm_http_completions_path(&warm_app, &state, &model_id).await;
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
     // Use the OS-assigned port when `--port 0` so mDNS advertises a reachable endpoint.
     let bound_port = listener.local_addr()?.port();
@@ -186,9 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "ax-engine-server preview listening on http://{} model_id={} support_tier={:?}",
         bind_address, model_id, support_tier
     );
-    if let Some(addr) = grpc_bind_address.as_deref() {
-        eprintln!("ax-engine-server gRPC listening on {addr}");
-    }
+    // The gRPC listen line is printed only after its socket is bound below.
     if tracing_enabled {
         info!(
             bind_address = %bind_address,
@@ -218,6 +219,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format!("invalid --grpc-bind-address {addr}: {e}"),
             )
         })?;
+        // Bind before advertising readiness so a port clash is a startup
+        // error instead of a silently absent gRPC endpoint.
+        let grpc_listener = tokio::net::TcpListener::bind(parsed).await?;
+        eprintln!("ax-engine-server gRPC listening on {addr}");
         let grpc_api_key = state.api_key.clone();
         let grpc_metrics = state.metrics.clone();
         let grpc_request_timeout = state.limits.grpc_request_timeout;
@@ -236,12 +241,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let grpc_server = grpc_builder
             .add_service(grpc_service)
-            .serve_with_shutdown(parsed, shutdown_signal());
+            .serve_with_incoming_shutdown(
+                tokio_stream::wrappers::TcpListenerStream::new(grpc_listener),
+                shutdown_signal(),
+            );
         let http_handle = tokio::spawn(http_server.into_future());
         let grpc_handle = tokio::spawn(grpc_server);
-        let (http_result, grpc_result) = tokio::join!(http_handle, grpc_handle);
-        http_result??;
-        grpc_result??;
+        // Either server failing takes the process down; the other one must
+        // not keep serving behind a ready line that claims both are up.
+        tokio::select! {
+            http_result = http_handle => {
+                http_result??;
+            }
+            grpc_result = grpc_handle => {
+                grpc_result?.map_err(std::io::Error::other)?;
+            }
+        }
     } else {
         http_server.await?;
     }

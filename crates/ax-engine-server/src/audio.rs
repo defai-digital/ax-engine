@@ -76,10 +76,16 @@ async fn serve_audio(
             "multipart field 'file' is required".to_string(),
         )
     })?;
-    let samples =
-        decode_audio_waveform(&file, WHISPER_SAMPLE_RATE, MAX_AUDIO_SAMPLES).map_err(|error| {
-            error_response(StatusCode::BAD_REQUEST, "invalid_audio", error.to_string())
-        })?;
+    // Decode on the bounded media preprocessor (slots + deadline) like chat
+    // media, never inline on the async worker.
+    let samples = state
+        .media
+        .run(move |_control| {
+            decode_audio_waveform(&file, WHISPER_SAMPLE_RATE, MAX_AUDIO_SAMPLES).map_err(|error| {
+                error_response(StatusCode::BAD_REQUEST, "invalid_audio", error.to_string())
+            })
+        })
+        .await?;
     let duration = samples.len() as f32 / WHISPER_SAMPLE_RATE as f32;
     let language = request
         .language

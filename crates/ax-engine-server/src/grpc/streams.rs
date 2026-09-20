@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ax_engine_sdk::{
     EngineSessionError, EngineTokenizer, GenerateRequest, GenerateStreamEvent, SelectedBackend,
@@ -85,13 +86,39 @@ where
         ) + Send
         + 'static,
 {
+    // Detect client disconnect the same way the SSE path does: a producer
+    // only learns of a closed channel when it next sends, which for a native
+    // worker can be after an entire prefill. Flip a cancel flag (and the
+    // native worker's disconnect flag) as soon as the receiver is dropped so
+    // the drive loop stops before pulling another event and the admission
+    // permit is released at the next scheduler boundary.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_monitor = Arc::clone(&cancel);
+    let service_disconnect = match &stream_context {
+        StreamStateSource::Service(events) => Some(events.disconnect_flag()),
+        StreamStateSource::Stateless { .. } | StreamStateSource::Stateful { .. } => None,
+    };
+    let monitor_tx = tx.clone();
+    tokio::spawn(async move {
+        monitor_tx.closed().await;
+        cancel_monitor.store(true, Ordering::Relaxed);
+        if let Some(disconnected) = service_disconnect {
+            disconnected.store(true, Ordering::Release);
+        }
+    });
     match stream_context {
         StreamStateSource::Service(mut events) => {
+            let error_tx = tx.clone();
             let handle = tokio::task::spawn_blocking(move || {
-                let mut next_event = || events.blocking_recv().transpose();
+                let mut next_event = || {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Ok(None);
+                    }
+                    events.blocking_recv().transpose()
+                };
                 driver(tx, &mut next_event);
             });
-            monitor_grpc_stream_task(handle, task_name);
+            monitor_grpc_stream_task(handle, task_name, error_tx);
         }
         StreamStateSource::Stateless {
             mut state,
@@ -99,7 +126,12 @@ where
             permit,
         } => {
             spawn_grpc_blocking_stream_task(tx, task_name, permit, move |tx| {
-                let mut next_event = || context.next_stream_event(&mut state);
+                let mut next_event = || {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Ok(None);
+                    }
+                    context.next_stream_event(&mut state)
+                };
                 driver(tx, &mut next_event);
             });
         }
@@ -109,7 +141,12 @@ where
             permit,
         } => {
             spawn_grpc_blocking_stream_task(tx, task_name, permit, move |tx| {
-                let mut next_event = || session.next_stream_event(&mut state);
+                let mut next_event = || {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Ok(None);
+                    }
+                    session.next_stream_event(&mut state)
+                };
                 driver(tx, &mut next_event);
             });
         }
@@ -117,10 +154,21 @@ where
     Ok(())
 }
 
-fn monitor_grpc_stream_task(handle: tokio::task::JoinHandle<()>, task_name: &'static str) {
+fn monitor_grpc_stream_task<T: Send + 'static>(
+    handle: tokio::task::JoinHandle<()>,
+    task_name: &'static str,
+    monitor_tx: mpsc::Sender<Result<T, Status>>,
+) {
     tokio::spawn(async move {
         if let Err(error) = handle.await {
             tracing::error!(%error, task = task_name, "gRPC stream task failed");
+            // A panicked producer must end the client's stream with an error,
+            // not leave it waiting for events that will never come.
+            let _ = monitor_tx
+                .send(Err(Status::internal(format!(
+                    "{task_name} task failed: {error}"
+                ))))
+                .await;
         }
     });
 }
