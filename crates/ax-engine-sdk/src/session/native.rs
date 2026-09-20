@@ -140,7 +140,9 @@ fn build_mlx_core(
     .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
     })?;
-    if config.mlx_mtp_policy == MlxMtpPolicy::Required && !runner.has_mtp() {
+    // `Required` means MTP must run: an attached but uncertified/conflicting
+    // drafter is not route-safe and would silently decode direct.
+    if config.mlx_mtp_policy == MlxMtpPolicy::Required && !runner.mtp_usable() {
         return Err(EngineSessionError::MlxMtpRequiredButUnavailable);
     }
     runner.set_mtp_requested(mtp_requested_for_policy(

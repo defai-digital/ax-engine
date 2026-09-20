@@ -274,6 +274,13 @@ impl MtpModelPolicy {
         !matches!(self.kind, MtpModelPolicyKind::None)
     }
 
+    /// Attached *and* route-safe: the only state in which a `Required`
+    /// session may start. An uncertified or conflicting drafter is attached
+    /// but would silently decode direct.
+    pub(super) const fn usable(self) -> bool {
+        self.has_attached_drafter() && self.route_safe()
+    }
+
     /// Attached drafter served by the generic MTP decode/prefill machinery.
     /// The Flash Next candidate is excluded: it owns a dedicated cursor route,
     /// and every generic path must treat it exactly like a model without a
@@ -674,6 +681,12 @@ mod tests {
             MtpModelPolicyKind::QwenLinearUncertifiedDirectFallback
         );
         assert!(!fallback.route_safe());
+        // Attached but not usable: `--mtp required` must fail closed here
+        // instead of accepting the session and decoding direct.
+        assert!(fallback.has_attached_drafter());
+        assert!(!fallback.usable());
+        assert!(policy_v4(Some(1)).has_attached_drafter());
+        assert!(!policy_v4(Some(1)).usable());
         assert!(fallback.is_qwen_linear_direct_fallback());
         assert!(!fallback.is_qwen_linear_certification_candidate());
         assert_eq!(fallback.qwen_gate_default(), None);

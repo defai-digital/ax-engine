@@ -1541,6 +1541,13 @@ impl MlxRunner {
         self.mtp_model_policy.has_attached_drafter()
     }
 
+    /// Whether the attached drafter may actually run: an uncertified or
+    /// conflicting drafter is attached but never route-safe, so a `Required`
+    /// policy must fail closed on it instead of silently decoding direct.
+    pub fn mtp_usable(&self) -> bool {
+        self.mtp_model_policy.usable()
+    }
+
     /// Drafter served by the generic MTP decode/prefill paths. The Flash Next
     /// candidate owns a dedicated cursor route and is invisible here, so an
     /// unrequested candidate routes exactly like a model without a drafter.
@@ -6894,8 +6901,14 @@ impl MlxRunner {
         // path-free so the same weights at a new path still share L1/L2.
         // Without a fingerprint, fold in `model_artifacts_root` so a
         // hot-swap that reuses `model_id` cannot hit wrong-checkpoint KV.
-        if self.artifact_fingerprint.is_some() {
-            format!("layers={};ordered-prefix-v2", self.cfg.layer_count)
+        if let Some(fingerprint) = self.artifact_fingerprint.as_deref() {
+            // Path-free, but checkpoint-bound: the in-memory L1 tier is shared
+            // across sessions, so a hot swap that keeps `model_id` and the
+            // layer count must not hit KV captured under different weights.
+            format!(
+                "layers={};ordered-prefix-v2;art={fingerprint}",
+                self.cfg.layer_count
+            )
         } else {
             format!(
                 "layers={};ordered-prefix-v2;root={}",
@@ -8623,16 +8636,18 @@ impl MlxRunner {
         state.cache.qwen4_exp = Some(step.trunk_state);
         state.cache.advance(step.committed_len);
 
-        // A one-token budget cannot accept a draft; do not count it as a miss.
-        let drafted = usize::from(remaining_output > 1);
+        // A one-token budget cannot accept a draft; it is neither a miss nor
+        // a partial reject, so it contributes no accept/reject sample.
         let accepted = usize::from(step.accepted);
         state.mtp_telemetry.record_correctness_mode(
             MtpCorrectnessMode::GreedyExact,
             MtpProposalLaw::DeterministicDelta,
         );
-        state
-            .mtp_telemetry
-            .record_step(drafted, accepted, &[MtpDraftSource::Mtp], None, accepted);
+        if remaining_output > 1 {
+            state
+                .mtp_telemetry
+                .record_step(1, accepted, &[MtpDraftSource::Mtp], None, accepted);
+        }
         state.mtp_telemetry.record_timings(MtpStepTimings {
             verify_forward_wall_us: step.verify_wall_us,
             draft_wall_us: step.draft_wall_us,
@@ -9385,9 +9400,10 @@ impl MlxRunner {
             state.mtp_pending_draft_log_prob_temperature = Some(1.0);
             state.mtp_pending_draft_distributions = distributions;
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Gemma4Assistant; drafted];
-            state
-                .mtp_telemetry
-                .record_step(drafted, 0, &state.mtp_pending_draft_sources, None, 0);
+            // The seed draft has not been verified yet: the next decode step
+            // owns its accept/reject `record_step`. Recording it here as a
+            // zero-accept step would count a fake complete miss and a 0.0
+            // acceptance sample, and double-count the first window.
             if drafted > 0 {
                 state
                     .gemma4_assistant_mtp_telemetry
