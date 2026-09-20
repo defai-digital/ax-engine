@@ -236,8 +236,11 @@ pub fn default_padded_token_budget(prefill_chunk_tokens: u32, max_batch_rows: u3
 /// beside its steady-state KV budget: the transient is NOT modeled there and
 /// an allocation failure aborts the process (uncatchable MLX C++ throw).
 pub fn padded_mask_bytes_upper_bound(max_padded_tokens: u32, element_bytes: u32) -> u64 {
-    let budget = u64::from(max_padded_tokens);
-    budget * budget / 2 * u64::from(element_bytes)
+    // `budget^2 / 2 * element_bytes` exceeds u64 for budgets near u32::MAX;
+    // saturate rather than wrap so the bound never under-reports.
+    let budget = u128::from(max_padded_tokens);
+    let bytes = budget * budget / 2 * u128::from(element_bytes);
+    u64::try_from(bytes).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -500,6 +503,8 @@ mod tests {
             u64::from(4096u32) * 4096 / 2 * 4
         );
         assert_eq!(padded_mask_bytes_upper_bound(0, 4), 0);
+        // Saturates instead of wrapping for operator-sized budgets.
+        assert_eq!(padded_mask_bytes_upper_bound(u32::MAX, 8), u64::MAX);
     }
 
     /// Property sweep: random windows, capabilities, and limits must always

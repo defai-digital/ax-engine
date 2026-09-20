@@ -28,7 +28,7 @@ use crate::scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
 };
 use thiserror::Error;
-use tracing::{debug, debug_span, error, field, trace};
+use tracing::{debug, debug_span, error, field, trace, warn};
 
 fn validation_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -376,10 +376,25 @@ impl EngineCore {
                 Ok(outcome) => outcome,
                 Err(step_error) => {
                     let failure_message = format!("engine step failed: {step_error}");
-                    if let Err(fail_error) = self.request_manager.fail_nonterminal_requests(
-                        &schedule_plan.selected_requests,
-                        &failure_message,
-                    ) {
+                    // `apply_execution_results` resolves updates in order and
+                    // may error part-way through; requests it already moved to
+                    // Runnable/Finished hold valid, KV-consistent progress and
+                    // must keep it. Only requests still Running were left
+                    // unresolved by this step.
+                    let unresolved_requests = schedule_plan
+                        .selected_requests
+                        .iter()
+                        .copied()
+                        .filter(|request_id| {
+                            self.request_manager
+                                .record(*request_id)
+                                .is_some_and(|record| record.state == RequestState::Running)
+                        })
+                        .collect::<Vec<_>>();
+                    if let Err(fail_error) = self
+                        .request_manager
+                        .fail_nonterminal_requests(&unresolved_requests, &failure_message)
+                    {
                         error!(
                             error = %fail_error,
                             original_error = %step_error,
@@ -985,6 +1000,7 @@ impl EngineCore {
             &sampled_tokens,
             &sampled_request_ids,
         )?;
+        self.reconcile_runner_appended_kv(&execution_batch)?;
 
         execution_batch.route_metadata = runner_output.route_metadata.clone();
         schedule_plan.execution_batch = Some(execution_batch);
@@ -1462,6 +1478,71 @@ impl EngineCore {
         self.kv_manager
             .lookup_prefix(request_id, &snapshot.prompt_tokens)
             .map_err(Into::into)
+    }
+
+    /// Bring KV accounting up to the tokens a runner actually cached.
+    ///
+    /// KV is allocated before dispatch for `scheduled_token_count` only, but
+    /// the runner contract lets a decode step return several tokens
+    /// (speculative / MTP acceptance): every accepted token beyond the first
+    /// was ingested into the runner's cache during this step. Without a
+    /// catch-up the logical token count drifts one block-fraction behind per
+    /// multi-token step, under-reporting usage and admitting new work against
+    /// blocks that are really occupied. The runner has already written those
+    /// positions, so a request whose catch-up cannot be satisfied fails
+    /// closed instead of running on unaccounted capacity.
+    fn reconcile_runner_appended_kv(
+        &mut self,
+        execution_batch: &ExecutionBatch,
+    ) -> Result<(), EngineCoreError> {
+        for item in &execution_batch.items {
+            let request_id = item.request_id;
+            let Some(record) = self.request_manager.record(request_id) else {
+                continue;
+            };
+            if record.state.is_terminal() {
+                continue;
+            }
+            // The newest sampled token is not in KV until the next step
+            // ingests it, so cached tokens = processed prompt + generated - 1.
+            let cached_tokens = record
+                .processed_prompt_tokens
+                .saturating_add(u32::try_from(record.generated_tokens.len()).unwrap_or(u32::MAX))
+                .saturating_sub(1);
+            let logical_tokens = self
+                .kv_manager
+                .block_table_snapshot(request_id)?
+                .logical_token_count;
+            let Some(surplus) = cached_tokens
+                .checked_sub(logical_tokens)
+                .filter(|surplus| *surplus > 0)
+            else {
+                continue;
+            };
+            let allocation_plan = self.kv_manager.allocate(request_id, surplus)?;
+            match allocation_plan.allocation_status {
+                AllocationStatus::Allocated => {
+                    self.sync_request_block_table(request_id)?;
+                    trace!(
+                        request_id = request_id.0,
+                        surplus_tokens = surplus,
+                        "reconciled KV accounting for multi-token runner output"
+                    );
+                }
+                AllocationStatus::InsufficientCapacity | AllocationStatus::Deferred => {
+                    warn!(
+                        request_id = request_id.0,
+                        surplus_tokens = surplus,
+                        "KV capacity exhausted by multi-token runner output; failing request"
+                    );
+                    self.request_manager.fail_nonterminal_requests(
+                        &[request_id],
+                        "KV capacity exhausted by multi-token runner output",
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn sync_request_block_table(&mut self, request_id: RequestId) -> Result<(), EngineCoreError> {
@@ -2958,6 +3039,159 @@ mod tests {
                 .map(|output| output.logits_outputs.len()),
             Some(1)
         );
+    }
+
+    /// Emits `extra_tokens` accepted tokens after the primary decode token,
+    /// the shape MTP / speculative runners return.
+    #[derive(Debug)]
+    struct MultiTokenDecodeRunner {
+        extra_tokens: u32,
+        stop_on_decode: Option<StopReason>,
+    }
+
+    impl ExecutionRunner for MultiTokenDecodeRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let request_updates = input
+                .execution_batch
+                .items
+                .iter()
+                .map(|item| {
+                    let decode = item.mode == ExecutionMode::Decode;
+                    crate::runner::RequestExecutionUpdate {
+                        request_id: item.request_id,
+                        tokens_executed: item.scheduled_token_count,
+                        output_token: decode.then_some(50),
+                        output_tokens: if decode {
+                            (0..self.extra_tokens).map(|i| 51 + i).collect()
+                        } else {
+                            Vec::new()
+                        },
+                        stop_reason: decode.then_some(self.stop_on_decode).flatten(),
+                        error: None,
+                        diffusion_schedule: None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            RunnerOutput {
+                step_id: input.execution_batch.step_id,
+                request_updates,
+                logits_handles: Vec::new(),
+                logits_outputs: Vec::new(),
+                kv_write_summary: crate::runner::KvWriteSummary {
+                    tokens_written: input.execution_batch.total_scheduled_tokens,
+                    blocks_touched: input.block_tables.len() as u32,
+                },
+                route_metadata: input.execution_batch.route_metadata.clone(),
+                execution_status: crate::runner::ExecutionStatus::Success,
+            }
+        }
+    }
+
+    #[test]
+    fn multi_token_decode_output_catches_up_kv_accounting() {
+        // block_size 4, 8 blocks. Prompt is 4 tokens; every decode step
+        // returns 1 + 1 tokens, so KV must grow by 2 tokens per step even
+        // though only 1 was scheduled.
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            MultiTokenDecodeRunner {
+                extra_tokens: 1,
+                stop_on_decode: None,
+            },
+            PanicSampler,
+        );
+        engine.submit(make_submission(12, 1, 10)).unwrap();
+        engine.step(4, true).unwrap();
+
+        for _ in 0..3 {
+            engine.step(1, true).unwrap();
+            let snapshot = engine.request_manager().snapshot(RequestId(12)).unwrap();
+            let table = engine
+                .kv_manager()
+                .block_table_snapshot(RequestId(12))
+                .unwrap();
+            let cached_tokens = snapshot.prompt_len + snapshot.generated_len - 1;
+            assert_eq!(
+                table.logical_token_count, cached_tokens,
+                "KV logical tokens must track prompt + generated - 1"
+            );
+            assert_eq!(
+                table.block_ids.len() as u32,
+                cached_tokens.div_ceil(4),
+                "block table must cover every cached token"
+            );
+        }
+        let snapshot = engine.request_manager().snapshot(RequestId(12)).unwrap();
+        assert_eq!(snapshot.generated_len, 6);
+        assert_eq!(snapshot.state, RequestState::Runnable);
+    }
+
+    #[test]
+    fn multi_token_decode_output_beyond_kv_capacity_fails_closed() {
+        // 2 blocks of 4 tokens: the prompt fills one block, and the first
+        // decode step's 1 + 5 tokens need three more blocks that do not exist.
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 2),
+            MultiTokenDecodeRunner {
+                extra_tokens: 5,
+                stop_on_decode: None,
+            },
+            PanicSampler,
+        );
+        engine.submit(make_submission(13, 1, 10)).unwrap();
+        engine.step(4, true).unwrap();
+        engine.step(1, true).unwrap();
+
+        let snapshot = engine.request_manager().snapshot(RequestId(13)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Failed);
+        assert!(
+            snapshot
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("multi-token runner output")),
+            "unexpected error: {:?}",
+            snapshot.last_error
+        );
+        // Terminal cleanup released its blocks (retained only as reclaimable
+        // prefix cache, which allocation may evict).
+        assert_eq!(engine.kv_manager().allocatable_block_count(), 2);
+        assert!(
+            engine
+                .kv_manager()
+                .block_table_snapshot(RequestId(13))
+                .is_err(),
+            "failed request must not keep a live block table"
+        );
+    }
+
+    #[test]
+    fn step_error_keeps_progress_of_requests_already_resolved() {
+        // Request 20 (max 10) accepts two tokens fine; request 21 (max 1)
+        // cannot take two, so apply_execution_results errors on it after 20
+        // was already resolved. 20 must keep its tokens and stay Runnable.
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 16),
+            MultiTokenDecodeRunner {
+                extra_tokens: 1,
+                stop_on_decode: None,
+            },
+            PanicSampler,
+        );
+        engine.submit(make_submission(20, 1, 10)).unwrap();
+        engine.submit(make_submission(21, 2, 1)).unwrap();
+        engine.step(8, true).unwrap();
+
+        let error = engine.step(2, true).unwrap_err();
+        assert!(
+            error.to_string().contains("max_output_tokens"),
+            "unexpected error: {error}"
+        );
+
+        let ok = engine.request_manager().snapshot(RequestId(20)).unwrap();
+        assert_eq!(ok.state, RequestState::Runnable);
+        assert_eq!(ok.generated_tokens, vec![50, 51]);
+        let failed = engine.request_manager().snapshot(RequestId(21)).unwrap();
+        assert_eq!(failed.state, RequestState::Failed);
     }
 
     #[test]
