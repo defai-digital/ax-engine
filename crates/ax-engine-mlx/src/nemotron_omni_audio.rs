@@ -219,7 +219,13 @@ impl NemotronOmniFeatureExtractor {
                 features[frame * self.config.num_mel_bins + mel] = (energy + mel_floor).ln() as f32;
             }
         }
-        let valid_frames = (waveform.len() / self.config.hop_length).min(frames);
+        // Every center-padded frame overlaps real signal (the last frame starts
+        // at `(len / hop) * hop`, inside the clip), and NeMo's own sequence
+        // length is `floor((len + n_fft - n_fft) / hop) + 1`, i.e. `frames`.
+        // Marking the last frame invalid dropped the clip's tail from
+        // normalization and let the encoder mask a token the front-end still
+        // returned as content for short clips.
+        let valid_frames = frames;
         normalize_log_mel(
             &mut features,
             frames,
@@ -1132,7 +1138,7 @@ mod tests {
         let audio = vec![0.0f32; 16_000];
         let extracted = extractor.extract_clip(&audio);
         assert_eq!(extracted.frames, 101);
-        assert_eq!(extracted.valid_frames, 100);
+        assert_eq!(extracted.valid_frames, 101);
         assert_eq!(config.subsampling_output_length(101), 13);
     }
 
