@@ -2440,7 +2440,7 @@ class WrapperContractTests(unittest.TestCase):
             ):
                 self.assertFalse(self.ax_engine._try_generate_manifest(model_dir))
 
-    def test_bundled_launch_failure_never_falls_back_to_cargo_or_path(self) -> None:
+    def test_bundled_spawn_failure_falls_through_but_rejection_fails_closed(self) -> None:
         import subprocess
         import tempfile
 
@@ -2449,10 +2449,10 @@ class WrapperContractTests(unittest.TestCase):
             (model_dir / "model-manifest.json").write_text("{}")
             calls: list[list[str]] = []
 
-            def fake_run(command, **kwargs):
+            def spawn_failure(command, **kwargs):
                 calls.append(command)
                 if command[0] == "/wheel/ax-engine-bench":
-                    raise OSError("exec format error")
+                    raise OSError("bad CPU type in executable")
                 return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
             with (
@@ -2461,51 +2461,55 @@ class WrapperContractTests(unittest.TestCase):
                     "_bundled_binary",
                     return_value=Path("/wheel/ax-engine-bench"),
                 ),
+                patch.object(self.ax_engine, "_source_checkout_root", return_value=None),
+                patch("shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
+                patch("subprocess.run", spawn_failure),
+            ):
+                # An unlaunchable payload is an environment problem: the PATH
+                # binary still gets to validate.
+                self.assertTrue(self.ax_engine._try_validate_manifest(model_dir))
+            self.assertEqual([command[0] for command in calls], ["/wheel/ax-engine-bench", "ax-engine-bench"])
+
+            calls.clear()
+
+            def rejection(command, **kwargs):
+                calls.append(command)
+                if command[0] == "/wheel/ax-engine-bench":
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="bad model")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with (
                 patch.object(
                     self.ax_engine,
-                    "_source_checkout_root",
-                    return_value=Path("/source/ax-engine"),
+                    "_bundled_binary",
+                    return_value=Path("/wheel/ax-engine-bench"),
                 ),
+                patch.object(self.ax_engine, "_source_checkout_root", return_value=None),
                 patch("shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
-                patch("subprocess.run", fake_run),
+                patch("subprocess.run", rejection),
             ):
+                # A binary that ran and rejected the model is a verdict; no
+                # other generator may overrule it.
                 self.assertFalse(self.ax_engine._try_generate_manifest(model_dir))
                 self.assertFalse(self.ax_engine._try_validate_manifest(model_dir))
-
             self.assertEqual([command[0] for command in calls], ["/wheel/ax-engine-bench"] * 2)
 
-    def test_workspace_local_wheel_without_payload_never_uses_cargo(self) -> None:
-        import subprocess
+    def test_checkout_root_accepts_repo_venv_but_not_foreign_workspace(self) -> None:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             package_dir = root / ".venv" / "lib" / "site-packages" / "ax_engine"
-            binary = package_dir / "_bin" / "ax-engine-bench"
-            binary.parent.mkdir(parents=True)
-            binary.write_text("wheel payload")
-            binary.chmod(0o644)
+            package_dir.mkdir(parents=True)
             (root / "Cargo.toml").write_text("[workspace]\n")
-            model_dir = root / "model"
-            model_dir.mkdir()
-            (model_dir / "model-manifest.json").write_text("{}")
-            calls: list[list[str]] = []
-
-            def fake_run(command, **kwargs):
-                calls.append(command)
-                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
-            with (
-                patch.object(self.ax_engine, "__file__", str(package_dir / "__init__.py")),
-                patch("shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
-                patch("subprocess.run", fake_run),
-            ):
-                self.assertIsNone(self.ax_engine._bundled_binary("ax-engine-bench"))
+            with patch.object(self.ax_engine, "__file__", str(package_dir / "__init__.py")):
+                # A foreign cargo workspace enclosing the venv is not a checkout.
                 self.assertIsNone(self.ax_engine._source_checkout_root())
-                self.assertTrue(self.ax_engine._try_validate_manifest(model_dir))
-
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0][0], "ax-engine-bench")
+                # This repository's own layout is.
+                core = root / "crates" / "ax-engine-core"
+                core.mkdir(parents=True)
+                (core / "Cargo.toml").write_text("[package]\n")
+                self.assertEqual(self.ax_engine._source_checkout_root(), root.resolve())
 
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

@@ -2407,9 +2407,14 @@ def _source_checkout_root() -> Path | None:
     source_root = _source_workspace_root()
     if source_root is None:
         return None
-    if package_dir != (source_root / "python" / "ax_engine").resolve():
-        return None
-    return source_root
+    if package_dir == (source_root / "python" / "ax_engine").resolve():
+        return source_root
+    # A non-editable install into a venv that lives inside this repository
+    # (the usual dev loop) still belongs to the checkout: cargo builds the
+    # matching sources. Only a foreign workspace is refused.
+    if (source_root / "crates" / "ax-engine-core" / "Cargo.toml").is_file():
+        return source_root
+    return None
 
 
 def _source_workspace_root() -> Path | None:
@@ -2477,14 +2482,15 @@ def _try_validate_manifest(dest: Path) -> bool:
                 text=True,
             )
         except OSError as error:
-            # The bundled binary is the only one guaranteed to match this
-            # package; never fall back to a possibly stale cargo or PATH build.
+            # A binary that cannot even be spawned (wrong CPU type, noexec
+            # mount, truncated install) is an environment problem, not a
+            # verdict on the model: fall through to the other generators.
             print(f"failed to launch {bench} manifest validation: {error}")
+        else:
+            if result.returncode == 0:
+                return True
+            print(f"{bench} manifest validation failed:\n{result.stderr.strip()}")
             return False
-        if result.returncode == 0:
-            return True
-        print(f"{bench} manifest validation failed:\n{result.stderr.strip()}")
-        return False
 
     repo_root = _source_checkout_root()
     if repo_root is not None and shutil.which("cargo"):
@@ -2569,18 +2575,19 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
                 text=True,
             )
         except OSError as error:
-            # The bundled binary is the only one guaranteed to match this
-            # package; never fall back to a possibly stale cargo or PATH build.
+            # A binary that cannot even be spawned (wrong CPU type, noexec
+            # mount, truncated install) is an environment problem, not a
+            # verdict on the model: fall through to the other generators.
             print(f"failed to launch {bench} generate-manifest: {error}")
+        else:
+            if result.returncode == 0:
+                print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
+                return True
+            # The binary ran and rejected the model. Surface that result rather
+            # than trying a different generator with potentially different
+            # model support.
+            print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
             return False
-        if result.returncode == 0:
-            print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
-            return True
-        # The binary ran and rejected the model. Surface that result rather
-        # than trying a different generator with potentially different
-        # model support.
-        print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
-        return False
 
     # In a source checkout, prefer the workspace's current Rust validator over
     # a potentially stale ax-engine-bench on PATH.

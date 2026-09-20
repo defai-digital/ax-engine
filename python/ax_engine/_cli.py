@@ -2063,16 +2063,20 @@ def _cmd_download(args: argparse.Namespace) -> int:
     if args.progress_json and not args.model:
         raise SystemExit("--progress-json requires a model alias or repo id")
 
-    if args.interactive and not _supports_interactive():
-        raise SystemExit(
-            "ax-engine download --interactive needs an interactive terminal. "
-            "Use: ax-engine download <model>"
-        )
     interactive = args.interactive or (
         not args.model and not args.no_interactive and not args.json and _supports_interactive()
     )
     if interactive:
-        return _run_interactive_download(args.force, local_only=args.local_only, dest=args.dest)
+        try:
+            return _run_interactive_download(
+                args.force, local_only=args.local_only, dest=args.dest
+            )
+        except EOFError as error:
+            # Piped answers work; a closed stdin gets guidance, not a traceback.
+            raise SystemExit(
+                "ax-engine download --interactive needs answers on stdin or an interactive "
+                "terminal. Use: ax-engine download <model>"
+            ) from error
 
     if not args.model:
         if args.json:

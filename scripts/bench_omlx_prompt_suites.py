@@ -55,7 +55,8 @@ def prompt_tokens(
     enable_thinking: bool,
 ) -> tuple[list[int], str, str]:
     if token_dir is not None:
-        candidates = sorted(token_dir.glob(f"real-*-{case['id']}-gen-{generation_tokens}.json"))
+        # Producer naming: real-{suite}-{case}-gen-{N}-{token_sha256[:12]}.json
+        candidates = sorted(token_dir.glob(f"real-*-{case['id']}-gen-{generation_tokens}-*.json"))
         if len(candidates) != 1:
             raise ValueError(
                 f"expected one token artifact for {case['id']!r} in {token_dir}, "
