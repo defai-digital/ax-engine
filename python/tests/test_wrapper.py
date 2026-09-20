@@ -2340,7 +2340,7 @@ class WrapperContractTests(unittest.TestCase):
                 patch.object(self.ax_engine, "_bundled_binary", return_value=None),
                 patch.object(
                     self.ax_engine,
-                    "_source_workspace_root",
+                    "_source_checkout_root",
                     return_value=source_root,
                 ),
                 patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"),
@@ -2439,6 +2439,73 @@ class WrapperContractTests(unittest.TestCase):
                 patch("shutil.which", return_value=None),
             ):
                 self.assertFalse(self.ax_engine._try_generate_manifest(model_dir))
+
+    def test_bundled_launch_failure_never_falls_back_to_cargo_or_path(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model-manifest.json").write_text("{}")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                if command[0] == "/wheel/ax-engine-bench":
+                    raise OSError("exec format error")
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with (
+                patch.object(
+                    self.ax_engine,
+                    "_bundled_binary",
+                    return_value=Path("/wheel/ax-engine-bench"),
+                ),
+                patch.object(
+                    self.ax_engine,
+                    "_source_checkout_root",
+                    return_value=Path("/source/ax-engine"),
+                ),
+                patch("shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
+                patch("subprocess.run", fake_run),
+            ):
+                self.assertFalse(self.ax_engine._try_generate_manifest(model_dir))
+                self.assertFalse(self.ax_engine._try_validate_manifest(model_dir))
+
+            self.assertEqual([command[0] for command in calls], ["/wheel/ax-engine-bench"] * 2)
+
+    def test_workspace_local_wheel_without_payload_never_uses_cargo(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package_dir = root / ".venv" / "lib" / "site-packages" / "ax_engine"
+            binary = package_dir / "_bin" / "ax-engine-bench"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("wheel payload")
+            binary.chmod(0o644)
+            (root / "Cargo.toml").write_text("[workspace]\n")
+            model_dir = root / "model"
+            model_dir.mkdir()
+            (model_dir / "model-manifest.json").write_text("{}")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+            with (
+                patch.object(self.ax_engine, "__file__", str(package_dir / "__init__.py")),
+                patch("shutil.which", side_effect=lambda name: f"/usr/local/bin/{name}"),
+                patch("subprocess.run", fake_run),
+            ):
+                self.assertIsNone(self.ax_engine._bundled_binary("ax-engine-bench"))
+                self.assertIsNone(self.ax_engine._source_checkout_root())
+                self.assertTrue(self.ax_engine._try_validate_manifest(model_dir))
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][0], "ax-engine-bench")
 
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

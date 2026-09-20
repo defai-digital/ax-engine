@@ -2388,18 +2388,32 @@ def _bundled_binary(name: str) -> Path | None:
     that staging directory in editable and source-checkout installs: an interrupted
     or earlier wheel build can leave binaries linked against a stale MLX runtime.
     """
-    package_dir = Path(__file__).resolve().parent
-    source_root = _source_workspace_root()
-    if source_root is not None and package_dir == (source_root / "python" / "ax_engine").resolve():
+    if _source_checkout_root() is not None:
         return None
-    candidate = package_dir / "_bin" / name
+    candidate = Path(__file__).resolve().parent / "_bin" / name
     if candidate.is_file() and os.access(candidate, os.X_OK):
         return candidate
     return None
 
 
+def _source_checkout_root() -> Path | None:
+    """Return the workspace root when this package is the checkout's own source tree.
+
+    A wheel installed into a virtualenv that happens to live inside a cargo
+    workspace is not a checkout: its binaries must come from the wheel payload
+    or PATH, never from ``cargo run`` against whatever HEAD is checked out.
+    """
+    package_dir = Path(__file__).resolve().parent
+    source_root = _source_workspace_root()
+    if source_root is None:
+        return None
+    if package_dir != (source_root / "python" / "ax_engine").resolve():
+        return None
+    return source_root
+
+
 def _source_workspace_root() -> Path | None:
-    """Return this package's source workspace root, if running from a checkout."""
+    """Return the nearest enclosing cargo workspace root, if any."""
     for parent in Path(__file__).resolve().parents:
         cargo_toml = parent / "Cargo.toml"
         if not cargo_toml.is_file():
@@ -2463,14 +2477,16 @@ def _try_validate_manifest(dest: Path) -> bool:
                 text=True,
             )
         except OSError as error:
+            # The bundled binary is the only one guaranteed to match this
+            # package; never fall back to a possibly stale cargo or PATH build.
             print(f"failed to launch {bench} manifest validation: {error}")
-        else:
-            if result.returncode == 0:
-                return True
-            print(f"{bench} manifest validation failed:\n{result.stderr.strip()}")
             return False
+        if result.returncode == 0:
+            return True
+        print(f"{bench} manifest validation failed:\n{result.stderr.strip()}")
+        return False
 
-    repo_root = _source_workspace_root()
+    repo_root = _source_checkout_root()
     if repo_root is not None and shutil.which("cargo"):
         try:
             result = subprocess.run(
@@ -2553,20 +2569,22 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
                 text=True,
             )
         except OSError as error:
+            # The bundled binary is the only one guaranteed to match this
+            # package; never fall back to a possibly stale cargo or PATH build.
             print(f"failed to launch {bench} generate-manifest: {error}")
-        else:
-            if result.returncode == 0:
-                print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
-                return True
-            # The binary ran and rejected the model. Surface that result rather
-            # than trying a different generator with potentially different
-            # model support.
-            print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
             return False
+        if result.returncode == 0:
+            print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
+            return True
+        # The binary ran and rejected the model. Surface that result rather
+        # than trying a different generator with potentially different
+        # model support.
+        print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
+        return False
 
     # In a source checkout, prefer the workspace's current Rust validator over
     # a potentially stale ax-engine-bench on PATH.
-    repo_root = _source_workspace_root()
+    repo_root = _source_checkout_root()
     if repo_root is not None and shutil.which("cargo"):
         generate_args = (
             ["--force", "--validate", manifest_dest]
@@ -2592,12 +2610,12 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
             )
         except OSError as error:
             print(f"failed to launch cargo generate-manifest: {error}")
-        else:
-            if result.returncode == 0:
-                print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
-                return True
-            print(f"cargo generate-manifest failed:\n{result.stderr.strip()}")
             return False
+        if result.returncode == 0:
+            print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
+            return True
+        print(f"cargo generate-manifest failed:\n{result.stderr.strip()}")
+        return False
 
     if shutil.which("ax-engine-bench"):
         bench = "ax-engine-bench"
