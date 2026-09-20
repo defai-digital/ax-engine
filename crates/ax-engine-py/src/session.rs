@@ -32,10 +32,13 @@ pub(crate) enum SessionSlot {
 
 // Resolve before native admission so the Python default cannot hide an operator
 // override. Explicit Auto is intentional and takes precedence over the environment.
+// A blank environment value is "unset" (no operator intent), matching the Rust
+// admission parser; an explicit blank argument is still an error.
 fn resolve_stream_experts(
     explicit: Option<&str>,
     environment: Option<&str>,
 ) -> PyResult<MlxStreamExpertsMode> {
+    let environment = environment.map(str::trim).filter(|raw| !raw.is_empty());
     MlxStreamExpertsMode::parse(explicit.or(environment).unwrap_or("auto")).map_err(|_| {
         PyValueError::new_err(
             "invalid mlx_stream_experts / AX_STREAM_EXPERTS value (expected off, auto, or on)",
@@ -620,9 +623,23 @@ mod tests {
     #[test]
     fn stream_experts_rejects_invalid_selected_values() {
         init_python();
-        for raw in ["", "2", "automatic", "invalid"] {
+        for raw in ["", "   ", "2", "automatic", "invalid"] {
             assert!(resolve_stream_experts(Some(raw), Some("off")).is_err());
+        }
+        for raw in ["2", "automatic", "invalid"] {
             assert!(resolve_stream_experts(None, Some(raw)).is_err());
+        }
+    }
+
+    #[test]
+    fn stream_experts_treats_blank_environment_as_unset() {
+        // Matches `expert_stream::stream_experts_mode_from_env`: a blank
+        // variable carries no operator intent and must not reject the load.
+        for raw in ["", "   ", "\t\n"] {
+            assert!(matches!(
+                resolve_stream_experts(None, Some(raw)),
+                Ok(MlxStreamExpertsMode::Auto)
+            ));
         }
     }
     use crate::dicts::test_support::{

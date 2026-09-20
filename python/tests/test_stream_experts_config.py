@@ -57,7 +57,7 @@ class StreamExpertsConfigTests(unittest.TestCase):
 
     def test_invalid_explicit_and_environment_modes_fail_before_model_load(self):
         program = '''
-from ax_engine._ax_engine import Session
+from ax_engine._ax_engine import EngineInferenceError, Session
 import os
 for explicit, environment in [("invalid", "off"), (None, "invalid"), ("", "off")]:
     os.environ["AX_STREAM_EXPERTS"] = environment
@@ -68,6 +68,16 @@ for explicit, environment in [("invalid", "off"), (None, "invalid"), ("", "off")
         assert "invalid mlx_stream_experts" in str(error), str(error)
     else:
         raise AssertionError("invalid mode was accepted")
+# A blank environment value is unset (Auto), as on the Rust admission path:
+# the failure must come from the missing artifacts, not from mode parsing.
+for environment in ["", "   "]:
+    os.environ["AX_STREAM_EXPERTS"] = environment
+    try:
+        Session(mlx=True, mlx_model_artifacts_dir="/nonexistent/ax-model")
+    except EngineInferenceError as error:
+        assert "/nonexistent/ax-model" in str(error), str(error)
+    else:
+        raise AssertionError("nonexistent artifacts dir was accepted")
 os.environ["AX_STREAM_EXPERTS"] = "invalid"
 session = Session(mlx=False, llama_server_url="http://127.0.0.1:1")
 session.close()
