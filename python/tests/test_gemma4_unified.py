@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import os
 import json
 import sys
 import tempfile
@@ -131,6 +132,31 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
         image_input = request.multimodal_inputs["gemma4_unified"]["images"][0]
         self.assertEqual(image_input["span"]["soft_token_count"], 2)
         self.assertEqual(len(image_input["pixel_values"]), 24)
+
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
+    def test_prepare_image_request_expands_tilde_in_model_dir(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "models" / "gemma4").mkdir(parents=True)
+            write_tiny_config(home / "models" / "gemma4")
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+                request = module.prepare_gemma4_unified_image_request(
+                    "~/models/gemma4",
+                    [7, 100, 8],
+                    [tiny_rgb_image()],
+                )
+        self.assertEqual(request.soft_token_counts, [2])
+
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
+    def test_undecodable_image_bytes_raise_value_error(self) -> None:
+        module = load_module()
+        with self.assertRaisesRegex(ValueError, "cannot decode Gemma4 unified image"):
+            module._load_pil_image(b"not-an-image")
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.png"
+            with self.assertRaises(FileNotFoundError):
+                module._load_pil_image(str(missing))
 
     @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
     def test_rejects_oversized_image_before_decoding_pixels(self) -> None:

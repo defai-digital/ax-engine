@@ -448,10 +448,12 @@ class Session:
         delegated_http_read_timeout_secs: int = 300,
         delegated_http_write_timeout_secs: int = 300,
     ) -> None:
-        if mlx and mlx_model_artifacts_dir is None:
+        # Mirror the native constructor, which also accepts `llama_model_path`
+        # as the artifacts directory when `mlx_model_artifacts_dir` is unset.
+        if mlx and mlx_model_artifacts_dir is None and llama_model_path is None:
             if not os.environ.get("AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR"):
                 raise ValueError(
-                    "mlx=True requires mlx_model_artifacts_dir or the "
+                    "mlx=True requires mlx_model_artifacts_dir (or llama_model_path) or the "
                     "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR environment variable.\n\n"
                     "To download a model:\n"
                     "  from ax_engine import download_model\n"
@@ -512,6 +514,7 @@ class Session:
         ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
+        ignore_eos: bool = False,
         stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> GenerateResult:
@@ -531,6 +534,7 @@ class Session:
                 ngram_window=ngram_window,
                 seed=seed,
                 deterministic=deterministic,
+                ignore_eos=ignore_eos,
                 stop_sequences=stop_sequences,
                 metadata=metadata,
             )
@@ -553,6 +557,7 @@ class Session:
         ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
+        ignore_eos: bool = False,
         stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> int:
@@ -571,6 +576,7 @@ class Session:
             ngram_window=ngram_window,
             seed=seed,
             deterministic=deterministic,
+            ignore_eos=ignore_eos,
             stop_sequences=stop_sequences,
             metadata=metadata,
         )
@@ -604,6 +610,7 @@ class Session:
         ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
+        ignore_eos: bool = False,
         stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]:
@@ -622,6 +629,7 @@ class Session:
             ngram_window=ngram_window,
             seed=seed,
             deterministic=deterministic,
+            ignore_eos=ignore_eos,
             stop_sequences=stop_sequences,
             metadata=metadata,
         ):
@@ -1293,30 +1301,50 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: 
 
     template = _chat_prompt_template(model_id)
     prompt_parts: list[str] = []
-    if template == "llama3":
+    if template in {"llama3", "llama4"}:
         prompt_parts.append("<|begin_of_text|>")
 
+    # Qwen tool results ride inside a single user turn as <tool_response>
+    # blocks (server chat.rs); a literal `tool` ChatML role does not exist.
+    qwen_tool_response_open = False
     for message in messages:
         normalized = _normalize_chat_message(message)
         role = _normalize_chat_role(normalized.role)
         content = normalized.content
         if template == "qwen_chatml":
-            prompt_parts.append(
-                f"<|im_start|>{role}\n{_escape_qwen_chatml_content(content)}<|im_end|>\n"
-            )
+            escaped = _escape_qwen_chatml_content(content)
+            if role in {"tool", "function"}:
+                if not qwen_tool_response_open:
+                    prompt_parts.append("<|im_start|>user\n")
+                    qwen_tool_response_open = True
+                prompt_parts.append(f"<tool_response>\n{escaped}\n</tool_response>\n")
+            else:
+                if qwen_tool_response_open:
+                    prompt_parts.append("<|im_end|>\n")
+                    qwen_tool_response_open = False
+                prompt_parts.append(f"<|im_start|>{role}\n{escaped}<|im_end|>\n")
         elif template == "llama3":
             prompt_parts.append(
                 f"<|start_header_id|>{role}<|end_header_id|>\n\n"
                 f"{_escape_llama3_content(content)}<|eot_id|>"
             )
+        elif template == "llama4":
+            prompt_parts.append(
+                f"<|header_start|>{role}<|header_end|>\n\n{_escape_llama4_content(content)}<|eot|>"
+            )
         else:
             safe_content = content.replace("\\", "\\\\").replace("\n", "\\n")
             prompt_parts.append(f"{role}: {safe_content}\n")
+
+    if qwen_tool_response_open:
+        prompt_parts.append("<|im_end|>\n")
 
     if template == "qwen_chatml":
         prompt_parts.append(_qwen_assistant_generation_prompt(model_id))
     elif template == "llama3":
         prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+    elif template == "llama4":
+        prompt_parts.append("<|header_start|>assistant<|header_end|>\n\n")
     else:
         prompt_parts.append("assistant:")
     return "".join(prompt_parts)
@@ -1348,19 +1376,28 @@ def _escape_llama3_content(content: str) -> str:
     )
 
 
+def _escape_llama4_content(content: str) -> str:
+    """Escape literal Llama 4 header/turn-boundary tokens inside content.
+
+    Mirrors ``escape_llama4_content`` in the server's chat.rs.
+    """
+    return (
+        content.replace("<|header_start|>", "&lt;|header_start|>")
+        .replace("<|header_end|>", "&lt;|header_end|>")
+        .replace("<|eot|>", "&lt;|eot|>")
+    )
+
+
 def _chat_prompt_template(model_id: str) -> str:
     normalized = model_id.lower()
     if "qwen" in normalized:
         return "qwen_chatml"
-    # Llama 3.x and Llama 4 Instruct share header/eot framing (server chat.rs).
-    if (
-        "llama-4" in normalized
-        or "llama4" in normalized
-        or "llama_4" in normalized
-        or "llama-3" in normalized
-        or "llama3" in normalized
-        or "llama_3" in normalized
-    ):
+    # Llama 4 Instruct uses `<|header_start|>` / `<|eot|>` framing, distinct
+    # from the Llama 3.x `<|start_header_id|>` / `<|eot_id|>` markers
+    # (server chat.rs renders them as separate templates).
+    if "llama-4" in normalized or "llama4" in normalized or "llama_4" in normalized:
+        return "llama4"
+    if "llama-3" in normalized or "llama3" in normalized or "llama_3" in normalized:
         return "llama3"
     return "plain_role_prefix"
 
@@ -1520,7 +1557,8 @@ def _default_mlx_lm_cache_root() -> Path:
         return Path(hf_hub_cache).expanduser()
     if hf_home := os.environ.get("HF_HOME"):
         return Path(hf_home).expanduser() / "hub"
-    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
+    # An empty XDG_CACHE_HOME is unset (XDG spec); do not resolve it to `.`.
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache").expanduser()
     return cache_home / "huggingface" / "hub"
 
 

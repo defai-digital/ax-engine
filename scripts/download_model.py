@@ -896,7 +896,8 @@ def default_mlx_lm_cache_root() -> Path:
         return Path(hf_hub_cache).expanduser()
     if hf_home := os.environ.get("HF_HOME"):
         return Path(hf_home).expanduser() / "hub"
-    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
+    # An empty XDG_CACHE_HOME is unset (XDG spec); do not resolve it to `.`.
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache").expanduser()
     return cache_home / "huggingface" / "hub"
 
 

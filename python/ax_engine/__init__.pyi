@@ -95,69 +95,72 @@ class CapabilityReport:
     prefix_reuse: bool
     long_context_validation: str
     benchmark_metrics: str
+    image_input: str = "unsupported"
+    delegated_readiness: str = "unsupported"
+    provider_extensions: str = "unsupported"
 
 @dataclass(frozen=True)
 class HostInfo:
-    os: str
-    arch: str
-    detected_soc: str | None
-    supported_mlx_runtime: bool
-    unsupported_host_override_active: bool
+    os: str = ""
+    arch: str = ""
+    detected_soc: str | None = None
+    supported_mlx_runtime: bool = False
+    unsupported_host_override_active: bool = False
 
 @dataclass(frozen=True)
 class ToolStatusInfo:
-    available: bool
-    version: str | None
+    available: bool = False
+    version: str | None = None
 
 @dataclass(frozen=True)
 class MetalToolchainInfo:
-    fully_available: bool
-    metal: ToolStatusInfo
-    metallib: ToolStatusInfo
-    metal_ar: ToolStatusInfo
+    fully_available: bool = False
+    metal: ToolStatusInfo = ...
+    metallib: ToolStatusInfo = ...
+    metal_ar: ToolStatusInfo = ...
 
 @dataclass(frozen=True)
 class MlxRuntimeInfo:
-    runner: str
-    artifacts_source: str | None
+    runner: str = ""
+    artifacts_source: str | None = None
 
 @dataclass(frozen=True)
 class SourceQuantizationInfo:
-    format: str
-    tensor_type_counts: dict[str, int]
-    quantized_tensor_count: int
-    contains_quantized_tensors: bool
+    format: str = ""
+    tensor_type_counts: dict[str, int] = ...
+    quantized_tensor_count: int = 0
+    contains_quantized_tensors: bool = False
 
 @dataclass(frozen=True)
 class RuntimeStatusInfo:
-    ready: bool
-    blockers: list[str]
-    notes: list[str]
+    ready: bool = True
+    blockers: list[str] = ...
+    notes: list[str] = ...
 
 @dataclass(frozen=True)
 class MlxModelInfo:
-    artifacts_source: str | None
-    model_family: str
-    tensor_format: str
-    source_quantization: SourceQuantizationInfo | None
-    runtime_status: RuntimeStatusInfo
-    layer_count: int
-    tensor_count: int
-    tie_word_embeddings: bool
-    is_moe: bool
-    is_hybrid_attention: bool
-    hybrid_full_attention_interval: int | None
-    mla_kv_latent_dim: int | None
-    moe_active_experts: int | None
-    bindings_prepared: bool
-    buffers_bound: bool
-    buffer_count: int
-    buffer_bytes: int
-    source_quantized_binding_count: int
-    source_q4_k_binding_count: int
-    source_q5_k_binding_count: int
-    source_q6_k_binding_count: int
-    source_q8_0_binding_count: int
+    artifacts_source: str | None = None
+    model_family: str = ""
+    tensor_format: str = ""
+    source_quantization: SourceQuantizationInfo | None = None
+    runtime_status: RuntimeStatusInfo = ...
+    layer_count: int = 0
+    tensor_count: int = 0
+    tie_word_embeddings: bool = False
+    is_moe: bool = False
+    is_hybrid_attention: bool = False
+    hybrid_full_attention_interval: int | None = None
+    mla_kv_latent_dim: int | None = None
+    moe_active_experts: int | None = None
+    bindings_prepared: bool = False
+    buffers_bound: bool = False
+    buffer_count: int = 0
+    buffer_bytes: int = 0
+    source_quantized_binding_count: int = 0
+    source_q4_k_binding_count: int = 0
+    source_q5_k_binding_count: int = 0
+    source_q6_k_binding_count: int = 0
+    source_q8_0_binding_count: int = 0
 
 @dataclass(frozen=True)
 class RuntimeInfo:
@@ -355,6 +358,7 @@ class Session:
         ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
+        ignore_eos: bool = False,
         stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> GenerateResult: ...
@@ -391,6 +395,7 @@ class Session:
         ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
+        ignore_eos: bool = False,
         stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> int: ...
@@ -430,6 +435,7 @@ class Session:
         ngram_window: int = 128,
         seed: int = 0,
         deterministic: bool | None = None,
+        ignore_eos: bool = False,
         stop_sequences: list[str] | None = None,
         metadata: str | None = None,
     ) -> Iterator[GenerateStreamEvent]: ...

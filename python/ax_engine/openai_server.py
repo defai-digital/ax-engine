@@ -32,6 +32,18 @@ def _escape_qwen_chatml_content(content: str) -> str:
     )
 
 
+def _escape_llama4_content(content: str) -> str:
+    """Escape literal Llama 4 header/turn-boundary tokens inside content.
+
+    Mirrors ``escape_llama4_content`` in the server's chat.rs.
+    """
+    return (
+        content.replace("<|header_start|>", "&lt;|header_start|>")
+        .replace("<|header_end|>", "&lt;|header_end|>")
+        .replace("<|eot|>", "&lt;|eot|>")
+    )
+
+
 def _escape_llama3_content(content: str) -> str:
     """Escape literal Llama 3.x header/turn-boundary tokens inside content.
 
@@ -59,7 +71,7 @@ def render_chat_prompt(
 
     template = chat_prompt_template(model_id)
     prompt_parts: list[str] = []
-    if template == "llama3":
+    if template in {"llama3", "llama4"}:
         prompt_parts.append("<|begin_of_text|>")
 
     qwen_tool_style = qwen_tool_contract_style(model_id)
@@ -120,6 +132,10 @@ def render_chat_prompt(
                 f"<|start_header_id|>{role}<|end_header_id|>\n\n"
                 f"{_escape_llama3_content(content)}<|eot_id|>"
             )
+        elif template == "llama4":
+            prompt_parts.append(
+                f"<|header_start|>{role}<|header_end|>\n\n{_escape_llama4_content(content)}<|eot|>"
+            )
         else:
             safe_content = content.replace("\\", "\\\\").replace("\n", "\\n")
             prompt_parts.append(f"{role}: {safe_content}\n")
@@ -131,6 +147,8 @@ def render_chat_prompt(
         prompt_parts.append(qwen_assistant_generation_prompt(model_id))
     elif template == "llama3":
         prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+    elif template == "llama4":
+        prompt_parts.append("<|header_start|>assistant<|header_end|>\n\n")
     else:
         prompt_parts.append("assistant:")
     return "".join(prompt_parts)
@@ -140,15 +158,12 @@ def chat_prompt_template(model_id: str) -> str:
     normalized = model_id.lower()
     if "qwen" in normalized:
         return "qwen_chatml"
-    # Llama 3.x and Llama 4 Instruct share header/eot framing (server chat.rs).
-    if (
-        "llama-4" in normalized
-        or "llama4" in normalized
-        or "llama_4" in normalized
-        or "llama-3" in normalized
-        or "llama3" in normalized
-        or "llama_3" in normalized
-    ):
+    # Llama 4 Instruct uses `<|header_start|>` / `<|eot|>` framing, distinct
+    # from the Llama 3.x `<|start_header_id|>` / `<|eot_id|>` markers
+    # (server chat.rs renders them as separate templates).
+    if "llama-4" in normalized or "llama4" in normalized or "llama_4" in normalized:
+        return "llama4"
+    if "llama-3" in normalized or "llama3" in normalized or "llama_3" in normalized:
         return "llama3"
     return "plain_role_prefix"
 

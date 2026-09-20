@@ -905,6 +905,18 @@ class AxEngineCliTests(unittest.TestCase):
             ],
         )
 
+    def test_serve_file_target_does_not_resolve_as_local_model_dir(self) -> None:
+        # A file that happens to match the argument must not be handed to the
+        # server as an artifacts dir; only directories are local models.
+        with tempfile.TemporaryDirectory() as tmp:
+            stray = pathlib.Path(tmp) / "not-a-model"
+            stray.write_text("x")
+            with unittest.mock.patch.object(_cli, "_server_bin", return_value="ax-engine-server"):
+                with self.assertRaises(SystemExit) as raised:
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        _cli.main(["serve", str(stray), "--dry-run", "--json"])
+        self.assertNotEqual(raised.exception.code, 0)
+
     def test_serve_dry_run_json_uses_local_model_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = pathlib.Path(tmp) / "model"

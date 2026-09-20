@@ -253,6 +253,7 @@ def prepare_gemma4_unified_video_request(
 
 
 def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
+    model_dir = model_dir.expanduser()
     model_config_path = model_dir / "config.json"
     if not model_config_path.is_file():
         raise FileNotFoundError(f"Gemma4 unified config not found: {model_config_path}")
@@ -574,20 +575,39 @@ def _load_pil_image(image: Any):
         return image.copy()
     opened = None
     if isinstance(image, bytes):
-        opened = Image.open(BytesIO(image))
+        opened = _open_image(BytesIO(image))
     elif isinstance(image, str):
         if image.startswith("data:"):
-            opened = Image.open(BytesIO(_decode_data_uri(image, ("image/",))))
+            opened = _open_image(BytesIO(_decode_data_uri(image, ("image/",))))
         elif _is_remote_url(image):
-            opened = Image.open(BytesIO(_fetch_url_bytes(image)))
+            opened = _open_image(BytesIO(_fetch_url_bytes(image)))
         elif image.startswith("file://"):
             image = _file_url_to_path(image)
     if opened is None:
-        opened = Image.open(image)
+        if isinstance(image, (str, Path)):
+            image = Path(image).expanduser()
+        opened = _open_image(image)
     with opened:
         _validate_image_dimensions(*opened.size)
-        opened.load()
+        try:
+            opened.load()
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"cannot decode Gemma4 unified image: {exc}") from exc
         return opened.copy()
+
+
+def _open_image(source: Any) -> Any:
+    """Open an image source, mapping undecodable data to the module's
+    ``ValueError`` contract while keeping a genuinely missing path a
+    ``FileNotFoundError`` (matching the Unlimited-OCR helper)."""
+    from PIL import Image
+
+    try:
+        return Image.open(source)
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot decode Gemma4 unified image: {exc}") from exc
 
 
 def _load_audio_waveform(audio: Any) -> tuple[list[float], int | None]:
@@ -610,7 +630,7 @@ def _load_audio_waveform(audio: Any) -> tuple[list[float], int | None]:
         if audio.startswith("file://"):
             audio = _file_url_to_path(audio)
     if isinstance(audio, (Path, str)):
-        with Path(audio).open("rb") as handle:
+        with Path(audio).expanduser().open("rb") as handle:
             return _load_wav(handle)
     return _flatten_audio_values(audio), None
 
@@ -776,7 +796,7 @@ def _file_url_to_path(url: str) -> Path:
         raise ValueError(f"Gemma4 unified expected a file URL, got {url}")
     if parsed.netloc not in ("", "localhost"):
         raise ValueError("Gemma4 unified file URLs must be local")
-    return Path(urllib.parse.unquote(parsed.path))
+    return Path(urllib.parse.unquote(parsed.path)).expanduser()
 
 
 def _sample_video_frames(frames: list[Any], max_frames: int) -> list[Any]:

@@ -382,6 +382,13 @@ class DownloadModelScriptTest(unittest.TestCase):
                 Path("/tmp/xdg-cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit"),
             )
 
+        # An empty XDG_CACHE_HOME is unset (XDG spec), never the current directory.
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": "", "HOME": "/tmp/xdg-home"}, clear=True):
+            self.assertEqual(
+                download_model.default_mlx_lm_cache_root(),
+                Path("/tmp/xdg-home/.cache/huggingface/hub"),
+            )
+
     def test_json_summary_for_existing_ready_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)

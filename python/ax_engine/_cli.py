@@ -9,6 +9,7 @@ import os
 import pathlib
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1910,7 +1911,9 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
     argv = [server_bin, "--host", args.host, "--port", str(args.port)]
 
     resolved: dict[str, Any]
-    if target_path.exists():
+    # Only a directory is a local artifacts dir; a stray file must not shadow
+    # an alias or be handed to the server as `--mlx-model-artifacts-dir`.
+    if target_path.is_dir():
         resolved = {
             "kind": "local_dir",
             "model": str(target_path.resolve()),
@@ -2020,7 +2023,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     else:
         print(f"AX Engine server: {url}")
         print("Command:")
-        print("  " + " ".join(argv))
+        print("  " + shlex.join(argv))
 
     if args.dry_run:
         return 0
