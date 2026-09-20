@@ -2283,13 +2283,18 @@ pub fn glm_mtp_draft_tokens_gated(
     let gate_forces_greedy = min_confidence > 0.0 && draft_mode != MtpDraftMode::Stochastic;
 
     let result = if gate_forces_greedy || draft_mode == MtpDraftMode::Greedy {
-        // Token selection is always argmax here (matching Qwen's naming),
-        // but the log-prob fed into rejection-sampling accept/reject math
-        // must still be computed at the configured draft-sampling
-        // temperature when one is set — mirrors Qwen's
-        // `mtp_draft_tokens_sampled` vs `mtp_draft_tokens_greedy` split
-        // (see `mtp_draft_tokens_gated`'s `use_temperature` check above).
-        let log_prob_temperature = if head.draft_sampling.temperature > 0.0 {
+        // Token selection is always argmax here (matching Qwen's naming).
+        // The confidence gate keys off the head's true (T=1.0) probability,
+        // exactly like `mtp_draft_tokens_gated`: temperature-sharpened
+        // log-probs saturate near 1.0 and let sub-threshold drafts through.
+        // Without the gate, the log-prob fed into rejection-sampling
+        // accept/reject math is computed at the configured draft-sampling
+        // temperature when one is set (Qwen's sampled/greedy split), and the
+        // runner records the matching T via
+        // `qwen_mtp_draft_log_prob_temperature`.
+        let log_prob_temperature = if gate_forces_greedy {
+            1.0
+        } else if head.draft_sampling.temperature > 0.0 {
             head.draft_sampling.temperature
         } else {
             1.0

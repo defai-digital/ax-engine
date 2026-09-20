@@ -9518,10 +9518,22 @@ impl MlxRunner {
             .as_ref()
             .map(|h| h.draft_sampling.temperature)
             .or_else(|| {
-                self.weights
-                    .glm_mtp
-                    .as_ref()
-                    .map(|h| h.draft_sampling.temperature)
+                // GLM drafts follow the Qwen gate rule: with the confidence
+                // gate active the log-probs are written at T=1.0, so the
+                // accept path must rescale with the same T.
+                self.weights.glm_mtp.as_ref().map(|h| {
+                    let (glm_gate, _) = resolve_mtp_gate_from_env(
+                        Some(sampling.temperature),
+                        state.mtp_adaptive_gate.as_ref(),
+                        mtp_optimistic_draft_min_confidence_override(),
+                        self.mtp_model_policy.glm_gate_default(),
+                    );
+                    crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
+                        h.draft_sampling.temperature,
+                        glm_gate,
+                        false,
+                    )
+                })
             })
             .or(deepseek_draft_temperature);
         let draft_log_prob_temperature_for_new_drafts = draft_sampling_temperature
