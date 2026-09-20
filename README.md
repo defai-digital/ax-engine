@@ -377,17 +377,34 @@ its prefill lead is 6x for both AX and MTPLX. Full analysis:
 
 ### Tiel / Cyber-Tiel peer refresh (2026-09-20)
 
-The [matched MTPLX comparison](benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md)
+The [four-machine performance report](docs/performance/tiel-vs-mtplx-2026-09-20.md)
 reports both packs separately on M5 Max 128 GiB, M4 Pro 64 GiB, M2 Ultra
 192 GiB and M3 Ultra 512 GiB. It uses identical model files and prompt tokens, fixed output counts,
 cold KV, two reversed-order blocks, and completion throughput including TTFT.
 These are explicit throughput-MTP, full-resident native API measurements.
+
+Coding completion throughput includes TTFT. Each cell has six measured samples;
+the ranges below compare the four Python/Rust cells per host with MTPLX
+**2.11.3 sustained**, not pooled speedups. Both engines use MLX **0.32.2**.
+
+| Tested machine | AX completion difference | Observed tradeoff |
+| --- | ---: | --- |
+| MacBook Pro M5 Max, 128 GiB | +3.1% to +18.0% | AX leads in completion, decode and TTFT. |
+| Mac mini M4 Pro, 64 GiB | -2.4% to -0.5% | MTPLX finishes slightly faster and starts sooner; AX decode is slightly faster. |
+| Mac Studio M2 Ultra, 192 GiB | -2.1% to +8.6% | Mixed completion results; AX decode is faster, MTPLX starts sooner. |
+| Mac Studio M3 Ultra, 512 GiB | +2.2% to +4.7% | AX finishes faster; MTPLX starts sooner. |
+
+The report includes both MTPLX profiles, separate decode/TTFT tables, memory,
+unwired controls and limitations. There is no comparable isolated prefill
+tokens/s claim. Both engines keep the model loaded throughout measured requests.
+
 That campaign explicitly used `mlx_stream_experts="off"` on the 64 GiB mini;
 the tested Auto build retained a 48 GiB reserve and paged experts. Wired/unwired controls and
 Auto diagnostics are reported separately. These results do not promote MTP,
 change defaults or certify either pack. The subsequent
 [bounded M4 default-session residency change](docs/mtp/tiel-prefill-diagnostics.md#bounded-default-session-residency)
-has separate server acceptance evidence.
+has separate AX-only server acceptance evidence; MTPLX was not rerun for that
+later build, and these peer timings are not default-server measurements.
 
 ### Campaign host: Apple M5 Max 128 GB (2026-09-15)
 

@@ -71,20 +71,31 @@ share a same-artifact denominator.
 
 #### Tiel and Cyber-Tiel resident peer comparison (2026-09-20)
 
-[Full results, sample ranges, TTFT and raw trial evidence](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md)
-compare AX with MTPLX sustained and turbo on the same exact MXFP4 MTP packs.
+[Four-machine report: completion, decode, TTFT and memory](performance/tiel-vs-mtplx-2026-09-20.md)
+compares AX with MTPLX sustained and turbo on the same exact MXFP4 MTP packs.
+Coding completion versus sustained is +3.1% to +18.0% on M5 Max, -2.4% to
+-0.5% on M4 Pro, -2.1% to +8.6% on M2 Ultra, and +2.2% to +4.7% on M3 Ultra.
+These are per-cell ranges, not pooled speedups. AX has lower coding TTFT on M5;
+MTPLX has lower TTFT on the other three hosts under the normal AX wiring policy.
+The [raw campaign tables](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md)
+retain sample spread, order effects and synthetic diagnostic results.
 The primary metric is **completion tok/s including TTFT**, not the pure decode
 metric used by other MTP tables below. Every primary cell pools six measured
 requests from reversed-order blocks after two warmups per block.
 
 This is explicit throughput-MTP with cold KV and full-resident weights, not
 server-default or certification evidence. M4 Pro has **64 GiB physical RAM**;
-the **48 GiB** number is AX's Auto headroom reserve. The tested Auto build paged these packs at
+the **48 GiB** number in that campaign is AX's Auto headroom reserve. The tested Auto build paged these packs at
 that capacity, so the resident comparison explicitly selected expert-stream
 Off. The short Auto diagnostic is separate. Normal wiring and explicit no-wire
 controls also remain separate; M2/M3/M4 measurements do not expand the automatic
 M5-only tuning policy. Read the per-host background-load and memory caveats
 before comparing results across machines.
+
+The later `c15a2347` bounded M4 default-session residency change has
+[separate AX-only HTTP acceptance](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-default/README.md),
+with no new MTPLX run or MTP-default promotion. Its 48 GiB model budget cap is
+distinct from the historical general-policy headroom allowance.
 
 AX Engine supports two MTP packaging contracts in the repo-owned runtime: Qwen
 fused sidecars and Gemma assistant drafters. The

@@ -5,7 +5,12 @@ All primary cells use six measured samples from two reversed-order blocks.
 Primary metric is completion tok/s including TTFT. These are resident,
 explicit throughput-MTP native-library measurements, not default server performance.
 
-**M4 requires explicit expert-stream Off. Auto retains the 48 GiB reserve and pages these packs.**
+**The measured M4 build required explicit expert-stream Off: its Auto policy
+retained the 48 GiB reserve and paged these packs.** The subsequent `c15a2347`
+bounded default-session change has [separate AX-only server evidence](../2026-09-20-default/README.md);
+these peer timings were not rerun on that later build. See the
+[four-machine public report](../../../../../docs/performance/tiel-vs-mtplx-2026-09-20.md)
+for the consolidated interpretation.
 
 Both engines retain the full model throughout measured requests. Unwired
 means the OS residency lock is disabled; it does not unload the model.

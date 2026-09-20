@@ -30,7 +30,11 @@ Exact model snapshots:
 | `AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP` | `5ab39b24bfd7f65203be9b7823b1840486f58b6d` |
 | `AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP` | `fe05e871ec69ad9ae8eac01fd285555514ac7daf` |
 
-See [results and per-host limitations](RESULTS.md). The main matrix contains
+See the [four-machine public report](../../../../../docs/performance/tiel-vs-mtplx-2026-09-20.md)
+and [results and per-host limitations](RESULTS.md). The later `c15a2347` bounded
+M4 default-session residency change has [separate AX-only acceptance](../2026-09-20-default/README.md).
+The Auto statements below describe this campaign's measured build, not that
+later policy; there was no new MTPLX run for the later build. The main matrix contains
 540 measured requests and 360 warmups; a separate M4 admission diagnostic
 adds six measured 16-token requests and six warmups.
 
