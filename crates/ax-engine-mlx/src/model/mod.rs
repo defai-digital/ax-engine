@@ -4548,9 +4548,15 @@ fn forward_lazy_single_and_logits_mode(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
-    // Single-token decode never needs an explicit SDPA mask. Use one borrowed
-    // `None` for every layer instead of allocating a per-step mask vector.
+    // Single-token decode never needs an explicit SDPA mask — except in
+    // bounded-rollback rotating mode, where a converted sliding layer
+    // presents its full `window + slack` ring and needs the slot-validity
+    // mask even for one query (same rule as `forward_and_logits_mode`).
+    // Keep the common decode path on one borrowed `None`.
     let decode_mask: Option<MlxArray> = None;
+    let masks = (cache.rotating_sliding_slack() > 0).then(|| {
+        build_layer_masks_for_forward(cfg, weights.layers.len(), 1, token_offset + 1, cache)
+    });
 
     let per_layer_started = profile_decode.then(Instant::now);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden);
@@ -4572,6 +4578,10 @@ fn forward_lazy_single_and_logits_mode(
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         let layer_ops_before = stage_profile.then(mlx_sys::op_count_snapshot);
+        let shared_mask = masks
+            .as_ref()
+            .map(|masks| &masks[li])
+            .unwrap_or(&decode_mask);
         hidden = layer_forward(
             cfg,
             layer_w,
@@ -4580,7 +4590,7 @@ fn forward_lazy_single_and_logits_mode(
             li,
             token_offset,
             pli,
-            Some(&decode_mask),
+            Some(shared_mask),
         );
         if let Some(layer_ops_before) = layer_ops_before {
             let layer_ops_delta = mlx_sys::op_count_take(layer_ops_before);

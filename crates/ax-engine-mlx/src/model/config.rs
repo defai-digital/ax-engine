@@ -925,6 +925,8 @@ fn default_rms_norm_eps(model_family: &str) -> f32 {
         || model_family == "minicpmv4_6"
         || model_family.starts_with("gemma")
         || model_family == "diffusion_gemma"
+        // Gemma3 text backbone (`uses_geglu` treats it as Gemma family too).
+        || model_family == "embeddinggemma"
         || model_family == "unlimited_ocr"
         || model_family == "muse_glimmer"
         || model_family.starts_with("deepseek")
@@ -1278,6 +1280,8 @@ mod tests {
         // DeepSeek-V2 / Unlimited-OCR language towers use 1e-6; the generic
         // non-qwen/gemma fallback of 1e-5 would silently corrupt OCR quality.
         assert!((default_rms_norm_eps("unlimited_ocr") - 1e-6).abs() < f32::EPSILON);
+        // Gemma3 text backbone: same 1e-6 default as the rest of the Gemma family.
+        assert!((default_rms_norm_eps("embeddinggemma") - 1e-6).abs() < f32::EPSILON);
         assert!((default_rms_norm_eps("deepseek_v3") - 1e-6).abs() < f32::EPSILON);
         assert!((default_rms_norm_eps("deepseek_v32") - 1e-6).abs() < f32::EPSILON);
         assert!((default_rms_norm_eps("qwen3") - 1e-6).abs() < f32::EPSILON);
