@@ -306,7 +306,7 @@ final class AxEngineClientTests: XCTestCase {
         data: [DONE]
 
         """
-        MockURLProtocol.handler = { _ in sseResponse(sse) }
+        MockURLProtocol.handler = { _ in sseResponse(sse + "\n") }
 
         var chunks: [OpenAiChatCompletionChunk] = []
         for try await chunk in makeClient().streamChatCompletion(.init(
@@ -326,7 +326,7 @@ final class AxEngineClientTests: XCTestCase {
         data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"qwen3_dense","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 
         """
-        MockURLProtocol.handler = { _ in sseResponse(sse) }
+        MockURLProtocol.handler = { _ in sseResponse(sse + "\n") }
 
         var chunks = 0
         do {
@@ -340,6 +340,52 @@ final class AxEngineClientTests: XCTestCase {
             XCTAssertTrue(err.message.contains("[DONE]"))
         }
         XCTAssertEqual(chunks, 1)
+    }
+
+    func testSSEParserFraming() async throws {
+        let cases: [(String, String, String)] = [
+            ("event: error\n\ndata: real\n\n", "message", "real"),
+            ("event: step\rdata: hello\r\r", "step", "hello"),
+            ("event: step\r\ndata: one\rdata: two\n\r\n", "step", "one\ntwo"),
+            ("data:   indented\n\n", "message", "  indented"),
+            ("event:  custom \ndata: x\n\n", " custom ", "x"),
+            ("event:\ndata: x\n\n", "message", "x"),
+            ("data\n\n", "message", ""),
+            ("\u{FEFF}data: x\n\n", "message", "x"),
+        ]
+        for (input, name, data) in cases {
+            MockURLProtocol.handler = { _ in sseResponse(input) }
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [MockURLProtocol.self]
+            let session = URLSession(configuration: config)
+            defer { session.invalidateAndCancel() }
+            let (bytes, _) = try await session.bytes(from: URL(string: "http://localhost/sse")!)
+            var parser = SSEParser(bytes: bytes).makeAsyncIterator()
+            let event = try await parser.next()
+            XCTAssertEqual(event?.event, name, input)
+            XCTAssertEqual(event?.data, data, input)
+            let trailing = try await parser.next()
+            XCTAssertNil(trailing, input)
+        }
+    }
+
+    func testCompletionDoneFraming() async throws {
+        for ending in ["", "\n", "\r", "\n\n", "\r\r", "\r\n\r\n"] {
+            let input = "data: {\"id\":\"c1\",\"object\":\"text_completion.chunk\",\"created\":0,\"model\":\"qwen3_dense\",\"choices\":[{\"index\":0,\"text\":\"hello\"}]}\n\ndata: [DONE]" + ending
+            let complete = ["\n\n", "\r\r", "\r\n\r\n"].contains(ending)
+            MockURLProtocol.handler = { _ in sseResponse(input) }
+            var text = ""
+            do {
+                for try await chunk in makeClient().streamCompletion(.init(prompt: "x")) {
+                    text += chunk.choices.map(\.text).joined()
+                }
+                XCTAssertTrue(complete, "Incomplete event must not complete a stream")
+            } catch let error as AxEngineStreamError {
+                XCTAssertFalse(complete)
+                XCTAssertTrue(error.message.contains("[DONE]"))
+            }
+            XCTAssertEqual(text, "hello")
+        }
     }
 
     func testStreamChatCompletionSetsStreamTrue() async throws {
@@ -361,7 +407,7 @@ final class AxEngineClientTests: XCTestCase {
         data: [DONE]
 
         """
-        MockURLProtocol.handler = { _ in sseResponse(sse) }
+        MockURLProtocol.handler = { _ in sseResponse(sse + "\n") }
 
         var texts: [String] = []
         for try await chunk in makeClient().streamCompletion(.init(prompt: "Once upon")) {
@@ -382,7 +428,7 @@ final class AxEngineClientTests: XCTestCase {
         data: {"response":{"request_id":1,"model_id":"qwen3_dense","prompt_tokens":[1,2,3],"output_tokens":[42],"status":"finished","finish_reason":"stop","step_count":1,"route":{}}}
 
         """
-        MockURLProtocol.handler = { _ in sseResponse(sse) }
+        MockURLProtocol.handler = { _ in sseResponse(sse + "\n") }
 
         var events: [GenerateStreamEvent] = []
         for try await event in makeClient().streamGenerate(.init(inputTokens: [1, 2, 3], maxOutputTokens: 4)) {
@@ -405,7 +451,7 @@ final class AxEngineClientTests: XCTestCase {
         data: {"error":{"message":"model crashed"}}
 
         """
-        MockURLProtocol.handler = { _ in sseResponse(sse) }
+        MockURLProtocol.handler = { _ in sseResponse(sse + "\n") }
 
         do {
             for try await _ in makeClient().streamCompletion(.init(prompt: "test")) {}
@@ -422,7 +468,7 @@ final class AxEngineClientTests: XCTestCase {
         data: something went wrong
 
         """
-        MockURLProtocol.handler = { _ in sseResponse(sse) }
+        MockURLProtocol.handler = { _ in sseResponse(sse + "\n") }
 
         do {
             for try await _ in makeClient().streamCompletion(.init(prompt: "test")) {}

@@ -2,6 +2,7 @@ package axengine
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,9 +17,10 @@ type SSEEvent struct {
 
 // SSEReader reads SSE events from an io.Reader.
 type SSEReader struct {
-	scanner *bufio.Scanner
-	event   string
-	dataBuf strings.Builder
+	scanner   *bufio.Scanner
+	event     string
+	dataBuf   strings.Builder
+	firstLine bool
 }
 
 // maxSSELineSize bounds a single SSE line. The native /v1/generate/stream
@@ -30,7 +32,28 @@ const maxSSELineSize = 16 * 1024 * 1024
 func NewSSEReader(r io.Reader) *SSEReader {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
-	return &SSEReader{scanner: scanner, event: "message"}
+	// Consume CR immediately, then skip an optional LF on the next scan.
+	// Waiting for the byte after CR would stall a complete CR-ended event.
+	skipLF := false
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		offset := 0
+		if skipLF && len(data) > 0 {
+			skipLF = false
+			if data[0] == '\n' {
+				offset = 1
+				data = data[1:]
+			}
+		}
+		if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+			skipLF = data[i] == '\r'
+			return offset + i + 1, data[:i], nil
+		}
+		if atEOF {
+			return offset + len(data), nil, nil
+		}
+		return offset, nil, nil
+	})
+	return &SSEReader{scanner: scanner, event: "message", firstLine: true}
 }
 
 // Next advances to the next event. Returns (event, true) when an event is
@@ -38,6 +61,10 @@ func NewSSEReader(r io.Reader) *SSEReader {
 func (s *SSEReader) Next() (*SSEEvent, bool) {
 	for s.scanner.Scan() {
 		line := s.scanner.Text()
+		if s.firstLine {
+			line = strings.TrimPrefix(line, "\ufeff")
+			s.firstLine = false
+		}
 
 		if line == "" {
 			if s.dataBuf.Len() == 0 {
@@ -57,22 +84,23 @@ func (s *SSEReader) Next() (*SSEEvent, bool) {
 		if strings.HasPrefix(line, ":") {
 			continue
 		}
-		if after, ok := strings.CutPrefix(line, "event:"); ok {
-			s.event = strings.TrimSpace(after)
-			continue
-		}
-		if after, ok := strings.CutPrefix(line, "data:"); ok {
-			s.dataBuf.WriteString(strings.TrimLeft(after, " "))
+		field, value, _ := strings.Cut(line, ":")
+		value = strings.TrimPrefix(value, " ")
+		switch field {
+		case "event":
+			s.event = value
+			if s.event == "" {
+				s.event = "message"
+			}
+		case "data":
+			s.dataBuf.WriteString(value)
 			s.dataBuf.WriteByte('\n')
 		}
 	}
 
-	if s.dataBuf.Len() > 0 {
-		data := strings.TrimSuffix(s.dataBuf.String(), "\n")
-		ev := &SSEEvent{Event: s.event, Data: data}
-		s.dataBuf.Reset()
-		return ev, true
-	}
+	// EOF never dispatches a partial event, including a partial [DONE].
+	s.dataBuf.Reset()
+	s.event = "message"
 
 	return nil, false
 }

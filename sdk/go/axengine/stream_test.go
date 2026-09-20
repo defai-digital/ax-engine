@@ -1,8 +1,10 @@
 package axengine
 
 import (
+	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 func TestSSEReaderBasic(t *testing.T) {
@@ -153,5 +155,42 @@ func TestPtrHelper(t *testing.T) {
 	ps := Ptr(s)
 	if *ps != "hello" {
 		t.Errorf("Ptr[string]: got %q want %q", *ps, "hello")
+	}
+}
+
+func TestSSEReaderFraming(t *testing.T) {
+	cases := []struct {
+		name, input, event, data string
+	}{
+		{"bare carriage return", "event: step\rdata: hello\r\r", "step", "hello"},
+		{"mixed line endings", "event: step\r\ndata: one\rdata: two\n\r\n", "step", "one\ntwo"},
+		{"one optional space", "data:   indented\n\n", "message", "  indented"},
+		{"literal event name", "event:  custom \ndata: x\n\n", " custom ", "x"},
+		{"empty event defaults", "event:\ndata: x\n\n", "message", "x"},
+		{"colonless data", "data\n\n", "message", ""},
+		{"leading BOM", "\ufeffdata: x\n\n", "message", "x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, source := range []io.Reader{strings.NewReader(tc.input), iotest.OneByteReader(strings.NewReader(tc.input))} {
+				r := NewSSEReader(source)
+				ev, ok := r.Next()
+				if !ok || ev.Event != tc.event || ev.Data != tc.data {
+					t.Fatalf("got %#v, %v; want event %q data %q", ev, ok, tc.event, tc.data)
+				}
+				if ev, ok := r.Next(); ok || r.Err() != nil {
+					t.Fatalf("unexpected trailing event %#v or error %v", ev, r.Err())
+				}
+			}
+		})
+	}
+}
+
+func TestSSEReaderDiscardsIncompleteEvents(t *testing.T) {
+	for _, input := range []string{"data: [DONE]", "data: [DONE]\n", "data: first\ndata: partial", "data: first\n"} {
+		r := NewSSEReader(strings.NewReader(input))
+		if ev, ok := r.Next(); ok {
+			t.Errorf("incomplete input %q dispatched %#v", input, ev)
+		}
 	}
 }

@@ -1,9 +1,9 @@
 package axengine
 
 import (
-	"errors"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -671,5 +671,32 @@ func TestChatCompletionDecodesLogprobs(t *testing.T) {
 	}
 	if lp.Content[0].Token != "hi" || lp.Content[0].Logprob != -0.25 {
 		t.Fatalf("unexpected token logprob %+v", lp.Content[0])
+	}
+}
+
+func TestStreamCompletionDoneFraming(t *testing.T) {
+	for _, ending := range []string{"", "\n", "\r", "\n\n", "\r\r", "\r\n\r\n"} {
+		input := "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"text\":\"hello\"}]}\n\ndata: [DONE]" + ending
+		complete := ending == "\n\n" || ending == "\r\r" || ending == "\r\n\r\n"
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, input)
+		})
+		startServer(t, mux, func(baseURL string) {
+			client := NewClient(&ClientOptions{BaseURL: baseURL})
+			ch, errCh := client.StreamCompletion(context.Background(), OpenAiCompletionRequest{Prompt: "x"})
+			var text string
+			for chunk := range ch {
+				text += chunk.Choices[0].Text
+			}
+			if text != "hello" {
+				t.Errorf("complete payload before trailer: got %q", text)
+			}
+			err := <-errCh
+			if complete && err != nil || !complete && !errors.Is(err, errStreamTruncated) {
+				t.Fatalf("ending %q: complete=%v, got error %v", ending, complete, err)
+			}
+		})
 	}
 }

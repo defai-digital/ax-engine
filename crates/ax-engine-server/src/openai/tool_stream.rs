@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use crate::openai::requests::OpenAiToolContract;
 use crate::openai::responses::{
-    extract_bare_gemma4_tool_call_payload_at, extract_gemma4_tool_call_payload_at,
-    extract_xml_tool_call_payload_at, find_bare_gemma4_call,
+    extract_bare_gemma4_tool_call_payload_at, extract_closed_xml_tool_call_payload_at,
+    extract_gemma4_tool_call_payload_at, extract_xml_tool_call_payload_at, find_bare_gemma4_call,
 };
 use crate::openai::schema::{OpenAiFunctionCall, OpenAiToolCall};
 
@@ -76,7 +76,7 @@ impl ToolCallStreamScanner {
         let mut events = self.drain_events(true);
         if let Some(kind) = self.span.take()
             && !self.buffer.is_empty()
-            && let Some((function, remaining)) = self.extract_span_at_start(kind)
+            && let Some((function, remaining)) = self.extract_span_at_start(kind, true)
         {
             events.push(ToolScanEvent::Call(self.build_call(function)));
             self.buffer = remaining;
@@ -128,7 +128,7 @@ impl ToolCallStreamScanner {
                         let Some(close_at) = self.buffer.find(closer) else {
                             return events;
                         };
-                        match self.extract_span_at_start(kind) {
+                        match self.extract_span_at_start(kind, at_end) {
                             Some((function, remaining)) => {
                                 events.push(ToolScanEvent::Call(self.build_call(function)));
                                 self.buffer = remaining;
@@ -155,7 +155,7 @@ impl ToolCallStreamScanner {
                     // Bare Gemma4: no closer marker; complete when the brace
                     // matcher inside the extractor succeeds.
                     if let Some((function, remaining)) =
-                        self.extract_span_at_start(ToolSpanKind::BareGemma4)
+                        self.extract_span_at_start(ToolSpanKind::BareGemma4, at_end)
                     {
                         events.push(ToolScanEvent::Call(self.build_call(function)));
                         self.buffer = remaining;
@@ -198,9 +198,14 @@ impl ToolCallStreamScanner {
         earliest
     }
 
-    fn extract_span_at_start(&self, kind: ToolSpanKind) -> Option<(OpenAiFunctionCall, String)> {
+    fn extract_span_at_start(
+        &self,
+        kind: ToolSpanKind,
+        at_end: bool,
+    ) -> Option<(OpenAiFunctionCall, String)> {
         match kind {
-            ToolSpanKind::Xml => extract_xml_tool_call_payload_at(&self.buffer, 0),
+            ToolSpanKind::Xml if at_end => extract_xml_tool_call_payload_at(&self.buffer, 0),
+            ToolSpanKind::Xml => extract_closed_xml_tool_call_payload_at(&self.buffer, 0),
             ToolSpanKind::Gemma4 => extract_gemma4_tool_call_payload_at(&self.buffer, 0),
             ToolSpanKind::BareGemma4 => extract_bare_gemma4_tool_call_payload_at(&self.buffer, 0),
         }
@@ -432,6 +437,36 @@ mod tests {
         let calls = calls(&events);
         assert_eq!(calls.len(), 1);
         assert!(calls[0].function.arguments.contains("a</tool_call>b"));
+    }
+
+    #[test]
+    fn xml_inner_closer_does_not_complete_a_streaming_call() {
+        let body = r#"<tool_call>{"name":"echo","arguments":{"text":"a</tool_call>b"}}"#;
+        let mut scanner = scanner();
+        assert!(scanner.push(body).is_empty(), "wait for the actual closer");
+        let mut events = scanner.push("</tool_call>tail");
+        events.extend(scanner.finish());
+        assert_eq!(calls(&events).len(), 1);
+        assert_eq!(content(&events), "tail");
+    }
+
+    #[test]
+    fn xml_inner_closer_is_invariant_across_all_chunk_splits() {
+        let text =
+            r#"<tool_call>{"name":"echo","arguments":{"text":"a</tool_call>b"}}</tool_call>tail"#;
+        for split in 0..=text.len() {
+            let mut scanner = scanner();
+            let mut events = scanner.push(&text[..split]);
+            events.extend(scanner.push(&text[split..]));
+            events.extend(scanner.finish());
+            assert_eq!(calls(&events).len(), 1, "split {split}");
+            assert_eq!(content(&events), "tail", "split {split}");
+            assert_eq!(
+                calls(&events)[0].function.arguments,
+                r#"{"text":"a</tool_call>b"}"#,
+                "split {split}"
+            );
+        }
     }
 
     #[test]

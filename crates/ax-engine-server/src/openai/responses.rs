@@ -351,6 +351,23 @@ pub(crate) fn extract_xml_tool_call_payload_at(
     content: &str,
     start: usize,
 ) -> Option<(OpenAiFunctionCall, String)> {
+    extract_xml_tool_call_payload(content, start, true)
+}
+
+/// Streaming input must have a real closing marker outside the parsed body.
+/// The permissive EOF fallback belongs only to completed output.
+pub(crate) fn extract_closed_xml_tool_call_payload_at(
+    content: &str,
+    start: usize,
+) -> Option<(OpenAiFunctionCall, String)> {
+    extract_xml_tool_call_payload(content, start, false)
+}
+
+fn extract_xml_tool_call_payload(
+    content: &str,
+    start: usize,
+    allow_unterminated: bool,
+) -> Option<(OpenAiFunctionCall, String)> {
     if !content[start..].starts_with("<tool_call>") {
         return None;
     }
@@ -366,6 +383,9 @@ pub(crate) fn extract_xml_tool_call_payload_at(
             return Some((function, remaining));
         }
         search = end + "</tool_call>".len();
+    }
+    if !allow_unterminated {
+        return None;
     }
     // Unterminated call: the body runs to the end of the content.
     let function = parse_tool_call_body(content[body_start..].trim())?;
