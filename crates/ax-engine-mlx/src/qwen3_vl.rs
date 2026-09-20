@@ -942,6 +942,15 @@ fn validate_vision_geometry(
             "vision hidden_size must divide num_heads".into(),
         ));
     }
+    // The 2D rotary factors split head_dim into two (H, W) halves of paired
+    // frequencies, so head_dim must be a multiple of four or the cos/sin
+    // buffers are shorter than the shape they are declared with.
+    let head_dim = config.hidden_size / config.num_heads;
+    if head_dim == 0 || !head_dim.is_multiple_of(4) {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "vision head_dim {head_dim} must be a positive multiple of 4"
+        )));
+    }
     Ok(())
 }
 
@@ -957,6 +966,12 @@ fn interpolated_position_embeddings(
     if base == 0 || (base as usize).saturating_mul(base as usize) != num_positions {
         return Err(Qwen3VlError::InvalidGeometry(format!(
             "num_position_embeddings {num_positions} is not a square"
+        )));
+    }
+    let table_shape = table.shape();
+    if table_shape.len() != 2 || table_shape[0] != num_positions as i32 {
+        return Err(Qwen3VlError::InvalidGeometry(format!(
+            "pos_embed table {table_shape:?} does not hold num_position_embeddings {num_positions} rows"
         )));
     }
     let mut indices = [Vec::<u32>::new(), Vec::new(), Vec::new(), Vec::new()];
@@ -1253,6 +1268,12 @@ fn scatter_or_add_visual(
     }
     let tokens = shape[1] as usize;
     let hidden = shape[2];
+    if vision.shape()[2] != hidden {
+        return Err(Qwen3VlError::Scatter(format!(
+            "vision width {} != text width {hidden}",
+            vision.shape()[2]
+        )));
+    }
     if positions.len() != vision.shape()[1] as usize {
         return Err(Qwen3VlError::Scatter(format!(
             "positions {} != vision tokens {}",
@@ -1593,6 +1614,26 @@ mod tests {
         let added = add_deepstack_into_text(&scattered, &vision, &[1, 2]).unwrap();
         eval(&[&added]);
         assert_eq!(added.shape(), vec![1, 4, 2]);
+    }
+
+    #[test]
+    fn scatter_rejects_vision_width_mismatch() {
+        let text = zeros(&[1, 4, 2], MlxDtype::Float32, None);
+        // Counts and positions are valid; only the hidden width differs.
+        let wide = f32_array(&[1.0; 8], &[1, 2, 4]);
+        assert!(scatter_vision_into_text(&text, &wide, &[1, 2]).is_err());
+        assert!(add_deepstack_into_text(&text, &wide, &[1, 2]).is_err());
+    }
+
+    #[test]
+    fn position_table_must_hold_every_position_embedding_row() {
+        // num_position_embeddings=4 (base 2) but only 2 rows in the table.
+        let short = zeros(&[2, 2], MlxDtype::Float32, None);
+        assert!(interpolated_position_embeddings(&short, 4, 1, 2, 2, 1).is_err());
+        let full = zeros(&[4, 2], MlxDtype::Float32, None);
+        let positions = interpolated_position_embeddings(&full, 4, 1, 2, 2, 1).unwrap();
+        eval(&[&positions]);
+        assert_eq!(positions.shape(), vec![4, 2]);
     }
 
     #[test]

@@ -450,6 +450,20 @@ pub fn load_minicpm_v46_vision_weights(
         &["vision_tower.embeddings.position_embedding.weight"],
     )?;
     reject_quantized(&position_embedding, "vision_tower position embedding")?;
+    // `dynamic_position_ids` indexes up to (image_size / patch_size)^2 rows;
+    // a truncated table would read out of bounds inside `take` at forward.
+    let base_side = config.image_size / config.patch_size;
+    let expected_rows = base_side.saturating_mul(base_side) as i32;
+    let position_shape = position_embedding.shape();
+    if position_shape.len() != 2
+        || position_shape[0] < expected_rows
+        || position_shape[1] != config.hidden_size as i32
+    {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "vision_tower position_embedding {position_shape:?} must be [>= {expected_rows}, {}]",
+            config.hidden_size
+        )));
+    }
 
     let mut layers = Vec::with_capacity(config.num_hidden_layers);
     for layer_index in 0..config.num_hidden_layers {
