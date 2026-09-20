@@ -384,6 +384,12 @@ serve them through the idempotent resolution flow:
 | `muse-glimmer-30b:axq`, `muse-glimmer-30b:axq-6bit` | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit` | `367745bd05b77bf82188f3799677e4beba543e8d` | Candidate; dense image-text agent; ATEM; no MTP |
 | `muse-glimmer-30b`, `muse-glimmer-30b:axq-4bit` | `AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit` | `bcfb0b748fc44487c1657fb6ae190592d515398b` | Candidate; compact 4-bit sibling |
 
+The two Tiel exports use the general M2-or-newer/macOS 26+ host admission;
+their automatic no-wire tuning is limited to audited M5 Max/128 GiB exports.
+On a 64 GiB host, Auto expert streaming selects paging under the 48 GiB
+reserve rule. Explicit full-resident benchmarks do not change that default
+or the Candidate status. See [Tiel residency and expert-stream controls](mtp/tiel-prefill-diagnostics.md).
+
 The unqualified `:axq` selector intentionally means 6-bit. Bare family
 aliases (`qwen3.6-27b`, `gemma4-12b`) stay mlx-community, and `ax-<family>`
 stays the AutomatosX OptiQ/QAT flagship whenever that sibling exists. Do not

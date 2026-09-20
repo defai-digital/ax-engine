@@ -33,6 +33,13 @@ MiniCPM-V, and others) are documented under
 Compact single models (Qwen 3.5 9B 4-bit preferred) still fit **16 GB**. Prefer
 4-bit for headroom on that class.
 
+Wired-memory controls are available across supported M2-or-newer Macs; they
+are not M5-only. The automatic **no-wire optimization** currently targets only
+the two audited Tiel MXFP4 MTP exports on **M5 Max with at least 128 GiB**.
+Other supported hosts retain existing wiring. Model fit and measured speed
+still depend on memory capacity and workload; see the
+[Tiel residency policy](docs/mtp/tiel-prefill-diagnostics.md#residency-policy-for-the-audited-m5-max-exports).
+
 ## Why AX Engine
 
 - **Optimized first for Qwen 3.8 27B AXQ** — one download of
@@ -367,6 +374,18 @@ its prefill lead is 6x for both AX and MTPLX. Full analysis:
 | MacBook Pro M5 Max 128 GB | 614 GB/s | 27.90 tok/s | 581 GB/s | 94.7% | 76.90 tok/s | 1602 GB/s (261%) |
 
 <img src="docs/assets/perf-decode-bandwidth-utilization.svg" alt="Decode throughput expressed as weight-stream bandwidth against Apple's published memory bandwidth for Mac mini M4 Pro and MacBook Pro M5 Max">
+
+### Tiel / Cyber-Tiel peer refresh (2026-09-20)
+
+The [matched MTPLX comparison](benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md)
+reports both packs separately on M5 Max 128 GiB, M4 Pro 64 GiB, M2 Ultra
+192 GiB and M3 Ultra 512 GiB. It uses identical model files and prompt tokens, fixed output counts,
+cold KV, two reversed-order blocks, and completion throughput including TTFT.
+These are explicit throughput-MTP, full-resident native API measurements.
+On the 64 GiB mini, resident mode requires `mlx_stream_experts="off"`;
+Auto keeps its 48 GiB reserve and pages experts. Wired/unwired controls and
+Auto diagnostics are reported separately. These results do not promote MTP,
+change defaults or certify either pack.
 
 ### Campaign host: Apple M5 Max 128 GB (2026-09-15)
 

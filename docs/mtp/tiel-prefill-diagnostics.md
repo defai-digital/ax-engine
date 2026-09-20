@@ -61,11 +61,22 @@ streaming is inactive, and no numeric `AX_MLX_WIRED_LIMIT_SCALE` override is set
 Unknown metadata or hardware retain the previous wiring policy. The startup
 trace event identifies application as `tiel-auto-no-wire-v1`.
 
+This hardware guard limits automatic performance tuning, not the availability
+of wired memory. AX Engine's native host requirement remains Apple M2 or newer
+on macOS 26 or newer. MLX's `set_wired_limit` is a general Metal memory control,
+not an M5-only or Tiel-only API; its [documented OS requirement](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.set_wired_limit.html)
+is macOS 15 or newer. Other supported Macs retain AX's existing wiring policy
+and can use the explicit override. Whether unwiring improves latency needs
+separate evidence for the hardware, memory capacity and model workload. API
+availability does not establish that every model fits or benefits.
+
 This reduces idle-to-submit waiting. It does not add GPU keepalive work or
 change sampling, buffer-cache limits, allocation limits, or MTP certification.
 To retain the previous wiring, set `AX_MLX_WIRED_LIMIT_SCALE=0.9` before process
 startup. `0` explicitly disables wiring. Unwired buffers can be evicted under
-competing memory pressure; the speed comparison covers one resident model in
+memory pressure; setting zero does not disable GPU execution or move inference
+to the CPU. The setting controls residency, not the execution backend.
+The speed comparison covers one resident model in
 isolation. A separate [co-residency probe](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-19-coexistence/README.md)
 checks these two packs together with up to 32 GiB of retained competing memory.
 Its 48 GiB attempt triggers a compressor-growth guard and is not a passed
@@ -75,6 +86,42 @@ remain unqualified. MLX wired limits have process scope.
 Re-exported or modified metadata will not match the audited fingerprints and
 will keep previous wiring until separately evaluated. The metadata check is a
 performance-policy selector, not authentication of every weight byte.
+
+The [four-host resident comparison](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md)
+adds M2 Ultra, M3 Ultra and M4 Pro controls. Those measurements remain separate
+from the automatic M5 policy and do not qualify high-pressure residency.
+
+## Model residency is different from wired memory
+
+| Control | What it changes |
+| --- | --- |
+| Expert streaming Auto/On | AX can load expert layers on demand instead of retaining every expert tensor in the MLX allocator. |
+| Expert streaming Off | AX loads and retains the full model for repeated requests; required-stream packs still reject Off. |
+| Wired limit zero | Removes the OS residency lock. It does not unload the model, enable expert streaming, or switch inference to the CPU. |
+
+In the matched resident benchmark, **both AX and MTPLX load once per process**
+and keep the model loaded across warmups and measured requests. Model loading
+is outside the timer. Cold KV means no reuse of earlier prompt state; it does
+not mean cold or reloaded model weights. Unwired allocations remain eligible
+for OS eviction under pressure, independently of engine-managed expert paging.
+
+## Expert streaming on smaller hosts
+
+The 48 GiB Auto reserve is an admission accounting allowance, not a separate
+48 GiB allocation or an enforced empty-memory reservation. It is separate from
+wired-memory control. These Tiel
+exports estimate about 20.51 GiB for complete residency. On a 64 GiB Mac mini,
+20.51 + 48 exceeds capacity, so Auto pages experts even though one model's
+observed resident allocation is about 21.25 GiB. That is the current admission
+policy, not evidence that the GPU cannot execute the model.
+
+A full-resident comparison must explicitly select `--stream-experts off` in
+the server, or `Session(..., mlx_stream_experts="off")` in Python. Python now
+honors `AX_STREAM_EXPERTS` when the argument is omitted; an explicit argument
+wins. Earlier Python builds always installed Auto and masked the environment.
+`off` still fails closed for packs with `required=true`. Model capacity,
+context and competing allocations must fit; no Auto reserve or required-pack
+guard was changed to produce benchmark results.
 
 Hardware probes fall back to `/usr/sbin/sysctl` when the command cannot be
 found through `PATH`, fails, or returns empty output. This keeps the memory

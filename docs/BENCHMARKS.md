@@ -11,6 +11,7 @@ workload-contract paths.
 | Published tables and charts | [Performance Results](PERFORMANCE-RESULTS.md) |
 | Interpretation | [Performance](PERFORMANCE.md) |
 | Workload-contract design | [Benchmark Design](BENCH-DESIGN.md) |
+| Tiel / Cyber-Tiel vs MTPLX, M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Matched resident native API contract](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/README.md) |
 
 The root `README.md` keeps **headline** takeaways only: single-client serving
 vs peer MLX serving engine, multi-model S1, MTP peer decode, and same-package MTP acceleration.

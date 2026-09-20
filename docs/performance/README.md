@@ -8,6 +8,7 @@ decide which result table, method, or investigation note applies to a claim.
 | Need | Read |
 | --- | --- |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
+| Tiel / Cyber-Tiel vs MTPLX on M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Resident comparison and wiring controls](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/README.md) |
 | Current MLX runtime admission | [MLX 0.32.2 admission](mlx-0.32.2-admission-2026-08-29.md) |
 | Why Mac mini M4 Pro and M5 Max decode differ (bandwidth utilization, MTP status) | [Decode bandwidth utilization](decode-bandwidth-utilization.md) |
 | Root README headline numbers | [README Performance](../../README.md#performance) |

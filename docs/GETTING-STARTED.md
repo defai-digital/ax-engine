@@ -336,6 +336,14 @@ Published multi-model and large-pack performance evidence is still gathered on
 Runtime surfaces fail closed when a backend is unavailable instead of silently
 pretending support exists.
 
+Wired-memory control is available on supported M2-or-newer Macs, including
+base, Pro, Max and Ultra variants; it does not require M5. The current automatic
+Tiel **no-wire** optimization is narrower: audited export metadata, M5 Max,
+at least 128 GiB, no expert streaming and no numeric operator override.
+Other hosts retain the existing wiring policy. This tuning guard does not
+reject otherwise supported models or hosts. Model memory requirements still
+apply. See [Tiel residency policy and overrides](mtp/tiel-prefill-diagnostics.md#residency-policy-for-the-audited-m5-max-exports).
+
 ## Getting a Model
 
 AX Engine requires pre-sanitized MLX weights. Prefer the curated

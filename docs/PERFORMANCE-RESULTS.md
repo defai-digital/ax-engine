@@ -35,10 +35,11 @@ denominator.
 > admission check at throughput parity with 0.31.2 (56.3 TFLOP/s qmm,
 > 2026-07-15) and is the admitted build for new benchmark sessions.
 
-**Evidence freshness (as of 2026-08-31):**
+**Evidence snapshots (each row is independently dated):**
 
 | Session | Engine / peers | Host | When |
 | --- | --- | --- | --- |
+| Tiel / Cyber-Tiel resident native API | AX candidate on `574d2d19` + Python mode fix · MTPLX **2.11.3** | M5 Max 128 GiB / M4 Pro 64 GiB / M2 Ultra 192 GiB / M3 Ultra 512 GiB | [2026-09-20](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md) |
 | Single-client serving vs peer MLX serving engine | AX Engine **6.13.1** · peer MLX serving engine **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
 | Multi-model S1 | AX Engine · multi-process peer MLX server **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
 | 6-bit exact sampled-MTP comparison | AX Engine **v6.13.1** AX-only | Apple **M5 Max** 128 GB | 2026-08-06 |
@@ -67,6 +68,23 @@ share a same-artifact denominator.
 | Embeddings | Encoder-style embedding throughput and ingest scale | Chunks/s, tokens/s, latency at batch/chunk settings | Text generation decode/prefill/TTFT |
 
 ### Session Mode: MTP Generation
+
+#### Tiel and Cyber-Tiel resident peer comparison (2026-09-20)
+
+[Full results, sample ranges, TTFT and raw trial evidence](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md)
+compare AX with MTPLX sustained and turbo on the same exact MXFP4 MTP packs.
+The primary metric is **completion tok/s including TTFT**, not the pure decode
+metric used by other MTP tables below. Every primary cell pools six measured
+requests from reversed-order blocks after two warmups per block.
+
+This is explicit throughput-MTP with cold KV and full-resident weights, not
+server-default or certification evidence. M4 Pro has **64 GiB physical RAM**;
+the **48 GiB** number is AX's Auto headroom reserve. Auto pages these packs at
+that capacity, so the resident comparison explicitly selects expert-stream
+Off. The short Auto diagnostic is separate. Normal wiring and explicit no-wire
+controls also remain separate; M2/M3/M4 measurements do not expand the automatic
+M5-only tuning policy. Read the per-host background-load and memory caveats
+before comparing results across machines.
 
 AX Engine supports two MTP packaging contracts in the repo-owned runtime: Qwen
 fused sidecars and Gemma assistant drafters. The
