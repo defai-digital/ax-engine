@@ -73,8 +73,8 @@ impl NemotronOmniImageRuntimeInput {
                 self.pixel_values.len()
             )));
         }
-        let expected_soft = (self.height / unit).saturating_mul(self.width / unit);
-        if self.soft_token_count != expected_soft {
+        let expected_soft = u64::from(self.height / unit) * u64::from(self.width / unit);
+        if u64::from(self.soft_token_count) != expected_soft {
             return Err(NemotronOmniRuntimeInputError::InvalidGeometry(format!(
                 "soft_token_count {} != downsampled patch count {expected_soft}",
                 self.soft_token_count
@@ -149,11 +149,25 @@ impl NemotronOmniRuntimeInputs {
         &self,
         prompt_len: usize,
     ) -> Result<(), NemotronOmniRuntimeInputError> {
+        let mut spans = Vec::with_capacity(self.images.len() + self.audios.len());
         for image in &self.images {
             image.validate(prompt_len)?;
+            spans.push((image.placeholder_index, image.soft_token_count as usize));
         }
         for audio in &self.audios {
             audio.validate(prompt_len)?;
+            spans.push((audio.placeholder_index, audio.soft_token_count as usize));
+        }
+        // Each prompt token can be replaced by one media tensor at most.
+        spans.sort_unstable();
+        for pair in spans.windows(2) {
+            let (previous_start, previous_count) = pair[0];
+            let (next_start, _) = pair[1];
+            if previous_start + previous_count > next_start {
+                return Err(NemotronOmniRuntimeInputError::InvalidGeometry(format!(
+                    "placeholder span starting at {previous_start} overlaps the span starting at {next_start}"
+                )));
+            }
         }
         Ok(())
     }
@@ -202,5 +216,18 @@ mod tests {
             }],
         };
         assert!(inputs.validate_for_prompt_len(8).is_ok());
+
+        // Audio span [4, 6) overlaps the image span [1, 5).
+        let mut overlapping = inputs.clone();
+        overlapping.audios[0].placeholder_index = 4;
+        let error = overlapping
+            .validate_for_prompt_len(8)
+            .expect_err("overlapping spans must be rejected");
+        assert!(error.to_string().contains("overlaps"), "{error}");
+
+        // Two images at the same placeholder overlap too.
+        let mut duplicate = inputs.clone();
+        duplicate.images.push(duplicate.images[0].clone());
+        assert!(duplicate.validate_for_prompt_len(8).is_err());
     }
 }
