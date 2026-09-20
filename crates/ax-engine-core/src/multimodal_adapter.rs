@@ -49,7 +49,9 @@ impl MultimodalPrefillAdapter {
 
         let mut modalities = vec![PrefillModality::Text];
         if let Some(unified) = inputs.gemma4_unified.as_ref() {
-            if !unified.images.is_empty() {
+            // Videos are per-frame image-processor output through the same
+            // vision tower, so they are a vision modality too.
+            if !unified.images.is_empty() || !unified.videos.is_empty() {
                 modalities.push(PrefillModality::Vision);
             }
             if !unified.audios.is_empty() {
@@ -201,6 +203,39 @@ mod tests {
         assert!(!adapter.requires_prefill_projection);
         assert!(!adapter.is_separate_generation_engine());
         assert_eq!(adapter.modalities, vec![PrefillModality::Text]);
+    }
+
+    #[test]
+    fn video_only_gemma4_inputs_are_a_vision_modality() {
+        let inputs = RequestMultimodalInputs {
+            gemma4_unified: Some(Gemma4UnifiedRuntimeInputs {
+                images: Vec::new(),
+                audios: Vec::new(),
+                videos: vec![crate::gemma4_unified::Gemma4UnifiedVideoRuntimeInput {
+                    span: Gemma4UnifiedTokenSpan {
+                        modality: Gemma4UnifiedModality::Video,
+                        placeholder_index: 0,
+                        replacement_start: 0,
+                        soft_token_count: 4,
+                        replacement_token_count: 4,
+                    },
+                    soft_token_ranges: Vec::new(),
+                    pixel_values: vec![0.0; 16],
+                    pixel_position_ids: vec![[0, 0]; 4],
+                    frame_count: 2,
+                }],
+            }),
+            unlimited_ocr: None,
+            qwen3_vl: None,
+            minicpm_v46: None,
+            nemotron_omni: None,
+        };
+
+        let adapter =
+            MultimodalPrefillAdapter::from_request_inputs(&inputs, GenerationKind::Autoregressive);
+        assert!(adapter.has_vision());
+        assert!(!adapter.has_audio());
+        assert!(adapter.requires_prefill_projection);
     }
 
     #[test]

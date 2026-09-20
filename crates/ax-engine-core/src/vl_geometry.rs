@@ -49,11 +49,13 @@ pub struct MropeSections {
 }
 
 impl MropeSections {
+    /// A collapsed axis yields zero positions rather than a phantom 1x1 grid,
+    /// matching `vit_soft_token_count`, which never invents a token.
     pub fn for_image(grid_h: u32, grid_w: u32) -> Self {
         Self {
             temporal: 1,
-            height: grid_h.max(1),
-            width: grid_w.max(1),
+            height: grid_h,
+            width: grid_w,
         }
     }
 
@@ -148,6 +150,8 @@ mod tests {
 
     #[test]
     fn mrope_image_grid() {
+        assert_eq!(MropeSections::for_image(0, 4).total_positions(), 0);
+        assert!(mrope_position_ids(MropeSections::for_image(0, 4)).is_empty());
         let s = MropeSections::for_image(2, 3);
         assert_eq!(s.total_positions(), 6);
         let ids = mrope_position_ids(s);
