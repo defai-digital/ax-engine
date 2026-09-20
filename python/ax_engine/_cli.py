@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import difflib
+import errno
 import importlib.metadata
 import json
 import os
@@ -1701,7 +1702,18 @@ def _default_download_root() -> pathlib.Path:
 
 
 def _wizard_input(prompt: str) -> str:
-    return input(prompt)
+    try:
+        return input(prompt)
+    except (ValueError, OSError) as error:
+        # A closed stdin surfaces as ValueError ("I/O operation on closed
+        # file") or EBADF from input(); treat it like an exhausted one so the
+        # wizard's EOF guidance applies. Anything else (a broken stdout, bad
+        # UTF-8 on the pipe) is a real error and keeps propagating.
+        stdin_closed = getattr(sys.stdin, "closed", True)
+        bad_fd = isinstance(error, OSError) and error.errno == errno.EBADF
+        if stdin_closed or bad_fd:
+            raise EOFError(str(error)) from error
+        raise
 
 
 def _select_profile_interactive() -> ModelProfile | None:
@@ -2072,7 +2084,8 @@ def _cmd_download(args: argparse.Namespace) -> int:
                 args.force, local_only=args.local_only, dest=args.dest
             )
         except EOFError as error:
-            # Piped answers work; a closed stdin gets guidance, not a traceback.
+            # Piped answers work; an exhausted or closed stdin gets guidance,
+            # not a traceback.
             raise SystemExit(
                 "ax-engine download --interactive needs answers on stdin or an interactive "
                 "terminal. Use: ax-engine download <model>"

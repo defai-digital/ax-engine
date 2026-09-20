@@ -2388,7 +2388,7 @@ def _bundled_binary(name: str) -> Path | None:
     that staging directory in editable and source-checkout installs: an interrupted
     or earlier wheel build can leave binaries linked against a stale MLX runtime.
     """
-    if _source_checkout_root() is not None:
+    if _source_checkout_root(payload_name=name) is not None:
         return None
     candidate = Path(__file__).resolve().parent / "_bin" / name
     if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -2396,12 +2396,16 @@ def _bundled_binary(name: str) -> Path | None:
     return None
 
 
-def _source_checkout_root() -> Path | None:
+def _source_checkout_root(*, payload_name: str | None = "ax-engine-bench") -> Path | None:
     """Return the workspace root when this package is the checkout's own source tree.
 
     A wheel installed into a virtualenv that happens to live inside a cargo
     workspace is not a checkout: its binaries must come from the wheel payload
     or PATH, never from ``cargo run`` against whatever HEAD is checked out.
+    ``payload_name`` is the wheel binary the caller would otherwise use; a
+    repo-local venv is only treated as a checkout when that payload is absent.
+    ``None`` skips that veto for callers that already tried the payload and
+    now want the checkout's ``cargo run`` tier.
     """
     package_dir = Path(__file__).resolve().parent
     source_root = _source_workspace_root()
@@ -2410,11 +2414,18 @@ def _source_checkout_root() -> Path | None:
     if package_dir == (source_root / "python" / "ax_engine").resolve():
         return source_root
     # A non-editable install into a venv that lives inside this repository
-    # (the usual dev loop) still belongs to the checkout: cargo builds the
-    # matching sources. Only a foreign workspace is refused.
-    if (source_root / "crates" / "ax-engine-core" / "Cargo.toml").is_file():
+    # (the usual dev loop) still belongs to the checkout when it carries no
+    # usable wheel payload: cargo then builds the matching sources. A venv
+    # holding an executable payload keeps using it (the runtime image may
+    # have no Rust toolchain), and a foreign workspace is always refused.
+    if not (source_root / "crates" / "ax-engine-core" / "Cargo.toml").is_file():
+        return None
+    if payload_name is None:
         return source_root
-    return None
+    payload = package_dir / "_bin" / payload_name
+    if payload.is_file() and os.access(payload, os.X_OK):
+        return None
+    return source_root
 
 
 def _source_workspace_root() -> Path | None:
@@ -2492,7 +2503,9 @@ def _try_validate_manifest(dest: Path) -> bool:
             print(f"{bench} manifest validation failed:\n{result.stderr.strip()}")
             return False
 
-    repo_root = _source_checkout_root()
+    # The payload tier already ran (or was absent); a checkout's cargo build
+    # is the next best match regardless of what the wheel shipped.
+    repo_root = _source_checkout_root(payload_name=None)
     if repo_root is not None and shutil.which("cargo"):
         try:
             result = subprocess.run(
@@ -2542,15 +2555,29 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
 
     Returns True on success.
     """
-    import shutil
-    import subprocess
-
     manifest_path = dest / _MODEL_MANIFEST_FILE
+    symlink_target: str | None = None
     if manifest_path.is_symlink():
         # A cached Hub manifest may point into the shared blob store. Detach
         # the snapshot entry before invoking older external generators that
         # might otherwise open the symlink target for writing.
+        symlink_target = os.readlink(manifest_path)
         manifest_path.unlink()
+    generated = _run_manifest_generators(dest, force=force)
+    if not generated and symlink_target is not None and not manifest_path.exists():
+        # No generator produced a manifest: put the snapshot entry back so a
+        # failed attempt does not leave the Hub cache without its manifest.
+        try:
+            manifest_path.symlink_to(symlink_target)
+        except OSError as error:
+            print(f"failed to restore {manifest_path}: {error}")
+    return generated
+
+
+def _run_manifest_generators(dest: Path, *, force: bool) -> bool:
+    import shutil
+    import subprocess
+
     # Make option-looking relative paths unambiguous without resolving cache
     # symlinks or changing the user-visible path spelling.
     manifest_dest = os.path.abspath(dest)
@@ -2591,7 +2618,9 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
 
     # In a source checkout, prefer the workspace's current Rust validator over
     # a potentially stale ax-engine-bench on PATH.
-    repo_root = _source_checkout_root()
+    # The payload tier already ran (or was absent); a checkout's cargo build
+    # is the next best match regardless of what the wheel shipped.
+    repo_root = _source_checkout_root(payload_name=None)
     if repo_root is not None and shutil.which("cargo"):
         generate_args = (
             ["--force", "--validate", manifest_dest]

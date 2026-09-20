@@ -2321,6 +2321,27 @@ class WrapperContractTests(unittest.TestCase):
             self.assertTrue(manifest.is_symlink())
             self.assertEqual(blob.read_text(), "published manifest")
 
+    def test_try_generate_manifest_restores_hub_symlink_when_no_generator_runs(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            blob = model_dir / "shared-blob"
+            blob.write_text("published manifest")
+            manifest = model_dir / "model-manifest.json"
+            manifest.symlink_to(blob)
+
+            with (
+                patch.object(self.ax_engine, "_bundled_binary", return_value=None),
+                patch.object(self.ax_engine, "_source_checkout_root", return_value=None),
+                patch("shutil.which", return_value=None),
+            ):
+                self.assertFalse(self.ax_engine._try_generate_manifest(model_dir))
+
+            # The snapshot entry must survive a failed attempt.
+            self.assertTrue(manifest.is_symlink())
+            self.assertEqual(manifest.read_text(), "published manifest")
+
     def test_try_validate_manifest_prefers_source_workspace_over_path(self) -> None:
         import subprocess
         import tempfile
@@ -2510,6 +2531,21 @@ class WrapperContractTests(unittest.TestCase):
                 core.mkdir(parents=True)
                 (core / "Cargo.toml").write_text("[package]\n")
                 self.assertEqual(self.ax_engine._source_checkout_root(), root.resolve())
+                # An executable wheel payload for the requested binary keeps
+                # winning (the runtime image may have no cargo), but only for
+                # that binary: the server payload does not veto a bench build.
+                payload = package_dir / "_bin" / "ax-engine-server"
+                payload.parent.mkdir()
+                payload.write_text("wheel payload")
+                payload.chmod(0o755)
+                self.assertIsNone(
+                    self.ax_engine._source_checkout_root(payload_name="ax-engine-server")
+                )
+                self.assertEqual(self.ax_engine._source_checkout_root(), root.resolve())
+                self.assertEqual(
+                    self.ax_engine._bundled_binary("ax-engine-server"), payload.resolve()
+                )
+                self.assertIsNone(self.ax_engine._bundled_binary("ax-engine-bench"))
 
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
