@@ -31,6 +31,8 @@ pub(super) fn mtp_ngram_gate_min_samples() -> u32 {
         std::env::var("AX_MLX_MTP_NGRAM_GATE_SAMPLES")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
+            // A zero minimum would let the gate decide with no evidence.
+            .map(|v| v.max(1))
             .unwrap_or(4)
     })
 }
@@ -73,6 +75,8 @@ pub(super) fn mtp_auto_optimistic_min_samples() -> u32 {
         std::env::var("AX_MLX_MTP_AUTO_OPTIMISTIC_MIN_SAMPLES")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
+            // A zero minimum would let the gate decide with no evidence.
+            .map(|v| v.max(1))
             .unwrap_or(4)
     })
 }
@@ -102,6 +106,8 @@ pub(super) fn mtp_bypass_min_samples() -> u32 {
         std::env::var("AX_MLX_MTP_BYPASS_MIN_SAMPLES")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
+            // A zero minimum would let the gate decide with no evidence.
+            .map(|v| v.max(1))
             .unwrap_or(8)
     })
 }
