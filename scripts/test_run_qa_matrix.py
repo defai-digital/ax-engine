@@ -27,6 +27,14 @@ def _load():
 
 
 class RunQaMatrixTests(unittest.TestCase):
+    def test_explicit_zero_cli_values_are_not_replaced_by_defaults(self):
+        mod = _load()
+        with patch.dict("os.environ", {"QA_SEED": "20260716"}):
+            self.assertEqual(mod._cli_or_env(0, "QA_SEED", "1"), 0)
+            self.assertEqual(mod._cli_or_env(None, "QA_SEED", "1"), 20260716)
+            self.assertEqual(mod._cli_or_env(None, "QA_UNSET_XYZ", "7"), 7)
+            self.assertEqual(mod._cli_or_env(5, "QA_UNSET_XYZ", "7"), 5)
+
     def test_mtp_preflight_opt_in_is_scoped_to_the_child(self):
         m = _load()
         with tempfile.TemporaryDirectory() as td:

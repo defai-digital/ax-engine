@@ -34,6 +34,7 @@ from surface_probes import (  # flat import when qa/ is on sys.path
     extract_chat_content,
     fetch_model_card,
     model_advertises_image,
+    model_advertises_video,
     probe_multimodal_image,
     probe_remote_media_rejected,
     probe_video_rejected,
@@ -303,7 +304,11 @@ def run_multimodal_probes(
     report.results.append(
         probe_remote_media_rejected(base_url, model, timeout=timeout)
     )
-    report.results.append(probe_video_rejected(base_url, model, timeout=timeout))
+    # Require inline video on models that advertise it; reject it elsewhere
+    # (same capability-aware contract as the surface runner).
+    report.results.append(probe_video_rejected(
+        base_url, model, timeout=timeout, require_video=model_advertises_video(card),
+    ))
 
     # Layer 2–3: image path honesty
     report.results.append(

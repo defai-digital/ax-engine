@@ -405,7 +405,7 @@ def run_cell(
         base = f"http://{host}:{port}"
         if cell.mode == "mtp" or verify_live_route:
             # A bench process is not proof of the running server's route.
-            probe_request = {"model_id": model_id, "input_tokens": list(range(1, 17)),
+            probe_request = {"model": model_id, "input_tokens": list(range(1, 17)),
                              "max_output_tokens": 64,
                              "sampling": {"temperature": 0, "seed": 0, "top_k": 0,
                                           "top_p": 1, "repetition_penalty": 1}}
@@ -757,6 +757,15 @@ def write_summary(
     return engine_fails
 
 
+def _cli_or_env(value: int | None, env: str, default: str) -> int:
+    """CLI value if given (even `0`), else the environment/default.
+
+    `is not None`, not truthiness: an explicit `--seed 0` is a legitimate
+    deterministic seed and must not be replaced by the environment default.
+    """
+    return value if value is not None else int(os.environ.get(env, default))
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Unified AX Engine QA matrix runner")
     p.add_argument(
@@ -845,11 +854,11 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     )
-    port = int(args.port or os.environ.get("QA_PORT", "18440"))
-    seed = int(args.seed or os.environ.get("QA_SEED", "20260716"))
-    sample = int(args.sample or os.environ.get("QA_SAMPLE", "8"))
-    timeout = int(args.timeout or os.environ.get("QA_TIMEOUT", "180"))
-    ready_max = int(args.ready_max or os.environ.get("QA_READY_MAX", "420"))
+    port = _cli_or_env(args.port, "QA_PORT", "18440")
+    seed = _cli_or_env(args.seed, "QA_SEED", "20260716")
+    sample = _cli_or_env(args.sample, "QA_SAMPLE", "8")
+    timeout = _cli_or_env(args.timeout, "QA_TIMEOUT", "180")
+    ready_max = _cli_or_env(args.ready_max, "QA_READY_MAX", "420")
     run_surface = bool(args.surface or os.environ.get("QA_SURFACE", "0") == "1")
 
     matrix = Path(args.matrix) if args.matrix else scratch / "qa-matrix.txt"

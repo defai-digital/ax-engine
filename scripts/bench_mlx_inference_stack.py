@@ -2610,8 +2610,10 @@ def run_mlx_lm_benchmark(
         str(generation_tokens),
         "--num-trials",
         str(repetitions + max(warmup_repetitions - 1, 0)),
+        # mlx_lm.benchmark takes an integer delay; round up so the baseline
+        # never idles less than the AX rows sleep between repetitions.
         "--delay",
-        str(int(cooldown)),
+        str(math.ceil(cooldown)),
         "--prefill-step-size",
         str(prefill_step_size),
     ]

@@ -102,14 +102,16 @@ def _stream_sse(url: str, payload: dict, timeout: int = 120) -> QaResponse:
                         event = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
-                    if first_chunk:
-                        ttft_ms = (time.monotonic() - start) * 1000
-                        first_chunk = False
                     choices = event.get("choices", [])
                     if choices:
                         delta = choices[0].get("delta", {})
                         content = delta.get("content", "")
                         if content:
+                            # Stamp TTFT on the first token-bearing chunk; the
+                            # role-only opener carries no content.
+                            if first_chunk:
+                                ttft_ms = (time.monotonic() - start) * 1000
+                                first_chunk = False
                             chunks.append(content)
                         fr = choices[0].get("finish_reason")
                         if fr:
@@ -548,13 +550,14 @@ def _stream_generate_sse(
                         event = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
-                    if first_chunk:
-                        ttft_ms = (time.monotonic() - start) * 1000
-                        first_chunk = False
-
                     if event_name == "step":
                         delta = event.get("delta_tokens", [])
                         if delta:
+                            # Stamp TTFT on the first token-bearing step; the
+                            # `request` ack event carries no tokens.
+                            if first_chunk:
+                                ttft_ms = (time.monotonic() - start) * 1000
+                                first_chunk = False
                             all_tokens.extend(delta)
                     elif event_name == "response":
                         response = event.get("response", {})
@@ -629,7 +632,9 @@ def send_generate_request(
         sampling["repetition_penalty"] = repetition_penalty
 
     payload: dict[str, Any] = {
-        "model_id": model,
+        # The server's GenerateHttpRequest reads `model`; an unknown
+        # `model_id` key would be ignored and silently route to the default.
+        "model": model,
         "input_tokens": input_tokens,
         "max_output_tokens": max_tokens,
         "sampling": sampling,
