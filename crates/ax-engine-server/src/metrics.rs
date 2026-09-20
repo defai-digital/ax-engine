@@ -292,10 +292,10 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             &step_models,
             |step| step.mtp_direct_fallback_steps_total,
         );
-        append_step_metric(
+        append_step_metric_per_model(
             &mut body,
             "ax_engine_mtp_accept_rate_ewma_x1000",
-            "Latest cascade-corrected MTP-only draft acceptance EWMA, scaled by 1000. Per-model series is authoritative (unlabeled: summed across loaded models).",
+            "Latest cascade-corrected MTP-only draft acceptance EWMA, scaled by 1000, per loaded model (a sum across models would not be a rate).",
             "gauge",
             &step_models,
             |step| step.mtp_accept_rate_ewma_x1000,
@@ -397,7 +397,9 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
                 |step: &crate::app_state::EngineStepGauges| step.mlx_mtp_runtime_enabled_by_default,
             ),
         ] {
-            append_step_metric(&mut body, name, help, "gauge", &step_models, value);
+            // 0/1 policy flags: a cross-model sum reads as a count of models,
+            // not a flag, so only the labeled series is exported.
+            append_step_metric_per_model(&mut body, name, help, "gauge", &step_models, value);
         }
         for (name, help, kind, value) in [
             (
@@ -987,6 +989,36 @@ fn append_arbiter_metric(
         body.push_str(work_class.as_str());
         body.push_str("\"} ");
         body.push_str(&value(stats).to_string());
+        body.push('\n');
+    }
+}
+
+/// Engine-step metric whose values are rates or flags: HELP/TYPE once, then
+/// only `model`-labeled series (summing them across models is meaningless).
+fn append_step_metric_per_model(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    metric_type: &str,
+    step_models: &[(String, crate::app_state::EngineStepGauges)],
+    value: impl Fn(&crate::app_state::EngineStepGauges) -> u64,
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(metric_type);
+    body.push('\n');
+    for (model_id, step) in step_models {
+        body.push_str(name);
+        body.push_str("{model=\"");
+        body.push_str(&escape_label_value(model_id));
+        body.push_str("\"} ");
+        body.push_str(&value(step).to_string());
         body.push('\n');
     }
 }

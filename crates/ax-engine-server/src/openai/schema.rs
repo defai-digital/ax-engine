@@ -75,6 +75,11 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     #[serde(default)]
     pub(crate) model: Option<String>,
     pub(crate) prompt: OpenAiPromptInput,
+    /// Internal (never deserialized): clamp the output budget to the
+    /// remaining context instead of rejecting the request. Set by the Ollama
+    /// `num_predict` sentinels `-1`/`-2`.
+    #[serde(skip)]
+    pub(crate) fit_max_tokens_to_context: bool,
     #[serde(default)]
     pub(crate) max_tokens: Option<u32>,
     #[serde(default)]
@@ -138,6 +143,11 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     #[serde(default)]
     pub(crate) model: Option<String>,
     pub(crate) messages: Vec<OpenAiChatMessage>,
+    /// Internal (never deserialized): clamp the output budget to the
+    /// remaining context instead of rejecting the request. Set by the Ollama
+    /// `num_predict` sentinels `-1`/`-2`.
+    #[serde(skip)]
+    pub(crate) fit_max_tokens_to_context: bool,
     #[serde(default)]
     pub(crate) input_tokens: Vec<u32>,
     #[serde(default)]

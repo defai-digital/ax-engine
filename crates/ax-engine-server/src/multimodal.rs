@@ -183,7 +183,14 @@ manifest with `ax-engine-bench generate-manifest --force` if vision was expected
                 .to_string(),
         ));
     }
-    let processor_cfg = read_json(&preprocessor_path).or_else(|_| read_json(&processor_path))?;
+    // Fall back only when the preferred file is absent: a corrupt
+    // preprocessor_config.json must surface its own parse error, not a
+    // misleading "processor_config.json not found".
+    let processor_cfg = if preprocessor_path.is_file() {
+        read_json(&preprocessor_path)?
+    } else {
+        read_json(&processor_path)?
+    };
     let mut config =
         Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model_cfg, &processor_cfg)
             .map_err(|error| MediaError::Config(error.to_string()))?;
@@ -645,11 +652,21 @@ impl TempVideoInput {
                 .unwrap_or(0),
             SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        path.push(unique);
-        std::fs::write(&path, bytes).map_err(|error| {
+        path.push(&unique);
+        // `create_new` refuses an existing entry (including a planted
+        // symlink) instead of following and truncating it; only the file
+        // name reaches the error body, never the server's temp layout.
+        let stage = || -> std::io::Result<()> {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            file.write_all(bytes)
+        };
+        stage().map_err(|error| {
             MediaError::Decode(format!(
-                "failed to stage inline video for decoding at {}: {error}",
-                path.display()
+                "failed to stage inline video for decoding ({unique}): {error}"
             ))
         })?;
         Ok(Self { path })
@@ -905,7 +922,10 @@ pub(crate) fn decode_audio_waveform(
             .map_err(|error| MediaError::Decode(format!("failed to decode WAV audio: {error}")))?;
         let spec = reader.spec();
         let channels = spec.channels.max(1) as usize;
-        let interleaved = read_wav_samples(reader, spec)?;
+        // Stop reading once the source already covers the sample cap so an
+        // upsampled low-rate upload cannot expand unbounded before truncation.
+        let frame_cap = wav_source_frame_cap(max_samples, spec.sample_rate, target_rate);
+        let interleaved = read_wav_samples(reader, spec, frame_cap)?;
         (downmix_to_mono(&interleaved, channels), spec.sample_rate)
     } else if looks_like_mp3(bytes) {
         let cap = u32::try_from(max_samples).unwrap_or(u32::MAX);
@@ -953,10 +973,30 @@ pub(crate) fn preprocess_wav(
         .map_err(|error| MediaError::Decode(format!("failed to decode WAV audio: {error}")))?;
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
-    let interleaved = read_wav_samples(reader, spec)?;
+    // Same bound as the MP3 decoder: enough source samples to fill the
+    // model's frame cap, nothing more.
+    let interleaved =
+        read_wav_samples(reader, spec, mp3_decode_sample_cap(audio, spec.sample_rate))?;
     let mono = downmix_to_mono(&interleaved, channels);
     let resampled = resample_linear(&mono, spec.sample_rate, audio.sampling_rate);
+    if resampled.iter().any(|sample| !sample.is_finite()) {
+        return Err(MediaError::Decode(
+            "decoded audio contains non-finite samples".to_string(),
+        ));
+    }
     frame_resampled_waveform(resampled, audio)
+}
+
+/// Source-rate frame count that covers `max_samples` at `target_rate`, with
+/// one extra source frame for the resampler's boundary interpolation.
+fn wav_source_frame_cap(max_samples: usize, source_rate: u32, target_rate: u32) -> Option<usize> {
+    let source_rate = u64::from(source_rate.max(1));
+    let target_rate = u64::from(target_rate.max(1));
+    let frames = (max_samples as u64)
+        .saturating_mul(source_rate)
+        .div_ceil(target_rate)
+        .saturating_add(1);
+    Some(usize::try_from(frames).unwrap_or(usize::MAX))
 }
 
 /// Decode an MP3 stream via symphonia and chunk the (mono, resampled) waveform
@@ -1105,24 +1145,36 @@ fn frame_resampled_waveform(
     })
 }
 
+/// Read up to `max_frames` interleaved frames. A decode error (for example a
+/// data chunk shorter than the header declares) fails closed instead of
+/// silently yielding a truncated waveform.
 fn read_wav_samples(
     reader: hound::WavReader<std::io::Cursor<&[u8]>>,
     spec: hound::WavSpec,
+    max_frames: Option<usize>,
 ) -> Result<Vec<f32>, MediaError> {
     let mut reader = reader;
+    let channels = spec.channels.max(1) as usize;
+    let max_samples = max_frames
+        .map(|frames| frames.saturating_mul(channels))
+        .unwrap_or(usize::MAX);
+    let decode_error =
+        |error: hound::Error| MediaError::Decode(format!("failed to decode WAV audio: {error}"));
     let samples = match spec.sample_format {
         hound::SampleFormat::Float => reader
             .samples::<f32>()
-            .filter_map(Result::ok)
-            .collect::<Vec<_>>(),
+            .take(max_samples)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(decode_error)?,
         hound::SampleFormat::Int => {
             let scale = (1i64 << (spec.bits_per_sample.saturating_sub(1))) as f32;
             let scale = if scale == 0.0 { 1.0 } else { scale };
             reader
                 .samples::<i32>()
-                .filter_map(Result::ok)
-                .map(|value| value as f32 / scale)
-                .collect::<Vec<_>>()
+                .take(max_samples)
+                .map(|value| value.map(|value| value as f32 / scale))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(decode_error)?
         }
     };
     Ok(samples)
@@ -1392,6 +1444,34 @@ mod tests {
         );
         assert_eq!(pre.frame_count, audio.compute_soft_tokens(pre.sample_count));
         assert_eq!(pre.feature_count, 640);
+    }
+
+    #[test]
+    fn truncated_wav_data_chunk_fails_closed() {
+        let mut wav = wav_16k_mono(&vec![0.25f32; 1600]);
+        // Keep the header (declares 1600 samples) but drop half of the data.
+        wav.truncate(wav.len() - 1600 * 2);
+        let error = preprocess_audio(&wav, &audio()).unwrap_err();
+        assert!(matches!(error, MediaError::Decode(_)), "{error}");
+    }
+
+    #[test]
+    fn wav_with_non_finite_samples_fails_closed() {
+        let mut samples = vec![0.1f32; 1600];
+        samples[10] = f32::NAN;
+        let error = preprocess_audio(&wav_16k_mono(&samples), &audio()).unwrap_err();
+        assert!(error.to_string().contains("non-finite"), "{error}");
+    }
+
+    #[test]
+    fn wav_decode_stops_at_the_source_sample_cap() {
+        // 8 kHz source, 16 kHz target, cap of 100 target samples: only ~51
+        // source frames are read even though the file carries 8000.
+        let wav = wav_mono(&vec![0.5f32; 8000], 8000);
+        let decoded = decode_audio_waveform(&wav, 16000, 100).unwrap();
+        assert_eq!(decoded.len(), 100);
+        assert_eq!(wav_source_frame_cap(100, 8000, 16000), Some(51));
+        assert_eq!(wav_source_frame_cap(100, 16000, 16000), Some(101));
     }
 
     #[test]

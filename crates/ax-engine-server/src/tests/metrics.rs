@@ -132,7 +132,9 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_mtp_draft_tokens_total 7\n"));
     assert!(body.contains("ax_engine_mtp_accepted_tokens_total 5\n"));
     assert!(body.contains("ax_engine_mtp_direct_fallback_steps_total 1\n"));
-    assert!(body.contains("ax_engine_mtp_accept_rate_ewma_x1000 714\n"));
+    // A rate has no meaningful cross-model sum: only the labeled series exists.
+    assert!(body.contains("ax_engine_mtp_accept_rate_ewma_x1000{model=\"qwen3\"} 714\n"));
+    assert!(!body.contains("ax_engine_mtp_accept_rate_ewma_x1000 714\n"));
     assert!(body.contains("ax_engine_mtp_accepted_tokens_total{model=\"qwen3\"} 5\n"));
     assert!(body.contains("ax_engine_mlx_prefix_cache_hits_total 1\n"));
     assert!(body.contains("ax_engine_mlx_prefix_cache_misses_total 2\n"));
@@ -143,10 +145,13 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_mlx_prefill_forward_wall_us_total 700\n"));
     assert!(body.contains("ax_engine_mlx_prefill_prefix_cache_wall_us_total 200\n"));
     assert!(body.contains("ax_engine_mlx_prefill_generation_state_wall_us_total 100\n"));
-    assert!(body.contains("ax_engine_mlx_mtp_model_policy_active 0\n"));
-    assert!(body.contains("ax_engine_mlx_mtp_model_policy_route_safe 1\n"));
-    assert!(body.contains("ax_engine_mlx_mtp_certified_default_on 0\n"));
-    assert!(body.contains("ax_engine_mlx_mtp_runtime_enabled_by_default 0\n"));
+    // 0/1 policy flags are exported per model only; a cross-model sum would
+    // read as a model count rather than a flag.
+    assert!(body.contains("ax_engine_mlx_mtp_model_policy_active{model=\"qwen3\"} 0\n"));
+    assert!(body.contains("ax_engine_mlx_mtp_model_policy_route_safe{model=\"qwen3\"} 1\n"));
+    assert!(body.contains("ax_engine_mlx_mtp_certified_default_on{model=\"qwen3\"} 0\n"));
+    assert!(body.contains("ax_engine_mlx_mtp_runtime_enabled_by_default{model=\"qwen3\"} 0\n"));
+    assert!(!body.contains("ax_engine_mlx_mtp_model_policy_route_safe 1\n"));
     assert!(body.contains("ax_engine_kv_allocated_blocks_total 23\n"));
     assert!(body.contains("ax_engine_kv_released_blocks_total 19\n"));
     assert!(body.contains("ax_engine_kv_cache_evictions_total 7\n"));

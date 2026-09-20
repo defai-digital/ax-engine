@@ -32,6 +32,7 @@ use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
     build_openai_chat_request_offloading_media, build_openai_completion_request,
     build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
+    openai_chat_prompt_render_options_for_live,
 };
 use crate::openai::responses::{openai_chat_completion_response, openai_finish_reason};
 use crate::openai::schema::{
@@ -385,13 +386,20 @@ async fn ollama_chat_inner(
     // responses require whole-output post-processing (tool-call extraction,
     // JSON-object validation); delegated backends keep it because their
     // Ollama adapters run through blocking chat completion.
+    let tools_requested = request.tools.is_some();
+    let format_requested = request.format.is_some();
+    let num_predict = resolve_ollama_num_predict(&live, request.options.num_predict)?;
+    let openai_request = ollama_chat_to_openai_request(request, thinking, num_predict)?;
+    // Thinking may be on by model default (DeepSeek-R1, Ornith) even when
+    // `think` is omitted; the buffered path is the only one that splits
+    // reasoning from content, so gate on the effective state.
+    let effective_thinking =
+        openai_chat_prompt_render_options_for_live(&openai_request, &live).enable_thinking;
     let can_true_stream = stream
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
-        && request.tools.is_none()
-        && request.format.is_none()
-        && thinking != Some(true);
-    let max_tokens = resolve_ollama_num_predict(&live, request.options.num_predict)?;
-    let openai_request = ollama_chat_to_openai_request(request, thinking, max_tokens)?;
+        && !tools_requested
+        && !format_requested
+        && !effective_thinking;
     if can_true_stream {
         let OpenAiBuiltRequest {
             generate_request,
@@ -441,8 +449,8 @@ async fn ollama_generate_inner(
     let can_true_stream = stream
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         && request.format.is_none();
-    let max_tokens = resolve_ollama_num_predict(&live, request.options.num_predict)?;
-    let openai_request = ollama_generate_to_openai_request(request, max_tokens)?;
+    let num_predict = resolve_ollama_num_predict(&live, request.options.num_predict)?;
+    let openai_request = ollama_generate_to_openai_request(request, num_predict)?;
     if can_true_stream {
         let OpenAiBuiltRequest {
             generate_request,
@@ -681,19 +689,21 @@ fn drive_ollama_native_events<N>(
                 }
                 let summary = ollama_generate_response_from_generate(payload.response);
                 let final_chunk = match kind {
-                    OllamaNativeStreamKind::Chat => json!({
-                        "model": summary.model,
-                        "created_at": summary.created_at,
-                        "message": {"role": "assistant", "content": ""},
-                        "done": true,
-                        "done_reason": summary.done_reason,
-                        "total_duration": summary.total_duration,
-                        "load_duration": summary.load_duration,
-                        "prompt_eval_count": summary.prompt_eval_count,
-                        "prompt_eval_duration": summary.prompt_eval_duration,
-                        "eval_count": summary.eval_count,
-                        "eval_duration": summary.eval_duration,
-                    }),
+                    OllamaNativeStreamKind::Chat => with_done_reason(
+                        json!({
+                            "model": summary.model,
+                            "created_at": summary.created_at,
+                            "message": {"role": "assistant", "content": ""},
+                            "done": true,
+                            "total_duration": summary.total_duration,
+                            "load_duration": summary.load_duration,
+                            "prompt_eval_count": summary.prompt_eval_count,
+                            "prompt_eval_duration": summary.prompt_eval_duration,
+                            "eval_count": summary.eval_count,
+                            "eval_duration": summary.eval_duration,
+                        }),
+                        summary.done_reason,
+                    ),
                     OllamaNativeStreamKind::Generate => {
                         let mut summary = summary;
                         summary.response = String::new();
@@ -742,7 +752,7 @@ fn send_ollama_ndjson_line(
 fn ollama_chat_to_openai_request(
     request: OllamaChatRequest,
     thinking: Option<bool>,
-    max_tokens: Option<u32>,
+    num_predict: OllamaNumPredict,
 ) -> Result<OpenAiChatCompletionHttpRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_unsupported_fields(&request.unsupported, "request")?;
     reject_unsupported_fields(&request.options.unsupported, "options")?;
@@ -764,7 +774,7 @@ fn ollama_chat_to_openai_request(
         model: request.model,
         messages,
         input_tokens: Vec::new(),
-        max_tokens,
+        max_tokens: num_predict.max_tokens,
         max_completion_tokens: None,
         temperature: request.options.temperature,
         top_p: request.options.top_p,
@@ -797,15 +807,16 @@ fn ollama_chat_to_openai_request(
         }),
         metadata: Some("ollama:/api/chat".to_string()),
         multimodal_inputs: Default::default(),
-        response_format: ollama_format_to_openai(request.format),
+        response_format: ollama_format_to_openai(request.format)?,
         tools: request.tools,
         tool_choice: None,
+        fit_max_tokens_to_context: num_predict.fill_context,
     })
 }
 
 fn ollama_generate_to_openai_request(
     request: OllamaGenerateRequest,
-    max_tokens: Option<u32>,
+    num_predict: OllamaNumPredict,
 ) -> Result<OpenAiCompletionHttpRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_unsupported_fields(&request.unsupported, "request")?;
     reject_unsupported_fields(&request.options.unsupported, "options")?;
@@ -821,7 +832,7 @@ fn ollama_generate_to_openai_request(
     Ok(OpenAiCompletionHttpRequest {
         model: request.model,
         prompt: OpenAiPromptInput::Text(prompt),
-        max_tokens,
+        max_tokens: num_predict.max_tokens,
         max_completion_tokens: None,
         temperature: request.options.temperature,
         top_p: request.options.top_p,
@@ -844,7 +855,8 @@ fn ollama_generate_to_openai_request(
         top_logprobs: None,
         metadata: Some("ollama:/api/generate".to_string()),
         multimodal_inputs: Default::default(),
-        response_format: ollama_format_to_openai(request.format),
+        response_format: ollama_format_to_openai(request.format)?,
+        fit_max_tokens_to_context: num_predict.fill_context,
     })
 }
 
@@ -936,6 +948,12 @@ fn validate_ollama_num_ctx(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct OllamaNumPredict {
+    max_tokens: Option<u32>,
+    fill_context: bool,
+}
+
 /// Resolve Ollama `options.num_predict` into an OpenAI `max_tokens` value.
 /// Positive budgets pass through. Ollama's documented sentinels `-1` (no
 /// fixed budget) and `-2` (fill the context) map to the session's advertised
@@ -944,14 +962,23 @@ fn validate_ollama_num_ctx(
 fn resolve_ollama_num_predict(
     live: &LiveState,
     num_predict: Option<i64>,
-) -> Result<Option<u32>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<OllamaNumPredict, (StatusCode, Json<ErrorResponse>)> {
     match num_predict {
-        None => Ok(None),
-        Some(value) if value > 0 => Ok(Some(u32::try_from(value).unwrap_or(u32::MAX))),
-        Some(-1) | Some(-2) => Ok(Some(crate::metadata::max_output_tokens_live(
-            live,
-            context_length(live),
-        ))),
+        None => Ok(OllamaNumPredict::default()),
+        Some(value) if value > 0 => Ok(OllamaNumPredict {
+            max_tokens: Some(u32::try_from(value).unwrap_or(u32::MAX)),
+            fill_context: false,
+        }),
+        // The sentinels mean "as many tokens as still fit": the budget is
+        // clamped to the remaining context once the prompt is tokenized,
+        // never rejected as context_length_exceeded.
+        Some(-1) | Some(-2) => Ok(OllamaNumPredict {
+            max_tokens: Some(crate::metadata::max_output_tokens_live(
+                live,
+                context_length(live),
+            )),
+            fill_context: true,
+        }),
         Some(value) => Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -1145,17 +1172,53 @@ fn ollama_image_data_uri(encoded: &str) -> Result<String, (StatusCode, Json<Erro
     Ok(format!("data:{mime};base64,{encoded}"))
 }
 
-fn ollama_format_to_openai(format: Option<Value>) -> Option<Value> {
-    let format = format?;
+/// Map Ollama `format` onto an OpenAI `response_format`. Ollama accepts the
+/// string `"json"` or a bare JSON Schema object; the OpenAI layer only
+/// enforces `json_object` / `json_schema` wrappers, so a bare schema must be
+/// wrapped (an unwrapped one would pass validation-free) and anything else
+/// fails closed instead of silently producing unconstrained output.
+fn ollama_format_to_openai(
+    format: Option<Value>,
+) -> Result<Option<Value>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(format) = format else {
+        return Ok(None);
+    };
     match format {
+        Value::Null => Ok(None),
         Value::String(value)
             if value.eq_ignore_ascii_case("json") || value.eq_ignore_ascii_case("json_object") =>
         {
-            Some(json!({"type": "json_object"}))
+            Ok(Some(json!({"type": "json_object"})))
         }
-        Value::Null => None,
-        value => Some(value),
+        Value::Object(ref object)
+            if matches!(
+                object.get("type").and_then(Value::as_str),
+                Some("json_object" | "json_schema" | "text")
+            ) =>
+        {
+            Ok(Some(format))
+        }
+        Value::Object(_) => Ok(Some(json!({
+            "type": "json_schema",
+            "json_schema": {"name": "ollama_format", "schema": format}
+        }))),
+        other => Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "Ollama-compatible field `format` must be \"json\" or a JSON Schema object (received {other})"
+            ),
+        )),
     }
+}
+
+/// Real Ollama omits `done_reason` rather than emitting `null`; keep the
+/// streaming terminal line shaped like the non-streaming response struct.
+fn with_done_reason(mut chunk: Value, done_reason: Option<&'static str>) -> Value {
+    if let (Some(reason), Some(object)) = (done_reason, chunk.as_object_mut()) {
+        object.insert("done_reason".to_string(), Value::String(reason.to_string()));
+    }
+    chunk
 }
 
 async fn run_ollama_chat_completion(
@@ -1367,22 +1430,24 @@ fn ollama_chat_stream_chunk(response: &OllamaChatResponse) -> Value {
 }
 
 fn ollama_chat_final_chunk(response: &OllamaChatResponse) -> Value {
-    json!({
-        "model": response.model,
-        "created_at": response.created_at,
-        // Real Ollama always includes `message` (with empty content) on the
-        // terminal `done: true` line; a client parsing every NDJSON line
-        // with a uniform schema would otherwise fail on the last line.
-        "message": {"role": "assistant", "content": ""},
-        "done": true,
-        "done_reason": response.done_reason,
-        "total_duration": response.total_duration,
-        "load_duration": response.load_duration,
-        "prompt_eval_count": response.prompt_eval_count,
-        "prompt_eval_duration": response.prompt_eval_duration,
-        "eval_count": response.eval_count,
-        "eval_duration": response.eval_duration,
-    })
+    with_done_reason(
+        json!({
+            "model": response.model,
+            "created_at": response.created_at,
+            // Real Ollama always includes `message` (with empty content) on the
+            // terminal `done: true` line; a client parsing every NDJSON line
+            // with a uniform schema would otherwise fail on the last line.
+            "message": {"role": "assistant", "content": ""},
+            "done": true,
+            "total_duration": response.total_duration,
+            "load_duration": response.load_duration,
+            "prompt_eval_count": response.prompt_eval_count,
+            "prompt_eval_duration": response.prompt_eval_duration,
+            "eval_count": response.eval_count,
+            "eval_duration": response.eval_duration,
+        }),
+        response.done_reason,
+    )
 }
 
 fn ollama_generate_stream_chunk(response: &OllamaGenerateResponse) -> Value {
@@ -1395,22 +1460,24 @@ fn ollama_generate_stream_chunk(response: &OllamaGenerateResponse) -> Value {
 }
 
 fn ollama_generate_final_chunk(response: &OllamaGenerateResponse) -> Value {
-    json!({
-        "model": response.model,
-        "created_at": response.created_at,
-        // Real Ollama always includes `response` (empty string) on the
-        // terminal `done: true` line; a client parsing every NDJSON line
-        // with a uniform schema would otherwise fail on the last line.
-        "response": "",
-        "done": true,
-        "done_reason": response.done_reason,
-        "total_duration": response.total_duration,
-        "load_duration": response.load_duration,
-        "prompt_eval_count": response.prompt_eval_count,
-        "prompt_eval_duration": response.prompt_eval_duration,
-        "eval_count": response.eval_count,
-        "eval_duration": response.eval_duration,
-    })
+    with_done_reason(
+        json!({
+            "model": response.model,
+            "created_at": response.created_at,
+            // Real Ollama always includes `response` (empty string) on the
+            // terminal `done: true` line; a client parsing every NDJSON line
+            // with a uniform schema would otherwise fail on the last line.
+            "response": "",
+            "done": true,
+            "total_duration": response.total_duration,
+            "load_duration": response.load_duration,
+            "prompt_eval_count": response.prompt_eval_count,
+            "prompt_eval_duration": response.prompt_eval_duration,
+            "eval_count": response.eval_count,
+            "eval_duration": response.eval_duration,
+        }),
+        response.done_reason,
+    )
 }
 
 fn ollama_ndjson_response(
@@ -1646,6 +1713,59 @@ mod tests {
     };
 
     #[test]
+    fn ollama_format_wraps_bare_json_schema_and_rejects_unknown_values() {
+        assert_eq!(ollama_format_to_openai(None).unwrap(), None);
+        assert_eq!(ollama_format_to_openai(Some(Value::Null)).unwrap(), None);
+        assert_eq!(
+            ollama_format_to_openai(Some(json!("JSON"))).unwrap(),
+            Some(json!({"type": "json_object"}))
+        );
+        let schema = json!({"type": "object", "properties": {"city": {"type": "string"}}});
+        let wrapped = ollama_format_to_openai(Some(schema.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(wrapped["type"], "json_schema");
+        assert_eq!(wrapped["json_schema"]["schema"], schema);
+        // Already OpenAI-shaped wrappers pass through untouched.
+        let wrapper = json!({"type": "json_object"});
+        assert_eq!(
+            ollama_format_to_openai(Some(wrapper.clone())).unwrap(),
+            Some(wrapper)
+        );
+        let (status, _) = ollama_format_to_openai(Some(json!("yaml"))).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn ollama_final_chunks_omit_done_reason_when_unknown() {
+        let mut response = OllamaChatResponse {
+            model: "m".to_string(),
+            created_at: "now".to_string(),
+            message: OllamaMessage {
+                role: "assistant".to_string(),
+                content: String::new(),
+                images: None,
+                thinking: None,
+                tool_calls: None,
+                tool_name: None,
+                unsupported: BTreeMap::new(),
+            },
+            done: true,
+            done_reason: None,
+            total_duration: 0,
+            load_duration: 0,
+            prompt_eval_count: 0,
+            prompt_eval_duration: 0,
+            eval_count: 0,
+            eval_duration: 0,
+        };
+        let chunk = ollama_chat_final_chunk(&response);
+        assert!(chunk.get("done_reason").is_none(), "{chunk}");
+        response.done_reason = Some("stop");
+        assert_eq!(ollama_chat_final_chunk(&response)["done_reason"], "stop");
+    }
+
+    #[test]
     fn ollama_chat_request_maps_to_openai_tool_request() {
         let request = OllamaChatRequest {
             model: Some("qwen3".to_string()),
@@ -1675,8 +1795,15 @@ mod tests {
             unsupported: BTreeMap::new(),
         };
 
-        let openai =
-            ollama_chat_to_openai_request(request, None, Some(16)).expect("request should map");
+        let openai = ollama_chat_to_openai_request(
+            request,
+            None,
+            OllamaNumPredict {
+                max_tokens: Some(16),
+                fill_context: false,
+            },
+        )
+        .expect("request should map");
 
         assert_eq!(openai.model.as_deref(), Some("qwen3"));
         assert_eq!(openai.max_tokens, Some(16));
@@ -1701,7 +1828,7 @@ mod tests {
         }))
         .expect("over-budget image request should deserialize");
 
-        let error = ollama_chat_to_openai_request(request, None, None)
+        let error = ollama_chat_to_openai_request(request, None, OllamaNumPredict::default())
             .expect_err("requests above the inline image budget must be rejected");
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(
@@ -1737,7 +1864,7 @@ mod tests {
         }))
         .expect("split over-budget image request should deserialize");
 
-        let error = ollama_chat_to_openai_request(request, None, None)
+        let error = ollama_chat_to_openai_request(request, None, OllamaNumPredict::default())
             .expect_err("the per-request budget applies across messages");
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(
@@ -1798,8 +1925,8 @@ mod tests {
         let thinking =
             resolve_ollama_thinking(request.think.as_ref()).expect("thinking level should map");
         assert_eq!(thinking, Some(true));
-        let openai =
-            ollama_chat_to_openai_request(request, thinking, None).expect("request should map");
+        let openai = ollama_chat_to_openai_request(request, thinking, OllamaNumPredict::default())
+            .expect("request should map");
 
         assert_eq!(
             openai
@@ -1849,17 +1976,25 @@ mod tests {
             .expect("think request should deserialize")
         };
 
-        let on = ollama_chat_to_openai_request(request(json!(true)), Some(true), None)
-            .expect("think=true should map")
-            .chat_template_kwargs
-            .expect("kwargs should be set");
+        let on = ollama_chat_to_openai_request(
+            request(json!(true)),
+            Some(true),
+            OllamaNumPredict::default(),
+        )
+        .expect("think=true should map")
+        .chat_template_kwargs
+        .expect("kwargs should be set");
         assert_eq!(on.enable_thinking, Some(true));
         assert_eq!(on.preserve_thinking, Some(true));
 
-        let off = ollama_chat_to_openai_request(request(json!(false)), Some(false), None)
-            .expect("think=false should map")
-            .chat_template_kwargs
-            .expect("kwargs should be set");
+        let off = ollama_chat_to_openai_request(
+            request(json!(false)),
+            Some(false),
+            OllamaNumPredict::default(),
+        )
+        .expect("think=false should map")
+        .chat_template_kwargs
+        .expect("kwargs should be set");
         assert_eq!(off.enable_thinking, Some(false));
         assert_eq!(
             off.preserve_thinking,

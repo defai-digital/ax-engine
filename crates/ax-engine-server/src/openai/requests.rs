@@ -87,6 +87,9 @@ pub(crate) struct OpenAiResponseOptions {
     /// backend only (delegated backends forward them upstream). Applied to
     /// visible assistant content; tool-call spans are exempt (ADR-040 D2).
     pub(crate) client_stop_sequences: Vec<String>,
+    /// Clamp `max_output_tokens` to the remaining context instead of
+    /// rejecting the request (Ollama `num_predict` sentinels).
+    pub(crate) fit_max_tokens_to_context: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -219,6 +222,7 @@ impl OpenAiResponseOptions {
             parse_tool_calls: false,
             tool_contract: None,
             client_stop_sequences: Vec::new(),
+            fit_max_tokens_to_context: request.fit_max_tokens_to_context,
         })
     }
 
@@ -247,6 +251,7 @@ impl OpenAiResponseOptions {
             ),
             tool_contract: OpenAiToolContract::from_tools(request.tools.as_ref()).map(Arc::new),
             client_stop_sequences: Vec::new(),
+            fit_max_tokens_to_context: request.fit_max_tokens_to_context,
         })
     }
 
@@ -773,8 +778,12 @@ fn build_openai_generate_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let (input_tokens, input_text) =
         tokenize_native_mlx_text_input(live, input_tokens, input_text)?;
-    let max_output_tokens =
-        fit_openai_max_output_tokens_to_context(live, &input_tokens, max_output_tokens)?;
+    let max_output_tokens = fit_openai_max_output_tokens_to_context(
+        live,
+        &input_tokens,
+        max_output_tokens,
+        response_options.fit_max_tokens_to_context,
+    )?;
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
@@ -798,6 +807,7 @@ fn fit_openai_max_output_tokens_to_context(
     live: &LiveState,
     input_tokens: &[u32],
     max_output_tokens: u32,
+    clamp_to_context: bool,
 ) -> Result<u32, (StatusCode, Json<ErrorResponse>)> {
     if input_tokens.is_empty() {
         return Ok(max_output_tokens);
@@ -817,6 +827,12 @@ fn fit_openai_max_output_tokens_to_context(
     let requested_tokens = prompt_tokens.saturating_add(max_output_tokens as usize);
     if requested_tokens <= context_length as usize {
         return Ok(max_output_tokens);
+    }
+    if clamp_to_context {
+        // "Fill the context" budgets (Ollama num_predict -1/-2) mean "as many
+        // tokens as still fit", never a rejection.
+        let remaining = context_length as usize - prompt_tokens;
+        return Ok(u32::try_from(remaining).unwrap_or(u32::MAX).max(1));
     }
 
     Err(error_response(
