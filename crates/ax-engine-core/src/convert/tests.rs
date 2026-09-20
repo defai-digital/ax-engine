@@ -5090,6 +5090,38 @@ fn maps_qwen4_exp_published_hf_checkpoint_names() {
     );
 }
 
+#[test]
+fn gemma4_router_eight_bit_override_applies_only_to_affine_quantization() {
+    let family = model_family_for_type("gemma4", &serde_json::json!({"model_type": "gemma4"}))
+        .expect("gemma4 family");
+    let router = "language_model.model.layers.0.router.proj.weight";
+    let affine = serde_json::json!({
+        "model_type": "gemma4",
+        "quantization": {"mode": "affine", "bits": 4, "group_size": 64}
+    });
+    let quantization = super::tensor_quantization(&affine, &family, router).expect("affine");
+    assert_eq!(quantization.bits, 8);
+    // MXFP4 is only valid as (group 32, bits 4); forcing 8 bits would produce
+    // a descriptor the loader rejects.
+    let mxfp4 = serde_json::json!({
+        "model_type": "gemma4",
+        "quantization": {"mode": "mxfp4", "bits": 4, "group_size": 32}
+    });
+    let quantization = super::tensor_quantization(&mxfp4, &family, router).expect("mxfp4");
+    assert_eq!(quantization.mode, "mxfp4");
+    assert_eq!(quantization.bits, 4);
+    assert_eq!(quantization.group_size, 32);
+}
+
+#[test]
+fn integer_config_fields_reject_fractional_and_oversized_values() {
+    use super::hf_config::f64_to_u32;
+    assert_eq!(f64_to_u32(10000.0), Some(10000));
+    assert_eq!(f64_to_u32(10000.5), None);
+    assert_eq!(f64_to_u32(-1.0), None);
+    assert_eq!(f64_to_u32(f64::from(u32::MAX) + 1.0), None);
+}
+
 fn has_qwen4_role(
     manifest: &crate::NativeModelManifest,
     role: NativeTensorRole,

@@ -1226,7 +1226,9 @@ pub(crate) fn compute_attention_value_from_key_layers(
 }
 
 pub(crate) fn f64_to_u32(value: f64) -> Option<u32> {
-    if value.is_finite() && value >= 0.0 && value <= f64::from(u32::MAX) {
+    // A fractional value in an integer field is a malformed config, not a
+    // number to truncate toward zero.
+    if value.is_finite() && value >= 0.0 && value <= f64::from(u32::MAX) && value.fract() == 0.0 {
         Some(value as u32)
     } else {
         None

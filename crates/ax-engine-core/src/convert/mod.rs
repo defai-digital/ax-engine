@@ -542,7 +542,12 @@ fn parse_think_token_ids(model_dir: &Path) -> (Option<u32>, Option<u32>) {
     let mut start = None;
     let mut end = None;
     for token in added {
-        let id = token.get("id").and_then(|i| i.as_u64()).map(|i| i as u32);
+        // An id beyond u32 cannot be a real token id; treat it as absent
+        // rather than truncating it into some unrelated token.
+        let id = token
+            .get("id")
+            .and_then(|i| i.as_u64())
+            .and_then(|i| u32::try_from(i).ok());
         // Qwen3 and DeepSeek (V3/R1/V4) both use these exact content strings;
         // only the numeric ids differ (DeepSeek V3: 128798/128799, V4:
         // 128821/128822). Matching content — not family — keeps conversion
@@ -1047,10 +1052,14 @@ fn tensor_quantization(
     // the rest of the affine-quantized model uses the global 4-bit setting.
     // gemma4_vl shares the same MoE text backbone family label is separate for
     // vision capability gating only.
+    // The predicate is specific to affine quantization: MXFP4 is only valid
+    // as (group 32, bits 4), and forcing bits=8 on it would produce a
+    // descriptor the loader rejects.
     if matches!(
         family.family_name,
         "gemma4" | "gemma4_vl" | "gemma4_unified"
     ) && tensor_name.ends_with(".router.proj.weight")
+        && quantization.mode == "affine"
     {
         quantization.bits = 8;
     }
