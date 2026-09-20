@@ -141,7 +141,7 @@ pub(super) fn draw_modal_with(
     // (pasted URLs, parser errors) cannot push the key-chip row out of the
     // popup.
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let content_rows = paragraph.line_count(inner_width) as u16;
+    let content_rows = wrapped_row_count(&paragraph, inner_width);
     let height = (content_rows + 2).min(area.height.saturating_sub(2));
     let popup = centered_rect(width, height, area);
     // Chip hit-rects: the hint spans render on the last content row, laid out
@@ -195,6 +195,18 @@ pub(super) fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         width,
         height,
     }
+}
+
+/// Terminal rows `paragraph` occupies once wrapped to `width` columns, never
+/// fewer than one.
+///
+/// This is the workspace's only call into ratatui's semver-exempt
+/// `unstable-rendered-line-info` feature (`Paragraph::line_count`). Upstream
+/// documents text wrapping as unstable, so a ratatui minor bump can change this
+/// API; keeping the call here bounds that bump to this one function instead of
+/// every caller.
+pub(super) fn wrapped_row_count(paragraph: &Paragraph<'_>, width: u16) -> u16 {
+    paragraph.line_count(width).max(1) as u16
 }
 
 /// Panel chrome: active gets a full accent frame; inactive keeps a light left bar

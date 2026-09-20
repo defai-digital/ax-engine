@@ -1022,7 +1022,7 @@ impl App {
                     // Same content, new wrap width — remeasure without rebuild.
                     let paragraph =
                         Paragraph::new(Text::from(c.lines.as_slice())).wrap(Wrap { trim: false });
-                    let height = (paragraph.line_count(text_width) as u16).max(1);
+                    let height = widgets::wrapped_row_count(&paragraph, text_width);
                     let lines = Rc::clone(&c.lines);
                     *cache = Some(TranscriptCache {
                         key,
@@ -1036,7 +1036,7 @@ impl App {
                     let built = Rc::new(self.build_transcript_lines());
                     let paragraph =
                         Paragraph::new(Text::from(built.as_slice())).wrap(Wrap { trim: false });
-                    let height = (paragraph.line_count(text_width) as u16).max(1);
+                    let height = widgets::wrapped_row_count(&paragraph, text_width);
                     *cache = Some(TranscriptCache {
                         key,
                         width: text_width,

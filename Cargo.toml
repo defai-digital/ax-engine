@@ -28,10 +28,11 @@ unicode-width = "0.2"
 fs2 = "0.4"
 hound = "3"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png"] }
-# unstable-rendered-line-info: exposes Paragraph::line_count, which the TUI
-# chat transcript uses to size its scroll buffer to the exact wrapped height.
-# Semver-exempt upstream, so a minor ratatui bump may require touching that
-# one call site (crates/ax-engine-bench/src/tui/screens/chat.rs).
+# unstable-rendered-line-info: exposes Paragraph::line_count, which the TUI uses
+# to size scroll buffers (chat transcript, confirm modals) to the exact wrapped
+# height. Semver-exempt upstream, so a minor ratatui bump may require touching
+# the single call site:
+# crates/ax-engine-bench/src/tui/widgets.rs (wrapped_row_count).
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 serde = { version = "1", features = ["derive"] }
 # NOTE: tui-textarea (chat input editor) is deliberately absent: as of 0.7.0 it

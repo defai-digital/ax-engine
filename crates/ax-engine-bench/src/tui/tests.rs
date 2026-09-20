@@ -26,6 +26,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::widgets::{Paragraph, Wrap};
 
 fn new_app() -> App {
     // Hermetic fixture: App::with_hardware_for_tests builds the catalog
@@ -1637,6 +1638,25 @@ fn modal_click_outside_dismisses_and_chips_act() {
 }
 
 #[test]
+fn wrapped_row_count_never_reports_zero_rows() {
+    // An empty paragraph still occupies one terminal row. Callers size scroll
+    // buffers and modal heights from this value, so a zero would collapse the
+    // viewport to nothing.
+    let empty = Paragraph::new("").wrap(Wrap { trim: false });
+    assert_eq!(super::widgets::wrapped_row_count(&empty, 20), 1);
+}
+
+#[test]
+fn wrapped_row_count_tracks_wrap_width() {
+    // Pins the semantics ratatui documents for `Paragraph::line_count`, which
+    // this helper is the only caller of: the same text needs more rows once the
+    // wrap width drops below its length.
+    let paragraph = Paragraph::new("Hello World").wrap(Wrap { trim: false });
+    assert_eq!(super::widgets::wrapped_row_count(&paragraph, 20), 1);
+    assert_eq!(super::widgets::wrapped_row_count(&paragraph, 10), 2);
+}
+
+#[test]
 fn delete_modal_requires_typed_word() {
     let mut app = new_app();
     app.modal = Some(Modal::DeleteModel {
@@ -1862,14 +1882,16 @@ fn server_status_waits_for_listening_line_before_going_green() {
 fn server_ready_accepts_tracing_bind_address_line() {
     // When RUST_LOG is set, ax-engine-server emits structured tracing instead of
     // the "listening on http://" operator line. The TUI must still go green.
-    assert!(crate::tui::server_log_indicates_ready(
+    assert!(crate::tui::server_probe::server_log_indicates_ready(
         "2026-07-18T11:21:03.181885Z  INFO ax-engine-server preview listening bind_address=127.0.0.1:8080 model_id=gemma4-e2b"
     ));
-    assert!(crate::tui::server_log_indicates_ready(
+    assert!(crate::tui::server_probe::server_log_indicates_ready(
         "ax-engine-server preview listening on http://127.0.0.1:8080 model_id=gemma4-e2b"
     ));
-    assert!(!crate::tui::server_log_indicates_ready("booting model..."));
-    assert!(!crate::tui::server_log_indicates_ready(
+    assert!(!crate::tui::server_probe::server_log_indicates_ready(
+        "booting model..."
+    ));
+    assert!(!crate::tui::server_probe::server_log_indicates_ready(
         "mlx error: [Primitive::output_shapes] CustomKernel cannot infer output shapes."
     ));
 
@@ -2762,17 +2784,35 @@ fn server_ready_flips_off_when_process_exits() {
 
 #[test]
 fn parse_health_body_accepts_ok_payload() {
-    let health = super::parse_health_body(
+    let health = super::server_probe::parse_health_body(
         r#"{"status":"ok","service":"ax-engine-server","model_id":"gemma4-e2b"}"#,
     )
     .expect("ok health");
     assert_eq!(health.model_id.as_deref(), Some("gemma4-e2b"));
-    assert!(super::parse_health_body(r#"{"status":"degraded"}"#).is_none());
+    assert!(super::server_probe::parse_health_body(r#"{"status":"degraded"}"#).is_none());
     assert!(
-        super::parse_health_body(r#"{"status":"ok","service":"other"}"#).is_none(),
+        super::server_probe::parse_health_body(r#"{"status":"ok","service":"other"}"#).is_none(),
         "foreign service must not attach"
     );
-    assert!(super::parse_health_body("not-json").is_none());
+    assert!(super::server_probe::parse_health_body("not-json").is_none());
+}
+
+#[test]
+fn format_http_base_url_brackets_bare_ipv6_hosts() {
+    assert_eq!(
+        super::server_probe::format_http_base_url("127.0.0.1", "31418"),
+        "http://127.0.0.1:31418"
+    );
+    // Without brackets the parser would read the port as part of the host.
+    assert_eq!(
+        super::server_probe::format_http_base_url("::1", "31418"),
+        "http://[::1]:31418"
+    );
+    // An already-bracketed host must not get a second pair.
+    assert_eq!(
+        super::server_probe::format_http_base_url("[::1]", "31418"),
+        "http://[::1]:31418"
+    );
 }
 
 #[test]
@@ -2781,7 +2821,7 @@ fn external_health_probe_marks_server_ready_without_child_job() {
     let mut app = new_app();
     assert!(!app.server_ready);
     assert!(!app.server_running());
-    let changed = app.apply_server_health(Some(super::ServerHealth {
+    let changed = app.apply_server_health(Some(super::server_probe::ServerHealth {
         model_id: Some("gemma4-e2b".into()),
     }));
     assert!(changed);
@@ -2806,7 +2846,7 @@ fn external_health_probe_marks_server_ready_without_child_job() {
 #[test]
 fn external_health_loss_detaches_ready_state() {
     let mut app = new_app();
-    app.apply_server_health(Some(super::ServerHealth {
+    app.apply_server_health(Some(super::server_probe::ServerHealth {
         model_id: Some("gemma4-e2b".into()),
     }));
     assert!(app.server_ready && app.external_server);
@@ -2825,7 +2865,7 @@ fn managed_health_probe_does_not_mark_external() {
     app.server = Some(Job::running_with_log(vec!["booting…".into()]));
     app.server_url = Some("http://127.0.0.1:31418".into());
     app.server_model = Some("local-label".into());
-    app.apply_server_health(Some(super::ServerHealth {
+    app.apply_server_health(Some(super::server_probe::ServerHealth {
         model_id: Some("from-health".into()),
     }));
     assert!(app.server_ready);
@@ -2843,7 +2883,7 @@ fn managed_health_probe_does_not_mark_external() {
 #[test]
 fn stop_external_server_detaches_without_child() {
     let mut app = new_app();
-    app.apply_server_health(Some(super::ServerHealth {
+    app.apply_server_health(Some(super::server_probe::ServerHealth {
         model_id: Some("gemma4-e2b".into()),
     }));
     app.screen = Screen::Serve;
@@ -2867,7 +2907,7 @@ fn stop_external_server_detaches_without_child() {
 #[test]
 fn serve_panel_shows_external_badge_when_attached() {
     let mut app = new_app();
-    app.apply_server_health(Some(super::ServerHealth {
+    app.apply_server_health(Some(super::server_probe::ServerHealth {
         model_id: Some("gemma4-e2b".into()),
     }));
     app.screen = Screen::Serve;
