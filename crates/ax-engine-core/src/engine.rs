@@ -2639,6 +2639,60 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_pool_still_finishes_prefill_tail_that_fits_its_partial_block() {
+        // Pool: 4 blocks x 4 tokens = 16 slots. A 14-token prompt chunked at
+        // 13 tokens owns all four blocks (partial block holds 1 token, room
+        // for 3) while the pool reports `kv_exhausted`. The remaining single
+        // prompt token and the one generated token both fit without a new
+        // block, so the request must complete instead of being deferred
+        // forever with no decode able to free capacity.
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 4));
+        let prompt: Vec<u32> = (1..=14).collect();
+        engine
+            .submit(make_submission_with_prompt(1, 1, prompt, 1))
+            .unwrap();
+
+        let outcome = engine.step(13, true).unwrap();
+        assert_eq!(outcome.metrics.scheduled_tokens, 13);
+        assert_eq!(
+            engine.kv_manager().memory_pressure().as_deref(),
+            Some("kv_exhausted"),
+            "test must reach the exhausted state with the prompt unfinished"
+        );
+        let snapshot = engine.request_manager().snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.processed_prompt_tokens, 13);
+
+        let outcome = engine.step(64, true).unwrap();
+        assert_eq!(
+            outcome.metrics.scheduled_tokens, 1,
+            "the prefill tail must be scheduled into the owned partial block"
+        );
+        assert!(outcome.schedule_plan.deferred_requests.is_empty());
+        assert!(outcome.schedule_plan.memory_blocked_requests.is_empty());
+        let snapshot = engine.request_manager().snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.processed_prompt_tokens, 14);
+
+        for _ in 0..4 {
+            let done = engine
+                .request_manager()
+                .snapshot(RequestId(1))
+                .is_none_or(|snapshot| snapshot.state.is_terminal());
+            if done {
+                break;
+            }
+            engine.step(64, true).unwrap();
+        }
+        assert!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(1))
+                .is_none_or(|snapshot| snapshot.state.is_terminal()),
+            "request must finish once its tail fits the partial block"
+        );
+    }
+
+    #[test]
     fn step_fails_request_that_can_never_fit_after_blocked_step_limit() {
         // Pool: 1 block x 4 tokens. The 8-token prompt needs 2 blocks and
         // can never fit; without the starvation bound it would loop

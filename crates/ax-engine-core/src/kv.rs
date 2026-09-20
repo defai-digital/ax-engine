@@ -520,6 +520,17 @@ impl KvManager {
             });
         }
 
+        // Validate the accounting before touching the free list so an
+        // overflow fails closed instead of leaving popped blocks orphaned.
+        let new_logical_token_count = self
+            .block_tables
+            .get(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?
+            .logical_token_count
+            .checked_add(scheduled_tokens)
+            .ok_or(KvManagerError::InvariantViolation(
+                "logical_token_count overflow",
+            ))?;
         let required_new_blocks = required_new_blocks as usize;
         let mut new_block_ids = Vec::with_capacity(required_new_blocks);
         for _ in 0..required_new_blocks {
@@ -545,12 +556,7 @@ impl KvManager {
                 .get_mut(&request_id)
                 .ok_or(KvManagerError::UnknownRequest(request_id))?;
             table.block_ids.extend(new_block_ids.iter().copied());
-            table.logical_token_count = table
-                .logical_token_count
-                .checked_add(scheduled_tokens)
-                .ok_or(KvManagerError::InvariantViolation(
-                    "logical_token_count overflow",
-                ))?;
+            table.logical_token_count = new_logical_token_count;
             table.full_block_count = table.logical_token_count / self.config.block_size_tokens;
             table.partial_block_tokens =
                 (table.logical_token_count % self.config.block_size_tokens) as u16;

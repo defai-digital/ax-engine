@@ -526,6 +526,16 @@ impl Scheduler {
             }
 
             let candidate_budget = match (mode, pressure_prefill_budget) {
+                (ExecutionMode::Prefill, Some(0))
+                    if prefill_tail_fits_partial_block(&snapshot, input.block_size_tokens) =>
+                {
+                    // Exhausted pool, but this in-progress prefill already owns
+                    // a partial block with room for its whole remaining prompt:
+                    // it needs zero new blocks. Deferring it would never
+                    // increment the memory-blocked bound, and with no decode
+                    // able to free capacity the request would hang forever.
+                    remaining_budget
+                }
                 (ExecutionMode::Prefill, Some(0)) => {
                     token_budget.record_skipped(mode, requested_tokens);
                     let pool_tokens =
@@ -762,6 +772,20 @@ fn schedulable_token_count(snapshot: &RequestSnapshot, mode: ExecutionMode) -> u
             .saturating_sub(snapshot.processed_prompt_tokens),
         ExecutionMode::Decode => 1,
     }
+}
+
+/// Whether an in-progress prefill's remaining prompt fits in the partial
+/// block it already owns, so continuing it allocates no new KV block. The
+/// KV logical length of a request in prefill equals its processed prompt
+/// tokens (reused prefix tokens count as processed).
+fn prefill_tail_fits_partial_block(snapshot: &RequestSnapshot, block_size_tokens: u32) -> bool {
+    let processed = snapshot.processed_prompt_tokens;
+    if processed == 0 || block_size_tokens == 0 {
+        return false;
+    }
+    let partial_room = (block_size_tokens - processed % block_size_tokens) % block_size_tokens;
+    let remaining = snapshot.prompt_len.saturating_sub(processed);
+    remaining > 0 && remaining <= partial_room
 }
 
 fn prefill_budget_for_memory_pressure(memory_pressure: Option<&str>) -> Option<u32> {
