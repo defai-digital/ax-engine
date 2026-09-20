@@ -76,7 +76,9 @@ fn unlimited_ocr_inputs_from_py(
     let Some(root_value) = payload.get_item("unlimited_ocr")? else {
         return Ok(None);
     };
-    if payload.contains("gemma4_unified")? {
+    // The shortcut builds OCR-only inputs, so any sibling provider key would be
+    // silently dropped instead of failing closed like the JSON path does.
+    if payload.len() != 1 {
         return Err(PyValueError::new_err(
             "multimodal request may select only one provider schema",
         ));

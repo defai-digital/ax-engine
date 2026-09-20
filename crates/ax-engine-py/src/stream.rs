@@ -79,9 +79,11 @@ impl GenerateStreamIterator {
         // reaching a terminal event (e.g. the Python iterator was dropped
         // mid-generation). Cancel the in-flight native request so it does not
         // keep co-decoding (and holding KV blocks) alongside every subsequent
-        // generate/stream call on this session.
+        // generate/stream call on this session. A request whose finishing Step
+        // was already delivered is terminal and must not be re-cancelled: that
+        // would drain its finished record with `cancel_requested` set.
         if let Some(state) = self.state.take()
-            && matches!(state, GenerateStreamState::Native(_))
+            && state.needs_native_cancel()
         {
             let _ = session.cancel_request(state.request_id());
         }
@@ -252,6 +254,53 @@ mod tests {
                         | ax_engine_sdk::SessionRequestState::Failed
                 ),
             "error-path cancel must terminalize the request; got {report:?}"
+        );
+    }
+
+    #[test]
+    fn abandon_after_finishing_step_does_not_cancel_the_finished_request() {
+        let mut session = EngineSession::new_deterministic_native_for_tests();
+        let mut state = session
+            .stream_generate_state(sample_request())
+            .expect("native stream state should start");
+        let request_id = state.request_id();
+
+        // Stop at the Step whose report is already terminal, before Response.
+        let mut saw_terminal_step = false;
+        for _ in 0..64 {
+            match session.next_stream_event(&mut state).expect("stream event") {
+                Some(SdkGenerateStreamEvent::Step(step))
+                    if matches!(
+                        step.request.state,
+                        ax_engine_sdk::SessionRequestState::Finished
+                    ) =>
+                {
+                    saw_terminal_step = true;
+                    break;
+                }
+                Some(SdkGenerateStreamEvent::Response(_)) | None => break,
+                Some(_) => {}
+            }
+        }
+        assert!(
+            saw_terminal_step,
+            "deterministic stream should emit a finished Step"
+        );
+
+        // Abandon path: state is still present, but the request is finished.
+        let mut iter = streaming_iterator(session, state);
+        iter.restore_session();
+
+        let guard = iter.owner.lock().expect("owner lock");
+        let SessionSlot::Ready(session) = &*guard else {
+            panic!("session should be Ready after abandon restore");
+        };
+        let report = session
+            .request_report(request_id)
+            .expect("finished request should retain a report");
+        assert!(
+            !report.cancel_requested,
+            "abandoning after the finishing Step must not mark the request cancelled"
         );
     }
 

@@ -382,8 +382,9 @@ impl GenerateStreamState {
     /// reached a terminal state (e.g. the finishing Step event was delivered
     /// but the terminal Response was not) must not be re-cancelled: the
     /// finished record would otherwise be drained with `cancel_requested`
-    /// set, corrupting its final report.
-    fn needs_native_cancel(&self) -> bool {
+    /// set, corrupting its final report. Public so bindings that abandon a
+    /// stream (e.g. the Python iterator's Drop) apply the same rule.
+    pub fn needs_native_cancel(&self) -> bool {
         match self {
             Self::Native(state) => {
                 state.phase != GenerateStreamPhase::Done

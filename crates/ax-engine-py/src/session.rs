@@ -154,11 +154,17 @@ impl Session {
             .unwrap_or(true)
     }
 
-    fn close(&mut self) -> PyResult<()> {
-        let mut slot = self.inner.lock().map_err(|_| {
-            py_engine_state_error("session mutex poisoned; session state is unrecoverable")
-        })?;
-        *slot = SessionSlot::Closed;
+    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
+        let previous = {
+            let mut slot = self.inner.lock().map_err(|_| {
+                py_engine_state_error("session mutex poisoned; session state is unrecoverable")
+            })?;
+            std::mem::replace(&mut *slot, SessionSlot::Closed)
+        };
+        // Tearing down a loaded EngineSession releases Metal buffers and KV
+        // state, which can take a while for large models; do it without the
+        // GIL so other Python threads and signal handlers keep running.
+        py.detach(move || drop(previous));
         Ok(())
     }
 
@@ -514,11 +520,12 @@ impl Session {
     #[pyo3(signature = (_exc_type=None, _exc=None, _traceback=None))]
     fn __exit__(
         &mut self,
+        py: Python<'_>,
         _exc_type: Option<&Bound<'_, PyAny>>,
         _exc: Option<&Bound<'_, PyAny>>,
         _traceback: Option<&Bound<'_, PyAny>>,
     ) {
-        let _ = self.close();
+        let _ = self.close(py);
     }
 }
 
@@ -663,7 +670,7 @@ mod tests {
     fn stream_generate_on_closed_session_restores_closed_slot() {
         init_python();
         let mut session = llama_cpp_session();
-        session.close().expect("close should succeed");
+        Python::attach(|py| session.close(py)).expect("close should succeed");
         assert!(session.closed());
 
         Python::attach(|py| {
