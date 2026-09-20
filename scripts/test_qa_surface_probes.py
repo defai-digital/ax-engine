@@ -193,6 +193,27 @@ class SurfaceProbeHelperTests(unittest.TestCase):
             with unittest.mock.patch("surface_probes._post_json", return_value=(status, {"error": "video unsupported"})):
                 self.assertFalse(probe_video_rejected("http://x", "m").passed)
 
+    def test_remote_media_probe_rejects_unrelated_4xx_and_empty_content_fails(self) -> None:
+        # An unrelated 4xx is not the media policy at work.
+        for status, body in [
+            (400, {"error": {"code": "model_not_found", "message": "requested model_id m is not loaded"}}),
+            (401, {"error": "unauthorized"}),
+            (404, {"error": "not found"}),
+            (429, {"error": "rate limit"}),
+        ]:
+            with unittest.mock.patch("surface_probes._post_json", return_value=(status, body)):
+                self.assertFalse(probe_remote_media_rejected("http://x", "m").passed, str(status))
+        with unittest.mock.patch(
+            "surface_probes._post_json",
+            return_value=(400, {"error": {"code": "invalid_request", "message": "no remote URLs"}}),
+        ):
+            self.assertTrue(probe_remote_media_rejected("http://x", "m").passed)
+        # Empty assistant content is not a passing chat turn.
+        empty = (200, {"choices": [{"message": {"role": "assistant", "content": ""}}]})
+        with unittest.mock.patch("surface_probes._post_json", return_value=empty):
+            self.assertFalse(probe_concurrent_chat("http://x", "m", workers=2).passed)
+            self.assertFalse(probe_tools_schema("http://x", "m").passed)
+
     def test_media_policy_probes(self) -> None:
         with unittest.mock.patch(
             "surface_probes._post_json", return_value=(422, {"error": "video unsupported; remote media disallowed"})

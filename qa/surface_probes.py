@@ -316,7 +316,8 @@ def probe_concurrent_chat(
         )
 
     elapsed = (time.monotonic() - start) * 1000
-    bad = [o for o in outcomes if o[0] != 200 or o[1] is None]
+    # An empty assistant message is not a successful chat turn.
+    bad = [o for o in outcomes if o[0] != 200 or not (o[1] or "").strip()]
     if bad:
         return SurfaceProbeResult(
             name,
@@ -571,7 +572,8 @@ def probe_tools_schema(
     msg = (body.get("choices") or [{}])[0].get("message") or {}
     content = msg.get("content")
     tool_calls = msg.get("tool_calls")
-    if content is None and not tool_calls:
+    # Empty/whitespace content is the "empty panic shape", not an answer.
+    if not str(content or "").strip() and not tool_calls:
         return SurfaceProbeResult(
             name, False, "message has neither content nor tool_calls", elapsed_ms=elapsed
         )
@@ -700,11 +702,18 @@ def probe_remote_media_rejected(
             "remote image URL was accepted (expected fail-closed 4xx)",
             elapsed_ms=elapsed,
         )
-    if status < 400:
+    # Only the media policy rejection counts: an unrelated 4xx (unknown
+    # model, auth, rate limit, missing route) must not read as fail-closed.
+    body_text = str(body).lower()
+    media_marker = any(
+        marker in body_text
+        for marker in ("remote", "image", "media", "data:", "text-only", "unsupported_modality", "url")
+    )
+    if status not in (400, 415, 422) or not media_marker:
         return SurfaceProbeResult(
             name,
             False,
-            f"unexpected HTTP {status}: {str(body)[:160]}",
+            f"unexpected HTTP {status} (not a remote-media rejection): {str(body)[:160]}",
             elapsed_ms=elapsed,
         )
     return SurfaceProbeResult(
