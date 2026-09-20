@@ -294,6 +294,10 @@ impl QsaIndexer {
         self.config
     }
 
+    pub(crate) fn projection_quantization_mode(&self) -> MlxQuantizationMode {
+        self.qk_proj.mlx_quantization_mode()
+    }
+
     /// Project the new hidden chunk, append raw keys, and return gather indices
     /// for every new query. `cache` is not modified; adopt [`QsaSelection::next_cache`]
     /// only after the rest of the step succeeds.

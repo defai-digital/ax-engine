@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "base_commit": "e3214ad7e1cb74679886e4f0ac928be38cc67286",
+  "hardware": "Apple M3 Max; build and small numerical tests only",
+  "rust": "1.97.1",
+  "mlx": "0.32.2",
+  "runtime_source_sha256": {
+    "crates/ax-engine-core/src/convert/qwen4_exp_layout.rs": "de8f1edc08566d7ed400a73f0ac604fa5ff1d3c007927bb705bd01b31a85be69",
+    "crates/ax-engine-mlx/src/expert_stream.rs": "a75212b832796725580678ec1a898c82f0de0757c660b7fcded2afa94efa8c3d",
+    "crates/ax-engine-mlx/src/expert_stream/selected.rs": "69ce863fd78185807d4de358cebc6240a21f73b11fa4beff290915b6c1038d08",
+    "crates/ax-engine-mlx/src/weights/qwen4_exp.rs": "3e8d743bc276fa636097172002efe2be25e23c5c2d4c1177bd8b66fbc45a7302",
+    "crates/mlx-sys/src/io.rs": "7e959d9cc9b537f4d17a406b3d94ee6970b02e41a3773316264354218592c5cd",
+    "crates/mlx-sys/src/io_rows.rs": "0686916d8b21c97f26f15ce23762f441714fb16222fffee4d5dcf5024858219d",
+    "scripts/qualify_qwen38_flash_next.py": "2970d6869f9429e31409aad76563d3bd7d9a66109e904a32f1610ccdf7b22f2e",
+    "scripts/test_qualify_qwen38_flash_next.py": "b6c4d0ea3826b1d64d7218108611d498dc2d1de725c47f84ae2b10b837346a44",
+    "crates/ax-engine-mlx/src/expert_stream/quantization.rs": "3bb0f78ece130c8b42e262340e4e780f4f3dc13af84f351e1b395918602786da"
+  },
+  "qualification": false,
+  "release_ready": false,
+  "workspace": {
+    "passed": 3710,
+    "failed": 0,
+    "ignored": 46
+  },
+  "python": {
+    "passed": 199,
+    "skipped": 36,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "name": "integrated-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 2.0072377500036964
+    },
+    {
+      "name": "integrated-workspace",
+      "command": [
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "seconds": 239.3125436249975
+    },
+    {
+      "name": "integrated-clippy-ci",
+      "command": [
+        "cargo",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings",
+        "--force-warn",
+        "clippy::unwrap-used",
+        "--force-warn",
+        "clippy::expect-used",
+        "--force-warn",
+        "clippy::panic",
+        "--force-warn",
+        "clippy::dbg-macro",
+        "--force-warn",
+        "clippy::large-enum-variant"
+      ],
+      "exit_code": 0,
+      "seconds": 37.04978183400817
+    },
+    {
+      "name": "integrated-scripts",
+      "command": [
+        "bash",
+        "scripts/check-scripts.sh"
+      ],
+      "exit_code": 0,
+      "seconds": 21.053515124993282
+    },
+    {
+      "name": "integrated-maturin",
+      "command": [
+        "maturin",
+        "develop"
+      ],
+      "exit_code": 0,
+      "seconds": 86.92107199999737
+    },
+    {
+      "name": "integrated-python",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "python/tests"
+      ],
+      "exit_code": 0,
+      "seconds": 4.78156783299346
+    },
+    {
+      "name": "integrated-flash-qualifier",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "scripts/test_qualify_qwen38_flash_next.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.2396516670123674
+    },
+    {
+      "name": "integrated-27b-dry-run",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "seconds": 0.030398500006413087
+    },
+    {
+      "name": "integrated-flash-dry-run",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "seconds": 0.028004958003293723
+    },
+    {
+      "name": "integrated-claims",
+      "command": [
+        "python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.10446266600047238
+    },
+    {
+      "name": "final-workspace",
+      "command": [
+        "cargo",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "seconds": 265.3772384999902
+    },
+    {
+      "name": "final-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 2.0558769999915967
+    },
+    {
+      "name": "final-claims",
+      "command": [
+        "python3",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0,
+      "seconds": 0.13552929100114852
+    }
+  ],
+  "strict_clippy": {
+    "passed": false,
+    "scope": "Pre-integration strict restriction-lint run; CI warn-first policy passes separately",
+    "first_error": "clippy::expect_used at crates/ax-engine-core/src/architecture_registry.rs:706"
+  },
+  "logs_sha256": {
+    "workspace.txt": "746e6a2b85cbe3794c874a717375307969cce0ef7957397f9ab088e41b04425e",
+    "python.txt": "42cff5ad070d183024f135d0c994493704264c0450d94ee627565c90fd371546",
+    "mxfp4-controls.txt": "88f35e29c23e304977cead96382d2bf43e53a34046127eb3531abe3e3ba0463b",
+    "output-head-repro.txt": "dd1ff0836ef131a208e4e92ef2e3f335cd72a2cedb6aeb74ab5d447210271b42",
+    "output-head-fixed.txt": "75151348c4bb147c7c3df8054cd2e6b206ef42d42b85837beb06ddeef5527fa6"
+  },
+  "review": "Muse and Claude reviews source-checked; target whole-model validation remains open",
+  "log_normalization": "Local workspace/venv paths replaced with placeholders; trailing blank lines removed."
+}

@@ -1,0 +1,102 @@
+{
+  "artifacts": [
+    {
+      "bytes": 34022,
+      "file": "native-diagnostic.json.gz",
+      "sha256": "da1567865a44fde1ef4c26dcee5916c8536c731e357d713c63aa2a6d7c802457",
+      "uncompressed_bytes": 747386,
+      "uncompressed_sha256": "72eeca1f6b148c68da19fa3697ec4768e49b6d42092f7463af75d37171a25eea"
+    },
+    {
+      "bytes": 40956,
+      "file": "integrity.json.gz",
+      "sha256": "b1fe82dcdca54ed850aca6ce0912d5d1860ccb7419069dc9a815190dc3a07b2d",
+      "uncompressed_bytes": 228911,
+      "uncompressed_sha256": "07a7b17df5aca444973aa9206e6089961f0cea9b3f7ccdfd9f76a8be8c8d843d"
+    }
+  ],
+  "binary_sha256": "c7cceff3aba9163ce5444c63481dd6cf208210e777743bf8526b1ac70295b457",
+  "collection_valid": true,
+  "curation_sha256": "74200d5f86ff1d72b3634ed5b10e288bd541153de56e566d976fa87e6a91e5bd",
+  "input_ids": 41,
+  "limits": [
+    "The raw native test passes collection, while recurrent/cache state identity fails.",
+    "Earliest stored difference does not establish exact incoming hidden inputs or an operator cause.",
+    "Cross-M2 short-control comparison is descriptive only; the stopped M2 full diagnostic has no numerical result.",
+    "Frozen worker log parser retained 549 paths; independent every-occurrence parsing found 550, including one additional allowed system AGX driver.",
+    "This forced-streaming native control with a one-layer expert cache is not default HTTP, lifecycle, QA, throughput, or release qualification."
+  ],
+  "maximum_compared_generated_prefix": 4,
+  "model_payload_bytes": 132261853669,
+  "model_prepost_files": 47,
+  "numerical_identity_pass": false,
+  "original_input_sha256": {
+    "final-observation-20260918/independent-terminal-review.json": "8b1a66cad5db77e628acf61d99d013962ad7e8f34585600389450354f51b43da",
+    "final-observation-20260918/native-diagnostic.json": "3cafb2d01a57891f349efb851bc4735d136e20db5b4449604e5407bdbbe8f555",
+    "final-observation-20260918/result.json": "998be7e04f52260fc1440ae2e7df9b033277ed5800d1652df5b4e0f97a357a31",
+    "final-observation-20260918/supervisor-result.json": "25655b92271aeed680a95feacf298a55ea81a2d615fe138dbd4c7976e0f6689b",
+    "final-observation-20260918/transfer-receipt.json": "c6c65918fa7bcd7af36439c4e4a7a52b00a31865b7ff172557f2bf3974d52b7d",
+    "freeze.json": "5e05c284c017eee0e69f20a23981b3a40a1f6493c46809dfb53eb7ba2315cded",
+    "run.py": "0fdbb82ccb39ffe3621fe16eb51df629fcdd6a40a4b353d3b50c791ac6e1bd7b"
+  },
+  "output_tokens": 5,
+  "prefill_final_singleton_ids": 1,
+  "prefill_prefix_ids": 40,
+  "qualification": false,
+  "release_ready": false,
+  "request": {
+    "all_compared_decode_states_exact": false,
+    "compared_state_prefix_lengths": [
+      1,
+      3,
+      4
+    ],
+    "cross_hardware_m2_observation": {
+      "m2_observed_candidate_ids": [
+        2665,
+        271,
+        332,
+        67407,
+        64700
+      ],
+      "m5_observed_candidate_ids": [
+        2665,
+        13,
+        271,
+        332,
+        67407
+      ],
+      "prefill_json_exact": false,
+      "scope": "Cross-hardware observation only; not collection admission or within-target parity"
+    },
+    "decode_state_compared": true,
+    "first_difference": null,
+    "first_nonzero_state": {
+      "dtype": "Bfloat16",
+      "index": 5,
+      "kind": "gdn.conv",
+      "layer": 2,
+      "max_abs": 0.03125,
+      "relative": 0.0026315790601074696,
+      "scale": 11.875,
+      "shape": [
+        1,
+        3,
+        10240
+      ]
+    },
+    "first_state_difference_prefix": 3,
+    "greedy_identity": true,
+    "nonzero_state_arrays_at_first_difference": 104,
+    "numerical_identity_pass": false,
+    "observed_equal_positions": 5,
+    "prefill_repeat_exact": true,
+    "prefill_state_array_count": 109,
+    "prefill_state_exact": true
+  },
+  "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "scope": "Apple M5 Max 128 GiB c7 five-token native diagnostic; not qualification",
+  "separate_m2_context_sha256": "d4f04c35e97b9c09c97263578fca1680c5ca0a5dd16fa8bcae493d6500094dda",
+  "snapshot_entries": 48,
+  "source_commit": "cd207324af669f37d5ebfe29430c0e4ea41f9a81"
+}

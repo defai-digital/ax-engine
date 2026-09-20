@@ -266,6 +266,7 @@ impl ToolCallStreamScanner {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use serde_json::json;
 

@@ -634,6 +634,7 @@ pub enum StateTransitionError {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::execution_plan::ExecutionPlanBinding;

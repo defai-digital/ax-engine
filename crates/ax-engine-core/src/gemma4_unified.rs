@@ -1122,6 +1122,7 @@ fn optional_u32(value: &Value, field: &'static str) -> Option<u32> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use serde_json::json;

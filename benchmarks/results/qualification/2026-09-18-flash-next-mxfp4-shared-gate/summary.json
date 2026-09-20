@@ -1,0 +1,365 @@
+{
+  "artifacts": [
+    {
+      "file": "component-analysis.json.gz",
+      "numeric_preservation": {
+        "booleans": 229,
+        "floats": 488,
+        "integers": 1269,
+        "nulls": 4
+      },
+      "sha256": "112bd973f2fecaa0c44a7fa7ef91d8f4b1bb23821c6030e56fa899d63f845bef",
+      "uncompressed_sha256": "862c7138dc2d6abd714a9d100ffd6af7ac71dab3d21a51b1e8b8a632edf6d6b5"
+    },
+    {
+      "file": "shared-gate-replay.json.gz",
+      "numeric_preservation": {
+        "booleans": 28,
+        "floats": 22,
+        "integers": 126,
+        "nulls": 1
+      },
+      "sha256": "a5fe187af8fdedab9b87c688fbbaa2a52fd16551b32859cff19e571f1b8ea116",
+      "uncompressed_sha256": "0bb1b6ee1ea211810cd186415c8c38e22c71e0bdeb4dafd5e81a2f19bbb05f67"
+    },
+    {
+      "file": "integrity.json.gz",
+      "numeric_preservation": {
+        "booleans": 1601,
+        "floats": 1334,
+        "integers": 27368,
+        "nulls": 414
+      },
+      "sha256": "068f436ed03ec1800f1e908f6162b3468fc198e3c18ac274dd373930edf1129a",
+      "uncompressed_sha256": "93dfacd520709f087f3ab9ebefd70d77cdead0fd2a3bfd06aecfbf3b7f979a40"
+    },
+    {
+      "file": "candidate-control.json.gz",
+      "numeric_preservation": {
+        "booleans": 800,
+        "floats": 686,
+        "integers": 10860,
+        "nulls": 9
+      },
+      "sha256": "6faea2e3b311c4323f214358e8a699b2daa7fdf420246bd6e0ce1ad5ee400446",
+      "uncompressed_sha256": "2042c284969763d513f7adb43b10c90a19e73eb4bed92568900cfffdf39bb1e3"
+    }
+  ],
+  "binary_sha256": "4e8994267173d68686116775714091232241f4619a7c2ebbd34c9b2cd3bea52a",
+  "candidate_control": {
+    "accepted_pairs": [
+      [
+        2665,
+        271
+      ],
+      [
+        332,
+        67407
+      ]
+    ],
+    "collection_valid": true,
+    "compared_state_prefixes": [
+      2,
+      4
+    ],
+    "consumed_tokens": 4,
+    "emitted_token_budget": 5,
+    "equal_tokens": 5,
+    "first_changed": {
+      "dtype": "Bfloat16",
+      "index": 93,
+      "kind": "gdn.conv",
+      "layer": 41,
+      "max_abs": 0.0625,
+      "relative": 0.0036764706019312143,
+      "scale": 17.0,
+      "shape": [
+        1,
+        3,
+        10240
+      ]
+    },
+    "first_state_prefix": 4,
+    "greedy_identity": true,
+    "limits": "Only recorded consumed prefixes are compared. Five emitted tokens do not imply a prefix-five state check or full-diagnostic qualification.",
+    "nonzero_arrays": 16,
+    "original_generated_prefix_equal": true,
+    "original_prefill_exact": true,
+    "qualification": false,
+    "release_ready": false,
+    "state_identity": false
+  },
+  "candidate_source": {
+    "binary_sha256": "c7cceff3aba9163ce5444c63481dd6cf208210e777743bf8526b1ac70295b457",
+    "freeze_sha256": "a0a79516bcbbfbf27cbc159a329a46471467ffd67fee2bcad503b9e087569e47",
+    "source_base_commit": "d525b548fb1594bdc8e46aa988866b786ea765e8",
+    "source_commit": "d525b548fb1594bdc8e46aa988866b786ea765e8+shared-gate-worktree",
+    "source_patch_sha256": "3439771c0ea29021d28a41eed78b7ebaa34c9dc24dc13994808f6a279d24e21e"
+  },
+  "capture_arrays": 614,
+  "captured_model_pre_post_files": 47,
+  "curation_sha256": "807177dbc6d36a7ac6698d6e780c7fcd6ce19828803ae2a2e7b6775ed5a8eaa1",
+  "inherited_prefixes": [
+    41,
+    43
+  ],
+  "limits": [
+    "The shared-down projection had different inputs and is not independently attributed.",
+    "Stored-state equality does not establish exact hidden inputs; the shared-gate input was captured directly.",
+    "No full-diagnostic, installed-default, M5/NAS, performance, lifecycle or release qualification."
+  ],
+  "local_probe_controls": 23,
+  "original_state_failure": {
+    "differing_arrays": 32,
+    "first_layer": 34,
+    "generated_prefix": 4,
+    "kind": "gdn.conv"
+  },
+  "qualification": false,
+  "release_ready": false,
+  "replay_live_rehashed_model_members": 2,
+  "replays": [
+    {
+      "captured_difference": {
+        "changed": 0,
+        "exact": true,
+        "first_changes": [],
+        "max_abs": 0.0,
+        "shape": [
+          1,
+          2,
+          640
+        ]
+      },
+      "case": "gate-prefix41",
+      "comparisons": {
+        "batch_repeat": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "batch_vs_singletons": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "rowwise_repeat": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "rowwise_vs_singletons": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "singleton_repeat": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        }
+      },
+      "diagnostic_valid": true,
+      "direct_forwards": [
+        9,
+        10
+      ],
+      "input_comparison": {
+        "changed": 0,
+        "exact": true,
+        "first_changes": [],
+        "max_abs": 0.0,
+        "shape": [
+          1,
+          2,
+          2560
+        ]
+      },
+      "native_projection_comparison": {
+        "batch": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "singletons": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        }
+      },
+      "prefix_tokens": 41,
+      "verifier_forward": 8
+    },
+    {
+      "captured_difference": {
+        "changed": 1,
+        "exact": false,
+        "first_changes": [
+          {
+            "direct": -0.48046875,
+            "index": 524,
+            "verifier": -0.482421875
+          }
+        ],
+        "max_abs": 0.001953125,
+        "shape": [
+          1,
+          2,
+          640
+        ]
+      },
+      "case": "gate-prefix43",
+      "comparisons": {
+        "batch_repeat": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "batch_vs_singletons": {
+          "changed": 1,
+          "exact": false,
+          "first_changes": [
+            {
+              "direct": -0.48046875,
+              "index": 524,
+              "verifier": -0.482421875
+            }
+          ],
+          "max_abs": 0.001953125,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "rowwise_repeat": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "rowwise_vs_singletons": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "singleton_repeat": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        }
+      },
+      "diagnostic_valid": true,
+      "direct_forwards": [
+        13,
+        14
+      ],
+      "input_comparison": {
+        "changed": 0,
+        "exact": true,
+        "first_changes": [],
+        "max_abs": 0.0,
+        "shape": [
+          1,
+          2,
+          2560
+        ]
+      },
+      "native_projection_comparison": {
+        "batch": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        },
+        "singletons": {
+          "changed": 0,
+          "exact": true,
+          "first_changes": [],
+          "max_abs": 0.0,
+          "shape": [
+            1,
+            2,
+            640
+          ]
+        }
+      },
+      "prefix_tokens": 43,
+      "verifier_forward": 12
+    }
+  ],
+  "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "scope": "Supplementary M2 layer-33 shared-gate attribution and separately bound short candidate control",
+  "source_commit": "6d2fdbf5fe1730c4b3b929ab89ae63685ba4afca",
+  "target_probe_controls": 23
+}

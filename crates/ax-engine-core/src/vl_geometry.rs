@@ -123,6 +123,7 @@ pub fn deepstack_injection_layers(num_feature_maps: usize, language_layers: u32)
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

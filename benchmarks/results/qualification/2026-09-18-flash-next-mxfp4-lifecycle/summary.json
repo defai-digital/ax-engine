@@ -1,0 +1,43 @@
+{
+  "artifacts": {
+    "lifecycle-failures.json.gz": {
+      "bytes": 38377,
+      "sha256": "c5156a80f8b0489f1213433d656ee196f255eb5eb903ae96646204206899a436"
+    }
+  },
+  "attempts": [
+    {
+      "original_postcheck_present": false,
+      "reason": "Full usage equality incorrectly included request-specific cache metadata",
+      "remaining_requests": 12,
+      "responses_completed": 2
+    },
+    {
+      "disconnect_drain_verified": false,
+      "disconnect_first_output_observed": true,
+      "original_postcheck_present": false,
+      "reason": "Active stream gauge remains zero during the first engine burst",
+      "recovery_verified": false,
+      "requests_completed": 5,
+      "required_mode_started": false
+    }
+  ],
+  "corrected_server_target_requalification": "pending new wheel and installation",
+  "local_regression": {
+    "after_fix": "one test passed",
+    "before_fix": "one test failed: active0 instead of1",
+    "initial_short_exact_filter": "zero tests; not passing evidence"
+  },
+  "qualification": false,
+  "release_ready": false,
+  "result": "failed",
+  "schema": "ax.flash_next.lifecycle_failure_summary.v1",
+  "separate_post_failure_followups": {
+    "each_installed_files": 52,
+    "each_payload_files": 47,
+    "passed": true,
+    "replaces_original_postcheck": false
+  },
+  "source_commit": "bf06cbb22c93d3a52b12cac4c31f396a36066da2",
+  "target": "MacBook Pro M5 Max 128 GiB, MXFP4 MTP, NAS over SMB"
+}

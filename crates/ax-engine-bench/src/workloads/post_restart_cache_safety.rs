@@ -396,6 +396,7 @@ fn flip_last_byte(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

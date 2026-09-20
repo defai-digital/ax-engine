@@ -241,6 +241,7 @@ pub fn padded_mask_bytes_upper_bound(max_padded_tokens: u32, element_bytes: u32)
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

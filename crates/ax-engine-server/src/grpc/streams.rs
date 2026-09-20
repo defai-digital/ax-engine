@@ -515,6 +515,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::sync::mpsc as std_mpsc;
     use std::time::Duration;

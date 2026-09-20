@@ -184,6 +184,7 @@ fn identity_mismatch_reason(a: &RowIdentity, b: &RowIdentity) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

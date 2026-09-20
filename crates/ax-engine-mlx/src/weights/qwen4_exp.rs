@@ -16,7 +16,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ax_engine_core::{NativeModelManifest, NativeTensorRole, NativeTensorSpec, WeightSanitize};
+use ax_engine_core::{
+    NativeModelArtifacts, NativeModelManifest, NativeTensorRole, NativeTensorSpec, WeightSanitize,
+};
 #[cfg(test)]
 use mlx_sys::eval;
 use mlx_sys::{
@@ -24,6 +26,7 @@ use mlx_sys::{
     load_safetensors_filtered, slice, transpose,
 };
 
+use crate::expert_stream::{ExpertQuantizationMode, ExpertQuantizationModes};
 use crate::model::LinearAttentionConfig;
 use crate::model::shared::qwen4_exp_attention::{
     Qwen4ExpAttention, Qwen4ExpAttentionConfig, Qwen4ExpAttentionWeights,
@@ -40,13 +43,21 @@ use crate::ngram_table::NgramTable;
 use crate::qwen4_exp_ngram::NgramLayout;
 use crate::qwen4_exp_qsa::{QsaConfig, QsaIndexer, QsaIndexerWeights};
 
-use super::{QuantizedWeight, WeightLoadError, take_weight, try_take_plain};
+use super::{QuantizedWeight, WeightLoadError, take_weight, take_weight_spec, try_take_plain};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Qwen4ExpTargetSchedule {
+    CanonicalSingleton,
+    LegacyBatched,
+    Unavailable(String),
+}
 
 /// All Flash Next weights: shared trunk pieces plus one entry per layer.
 ///
 /// Bounded by construction: the n-gram table inside each [`Qwen4ExpPleBundle`]
 /// serves rows on demand and is never materialized whole here.
 pub(crate) struct Qwen4ExpWeights {
+    pub(crate) target_schedule: Qwen4ExpTargetSchedule,
     pub(crate) token_embedding: QuantizedWeight,
     pub(crate) lm_head: QuantizedWeight,
     pub(crate) layout: Qwen4ExpStreamLayout,
@@ -78,6 +89,7 @@ pub(crate) struct Qwen4ExpPleBundle {
     pub(crate) embedding_width: usize,
 }
 
+#[cfg(test)]
 pub(crate) fn load(
     root: &Path,
     manifest: &NativeModelManifest,
@@ -92,11 +104,39 @@ pub(crate) fn load(
     )
 }
 
+pub(crate) fn load_artifacts(
+    artifacts: &NativeModelArtifacts,
+) -> Result<Qwen4ExpWeights, WeightLoadError> {
+    load_with_schedule_admission(
+        artifacts.root_dir(),
+        artifacts.manifest(),
+        crate::expert_stream::stream_experts_mode(),
+        crate::expert_stream::expert_layer_budget(),
+        artifacts.audited_qwen4_exp_mxfp4(),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn load_with_paging_policy(
     root: &Path,
     manifest: &NativeModelManifest,
     mode: crate::expert_stream::StreamExpertsMode,
     budget_layers: usize,
+) -> Result<Qwen4ExpWeights, WeightLoadError> {
+    // Lower-level callers include synthetic fixtures without product admission.
+    // They may preserve legacy arithmetic but cannot acquire MXFP4 eligibility.
+    let audited_mxfp4 =
+        NativeModelArtifacts::from_manifest_and_root(root.to_path_buf(), manifest.clone())
+            .is_ok_and(|artifacts| artifacts.audited_qwen4_exp_mxfp4());
+    load_with_schedule_admission(root, manifest, mode, budget_layers, audited_mxfp4)
+}
+
+fn load_with_schedule_admission(
+    root: &Path,
+    manifest: &NativeModelManifest,
+    mode: crate::expert_stream::StreamExpertsMode,
+    budget_layers: usize,
+    audited_mxfp4: bool,
 ) -> Result<Qwen4ExpWeights, WeightLoadError> {
     if manifest.model_family != "qwen4_exp" {
         return Err(WeightLoadError::InvalidLayer(format!(
@@ -124,7 +164,7 @@ pub(crate) fn load_with_paging_policy(
         WeightLoadError::FileMissing(format!("cannot resolve root {}: {e}", root.display()))
     })?;
 
-    let streamed_layers = stream_manifest
+    let (streamed_layers, quantization_modes) = stream_manifest
         .as_ref()
         .map(|stream| {
             validate_expert_paging_contract(
@@ -141,15 +181,39 @@ pub(crate) fn load_with_paging_policy(
         .as_ref()
         .map(crate::expert_stream::streamed_skip_names)
         .unwrap_or_default();
-    let expert_stream = stream_manifest.map(|stream| {
-        Arc::new(crate::expert_stream::ExpertStackPager::new(
-            Arc::new(stream),
-            root.to_path_buf(),
-            budget_layers,
-        ))
-    });
+    let schedule_modes = quantization_modes.clone();
+    let expert_stream = stream_manifest
+        .map(|stream| {
+            crate::expert_stream::ExpertStackPager::new_with_quantization_modes(
+                Arc::new(stream),
+                root.to_path_buf(),
+                budget_layers,
+                quantization_modes,
+            )
+            .map(Arc::new)
+        })
+        .transpose()?;
     let specs = manifest.tensors.as_slice();
     let mut name_map = load_resident_tensors(root, &canonical_root, manifest, &stream_skip)?;
+    let mut schedule_index = read_weight_index(root, &canonical_root)?.unwrap_or_default();
+    let target_schedule = match admit_implicit_affine_sidecars(
+        root,
+        &canonical_root,
+        specs,
+        &streamed_layers,
+        &schedule_modes,
+        &mut schedule_index,
+    ) {
+        Ok(_header_readers) => classify_target_schedule(
+            audited_mxfp4,
+            specs,
+            &name_map,
+            &streamed_layers,
+            &schedule_modes,
+            Some(&schedule_index),
+        ),
+        Err(reason) => Qwen4ExpTargetSchedule::Unavailable(reason),
+    };
     sanitize_norms_and_convs(manifest.weight_sanitize, &manifest.tensors, &mut name_map)?;
 
     let hidden = as_usize(manifest.hidden_size, "hidden_size")?;
@@ -419,6 +483,7 @@ pub(crate) fn load_with_paging_policy(
     }
 
     Ok(Qwen4ExpWeights {
+        target_schedule,
         token_embedding,
         lm_head,
         layout,
@@ -426,6 +491,267 @@ pub(crate) fn load_with_paging_policy(
         layers,
         expert_stream,
     })
+}
+
+/// Preserve legacy colocated affine sidecars without loading expert payloads.
+/// Open each needed shard header once, selecting only the affected projections.
+fn admit_implicit_affine_sidecars(
+    root: &Path,
+    canonical_root: &Path,
+    specs: &[NativeTensorSpec],
+    streamed_layers: &HashSet<u32>,
+    modes: &ExpertQuantizationModes,
+    index: &mut HashMap<String, PathBuf>,
+) -> Result<Vec<mlx_sys::SafetensorsRowReader>, String> {
+    let indexed =
+        |name: &str| index.contains_key(name) || specs.iter().any(|spec| spec.name == name);
+    let affected: Vec<_> = specs
+        .iter()
+        .filter(|spec| {
+            let base = spec.name.strip_suffix(".weight").unwrap_or(&spec.name);
+            spec.layer_index
+                .is_some_and(|layer| streamed_layers.contains(&layer))
+                && modes.get(&spec.name) == Some(&ExpertQuantizationMode::Affine)
+                && spec.quantization.is_some()
+                && (!indexed(&format!("{base}.scales")) || !indexed(&format!("{base}.biases")))
+        })
+        .collect();
+    let mut shards = std::collections::BTreeMap::<PathBuf, HashSet<String>>::new();
+    let mut bindings = HashMap::new();
+    for spec in &affected {
+        let base = spec.name.strip_suffix(".weight").unwrap_or(&spec.name);
+        for name in [
+            spec.name.clone(),
+            format!("{base}.scales"),
+            format!("{base}.biases"),
+        ] {
+            let file = if let Some(file) = index.get(&name) {
+                file.clone()
+            } else {
+                let file = specs
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .map_or(&spec.file, |entry| &entry.file);
+                resolve_in_root(root, canonical_root, file).map_err(|error| error.to_string())?
+            };
+            shards.entry(file.clone()).or_default().insert(name.clone());
+            bindings.insert(name, file);
+        }
+    }
+    let mut readers = HashMap::new();
+    for (file, names) in shards {
+        let mut names: Vec<_> = names.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        readers.insert(
+            file.clone(),
+            mlx_sys::SafetensorsRowReader::open_selected_stacks(
+                &file,
+                &names,
+                DEFAULT_MAX_GATHER_BYTES,
+            )?,
+        );
+    }
+    let metadata = |name: &str| {
+        bindings
+            .get(name)
+            .and_then(|file| readers.get(file))
+            .and_then(|reader| reader.tensor_meta(name))
+            .ok_or_else(|| format!("missing affine expert header {name}"))
+    };
+    for spec in affected {
+        let base = spec.name.strip_suffix(".weight").unwrap_or(&spec.name);
+        let weight = metadata(&spec.name)?;
+        let scales = metadata(&format!("{base}.scales"))?;
+        let biases = metadata(&format!("{base}.biases"))?;
+        let quant = spec
+            .quantization
+            .as_ref()
+            .ok_or("missing affine expert quantization")?;
+        let columns_per_group = u64::from(quant.bits) * u64::from(quant.group_size);
+        let packed_bits = spec
+            .shape
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .checked_mul(32)
+            .ok_or("affine expert width overflow")?;
+        if weight.dtype != MlxDtype::Uint32
+            || quant.mode != "affine"
+            || !matches!(quant.bits, 2 | 4 | 6 | 8)
+            || columns_per_group == 0
+            || packed_bits == 0
+            || packed_bits % columns_per_group != 0
+            || weight
+                .shape
+                .iter()
+                .map(|&dim| dim as u64)
+                .collect::<Vec<_>>()
+                != spec.shape
+        {
+            return Err(format!(
+                "{} has a discordant affine expert header",
+                spec.name
+            ));
+        }
+        let mut expected = weight.shape;
+        let last = expected
+            .last_mut()
+            .ok_or("affine expert header has no columns")?;
+        *last = i32::try_from(packed_bits / columns_per_group)
+            .map_err(|_| "affine scale width overflow")?;
+        if scales.shape != expected
+            || biases.shape != expected
+            || scales.dtype != biases.dtype
+            || !matches!(
+                scales.dtype,
+                MlxDtype::Float16 | MlxDtype::Bfloat16 | MlxDtype::Float32
+            )
+        {
+            return Err(format!(
+                "{} has discordant affine scales/group biases",
+                spec.name
+            ));
+        }
+    }
+    index.extend(bindings);
+    Ok(readers.into_values().collect())
+}
+
+/// Inspect resolved metadata and array handles only. Expert payloads and n-gram
+/// rows must not be loaded or evaluated to choose the target schedule.
+fn classify_target_schedule(
+    audited_mxfp4: bool,
+    specs: &[NativeTensorSpec],
+    resident: &HashMap<String, MlxArray>,
+    streamed_layers: &HashSet<u32>,
+    streamed_modes: &ExpertQuantizationModes,
+    index: Option<&HashMap<String, PathBuf>>,
+) -> Qwen4ExpTargetSchedule {
+    let classify = || -> Result<bool, String> {
+        let mut has_mxfp4 = false;
+        let indexed = |name: &str| {
+            index.is_some_and(|map| map.contains_key(name))
+                || specs.iter().any(|spec| spec.name == name)
+        };
+        for spec in specs.iter().filter(|spec| {
+            is_trunk_resident_role(spec.role) || spec.role == NativeTensorRole::NgramEmbedding
+        }) {
+            if let Some(quant) = &spec.quantization {
+                if !matches!(quant.mode.as_str(), "affine" | "mxfp4") {
+                    return Err(format!(
+                        "{} has an unsupported target quantization mode",
+                        spec.name
+                    ));
+                }
+                has_mxfp4 |= quant.mode == "mxfp4";
+            }
+            if spec.role == NativeTensorRole::NgramEmbedding {
+                // The bounded table loader and core protected-format contract
+                // own this role. Never open its data to classify the verifier.
+                continue;
+            }
+            let base = spec.name.strip_suffix(".weight").unwrap_or(&spec.name);
+            let expert = matches!(
+                spec.role,
+                NativeTensorRole::FfnGateExps
+                    | NativeTensorRole::FfnUpExps
+                    | NativeTensorRole::FfnDownExps
+                    | NativeTensorRole::FfnGateUpExpsPacked
+            );
+            if expert
+                && spec
+                    .layer_index
+                    .is_some_and(|layer| streamed_layers.contains(&layer))
+            {
+                let mode = streamed_modes
+                    .get(&spec.name)
+                    .ok_or_else(|| format!("{} lacks a validated pager mode", spec.name))?;
+                if let Some(quant) = &spec.quantization {
+                    let scales = indexed(&format!("{base}.scales"));
+                    let biases = indexed(&format!("{base}.biases"));
+                    let consistent = match mode {
+                        ExpertQuantizationMode::Mxfp4 => {
+                            has_mxfp4 = true;
+                            quant.mode == "mxfp4"
+                                && quant.bits == 4
+                                && quant.group_size == 32
+                                && scales
+                                && !biases
+                        }
+                        ExpertQuantizationMode::Affine => {
+                            quant.mode == "affine" && scales && biases
+                        }
+                    };
+                    if !consistent {
+                        return Err(format!(
+                            "{} has incomplete or discordant pager sidecars",
+                            spec.name
+                        ));
+                    }
+                } else if spec.source_quantized || *mode != ExpertQuantizationMode::Affine {
+                    return Err(format!("{} has a discordant dense pager mode", spec.name));
+                }
+                continue;
+            }
+            // Use the same resolver as component construction on shallow array
+            // handles, including its scales/group-bias/dense-bias distinction.
+            let mut parts = HashMap::new();
+            for name in [
+                spec.name.clone(),
+                format!("{base}.scales"),
+                format!("{base}.biases"),
+                format!("{base}.bias"),
+            ] {
+                if let Some(array) = resident.get(&name) {
+                    parts.insert(name, array.clone());
+                }
+            }
+            let resolved = take_weight_spec(&mut parts, spec).map_err(|error| error.to_string())?;
+            if !resolved.is_quantized() {
+                continue;
+            }
+            if resolved.weight.dtype() != MlxDtype::Uint32 {
+                return Err(format!("{} has non-U32 quantized storage", spec.name));
+            }
+            if resolved.is_mxfp4_quantized() {
+                has_mxfp4 = true;
+                let shape = resolved.weight.shape();
+                let mut scale_shape = shape.clone();
+                let packed_cols = scale_shape
+                    .last_mut()
+                    .ok_or_else(|| format!("{} has no quantized columns", spec.name))?;
+                let aligned = *packed_cols > 0 && *packed_cols % 4 == 0;
+                *packed_cols /= 4;
+                if resolved.mode != "mxfp4"
+                    || resolved.bits != 4
+                    || resolved.group_size != 32
+                    || resolved.scales.as_ref().map(MlxArray::dtype) != Some(MlxDtype::Uint8)
+                    || !aligned
+                    || !matches!(shape.len(), 2 | 3)
+                    || resolved.scales.as_ref().map(MlxArray::shape) != Some(scale_shape)
+                {
+                    return Err(format!(
+                        "{} resolves outside the admitted MXFP4 contract",
+                        spec.name
+                    ));
+                }
+            } else if !resolved.is_affine_quantized() {
+                return Err(format!(
+                    "{} has an unclassified resolved target mode",
+                    spec.name
+                ));
+            }
+        }
+        Ok(has_mxfp4)
+    };
+    match classify() {
+        Ok(true) if audited_mxfp4 => Qwen4ExpTargetSchedule::CanonicalSingleton,
+        Ok(false) if !audited_mxfp4 => Qwen4ExpTargetSchedule::LegacyBatched,
+        Ok(_) => Qwen4ExpTargetSchedule::Unavailable(
+            "Flash Next resolved target format does not match audited MXFP4 admission".into(),
+        ),
+        Err(reason) => Qwen4ExpTargetSchedule::Unavailable(reason),
+    }
 }
 
 pub(super) enum Qwen4ExpLayerKind {
@@ -580,14 +906,14 @@ pub(super) fn read_weight_index(
 }
 
 /// Bind the paging sidecar to the already validated native tensor contract.
-/// The pager currently interprets quantized projections as affine only.
+/// Preserve each projection mode separately from the v1 bits/group fields.
 fn validate_expert_paging_contract(
     root: &Path,
     canonical_root: &Path,
     specs: &[NativeTensorSpec],
     expected_top_k: u32,
     stream: &crate::expert_stream::ExpertStreamManifest,
-) -> Result<HashSet<u32>, WeightLoadError> {
+) -> Result<(HashSet<u32>, ExpertQuantizationModes), WeightLoadError> {
     use crate::expert_stream::ExpertProj;
     let invalid = |message: String| {
         WeightLoadError::InvalidLayer(format!("qwen4_exp expert paging: {message}"))
@@ -612,6 +938,7 @@ fn validate_expert_paging_contract(
     let index = read_weight_index(root, canonical_root)?;
     let mut declared = HashSet::new();
     let mut layers = HashSet::new();
+    let mut modes = ExpertQuantizationModes::new();
     for entry in &stream.tensors {
         if !declared.insert(entry.name.clone()) {
             return Err(invalid(format!("duplicate tensor {}", entry.name)));
@@ -632,7 +959,7 @@ fn validate_expert_paging_contract(
             .or_else(|| sidecar_base.and_then(|name| by_name.get(name).copied()))
             .ok_or_else(|| {
                 invalid(format!(
-                    "{} is not a declared expert projection or affine sidecar",
+                    "{} is not a declared expert projection or quantization sidecar",
                     entry.name
                 ))
             })?;
@@ -647,8 +974,18 @@ fn validate_expert_paging_contract(
                 entry.name
             )));
         }
-        let (bits, group_size) = match &spec.quantization {
-            Some(quant) if quant.mode == "affine" => (quant.bits, quant.group_size),
+        let (bits, group_size, quantization_mode) = match &spec.quantization {
+            Some(quant) if quant.mode == "affine" => {
+                (quant.bits, quant.group_size, ExpertQuantizationMode::Affine)
+            }
+            Some(quant)
+                if quant.mode == "mxfp4"
+                    && quant.bits == 4
+                    && quant.group_size == 32
+                    && spec.dtype == ax_engine_core::NativeTensorDataType::U32 =>
+            {
+                (4, 32, ExpertQuantizationMode::Mxfp4)
+            }
             Some(quant) => {
                 return Err(invalid(format!(
                     "{} uses unsupported paging quantization {}",
@@ -662,15 +999,16 @@ fn validate_expert_paging_contract(
                     | ax_engine_core::NativeTensorDataType::F32
             ) && !spec.source_quantized =>
             {
-                (4, 64)
+                (4, 64, ExpertQuantizationMode::Affine)
             }
             None => {
                 return Err(invalid(format!(
-                    "{} lacks a supported dense or affine contract",
+                    "{} lacks a supported dense or quantized contract",
                     spec.name
                 )));
             }
         };
+        modes.insert(spec.name.clone(), quantization_mode);
         if (entry.bits, entry.group_size) != (bits, group_size) {
             return Err(invalid(format!(
                 "{} disagrees with native bits/group_size",
@@ -712,6 +1050,18 @@ fn validate_expert_paging_contract(
                 "unsupported dense expert bias {linear_bias}"
             )));
         }
+        let group_bias = format!("{base}.biases");
+        if modes.get(&spec.name) == Some(&ExpertQuantizationMode::Mxfp4)
+            && (declared.contains(&group_bias)
+                || index
+                    .as_ref()
+                    .is_some_and(|map| map.contains_key(&group_bias))
+                || specs.iter().any(|tensor| tensor.name == group_bias))
+        {
+            return Err(invalid(format!(
+                "MXFP4 must not declare group bias {group_bias}"
+            )));
+        }
         // The pager automatically reads colocated sidecars. Cross-file sidecars
         // must also appear in its plan so their shard is opened on a cache miss.
         if spec.quantization.is_some() {
@@ -729,7 +1079,7 @@ fn validate_expert_paging_contract(
             }
         }
     }
-    Ok(layers)
+    Ok((layers, modes))
 }
 
 /// Select the exact trunk tensors and their named sidecars before opening
@@ -1600,6 +1950,344 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
+    fn schedule_projection(
+        mode: &str,
+        biases: bool,
+    ) -> (NativeTensorSpec, HashMap<String, MlxArray>) {
+        use ax_engine_core::{NativeTensorDataType, NativeTensorQuantization};
+        let spec = NativeTensorSpec {
+            name: "layers.0.gate.weight".into(),
+            role: NativeTensorRole::FfnGateExps,
+            layer_index: Some(0),
+            dtype: NativeTensorDataType::U32,
+            source_tensor_type: None,
+            source_quantized: true,
+            quantization: Some(NativeTensorQuantization {
+                bits: 4,
+                group_size: 32,
+                mode: mode.into(),
+            }),
+            quantized_source: None,
+            shape: vec![2, 16, 8],
+            file: "experts.safetensors".into(),
+            offset_bytes: 0,
+            length_bytes: 1024,
+        };
+        let mut arrays = HashMap::from([
+            (
+                spec.name.clone(),
+                mlx_sys::zeros(&[2, 16, 8], MlxDtype::Uint32, None),
+            ),
+            (
+                "layers.0.gate.scales".into(),
+                mlx_sys::zeros(
+                    &[2, 16, 2],
+                    if mode == "mxfp4" {
+                        MlxDtype::Uint8
+                    } else {
+                        MlxDtype::Bfloat16
+                    },
+                    None,
+                ),
+            ),
+        ]);
+        if biases {
+            arrays.insert(
+                "layers.0.gate.biases".into(),
+                mlx_sys::zeros(&[2, 16, 2], MlxDtype::Bfloat16, None),
+            );
+        }
+        (spec, arrays)
+    }
+
+    #[test]
+    fn target_schedule_binds_resolved_modes_and_preserves_affine() {
+        let (spec, mut arrays) = schedule_projection("mxfp4", false);
+        let classify = |admitted, spec: &NativeTensorSpec, arrays: &HashMap<String, MlxArray>| {
+            classify_target_schedule(
+                admitted,
+                std::slice::from_ref(spec),
+                arrays,
+                &HashSet::new(),
+                &ExpertQuantizationModes::new(),
+                None,
+            )
+        };
+        assert_eq!(
+            classify(true, &spec, &arrays),
+            Qwen4ExpTargetSchedule::CanonicalSingleton
+        );
+        assert!(matches!(
+            classify(false, &spec, &arrays),
+            Qwen4ExpTargetSchedule::Unavailable(_)
+        ));
+        for violation in [
+            "bias",
+            "missing_scale",
+            "scale_dtype",
+            "scale_shape",
+            "unknown",
+        ] {
+            let mut changed = spec.clone();
+            let mut bad = arrays.clone();
+            match violation {
+                "bias" => {
+                    bad.insert(
+                        "layers.0.gate.biases".into(),
+                        mlx_sys::zeros(&[2, 16, 2], MlxDtype::Bfloat16, None),
+                    );
+                }
+                "missing_scale" => {
+                    bad.remove("layers.0.gate.scales");
+                }
+                "scale_dtype" => {
+                    bad.insert(
+                        "layers.0.gate.scales".into(),
+                        mlx_sys::zeros(&[2, 16, 2], MlxDtype::Bfloat16, None),
+                    );
+                }
+                "scale_shape" => {
+                    bad.insert(
+                        "layers.0.gate.scales".into(),
+                        mlx_sys::zeros(&[2, 16, 1], MlxDtype::Uint8, None),
+                    );
+                }
+                "unknown" => changed.quantization.as_mut().unwrap().mode = "mxfp8".into(),
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    classify(true, &changed, &bad),
+                    Qwen4ExpTargetSchedule::Unavailable(_)
+                ),
+                "accepted {violation}"
+            );
+        }
+        let (affine, affine_arrays) = schedule_projection("affine", true);
+        assert_eq!(
+            classify(false, &affine, &affine_arrays),
+            Qwen4ExpTargetSchedule::LegacyBatched
+        );
+        let (fallback, fallback_arrays) = schedule_projection("affine", false);
+        for admitted in [false, true] {
+            assert!(
+                matches!(
+                    classify(admitted, &fallback, &fallback_arrays),
+                    Qwen4ExpTargetSchedule::Unavailable(_)
+                ),
+                "scales-only fallback must not become affine or override admission"
+            );
+        }
+        // The real mixed pack's protected affine companion stays ordinary, but
+        // its sequence schedule follows the admitted MXFP4 trunk.
+        let mut companion = affine;
+        companion.name = "router.weight".into();
+        companion.role = NativeTensorRole::FfnGateInp;
+        companion.shape = vec![16, 16];
+        companion.quantization.as_mut().unwrap().bits = 8;
+        for (name, shape, dtype) in [
+            ("router.weight", vec![16, 16], MlxDtype::Uint32),
+            ("router.scales", vec![16, 2], MlxDtype::Bfloat16),
+            ("router.biases", vec![16, 2], MlxDtype::Bfloat16),
+        ] {
+            arrays.insert(name.into(), mlx_sys::zeros(&shape, dtype, None));
+        }
+        assert_eq!(
+            classify_target_schedule(
+                true,
+                &[spec, companion],
+                &arrays,
+                &HashSet::new(),
+                &ExpertQuantizationModes::new(),
+                None
+            ),
+            Qwen4ExpTargetSchedule::CanonicalSingleton
+        );
+    }
+
+    #[test]
+    fn implicit_affine_expert_sidecars_use_headers_without_payload_reads() {
+        use std::io::Write;
+        let root = std::env::temp_dir().join(format!(
+            "ax-flash-affine-header-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let canonical = root.canonicalize().unwrap();
+        let (spec, _) = schedule_projection("affine", true);
+        let modes =
+            ExpertQuantizationModes::from([(spec.name.clone(), ExpertQuantizationMode::Affine)]);
+        let write_header = |with_bias: bool| {
+            let mut header = serde_json::json!({
+                "layers.0.gate.weight": {"dtype": "U32", "shape": [2,16,8], "data_offsets": [0,1024]},
+                "layers.0.gate.scales": {"dtype": "BF16", "shape": [2,16,2], "data_offsets": [1024,1152]},
+                "ignored": {"dtype": "I64", "shape": [1], "data_offsets": [0,8]},
+            });
+            if with_bias {
+                header["layers.0.gate.biases"] = serde_json::json!({
+                    "dtype": "BF16", "shape": [2,16,2], "data_offsets": [1152,1280],
+                });
+            }
+            let header = serde_json::to_vec(&header).unwrap();
+            let mut file = std::fs::File::create(root.join("experts.safetensors")).unwrap();
+            file.write_all(&(header.len() as u64).to_le_bytes())
+                .unwrap();
+            file.write_all(&header).unwrap();
+            // Sparse payload extent: the test never writes or reads weight data.
+            file.set_len(8 + header.len() as u64 + 1280).unwrap();
+        };
+        write_header(true);
+        let mut index = HashMap::new();
+        let readers = admit_implicit_affine_sidecars(
+            &root,
+            &canonical,
+            std::slice::from_ref(&spec),
+            &HashSet::from([0]),
+            &modes,
+            &mut index,
+        )
+        .unwrap();
+        assert_eq!(readers.len(), 1);
+        assert!(
+            readers
+                .iter()
+                .all(|reader| reader.payload_bytes_read() == 0)
+        );
+        assert_eq!(
+            classify_target_schedule(
+                false,
+                std::slice::from_ref(&spec),
+                &HashMap::new(),
+                &HashSet::from([0]),
+                &modes,
+                Some(&index)
+            ),
+            Qwen4ExpTargetSchedule::LegacyBatched
+        );
+        drop(readers);
+        write_header(false);
+        let mut index = HashMap::new();
+        assert!(
+            admit_implicit_affine_sidecars(
+                &root,
+                &canonical,
+                std::slice::from_ref(&spec),
+                &HashSet::from([0]),
+                &modes,
+                &mut index
+            )
+            .is_err()
+        );
+        assert!(
+            index.is_empty(),
+            "failed header admission must not publish partial bindings"
+        );
+        assert!(matches!(
+            classify_target_schedule(
+                false,
+                &[spec],
+                &HashMap::new(),
+                &HashSet::from([0]),
+                &modes,
+                Some(&index)
+            ),
+            Qwen4ExpTargetSchedule::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn target_schedule_streamed_and_resident_agree_without_expert_payloads() {
+        let (spec, arrays) = schedule_projection("mxfp4", false);
+        let specs = [spec];
+        let index: HashMap<_, _> = arrays
+            .keys()
+            .map(|name| (name.clone(), PathBuf::from("missing-expert-payload")))
+            .collect();
+        let modes =
+            ExpertQuantizationModes::from([(specs[0].name.clone(), ExpertQuantizationMode::Mxfp4)]);
+        let resident = classify_target_schedule(
+            true,
+            &specs,
+            &arrays,
+            &HashSet::new(),
+            &ExpertQuantizationModes::new(),
+            Some(&index),
+        );
+        let streamed = classify_target_schedule(
+            true,
+            &specs,
+            &HashMap::new(),
+            &HashSet::from([0]),
+            &modes,
+            Some(&index),
+        );
+        assert_eq!(resident, Qwen4ExpTargetSchedule::CanonicalSingleton);
+        assert_eq!(streamed, resident);
+        for violation in ["mode", "scale", "bias", "missing_mode"] {
+            let mut changed_modes = modes.clone();
+            let mut changed_index = index.clone();
+            match violation {
+                "mode" => {
+                    changed_modes.insert(specs[0].name.clone(), ExpertQuantizationMode::Affine);
+                }
+                "scale" => {
+                    changed_index.remove("layers.0.gate.scales");
+                }
+                "bias" => {
+                    changed_index.insert(
+                        "layers.0.gate.biases".into(),
+                        "missing-expert-payload".into(),
+                    );
+                }
+                "missing_mode" => changed_modes.clear(),
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    classify_target_schedule(
+                        true,
+                        &specs,
+                        &HashMap::new(),
+                        &HashSet::from([0]),
+                        &changed_modes,
+                        Some(&changed_index)
+                    ),
+                    Qwen4ExpTargetSchedule::Unavailable(_)
+                ),
+                "accepted {violation}"
+            );
+        }
+        let (affine, affine_arrays) = schedule_projection("affine", true);
+        let affine_index = affine_arrays
+            .keys()
+            .map(|name| (name.clone(), PathBuf::from("missing-expert-payload")))
+            .collect();
+        let modes =
+            ExpertQuantizationModes::from([(affine.name.clone(), ExpertQuantizationMode::Affine)]);
+        assert_eq!(
+            classify_target_schedule(
+                false,
+                &[affine],
+                &HashMap::new(),
+                &HashSet::from([0]),
+                &modes,
+                Some(&affine_index)
+            ),
+            Qwen4ExpTargetSchedule::LegacyBatched
+        );
+    }
+
     #[test]
     #[ignore = "requires a real Flash Next pack and captured QSA inputs"]
     fn qsa_real_pack_same_input_replay() {
@@ -1821,8 +2509,43 @@ mod tests {
         .collect();
         let plan = crate::expert_stream::infer_layer_stack_manifest(&specs, 2).unwrap();
         assert_eq!(
-            validate_expert_paging_contract(&root, &canonical, &specs, 2, &plan).unwrap(),
+            validate_expert_paging_contract(&root, &canonical, &specs, 2, &plan)
+                .unwrap()
+                .0,
             HashSet::from([0])
+        );
+        let mut mxfp4_specs = specs.clone();
+        for spec in &mut mxfp4_specs {
+            spec.quantization.as_mut().unwrap().mode = "mxfp4".into();
+        }
+        let (layers, modes) =
+            validate_expert_paging_contract(&root, &canonical, &mxfp4_specs, 2, &plan).unwrap();
+        assert_eq!(layers, HashSet::from([0]));
+        assert_eq!(modes.len(), 3);
+        assert!(
+            modes
+                .values()
+                .all(|mode| *mode == ExpertQuantizationMode::Mxfp4)
+        );
+        let index = mxfp4_specs
+            .iter()
+            .flat_map(|spec| {
+                let base = spec.name.strip_suffix(".weight").unwrap();
+                [spec.name.clone(), format!("{base}.scales")]
+                    .map(|name| (name, canonical.join("experts.safetensors")))
+            })
+            .collect();
+        assert_eq!(
+            classify_target_schedule(
+                true,
+                &mxfp4_specs,
+                &HashMap::new(),
+                &layers,
+                &modes,
+                Some(&index),
+            ),
+            Qwen4ExpTargetSchedule::CanonicalSingleton,
+            "validated pager metadata must classify without parsing placeholder payloads"
         );
         for violation in [
             "bits",
@@ -1853,7 +2576,7 @@ mod tests {
                 "duplicate" => changed.tensors.push(changed.tensors[0].clone()),
                 "file" => changed.tensors[0].file = "other.safetensors".into(),
                 "unknown" => changed.tensors[0].name = "unrecognized.weight".into(),
-                "mode" => changed_specs[0].quantization.as_mut().unwrap().mode = "mxfp4".into(),
+                "mode" => changed_specs[0].quantization.as_mut().unwrap().mode = "mxfp8".into(),
                 "topk" => changed.experts_per_tok = 1,
                 _ => unreachable!(),
             }

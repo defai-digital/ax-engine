@@ -333,8 +333,11 @@ than silently dropped.
   part of the prompt from the prefix cache, non-streaming responses report
   the reused token count in the OpenAI prompt-caching shape. MLX responses use
   the runner's physical restore count, including an explicit zero overriding
-  scheduler prefix affinity. Other backends fall back to the scheduler count;
-  the block is omitted when reuse was zero or unknown.
+  scheduler prefix affinity. Native streaming responses also include these
+  details in the terminal usage chunk when `stream_options.include_usage` is
+  `true`. Other backends fall back to the scheduler count; the block is omitted
+  when reuse was zero or unknown. Cache details describe the individual request,
+  so identical cold and warm requests can report different `cached_tokens`.
 - **`response_format: json_object`** (completions and chat): non-streaming
   responses are validated server-side; output that is not a JSON object
   returns `502 invalid_output`. This is post-hoc validation, not constrained

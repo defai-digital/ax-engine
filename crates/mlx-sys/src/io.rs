@@ -321,6 +321,40 @@ fn parse_safetensors_dtype(s: &str) -> Option<MlxDtype> {
 mod tests {
     use super::*;
     use crate::transforms::eval;
+    use std::collections::HashSet;
+
+    #[test]
+    fn filtered_loader_rejects_inconsistent_tensor_geometry_without_panicking() {
+        let dir = std::env::temp_dir().join(format!("ax-filtered-invalid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.safetensors");
+        for (dtype, shape) in [
+            ("F16", serde_json::json!([16])),
+            ("F32", serde_json::json!([2])),
+            ("U8", serde_json::json!([4294967296u64])),
+            (
+                "U8",
+                serde_json::json!([2147483647u64, 2147483647u64, 2147483647u64]),
+            ),
+        ] {
+            let header = serde_json::to_vec(&serde_json::json!({"bad": {
+                "dtype":dtype, "shape":shape, "data_offsets":[0,16]
+            }}))
+            .unwrap();
+            let mut data = (header.len() as u64).to_le_bytes().to_vec();
+            data.extend(header);
+            data.extend([0u8; 16]);
+            std::fs::write(&path, data).unwrap();
+            let keep = HashSet::from(["bad".to_string()]);
+            assert!(load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&keep)).is_err());
+            assert!(
+                load_safetensors_filtered(&path, SafetensorsNameFilter::Exclude(&keep))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Build a minimal safetensors file in a temp dir, load it back, and
     /// verify the tensor data round-trips correctly.

@@ -103,6 +103,7 @@ pub fn chat_contract_for_family(family_label: &str) -> Option<&'static ChatContr
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::architecture_registry::{

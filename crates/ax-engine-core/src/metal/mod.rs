@@ -14124,4 +14124,5 @@ fn encode_numeric_kernel(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests;

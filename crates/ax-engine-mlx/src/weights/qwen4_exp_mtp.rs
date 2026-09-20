@@ -587,6 +587,7 @@ pub(crate) fn load(
         fc_embedding,
         fc_hidden,
         graph: Qwen4ExpWeights {
+            target_schedule: super::qwen4_exp::Qwen4ExpTargetSchedule::LegacyBatched,
             token_embedding: trunk.token_embedding.clone(),
             lm_head: trunk.lm_head.clone(),
             layout,

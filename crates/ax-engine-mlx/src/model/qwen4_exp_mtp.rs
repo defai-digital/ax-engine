@@ -1,12 +1,9 @@
 //! Experimental Flash Next draft graph with authoritative primary verification.
 //!
-//! Flash Next MTP guarantees greedy-token identity with direct decode until a
-//! near-tie: batched length-2 verify and singleton decode may pick different
-//! argmax tokens when the top-two margin is at or below
-//! `AX_FLASH_NEXT_MTP_TIE_MARGIN`. Identity checks stop at the first such
-//! position and record it. Bit-exact logits and serialized state versus
-//! direct decode are not part of the contract. This matches the 27B route's
-//! ADR-003 D5 greedy-parity rule.
+//! Admitted MXFP4 trunks verify and retain state with ordinary singleton
+//! target transitions. Pure-affine trunks retain the legacy batched verifier.
+//! Neither schedule grants qualification: target token and state identity,
+//! including exact ties, require independent direct-trajectory evidence.
 //!
 //! The sidecar has no published official forward oracle. Its candidate input
 //! combiner uses a shared hidden projection per residual stream and adds a
@@ -16,16 +13,20 @@
 use std::time::Instant;
 
 #[cfg(test)]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use super::qwen4_exp::{self, Qwen4ExpOutput, Qwen4ExpState};
 use super::shared::utils::{ProjectionBatchPolicy, qw_with_policy};
-use crate::weights::qwen4_exp::{Qwen4ExpAttentionBranch, Qwen4ExpWeights};
+use crate::weights::qwen4_exp::{Qwen4ExpAttentionBranch, Qwen4ExpTargetSchedule, Qwen4ExpWeights};
 use crate::weights::qwen4_exp_mtp::Qwen4ExpMtpWeights;
 use mlx_sys::{
     MlxArray, MlxDtype, add, argmax, astype, concatenate, multiply, reshape, rms_norm, slice, topk,
     try_eval,
 };
+
+#[cfg(test)]
+#[path = "qwen4_exp_mtp_canonical_tests.rs"]
+mod canonical_tests;
 
 fn norm(input: &MlxArray, gain: &MlxArray, eps: f32) -> MlxArray {
     let unit = rms_norm(&astype(input, MlxDtype::Float32, None), None, eps, None);
@@ -130,6 +131,9 @@ fn head_advance_cache(
 #[cfg(test)]
 thread_local! {
     static TRUNK_FORWARD_COUNT: Cell<usize> = const { Cell::new(0) };
+    static TRUNK_FORWARD_TOKENS: RefCell<Vec<Vec<u32>>> = const { RefCell::new(Vec::new()) };
+    static FAIL_TARGET_CALL: Cell<Option<usize>> = const { Cell::new(None) };
+    static FAIL_ACCEPTED_CATCHUP: Cell<bool> = const { Cell::new(false) };
 }
 
 fn trunk_forward(
@@ -139,15 +143,47 @@ fn trunk_forward(
     owner: u64,
 ) -> Result<Qwen4ExpOutput, String> {
     #[cfg(test)]
-    TRUNK_FORWARD_COUNT.with(|count| count.set(count.get().saturating_add(1)));
-    qwen4_exp::forward_with_hc_policy(
-        trunk,
-        tokens,
-        state,
-        owner,
-        ProjectionBatchPolicy::Shared,
-        ProjectionBatchPolicy::RowExact,
-    )
+    {
+        TRUNK_FORWARD_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+        TRUNK_FORWARD_TOKENS.with(|calls| calls.borrow_mut().push(tokens.to_vec()));
+    }
+    let output = match &trunk.target_schedule {
+        Qwen4ExpTargetSchedule::CanonicalSingleton => {
+            if tokens.len() != 1 {
+                return Err("Flash Next canonical verification requires a singleton".into());
+            }
+            qwen4_exp::forward(trunk, tokens, state, owner, ProjectionBatchPolicy::Shared)
+        }
+        Qwen4ExpTargetSchedule::LegacyBatched => qwen4_exp::forward_with_verifier_policy(
+            trunk,
+            tokens,
+            state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+            ProjectionBatchPolicy::RowExact,
+        ),
+        Qwen4ExpTargetSchedule::Unavailable(reason) => {
+            return Err(format!(
+                "Flash Next MTP target schedule unavailable: {reason}"
+            ));
+        }
+    }?;
+    #[cfg(test)]
+    if FAIL_TARGET_CALL.with(|fail| fail.get())
+        == Some(TRUNK_FORWARD_TOKENS.with(|calls| calls.borrow().len()))
+    {
+        return Err("injected failure after materialized target transition".into());
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
+pub(crate) fn target_schedule_name(trunk: &Qwen4ExpWeights) -> &'static str {
+    match trunk.target_schedule {
+        Qwen4ExpTargetSchedule::CanonicalSingleton => "canonical_singleton",
+        Qwen4ExpTargetSchedule::LegacyBatched => "legacy_batched",
+        Qwen4ExpTargetSchedule::Unavailable(_) => "unavailable",
+    }
 }
 
 fn token_at_row(logits: &MlxArray, row: i32) -> Result<u32, String> {
@@ -253,6 +289,10 @@ fn sum_verify_wall_us(correction_wall_us: u32, bonus_wall_us: u32, rejection_wal
 }
 
 pub(crate) struct VerifiedStep {
+    #[cfg(test)]
+    pub target_schedule: &'static str,
+    #[cfg(test)]
+    pub verification_logits: Option<MlxArray>,
     pub committed: Vec<u32>,
     pub accepted: bool,
     pub after_primary: Qwen4ExpOutput,
@@ -261,8 +301,7 @@ pub(crate) struct VerifiedStep {
     pub correction_wall_us: u32,
     pub bonus_wall_us: u32,
     pub rejection_wall_us: u32,
-    /// Top-two margin of verifier row 0, including on rejection. The one-slot
-    /// budget path has no verifier and uses its singleton logits instead.
+    /// Top-two margin of the correction decision, including on rejection.
     pub correction_margin: f32,
     /// Top-two margin of the bonus logits row on acceptance; 0 otherwise.
     pub bonus_margin: f32,
@@ -295,7 +334,14 @@ fn verify_diagnostic(
 ) -> Result<serde_json::Value, String> {
     let batched = batched_row0_token
         .map(|token| serde_json::json!({"token": token, "margin": step.correction_margin}));
-    let singleton = if step.accepted {
+    let canonical = step.target_schedule == "canonical_singleton";
+    let singleton = if canonical {
+        Some(serde_json::json!({
+            "token": next_token(&step.after_primary)?,
+            "margin": step.correction_margin,
+            "source": "canonical_primary",
+        }))
+    } else if step.accepted {
         None
     } else {
         Some(serde_json::json!({
@@ -312,6 +358,7 @@ fn verify_diagnostic(
         "primary": input.primary,
         "draft": input.draft,
         "remaining": input.remaining,
+        "target_schedule": step.target_schedule,
         "accepted": step.accepted,
         "committed_len": step.committed.len(),
         "batched_row0": batched,
@@ -338,12 +385,8 @@ fn emit_verify_diagnostic(
 /// `primary` must be the authoritative token from this checkpoint's logits.
 /// A mismatched or truncated draft is never evaluated as a committed token.
 ///
-/// When more than one output slot remains, verification is one length-2 Shared
-/// trunk forward of `[primary, draft]`. The correction token is logits row 0.
-/// Acceptance commits the two-token state and reads the bonus from row 1
-/// (`bonus_wall_us` is then zero). Rejection runs one extra singleton forward
-/// of `[primary]` from the original state so the committed state matches
-/// direct decode (`rejection_wall_us`).
+/// Canonical verification decides and commits ordinary singletons. Legacy
+/// verification retains its length-2 batch, followed by replay on rejection.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_one(
     trunk: &Qwen4ExpWeights,
@@ -364,6 +407,52 @@ pub(crate) fn verify_one(
         draft,
         remaining,
     };
+    if matches!(
+        trunk.target_schedule,
+        Qwen4ExpTargetSchedule::CanonicalSingleton
+    ) {
+        let started = Instant::now();
+        let after_primary = trunk_forward(trunk, &[primary], state, owner)?;
+        let correction = next_token(&after_primary)?;
+        let correction_margin = top_two_margin(&after_primary.logits, 0)?;
+        let correction_wall_us = elapsed_us(started);
+        let accepted = remaining > 1
+            && !terminal_ids.contains(&primary)
+            && !terminal_ids.contains(&correction)
+            && draft == correction;
+        let (after_draft, next_primary, bonus_margin, bonus_wall_us) = if accepted {
+            let started = Instant::now();
+            let output = trunk_forward(trunk, &[draft], &after_primary.state, owner)?;
+            let bonus = next_token(&output)?;
+            let margin = top_two_margin(&output.logits, 0)?;
+            (Some(output), bonus, margin, elapsed_us(started))
+        } else {
+            (None, correction, 0.0, 0)
+        };
+        let verified = VerifiedStep {
+            #[cfg(test)]
+            target_schedule: target_schedule_name(trunk),
+            #[cfg(test)]
+            verification_logits: None,
+            committed: if accepted {
+                vec![primary, draft]
+            } else {
+                vec![primary]
+            },
+            accepted,
+            after_primary,
+            after_draft,
+            next_primary,
+            correction_wall_us,
+            bonus_wall_us,
+            rejection_wall_us: 0,
+            correction_margin,
+            bonus_margin,
+        };
+        #[cfg(test)]
+        emit_verify_diagnostic(diagnostic_input, &verified, None)?;
+        return Ok(verified);
+    }
     if remaining == 1 {
         let started = Instant::now();
         let after_primary = trunk_forward(trunk, &[primary], state, owner)?;
@@ -371,6 +460,10 @@ pub(crate) fn verify_one(
         let correction = next_token(&after_primary)?;
         let correction_margin = top_two_margin(&after_primary.logits, 0)?;
         let verified = VerifiedStep {
+            #[cfg(test)]
+            target_schedule: target_schedule_name(trunk),
+            #[cfg(test)]
+            verification_logits: None,
             committed: vec![primary],
             accepted: false,
             after_primary,
@@ -401,6 +494,10 @@ pub(crate) fn verify_one(
         let bonus = token_at_row(&batched.logits, 1)?;
         let bonus_margin = top_two_margin(&batched.logits, 1)?;
         let verified = VerifiedStep {
+            #[cfg(test)]
+            target_schedule: target_schedule_name(trunk),
+            #[cfg(test)]
+            verification_logits: Some(batched.logits.clone()),
             committed: vec![primary, draft],
             accepted: true,
             after_primary: output_row(&batched, 0)?,
@@ -421,6 +518,10 @@ pub(crate) fn verify_one(
         let rejection_wall_us = elapsed_us(started);
         let next_primary = next_token(&after_primary)?;
         let verified = VerifiedStep {
+            #[cfg(test)]
+            target_schedule: target_schedule_name(trunk),
+            #[cfg(test)]
+            verification_logits: Some(batched.logits.clone()),
             committed: vec![primary],
             accepted: false,
             after_primary,
@@ -464,6 +565,8 @@ pub(crate) struct CursorStep {
 }
 
 struct AdvancedStep {
+    #[cfg(test)]
+    observation: CandidateStepObservation,
     trunk_state: Qwen4ExpState,
     consumed: Vec<u32>,
     next_primary: u32,
@@ -576,9 +679,24 @@ impl Qwen4ExpDraftCursor {
             let next_primary = next_token(&output)?;
             let correction_wall_us = elapsed_us(started);
             let correction_margin = top_two_margin(&output.logits, 0)?;
+            #[cfg(test)]
+            let canonical_primary = canonical_primary_observation(trunk, &output);
             self.draft_state = draft_state;
             self.stream_hidden = Some(output.stream_hidden);
             return Ok(AdvancedStep {
+                #[cfg(test)]
+                observation: CandidateStepObservation {
+                    target_schedule: target_schedule_name(trunk),
+                    draft_token: None,
+                    verification_logits: None,
+                    canonical_primary,
+                    canonical_correction_logits: matches!(
+                        trunk.target_schedule,
+                        Qwen4ExpTargetSchedule::CanonicalSingleton
+                    )
+                    .then(|| output.logits.clone()),
+                    next_logits: output.logits.clone(),
+                },
                 trunk_state: output.state,
                 consumed: vec![primary],
                 next_primary,
@@ -613,6 +731,14 @@ impl Qwen4ExpDraftCursor {
         let verify_wall_us = verified.verify_wall_us();
         let correction_margin = verified.correction_margin;
         let bonus_margin = verified.bonus_margin;
+        #[cfg(test)]
+        let canonical_correction_logits = matches!(
+            trunk.target_schedule,
+            Qwen4ExpTargetSchedule::CanonicalSingleton
+        )
+        .then(|| verified.after_primary.logits.clone());
+        #[cfg(test)]
+        let canonical_primary = canonical_primary_observation(trunk, &verified.after_primary);
         let consumed = verified.committed;
         let (draft_state, final_output) = if let Some(after_draft) = verified.after_draft {
             let alignment_started = Instant::now();
@@ -623,6 +749,10 @@ impl Qwen4ExpDraftCursor {
                 &proposed.state,
                 self.owner,
             )?;
+            #[cfg(test)]
+            if FAIL_ACCEPTED_CATCHUP.with(Cell::get) {
+                return Err("injected failure after materialized accepted head catch-up".into());
+            }
             draft_wall_us = draft_wall_us.saturating_add(elapsed_us(alignment_started));
             (aligned, after_draft)
         } else {
@@ -633,6 +763,15 @@ impl Qwen4ExpDraftCursor {
         self.proposed += 1;
         self.accepted += usize::from(accepted);
         Ok(AdvancedStep {
+            #[cfg(test)]
+            observation: CandidateStepObservation {
+                target_schedule: target_schedule_name(trunk),
+                draft_token: Some(draft),
+                verification_logits: verified.verification_logits,
+                canonical_correction_logits,
+                canonical_primary,
+                next_logits: final_output.logits.clone(),
+            },
             trunk_state: final_output.state,
             consumed,
             next_primary,
@@ -696,10 +835,45 @@ pub(crate) struct CandidateSession {
     pub draft_state: Qwen4ExpState,
     pub stream_hidden: MlxArray,
     pub primary: u32,
+    pub primary_logits: MlxArray,
     trunk_owner: u64,
     draft_owner: u64,
     pub proposed: usize,
     pub accepted: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct CanonicalPrimaryObservation {
+    pub state: Qwen4ExpState,
+    pub stream_hidden: MlxArray,
+}
+
+#[cfg(test)]
+fn canonical_primary_observation(
+    trunk: &Qwen4ExpWeights,
+    output: &Qwen4ExpOutput,
+) -> Option<CanonicalPrimaryObservation> {
+    matches!(
+        trunk.target_schedule,
+        Qwen4ExpTargetSchedule::CanonicalSingleton
+    )
+    .then(|| CanonicalPrimaryObservation {
+        state: output.state.clone(),
+        stream_hidden: output.stream_hidden.clone(),
+    })
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct CandidateStepObservation {
+    pub target_schedule: &'static str,
+    pub draft_token: Option<u32>,
+    /// Only legacy length-2 verifier rows; canonical transitions are separate.
+    pub verification_logits: Option<MlxArray>,
+    pub canonical_correction_logits: Option<MlxArray>,
+    pub canonical_primary: Option<CanonicalPrimaryObservation>,
+    pub next_logits: MlxArray,
 }
 
 #[cfg(test)]
@@ -745,6 +919,7 @@ impl CandidateSession {
         )?;
         Ok(Self {
             primary: next_token(&output)?,
+            primary_logits: output.logits,
             trunk_state: output.state,
             draft_state,
             stream_hidden: output.stream_hidden,
@@ -762,6 +937,17 @@ impl CandidateSession {
         remaining: usize,
         terminal_ids: &[u32],
     ) -> Result<Vec<u32>, String> {
+        self.step_observed(trunk, head, remaining, terminal_ids)
+            .map(|(consumed, _)| consumed)
+    }
+
+    pub(crate) fn step_observed(
+        &mut self,
+        trunk: &Qwen4ExpWeights,
+        head: &Qwen4ExpMtpWeights,
+        remaining: usize,
+        terminal_ids: &[u32],
+    ) -> Result<(Vec<u32>, CandidateStepObservation), String> {
         let mut cursor = Qwen4ExpDraftCursor {
             draft_state: self.draft_state.clone(),
             stream_hidden: Some(self.stream_hidden.clone()),
@@ -782,9 +968,10 @@ impl CandidateSession {
         self.draft_state = cursor.draft_state;
         self.stream_hidden = cursor.stream_hidden.ok_or("missing committed MTP row")?;
         self.primary = advanced.next_primary;
+        self.primary_logits = advanced.observation.next_logits.clone();
         self.proposed = cursor.proposed;
         self.accepted = cursor.accepted;
-        Ok(advanced.consumed)
+        Ok((advanced.consumed, advanced.observation))
     }
 }
 
@@ -822,6 +1009,7 @@ pub(crate) mod mtp_parity {
         pub greedy_identity: bool,
         pub identity_until_first_tie: bool,
         pub tie_divergences: Vec<TieDivergence>,
+        pub compared_positions: usize,
     }
 
     impl GreedyIdentityReport {
@@ -830,6 +1018,7 @@ pub(crate) mod mtp_parity {
                 greedy_identity: true,
                 identity_until_first_tie: true,
                 tie_divergences: Vec::new(),
+                compared_positions: 0,
             }
         }
     }
@@ -895,6 +1084,7 @@ pub(crate) mod mtp_parity {
         let shared = direct.len().min(mtp.len());
         let mut report = GreedyIdentityReport::exact();
         for position in 0..shared {
+            report.compared_positions = position + 1;
             if direct[position] == mtp[position] {
                 continue;
             }
@@ -1229,10 +1419,12 @@ pub(crate) mod mtp_parity {
         assert_eq!(tied.tie_divergences.len(), 1);
         assert_eq!(tied.tie_divergences[0].position, 2);
         assert_eq!(tied.tie_divergences[0].tokens, [271, 561]);
+        assert_eq!(tied.compared_positions, 3);
         let exact = greedy_identity_until_tie(&direct, &direct, 0.0, 0.5).unwrap();
         assert!(exact.greedy_identity);
         assert!(exact.identity_until_first_tie);
         assert!(exact.tie_divergences.is_empty());
+        assert_eq!(exact.compared_positions, direct.len());
         let wide = greedy_identity_until_tie(&direct, &mtp, 1.25, 0.5).unwrap_err();
         assert_eq!(
             wide,

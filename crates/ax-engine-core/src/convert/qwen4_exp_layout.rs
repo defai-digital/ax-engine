@@ -47,52 +47,90 @@ fn has_unknown_layout_blocker(manifest: &NativeModelManifest) -> bool {
         .any(|blocker| blocker == QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER)
 }
 
-fn protected_projections_match(manifest: &NativeModelManifest, expert_layout: (u32, u32)) -> bool {
-    manifest
-        .tensors
-        .iter()
-        .filter_map(|tensor| tensor.quantization.as_ref())
-        .all(|quant| match expert_layout {
-            (2, 32) => matches!((quant.bits, quant.group_size), (2 | 4 | 8, 32)),
-            (4, 64) => matches!((quant.bits, quant.group_size), (4 | 8, 32 | 64)),
-            (6, 64) => matches!((quant.bits, quant.group_size), (6, 64) | (8, 32 | 64)),
-            _ => false,
-        })
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExpertLayout {
+    Affine(u32, u32),
+    Mxfp4,
 }
 
-/// Inspect expert quantization. Mixed layouts, MXFP4, and unquantized experts
-/// are hard errors; a uniform (2,32) / (4,64) / (6,64) affine layout is `Ok`.
-fn inspect_expert_layout(manifest: &NativeModelManifest) -> Result<Option<(u32, u32)>, String> {
+fn protected_projections_match(
+    manifest: &NativeModelManifest,
+    expert_layout: ExpertLayout,
+) -> bool {
+    manifest.tensors.iter().all(|tensor| {
+        let Some(quant) = &tensor.quantization else {
+            return true;
+        };
+        match expert_layout {
+            ExpertLayout::Affine(bits, group) => {
+                quant.mode == "affine"
+                    && match (bits, group) {
+                        (2, 32) => matches!((quant.bits, quant.group_size), (2 | 4 | 8, 32)),
+                        (4, 64) => matches!((quant.bits, quant.group_size), (4 | 8, 32 | 64)),
+                        (6, 64) => matches!((quant.bits, quant.group_size), (6, 64) | (8, 32 | 64)),
+                        _ => false,
+                    }
+            }
+            ExpertLayout::Mxfp4 => {
+                let affine8 = quant.mode == "affine" && (quant.bits, quant.group_size) == (8, 32);
+                if tensor.role == NativeTensorRole::LmHead {
+                    // The pinned MXFP4 export protects its output head at 8/64.
+                    quant.mode == "affine" && quant.bits == 8 && matches!(quant.group_size, 32 | 64)
+                } else if matches!(
+                    tensor.role,
+                    NativeTensorRole::TokenEmbedding
+                        | NativeTensorRole::NgramEmbedding
+                        | NativeTensorRole::FfnGateInp
+                        | NativeTensorRole::FfnSharedExpertGateInp
+                ) {
+                    affine8
+                } else {
+                    affine8 || (quant.mode == "mxfp4" && (quant.bits, quant.group_size) == (4, 32))
+                }
+            }
+        }
+    })
+}
+
+/// Inspect uniform expert layouts while preserving mode in the identity.
+/// Protected non-expert tensors are checked against that complete layout.
+fn inspect_expert_layout(manifest: &NativeModelManifest) -> Result<Option<ExpertLayout>, String> {
     let mut expert_layout = None;
     for tensor in &manifest.tensors {
         if let Some(quantization) = &tensor.quantization {
-            if quantization.mode != "affine" {
+            if !matches!(quantization.mode.as_str(), "affine" | "mxfp4") {
                 return Err(format!(
-                    "qwen4_exp rejects quantization mode {} on tensor {} (MXFP4 and other \
-non-affine formats are not product)",
+                    "qwen4_exp rejects quantization mode {} on tensor {}",
                     quantization.mode, tensor.name
                 ));
             }
             if is_expert_role(tensor.role) {
-                let layout = (quantization.bits, quantization.group_size);
-                if !matches!(layout, (2, 32) | (4 | 6, 64)) {
-                    return Err(format!(
-                        "qwen4_exp expert tensor {} has unsupported affine layout bits={} \
-group_size={} (product is 4-bit/group64 or 6-bit/group64; 2-bit/group32 is experimental)",
-                        tensor.name, layout.0, layout.1
-                    ));
-                }
+                let layout = match (
+                    quantization.mode.as_str(),
+                    quantization.bits,
+                    quantization.group_size,
+                ) {
+                    ("affine", bits, group) if matches!((bits, group), (2, 32) | (4 | 6, 64)) => {
+                        ExpertLayout::Affine(bits, group)
+                    }
+                    ("mxfp4", 4, 32) => ExpertLayout::Mxfp4,
+                    _ => {
+                        return Err(format!(
+                            "qwen4_exp expert tensor {} has unsupported quantization layout {:?}",
+                            tensor.name, quantization
+                        ));
+                    }
+                };
                 if expert_layout.is_some_and(|expected| expected != layout) {
                     return Err(format!(
-                        "qwen4_exp mixed expert layouts are rejected (saw {expert_layout:?} and \
-{layout:?})"
+                        "qwen4_exp mixed expert layouts are rejected (saw {expert_layout:?} and {layout:?})"
                     ));
                 }
                 expert_layout = Some(layout);
             }
         } else if is_expert_role(tensor.role) {
             return Err(format!(
-                "qwen4_exp expert tensor {} must be affine-quantized",
+                "qwen4_exp expert tensor {} must be quantized",
                 tensor.name
             ));
         }
@@ -109,7 +147,7 @@ fn layout_apply_matches(model_dir: &Path, manifest: &NativeModelManifest) -> boo
 
 /// Product 4-bit/group64 and 6-bit/group64 packs admit without an environment
 /// variable. 2-bit/group32 still requires `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL`.
-/// Mixed layouts, MXFP4, and unknown exporters stay rejected.
+/// MXFP4/group32 also requires the family opt-in; unknown exporters stay rejected.
 pub(crate) fn experimental_runtime_admission(
     model_dir: &Path,
     manifest: &NativeModelManifest,
@@ -136,14 +174,28 @@ pub(crate) fn experimental_runtime_admission(
         return false;
     }
     match expert_layout {
-        (4 | 6, 64) => true,
-        (2, 32) => enabled,
+        ExpertLayout::Affine(4 | 6, 64) => true,
+        ExpertLayout::Affine(2, 32) | ExpertLayout::Mxfp4 => enabled,
         _ => false,
     }
 }
 
+/// Classify the existing audited MXFP4 envelope without admitting a new format.
+/// The caller owns complete native-manifest validation and runtime opt-in.
+pub(crate) fn audited_mxfp4_runtime_format(
+    model_dir: &Path,
+    manifest: &NativeModelManifest,
+) -> bool {
+    manifest.tensor_format == crate::model::NativeTensorFormat::Safetensors
+        && matches!(
+            inspect_expert_layout(manifest),
+            Ok(Some(ExpertLayout::Mxfp4))
+        )
+        && experimental_runtime_admission(model_dir, manifest, true)
+}
+
 /// Hard-error format gate for Flash Next. Product 4/6-bit packs pass without
-/// env. 2-bit still needs the family opt-in. Mixed layouts, MXFP4, and
+/// env. 2-bit and MXFP4 still need the family opt-in. Mixed layouts and
 /// protected-projection mismatches are errors, not silent admission failures.
 pub(crate) fn validate_qwen4_exp_runtime_formats(
     model_dir: &Path,
@@ -165,12 +217,15 @@ pub(crate) fn validate_qwen4_exp_runtime_formats(
             "qwen4_exp protected-projection layout does not match expert format {expert_layout:?}"
         ));
     }
-    if expert_layout == (2, 32) && !experimental {
+    if expert_layout == ExpertLayout::Affine(2, 32) && !experimental {
         return Err(
             "qwen4_exp 2-bit/group32 is not a product format (set AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1; \
 AX_ENGINE_2BIT_EXPERIMENTAL=1 is also required)"
                 .to_string(),
         );
+    }
+    if expert_layout == ExpertLayout::Mxfp4 && !experimental {
+        return Err("qwen4_exp MXFP4/group32 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 until native target qualification completes".into());
     }
     if !layout_apply_matches(model_dir, manifest) {
         return Err(
@@ -764,6 +819,164 @@ mod tests {
             candidate.tensors.last_mut().unwrap().quantization = None;
             assert!(!experimental_runtime_admission(&dir, &candidate, true));
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn audited_mxfp4_classification_reuses_layout_and_protected_formats() {
+        let dir = temp_model_dir("mxfp4-classification");
+        write_axquant_manifest(&dir, &audited_legacy_json());
+        let mut manifest = base_manifest();
+        apply(&dir, &mut manifest).unwrap();
+        let mut expert = conv_tensor(
+            "expert",
+            NativeTensorRole::FfnGateExps,
+            vec![4, 64, 8],
+            NativeTensorDataType::U32,
+            true,
+        );
+        expert.quantization = Some(NativeTensorQuantization {
+            mode: "mxfp4".into(),
+            bits: 4,
+            group_size: 32,
+        });
+        manifest.tensors.push(expert);
+        assert!(audited_mxfp4_runtime_format(&dir, &manifest));
+        for violation in [
+            "affine",
+            "missing_exporter",
+            "sanitize",
+            "protected",
+            "unknown",
+        ] {
+            let mut changed = manifest.clone();
+            match violation {
+                "affine" => {
+                    let quant = changed
+                        .tensors
+                        .last_mut()
+                        .unwrap()
+                        .quantization
+                        .as_mut()
+                        .unwrap();
+                    quant.mode = "affine".into();
+                    quant.group_size = 64;
+                    assert!(experimental_runtime_admission(&dir, &changed, false));
+                }
+                "missing_exporter" => {
+                    std::fs::remove_file(dir.join(AXQUANT_MANIFEST_FILE)).unwrap();
+                }
+                "sanitize" => changed.weight_sanitize = WeightSanitize::HfToMlx,
+                "protected" => {
+                    changed.tensors.last_mut().unwrap().role = NativeTensorRole::TokenEmbedding;
+                }
+                "unknown" => {
+                    changed
+                        .tensors
+                        .last_mut()
+                        .unwrap()
+                        .quantization
+                        .as_mut()
+                        .unwrap()
+                        .mode = "mxfp8".into();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !audited_mxfp4_runtime_format(&dir, &changed),
+                "accepted {violation}"
+            );
+            write_axquant_manifest(&dir, &audited_legacy_json());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mxfp4_admission_preserves_mode_overrides_and_requires_opt_in() {
+        let dir = temp_model_dir("mxfp4-formats");
+        write_axquant_manifest(&dir, &audited_legacy_json());
+        let mut manifest = base_manifest();
+        apply(&dir, &mut manifest).unwrap();
+        let mut expert = conv_tensor(
+            "expert",
+            NativeTensorRole::FfnGateExps,
+            vec![4, 64, 8],
+            NativeTensorDataType::U32,
+            true,
+        );
+        let quant = expert.quantization.as_mut().unwrap();
+        quant.mode = "mxfp4".into();
+        quant.bits = 4;
+        quant.group_size = 32;
+        manifest.tensors.push(expert.clone());
+        for role in [
+            NativeTensorRole::TokenEmbedding,
+            NativeTensorRole::NgramEmbedding,
+            NativeTensorRole::FfnGateInp,
+            NativeTensorRole::FfnSharedExpertGateInp,
+        ] {
+            let mut protected = expert.clone();
+            protected.role = role;
+            protected.name = format!("protected-{role:?}");
+            let quant = protected.quantization.as_mut().unwrap();
+            quant.mode = "affine".into();
+            quant.bits = 8;
+            manifest.tensors.push(protected);
+        }
+        assert!(!experimental_runtime_admission(&dir, &manifest, false));
+        assert!(
+            validate_qwen4_exp_runtime_formats(&dir, &manifest, false)
+                .unwrap_err()
+                .contains("AX_ENGINE_FLASH_NEXT_EXPERIMENTAL")
+        );
+        assert!(experimental_runtime_admission(&dir, &manifest, true));
+        validate_qwen4_exp_runtime_formats(&dir, &manifest, true).unwrap();
+        for index in manifest.tensors.len() - 4..manifest.tensors.len() {
+            let mut bad = manifest.clone();
+            let quant = bad.tensors[index].quantization.as_mut().unwrap();
+            quant.mode = "mxfp4".into();
+            quant.bits = 4;
+            assert!(!experimental_runtime_admission(&dir, &bad, true));
+            assert!(validate_qwen4_exp_runtime_formats(&dir, &bad, true).is_err());
+        }
+        let mut head = expert.clone();
+        head.name = "language_model.lm_head.weight".into();
+        head.role = NativeTensorRole::LmHead;
+        head.layer_index = None;
+        let quant = head.quantization.as_mut().unwrap();
+        quant.mode = "affine".into();
+        quant.bits = 8;
+        quant.group_size = 64;
+        manifest.tensors.push(head);
+        assert!(experimental_runtime_admission(&dir, &manifest, true));
+        validate_qwen4_exp_runtime_formats(&dir, &manifest, true).unwrap();
+        assert!(!experimental_runtime_admission(&dir, &manifest, false));
+        for role in [NativeTensorRole::AttentionQ, NativeTensorRole::FfnGateInp] {
+            let mut bad = manifest.clone();
+            bad.tensors.last_mut().unwrap().role = role;
+            assert!(validate_qwen4_exp_runtime_formats(&dir, &bad, true).is_err());
+        }
+        let mut bad_head = manifest.clone();
+        bad_head
+            .tensors
+            .last_mut()
+            .unwrap()
+            .quantization
+            .as_mut()
+            .unwrap()
+            .bits = 4;
+        assert!(validate_qwen4_exp_runtime_formats(&dir, &bad_head, true).is_err());
+        let mut mixed = expert;
+        mixed.name = "affine-expert".into();
+        let quant = mixed.quantization.as_mut().unwrap();
+        quant.mode = "affine".into();
+        quant.group_size = 64;
+        manifest.tensors.push(mixed);
+        assert!(
+            validate_qwen4_exp_runtime_formats(&dir, &manifest, true)
+                .unwrap_err()
+                .contains("mixed expert layouts")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

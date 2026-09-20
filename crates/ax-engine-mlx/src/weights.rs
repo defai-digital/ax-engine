@@ -115,7 +115,9 @@ fn load_flash_next_mtp_candidate(
     if !flash_next_mtp_sidecar_present(artifacts.root_dir()) {
         return None;
     }
-    match qwen4_exp_mtp::load(artifacts.root_dir(), artifacts.manifest(), trunk) {
+    match load_flash_next_mtp_for_schedule(&trunk.target_schedule, || {
+        qwen4_exp_mtp::load(artifacts.root_dir(), artifacts.manifest(), trunk)
+    }) {
         Ok(head) => Some(Box::new(head)),
         Err(error) => {
             tracing::error!(
@@ -126,6 +128,18 @@ fn load_flash_next_mtp_candidate(
             None
         }
     }
+}
+
+fn load_flash_next_mtp_for_schedule<T>(
+    schedule: &qwen4_exp::Qwen4ExpTargetSchedule,
+    load: impl FnOnce() -> Result<T, WeightLoadError>,
+) -> Result<T, WeightLoadError> {
+    if let qwen4_exp::Qwen4ExpTargetSchedule::Unavailable(reason) = schedule {
+        return Err(WeightLoadError::InvalidLayer(format!(
+            "Flash Next target schedule is unavailable: {reason}"
+        )));
+    }
+    load()
 }
 
 impl ModelWeights {
@@ -1217,7 +1231,7 @@ pub(crate) fn load_weights_with_session_budget(
 ) -> Result<ModelWeights, WeightLoadError> {
     maybe_raise_metal_buffer_caps(artifacts);
     if artifacts.manifest().model_family == "qwen4_exp" {
-        let dedicated = qwen4_exp::load(artifacts.root_dir(), artifacts.manifest())?;
+        let dedicated = qwen4_exp::load_artifacts(artifacts)?;
         let token_embedding = dedicated.token_embedding.clone();
         let lm_head = dedicated.lm_head.clone();
         let expert_stream = dedicated.expert_stream.clone();
@@ -7163,6 +7177,34 @@ mod tests {
     use ax_engine_core::NativeTensorDataType;
     use mlx_sys::{MlxDtype, zeros};
     use std::path::Path;
+
+    #[test]
+    fn flash_next_mtp_unavailable_schedule_never_opens_sidecar() {
+        use qwen4_exp::Qwen4ExpTargetSchedule;
+        let mut opened = 0;
+        let result = load_flash_next_mtp_for_schedule(
+            &Qwen4ExpTargetSchedule::Unavailable("unclassified MXFP4".into()),
+            || {
+                opened += 1;
+                Ok(())
+            },
+        );
+        assert!(matches!(result, Err(WeightLoadError::InvalidLayer(_))));
+        assert_eq!(opened, 0);
+        for schedule in [
+            Qwen4ExpTargetSchedule::CanonicalSingleton,
+            Qwen4ExpTargetSchedule::LegacyBatched,
+        ] {
+            let result = load_flash_next_mtp_for_schedule(&schedule, || {
+                opened += 1;
+                Err::<(), _>(WeightLoadError::FileMissing(
+                    "retained sidecar failure".into(),
+                ))
+            });
+            assert!(matches!(result, Err(WeightLoadError::FileMissing(_))));
+        }
+        assert_eq!(opened, 2);
+    }
 
     #[test]
     fn flash_next_mtp_sidecar_present_requires_mtp_safetensors() {

@@ -644,6 +644,7 @@ fn internal(message: impl Into<String>) -> HttpErrorResponse {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

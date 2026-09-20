@@ -5,13 +5,14 @@ Status: **Candidate; release qualification open**
 Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 Target SKU: **MacBook Pro M5 Max, 128 GB**. Target pack: **MXFP4 MTP**.
-Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-17**.
+Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-19**.
 
 "MTP Tier 2 pending" here uses the same three-gate vocabulary as the
 [Qwen 3.8 27B record](qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means):
 MTP-S (in-path safety), MTP-P (performance claim license) and MTP-D (default
-promotion) are evidenced separately. For this SKU all three are open, and native
-trunk execution stays fail-closed, so no gate can be evidenced yet.
+promotion) are evidenced separately. For this SKU all three are open. Default
+admission remains fail-closed; the opt-in experimental evidence below does not
+by itself close any gate.
 
 ## Current target and open gates
 
@@ -19,10 +20,254 @@ The target is
 [`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/tree/0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35)
 at revision `0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35`. Published file
 metadata totals 132,261,853,669 bytes. Default MXFP4/group32 coexists with
-per-tensor affine8/group32 overrides; the protected MTP sidecar is BF16.
+per-tensor affine8/group32 overrides and an affine8/group64 output head;
+the protected MTP sidecar is BF16.
 The current campaign uses a NAS-backed Hugging Face cache over SMB; storage
-conditions are part of qualification. MXFP4 paging remains rejected by the
-current native loader; model publication does not establish AX execution.
+conditions are part of qualification. MXFP4 paging requires the explicit
+`AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` opt-in. Small generated-tensor controls
+cover bounded U8 scale reads, full-layer/selected-row equivalence, malformed
+layouts and I/O recovery; target whole-model qualification is still open.
+
+[Pinned pack audit](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/pack-audit.json)
+records full file hashes and quantization geometry. Successful Hub staging does
+not establish installed AX delivery or model execution.
+
+[Installed default recovery](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-default-recovery/README.md)
+now completes on the M5/NAS target using source `85a2bab0`: all 47 published
+file hashes and the generated native manifest match, runtime identities remain
+unchanged, and the owned processes have exited. The invocation reused the
+original partial cache with unchanged default transport settings. Both earlier
+failed attempts remain recorded; this recovery does not qualify fresh-cache
+delivery, later runtime candidates, model execution or lifecycle behavior.
+
+Installed M5 fixed-input controls now pass both direct and required MTP on the
+[selected route](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/native-selected-r2.json)
+and [default Auto route](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/native-default-r2.json),
+including post-run file hashes and identical text/usage (46 input, 32 output
+tokens). These four requests do not establish full QA, numerical certification,
+or throughput. The required Auto request includes intrusive stack sampling;
+its elapsed time is not benchmark evidence.
+
+[Current-source installed QA](../../benchmarks/results/qualification/2026-09-19-flash-next-mxfp4-installed-qa/README.md)
+on source `5f583018` completes all 105 original inputs in each mode, with 210
+normal stops and 105/105 identical direct/MTP text pairs. Each mode still has
+102 quality passes and three original failures: alphabet comma spacing, the
+gravity answer `9`, and the water formula's subscript representation. Both modes
+return `1734` for the 29,774-token lookup. Original payload/runtime integrity
+and owned-process cleanup pass; the original QA verdict remains **failed**.
+The portable evidence reader independently replays the unchanged checkers.
+These request timings do not establish MTP acceleration, and text identity
+does not by itself establish same-state MTP-S safety.
+
+The [earlier installed target QA](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-target-qa/README.md)
+retains its separate historical result: all 105 original inputs in each mode, with 210 normal stops
+and clean shutdowns. Each mode has 102 quality passes and three retained
+failures. Direct/MTP text matches on 103/105 pairs; two reasoning answers
+differ despite identical checker results. Both modes pass the 29,774-token
+lookup. The frozen supervisor completed all pre/post integrity checks, but
+the overall QA verdict is **failed**. Generated token IDs and logit margins
+were not recorded by this endpoint; a near-tie explanation is not established.
+
+[Current-source native controls](../../benchmarks/results/qualification/2026-09-19-flash-next-mxfp4-native-controls/README.md)
+pass their original bounded contract on source `5f583018`: real-head acceptance
+is 95/117 and the permuted control is 0/209, with all 104 paired outputs equal.
+Independent same-state trace reconstruction finds zero invalid acceptances.
+The state control covers two steps and 109 arrays; the three-token runner
+control does not compare stored state. All original payload/runtime integrity
+checks and owned-process cleanup pass. This selected-route diagnostic retains
+MTP-S/P/D as `not_assessed`; installed/default and full product qualification
+remain open. Earlier results below retain their original source and failures.
+
+[Current-source installed lifecycle](../../benchmarks/results/qualification/2026-09-19-flash-next-mxfp4-installed-lifecycle/README.md)
+also passes its fourteen-action contract on source `5f583018`: default and
+required MTP complete SSE, budgets, stop, active-producer disconnect and
+identical recovery. Original payload/runtime integrity and clean owned-process
+exit pass. This uses the installed paging defaults within experimental family
+admission. The current QA collection above is complete with retained quality
+failures; broader numerical coverage, memory, performance and fresh delivery
+remain open. MTP-S/P/D are still `not_assessed`.
+
+[Target native MTP controls](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-mtp/README.md)
+are also complete and **failed exact identity**. Real-head acceptance is
+94/116 (81.03%), while the permuted head accepts 0/209. Both use 104 inputs
+with 55 short exclusions; only 102/104 generated-token arrays agree across
+heads. Bounded state/runner controls and post-run integrity verification
+passed. The recorded coverage overstatement after a first mismatch is
+preserved and explained in the evidence; it does not waive the failure.
+
+[Supplementary MXFP4 GDN attribution](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-gdn/README.md)
+reproduces batch/singleton rounding differences with actual BF16 inputs and
+original QKV/output weights. Verifier-only per-row projections move the first
+changed stored state from layer 0 to layer 43 in the original three-token
+roses control. That GDN-only candidate retains eleven differing state arrays;
+this is a component correction, not whole-model or M5 identity qualification.
+Direct and affine routing retain
+their existing policies, and default admission remains closed.
+
+[Supplementary MXFP4 QSA attribution](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-qsa/README.md)
+isolates main-key and indexer projection scheduling differences on identical
+captured inputs. The main-key replay exactly reproduces the native outputs;
+the indexer replay has no captured native projection. Applying the verifier
+policy to these two MXFP4 projections leaves no recorded state difference in
+the same three-token control, with all three output tokens equal and all 47
+pack hashes unchanged. This bounded M2 result does not establish longer
+trajectory identity or qualify the M5/NAS target; those gates remain open.
+
+[The longer QSA diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-qsa-full/README.md)
+retains a failed identity result on that candidate. Cause/effect matches 89
+token positions including EOS, but stored state differs after prefix 2.
+Roses first differs in stored state after prefix 4 and in output at position
+13. Both prefill comparisons are exact and all 47 pack pre/post hashes match.
+The passing three-token control therefore does not close whole-model identity.
+
+[Supplementary QSA query/output attribution](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-qsa-query-output/README.md)
+reproduces two further projection differences with identical captured inputs
+and original weights. Applying the existing verifier policy to MXFP4 Q/gate
+and output projections preserves all five generated tokens, both accepted
+pairs and the repeated prefill in a separate M2 control. At consumed prefix 4,
+the first stored-state difference moves from layer 8 to layer 34; 32 arrays
+still differ. This candidate has not completed the full diagnostic or M5/NAS
+qualification. The earlier failures remain retained, and default admission
+remains closed.
+
+[Supplementary shared-gate attribution](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-shared-gate/README.md)
+reproduces one further MXFP4 projection difference on identical captured inputs
+and original weights. The verifier correction preserves all five output tokens,
+both accepted pairs and prefill in the final-source M2 control; all 47 pre/post
+pack hashes match. At consumed prefix 4, the first stored-state difference
+moves from layer 34 to layer 41, with 16 arrays still different. Only prefixes
+2 and 4 were compared. Complete state identity therefore still fails, and the
+original M2 full diagnostic stopped incomplete with native SIGBUS and no
+post-run payload hashes; it supplies no full numerical verdict. M5/NAS
+installed qualification, performance, lifecycle and default-MTP promotion
+remain open.
+
+[The same-source M5 short diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-m5-short/README.md)
+now completes with valid collection and failed state identity. The 41-input,
+five-output-token control preserves all five greedy IDs and exact prefill,
+but state first differs at consumed prefix 3, zero-based layer 2, across
+104 of 109 arrays. Prefixes 1, 3 and 4 were compared; the fifth emitted token
+was not consumed by a further forward pass. All 47 model pre/post hashes,
+the generated manifest and runtime identities match, and owned processes
+exited cleanly. This forced-streaming native diagnostic uses a one-layer
+expert cache; it does not qualify installed default behavior or identify a
+particular faulty operator. Full target identity remains open.
+
+[The same-source M5 original-full diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-m5-full/README.md)
+also completes with valid collection and failed numerical identity. The two
+original requests have 256-token caps and stop at their first greedy mismatch:
+cause/effect matches 15 positions, then differs at zero-based position 15
+(bonus, direct 6745 / MTP 5073); roses matches six positions, then differs at
+position 6 (correction, direct 198 / MTP 271). Their earliest stored-state
+differences are consumed prefix 2, layer 1 `ple.conv` (105/109 arrays), and
+prefix 3, layer 2 `gdn.conv` (104/109 arrays). Both prefills are exact.
+All 47 pre/post payload hashes, manifest, runtime/source and process cleanup
+checks pass. These forced-streaming native results retain the zero-margin
+roses mismatch as a failure; they do not identify an operator cause or qualify
+installed default behavior, MTP, performance or release readiness.
+
+The current implementation candidate uses ordinary single-token target forwards
+for both MTP decisions and retained state within the audited mixed MXFP4 pack
+format. Load-time classification checks the resolved quantization modes and
+validated expert-paging metadata; unclassified formats cannot attach an MTP
+head. Existing affine verifier behavior is preserved. Local synthetic controls
+cover accepted/rejected drafts, output budgets, terminal tokens, state ownership
+and failed-step recovery. The [same-source M5 canonical diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-m5-canonical-full/README.md)
+now passes independently reviewed collection and numerical identity on source
+`bf06cbb2`. The original two requests finish at EOS after 90 and 133 equal
+output positions; 256 remains the per-request cap. Repeated prefill and every
+compared complete serialized state, stream hidden and canonical full-logit
+checkpoint are exact. All 47 pre/post payload hashes, generated manifest,
+source/runtime bindings and owned-process cleanup pass. This uses forced
+streaming with one cached expert layer and the pinned diagnostic runtime.
+It does not qualify the candidate wheel's installed/default behavior, independent
+holdout, full QA, lifecycle, memory or throughput. The `cd207324` failures above
+remain the comparison baseline. Experimental opt-in, qualification and release
+gates remain unchanged, and no MTP speedup is claimed.
+
+[The same-source four-prompt holdout and candidate installation](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-m5-holdout-installed/README.md)
+now pass on M5. The four frozen inputs contain 66/72/76/70 IDs; each reaches
+64 equal output positions, with exact compared primary/final state, hidden and
+full logits. Each compares 63 consumed positions and 109 prefill state arrays;
+the final emitted token is not consumed by another forward pass. All 47
+pre/post payload hashes and clean owned-process checks pass. This retains the
+forced-streaming native diagnostic scope and one-layer expert cache.
+
+The proper `bf06cbb2` wheel is also installed in a separate target environment.
+All 21 AX package members match; 28 tokenizer members and 52 runtime files are
+bound. Isolated import, bundled-runtime doctor, default MXFP4 rejection and
+experimental metadata validation pass without replacing the existing manifest.
+Installed runtime libraries match the diagnostic. Dependency versions and
+observed tokenizer bytes are recorded; prior immutable third-party wheel
+reproduction is not claimed. This installation check executes no model request.
+Installed API lifecycle, full QA/long context, broader numerical controls,
+memory/latency, performance, the primary baseline and fresh delivery remain
+open. Neither result promotes the product default or qualifies a release.
+
+[The installed `bf06cbb2` lifecycle attempts](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-lifecycle/README.md)
+retain two failures. The first comparator incorrectly required cold/warm cache
+metadata equality despite matching text, finish reason and token totals. After
+that harness correction, baseline, SSE, budgets and stop pass, but the disconnect
+probe exposes a stale active-stream gauge: zero active streams while one job is
+pending and only the preceding five requests have completed. Drain/recovery and
+required MTP remain untested in those attempts. Both runs lack their original
+postchecks; separate later integrity followups pass without changing the failed
+lifecycle verdicts.
+The server now publishes stream ownership before its first decode burst, with
+a local before/after regression. This does not change model arithmetic or
+promote the product default.
+
+[The rebuilt `5d028881` installation and lifecycle](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-lifecycle-gauge-fix/README.md)
+now pass on the M5/NAS target. Both default and required-MTP modes complete
+all seven lifecycle actions: baseline, full SSE, one/two-token budgets, stop,
+unfinished disconnect and identical recovery. The active-stream gauge is one
+before each disconnect, then work drains. Both servers exit cleanly, all owned
+processes are gone, and the original pre/post checks verify all 47 model payloads
+and 52 installed runtime files. Independent reconstruction validates all 14
+actions against raw responses, events and metrics.
+
+Family admission still requires explicit experimental opt-in; "default" here
+means the unchanged MTP/paging policy within that opt-in. The new wheel passes
+81 isolated packaging tests. Exact-source CI passes eight jobs but skips all
+eight real-weight execution steps; strict Clippy retains 1,798 unchanged
+baseline diagnostics. Prior numerical evidence keeps source `bf06cbb2`, with
+complete unchanged numerical/runtime trees bound by a source comparison.
+The new 105-input-per-mode QA campaign is launched separately; no result is
+claimed yet. Broader MTP, checkpoint, performance, memory, primary-reference
+and fresh-delivery gates remain open.
+
+[MXFP4 reference evidence](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-references/README.md)
+now includes all three numerical reference graphs, eight inputs and 3,316
+positions per graph, with completed artifact and post-run hash verification.
+The [four-graph comparison](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-four-graph/README.md)
+passes the frozen aggregate numerical bounds across those 3,316 positions.
+Its AX data comes from source `2642a628` on the M5 with selected-expert paging;
+it does not qualify the later QSA correction, MTP or default paging. Three
+AX-only high-margin disagreements remain, below the frozen 1% limit. This is
+statistical acceptance, not exact token or logit identity. The separate 105-item
+functional reference replay has 101 quality passes and four retained failures.
+Neither result closes AX QA or the missing `mlx_lm.benchmark` primary baseline.
+No failed answer was normalized into a pass.
+
+[The installed M5 fixed-workload attempt](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-workload/README.md)
+completed one of six AX cells: 512-token direct, with two warmups and three
+measurements of 128 output tokens each. The first required-MTP warmup exceeded
+the frozen 3,600-second request deadline; no required trial completed, and
+the four larger-context AX cells did not start. All 68 recorded installed
+identities match before/after. This failed attempt used source `85a2bab0`,
+not the later QSA correction. Forced server cleanup after the timeout does
+not establish a native crash or its cause. The three primary reference cells
+remain unsupported; no speedup or completed performance matrix is claimed.
+
+[An isolated required-512 diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-required512-diagnostic/README.md)
+subsequently completed all 128 outputs on the same installed `85a2bab0` source
+within the original deadlines. It omitted the five preceding direct requests
+and added progress/resource observation, so it does not replace the failed
+matrix or identify the original timeout's cause. Its first 37 token IDs match
+all five direct trials, then the trajectories diverge; greedy identity fails.
+SSE, client and terminal records agree, and the frozen helper completes both
+68-file integrity checks. This is bounded diagnostic evidence, not a throughput,
+quality or later-candidate qualification result.
 
 Six-bit is excluded from this target campaign. The former Studio target and
 all affine results below are historical; they do not qualify MXFP4 on M5 Max.
@@ -30,11 +275,11 @@ Existing download aliases retain their original pack identity.
 
 | Gate | Current target state |
 | --- | --- |
-| MXFP4 execution | Open: validated mode/scale/bias contracts through full-layer and selected-expert paging |
-| Immutable delivery | Published revision and metadata identified; target SSD payload verification pending |
-| Numerical and MTP | New pack-specific holdout, direct/MTP state, rollback and trained-head evidence required |
-| Installed QA and lifecycle | Target QA, SSE/disconnect/recovery, stop/budget and long-context evidence pending |
-| Throughput and memory | Nine new cells: 512/2048/8192 prompt tokens x AX direct/reference/AX MTP; target peak memory and cold latency pending |
+| MXFP4 execution | Diagnostic mode binding and U8 scales implemented; small-tensor controls and four installed M5 fixed-input direct/MTP controls pass. Full target validation remains open |
+| Immutable delivery | Installed85 default recovery verifies all 47 published files and the generated manifest on target NAS. Original failed attempts remain retained; fresh-cache and final-candidate delivery qualification remain open |
+| Numerical and MTP | Canonical source `bf06cbb2` passes the original two-prompt M5 diagnostic (90/133 positions to EOS) and four-prompt holdout (64 outputs each), including compared state/hidden/logits and complete integrity checks. Broader checkpoint/default/MTP qualification remains open. All `cd207324` failures and incomplete M2 SIGBUS remain retained |
+| Installed QA and lifecycle | Source `5d028881` passes installation and all 14 lifecycle actions with original pre/post integrity checks. New 105-input-per-mode QA is launched, without a result yet. Historical installed85 QA failures and both bf06 lifecycle failures remain retained |
+| Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
 | Release | Candidate; no release-ready or default-MTP promotion |
 
 ## Existing affine implementation and historical evidence
@@ -77,6 +322,18 @@ zero-high-margin-disagreement rule failed, while the later at-most-1% rule
 passes at 22/3,260 (0.67%). The aggregate mean KL is 0.0860 against a 0.1011
 limit, and top-1 disagreement is 2.85% against 3.22%. Do not describe this as
 an independent confirmation or exact full-model parity.
+
+Historical MTP artifacts contain `primary_state_exact_each_step` and
+`draft_state_exact_each_step` flags derived from greedy token identity, while
+the state arrays were checked with numerical tolerances. Those flags do not
+prove byte-exact state equality. New diagnostics report tolerance checks and
+whether state comparison stopped after a near-tie separately. The initial
+primary/draft prefill state comparison remains byte-exact.
+
+Draft agreement uses its actual comparison-sample count as the denominator.
+Session proposal/acceptance counters remain a separate metric; historical
+aggregate agreement rates divided by proposals and can differ when those
+counts diverge. New reports include agreement matches and samples explicitly.
 
 ## Latest campaign failures
 
@@ -319,7 +576,8 @@ not published.
 Audited affine 4-bit/group64 and 6-bit/group64 manifests can be admitted
 without an environment variable. `runtime_status.ready` expresses loader
 admission, not checkpoint certification. Unknown exporter layouts, invalid
-geometry, mixed expert layouts and MXFP4 remain rejected by the native loader.
+geometry and mixed expert layouts remain rejected. MXFP4/group32 now has an
+explicit family opt-in for diagnostic validation; it is not release-qualified.
 2-bit/group32 requires both `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
 `AX_ENGINE_2BIT_EXPERIMENTAL=1`. Auto/On/Off expert residency is unchanged.
 

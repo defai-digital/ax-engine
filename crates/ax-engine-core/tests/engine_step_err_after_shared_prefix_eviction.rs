@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 // End-to-end repro through EngineCore::step():
 // retained-cache prefix share + KV exhaustion -> eviction strips the cache
 // entries backing the live share -> InsufficientCapacity rollback hits an

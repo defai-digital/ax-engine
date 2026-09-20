@@ -1,0 +1,22 @@
+   Compiling ax-engine-core v7.4.0 ($WORKTREE/crates/ax-engine-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.51s
+     Running unittests src/lib.rs (target/debug/deps/ax_engine_core-495e2507fce36b6e)
+
+running 1 test
+test convert::qwen4_exp_layout::tests::mxfp4_admission_preserves_mode_overrides_and_requires_opt_in ... FAILED
+
+failures:
+
+---- convert::qwen4_exp_layout::tests::mxfp4_admission_preserves_mode_overrides_and_requires_opt_in stdout ----
+
+thread 'convert::qwen4_exp_layout::tests::mxfp4_admission_preserves_mode_overrides_and_requires_opt_in' (9070175) panicked at crates/ax-engine-core/src/convert/qwen4_exp_layout.rs:865:9:
+assertion failed: experimental_runtime_admission(&dir, &manifest, true)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    convert::qwen4_exp_layout::tests::mxfp4_admission_preserves_mode_overrides_and_requires_opt_in
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 798 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p ax-engine-core --lib`

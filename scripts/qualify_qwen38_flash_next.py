@@ -35,7 +35,10 @@ EXISTING_AFFINE_EXPERT_LAYOUTS = (
     {"bits": 4, "group_size": 64},
     {"bits": 6, "group_size": 64},
 )
-EXPERIMENTAL_EXPERT_LAYOUTS = ({"bits": 2, "group_size": 32},)
+EXPERIMENTAL_EXPERT_LAYOUTS = (
+    {"mode": "affine", "bits": 2, "group_size": 32},
+    {"mode": "mxfp4", "bits": 4, "group_size": 32},
+)
 EXPERT_ROLES = {
     "ffn_gate_exps",
     "ffn_up_exps",
@@ -58,7 +61,10 @@ def contract() -> dict[str, Any]:
         "repo_id": PRIMARY_REPO,
         "pack_revision": PACK_REVISION,
         "target_quantization": {"mode": "mxfp4", "bits": 4, "group_size": 32},
-        "mixed_tensor_overrides": "per-tensor affine8/group32; preserve checkpoint metadata",
+        "mixed_tensor_overrides": (
+            "affine8/group32 embedding/router overrides and affine8/group64 output head; "
+            "preserve checkpoint metadata"
+        ),
         "sixbit_in_target_scope": False,
         "existing_affine_alias": AFFINE_ALIAS,
         "existing_affine_repo_id": AFFINE_REPO,
@@ -76,20 +82,44 @@ def contract() -> dict[str, Any]:
         "qualification": False,
         "validation_scope": "manifest metadata only; native loader validation required",
         "convert": "metadata mapping; existing audited affine readiness is not MXFP4 readiness",
-        "load_blocker": "MXFP4 expert paging is not implemented",
+        "load_blocker": "MXFP4 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1; target qualification pending",
         "unknown_layout_blocker": "qwen4_exp_weight_layout_unknown",
         "existing_affine_expert_layouts": list(EXISTING_AFFINE_EXPERT_LAYOUTS),
         "experimental_opt_in": "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1",
         "experimental_scope": (
-            "non-product formats only; audited affine 2-bit/group32 also needs "
-            "AX_ENGINE_2BIT_EXPERIMENTAL=1. MXFP4 stays rejected."
+            "MXFP4/group32 diagnostic paging; audited affine 2-bit/group32 also needs "
+            "AX_ENGINE_2BIT_EXPERIMENTAL=1. Neither has target qualification."
         ),
         "experimental_expert_layouts": list(EXPERIMENTAL_EXPERT_LAYOUTS),
         "experimental_2bit_opt_in": "AX_ENGINE_2BIT_EXPERIMENTAL=1",
         "mtp": (
             "sidecar attaches when mtp.safetensors is present; "
-            "certified_default_on remains false; greedy identity until documented ties"
+            "certified_default_on remains false; MTP-S, MTP-P and MTP-D require separate evidence"
         ),
+        "mtp_gates": {
+            "MTP-S": (
+                "Shipping safety: every accepted draft equals the same-state verifier greedy "
+                "decision, with zero invalid acceptances; not assessed by cross-route parity"
+            ),
+            "MTP-P": (
+                "Scoped acceleration claims: weighted >= 1.20x and prompt-median >= 1.10x "
+                "on two named authorizing workloads, a negative control, full source/build/"
+                "pack/SKU/runtime evidence and divergence indices/logit-margin disclosures; "
+                "passing does not change defaults"
+            ),
+            "MTP-D": (
+                "Separate promotion decision and release tag after MTP-S/P; default-product-"
+                "path greedy parity with shared deterministic tie-breaking, quality, endurance "
+                "and long-context decode-at-depth; diagnostic arithmetic profiles do not qualify"
+            ),
+        },
+        "mtp_certification": {
+            gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")
+        },
+        "diagnostic_only": [
+            "Independent direct/MTP token differences must be disclosed; they alone neither "
+            "fail nor establish MTP-S. A near-tie explanation requires measured logits.",
+        ],
         "not": [
             "qwen3.8-27b:axq",
             "qwen3_5",
@@ -117,13 +147,16 @@ def _print_contract(as_json: bool) -> None:
     print(f"alias:  {payload['alias'] or 'not registered for the MXFP4 target'}")
     print(f"repo:   {payload['repo_id']}")
     print(f"host:   {payload['host_class']}")
-    print("target admission: MXFP4/group32 blocked pending native paging implementation")
+    print("target admission: MXFP4/group32 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
     print("existing affine admission: 4-bit/group64 and 6-bit/group64; not target qualification")
     print("fail-closed: convert must not remap onto qwen3_5")
+    print("MTP gates (metadata preflight assesses none):")
+    for gate, requirement in payload["mtp_gates"].items():
+        print(f"  {gate} [{payload['mtp_certification'][gate]}]: {requirement}")
 
 
-def _expert_layouts(manifest: dict[str, Any]) -> list[tuple[int, int]]:
-    layouts: list[tuple[int, int]] = []
+def _expert_layouts(manifest: dict[str, Any]) -> list[tuple[str, int, int]]:
+    layouts: list[tuple[str, int, int]] = []
     for tensor in manifest.get("tensors") or []:
         if not isinstance(tensor, dict):
             continue
@@ -131,17 +164,17 @@ def _expert_layouts(manifest: dict[str, Any]) -> list[tuple[int, int]]:
             continue
         quant = tensor.get("quantization")
         if not isinstance(quant, dict):
-            raise SystemExit(f"expert tensor {tensor.get('name')} is not affine-quantized")
-        if quant.get("mode") != "affine":
+            raise SystemExit(f"expert tensor {tensor.get('name')} has no quantization metadata")
+        if quant.get("mode") not in ("affine", "mxfp4"):
             raise SystemExit(
                 f"expert tensor {tensor.get('name')} uses {quant.get('mode')!r}; "
-                "MXFP4 and other non-affine formats are rejected"
+                "only affine and MXFP4 expert formats are recognized"
             )
         bits = quant.get("bits")
         group = quant.get("group_size")
         if type(bits) is not int or type(group) is not int:
-            raise SystemExit(f"expert tensor {tensor.get('name')} has invalid affine metadata")
-        layout = (bits, group)
+            raise SystemExit(f"expert tensor {tensor.get('name')} has invalid quantization metadata")
+        layout = (quant["mode"], bits, group)
         if layout not in layouts:
             layouts.append(layout)
     return layouts
@@ -191,22 +224,24 @@ def _live_preflight(model_dir: Path) -> None:
     layouts = _expert_layouts(manifest)
     if len(layouts) > 1:
         raise SystemExit(f"mixed expert layouts are rejected: {layouts}")
-    allowed = {(item["bits"], item["group_size"]) for item in EXISTING_AFFINE_EXPERT_LAYOUTS}
+    allowed = {("affine", item["bits"], item["group_size"]) for item in EXISTING_AFFINE_EXPERT_LAYOUTS}
     allowed.update(
-        (item["bits"], item["group_size"]) for item in EXPERIMENTAL_EXPERT_LAYOUTS
+        (item["mode"], item["bits"], item["group_size"]) for item in EXPERIMENTAL_EXPERT_LAYOUTS
     )
     if not layouts:
-        raise SystemExit("manifest has no affine expert tensors")
-    if layouts[0] == (2, 32) and not all(
+        raise SystemExit("manifest has no quantized expert tensors")
+    if layouts[0] == ("affine", 2, 32) and not all(
         os.environ.get(name) == "1"
         for name in ("AX_ENGINE_FLASH_NEXT_EXPERIMENTAL", "AX_ENGINE_2BIT_EXPERIMENTAL")
     ):
         raise SystemExit("2-bit requires both experimental opt-ins")
+    if layouts[0][0] == "mxfp4" and os.environ.get("AX_ENGINE_FLASH_NEXT_EXPERIMENTAL") != "1":
+        raise SystemExit("MXFP4 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
     if layouts[0] not in allowed:
         raise SystemExit(f"unsupported expert layout {layouts[0]}")
     print(f"live preflight ok: {model_dir}")
-    print("family qwen4_exp; declared ready and affine layout; metadata preflight only")
-    print("this affine manifest does not qualify the MXFP4 MTP target")
+    print(f"family qwen4_exp; declared ready and {layouts[0]} layout; metadata preflight only")
+    print("this metadata preflight does not qualify the MXFP4 MTP target")
     print("next: ax-engine doctor, then QA surface direct+mtp on this snapshot")
     print("this script does not start the Flash Next server (operator-owned live run)")
 

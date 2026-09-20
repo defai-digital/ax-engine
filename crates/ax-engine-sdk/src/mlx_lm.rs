@@ -644,6 +644,7 @@ struct MlxLmChatCompletionResponse {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::io::{Cursor, Read, Write};
     use std::net::TcpListener;

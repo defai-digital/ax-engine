@@ -277,6 +277,7 @@ fn drain_to_response(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

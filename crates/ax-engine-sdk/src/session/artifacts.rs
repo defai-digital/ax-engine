@@ -74,6 +74,7 @@ pub(super) fn resolve_native_model_report(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs;

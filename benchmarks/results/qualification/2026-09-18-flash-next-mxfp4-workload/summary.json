@@ -1,0 +1,83 @@
+{
+  "artifacts": [
+    {
+      "file": "result.json.gz",
+      "sha256": "5be3c9673a23821b32b0bd5e9d8358fcf58f1d490ddfc0d4d0aeae944238788e",
+      "uncompressed_sha256": "b0f7cccf512b6399c683f61dcc4d360bd6d7ec9a2599bdeeb3570717078d5f1b"
+    },
+    {
+      "file": "trials.json.gz",
+      "sha256": "5e2cdc94ed0c05da341978fbfdac76ba0c1af03d857b59d668956a3dabe0eff4",
+      "uncompressed_sha256": "a1d836a81f9b78ee77b2f73731a07a608845178a05df456e33d77cfcbb6d8467"
+    },
+    {
+      "file": "integrity.json.gz",
+      "sha256": "4171858e2ab33088cffe19b3caf841fc9d5d6a89944dd12e345d4ca4534b870c",
+      "uncompressed_sha256": "b414748fa1bd030f742e4b01abd8d226b213bfddada6d6286b0657114cc5c686"
+    },
+    {
+      "file": "logs.json.gz",
+      "sha256": "8eddce16c11adcae18bd60d8451a3b60e5b6ed9d4091fa050e14b0afd39b9124",
+      "uncompressed_sha256": "30ad22fce2ee5a4a7a1631237bd631c0f4e98107287f397298382b0857d68aea"
+    }
+  ],
+  "ax_collection_complete": false,
+  "ax_collection_valid": false,
+  "collection_seconds": 129600,
+  "completed": true,
+  "completed_ax_cells": 1,
+  "completed_direct_trials": 5,
+  "completed_required_trials": 0,
+  "curation_sha256": "a53bdffb088fec7fd208c96db9231064b58e004c686b2e26ac1cfeeaf195eaef",
+  "direct_cell_validation": {
+    "measurements": 3,
+    "medians": {
+      "accepted_tokens": 0,
+      "client_first_output_event_seconds": 574.8518178340164,
+      "client_post_first_event_tokens_per_second": 0.2404851877663203,
+      "client_tokens_after_first_event": 127,
+      "client_total_seconds": 1102.950871167006,
+      "drafted_tokens": 0,
+      "runner_decode_tokens_per_second": 0.24238120277570332,
+      "runner_prefill_tokens_per_second": 0.8906652341058597
+    },
+    "valid": true,
+    "warmups": 2
+  },
+  "error": "TimeoutError: Frozen request deadline exceeded",
+  "execution_freeze_sha256": "564f5228e47ce7d253d4f40d694d91596923db73a9ced213596833157988c6b6",
+  "failed_cell": {
+    "kind": "warmup",
+    "mode": "required",
+    "prompt_tokens": 512,
+    "trial_index": 0
+  },
+  "helper_source_commit": "5588b103116c45c6a480f3da93fdeeb632dcbd50",
+  "independent_artifact_audit_sha256": "7658c4d8ddf402155c95b92fc9e5aebeadeb97ad0d3e9997bc2b0bf08db36f78",
+  "installed_freeze_sha256": "abb47995684715584a82ab78619e7f4aea4da5dfb1843727fe5fd8ef6da597dd",
+  "installed_pack_files": 48,
+  "limitations": [
+    "Required client JSON and partial-stream evidence are absent; no zero-output inference.",
+    "Server SIGKILL is recorded supervisor cleanup after timeout, not proof of native crash or OOM.",
+    "Retained logs cannot isolate prefill/decode, memory, storage, or runtime cause.",
+    "Process absence was observed at collection times, not reserved for future work.",
+    "Primary mlx_lm.benchmark cells remain unsupported; no replacement baseline."
+  ],
+  "passed": false,
+  "performance_claim": false,
+  "phase": "failed",
+  "pre_post_installed_identity_files": 68,
+  "qualification": false,
+  "raw_terminal_sha256": "1b2bdd904f41be4c094bab582da77e626557f8e6806e9d738579581cd95d9940",
+  "release_ready": false,
+  "request_seconds": 3600,
+  "required_ax_cells": 6,
+  "required_matrix_cells": 9,
+  "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "runtime_source_commit": "85a2bab0dd72c9e2076f455237dca052ff8d12b7",
+  "scope": "Failed M5 Max 128 GiB NAS-backed fixed workload; partial AX data only, no speedup claim",
+  "server_exit_code": -9,
+  "server_forced_kill": true,
+  "socket_seconds": 1800,
+  "unsupported_primary_cells": 3
+}

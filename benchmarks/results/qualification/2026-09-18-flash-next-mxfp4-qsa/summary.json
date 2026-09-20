@@ -1,0 +1,112 @@
+{
+  "qualification": false,
+  "release_ready": false,
+  "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "scope": "Supplementary M2 Ultra 192 GiB QSA projection attribution and three-token candidate; not M5 qualification",
+  "curation_sha256": "f508d584fa33e470ce47ba54924dd56d2d148d5ddf5b87ce29cf08ed3f27efff",
+  "key_difference": {
+    "shape": [
+      1,
+      2,
+      512
+    ],
+    "exact": false,
+    "changed": 2,
+    "max_abs": 0.00390625,
+    "first_changes": [
+      {
+        "index": 397,
+        "verifier": -4.506111145019531e-05,
+        "direct": -4.5299530029296875e-05
+      },
+      {
+        "index": 858,
+        "verifier": 0.51171875,
+        "direct": 0.515625
+      }
+    ]
+  },
+  "indexer_replay_difference": {
+    "shape": [
+      1,
+      2,
+      640
+    ],
+    "exact": false,
+    "changed": 1,
+    "max_abs": 0.00048828125,
+    "first_changes": [
+      {
+        "index": 556,
+        "verifier": 0.119140625,
+        "direct": 0.11865234375
+      }
+    ]
+  },
+  "indexer_native_projection_comparison": null,
+  "candidates": {
+    "gdn_corrected_baseline": {
+      "greedy_identity": true,
+      "first_difference": null,
+      "observed_equal_positions": 3,
+      "prefill_repeat_exact": true,
+      "prefill_state_array_count": 109,
+      "prefill_state_exact": true,
+      "decode_state_compared": true,
+      "compared_state_prefix_lengths": [
+        2
+      ],
+      "all_compared_decode_states_exact": false,
+      "first_state_difference_prefix": 2,
+      "first_nonzero_state": {
+        "dtype": "Bfloat16",
+        "index": 97,
+        "kind": "qsa.k",
+        "layer": 43,
+        "max_abs": 0.015625,
+        "relative": 0.0017482517287135124,
+        "scale": 8.9375,
+        "shape": [
+          1,
+          43,
+          2,
+          256
+        ]
+      },
+      "nonzero_state_arrays_at_first_difference": 11
+    },
+    "qsa_candidate": {
+      "greedy_identity": true,
+      "first_difference": null,
+      "observed_equal_positions": 3,
+      "prefill_repeat_exact": true,
+      "prefill_state_array_count": 109,
+      "prefill_state_exact": true,
+      "decode_state_compared": true,
+      "compared_state_prefix_lengths": [
+        2
+      ],
+      "all_compared_decode_states_exact": true,
+      "first_state_difference_prefix": null,
+      "first_nonzero_state": null,
+      "nonzero_state_arrays_at_first_difference": null
+    }
+  },
+  "artifacts": [
+    {
+      "file": "native-controls.json.gz",
+      "sha256": "3b515a042e07fceab7ccc22bb07fab819ff5d9d312881cbe48c9859e1b766800",
+      "uncompressed_sha256": "ebac1cd1041e5269d3b4724cba2adfaa4ce0a495ba4d12305659afe264e38b07"
+    },
+    {
+      "file": "integrity.json.gz",
+      "sha256": "4fb1504aa324db670d51c465ec82cc96170d27307d83596ad3a7870206ac5cb3",
+      "uncompressed_sha256": "a6a138177c4a0c69e13dfb8d171a256418269d9f681ac84472b33236ee0748f6"
+    },
+    {
+      "file": "components.json.gz",
+      "sha256": "015e0fa832277eafa839c411ca0d546c4f05fba42bc3d5e25c9171085aebd976",
+      "uncompressed_sha256": "5711f1f12995ccf2fbbd7d784f0180b6a16ab842d04eac7de1c82bc36d541f04"
+    }
+  ]
+}

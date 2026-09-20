@@ -5,10 +5,32 @@ use super::*;
 use ax_engine_core::{NativeModelArtifacts, NativeRuntimeStatus, WeightSanitize};
 use std::path::{Path, PathBuf};
 
+#[path = "qwen4_exp_mtp_diagnostics.rs"]
+mod mtp_diagnostics;
+
 fn assert_equal(a: &MlxArray, b: &MlxArray) {
     mlx_sys::eval(&[a, b]);
     assert_eq!(a.shape(), b.shape());
     assert_eq!(a.data_f32(), b.data_f32());
+}
+
+fn flash_mtp_hidden_exact(a: &MlxArray, b: &MlxArray) -> bool {
+    if a.shape() != b.shape()
+        || a.dtype() != b.dtype()
+        || !matches!(
+            a.dtype(),
+            MlxDtype::Float32 | MlxDtype::Float16 | MlxDtype::Bfloat16
+        )
+    {
+        return false;
+    }
+    let a = mlx_sys::contiguous(&astype(a, MlxDtype::Float32, None), None);
+    let b = mlx_sys::contiguous(&astype(b, MlxDtype::Float32, None), None);
+    mlx_sys::try_eval(&[&a, &b]).unwrap();
+    a.data_f32()
+        .iter()
+        .zip(b.data_f32())
+        .all(|(a, b)| a.is_finite() && b.is_finite() && a.to_bits() == b.to_bits())
 }
 
 #[test]
@@ -1117,7 +1139,15 @@ fn observe_greedy_mismatch(
     tie_margin: f32,
 ) {
     use crate::model::qwen4_exp_mtp::mtp_parity;
-    if expected == actual || !*comparing {
+    if !*comparing {
+        return;
+    }
+    assert!(
+        position <= identity.compared_positions,
+        "comparison skipped a position"
+    );
+    identity.compared_positions = identity.compared_positions.max(position + 1);
+    if expected == actual {
         return;
     }
     identity.greedy_identity = false;
@@ -1128,6 +1158,43 @@ fn observe_greedy_mismatch(
         }
         Ok(None) => {}
         Err(error) => panic!("{error}"),
+    }
+}
+
+#[test]
+fn flash_next_mtp_comparison_coverage_stops_at_first_difference() {
+    use crate::model::qwen4_exp_mtp::mtp_parity::GreedyIdentityReport;
+    for first_difference in [None, Some(0), Some(1), Some(15)] {
+        let mut identity = GreedyIdentityReport::exact();
+        let mut comparing = true;
+        for position in 0..16 {
+            let token = if first_difference == Some(position) {
+                271
+            } else {
+                13
+            };
+            // A pending primary can be observed again when it is committed.
+            for _ in 0..2 {
+                observe_greedy_mismatch(
+                    &mut identity,
+                    &mut comparing,
+                    position,
+                    13,
+                    token,
+                    0.0,
+                    0.5,
+                );
+            }
+        }
+        assert_eq!(
+            identity.compared_positions,
+            first_difference.map_or(16, |p| p + 1)
+        );
+        assert_eq!(identity.greedy_identity, first_difference.is_none());
+        assert_eq!(
+            identity.tie_divergences.len(),
+            usize::from(first_difference.is_some())
+        );
     }
 }
 
@@ -1461,6 +1528,8 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
     );
     let mut generated = Vec::new();
     let mut mtp_selected_decode_bytes = 0;
+    let mut compared_state_steps = 0usize;
+    let mut compared_generated_tokens = 0usize;
     let mut identity = mtp_parity::GreedyIdentityReport::exact();
     let mut comparing = true;
     while generated.len() < budget {
@@ -1540,6 +1609,8 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
                 mtp_parity::mtp_state_divergence(&session.draft_state, &draft_reference),
             );
             mtp_parity::assert_mtp_state_close(&session.draft_state, &draft_reference, dtype);
+            compared_state_steps += 1;
+            compared_generated_tokens = generated.len();
         }
     }
     assert_eq!(generated.len(), budget);
@@ -1573,17 +1644,20 @@ fn qwen4_exp_mtp_candidate_keeps_primary_tokens_and_state_exact() {
             assert_eq!(cached_layers, 0);
         }
         let result = serde_json::json!({
-            "qualification": false, "generated_ids": generated,
+            "qualification": false, "prompt_ids": tokens, "generated_ids": generated,
+            "compared_state_steps": compared_state_steps,
+            "compared_generated_tokens": compared_generated_tokens,
             "selected_payload_after_prefill": bytes,
             "selected_payload_after_run": pager.selected_payload_bytes_read().unwrap(),
             "proposed": session.proposed, "accepted": session.accepted,
             "mtp_only_selected_decode_payload_bytes": mtp_selected_decode_bytes,
             "prefill_primary_and_draft_state_exact": true,
-            "draft_state_exact_each_step": identity.greedy_identity,
+            "draft_state_within_tolerance_each_compared_step": max_state_divergence.relative <= tolerance.limit,
             "selected_prefill_capacity_fallback_layers": fallback_layers,
             "cached_layer_count": cached_layers,
             "cached_whole_layers_after_run": cached_layers,
-            "primary_state_exact_each_step": identity.greedy_identity,
+            "primary_state_within_tolerance_each_compared_step": max_state_divergence.relative <= tolerance.limit,
+            "state_comparison_stopped_after_first_tie": !identity.greedy_identity,
             "forced_acceptance_rejection_budget_and_eos": true,
             "zero_budget_preserves_primary_and_draft_state": true,
             "logit_scale": max_logit_divergence.scale,
@@ -1745,6 +1819,8 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
     let artifacts = NativeModelArtifacts::from_dir(&root).unwrap();
     let start = std::time::Instant::now();
     let trunk = crate::weights::qwen4_exp::load(&root, artifacts.manifest()).unwrap();
+    let canonical =
+        crate::model::qwen4_exp_mtp::target_schedule_name(&trunk) == "canonical_singleton";
     let trunk_seconds = start.elapsed().as_secs_f64();
     let start = std::time::Instant::now();
     let mut head =
@@ -1796,6 +1872,13 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         flash_mtp_state_bytes(&session.draft_state, 1),
         flash_mtp_state_bytes(&draft_reference, 1)
     );
+    // Prefill already proved both full state encodings above. Include the saved
+    // target hidden row, then retain exactness over every aligned decode prefix.
+    let mut canonical_trunk_state_exact = true;
+    let mut canonical_draft_state_exact = true;
+    let mut canonical_saved_hidden_exact =
+        !canonical || flash_mtp_hidden_exact(&session.stream_hidden, &direct.stream_hidden);
+    let mut canonical_prefixes_compared = usize::from(canonical);
     let mut generated = Vec::new();
     let mut agreement = Vec::new();
     let mut proposed = 0usize;
@@ -1902,6 +1985,16 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         }
         if comparing {
             assert_eq!(session.primary, flash_next_mtp_greedy_token(&direct));
+            if canonical {
+                canonical_trunk_state_exact &=
+                    flash_mtp_state_bytes(&session.trunk_state, trunk.layers.len())
+                        == flash_mtp_state_bytes(&direct.state, trunk.layers.len());
+                canonical_draft_state_exact &= flash_mtp_state_bytes(&session.draft_state, 1)
+                    == flash_mtp_state_bytes(&draft_reference, 1);
+                canonical_saved_hidden_exact &=
+                    flash_mtp_hidden_exact(&session.stream_hidden, &direct.stream_hidden);
+                canonical_prefixes_compared += 1;
+            }
             last_trunk_arrays =
                 mtp_parity::mtp_state_array_records(&session.trunk_state, &direct.state);
             max_state_divergence = max_state_divergence.max_relative(
@@ -1926,13 +2019,21 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         );
     }
     let greedy_identity = identity.greedy_identity && generated == expected_cut;
-    let within_tolerance =
-        max_state_divergence.relative <= tolerance.limit && identity.identity_until_first_tie;
+    let within_tolerance = if canonical {
+        greedy_identity
+            && canonical_trunk_state_exact
+            && canonical_draft_state_exact
+            && canonical_saved_hidden_exact
+            && max_state_divergence.max_abs == 0.0
+    } else {
+        max_state_divergence.relative <= tolerance.limit && identity.identity_until_first_tie
+    };
     let agreement_rate = crate::model::qwen4_exp_mtp::trained_head::agreement_rate(&agreement);
     assert_eq!(agreement.len(), proposed);
     assert_eq!(agreement.iter().filter(|agreed| **agreed).count(), accepted);
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "qualification":false,"route":"flash_next_mtp_candidate_sequential_primary_verify",
+        "target_schedule": crate::model::qwen4_exp_mtp::target_schedule_name(&trunk),
         "trunk_load_seconds":trunk_seconds,"head_load_seconds":head_seconds,
         "generation_seconds":start.elapsed().as_secs_f64(),"prompt_ids":tokens,
         "expected_ids":expected,"generated_ids":generated.clone(),"greedy_tokens":generated.clone(),
@@ -1963,11 +2064,19 @@ fn qwen4_exp_real_pack_mtp_candidate_matches_resident_record() {
         "within_tolerance": within_tolerance,
         "stopped_at_terminal": stopped_at_terminal,
         "terminal_position": terminal_position,
-        "compared_positions": generated.len(),
+        "compared_positions": identity.compared_positions,
         "terminal_ids": terminal_ids,
         "state_arrays": mtp_parity::mtp_state_arrays_json(&last_trunk_arrays),
         "note":"Reconstructed candidate head; primary verification is authoritative; no throughput claim"
     });
+    result["canonical_compared_full_trunk_state_exact"] =
+        serde_json::json!(canonical.then_some(canonical_trunk_state_exact));
+    result["canonical_compared_full_draft_state_exact"] =
+        serde_json::json!(canonical.then_some(canonical_draft_state_exact));
+    result["canonical_compared_saved_stream_hidden_exact"] =
+        serde_json::json!(canonical.then_some(canonical_saved_hidden_exact));
+    result["canonical_common_prefixes_compared"] =
+        serde_json::json!(canonical.then_some(canonical_prefixes_compared));
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_SMOKE_OUTPUT")
         .or_else(|| std::env::var_os("AX_FLASH_NEXT_RESULT_PATH"))
     {
@@ -2343,7 +2452,7 @@ fn flash_next_mtp_oracle_generate(
     );
     FlashNextMtpOracleRun {
         too_short: flash_next_mtp_too_short(&generated, terminal_ids),
-        compared_positions: generated.len(),
+        compared_positions: identity.compared_positions,
         generated,
         agreement,
         proposed,
@@ -2504,7 +2613,7 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
     let mut requests = Vec::new();
     let mut proposed = 0usize;
     let mut accepted = 0usize;
-    let mut agreed = 0usize;
+    let mut agreement_observations = Vec::new();
     let mut too_short_requests = 0usize;
     let mut greedy_identity = true;
     let mut identity_until_first_tie = true;
@@ -2543,7 +2652,7 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         } else {
             proposed += run.proposed;
             accepted += run.accepted;
-            agreed += run.agreement.iter().filter(|step| **step).count();
+            agreement_observations.extend_from_slice(&run.agreement);
         }
         requests.push(serde_json::json!({
             "id": prompt.id.clone().unwrap_or_else(|| format!("request-{index}")),
@@ -2573,14 +2682,13 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
     } else {
         accepted as f64 / proposed as f64
     };
-    let agreement_rate = if proposed == 0 {
-        0.0
-    } else {
-        agreed as f64 / proposed as f64
-    };
+    let agreement_rate = trained_head::agreement_rate(&agreement_observations);
+    let agreement_samples = agreement_observations.len();
+    let agreed = agreement_observations.iter().filter(|step| **step).count();
     let result = serde_json::json!({
         "qualification": false,
         "route": "flash_next_mtp_trained_head_oracle",
+        "target_schedule": crate::model::qwen4_exp_mtp::target_schedule_name(&trunk),
         "head_permuted": head_permuted,
         "permute_seed": permute_seed,
         "trunk_load_seconds": trunk_seconds,
@@ -2589,6 +2697,8 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         "accepted": accepted,
         "acceptance_rate": acceptance_rate,
         "draft_vs_primary_top1_agreement_rate": agreement_rate,
+        "draft_vs_primary_top1_agreement_samples": agreement_samples,
+        "draft_vs_primary_top1_agreement_matches": agreed,
         "too_short_requests": too_short_requests,
         "terminal_ids": terminal_ids,
         "greedy_identity": greedy_identity,
@@ -2606,6 +2716,12 @@ fn qwen4_exp_real_pack_mtp_trained_head_oracle() {
         std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
     eprintln!("{result}");
+    if crate::model::qwen4_exp_mtp::target_schedule_name(&trunk) == "canonical_singleton" {
+        assert!(
+            greedy_identity,
+            "canonical MTP requires exact greedy identity, including ties"
+        );
+    }
     assert!(
         identity_until_first_tie,
         "MTP greedy identity failed before a documented near-tie"
@@ -2773,6 +2889,7 @@ fn flash_next_mtp_oracle_agreement_matches_proposals_when_stopped_inside_budget(
         flash_next_mtp_oracle_generate(&trunk, &head, &[1], 5, owner, draft_owner, &[0]);
     assert!(too_short.too_short);
     assert!(too_short.stopped_at_terminal);
+    assert_eq!(too_short.compared_positions, 1);
     assert_eq!(too_short.agreement.len(), too_short.proposed);
     assert_eq!(too_short.proposed, 0);
 
@@ -2780,6 +2897,7 @@ fn flash_next_mtp_oracle_agreement_matches_proposals_when_stopped_inside_budget(
         flash_next_mtp_oracle_generate(&trunk, &head, &[1], 5, owner + 2, draft_owner + 2, &[]);
     assert!(!full_budget.stopped_at_terminal);
     assert_eq!(full_budget.generated.len(), 5);
+    assert_eq!(full_budget.compared_positions, 5);
     assert_eq!(full_budget.agreement.len(), full_budget.proposed);
     assert_eq!(full_budget.proposed, 2);
 

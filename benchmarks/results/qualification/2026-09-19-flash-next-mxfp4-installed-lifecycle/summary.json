@@ -1,0 +1,30 @@
+{
+  "artifacts": {
+    "lifecycle.json.gz": {
+      "bytes": 27225,
+      "sha256": "7fb16d56192e81e1f126b5213bce7ba2b03758a56c0ae0ebf6117617c420ae08"
+    },
+    "lifecycle_checks.py": {
+      "bytes": 9824,
+      "sha256": "05a845922e06fef1139c33bcf38896862b8a8291ee9da82f3240f05ac9734059"
+    }
+  },
+  "installed_runtime_files": 52,
+  "mtp_certification": {
+    "MTP-D": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-S": "not_assessed"
+  },
+  "original_reader_sha256": "0f93d250dc7fba64921f12a629e66e64f147930469297ea0370899cb976d17da",
+  "original_root_review_sha256": "8bf1e51c36a7dd32efcaa8df19e6e43781ed538e2877100115721f2a5cd6635a",
+  "payload_prepost_files": 47,
+  "profile": "Default and required MTP within explicit experimental family admission; original paging policy",
+  "qualification": false,
+  "release_ready": false,
+  "requests_validated": 14,
+  "result": "PASS_INSTALLED_LIFECYCLE_ONLY",
+  "schema": "ax.flash_next.current_lifecycle_summary.v1",
+  "source_commit": "5f583018032c406cd3016c6c1c016612dd8b2fbd",
+  "target": "MacBook Pro M5 Max 128 GiB; MXFP4 MTP; NAS over SMB",
+  "wheel_sha256": "06c65e8069431258e77490be0eefd9067adcb262cdea156e0c126c0525f0cd14"
+}

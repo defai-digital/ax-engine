@@ -694,9 +694,9 @@ pub(crate) fn qw_with_policy(
     {
         return row_exact;
     }
-    // Shared (default): invariant when exact profile scopes it. MXFP4
-    // quantized_matmul is already singleton-exact at S=2, so a batched
-    // qmm is safe here (and much faster than a per-row loop).
+    // Shared preserves the backend batch schedule unless an exact scope applies.
+    // MXFP4 BF16 projections can differ from singleton rows even at S=2;
+    // callers that retain singleton-compatible state must select RowExact.
     qw_direct(x, qw)
 }
 
@@ -3458,7 +3458,7 @@ mod tests {
         eprintln!("batched MXFP4 S=2 vs singleton max_abs={max_abs}");
         assert!(
             max_abs < 1.0e-5,
-            "if this fails, batched MXFP4 qmm is not singleton-exact (max_abs={max_abs})"
+            "small F32 MXFP4 batch/singleton control exceeds tolerance (max_abs={max_abs})"
         );
     }
 

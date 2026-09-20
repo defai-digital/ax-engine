@@ -5248,11 +5248,10 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
             manifest.runtime_status.blockers
         );
         assert!(
-            manifest
-                .runtime_status
-                .notes
-                .iter()
-                .any(|n| n.contains("Mac Studio M5 Ultra")),
+            manifest.runtime_status.notes.iter().any(|n| {
+                n.contains("MacBook Pro M5 Max 128 GB, MXFP4 MTP")
+                    && n.contains("target qualification pending")
+            }),
             "{model_type}: {:?}",
             manifest.runtime_status.notes
         );

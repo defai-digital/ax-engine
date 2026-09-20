@@ -1430,6 +1430,7 @@ fn send_openai_llama_cpp_chat_final_chunk(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod gpt_oss_harmony_stream_filter_tests {
     use super::GptOssHarmonyStreamFilter;
     use crate::chat::GptOssHarmonyIds;
@@ -1502,6 +1503,7 @@ mod gpt_oss_harmony_stream_filter_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod stream_delta_text_tests {
     use ax_engine_sdk::EngineTokenizerError;
     use tokio::sync::mpsc;
@@ -1623,6 +1625,7 @@ mod incremental_decode_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod stream_usage_tests {
     use ax_engine_sdk::GenerateRouteReport;
 

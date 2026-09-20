@@ -3,6 +3,14 @@
 This directory contains repo-owned smoke checks and a small number of diagnostic
 helpers.
 
+`verify_flash_next_runner_states.py <result-directory>` independently checks the
+aligned runner diagnostic's complete AXKB snapshots, consumed token prefixes,
+PLE history and continuation logits. It requires the original `result.json`
+and raw files. A zero exit means the evidence is internally consistent; inspect
+`diagnostic_passed` separately, since an honestly recorded mismatch remains
+valid failed evidence. This reader does not establish MTP-S/P/D, pack/runtime
+identity or release qualification.
+
 ## Benchmarking Rule
 
 Use `bench_mlx_inference_stack.py` for AX Engine MLX model-inference

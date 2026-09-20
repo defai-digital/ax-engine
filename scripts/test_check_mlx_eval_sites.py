@@ -70,6 +70,40 @@ fn run() {
 """
         self.assertEqual(self._count(source), {})
 
+    def test_external_test_module_does_not_hide_following_production_calls(self) -> None:
+        for declaration in (
+            "mod verifier_tests;",
+            "pub(crate) mod verifier_tests; // trailing comment with {",
+            "mod verifier_tests\n;",
+        ):
+            with self.subTest(declaration=declaration):
+                source = """
+#[cfg(test)]
+#[path = "verifier_tests.rs"]
+""" + declaration + """
+
+fn attend_selected() {
+    eval(&[a]);
+    try_eval(&[b]);
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod inline_tests { use std::fmt;
+    fn test_only() {
+        async_eval(&[c]);
+    }
+}
+
+fn next_production_function() {
+    eval_first_u32(&d);
+}
+"""
+                self.assertEqual(
+                    self._count(source),
+                    {"eval": 1, "try_eval": 1, "eval_first_u32": 1},
+                )
+
 
 class BaselineTests(unittest.TestCase):
     def test_baseline_exists_and_matches_tree(self) -> None:

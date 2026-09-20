@@ -617,6 +617,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 pub(crate) mod test_support {
     use super::*;
     use ax_engine_sdk::SessionRequestReport;

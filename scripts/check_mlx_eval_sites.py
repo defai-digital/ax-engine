@@ -66,7 +66,7 @@ def production_lines(text: str):
         line = lines[idx]
         if CFG_TEST_RE.match(line):
             # Find the mod declaration (attributes may stack), then skip
-            # the whole brace-balanced block.
+            # its declaration or inline brace-balanced block.
             probe = idx + 1
             while probe < len(lines) and lines[probe].lstrip().startswith("#["):
                 probe += 1
@@ -75,6 +75,8 @@ def production_lines(text: str):
                 entered = False
                 while probe < len(lines):
                     stripped = strip_line_comment(lines[probe])
+                    if not entered and "{" not in stripped and stripped.rstrip().endswith(";"):
+                        break
                     depth += stripped.count("{") - stripped.count("}")
                     if "{" in stripped:
                         entered = True

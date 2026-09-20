@@ -260,6 +260,7 @@ pub(crate) fn parse_max_request_body_bytes(value: Option<String>) -> Option<usiz
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};

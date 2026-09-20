@@ -447,6 +447,7 @@ async fn send_stream_error_async(tx: &StreamEventSender, error: ErrorResponse) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::sync::mpsc as std_mpsc;
 

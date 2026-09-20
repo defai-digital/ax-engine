@@ -5,10 +5,13 @@ use super::*;
 use crate::model::qwen4_exp::Qwen4ExpState;
 use crate::model::qwen4_exp_mtp::mtp_parity;
 use crate::model::shared::ProjectionBatchPolicy;
+use crate::weights::qwen4_exp::Qwen4ExpTargetSchedule;
 use ax_engine_core::{
     ExecutionBatch, ExecutionItem, PositionRange, RouteMetadata, StepId, WorkUnitKind,
 };
 use std::path::PathBuf;
+
+mod aligned_state_tests;
 
 fn artifacts() -> NativeModelArtifacts {
     let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
@@ -129,6 +132,119 @@ fn flash_runner_state_bytes(state: &Qwen4ExpState, layers: usize) -> Vec<u8> {
     cache.qwen4_exp = Some(state.clone());
     cache.advance(state.position());
     cache.serialize_to_bytes()
+}
+
+#[test]
+fn flash_next_finite_exact_ties_choose_first_token_on_cpu_and_mlx() {
+    // Separate ties across reduction chunks in a full-size vocabulary. These
+    // are exact Float32 ties, without NaNs, infinities, or a margin waiver.
+    const VOCAB: usize = 262_144;
+    let _scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    for ties in [
+        [17, 65_553, 131_089, 196_625],
+        [65_553, 131_089, 196_625, 262_143],
+    ] {
+        let mut values = vec![-2.0f32; VOCAB];
+        for index in ties {
+            values[index] = 3.0;
+        }
+        assert!(values.iter().all(|value| value.is_finite()));
+        let sampling = MlxSamplingParams::greedy();
+        let mut rng = Xorshift64::new(42);
+        let cpu = crate::sampling::sample_categorical(&values, sampling, &[], &mut rng);
+        assert_eq!(cpu, ties[0] as u32);
+        let logits = MlxArray::from_raw_data(
+            values.as_ptr().cast(),
+            std::mem::size_of_val(values.as_slice()),
+            &[VOCAB as i32],
+            MlxDtype::Float32,
+        );
+        mlx_sys::eval(&[&logits]);
+        // Direct prefill uses [vocab]; the verifier reduces a [1, vocab] row
+        // with the same MLX argmax operation. Exercise both actual shapes.
+        for row in [
+            logits.clone(),
+            mlx_sys::reshape(&logits, &[1, VOCAB as i32], None),
+        ] {
+            let token = crate::generate::sample_token_from_prefill_logits(
+                &row,
+                MlxSamplingRequest::new(sampling, &[]),
+                &mut rng,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+            assert_eq!(token, cpu, "shape={:?}, ties={ties:?}", row.shape());
+        }
+    }
+}
+
+#[test]
+fn flash_next_exact_profile_is_false_and_nested_scope_restores_on_error() {
+    fn failed_request(selected: bool) -> Result<(), &'static str> {
+        let _call = crate::fastpath::scoped_qwen_linear_mtp_exact(selected);
+        assert!(!crate::fastpath::qwen_linear_mtp_exact_enabled());
+        {
+            let _nested = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+            assert!(crate::fastpath::qwen_linear_mtp_exact_enabled());
+        }
+        assert!(!crate::fastpath::qwen_linear_mtp_exact_enabled());
+        Err("synthetic request failure")
+    }
+
+    let original = crate::fastpath::qwen_linear_mtp_exact_enabled();
+    {
+        let _outer = crate::fastpath::scoped_qwen_linear_mtp_exact(true);
+        let eligible = qwen_linear_mtp_exact_model_eligible("qwen4_exp", true, 1, &[]);
+        assert!(!eligible);
+        for explicit in [None, Some(false), Some(true)] {
+            let (resolved, _) =
+                crate::fastpath::resolve_qwen_linear_mtp_exact_with_override(eligible, explicit);
+            assert!(!resolved);
+            for mtp_requested in [false, true] {
+                let selected = qwen_linear_mtp_exact_scope_for_request(resolved, mtp_requested);
+                let result = failed_request(selected);
+                assert_eq!(result, Err("synthetic request failure"));
+                assert!(crate::fastpath::qwen_linear_mtp_exact_enabled());
+            }
+        }
+    }
+    assert_eq!(crate::fastpath::qwen_linear_mtp_exact_enabled(), original);
+}
+
+fn runner_identity_admitted(
+    schedule: &Qwen4ExpTargetSchedule,
+    identity: &mtp_parity::GreedyIdentityReport,
+) -> bool {
+    match schedule {
+        Qwen4ExpTargetSchedule::CanonicalSingleton => identity.greedy_identity,
+        Qwen4ExpTargetSchedule::LegacyBatched => identity.identity_until_first_tie,
+        Qwen4ExpTargetSchedule::Unavailable(_) => false,
+    }
+}
+
+#[test]
+fn canonical_runner_evidence_rejects_a_tie_waiver_without_changing_legacy_admission() {
+    let tied = mtp_parity::greedy_identity_until_tie(&[17, 31], &[17, 37], 0.0, 0.0).unwrap();
+    assert!(!tied.greedy_identity);
+    assert!(tied.identity_until_first_tie);
+    assert!(!runner_identity_admitted(
+        &Qwen4ExpTargetSchedule::CanonicalSingleton,
+        &tied
+    ));
+    assert!(runner_identity_admitted(
+        &Qwen4ExpTargetSchedule::LegacyBatched,
+        &tied
+    ));
+    let exact = mtp_parity::greedy_identity_until_tie(&[17, 31], &[17, 31], 0.0, 0.0).unwrap();
+    assert!(runner_identity_admitted(
+        &Qwen4ExpTargetSchedule::CanonicalSingleton,
+        &exact
+    ));
+    assert!(!runner_identity_admitted(
+        &Qwen4ExpTargetSchedule::Unavailable("test".into()),
+        &exact
+    ));
 }
 
 /// Expected `Qwen4ExpState::position` after one production `MlxRunner::run`
@@ -346,7 +462,9 @@ fn runner_greedy_identity(
         }
     }
     if position == shared && direct.tokens.len() == mtp.tokens.len() {
-        return mtp_parity::GreedyIdentityReport::exact();
+        let mut report = mtp_parity::GreedyIdentityReport::exact();
+        report.compared_positions = shared;
+        return report;
     }
     let direct_margin = if position < shared {
         direct_margin_at_divergence(
@@ -379,8 +497,19 @@ fn generate_with_block_size(
     runner: &MlxRunner,
     prompt: &[u32],
     quantum: usize,
+    ctx: RunnerRequestContext,
+    block_size: u32,
+) -> Generation {
+    generate_observed(runner, prompt, quantum, ctx, block_size, |_| {})
+}
+
+fn generate_observed(
+    runner: &MlxRunner,
+    prompt: &[u32],
+    quantum: usize,
     mut ctx: RunnerRequestContext,
     block_size: u32,
+    mut observe: impl FnMut(&Qwen4ExpState),
 ) -> Generation {
     let mut result = Generation {
         prompt_len: prompt.len(),
@@ -403,6 +532,7 @@ fn generate_with_block_size(
             .routes
             .push(output.route_metadata.crossover_decisions);
         if let Some(state) = snapshot_trunk(runner, ctx.request_id) {
+            observe(&state);
             result.prefill_state = Some(state);
         }
         ctx.processed_prompt_tokens += chunk.len() as u32;
@@ -434,12 +564,15 @@ fn generate_with_block_size(
             .routes
             .push(output.route_metadata.crossover_decisions);
         assert!(result.tokens.len() <= ctx.max_output_tokens as usize);
-        if let Some(state) = runner.states.lock().get(&ctx.request_id)
-            && let Some(cursor) = &state.flash_next_mtp.cursor
-        {
-            let trunk = state.cache.qwen4_exp.as_ref().unwrap();
-            assert_eq!(trunk.position(), state.cache.seq_len());
-            assert!(cursor.aligned(trunk));
+        if let Some(state) = runner.states.lock().get(&ctx.request_id) {
+            if let Some(trunk) = state.cache.qwen4_exp.as_ref() {
+                observe(trunk);
+            }
+            if let Some(cursor) = &state.flash_next_mtp.cursor {
+                let trunk = state.cache.qwen4_exp.as_ref().unwrap();
+                assert_eq!(trunk.position(), state.cache.seq_len());
+                assert!(cursor.aligned(trunk));
+            }
         }
         if update.stop_reason.is_some() {
             break;
@@ -497,12 +630,157 @@ fn flash_next_runner_mtp_matches_direct_across_prefill_quanta_and_budgets() {
                     candidate.tokens, direct.tokens,
                     "quantum={quantum}, budget={budget}"
                 );
+                assert_eq!(
+                    runner_greedy_identity(&direct, &candidate, &runner).compared_positions,
+                    direct.tokens.len()
+                );
                 assert_eq!(direct.maximum("ax_mlx_flash_next_mtp_verified_steps"), 0);
                 if budget > 1 {
                     assert!(candidate.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
                 }
                 assert_eq!(candidate.maximum("ax_mlx_mtp_model_policy"), 10);
                 assert_eq!(candidate.maximum("ax_mlx_flash_next_mtp_step_errors"), 0);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires synthetic Flash Next MTP artifacts; explicitly selects canonical scheduling"]
+fn flash_next_canonical_runner_matches_aligned_states_and_continuation() {
+    let _scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    let artifacts = artifacts();
+    let prompt = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    for force_accept in [false, true] {
+        let mut weights = crate::weights::load_weights(&artifacts).unwrap();
+        // The synthetic affine/BF16 fixtures exercise scheduling mechanics;
+        // overriding their schedule here does not certify a real MXFP4 pack.
+        weights.qwen4_exp.as_mut().unwrap().target_schedule =
+            Qwen4ExpTargetSchedule::CanonicalSingleton;
+        if force_accept {
+            // Keep the nonzero stateful trunk, but force exact greedy ties in
+            // both heads so acceptance and bonus emission are exercised.
+            let shape = [
+                artifacts.manifest().vocab_size as i32,
+                artifacts.manifest().hidden_size as i32,
+            ];
+            let data = vec![0.0f32; (shape[0] * shape[1]) as usize];
+            let head = crate::weights::QuantizedWeight::new(
+                MlxArray::from_raw_data(
+                    data.as_ptr().cast(),
+                    std::mem::size_of_val(data.as_slice()),
+                    &shape,
+                    MlxDtype::Float32,
+                ),
+                None,
+                None,
+            );
+            weights.lm_head = head.clone();
+            weights.qwen4_exp.as_mut().unwrap().lm_head = head.clone();
+            weights.qwen4_exp_mtp.as_mut().unwrap().graph.lm_head = head;
+        }
+        let shared = MlxSharedWeightsCell::new();
+        shared.publish(Arc::new(weights));
+        let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+            &artifacts,
+            2,
+            true,
+            true,
+            None,
+            Some(&shared),
+        )
+        .unwrap();
+        assert!(runner.has_mtp());
+        for quantum in [3, 100] {
+            let mut snapshots = [
+                std::collections::BTreeMap::new(),
+                std::collections::BTreeMap::new(),
+            ];
+            let mut generations = Vec::new();
+            for (mode, states) in snapshots.iter_mut().enumerate() {
+                *runner.prefix_cache.lock() = MlxPrefixCache::new(MlxPrefixCachePolicy {
+                    max_bytes: 64 * 1024 * 1024,
+                    max_entries: 128,
+                });
+                *runner.native_prefix_cache.lock() =
+                    MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+                        max_bytes: 64 * 1024 * 1024,
+                        max_entries: 128,
+                    });
+                runner.set_mtp_requested(mode == 1);
+                let generation = generate_observed(
+                    &runner,
+                    &prompt,
+                    quantum,
+                    context(1200 + mode as u64, prompt.len(), 8),
+                    4,
+                    |state| {
+                        if state.position() >= prompt.len() {
+                            states.insert(state.position(), state.clone());
+                        }
+                    },
+                );
+                generations.push(generation);
+            }
+            let direct = &generations[0];
+            let candidate = &generations[1];
+            assert_eq!(direct.tokens.len(), 8);
+            assert_eq!(
+                candidate.tokens, direct.tokens,
+                "quantum={quantum}, force_accept={force_accept}"
+            );
+            assert!(runner_greedy_identity(direct, candidate, &runner).greedy_identity);
+            assert!(candidate.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
+            assert_eq!(candidate.maximum("ax_mlx_flash_next_mtp_step_errors"), 0);
+            if force_accept {
+                assert_eq!(candidate.tokens, vec![0; 8]);
+                assert!(candidate.maximum("ax_mlx_flash_next_mtp_accepted_steps") > 0);
+            }
+            let trunk = runner.weights.qwen4_exp.as_ref().unwrap();
+            let mut aligned = Vec::new();
+            for (&position, direct_state) in &snapshots[0] {
+                let Some(candidate_state) = snapshots[1].get(&position) else {
+                    continue;
+                };
+                let consumed = position - prompt.len();
+                assert_eq!(&direct.tokens[..consumed], &candidate.tokens[..consumed]);
+                assert_eq!(
+                    flash_runner_state_bytes(direct_state, trunk.layers.len()),
+                    flash_runner_state_bytes(candidate_state, trunk.layers.len()),
+                    "aligned consumed prefix={consumed}, quantum={quantum}, force_accept={force_accept}"
+                );
+                aligned.push((position, direct_state, candidate_state));
+            }
+            assert!(
+                aligned.len() >= 2,
+                "must compare live decode states, not only prefill"
+            );
+            let (position, direct_state, candidate_state) = aligned.last().unwrap();
+            let consumed = position - prompt.len();
+            assert!(consumed > 0 && consumed + 1 < direct.tokens.len());
+            let token = direct.tokens[consumed];
+            // Resume ordinary singleton execution from each retained state at
+            // the same consumed prefix, including PLE history and QSA caches.
+            let continue_from = |state| {
+                crate::model::qwen4_exp::forward(
+                    trunk,
+                    &[token],
+                    state,
+                    runner.cfg.compile_cache_identity,
+                    ProjectionBatchPolicy::Shared,
+                )
+                .unwrap()
+            };
+            let continued_direct = continue_from(direct_state);
+            let continued_candidate = continue_from(candidate_state);
+            assert_eq!(
+                flash_runner_state_bytes(&continued_direct.state, trunk.layers.len()),
+                flash_runner_state_bytes(&continued_candidate.state, trunk.layers.len()),
+            );
+            for output in [&continued_direct, &continued_candidate] {
+                let next = mlx_sys::argmax(&output.logits, None);
+                mlx_sys::eval(&[&next]);
+                assert_eq!(next.data_u32()[0], direct.tokens[consumed + 1]);
             }
         }
     }
@@ -568,8 +846,11 @@ fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
         mtp_parity::greedy_identity_until_tie(&expected, &result.tokens, margin, tie_margin)
             .unwrap_or_else(|error| panic!("{error}"));
     let greedy_identity = identity.greedy_identity;
+    let trunk = runner.weights.qwen4_exp.as_ref().unwrap();
+    let admitted = runner_identity_admitted(&trunk.target_schedule, &identity);
     let evidence = serde_json::json!({
         "qualification":false, "route":"production_flash_next_mtp_candidate",
+        "target_schedule": crate::model::qwen4_exp_mtp::target_schedule_name(trunk),
         "block_size_tokens":16,
         "load_seconds":load_seconds,"generation_seconds":generation_started.elapsed().as_secs_f64(),
         "tokens":result.tokens,"expected_ids":expected,"routes":result.routes,
@@ -580,7 +861,7 @@ fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
             .iter()
             .map(mtp_parity::TieDivergence::to_json)
             .collect::<Vec<_>>(),
-        "within_tolerance": identity.identity_until_first_tie,
+        "within_tolerance": admitted,
         "mlx_peak_bytes":mlx_sys::get_peak_memory(),
     });
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_RESULT_PATH") {
@@ -588,8 +869,8 @@ fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
     }
     eprintln!("{evidence}");
     assert!(
-        identity.identity_until_first_tie,
-        "MTP greedy identity failed before a documented near-tie"
+        admitted,
+        "MTP greedy identity failed the selected target schedule contract"
     );
     assert!(result.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
     assert_eq!(result.maximum("ax_mlx_flash_next_mtp_step_errors"), 0);
@@ -752,10 +1033,10 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
     // max_output > 1. That lookahead is independent of prompt length and of
     // `block_size_tokens` (see
     // `flash_next_direct_prefill_snapshot_is_prompt_plus_pipeline_bootstrap`).
-    // Serialized bytes can still differ (QMM shape / eval order) at the
-    // same position, so byte-exact prefill identity is a documented
-    // non-goal. Positions are compared against the production `run()`
-    // contract, not against each other.
+    // Historical affine batched verification allowed arithmetic differences
+    // at the same position. Canonical verification requires exact identity at
+    // aligned consumed prefixes, but these lookahead snapshots are not aligned.
+    // Positions are compared against the production `run()` contract.
     assert_eq!(
         mtp_prefill.position(),
         flash_next_run_prefill_snapshot_len(prompt.len(), 3, true),
@@ -791,19 +1072,35 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         .fold(mtp_parity::MtpDivergence::zero(), |a, b| a.max_relative(b));
     let identity = runner_greedy_identity(&direct, &candidate, &runner);
     let greedy_identity = identity.greedy_identity;
+    let trunk = runner.weights.qwen4_exp.as_ref().unwrap();
+    let canonical = matches!(
+        trunk.target_schedule,
+        Qwen4ExpTargetSchedule::CanonicalSingleton
+    );
+    let admitted = runner_identity_admitted(&trunk.target_schedule, &identity);
     // The runner drops request state on the terminal step, so decode-state
     // divergence is measured by the CandidateSession controls, not here.
     let tolerance = mtp_parity::mtp_run_tolerance(dtype);
     if same_position {
-        mtp_parity::assert_mtp_state_close(mtp_prefill, direct_prefill, dtype);
+        if canonical {
+            assert_eq!(mtp_bytes, direct_bytes);
+        } else {
+            mtp_parity::assert_mtp_state_close(mtp_prefill, direct_prefill, dtype);
+        }
     }
     let within_tolerance = if same_position {
-        identity.identity_until_first_tie && prefill_divergence.relative <= tolerance.limit
+        admitted
+            && if canonical {
+                mtp_bytes == direct_bytes
+            } else {
+                prefill_divergence.relative <= tolerance.limit
+            }
     } else {
-        identity.identity_until_first_tie
+        admitted
     };
     let evidence = serde_json::json!({
-        "qualification":false,"block_size_tokens":4,"direct_ids":direct.tokens,
+        "qualification":false,"prompt_ids":prompt,"block_size_tokens":4,"direct_ids":direct.tokens,
+        "target_schedule": crate::model::qwen4_exp_mtp::target_schedule_name(trunk),
         "mtp_ids":candidate.tokens,"direct_routes":direct.routes,"mtp_routes":candidate.routes,
         "greedy_identity": greedy_identity,
         "identity_until_first_tie": identity.identity_until_first_tie,
@@ -812,8 +1109,9 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
             .iter()
             .map(mtp_parity::TieDivergence::to_json)
             .collect::<Vec<_>>(),
-        "prefill_state_exact": false,
-        "prefill_state_byte_exact_is_non_goal": true,
+        "prefill_state_exact": canonical && same_position && mtp_bytes == direct_bytes,
+        "prefill_state_compared": same_position,
+        "prefill_state_byte_exact_is_non_goal": !canonical,
         "prefill_seq_len_field": "AXKB header seq_len u64 LE at bytes 8..16",
         "prefill_position": mtp_prefill.position(),
         "direct_prefill_position": direct_prefill.position(),
@@ -826,6 +1124,7 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         "max_state_relative_divergence": prefill_divergence.relative,
         "tolerance": tolerance.limit,
         "tolerance_source": tolerance.source,
+        "tie_margin": mtp_parity::mtp_tie_margin(),
         "state_tolerance": tolerance.limit,
         "within_tolerance": within_tolerance,
         "state_arrays": mtp_parity::mtp_state_arrays_json(&prefill_records),
@@ -834,8 +1133,8 @@ fn flash_next_real_runner_mtp_matches_same_schedule_direct() {
         std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     }
     assert!(
-        identity.identity_until_first_tie,
-        "MTP greedy identity failed before a documented near-tie"
+        admitted,
+        "MTP greedy identity failed the selected target schedule contract"
     );
     assert!(candidate.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
 }
@@ -865,6 +1164,7 @@ fn flash_next_real_runner_mtp_paired_cost() {
     let warmup_pairs = 2usize;
     let mut evidence = serde_json::json!({
         "qualification": false,
+        "target_schedule": crate::model::qwen4_exp_mtp::target_schedule_name(runner.weights.qwen4_exp.as_ref().unwrap()),
         "kind": "paired_production_runner_cost",
         "completed": false,
         "prompt_ids": prompt,
@@ -969,8 +1269,11 @@ fn flash_next_real_runner_mtp_paired_cost() {
                 pair_identity.identity_until_first_tie
             );
             assert!(
-                pair_identity.identity_until_first_tie,
-                "MTP greedy identity failed before a documented near-tie at pair={pair} candidate={candidate}"
+                runner_identity_admitted(
+                    &runner.weights.qwen4_exp.as_ref().unwrap().target_schedule,
+                    &pair_identity
+                ),
+                "MTP greedy identity failed the selected target schedule contract at pair={pair} candidate={candidate}"
             );
             assert_eq!(result.tokens.len(), 32);
             assert_eq!(errors, 0);
@@ -978,7 +1281,11 @@ fn flash_next_real_runner_mtp_paired_cost() {
         }
     }
     evidence["completed"] = true.into();
-    evidence["greedy_identity_all_requests"] = pair_identity.identity_until_first_tie.into();
+    evidence["greedy_identity_all_requests"] = runner_identity_admitted(
+        &runner.weights.qwen4_exp.as_ref().unwrap().target_schedule,
+        &pair_identity,
+    )
+    .into();
     evidence["identity_until_first_tie"] = pair_identity.identity_until_first_tie.into();
     evidence["tie_divergences"] = serde_json::json!(
         pair_identity

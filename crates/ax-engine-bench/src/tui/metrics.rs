@@ -747,6 +747,7 @@ pub(super) fn parse_ps_top_rss(raw: &str, limit: usize) -> Vec<TopProc> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

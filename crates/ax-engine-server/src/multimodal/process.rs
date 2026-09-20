@@ -140,6 +140,7 @@ pub(super) fn run_bounded(
 }
 
 #[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};

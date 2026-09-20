@@ -1,0 +1,65 @@
+{
+  "artifacts": {
+    "checkers.py": {
+      "bytes": 15648,
+      "sha256": "67c9d1909a6a940634ff8f4f9d0c97eaeb22cf4580eb176357d1654631c26e4f"
+    },
+    "closed_checks.py": {
+      "bytes": 4615,
+      "sha256": "4854a20c460bc072fd4d0fbae51528ca4eb6d9147c30290a17e4b7f6eb477cf8"
+    },
+    "full-qa-inputs.json": {
+      "bytes": 628867,
+      "sha256": "e1e8234c02ee02a4a4d8b96acef0e88d128ebaae9ef5e904e86050c51ff283e4"
+    },
+    "full-qa-items.json": {
+      "bytes": 138639,
+      "sha256": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad"
+    },
+    "prompt_def.py": {
+      "bytes": 1262,
+      "sha256": "5e5d288edf046bd4f5a0577237a643cf1d7573e627a8792d6bc4807f64328118"
+    },
+    "qa.json.gz": {
+      "bytes": 44839,
+      "sha256": "ba989b15bd1235d31376df2d46df57dd54f8e1d0e14930e2c63a8b450d9f2e92"
+    },
+    "qa_checks.py": {
+      "bytes": 6755,
+      "sha256": "8e2708872c70b4ce92fec4382fcbe4925e734ad1202225dc92436ee254fa2122"
+    },
+    "reader-inputs.json": {
+      "bytes": 932,
+      "sha256": "41cd11bcf6a2cf08f6bf99b777669dd734e96214111ba216f33f427cabcebd46"
+    }
+  },
+  "matching_text_pairs": 105,
+  "mtp_certification": {
+    "MTP-D": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-S": "not_assessed"
+  },
+  "normal_stops": true,
+  "original_qa_passed": false,
+  "original_reader_sha256": "ce730f5a3ce7fb2e95601e7f6dcc8b7bdba5d441a1fede7b76da5e0c0ca760c2",
+  "original_root_review_sha256": "0f27aa60fc467f6b01a3e9989e626cca21086fd8eebbc8cb6515bab819201d0b",
+  "qualification": false,
+  "quality_failures": {
+    "disabled": [
+      "instruction_alphabet_first",
+      "science_gravity_earth",
+      "knowledge_water_formula"
+    ],
+    "required": [
+      "instruction_alphabet_first",
+      "science_gravity_earth",
+      "knowledge_water_formula"
+    ]
+  },
+  "release_ready": false,
+  "requests": 210,
+  "schema": "ax.flash_next.current_qa_summary.v1",
+  "source_commit": "5f583018032c406cd3016c6c1c016612dd8b2fbd",
+  "target": "MacBook Pro M5 Max 128 GiB; MXFP4 MTP; NAS over SMB",
+  "wheel_sha256": "06c65e8069431258e77490be0eefd9067adcb262cdea156e0c126c0525f0cd14"
+}

@@ -1,0 +1,22 @@
+{
+  "cause": "Underlying mapping/storage cause and missing supervisor terminal remain unresolved.",
+  "collection_complete": false,
+  "collection_valid": false,
+  "native_termination": {
+    "signal": "SIGBUS",
+    "subtype": "KERN_MEMORY_ERROR",
+    "type": "EXC_BAD_ACCESS"
+  },
+  "numerical_result": null,
+  "post_payload_hashes": 0,
+  "pre_payload_hashes": 47,
+  "qualification": false,
+  "release_ready": false,
+  "scope": "Separate supplementary M2 full diagnostic; not a completed numerical result",
+  "source_sha256": {
+    "native-crash-summary.json": "be9c9b6c92dfb5b1469da64653ebb7eb1682084803eb60cb25a83cda9f746d66",
+    "stopped-artifacts-20260918/native-diagnostic.json": "1443f34bceaf4a24fb8584dd901c0acb250bab782d2c2ef2acf5387610c7b69d",
+    "stopped-artifacts-20260918/result.json": "ca16b66696924d3e1f8b29cdce31fc13ac1ac8a4d99b9d68229f3a67c611c48c",
+    "stopped-artifacts-20260918/transfer-receipt.json": "bb65bb366ff459fc16ef72fbcf6a32ecbc09c9f20020c0815d737c964ab18157"
+  }
+}

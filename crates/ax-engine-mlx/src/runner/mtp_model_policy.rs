@@ -90,9 +90,9 @@ pub(super) enum MtpModelPolicyKind {
     DeepseekV4UncertifiedDirectFallback,
     ConflictingDrafters,
     /// Flash Next (`qwen4_exp`) sidecar attached when `mtp.safetensors` is
-    /// present (route code 10). Depth one, never default-on, greedy identity
-    /// until documented ties, and served by its own request-local draft
-    /// cursor rather than the generic MTP decode machinery.
+    /// present and its target schedule is admitted (route code 10). Depth one,
+    /// never default-on, with independent token/state qualification still
+    /// required. Served by its own request-local draft cursor.
     FlashNextCertificationCandidate,
 }
 

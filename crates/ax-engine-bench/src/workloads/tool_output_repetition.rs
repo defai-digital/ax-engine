@@ -203,6 +203,7 @@ impl ToolOutputRepetition {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

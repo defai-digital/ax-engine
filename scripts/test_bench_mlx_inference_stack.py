@@ -1350,6 +1350,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertAlmostEqual(run["client_wall_ttft_ms"], 123.0, places=6)
         self.assertAlmostEqual(run["client_wall_total_ms"], 456.0, places=6)
         self.assertEqual(run["ttft_ms"], 100.0)
+        self.assertEqual(run["socket_timeout_seconds"], 300.0)
+        self.assertEqual(run["client_first_output_tokens"], 1)
+        self.assertEqual(run["client_first_output_event"], "step")
+        self.assertEqual(run["client_output_tokens_after_first_event"], 0)
         self.assertEqual(
             run["scheduler_step_telemetry"],
             [
@@ -1397,7 +1401,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             with patch.object(
                 bench.time, "perf_counter", side_effect=[10.0, 10.1, 10.456]
             ):
-                bench.axengine_one_run(
+                run = bench.axengine_one_run(
                     19091,
                     [1, 2, 3, 4],
                     1,
@@ -1408,6 +1412,44 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         body = json.loads(captured["body"])
         self.assertEqual(body["sampling"]["temperature"], 0.6)
         self.assertEqual(body["sampling"]["seed"], 44)
+        self.assertEqual(run["client_first_output_event"], "response")
+        self.assertEqual(run["client_first_output_tokens"], 1)
+        self.assertEqual(run["client_output_tokens_after_first_event"], 0)
+
+    def test_axengine_one_run_records_batched_first_output_and_socket_timeout(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __iter__(self):
+                for event, payload in (
+                    ("step", {"step": {"runner_time_us": 100_000}, "request": {"output_len": 2}}),
+                    ("step", {"step": {"runner_time_us": 200_000}, "request": {"output_len": 4}}),
+                    ("response", {"response": {"output_tokens": [41, 42, 43, 44]}}),
+                ):
+                    yield f"event: {event}\n".encode()
+                    yield b"data: " + json.dumps(payload).encode() + b"\n"
+                    yield b"\n"
+
+        connection = MagicMock()
+        connection.getresponse.return_value = FakeResponse()
+        with (
+            patch.object(bench.http.client, "HTTPConnection", return_value=connection) as factory,
+            patch.object(bench.time, "perf_counter", side_effect=[10.0, 10.1, 10.3]),
+        ):
+            run = bench.axengine_one_run(19091, [1, 2, 3], 4, socket_timeout_seconds=1800)
+        factory.assert_called_once_with("127.0.0.1", 19091, timeout=1800)
+        connection.close.assert_called_once_with()
+        self.assertEqual(run["client_first_output_tokens"], 2)
+        self.assertEqual(run["client_output_tokens_after_first_event"], 2)
+        self.assertEqual(run["client_first_output_event"], "step")
+        self.assertEqual(run["socket_timeout_seconds"], 1800)
+
+    def test_axengine_one_run_rejects_unbounded_or_nonpositive_socket_timeout(self) -> None:
+        with patch.object(bench.http.client, "HTTPConnection") as factory:
+            for timeout in (0, -1, float("inf"), float("nan")):
+                with self.subTest(timeout=timeout), self.assertRaisesRegex(ValueError, "finite and positive"):
+                    bench.axengine_one_run(19091, [1, 2, 3], 4, socket_timeout_seconds=timeout)
+            factory.assert_not_called()
 
     def test_bench_axengine_prefill_work_contract_reflects_actual_sampler(self) -> None:
         # Regression test: bench_axengine built the row's

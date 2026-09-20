@@ -2167,6 +2167,7 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod expert_stream_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 

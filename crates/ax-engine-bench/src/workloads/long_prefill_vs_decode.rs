@@ -414,6 +414,7 @@ fn capture_route_decisions(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::path::PathBuf;
 

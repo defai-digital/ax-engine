@@ -1,0 +1,162 @@
+{
+  "scope": "Installed wheel packaging and metadata admission; no target inference result yet",
+  "qualification": false,
+  "release_ready": false,
+  "source_commit": "85a2bab0dd72c9e2076f455237dca052ff8d12b7",
+  "wheel_sha256": "b05b1ef032761bd4d05f3c9401621618f70bf2f2ba151f489ab7e364359275f3",
+  "local_installed_tests": {
+    "hardware": "Apple M3 Max",
+    "passed": 81,
+    "failed": 0,
+    "skipped": 0
+  },
+  "m5_preflight": {
+    "source_commit": "85a2bab0dd72c9e2076f455237dca052ff8d12b7",
+    "qualification": false,
+    "release_ready": false,
+    "passed": true,
+    "wheel_sha256": "b05b1ef032761bd4d05f3c9401621618f70bf2f2ba151f489ab7e364359275f3",
+    "commands": [
+      {
+        "name": "bundled-runtime-doctor",
+        "command": [
+          "$QUALIFICATION_DIR/venv-85a2bab0/bin/ax-engine",
+          "doctor",
+          "--json"
+        ],
+        "experimental_opt_in": false,
+        "exit_code": 0,
+        "stdout": "{\n  \"checks\": [\n    {\n      \"detail\": \"$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server ok\",\n      \"id\": \"server_binary\",\n      \"status\": \"pass\"\n    },\n    {\n      \"detail\": \"$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-bench ok\",\n      \"id\": \"bench_binary\",\n      \"status\": \"pass\"\n    },\n    {\n      \"detail\": \"Apple M5 Max (macos/aarch64)\",\n      \"id\": \"host\",\n      \"status\": \"pass\"\n    },\n    {\n      \"detail\": \"Metal compiler and metallib available\",\n      \"id\": \"metal_toolchain\",\n      \"status\": \"pass\"\n    },\n    {\n      \"detail\": \"Bundled MLX runtime assets available\",\n      \"id\": \"mlx_runtime\",\n      \"status\": \"pass\"\n    },\n    {\n      \"id\": \"model\",\n      \"path\": null,\n      \"selected\": false,\n      \"status\": \"not_selected\"\n    }\n  ],\n  \"details_command\": \"ax-engine-bench doctor\",\n  \"host\": {\n    \"arch\": \"arm64\",\n    \"cpu_cores\": {\n      \"efficiency\": null,\n      \"logical\": 18,\n      \"performance\": 12,\n      \"physical\": 18,\n      \"summary\": \"18 (6 Super and 12 Performance)\",\n      \"types\": {\n        \"performance\": 12,\n        \"super\": 6\n      }\n    },\n    \"gpu_cores\": 40,\n    \"os\": \"darwin\",\n    \"os_build\": \"26A428\",\n    \"os_version\": \"27.0\",\n    \"ram_bytes\": 137438953472,\n    \"ram_gib\": 128\n  },\n  \"install\": {\n    \"cwd\": \"$QUALIFICATION_DIR\",\n    \"mode\": \"installed_tools\",\n    \"version\": \"7.4.0\"\n  },\n  \"issues\": [],\n  \"model_issues\": [],\n  \"next_actions\": [\n    \"ax-engine serve qwen36-35b --port 31418\",\n    \"ax-engine models list\"\n  ],\n  \"ready_for\": [\n    \"serve\",\n    \"python_sdk\"\n  ],\n  \"result\": \"ready\",\n  \"schema_version\": \"ax.engine.doctor.v1\",\n  \"source\": {\n    \"details_command\": \"ax-engine-bench doctor --json\",\n    \"schema_version\": \"ax.engine_bench.doctor.v1\",\n    \"status\": \"ready\"\n  }\n}\n",
+        "stderr": ""
+      },
+      {
+        "name": "generate-native-metadata",
+        "command": [
+          "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-bench",
+          "generate-manifest",
+          "$MODEL_DIR",
+          "--json"
+        ],
+        "experimental_opt_in": true,
+        "exit_code": 0,
+        "stdout": "{\n  \"schema_version\": \"ax.generate_manifest.v1\",\n  \"model_dir\": \"$MODEL_DIR\",\n  \"manifest_path\": \"$MODEL_DIR/model-manifest.json\",\n  \"status\": \"written\",\n  \"manifest_present\": true\n}\n",
+        "stderr": ""
+      },
+      {
+        "name": "default-mxfp4-rejected",
+        "command": [
+          "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-bench",
+          "generate-manifest",
+          "$MODEL_DIR",
+          "--json",
+          "--validate"
+        ],
+        "experimental_opt_in": false,
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "generated manifest validation failed for $MODEL_DIR: invalid native model manifest: qwen4_exp MXFP4/group32 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 until native target qualification completes\n"
+      },
+      {
+        "name": "opt-in-metadata-validation",
+        "command": [
+          "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-bench",
+          "generate-manifest",
+          "$MODEL_DIR",
+          "--json",
+          "--validate"
+        ],
+        "experimental_opt_in": true,
+        "exit_code": 0,
+        "stdout": "{\n  \"schema_version\": \"ax.generate_manifest.v1\",\n  \"model_dir\": \"$MODEL_DIR\",\n  \"manifest_path\": \"$MODEL_DIR/model-manifest.json\",\n  \"status\": \"already_exists\",\n  \"manifest_present\": true,\n  \"validation\": {\n    \"passed\": true\n  }\n}\n",
+        "stderr": ""
+      }
+    ],
+    "manifest_sha256": "4252bb87db718f88e7e2eae3a08abe7e118999ffe8b664e301574348b5195512"
+  },
+  "frozen_file_sha256": {
+    "$MODEL_DIR/.gitattributes": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+    "$MODEL_DIR/LICENSE": "a0dc422560841fd68e06d974907f8b4c709bca44a67daad2b528437bdf676c08",
+    "$MODEL_DIR/README.md": "fb159859b31e60dceb6af5bf458cea5d23dd2216146e6ee376fc0668f33148bd",
+    "$MODEL_DIR/ax_expert_stream.json": "c25d92122725ba01a52ab3d6572a115562b62172ef4fa29d3951728391c1e51b",
+    "$MODEL_DIR/axquant_manifest.json": "42030475bbae17dd1b3bf8dbb0a6defbfcc230165124d68d4fc2361ef6204385",
+    "$MODEL_DIR/axquant_mtp_sidecar_manifest.json": "31c03269697493fb1c099bf86e49f47cd4fa8128bad6b457cf0eef5ceab36a2f",
+    "$MODEL_DIR/axquant_plan.json": "a3a19a4d4dad9381d1f1174b172d7119dab92b4ee2bcbba69a22ee814d6d30fb",
+    "$MODEL_DIR/axquant_quantizer_execution.json": "5e3a28e3c6c2d063a358e2a3cb046c819467a7d6c0c54ac73d547bc3c2f08429",
+    "$MODEL_DIR/axquant_runtime.json": "258339be24ced0609d8e0b99c87ac7c3976ecb44ffb9129123910cd5ca3e757d",
+    "$MODEL_DIR/chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "$MODEL_DIR/config.json": "fb3c637ce4a240453c454fbc1211fa1e893d0af12df54a9df19c9c017fa59237",
+    "$MODEL_DIR/generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+    "$MODEL_DIR/merges.txt": "a9d356d7bdf1ef4949e3e748e95b8e10ad9d4e2e838eddc38a0a7b6b94d1db8d",
+    "$MODEL_DIR/model-00001-of-00025.safetensors": "7827fb7f0fa1b4d8ca24fd326efc2efbb9626e85cd911dc307924fa575b5c857",
+    "$MODEL_DIR/model-00002-of-00025.safetensors": "89b285eb22f412a30c062a772cc73ff326e3b069e2d8a1bdd56a62d240f4dda8",
+    "$MODEL_DIR/model-00003-of-00025.safetensors": "8793a858465c0481d4e34d66c91532760a4bed01a303f780168c28e7b089ed22",
+    "$MODEL_DIR/model-00004-of-00025.safetensors": "db0d6e663253240284251145b191bdff2973fe58ab46b88a3161a47ade40b57d",
+    "$MODEL_DIR/model-00005-of-00025.safetensors": "0ee1cff9968b084880c88ff5b44cd2c57b9f8fb986cae97500d2b6e045539b37",
+    "$MODEL_DIR/model-00006-of-00025.safetensors": "504d67bf63183688c7fa850c6c96a0351efed410bdf43cf16c815c7464b30645",
+    "$MODEL_DIR/model-00007-of-00025.safetensors": "4c90e2fcc2f884fbb5cadbb8c7ae4114300b0277571f11b40271a12bea2d06f1",
+    "$MODEL_DIR/model-00008-of-00025.safetensors": "7a1de0415585f8cce77ea8c5eab0b7bed9c315601d63020e9b1237896cc6a3b9",
+    "$MODEL_DIR/model-00009-of-00025.safetensors": "fe2f177fbd1ed316fc96ec0b7173e2e5717dace10621f2204da6868425b01d63",
+    "$MODEL_DIR/model-00010-of-00025.safetensors": "80689aedb6957ce8c5ee7756a6993a78de67cf331c9ce20a9b0261b7e2d38635",
+    "$MODEL_DIR/model-00011-of-00025.safetensors": "1c82485e655e9d68213f81f8794349e663822ca7d8473b57a6e713faf938c68f",
+    "$MODEL_DIR/model-00012-of-00025.safetensors": "1431824fb71bdaf830b968bbce08946ccc5282445b20d38439d52cc506dbab4e",
+    "$MODEL_DIR/model-00013-of-00025.safetensors": "6f878a6c23601b553db0f4716bf7e9c1a0a35f29b93dc097edd71ae1217ce41d",
+    "$MODEL_DIR/model-00014-of-00025.safetensors": "6f56d2bcda80db08149e502e22decc9a7896ce804c7785dcd3edc57097a242c5",
+    "$MODEL_DIR/model-00015-of-00025.safetensors": "daad611449d905edd87a57069bb21378d034cb50dd02b661db22d7280accf1ab",
+    "$MODEL_DIR/model-00016-of-00025.safetensors": "a50ab14901ea8e56969d45d56a37caf37e1ebb5b0f4fc7cabbf090aa2edf272c",
+    "$MODEL_DIR/model-00017-of-00025.safetensors": "9e4ac0a5ccb1d29a130461acfc39a8400f1d653b56cda07710112c74d6a03b7b",
+    "$MODEL_DIR/model-00018-of-00025.safetensors": "ddc4065085f4a6175cc725a7b030156fde9d0d51384540ff54b11bfc03762c44",
+    "$MODEL_DIR/model-00019-of-00025.safetensors": "a51525d81588a0c929f10f4347f5735a656561692314974d2924b52b5a6b39b4",
+    "$MODEL_DIR/model-00020-of-00025.safetensors": "74029b1eb3e358f007f5d47e57b534c1e03a04a162b96a36e83f552a1dc6eef1",
+    "$MODEL_DIR/model-00021-of-00025.safetensors": "e9174036e8c192d0f81755b9fa242f9ba024c487662b99e1683ab9a783f95b76",
+    "$MODEL_DIR/model-00022-of-00025.safetensors": "03a38790f202ffe363f2560f672215a0b0dafcb28f0b4e9ccb75427a1457fd4a",
+    "$MODEL_DIR/model-00023-of-00025.safetensors": "e054f46d4ec3d0ad5fb37581e6bec3f4d975dd2a33ba8001a9fa2f805b3486e9",
+    "$MODEL_DIR/model-00024-of-00025.safetensors": "781d31f35f8a3a603902ccca25dfa3a489615c2a4c433da474b8b3ff8750bfe8",
+    "$MODEL_DIR/model-00025-of-00025.safetensors": "0e12e553a9282302405625fad84773addbd706b796636bb4e4df1842451f35ab",
+    "$MODEL_DIR/model.safetensors.index.json": "37344288777e7e78b35901cb1d572dad0dc640cb9cedb90024860b932a657696",
+    "$MODEL_DIR/mtp.safetensors": "2f7df97f7a969b3d08b5832e4754af5668e92ada6f473d37da87868c79edcfe0",
+    "$MODEL_DIR/mtplx_runtime.json": "119b930ed4b470a08008aa2a51b4a83162907a85b8455f559cffa03e33236ed6",
+    "$MODEL_DIR/preprocessor_config.json": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+    "$MODEL_DIR/processor_config.json": "45fc17c8dd2474af6b493b52483c26c0584b0082d368c480f9fa611e73070040",
+    "$MODEL_DIR/tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+    "$MODEL_DIR/tokenizer_config.json": "792fa3f0cb88b111e54ef3134c873531008c4df471d108da17903426e308aa7b",
+    "$MODEL_DIR/video_preprocessor_config.json": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+    "$MODEL_DIR/vocab.json": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-server": "9d6725d82da906ef324d1601a939405b64779d4251ec3bf7ae5435e80d3cb4ed",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_bin/ax-engine-bench": "7d300afcc838f853b8c8298f541c13cfdf6df5eb6b3f7fc5089f57fa04c783a8",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_bin/ax-engine": "a7aa7c9b533500ade8da7648e4c3553ef0f16f6833b1a0aaf93ed2c60f6b9bd4",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/.dylibs/libmlx.dylib": "ac88606127e925e3d405dadcdc599b6197bc73b3c5a7587cc877542e7fe2fef3",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/.dylibs/libjaccl.dylib": "4200b690fb963346ccea751d971408fe63a1b5570aa6357989ad64217dfc0e66",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/.dylibs/mlx.metallib": "dc59d1cceb1a5c7e578232e6e41e28e2c73c9463ac6dbc3886c3ee17ffc270ed",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_repo_ref.py": "c79cd9132703bb73283476727a4977956080a7f747151e9a2007bfd9c886b61a",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/unlimited_ocr.py": "824ccc0d82884f7474561bc88519859a4a614167696fc58b7fa1a76c24b692e6",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_cli.py": "52a2248f166629ddfd86160e7f82d7b019c02e2d2bc57b3eee62ae01436684e6",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/__init__.py": "3e16327cba57a1e5cffb94f138df1356805803ec6edbd8f515d34564e6c1cb34",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/openai_server.py": "87bb03bff8e8c1856b3f86e469ce134c0deec899a2005616ac1620f9e91866b8",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/langchain.py": "e91ac532286f2afec15f3542f5ed7ab9f67f80926c1385cbaefb3d912a88188e",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/gemma4_unified.py": "22775321931e44b2afdb036c3228c9ffc605a720bdf4fb5a190e33806c24d778",
+    "$QUALIFICATION_DIR/venv-85a2bab0/lib/python3.12/site-packages/ax_engine/_ax_engine.abi3.so": "16617005038817ccd09c8616253dd4178be23ad398414e7de29ce11fcd3787d9",
+    "$QUALIFICATION_DIR/ax_engine-7.4.0-cp312-abi3-macosx_26_0_arm64.whl": "b05b1ef032761bd4d05f3c9401621618f70bf2f2ba151f489ab7e364359275f3",
+    "$MODEL_DIR/model-manifest.json": "4252bb87db718f88e7e2eae3a08abe7e118999ffe8b664e301574348b5195512",
+    "$QUALIFICATION_DIR/smoke-input.json": "e2574d6f05ad1cad8fe425a9252fc047465cf7b5690bc90c4653ceea72acb317",
+    "$QUALIFICATION_DIR/run-installed-native.py": "eab7ad7fa2b8a03da140a4deeb1bcbfa24eb041f707c4e05de21f24c6f189467"
+  },
+  "primary_reference_admission": {
+    "scope": "Installed primary reference class lookup; no weights loaded",
+    "mlx_lm_version": "0.31.3",
+    "mlx_version": "0.32.2",
+    "config_sha256": "fb3c637ce4a240453c454fbc1211fa1e893d0af12df54a9df19c9c017fa59237",
+    "model_type": "qwen4_exp",
+    "utils_sha256": "ba0371e9c88d52b34d71271945c2394005fbcb2bfb2ee9f6f82d627a33b72422",
+    "qualification": false,
+    "release_ready": false,
+    "supported": false,
+    "error": "ValueError: Model type qwen4_exp not supported."
+  },
+  "ci": {
+    "run_id": 35296716473,
+    "conclusion": "success",
+    "native_target_qualification": false,
+    "real_model_steps": "skipped; no mounted model artifacts"
+  },
+  "installed_tests_log_sha256": "feba5b993e5aae12dfac509d7251ea8ead76d44ba653df23b922f0987f7b3b7e"
+}

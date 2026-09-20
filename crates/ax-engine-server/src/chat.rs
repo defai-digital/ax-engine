@@ -1654,6 +1654,7 @@ pub(crate) fn decode_glm_chat_output(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::fs;

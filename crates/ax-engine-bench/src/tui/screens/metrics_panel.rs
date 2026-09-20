@@ -503,6 +503,7 @@ fn gpu_bar_label(m: &LiveMetrics) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod series_tests {
     use super::series_points;
     use std::collections::VecDeque;

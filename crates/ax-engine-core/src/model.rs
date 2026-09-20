@@ -1254,6 +1254,12 @@ impl NativeModelManifest {
 }
 
 impl NativeModelArtifacts {
+    /// Whether validated artifacts use the existing audited Flash Next MXFP4
+    /// envelope. This is format classification, not numerical qualification.
+    pub fn audited_qwen4_exp_mxfp4(&self) -> bool {
+        crate::convert::audited_mxfp4_runtime_format(&self.root_dir, &self.manifest)
+    }
+
     /// Build artifacts directly from a pre-parsed manifest and root directory.
     /// Used by the GGUF loader to bypass the JSON manifest file.
     pub fn from_manifest_and_root(
@@ -1346,6 +1352,15 @@ impl NativeModelArtifacts {
     pub fn summary(&self) -> NativeModelArtifactsSummary {
         let is_hybrid_attention = self.manifest.linear_attention.is_enabled();
         let mut runtime_status = self.manifest.runtime_status.clone();
+        if self.manifest.model_family == "qwen4_exp" {
+            for note in &mut runtime_status.notes {
+                if note == "best-experience SKU: Mac Studio M5 Ultra 256 GB" {
+                    *note = "Legacy exporter target: Mac Studio M5 Ultra 256 GB (superseded). \
+Current AX Engine target: MacBook Pro M5 Max 128 GB, MXFP4 MTP; qualification pending."
+                        .to_string();
+                }
+            }
+        }
         // Artifacts have already passed runtime admission. Old Flash Next
         // manifests retain the retired trunk blocker on disk for provenance.
         if self.manifest.model_family == "qwen4_exp"
@@ -5359,6 +5374,7 @@ fn validate_quantized_source_path(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
@@ -5459,6 +5475,41 @@ mod tests {
         assert!(summary.runtime_status.notes[1].contains("certification remains separate"));
         assert_eq!(artifacts.manifest(), &original);
         assert_eq!(artifacts.summary().runtime_status, summary.runtime_status);
+    }
+
+    #[test]
+    fn flash_next_summary_identifies_superseded_exporter_target_without_changing_manifest() {
+        let legacy = "best-experience SKU: Mac Studio M5 Ultra 256 GB";
+        for family in ["qwen4_exp", "qwen3"] {
+            let mut manifest = packed_layer_manifest();
+            manifest.model_family = family.to_string();
+            manifest.runtime_status.notes =
+                vec!["exporter provenance".to_string(), legacy.to_string()];
+            let original = manifest.clone();
+            let artifacts = NativeModelArtifacts {
+                root_dir: PathBuf::new(),
+                manifest,
+            };
+            let summary = artifacts.summary();
+            assert_eq!(artifacts.manifest(), &original);
+            assert_eq!(summary.runtime_status.ready, original.runtime_status.ready);
+            assert_eq!(
+                summary.runtime_status.blockers,
+                original.runtime_status.blockers
+            );
+            assert_eq!(summary.runtime_status.notes[0], "exporter provenance");
+            if family == "qwen4_exp" {
+                assert!(summary.runtime_status.notes[1].contains("(superseded)"));
+                assert!(
+                    summary.runtime_status.notes[1]
+                        .contains("MacBook Pro M5 Max 128 GB, MXFP4 MTP")
+                );
+                assert!(summary.runtime_status.notes[1].contains("qualification pending"));
+            } else {
+                assert_eq!(summary.runtime_status.notes[1], legacy);
+            }
+            assert_eq!(artifacts.summary().runtime_status, summary.runtime_status);
+        }
     }
 
     #[test]

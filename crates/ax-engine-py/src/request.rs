@@ -225,6 +225,7 @@ fn py_dict_to_json(dict: &Bound<'_, PyDict>) -> PyResult<Value> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

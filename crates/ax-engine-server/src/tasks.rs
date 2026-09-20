@@ -127,6 +127,7 @@ impl MediaPreprocessor {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

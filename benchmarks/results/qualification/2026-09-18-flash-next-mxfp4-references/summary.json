@@ -1,0 +1,113 @@
+{
+  "schema": "ax.flash_next.mxfp4.reference_evidence.v1",
+  "qualification": false,
+  "release_ready": false,
+  "numerical_acceptance": false,
+  "performance_claim": false,
+  "target": "MacBook Pro M5 Max 128 GiB with NAS over SMB; AX target acceptance remains open",
+  "reference_hardware": "Apple M2 Ultra 192 GiB with local external storage; not target performance",
+  "model_repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "model_revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+  "reference_modules": {
+    "transformers_commit": "bd15bc95a89e728bbc1224084eb3b5829428c353",
+    "official_module_sha256": "2a44aeadb215acbb5c75939fcc97e9f14bccff5a51c232826427594993f6a760",
+    "mlx_vlm_commit": "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb",
+    "language_module_sha256": "30f059d6289451bde0f5ef816090ff946ebc857d1b557f83415e2ba867d76199",
+    "mlx_version": "0.32.2"
+  },
+  "numerical": {
+    "reference_graphs": 3,
+    "required_graphs": 4,
+    "prompts": 8,
+    "positions_per_graph": 3316,
+    "comparator_sha256": "643ecc1ee0b1b91a5563bf7be9c5d6e4f993a34b4de986bf1e4f3fb705279ed9",
+    "reference": "official-chunked",
+    "comparisons": {
+      "official-recurrent": {
+        "positions": 3316,
+        "mean_kl": 0.02025978694757816,
+        "top1_disagreements": 284,
+        "top1_disagreement_rate": 0.0856453558504222
+      },
+      "mlx-vlm": {
+        "positions": 3316,
+        "mean_kl": 0.02128314131240479,
+        "top1_disagreements": 268,
+        "top1_disagreement_rate": 0.08082026537997587
+      }
+    },
+    "acceptance": {
+      "evaluated": false,
+      "passed": false,
+      "multiplier": 1.25,
+      "high_margin_threshold": 1.0,
+      "high_margin_max_rate": 0.01,
+      "ax_mean_kl": null,
+      "floor_mean_kl": 0.02025978694757816,
+      "mean_kl_limit": 0.0253247336844727,
+      "mean_kl_ok": false,
+      "ax_top1_disagreement_rate": null,
+      "floor_top1_disagreement_rate": 0.0856453558504222,
+      "top1_limit": 0.10705669481302775,
+      "top1_ok": false,
+      "high_margin_ax_only_count": 0,
+      "high_margin_rate": null,
+      "high_margin_mlx_vlm_disagrees_with_reference": 0,
+      "high_margin_mlx_vlm_agrees_with_reference": 0,
+      "high_margin_ok": true,
+      "coverage_parity_ok": true,
+      "coverage_parity": true,
+      "floor_graph": "official-recurrent"
+    },
+    "ax_present": false,
+    "scope": "Reference data and full-position floor only; AX-aligned acceptance still required"
+  },
+  "reference_qa": {
+    "cases": 105,
+    "quality_passes": 101,
+    "quality_failures": [
+      "instruction_alphabet_first",
+      "science_gravity_earth",
+      "knowledge_water_formula",
+      "format_csv_pair"
+    ],
+    "normal_stops": 105,
+    "artifact_valid": true,
+    "frozen_quality_pass": false
+  },
+  "integrity": {
+    "published_pack_files": 47,
+    "reference_array_and_sidecar_files": 48,
+    "reference_arrays_unchanged_before_after_scoring": true
+  },
+  "primary_benchmark": "mlx_lm.benchmark admission remains unsupported; MLX-VLM is not a replacement",
+  "public_artifacts": [
+    {
+      "file": "reference-statistics.json.gz",
+      "sha256": "fa17b5fc7689a6e5ef89489e2bcd8c0e8a7dcd98e29768277044d5f4bc9db237",
+      "uncompressed_sha256": "39092c67dc1809169bf84a217de290bdc9452d7a8b1155629f694c0cacdb7d9e"
+    },
+    {
+      "file": "reference-qa.json.gz",
+      "sha256": "b4f6d9b93a161c27a11960a27133409f110edcde6b26b0ba499ce9ac1a22e907",
+      "uncompressed_sha256": "a750653c1ff537ec2228373af2aa90d99457465dae91c38cda811309a07afcdd"
+    },
+    {
+      "file": "integrity.json.gz",
+      "sha256": "834cce2f4687caa0a202c661e263715965fafb62c6ead06fc3f6cd7d23e8c77d",
+      "uncompressed_sha256": "0dfc58deaaf7d460fd40101a9249cbc8d518511fabb32be94ea91b6e9f2f8bcd"
+    }
+  ],
+  "source_sha256": {
+    "numerical-oracle/reference-collection-terminal.json": "09f08866896bec1bfc6b75c1557040d15a0e0ad662037becb1b827f46cabbc13",
+    "numerical-oracle/reference-floor-r2-terminal.json": "193b19c1183f7ea8a82dd753823a94f01a0c71e8a0ba77ac9b0946fb75cc60bb",
+    "numerical-oracle/reference-floor-r2-statistics.json": "76a93e6636fc638b24d9a8a2e6bd0bf4f50e49426b455298ada43814e191ef18",
+    "reference-qa/target-run-terminal.json": "3249b9894a3fd72009a714aaef855260a61aece9f244778f5c1daa663358abeb",
+    "reference-qa/collection-terminal.json": "0787ac1edc684ded5a287349a4a3dee882dcea5e8cac1e0de0d0666cfb5baea2",
+    "numerical-oracle/reference-floor-attempt1.json": "697e2a4f1d1277aec5431ae0f5aaa6c146bc3742547596cf978de5600528a632"
+  },
+  "curation": {
+    "script_sha256": "6b18a337ac6ce87936cf6a78713b47ebb41860f53101a4cdac58f957327cc679",
+    "policy": "Private location strings are replaced by stable hash labels; numeric values, outputs and verdicts are unchanged; deterministic gzip mtime=0"
+  }
+}

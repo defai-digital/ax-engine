@@ -11,7 +11,9 @@
 //! v1 is layer-stack paging only: the existing `gather_qmm` kernel runs
 //! unchanged on the paged packed tensors. No per-expert unfused kernels.
 
+mod quantization;
 mod selected;
+pub(crate) use quantization::{ExpertQuantizationMode, ExpertQuantizationModes};
 pub(crate) use selected::take_selected_expert_read_stats;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -686,6 +688,7 @@ pub struct ExpertStackPager {
     fuse_split_experts: bool,
     cache: Mutex<PagerCache>,
     selected_readers: Mutex<HashMap<u32, Arc<selected::SelectedExpertRows>>>,
+    quantization_modes: Option<ExpertQuantizationModes>,
     /// Layers that missed the selected-prefill payload cap and fell back to
     /// whole-layer paging. Distinct from `cached_layer_count`, which also
     /// includes resident stacks loaded for any other reason.
@@ -709,12 +712,62 @@ impl ExpertStackPager {
             budget_layers: budget_layers.max(1),
             fuse_split_experts,
             selected_readers: Mutex::new(HashMap::new()),
+            quantization_modes: None,
             cache: Mutex::new(PagerCache {
                 entries: HashMap::new(),
                 order: VecDeque::new(),
             }),
             selected_prefill_capacity_fallbacks: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Bind every projection to the native mode. The map and caches belong
+    /// to one model instance and never persist across model loads.
+    pub(crate) fn new_with_quantization_modes(
+        manifest: Arc<ExpertStreamManifest>,
+        root: PathBuf,
+        budget_layers: usize,
+        modes: ExpertQuantizationModes,
+    ) -> Result<Self, ExpertStreamError> {
+        let mut names = HashSet::new();
+        for tensor in manifest
+            .tensors
+            .iter()
+            .filter(|t| !is_quantization_sidecar_name(&t.name))
+        {
+            let mode = quantization::mode_for(Some(&modes), &tensor.name)
+                .map_err(ExpertStreamError::InvalidManifest)?;
+            if !names.insert(tensor.name.as_str()) {
+                return Err(ExpertStreamError::InvalidManifest(
+                    "duplicate expert projection".into(),
+                ));
+            }
+            if mode == ExpertQuantizationMode::Mxfp4 {
+                if (tensor.bits, tensor.group_size) != (4, 32) {
+                    return Err(ExpertStreamError::InvalidManifest(
+                        "MXFP4 requires bits=4/group32".into(),
+                    ));
+                }
+                let base = tensor.name.strip_suffix(".weight").unwrap_or(&tensor.name);
+                if manifest
+                    .tensors
+                    .iter()
+                    .any(|t| t.name == format!("{base}.biases") || t.name == format!("{base}.bias"))
+                {
+                    return Err(ExpertStreamError::InvalidManifest(
+                        "MXFP4 expert bias is unsupported".into(),
+                    ));
+                }
+            }
+        }
+        if names.len() != modes.len() {
+            return Err(ExpertStreamError::InvalidManifest(
+                "quantization map has unknown projections".into(),
+            ));
+        }
+        let mut pager = Self::new(manifest, root, budget_layers);
+        pager.quantization_modes = Some(modes);
+        Ok(pager)
     }
 
     pub fn manifest(&self) -> &ExpertStreamManifest {
@@ -762,6 +815,7 @@ impl ExpertStackPager {
                         &self.root,
                         layer,
                         mlx_sys::DEFAULT_MAX_GATHER_BYTES,
+                        self.quantization_modes.as_ref(),
                     )
                     .map_err(ExpertStreamError::Paging)?,
                 );
@@ -880,6 +934,9 @@ impl ExpertStackPager {
             let base = tensor
                 .name
                 .strip_suffix(".weight")
+                .or_else(|| tensor.name.strip_suffix(".scales"))
+                .or_else(|| tensor.name.strip_suffix(".biases"))
+                .or_else(|| tensor.name.strip_suffix(".bias"))
                 .unwrap_or(tensor.name.as_str());
             keep.insert(tensor.name.clone());
             keep.insert(format!("{base}.scales"));
@@ -901,6 +958,38 @@ impl ExpertStackPager {
                         "tensor {name} appears in multiple files for layer {layer}"
                     )));
                 }
+            }
+        }
+        for tensor in tensors
+            .iter()
+            .filter(|t| !is_quantization_sidecar_name(&t.name))
+        {
+            if quantization::mode_for(self.quantization_modes.as_ref(), &tensor.name)
+                .map_err(ExpertStreamError::Paging)?
+                == ExpertQuantizationMode::Mxfp4
+            {
+                let base = tensor.name.strip_suffix(".weight").unwrap_or(&tensor.name);
+                let weight = loaded.get(&tensor.name).ok_or_else(|| {
+                    ExpertStreamError::Paging(format!("missing MXFP4 weight {}", tensor.name))
+                })?;
+                let scales = loaded.get(&format!("{base}.scales")).ok_or_else(|| {
+                    ExpertStreamError::Paging(format!("missing MXFP4 scales for {}", tensor.name))
+                })?;
+                if loaded.contains_key(&format!("{base}.biases"))
+                    || loaded.contains_key(&format!("{base}.bias"))
+                {
+                    return Err(ExpertStreamError::Paging(
+                        "MXFP4 expert bias is unsupported".into(),
+                    ));
+                }
+                quantization::validate_mxfp4_pair(
+                    &weight.shape(),
+                    weight.dtype(),
+                    &scales.shape(),
+                    scales.dtype(),
+                    tensor.num_experts,
+                )
+                .map_err(ExpertStreamError::Paging)?;
             }
         }
         #[cfg(test)]
@@ -952,7 +1041,10 @@ impl ExpertStackPager {
                         tensor.name, tensor.bits
                     ))
                 })?,
-                mode: "affine".to_string(),
+                mode: quantization::mode_for(self.quantization_modes.as_ref(), &tensor.name)
+                    .map_err(ExpertStreamError::Paging)?
+                    .as_str()
+                    .to_string(),
                 linear_bias,
                 decode_weight_t: None,
                 decode_q2_weight: None,

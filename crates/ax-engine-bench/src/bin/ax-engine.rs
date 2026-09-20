@@ -4510,6 +4510,7 @@ fn _os_str(value: &str) -> &OsStr {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.12, pytest-9.1.1, pluggy-1.6.0
+rootdir: $WORKTREE
+configfile: pyproject.toml
+collected 81 items
+
+python/tests/test_cli.py ............................................... [ 58%]
+....                                                                     [ 62%]
+python/tests/test_installed_preview.py ......                            [ 70%]
+python/tests/test_embedding_smoke.py .....                               [ 76%]
+scripts/test_build_pypi_wheel_minos.py .......                           [ 85%]
+scripts/test_repair_mlx_metallib_wheel.py ............                   [100%]
+
+============================== 81 passed in 5.44s ==============================

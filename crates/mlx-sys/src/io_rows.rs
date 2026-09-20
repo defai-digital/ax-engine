@@ -24,8 +24,8 @@
 //! gather, reader eviction, or dropping the reader never overwrites previously
 //! returned results that feed lazy graphs.
 //!
-//! Supported dtypes: `F32`, `F16`, `BF16`, `U32` (plus `FLOAT32`, `FLOAT16`,
-//! `BFLOAT16`, `UINT32` aliases). All other dtypes fail closed at open. `U32`
+//! Supported dtypes: `F32`, `F16`, `BF16`, `U32`, `U8` (plus `FLOAT32`, `FLOAT16`,
+//! `BFLOAT16`, `UINT32`, `UINT8` aliases). All other dtypes fail closed at open. `U32`
 //! coverage here is raw row buffers only, not affine-quantization numeric
 //! parity (owned by the quantization integration).
 
@@ -62,7 +62,7 @@ pub struct RowTensorMeta {
     pub shape: Vec<i32>,
     /// Bytes per row (`cols * elem_bytes`).
     pub row_bytes: usize,
-    /// Bytes per element (4 for F32/U32, 2 for F16/BF16).
+    /// Bytes per element (4 for F32/U32, 2 for F16/BF16, 1 for U8).
     pub elem_bytes: usize,
     /// Absolute file offset of the tensor payload start.
     pub data_start: u64,
@@ -160,6 +160,7 @@ fn parse_row_dtype(s: &str) -> Option<MlxDtype> {
         "F16" | "FLOAT16" => MlxDtype::Float16,
         "BF16" | "BFLOAT16" => MlxDtype::Bfloat16,
         "U32" | "UINT32" => MlxDtype::Uint32,
+        "U8" | "UINT8" => MlxDtype::Uint8,
         _ => return None,
     })
 }
@@ -293,7 +294,7 @@ impl SafetensorsRowReader {
     /// that mix rank-2 tables with unrelated ranks or dtypes need
     /// [`Self::open_selected`] instead.
     pub fn open(path: &Path) -> Result<Self, String> {
-        Self::open_inner(path, None, DEFAULT_MAX_GATHER_BYTES, 2)
+        Self::open_inner(path, None, DEFAULT_MAX_GATHER_BYTES, 2, &[])
     }
 
     /// Open with an explicit per-gather output byte budget.
@@ -301,7 +302,7 @@ impl SafetensorsRowReader {
     /// The budget is immutable for the life of the reader. Like [`Self::open`],
     /// validates every tensor entry strictly.
     pub fn open_with_budget(path: &Path, max_gather_bytes: usize) -> Result<Self, String> {
-        Self::open_inner(path, None, max_gather_bytes, 2)
+        Self::open_inner(path, None, max_gather_bytes, 2, &[])
     }
 
     /// Open only the requested tensors with an explicit byte budget.
@@ -317,7 +318,7 @@ impl SafetensorsRowReader {
         tensor_names: &[&str],
         max_gather_bytes: usize,
     ) -> Result<Self, String> {
-        Self::open_inner(path, Some(tensor_names), max_gather_bytes, 2)
+        Self::open_inner(path, Some(tensor_names), max_gather_bytes, 2, &[])
     }
 
     /// Open selected rank-3 stacks for bounded axis-zero gathers.
@@ -331,7 +332,24 @@ impl SafetensorsRowReader {
         tensor_names: &[&str],
         max_gather_bytes: usize,
     ) -> Result<Self, String> {
-        Self::open_inner(path, Some(tensor_names), max_gather_bytes, 3)
+        Self::open_inner(path, Some(tensor_names), max_gather_bytes, 3, &[])
+    }
+
+    /// Open selected stacks while rejecting forbidden sidecars in the header.
+    /// No payload is read, including for a rejected unselected entry.
+    pub fn open_selected_stacks_rejecting(
+        path: &Path,
+        tensor_names: &[&str],
+        forbidden_names: &[&str],
+        max_gather_bytes: usize,
+    ) -> Result<Self, String> {
+        Self::open_inner(
+            path,
+            Some(tensor_names),
+            max_gather_bytes,
+            3,
+            forbidden_names,
+        )
     }
 
     fn open_inner(
@@ -339,6 +357,7 @@ impl SafetensorsRowReader {
         select: Option<&[&str]>,
         max_gather_bytes: usize,
         rank: usize,
+        forbidden_names: &[&str],
     ) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
         let file_len = file
@@ -387,6 +406,11 @@ impl SafetensorsRowReader {
             )
         })?;
 
+        for name in forbidden_names {
+            if obj.contains_key(*name) {
+                return Err(format!("forbidden tensor {name:?} in {}", path.display()));
+            }
+        }
         let mut tensors: HashMap<String, RowTensorMeta> = HashMap::new();
         match select {
             None => {
@@ -573,15 +597,25 @@ mod tests {
         for (name, dtype, elem) in [
             ("F32", MlxDtype::Float32, 4usize),
             ("U32", MlxDtype::Uint32, 4),
+            ("U8", MlxDtype::Uint8, 1),
             ("BF16", MlxDtype::Bfloat16, 2),
             ("F16", MlxDtype::Float16, 2),
         ] {
-            let values: Vec<u32> = (0..24).map(|n| (n / 6 + n % 6) % 4).collect();
+            let values: Vec<u32> = (0..24)
+                .map(|n| {
+                    if name == "U8" {
+                        (n * 11) % 256
+                    } else {
+                        (n / 6 + n % 6) % 4
+                    }
+                })
+                .collect();
             let payload: Vec<u8> = values
                 .iter()
                 .flat_map(|&value| match name {
                     "F32" => (value as f32).to_le_bytes().to_vec(),
                     "U32" => value.to_le_bytes().to_vec(),
+                    "U8" => vec![value as u8],
                     "BF16" => (((value as f32).to_bits() >> 16) as u16)
                         .to_le_bytes()
                         .to_vec(),
@@ -602,6 +636,16 @@ mod tests {
             assert!(SafetensorsRowReader::open_selected(&path, &["experts"], 1024).is_err());
             let reader =
                 SafetensorsRowReader::open_selected_stacks(&path, &["experts"], 1024).unwrap();
+            assert!(
+                SafetensorsRowReader::open_selected_stacks_rejecting(
+                    &path,
+                    &["experts"],
+                    &["ignored"],
+                    1024,
+                )
+                .unwrap_err()
+                .contains("forbidden tensor")
+            );
             let meta = reader.tensor_meta("experts").unwrap();
             assert_eq!(meta.shape, [4, 2, 3]);
             assert_eq!(meta.cols, 6);

@@ -119,6 +119,7 @@ impl Drop for AdmissionDrainGuard {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::sync::mpsc;
     use std::time::Duration;

@@ -1,0 +1,118 @@
+{
+  "source_commit": "5d73cd37d6f4c28a00d9609ded8397cbe046a676",
+  "binary_sha256": "e28dadab0b31a2d2be8b7bc1bde278819748cbcfd8671a166a4d2773ebed56ce",
+  "host": "M3 Max; unit controls only",
+  "qualification": false,
+  "release_ready": false,
+  "completed": true,
+  "passed": true,
+  "cases": [
+    {
+      "name": "f32-decode",
+      "command": [
+        "$NATIVE_TEST_BINARY",
+        "--exact",
+        "model::qwen4_exp_integration_tests::qwen4_exp_selected_experts_preserve_hybrid_state_and_recover_io",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 0.398697083001025,
+      "fixture_provenance_sha256": "ee75bd6edb4aba0785af26bfe8c9791fc33b24ea9de93c7437739adee431fd0d",
+      "log_sha256": "fcf343e26a49dff198bf0b8f612583ba65b073fb906337021bb50e47032ff8aa",
+      "log": "mxfp4-state-f32-decode.txt"
+    },
+    {
+      "name": "f32-prefill",
+      "command": [
+        "$NATIVE_TEST_BINARY",
+        "--exact",
+        "model::qwen4_exp_integration_tests::qwen4_exp_selected_prefill_preserves_hybrid_state_and_recovers_io",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 0.18108179200498853,
+      "fixture_provenance_sha256": "ee75bd6edb4aba0785af26bfe8c9791fc33b24ea9de93c7437739adee431fd0d",
+      "log_sha256": "e3197f0ebf96cc66d104fb77487acb5cd080177ff688269825510cfcb3f5fe64",
+      "log": "mxfp4-state-f32-prefill.txt"
+    },
+    {
+      "name": "bf16-decode",
+      "command": [
+        "$NATIVE_TEST_BINARY",
+        "--exact",
+        "model::qwen4_exp_integration_tests::qwen4_exp_selected_experts_preserve_hybrid_state_and_recover_io",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 0.39566716700210236,
+      "fixture_provenance_sha256": "5ccf54d85500f85d3404811f0002d722de729cbfdfed0b7e3ba412a091f8d907",
+      "log_sha256": "fcf343e26a49dff198bf0b8f612583ba65b073fb906337021bb50e47032ff8aa",
+      "log": "mxfp4-state-bf16-decode.txt"
+    },
+    {
+      "name": "bf16-prefill",
+      "command": [
+        "$NATIVE_TEST_BINARY",
+        "--exact",
+        "model::qwen4_exp_integration_tests::qwen4_exp_selected_prefill_preserves_hybrid_state_and_recovers_io",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "seconds": 0.17973970800812822,
+      "fixture_provenance_sha256": "5ccf54d85500f85d3404811f0002d722de729cbfdfed0b7e3ba412a091f8d907",
+      "log_sha256": "3fe1e32d42af3a1780c8d3f367d8238216fb9c949b9a06b4d50b18973222f7ed",
+      "log": "mxfp4-state-bf16-prefill.txt"
+    }
+  ],
+  "scope": "Tiny synthetic full-trunk selected/resident logits and serialized-state equality, injected expert IO failure, unchanged committed state and exact recovery; not checkpoint numerical qualification",
+  "reproduction_environment": {
+    "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL": "1",
+    "AX_FLASH_NEXT_SELECTED_FIXTURE": "$FIXTURE_DIR"
+  },
+  "fixtures": {
+    "f32": {
+      "qualification": false,
+      "release_ready": false,
+      "dtype": "f32",
+      "scope": "Synthetic bounded unit fixture; expert matrices MXFP4, other tensors unchanged",
+      "source": {
+        "model.safetensors": "6495f3074ba5d8436a90c82c23da254684e692f6ba5663c317e4a163141a84ba",
+        "config.json": "eae96064a8181ded4c106408874ba7b91a3f6355cf0c8c3ca67c62089b119711",
+        "provenance.json": "b528100d3583f799cafc49307086403e59002fe55ad48f4f3ace301010b0bb95"
+      },
+      "generator_sha256": "a124c49b399d163b22595f7e53f0b150ec093dce940d459c22087cca9ba276cf",
+      "files": {
+        "model.safetensors": "a7611b05b9f35ab5041ca7e165ba6f8f1b69186556738a15c9e1246be96c3049",
+        "experts.safetensors": "3fc47e3c3c131e5ac4f75629ea3f51f5f75de43d7b1ec6b148a58ded2a494e14",
+        "config.json": "7d4cf5d0f93633edd8941798a560ac1b21c875f15b002e94852fc231a7b694b3",
+        "ax_expert_stream.json": "6274cd3b20fd331ade96218cdbf66ac8a05b41cbb9133b9b5ffe94b51940a33c"
+      }
+    },
+    "bf16": {
+      "qualification": false,
+      "release_ready": false,
+      "dtype": "bf16",
+      "scope": "Synthetic bounded unit fixture; expert matrices MXFP4, other tensors unchanged",
+      "source": {
+        "model.safetensors": "c16716783b6ae14131a39f09258dfee9bf053751a931a0c1f2549113151ea2d5",
+        "config.json": "eae96064a8181ded4c106408874ba7b91a3f6355cf0c8c3ca67c62089b119711",
+        "provenance.json": "0992ad4ba16bcb9fa0cb8e6ec9fbf5e4a6057d245c2a682d9b91ad1b6533ffbc"
+      },
+      "generator_sha256": "a124c49b399d163b22595f7e53f0b150ec093dce940d459c22087cca9ba276cf",
+      "files": {
+        "model.safetensors": "b1acc5fd3a4fb529c02cf10291aca36982cd233eee0e5d2aa7524d1f4f2d00bf",
+        "experts.safetensors": "a402f0c695db28b93e9b7f9413fa86d089bdace427f51e2fb42381cb16699a51",
+        "config.json": "7d4cf5d0f93633edd8941798a560ac1b21c875f15b002e94852fc231a7b694b3",
+        "ax_expert_stream.json": "6274cd3b20fd331ade96218cdbf66ac8a05b41cbb9133b9b5ffe94b51940a33c"
+      }
+    }
+  }
+}

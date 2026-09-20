@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -68,7 +70,10 @@ class QualifyFlashNextTest(unittest.TestCase):
         )
         self.assertEqual(
             payload["experimental_expert_layouts"],
-            [{"bits": 2, "group_size": 32}],
+            [
+                {"mode": "affine", "bits": 2, "group_size": 32},
+                {"mode": "mxfp4", "bits": 4, "group_size": 32},
+            ],
         )
         self.assertIn("qwen3.8-27b:axq", payload["not"])
         self.assertIn("Candidate", payload["status"])
@@ -104,7 +109,7 @@ class QualifyFlashNextTest(unittest.TestCase):
             )
             mod._live_preflight(model_dir)
 
-    def test_live_preflight_rejects_unknown_layout_and_mxfp4(self) -> None:
+    def test_live_preflight_rejects_unknown_layout_and_ungated_mxfp4(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             model_dir = Path(td)
             (model_dir / "config.json").write_text("{}", encoding="utf-8")
@@ -132,11 +137,48 @@ class QualifyFlashNextTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 mod._live_preflight(model_dir)
             self.assertIn("MXFP4", str(raised.exception))
+            with patch.dict("os.environ", {"AX_ENGINE_FLASH_NEXT_EXPERIMENTAL": "1"}):
+                mod._live_preflight(model_dir)
+                # The same bits/group tuple cannot relabel affine as MXFP4.
+                mxfp4["tensors"][0]["quantization"]["mode"] = "affine"
+                (model_dir / "model-manifest.json").write_text(json.dumps(mxfp4))
+                with self.assertRaisesRegex(SystemExit, "unsupported expert layout"):
+                    mod._live_preflight(model_dir)
 
     def test_metadata_preflight_never_establishes_qualification(self) -> None:
         self.assertFalse(mod.contract()["release_ready"])
         self.assertFalse(mod.contract()["qualification"])
         self.assertIn("metadata only", mod.contract()["validation_scope"])
+
+    def test_mtp_gates_remain_unassessed_after_ready_metadata_preflight(self) -> None:
+        expected = {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config.json").write_text("{}")
+            (root / "model-manifest.json").write_text(json.dumps(_product_manifest()))
+            mod._live_preflight(root)
+        payload = mod.contract()
+        self.assertEqual(payload["mtp_certification"], expected)
+        self.assertEqual(set(payload["mtp_gates"]), set(expected))
+        self.assertFalse(payload["qualification"])
+        self.assertFalse(payload["release_ready"])
+        self.assertIn("same-state verifier", payload["mtp_gates"]["MTP-S"])
+        self.assertIn("does not change defaults", payload["mtp_gates"]["MTP-P"])
+        self.assertIn("release tag", payload["mtp_gates"]["MTP-D"])
+        self.assertIn("neither fail nor establish MTP-S", payload["diagnostic_only"][0])
+
+    def test_both_dry_run_formats_disclose_unassessed_mtp_gates(self) -> None:
+        for as_json in (False, True):
+            with self.subTest(as_json=as_json), contextlib.redirect_stdout(io.StringIO()) as out:
+                mod._print_contract(as_json)
+            text = out.getvalue()
+            if as_json:
+                self.assertEqual(json.loads(text)["mtp_certification"], {
+                    gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")
+                })
+            else:
+                for gate in ("MTP-S", "MTP-P", "MTP-D"):
+                    self.assertIn(f"{gate} [not_assessed]", text)
 
     def test_ready_flag_cannot_hide_other_blockers(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -161,7 +203,7 @@ class QualifyFlashNextTest(unittest.TestCase):
                 mod._live_preflight(root)
             manifest["tensors"][0]["role"] = "other"
             (root / "model-manifest.json").write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(SystemExit, "no affine expert"):
+            with self.assertRaisesRegex(SystemExit, "no quantized expert"):
                 mod._live_preflight(root)
 
 
