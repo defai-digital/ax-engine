@@ -959,6 +959,18 @@ fn validate_load_memory_preflight(
     // manifests. The latter misses compiled graphs and live temporaries and
     // can double-count shared storage; it remains a deterministic fallback
     // when MLX has no device probe (for example a delegated CPU backend).
+    //
+    // Known limitation (replace + memory_constrained only): `outgoing` is an
+    // estimate while `resident_accounted` may be a measurement, so crediting
+    // the shutdown subtracts an inflated number from a measured one and can
+    // under-count the models that stay resident. Do not "fix" this by flooring
+    // the residual at `resident_total - outgoing`: shared weights make the
+    // estimate sum double-count storage the measurement already de-duplicated,
+    // which would false-reject legitimate multi-model loads. The sound fix is
+    // to re-measure `mlx_device_active_bytes()` after the outgoing generation
+    // is shut down, which needs a load-ordering change; until then the
+    // inflated `incoming` estimate partially compensates and this stays a
+    // conservative heuristic rather than an allocator guarantee.
     let measured_active = mlx_device_active_bytes();
     let resident_accounted = measured_active.unwrap_or(resident_total);
     let peak = projected_peak_bytes(
