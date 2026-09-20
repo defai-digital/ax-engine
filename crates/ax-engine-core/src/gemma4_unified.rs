@@ -84,7 +84,9 @@ pub fn resolve_soft_token_budget(
             return validate_soft_token_budget(budget);
         }
     }
-    Ok(checkpoint_default.clamp(1, SOFT_TOKEN_BUDGET_CEILING))
+    // The checkpoint default is subject to the same ladder as an explicit
+    // budget; clamping would accept off-ladder values (or turn 0 into 1).
+    validate_soft_token_budget(checkpoint_default)
 }
 
 /// Video sizing contract (WS-M1): keep expanded soft tokens within atomic
@@ -658,6 +660,23 @@ fn validate_video_frame_shape(
                 video.pixel_position_ids.len()
             ),
         ));
+    }
+    // The runtime embeds frames as equal slices of the patch tensor and binds
+    // them to the ranges in order, so every range must take exactly one
+    // frame's worth of soft tokens; unequal ranges would silently receive
+    // another frame's embeddings.
+    let soft_tokens_per_frame = video.pixel_position_ids.len() / frame_count;
+    for (range_idx, range) in video.soft_token_ranges.iter().enumerate() {
+        if range.soft_token_count as usize != soft_tokens_per_frame {
+            return Err(invalid_runtime_input(
+                format!("videos[{idx}].soft_token_ranges[{range_idx}].soft_token_count"),
+                format!(
+                    "expected {soft_tokens_per_frame} soft tokens per frame ({} patches / {frame_count} frames), found {}",
+                    video.pixel_position_ids.len(),
+                    range.soft_token_count
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -1586,6 +1605,35 @@ mod tests {
     }
 
     #[test]
+    fn video_ranges_must_each_take_one_frame_of_soft_tokens() {
+        let range = |start: usize, soft_token_count: u32| Gemma4UnifiedSoftTokenRange {
+            start,
+            soft_token_count,
+        };
+        let video = |ranges: Vec<Gemma4UnifiedSoftTokenRange>| Gemma4UnifiedVideoRuntimeInput {
+            span: Gemma4UnifiedTokenSpan {
+                modality: Gemma4UnifiedModality::Video,
+                placeholder_index: 0,
+                replacement_start: 0,
+                soft_token_count: 4,
+                replacement_token_count: 10,
+            },
+            soft_token_ranges: ranges,
+            pixel_values: vec![0.0; 4],
+            pixel_position_ids: vec![[0, 0], [1, 0], [0, 0], [1, 0]],
+            frame_count: 2,
+        };
+        // Two frames of two patches each: 2 + 2 is the only valid split.
+        assert!(validate_video_frame_shape(0, &video(vec![range(1, 2), range(5, 2)])).is_ok());
+        let error = validate_video_frame_shape(0, &video(vec![range(1, 3), range(6, 1)]))
+            .expect_err("unequal per-frame ranges must be rejected");
+        assert!(
+            error.to_string().contains("soft tokens per frame"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn rejects_video_timestamp_count_mismatch() {
         let cfg = local_like_config();
         let error = cfg
@@ -1784,6 +1832,9 @@ mod tests {
         );
         assert_eq!(resolve_soft_token_budget(None, None, 280).unwrap(), 280);
         assert!(resolve_soft_token_budget(Some("ultra"), None, 280).is_err());
+        // A checkpoint default off the ladder is rejected, not clamped.
+        assert!(resolve_soft_token_budget(None, None, 100).is_err());
+        assert!(resolve_soft_token_budget(None, None, 0).is_err());
         assert_eq!(max_frames_for_atomic_budget(2048, 70, 368), 24);
     }
 
