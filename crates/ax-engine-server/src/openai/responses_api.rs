@@ -140,6 +140,13 @@ fn validate_stateless_contract(request: &OpenAiResponsesRequest) -> Result<(), H
             "max_tool_calls is not supported by the stateless /v1/responses subset",
         ));
     }
+    if request.parallel_tool_calls == Some(false) {
+        // Echoing `false` while emitting several function_call items would
+        // misrepresent the response; fail closed until it is enforced.
+        return Err(unsupported(
+            "parallel_tool_calls=false is not supported by the stateless /v1/responses subset",
+        ));
+    }
     if request
         .service_tier
         .as_deref()
@@ -346,6 +353,7 @@ fn response_function_call_item(
         .ok_or_else(|| invalid(format!("input[{index}].call_id must be a string")))?;
     let arguments = object
         .get("arguments")
+        .filter(|value| !value.is_null())
         .map(value_as_text)
         .unwrap_or_else(|| "{}".to_string());
     Ok(json!({
@@ -364,10 +372,20 @@ fn response_function_output_item(
     index: usize,
 ) -> Result<Value, HttpErrorResponse> {
     let call_id = required_string(object, "call_id", index)?;
-    let output = object
-        .get("output")
-        .map(value_as_text)
-        .ok_or_else(|| invalid(format!("input[{index}].output is required")))?;
+    // `output` is a string or a text-part array (flattened like message
+    // content); `null` or another type is invalid, never the literal "null".
+    let output = match object.get("output") {
+        Some(Value::String(text)) => text.clone(),
+        Some(parts @ Value::Array(_)) => response_item_text(Some(parts), index)?,
+        Some(Value::Null) | None => {
+            return Err(invalid(format!("input[{index}].output is required")));
+        }
+        Some(_) => {
+            return Err(invalid(format!(
+                "input[{index}].output must be a string or text-part array"
+            )));
+        }
+    };
     Ok(json!({
         "role": "tool",
         "tool_call_id": call_id,
@@ -580,8 +598,16 @@ fn build_responses_output(
 }
 
 fn responses_usage(usage: Option<&Value>) -> Value {
+    // The Responses shape always carries a usage object; an absent inner
+    // usage becomes a zeroed object, never `null`.
     let Some(usage) = usage.filter(|value| !value.is_null()) else {
-        return Value::Null;
+        return json!({
+            "input_tokens": 0,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens": 0,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": 0
+        });
     };
     let prompt_tokens = usage
         .get("prompt_tokens")
@@ -773,6 +799,32 @@ mod tests {
 
         assert_eq!(response["status"], "incomplete");
         assert_eq!(response["incomplete_details"]["reason"], "content_filter");
-        assert_eq!(response["usage"], Value::Null);
+        // Absent inner usage still yields a usage object.
+        assert_eq!(response["usage"]["total_tokens"], 0);
+        assert_eq!(
+            response["usage"]["input_tokens_details"]["cached_tokens"],
+            0
+        );
+    }
+
+    #[test]
+    fn function_call_output_arrays_flatten_and_null_is_rejected() {
+        let mut object = Map::new();
+        object.insert("call_id".to_string(), json!("c"));
+        object.insert(
+            "output".to_string(),
+            json!([{"type": "input_text", "text": "hi"}]),
+        );
+        let item = response_function_output_item(&object, 0).expect("array output flattens");
+        assert_eq!(item["content"], "hi");
+        object.insert("output".to_string(), Value::Null);
+        assert!(response_function_output_item(&object, 0).is_err());
+
+        let mut call = Map::new();
+        call.insert("name".to_string(), json!("f"));
+        call.insert("call_id".to_string(), json!("c"));
+        call.insert("arguments".to_string(), Value::Null);
+        let item = response_function_call_item(&call, 0).expect("null arguments default");
+        assert_eq!(item["tool_calls"][0]["function"]["arguments"], "{}");
     }
 }

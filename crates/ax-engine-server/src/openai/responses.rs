@@ -346,16 +346,21 @@ pub(crate) fn extract_xml_tool_call_payload_at(
         return None;
     }
     let body_start = start + "<tool_call>".len();
-    let relative_end = content[body_start..].find("</tool_call>");
-    let end = relative_end
-        .map(|offset| body_start + offset)
-        .unwrap_or(content.len());
-    let function = parse_tool_call_body(content[body_start..end].trim())?;
-    let suffix_start = relative_end
-        .map(|_| end + "</tool_call>".len())
-        .unwrap_or(content.len());
-    let remaining = format!("{}{}", &content[..start], &content[suffix_start..]);
-    Some((function, remaining))
+    // An argument string may legitimately contain the closing marker, so
+    // try each successive closer and keep the first body that parses.
+    let mut search = body_start;
+    while let Some(relative) = content[search..].find("</tool_call>") {
+        let end = search + relative;
+        if let Some(function) = parse_tool_call_body(content[body_start..end].trim()) {
+            let suffix_start = end + "</tool_call>".len();
+            let remaining = format!("{}{}", &content[..start], &content[suffix_start..]);
+            return Some((function, remaining));
+        }
+        search = end + "</tool_call>".len();
+    }
+    // Unterminated call: the body runs to the end of the content.
+    let function = parse_tool_call_body(content[body_start..].trim())?;
+    Some((function, content[..start].to_string()))
 }
 
 pub(crate) fn extract_gemma4_tool_call_payload_at(
@@ -845,4 +850,23 @@ pub(crate) fn unix_timestamp_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod xml_tool_call_tests {
+    use super::extract_xml_tool_call_payload_at;
+
+    #[test]
+    fn xml_tool_call_survives_a_closing_marker_inside_an_argument_string() {
+        let content = "<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"a </tool_call> b\"}}</tool_call> tail";
+        let (function, remaining) =
+            extract_xml_tool_call_payload_at(content, 0).expect("call must be extracted");
+        assert_eq!(function.name, "echo");
+        assert!(
+            function.arguments.contains("a </tool_call> b"),
+            "{}",
+            function.arguments
+        );
+        assert_eq!(remaining, " tail");
+    }
 }

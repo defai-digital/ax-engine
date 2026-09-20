@@ -131,10 +131,18 @@ impl OpenAiToolContract {
             return name.to_string();
         }
         let normalized = normalize_tool_name(name);
-        self.tools
+        // Normalization is only a safe bridge when it identifies exactly one
+        // declared tool; `get_weather` vs `getWeather` would otherwise route
+        // to whichever key sorts first.
+        let mut matches = self
+            .tools
             .keys()
-            .find(|candidate| normalize_tool_name(candidate) == normalized)
-            .cloned()
+            .filter(|candidate| normalize_tool_name(candidate) == normalized);
+        let unique = match (matches.next(), matches.next()) {
+            (Some(only), None) => Some(only.clone()),
+            _ => None,
+        };
+        unique
             .or_else(|| {
                 common_tool_alias(name)
                     .and_then(|alias| self.tools.contains_key(alias).then(|| alias.to_string()))
@@ -154,9 +162,11 @@ impl OpenAiToolContract {
             if object.contains_key(canonical) {
                 continue;
             }
+            // An alias that is itself a declared property of this tool is a
+            // real argument, never a misspelling of `canonical`.
             if let Some(alias) = argument_aliases(canonical)
                 .iter()
-                .find(|alias| object.contains_key(**alias))
+                .find(|alias| object.contains_key(**alias) && !shape.properties.contains(**alias))
             {
                 if let Some(value) = object.remove(*alias) {
                     object.insert(canonical.clone(), value);
@@ -1461,6 +1471,42 @@ fn openai_max_tokens(max_completion_tokens: Option<u32>, max_tokens: Option<u32>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_arguments_never_steal_a_declared_sibling_property() {
+        let tools = serde_json::json!([{
+            "type": "function",
+            "function": {
+                "name": "edit",
+                "parameters": {"type": "object", "properties": {"filePath": {}, "path": {}}}
+            }
+        }]);
+        let contract = OpenAiToolContract::from_tools(Some(&tools)).expect("contract");
+        let arguments = contract.canonical_arguments("edit", "{\"path\":\"/tmp/x\"}".to_string());
+        assert_eq!(arguments, "{\"path\":\"/tmp/x\"}");
+        // Without a declared `path`, the alias still maps onto filePath.
+        let tools = serde_json::json!([{
+            "type": "function",
+            "function": {"name": "edit", "parameters": {"type": "object", "properties": {"filePath": {}}}}
+        }]);
+        let contract = OpenAiToolContract::from_tools(Some(&tools)).expect("contract");
+        let arguments = contract.canonical_arguments("edit", "{\"path\":\"/tmp/x\"}".to_string());
+        assert_eq!(arguments, "{\"filePath\":\"/tmp/x\"}");
+    }
+
+    #[test]
+    fn canonical_tool_name_does_not_guess_between_colliding_declarations() {
+        let tools = serde_json::json!([
+            {"type": "function", "function": {"name": "get_weather", "parameters": {}}},
+            {"type": "function", "function": {"name": "getWeather", "parameters": {}}}
+        ]);
+        let contract = OpenAiToolContract::from_tools(Some(&tools)).expect("contract");
+        assert_eq!(contract.canonical_tool_name("get_weather"), "get_weather");
+        assert_eq!(contract.canonical_tool_name("getWeather"), "getWeather");
+        // Ambiguous after normalization: keep the model's spelling rather
+        // than routing to the lexicographically first declaration.
+        assert_eq!(contract.canonical_tool_name("getweather"), "getweather");
+    }
     use serde_json::json;
 
     #[test]

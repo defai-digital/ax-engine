@@ -219,6 +219,26 @@ pub(crate) fn validate_value(schema: &Value, value: &Value) -> Result<(), String
     validate_value_at(schema, value, "")
 }
 
+/// JSON Schema equality: numbers compare mathematically (`1` equals `1.0`),
+/// which `serde_json::Value`'s `PartialEq` does not do.
+fn json_values_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(a), Value::Number(b)) => match (a.as_f64(), b.as_f64()) {
+            (Some(x), Some(y)) => x == y,
+            _ => a == b,
+        },
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| json_values_equal(x, y))
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, x)| b.get(key).is_some_and(|y| json_values_equal(x, y)))
+        }
+        _ => left == right,
+    }
+}
+
 fn validate_value_at(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
     let object = match schema {
         Value::Object(object) => object,
@@ -231,12 +251,14 @@ fn validate_value_at(schema: &Value, value: &Value, path: &str) -> Result<(), St
         validate_type(expected, value, display_path())?;
     }
     if let Some(constant) = object.get("const")
-        && value != constant
+        && !json_values_equal(value, constant)
     {
         return Err(format!("output{}: does not equal const", display_path()));
     }
     if let Some(Value::Array(options)) = object.get("enum")
-        && !options.iter().any(|option| option == value)
+        && !options
+            .iter()
+            .any(|option| json_values_equal(option, value))
     {
         return Err(format!("output{}: is not one of enum", display_path()));
     }
@@ -412,6 +434,18 @@ fn keyword_u64(schema: &Map<String, Value>, keyword: &str) -> Option<u64> {
 #[allow(clippy::expect_used)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn const_and_enum_compare_numbers_mathematically() {
+        use super::json_values_equal;
+        assert!(json_values_equal(&json!(1), &json!(1.0)));
+        assert!(json_values_equal(
+            &json!([1, {"a": 2}]),
+            &json!([1.0, {"a": 2.0}])
+        ));
+        assert!(!json_values_equal(&json!(1), &json!(1.5)));
+        assert!(!json_values_equal(&json!("1"), &json!(1)));
+    }
 
     use super::*;
 
