@@ -1249,6 +1249,53 @@ fn llama_cpp_stepwise_lifecycle_reports_delegated_prompt_cache_hits() {
 }
 
 #[test]
+fn llama_cpp_stepwise_lifecycle_rejects_duplicate_request_id() {
+    let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
+        1,
+        vec![
+            serde_json::json!({"content": "hello", "tokens": [4], "stop": false}),
+            serde_json::json!({
+                "content": " world",
+                "tokens": [5],
+                "stop": true,
+                "stop_type": "limit"
+            }),
+        ],
+        |_| {},
+    );
+    let mut session = llama_cpp_server_session(server_url);
+    let request = GenerateRequest {
+        model_id: "qwen3".to_string(),
+        input_tokens: vec![1, 2, 3],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 2,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(41, request.clone())
+        .expect("first submit should succeed");
+    // A second submit with the live id must fail closed instead of replacing
+    // the first stream handle; the scripted server expects exactly one request.
+    assert!(matches!(
+        session.submit_generate_with_request_id(41, request),
+        Err(EngineSessionError::DuplicateRequestId { request_id: 41 })
+    ));
+
+    session.step_report().expect("first step");
+    session.step_report().expect("second step");
+    let report = session
+        .request_report(41)
+        .expect("original request should still exist");
+    assert_eq!(report.output_tokens, vec![4, 5]);
+    server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+}
+
+#[test]
 fn llama_cpp_stepwise_lifecycle_advances_multiple_active_requests() {
     let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
         2,

@@ -195,9 +195,12 @@ pub struct LlamaCppStreamChunk {
     pub stop_type: Option<String>,
     #[serde(default)]
     pub prompt_progress: Option<LlamaCppPromptProgress>,
-    #[serde(default)]
+    /// llama.cpp's native `/completion` stream reports these as
+    /// `tokens_evaluated` / `tokens_predicted` on the terminal chunk; the
+    /// blocking path already maps `tokens_evaluated`.
+    #[serde(default, alias = "tokens_evaluated")]
     pub prompt_token_count: Option<u32>,
-    #[serde(default)]
+    #[serde(default, alias = "tokens_predicted")]
     pub output_token_count: Option<u32>,
 }
 
@@ -721,6 +724,9 @@ fn build_llama_cpp_chat_completion_request(
         stream,
         stop: request.stop_sequences.clone(),
         metadata: request.metadata.as_deref(),
+        stream_options: stream.then_some(LlamaCppStreamOptions {
+            include_usage: true,
+        }),
     }
 }
 
@@ -922,6 +928,14 @@ struct LlamaCppChatCompletionRequest<'a> {
     stop: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<&'a str>,
+    /// OpenAI-compatible servers omit `usage` from streams unless asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<LlamaCppStreamOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct LlamaCppStreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1001,7 +1015,13 @@ struct LlamaCppChatCompletionStreamChunk {
 impl LlamaCppChatCompletionStreamChunk {
     fn into_stream_chunk(self) -> LlamaCppStreamChunk {
         let choice = self.choices.into_iter().next().unwrap_or_default();
-        let finish_reason = choice.finish_reason;
+        // OpenAI finish reasons are mapped onto the shared stop_type table:
+        // a tool-call or function-call terminal delta is a normal stop, not
+        // an unknown stop_type (which the table reports as an error finish).
+        let finish_reason = choice.finish_reason.map(|reason| match reason.as_str() {
+            "tool_calls" | "function_call" => "stop".to_string(),
+            _ => reason,
+        });
         LlamaCppStreamChunk {
             content: choice
                 .delta
@@ -1037,6 +1057,30 @@ fn llama_cpp_server_completion_route(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_chat_stream_tool_call_finish_is_a_normal_stop() {
+        let chunk: LlamaCppChatCompletionStreamChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"content":""},"finish_reason":"tool_calls"}]}"#,
+        )
+        .expect("chunk parses");
+        let chunk = chunk.into_stream_chunk();
+        assert!(chunk.stop);
+        assert_eq!(
+            crate::generate::finish_reason_from_stop_type(chunk.stop, chunk.stop_type.as_deref()),
+            Some(GenerateFinishReason::Stop)
+        );
+    }
+
+    #[test]
+    fn native_completion_stream_accepts_llama_cpp_usage_names() {
+        let chunk: LlamaCppStreamChunk = serde_json::from_str(
+            r#"{"content":"","stop":true,"stop_type":"eos","tokens_evaluated":42,"tokens_predicted":7}"#,
+        )
+        .expect("chunk parses");
+        assert_eq!(chunk.prompt_token_count, Some(42));
+        assert_eq!(chunk.output_token_count, Some(7));
+    }
 
     #[test]
     fn extract_cli_response_strips_preamble_and_stats() {

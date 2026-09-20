@@ -475,6 +475,11 @@ impl EngineSession {
             request_id,
             &request,
         )?;
+        // Mirror the native request manager: a second submit with a live or
+        // terminal id must not silently drop the first stream handle.
+        if self.llama_requests.contains_key(&request_id) {
+            return Err(EngineSessionError::DuplicateRequestId { request_id });
+        }
         self.advance_request_id(request_id);
         let (_runtime, stream, _route_backend) =
             self.llama_cpp_stream_start(request_id, &request)?;
@@ -952,6 +957,16 @@ impl EngineSession {
         }
         if request.input_text.is_some() {
             return Err(EngineSessionError::MlxBackendRequiresTokenizedInput);
+        }
+        if !request.stop_sequences.is_empty() {
+            // The core scheduler has no stop-string sampler; the HTTP server
+            // applies client stops post-decode (ADR-040). Direct SDK callers
+            // must not believe the field was honored.
+            tracing::warn!(
+                request_id,
+                stop_sequences = request.stop_sequences.len(),
+                "native MLX session ignores stop_sequences; apply stop strings on the decoded text"
+            );
         }
 
         let request_id = RequestId(request_id);

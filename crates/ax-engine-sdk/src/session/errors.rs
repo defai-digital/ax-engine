@@ -57,6 +57,8 @@ pub enum EngineSessionError {
     MlxMtpRequiredButUnavailable,
     #[error("request_id must be greater than zero")]
     InvalidRequestId,
+    #[error("request id {request_id} is already in use by a live or terminal request")]
+    DuplicateRequestId { request_id: u64 },
     #[error("unsupported support tier cannot start an engine session")]
     UnsupportedSupportTier,
     #[error(

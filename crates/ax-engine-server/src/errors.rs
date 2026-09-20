@@ -84,6 +84,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::InvalidMultimodalInputs(_)
         | EngineSessionError::InvalidMaxBatchTokens
         | EngineSessionError::InvalidRequestId
+        | EngineSessionError::DuplicateRequestId { .. }
         | EngineSessionError::UnsupportedSupportTier
         | EngineSessionError::MlxMtpRequiredButUnavailable
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }

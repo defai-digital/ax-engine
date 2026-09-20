@@ -42,6 +42,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::InvalidMultimodalInputs(_)
         | EngineSessionError::InvalidMaxBatchTokens
         | EngineSessionError::InvalidRequestId
+        | EngineSessionError::DuplicateRequestId { .. }
         | EngineSessionError::UnsupportedSupportTier
         | EngineSessionError::MlxMtpRequiredButUnavailable
         | EngineSessionError::LlamaCppDoesNotSupportLifecycle { .. }
