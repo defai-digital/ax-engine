@@ -1495,7 +1495,13 @@ fn cancel_stepwise_request(
     session: &mut EngineSession,
     request_id: u64,
 ) -> SessionResult<SessionRequestReport> {
-    request_report(session, request_id)?;
+    let report = request_report(session, request_id)?;
+    // A terminal request has already left the engine's live records (drain
+    // moves it to retained snapshots); cancelling it again is a no-op that
+    // returns the terminal report, like the llama.cpp lifecycle path.
+    if request_state_is_terminal(report.state) {
+        return Ok(report);
+    }
     session.cancel_request(request_id)?;
     session
         .request_report(request_id)
@@ -1782,7 +1788,16 @@ fn advance_shared_engine(
                                 break;
                             }
                         }
-                        Err(_) => break,
+                        Err(error) => {
+                            // The next tick's primary step retries and, if the
+                            // failure persists, detaches the streams; a burst
+                            // failure must still leave an operator-visible trace.
+                            tracing::warn!(
+                                %error,
+                                "single-stream burst engine step failed; retrying on the next tick"
+                            );
+                            break;
+                        }
                     }
                 }
             }
@@ -2439,6 +2454,32 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         assert!(!service.is_busy());
+    }
+
+    #[test]
+    fn cancelling_a_terminal_stepwise_request_returns_its_report() {
+        let mut session = EngineSession::new_deterministic_native_for_tests();
+        let request = ax_engine_sdk::GenerateRequest {
+            model_id: "qwen3".to_string(),
+            input_tokens: vec![1, 2, 3],
+            input_text: None,
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 4,
+            sampling: Default::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        };
+        session
+            .submit_generate_with_request_id(7, request)
+            .expect("submit");
+        let first = cancel_stepwise_request(&mut session, 7).expect("first cancel");
+        assert!(request_state_is_terminal(first.state));
+        // Drain terminal cleanup so the record leaves the live table.
+        let _ = session.step_report_with_request_ids();
+        // A second cancel must not surface UnknownRequest as a 500: the
+        // request is terminal and its report is still served.
+        let second = cancel_stepwise_request(&mut session, 7).expect("second cancel");
+        assert_eq!(second.state, first.state);
     }
 
     #[tokio::test]

@@ -24,15 +24,19 @@ pub(crate) fn percentile_u64(values: &[u64], quantile: f64) -> Option<u64> {
     values.get(index).copied()
 }
 
-pub(crate) fn percentage_delta(baseline: f64, candidate: f64) -> f64 {
+/// Percentage change from `baseline` to `candidate`. `None` when the change
+/// is undefined (zero baseline, non-zero candidate): serde_json would
+/// otherwise silently turn the infinite value into `null`, so the artifact
+/// carries an explicit absence instead of an accidental one.
+pub(crate) fn percentage_delta(baseline: f64, candidate: f64) -> Option<f64> {
     if baseline.abs() < f64::EPSILON {
         if candidate.abs() < f64::EPSILON {
-            0.0
+            Some(0.0)
         } else {
-            f64::INFINITY.copysign(candidate)
+            None
         }
     } else {
-        ((candidate - baseline) / baseline) * 100.0
+        Some(((candidate - baseline) / baseline) * 100.0)
     }
 }
 
@@ -71,5 +75,25 @@ mod tests {
         assert_eq!(nonzero_elapsed_ms(Duration::from_micros(999)), 1);
         assert_eq!(nonzero_elapsed_ms(Duration::from_millis(1)), 1);
         assert_eq!(nonzero_elapsed_ms(Duration::from_millis(120)), 120);
+    }
+}
+
+#[cfg(test)]
+mod percentage_delta_tests {
+    use super::percentage_delta;
+
+    #[test]
+    fn zero_baseline_is_an_explicit_absence_not_an_infinite_value() {
+        assert_eq!(percentage_delta(0.0, 0.0), Some(0.0));
+        assert_eq!(percentage_delta(0.0, 0.5), None);
+        assert_eq!(percentage_delta(0.0, -0.5), None);
+        let delta = percentage_delta(10.0, 15.0).expect("finite delta");
+        assert!((delta - 50.0).abs() < 1e-9);
+        // The artifact carries `null` deliberately rather than by serde
+        // coercion of an infinite f64.
+        assert_eq!(
+            serde_json::json!({"pct": percentage_delta(0.0, 1.0)})["pct"],
+            serde_json::Value::Null
+        );
     }
 }
