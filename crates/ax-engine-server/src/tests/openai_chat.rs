@@ -440,6 +440,71 @@ fn openai_chat_prompt_renderer_uses_qwen36_function_xml_tool_contract() {
 }
 
 #[test]
+fn tiel_tool_contract_uses_publisher_xml_grammar_for_calls_and_history() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Use project conventions."},
+        {"role": "user", "content": "Count Python files"},
+        {"role": "assistant", "content": null, "tool_calls": [{
+            "id": "call_0", "type": "function",
+            "function": {"name": "read_file", "arguments": "{\"path\":\"README.md\"}"}
+        }]},
+        {"role": "tool", "tool_call_id": "call_0", "content": "Python: 238 lines"},
+        {"role": "user", "content": "Continue"}
+    ]))
+    .expect("valid history");
+    let tools = json!([{"type": "function", "function": {
+        "name": "read_file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}
+    }}]);
+    for model_id in [
+        "tiel-coder-35b-axq-mxfp4",
+        "cyber-tiel-coder-35b-axq-mxfp4",
+        "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+    ] {
+        let prompt = render_openai_chat_prompt_with_tools(
+            model_id,
+            &messages,
+            Some(&tools),
+            Some(&json!("auto")),
+        )
+        .expect("Tiel prompt renders");
+        assert!(
+            prompt.starts_with("<|im_start|>system\n# Tools"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("<function=example_function_name>"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("<function=read_file>"), "{prompt}");
+        assert!(
+            prompt.contains("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+            "{prompt}"
+        );
+        assert_eq!(prompt.matches("<|im_start|>system\n").count(), 1);
+        assert_eq!(prompt.matches("# Tools").count(), 1);
+        let no_tools = render_openai_chat_prompt_with_tools(
+            model_id,
+            &messages,
+            Some(&tools),
+            Some(&json!("none")),
+        )
+        .expect("tool-free Tiel prompt renders");
+        assert!(!no_tools.contains("# Tools"));
+        assert!(prompt.contains("<parameter=path>"), "{prompt}");
+        assert!(prompt.contains("<tool_response>"), "{prompt}");
+        assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+    }
+    for unrelated in [
+        "other/tiel-coder-35b-axq-mxfp4",
+        "tiel-coder-35b-axq-mxfp4-custom",
+        "tiel",
+    ] {
+        assert!(!chat::is_tiel_coder_model(unrelated));
+    }
+}
+
+#[test]
 fn openai_chat_prompt_renderer_uses_ornith_function_xml_and_official_history() {
     // Ornith keeps a product id, but its hub jinja is Qwen3.5-class:
     // JSON tool schemas + function= calls, tools-first system turn, and an

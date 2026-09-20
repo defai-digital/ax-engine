@@ -594,7 +594,22 @@ fn json_contains_u64(value: &Value, target: u64) -> bool {
 /// but share official Qwen3.5 ChatML + function-XML tools.
 pub(crate) fn is_qwen35_class_named_finetune(model_id: &str) -> bool {
     let m = model_id.to_ascii_lowercase();
-    m.contains("holo3") || m.contains("holo-3") || m.contains("ornith")
+    m.contains("holo3")
+        || m.contains("holo-3")
+        || m.contains("ornith")
+        || is_tiel_coder_model(model_id)
+}
+
+/// Audited Tiel packs default to function-XML calls in their publisher template.
+/// Keep exact identities: unrelated gateways or suffixes must not select it.
+pub(crate) fn is_tiel_coder_model(model_id: &str) -> bool {
+    matches!(
+        model_id,
+        "tiel-coder-35b-axq-mxfp4"
+            | "cyber-tiel-coder-35b-axq-mxfp4"
+            | "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP"
+            | "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP"
+    )
 }
 
 pub(crate) fn is_ornith_model(model_id: &str) -> bool {

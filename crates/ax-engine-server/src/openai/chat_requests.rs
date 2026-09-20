@@ -1180,7 +1180,7 @@ fn append_qwen_assistant_history(
         .as_deref()
         .map(str::trim)
         .filter(|reasoning| !reasoning.is_empty());
-    if chat::is_ornith_model(model_id) {
+    if chat::is_ornith_model(model_id) || chat::is_tiel_coder_model(model_id) {
         // Official Ornith jinja always wraps prior assistant turns as
         // `<think>\n{reasoning}\n</think>\n\n{content}`, even when empty.
         // Replay actual CoT only when preserve_thinking is on so ordinary
@@ -1853,9 +1853,9 @@ fn prepend_qwen_tool_contract(
     let Some(contract) = render_tool_contract_system_message(tools, tool_choice, style) else {
         return messages;
     };
-    // Official Ornith jinja puts the tools contract first, then any caller
+    // Ornith and audited Tiel templates put the tools contract first, then caller
     // system text, in the same system turn.
-    if chat::is_ornith_model(model_id) {
+    if chat::is_ornith_model(model_id) || chat::is_tiel_coder_model(model_id) {
         if let Some((role, content)) = messages.first_mut()
             && role == "system"
         {

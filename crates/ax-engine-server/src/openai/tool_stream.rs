@@ -396,6 +396,19 @@ mod tests {
     }
 
     #[test]
+    fn tiel_missing_outer_json_brace_is_not_an_executable_call() {
+        let malformed = "<tool_call>\n{\"name\":\"bash\",\"arguments\":{\"command\":\"cloc --include-ext=py\",\"description\":\"Count Python lines\"}\n</tool_call>";
+        let mut scanner = scanner();
+        let mut events = Vec::new();
+        for chunk in malformed.as_bytes().chunks(7) {
+            events.extend(scanner.push(std::str::from_utf8(chunk).expect("ASCII fixture")));
+        }
+        events.extend(scanner.finish());
+        assert!(calls(&events).is_empty());
+        assert_eq!(content(&events), malformed);
+    }
+
+    #[test]
     fn invalid_span_with_closer_is_flushed_as_content() {
         let mut scanner = scanner();
         let mut events = scanner.push("<|tool_call>not a call<tool_call|>tail");
