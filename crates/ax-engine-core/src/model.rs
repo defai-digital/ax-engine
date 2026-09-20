@@ -1963,6 +1963,7 @@ pub(crate) fn validate_native_model_manifest(
         // compressor/indexer/hash-routing tensors per layer — validate the V4
         // layout directly instead of the generic attn+FFN sandwich.
         if is_deepseek_v4 {
+            validate_deepseek_v4_compress_ratios(manifest)?;
             validate_deepseek_v4_layer(manifest, layer_index, roles)?;
             continue;
         }
@@ -2694,6 +2695,36 @@ fn validate_nemotron_h_layer(
 /// when it is 4. The first `num_hash_layers` layers route via the
 /// `ffn.gate.tid2eid` hash table, the rest via the learned gate correction
 /// bias — exactly one of the two must be present per layer.
+/// Same contract the converter enforces: one ratio per layer, each 0, 4, or
+/// 128. Without it a short or illegal table would silently read as "no
+/// compressor" for the affected layers.
+fn validate_deepseek_v4_compress_ratios(
+    manifest: &NativeModelManifest,
+) -> Result<(), NativeModelError> {
+    let ratios = &manifest.deepseek_v4.compress_ratios;
+    if ratios.len() != manifest.layer_count as usize {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "deepseek_v4.compress_ratios must contain one entry per layer, got {} for layer_count {}",
+                ratios.len(),
+                manifest.layer_count
+            ),
+        });
+    }
+    if let Some((layer_index, ratio)) = ratios
+        .iter()
+        .enumerate()
+        .find(|(_, ratio)| !matches!(ratio, 0 | 4 | 128))
+    {
+        return Err(NativeModelError::InvalidManifest {
+            message: format!(
+                "deepseek_v4.compress_ratios[{layer_index}] must be 0, 4, or 128, got {ratio}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn validate_deepseek_v4_layer(
     manifest: &NativeModelManifest,
     layer_index: u32,

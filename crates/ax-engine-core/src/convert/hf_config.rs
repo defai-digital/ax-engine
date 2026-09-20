@@ -1064,6 +1064,13 @@ pub(crate) fn parse_layer_types(
             .collect();
     }
 
+    // qwen4_exp layers are linear / full / sparse attention; the sliding
+    // window fallback below would synthesize types its own validator
+    // rejects, so an explicit `layer_types` is the only accepted source.
+    if is_qwen4_exp_family(model_type) {
+        return Vec::new();
+    }
+
     let pattern = arch_u64(config, model_type, "sliding_window_pattern")
         .filter(|&pattern| pattern > 0)
         .unwrap_or(5);
@@ -1238,15 +1245,36 @@ pub(crate) fn require_arch_u64(
     arch_u64(config, model_type, field).ok_or(ConvertError::MissingConfigField { field })
 }
 
+/// `require_arch_u64` narrowed to `u32`; a value above `u32::MAX` is a
+/// malformed config, reported as a missing/invalid field instead of wrapping.
+pub(crate) fn require_arch_u32(
+    config: &serde_json::Value,
+    model_type: &str,
+    field: &'static str,
+) -> Result<u32, ConvertError> {
+    u64_to_u32(require_arch_u64(config, model_type, field)?)
+        .ok_or(ConvertError::MissingConfigField { field })
+}
+
+fn optional_arch_u32(
+    config: &serde_json::Value,
+    model_type: &str,
+    field: &'static str,
+) -> Result<Option<u32>, ConvertError> {
+    arch_u64(config, model_type, field)
+        .map(|value| u64_to_u32(value).ok_or(ConvertError::MissingConfigField { field }))
+        .transpose()
+}
+
 pub(crate) fn resolve_architecture(
     config: &serde_json::Value,
     model_type: &str,
 ) -> Result<ArchitectureParams, ConvertError> {
     if model_type == "whisper" {
-        let hidden_size = require_arch_u64(config, model_type, "n_audio_state")? as u32;
-        let attention_head_count = require_arch_u64(config, model_type, "n_audio_head")? as u32;
-        let layer_count = require_arch_u64(config, model_type, "n_audio_layer")? as u32;
-        let vocab_size = require_arch_u64(config, model_type, "n_vocab")? as u32;
+        let hidden_size = require_arch_u32(config, model_type, "n_audio_state")?;
+        let attention_head_count = require_arch_u32(config, model_type, "n_audio_head")?;
+        let layer_count = require_arch_u32(config, model_type, "n_audio_layer")?;
+        let vocab_size = require_arch_u32(config, model_type, "n_vocab")?;
         let attention_head_dim = hidden_size
             .checked_div(attention_head_count)
             .unwrap_or_default();
@@ -1261,21 +1289,23 @@ pub(crate) fn resolve_architecture(
         });
     }
 
-    let hidden_size = require_arch_u64(config, model_type, "hidden_size")? as u32;
-    let attention_head_count = require_arch_u64(config, model_type, "num_attention_heads")? as u32;
-    let kv_head_count = arch_u64(config, model_type, "num_key_value_heads")
-        .map(|v| v as u32)
+    let hidden_size = require_arch_u32(config, model_type, "hidden_size")?;
+    let attention_head_count = require_arch_u32(config, model_type, "num_attention_heads")?;
+    let kv_head_count = optional_arch_u32(config, model_type, "num_key_value_heads")?
         .unwrap_or(attention_head_count);
     let attention_head_dim = if is_mla_family(model_type) {
         let qk_nope = require_arch_u64(config, model_type, "qk_nope_head_dim")?;
         let qk_rope = require_arch_u64(config, model_type, "qk_rope_head_dim")?;
-        (qk_nope + qk_rope) as u32
+        qk_nope.checked_add(qk_rope).and_then(u64_to_u32).ok_or(
+            ConvertError::MissingConfigField {
+                field: "qk_nope_head_dim + qk_rope_head_dim",
+            },
+        )?
     } else {
-        arch_u64(config, model_type, "head_dim")
-            .map(|v| v as u32)
+        optional_arch_u32(config, model_type, "head_dim")?
             .unwrap_or_else(|| hidden_size.checked_div(attention_head_count).unwrap_or(0))
     };
-    let mut layer_count = require_arch_u64(config, model_type, "num_hidden_layers")? as u32;
+    let mut layer_count = require_arch_u32(config, model_type, "num_hidden_layers")?;
     // Nemotron-H: hybrid pattern length is the authoritative layer count (mlx-lm).
     if is_nemotron_h(model_type) {
         let pattern_len = parse_nemotron_hybrid_pattern(config, layer_count).len() as u32;
@@ -1283,10 +1313,9 @@ pub(crate) fn resolve_architecture(
             layer_count = pattern_len;
         }
     }
-    let vocab_size = require_arch_u64(config, model_type, "vocab_size")? as u32;
-    let intermediate_size = arch_u64(config, model_type, "intermediate_size")
-        .map(|v| v as u32)
-        .unwrap_or(0);
+    let vocab_size = require_arch_u32(config, model_type, "vocab_size")?;
+    let intermediate_size =
+        optional_arch_u32(config, model_type, "intermediate_size")?.unwrap_or(0);
 
     Ok(ArchitectureParams {
         layer_count,

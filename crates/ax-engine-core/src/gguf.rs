@@ -186,6 +186,14 @@ fn read_gguf_string(r: &mut impl Read) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Checked narrowing for untrusted `u64` metadata: a value above `u32::MAX`
+/// is a malformed file, never a silently wrapped geometry.
+fn u64_to_u32(value: u64, field: &str) -> Result<u32, GgufError> {
+    u32::try_from(value).map_err(|_| {
+        GgufError::InvalidManifest(format!("{field} = {value} exceeds the supported u32 range"))
+    })
+}
+
 fn f64_to_u32(value: f64) -> Option<u32> {
     if value.is_finite() && value >= 0.0 && value <= f64::from(u32::MAX) {
         Some(value as u32)
@@ -465,7 +473,22 @@ fn parse_gguf_header(path: &Path) -> Result<GgufHeader, GgufError> {
         path: path.to_owned(),
         source: e,
     })?;
-    let data_section_offset = header_end.div_ceil(alignment) * alignment;
+    // `general.alignment` is untrusted: zero would panic in div_ceil and a
+    // huge value would wrap the aligned offset, so both fail closed.
+    if alignment == 0 {
+        return Err(GgufError::InvalidManifest(
+            "general.alignment must be greater than zero".to_string(),
+        ));
+    }
+    let data_section_offset = header_end
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment)
+        .and_then(|value| value.checked_mul(alignment))
+        .ok_or_else(|| {
+            GgufError::InvalidManifest(format!(
+                "data section offset overflows with general.alignment {alignment}"
+            ))
+        })?;
 
     Ok(GgufHeader {
         kv,
@@ -581,8 +604,10 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
             .find_map(|a| kv_float(kv, &format!("{a}.{suffix}")))
     };
 
-    let layer_count =
-        get_arch_uint("block_count").ok_or(GgufError::MissingMetadata("block_count"))? as u32;
+    let layer_count = u64_to_u32(
+        get_arch_uint("block_count").ok_or(GgufError::MissingMetadata("block_count"))?,
+        "block_count",
+    )?;
 
     // vocab_size: prefer explicit metadata, fall back to the token_embd shape.
     // In GGUF, token_embd shape = [hidden_dim, vocab_size] (ggml order), so
@@ -595,29 +620,35 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                 .find(|t| t.name == "token_embd.weight")
                 .and_then(|t| t.dims.last().copied())
         })
-        .ok_or(GgufError::MissingMetadata("vocab_size"))? as u32;
+        .ok_or(GgufError::MissingMetadata("vocab_size"))?;
+    let vocab_size = u64_to_u32(vocab_size, "vocab_size")?;
 
     // hidden_size: prefer metadata, fall back to token_embd shape
     let hidden_size = get_arch_uint("embedding_length")
-        .map(|v| v as u32)
         .or_else(|| {
             header
                 .tensors
                 .iter()
                 .find(|t| t.name == "token_embd.weight")
-                .and_then(|t| t.logical_shape().get(1).map(|&d| d as u32))
+                .and_then(|t| t.logical_shape().get(1).copied())
         })
         .ok_or(GgufError::MissingMetadata("embedding_length"))?;
+    let hidden_size = u64_to_u32(hidden_size, "embedding_length")?;
 
-    let attention_head_count = get_arch_uint("attention.head_count")
-        .ok_or(GgufError::MissingMetadata("attention.head_count"))?
-        as u32;
-    let kv_head_count =
-        get_arch_uint("attention.head_count_kv").unwrap_or(attention_head_count as u64) as u32;
+    let attention_head_count = u64_to_u32(
+        get_arch_uint("attention.head_count")
+            .ok_or(GgufError::MissingMetadata("attention.head_count"))?,
+        "attention.head_count",
+    )?;
+    let kv_head_count = get_arch_uint("attention.head_count_kv")
+        .map(|v| u64_to_u32(v, "attention.head_count_kv"))
+        .transpose()?
+        .unwrap_or(attention_head_count);
 
     // head_dim: prefer explicit key, else hidden_size / head_count
     let attention_head_dim = get_arch_uint("attention.key_length")
-        .map(|v| v as u32)
+        .map(|v| u64_to_u32(v, "attention.key_length"))
+        .transpose()?
         .unwrap_or_else(|| hidden_size / attention_head_count.max(1));
 
     let rope_theta = get_arch_float("rope.freq_base").and_then(f64_to_u32);
@@ -760,7 +791,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
 
     // Feed-forward intermediate size (optional in GGUF metadata; 0 means unknown)
     let intermediate_size = get_arch_uint("feed_forward_length")
-        .map(|v| v as u32)
+        .map(|v| u64_to_u32(v, "feed_forward_length"))
+        .transpose()?
         .unwrap_or(0);
 
     // Linear attention (SSM / Mamba-style hybrid) configuration.
@@ -779,7 +811,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                 "qwen35.full_attention_interval",
             ],
         )
-        .map(|v| v as u32);
+        .map(|v| u64_to_u32(v, "full_attention_interval"))
+        .transpose()?;
         let num_value_heads = kv_uint_multi(
             kv,
             &[
@@ -788,7 +821,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                 &format!("{arch}.ssm.time_step_rank"),
             ],
         )
-        .map(|v| v as u32);
+        .map(|v| u64_to_u32(v, "num_value_heads"))
+        .transpose()?;
         let num_key_heads = kv_uint_multi(
             kv,
             &[
@@ -797,7 +831,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                 &format!("{arch}.ssm.group_count"),
             ],
         )
-        .map(|v| v as u32);
+        .map(|v| u64_to_u32(v, "num_key_heads"))
+        .transpose()?;
         let key_head_dim = kv_uint_multi(
             kv,
             &[
@@ -806,7 +841,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                 &format!("{arch}.ssm.state_size"),
             ],
         )
-        .map(|v| v as u32);
+        .map(|v| u64_to_u32(v, "key_head_dim"))
+        .transpose()?;
         let ssm_inner_size = kv_uint_multi(kv, &[&format!("{arch}.ssm.inner_size")]);
         let value_head_dim = kv_uint_multi(
             kv,
@@ -815,12 +851,15 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                 "qwen35.linear_value_head_dim",
             ],
         )
-        .map(|v| v as u32)
+        .map(|v| u64_to_u32(v, "value_head_dim"))
+        .transpose()?
         .or_else(|| {
             // Derive: value_head_dim = ssm_inner_size / num_value_heads
             let inner = ssm_inner_size?;
-            let nv = num_value_heads? as u64;
-            inner.checked_div(nv).map(|value| value as u32)
+            let nv = u64::from(num_value_heads?);
+            inner
+                .checked_div(nv)
+                .and_then(|value| u32::try_from(value).ok())
         });
         let conv_kernel_dim = kv_uint_multi(
             kv,
@@ -830,7 +869,8 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
                 &format!("{arch}.ssm.conv_kernel"),
             ],
         )
-        .map(|v| v as u32);
+        .map(|v| u64_to_u32(v, "conv_kernel_dim"))
+        .transpose()?;
 
         NativeLinearAttentionConfig {
             full_attention_interval,
@@ -958,6 +998,12 @@ mod tests {
         let parsed = read_kv_value(&mut Cursor::new(payload), GGUF_TYPE_ARRAY, 0)
             .expect("flat array must parse");
         assert!(parsed.is_none(), "arrays are skipped, not stored");
+    }
+
+    #[test]
+    fn metadata_values_outside_u32_are_rejected() {
+        assert_eq!(u64_to_u32(7, "x").ok(), Some(7));
+        assert!(u64_to_u32(u64::from(u32::MAX) + 1, "block_count").is_err());
     }
 
     #[test]

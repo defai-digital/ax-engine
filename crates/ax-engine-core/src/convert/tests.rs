@@ -467,6 +467,50 @@ fn gpt_oss_layer_types_from_config_and_default_alternate() {
 
     // Non-interleaved families still return empty (global SWA path).
     assert!(parse_layer_types(&empty, "mistral", 4).is_empty());
+
+    // qwen4_exp never receives the sliding-window fallback: its validator
+    // accepts only linear / full / sparse attention, so an omitted
+    // `layer_types` must surface as the clear length error, not as
+    // synthesized sliding_attention entries.
+    let qwen4 = serde_json::json!({ "model_type": "qwen4_exp" });
+    assert!(parse_layer_types(&qwen4, "qwen4_exp", 4).is_empty());
+    let qwen4_explicit = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "layer_types": ["linear_attention", "full_attention"]
+    });
+    assert_eq!(
+        parse_layer_types(&qwen4_explicit, "qwen4_exp", 2),
+        vec!["linear_attention".to_string(), "full_attention".to_string()]
+    );
+}
+
+#[test]
+fn resolve_architecture_rejects_values_outside_u32() {
+    use super::hf_config::resolve_architecture;
+    let base = serde_json::json!({
+        "model_type": "qwen3",
+        "hidden_size": 64,
+        "num_attention_heads": 2,
+        "num_hidden_layers": 1,
+        "vocab_size": 100
+    });
+    assert!(resolve_architecture(&base, "qwen3").is_ok());
+    for field in [
+        "hidden_size",
+        "num_attention_heads",
+        "num_hidden_layers",
+        "vocab_size",
+    ] {
+        let mut config = base.clone();
+        config[field] = serde_json::json!(4_294_967_297_u64);
+        assert!(
+            resolve_architecture(&config, "qwen3").is_err(),
+            "{field} above u32::MAX must be rejected, not wrapped"
+        );
+    }
+    let mut config = base.clone();
+    config["num_key_value_heads"] = serde_json::json!(4_294_967_297_u64);
+    assert!(resolve_architecture(&config, "qwen3").is_err());
 }
 
 #[test]
