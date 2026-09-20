@@ -166,19 +166,17 @@ pub(crate) fn write_trusted_baseline_artifacts(
         ));
     }
 
-    let baseline_dir = output_root.join(&slug);
-    if baseline_dir.exists() {
+    let final_dir = output_root.join(&slug);
+    if final_dir.exists() {
         return Err(CliError::Contract(format!(
             "trusted baseline already exists and will not be overwritten: {}",
-            baseline_dir.display()
+            final_dir.display()
         )));
     }
-    fs::create_dir_all(&baseline_dir).map_err(|error| {
-        CliError::Runtime(format!(
-            "failed to create trusted baseline directory {}: {error}",
-            baseline_dir.display()
-        ))
-    })?;
+    // Publish atomically: stage every file in a unique directory, then
+    // rename it into place. An interrupted run leaves only a staging
+    // directory, never a half-written baseline that blocks the retry.
+    let (_, baseline_dir) = create_unique_result_dir(output_root, Some("baseline-staging"), &slug)?;
 
     let trusted_baseline =
         build_trusted_baseline_json(name, &slug, source_dir, &manifest, &environment, &metrics)?;
@@ -204,7 +202,14 @@ pub(crate) fn write_trusted_baseline_artifacts(
     copy_optional_artifact_file(source_dir, &baseline_dir, "routes.json")?;
     copy_optional_artifact_file(source_dir, &baseline_dir, "trace.json")?;
 
-    Ok(baseline_dir)
+    fs::rename(&baseline_dir, &final_dir).map_err(|error| {
+        CliError::Runtime(format!(
+            "failed to publish trusted baseline {} -> {}: {error}",
+            baseline_dir.display(),
+            final_dir.display()
+        ))
+    })?;
+    Ok(final_dir)
 }
 
 pub(crate) fn write_matrix_compare_artifacts(
@@ -220,11 +225,9 @@ pub(crate) fn write_matrix_compare_artifacts(
         .get("id")
         .and_then(Value::as_str)
         .unwrap_or("matrix-compare");
-    let result_dir = output_root.join(format!(
-        "{}-matrix-compare-{}",
-        unix_timestamp_secs()?,
-        sanitize_component(matrix_id)
-    ));
+    // Same uniqueness contract as every other artifact writer: two runs in
+    // the same second must not share (and clobber) one result directory.
+    let (_, result_dir) = create_unique_result_dir(output_root, Some("matrix-compare"), matrix_id)?;
     let cases_dir = result_dir.join("cases");
     fs::create_dir_all(&cases_dir).map_err(|error| {
         CliError::Runtime(format!(

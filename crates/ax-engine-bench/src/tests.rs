@@ -9190,3 +9190,45 @@ fn compare_validation_rejects_backend_reported_cached_prompt_tokens_drift() {
 
     assert!(message.contains("route.backend_reported_cached_prompt_tokens"));
 }
+
+#[test]
+fn pluck_style_commands_reject_unknown_flags_and_missing_values() {
+    let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    // A typo'd flag must not silently change behavior.
+    let error = handle_scenario(&args(&[
+        "--manifest",
+        "m.json",
+        "--output-root",
+        "out",
+        "--jsn",
+    ]))
+    .expect_err("unknown flag must be rejected");
+    assert!(
+        matches!(error, CliError::Usage(message) if message.contains("unknown flag for scenario: --jsn"))
+    );
+    // A value flag at the end of the arguments has no value.
+    let error =
+        handle_serving_stress(&args(&["--seed"])).expect_err("missing value must be rejected");
+    assert!(
+        matches!(error, CliError::Usage(message) if message.contains("--seed expects a value"))
+    );
+    // A value flag must not swallow the next flag as its value.
+    let error = handle_serving_stress(&args(&["--model-id", "--json"]))
+        .expect_err("flag-shaped value must be rejected");
+    assert!(matches!(error, CliError::Usage(message) if message.contains("found flag --json")));
+}
+
+#[test]
+fn serving_stress_rejects_a_missing_explicit_artifacts_dir_instead_of_skipping() {
+    let args = [
+        "--mlx-model-artifacts-dir",
+        "/nonexistent/ax-engine-bench-artifacts",
+        "--json",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect::<Vec<_>>();
+    let error =
+        handle_serving_stress(&args).expect_err("explicit missing dir must be a usage error");
+    assert!(matches!(error, CliError::Usage(message) if message.contains("is not a directory")));
+}

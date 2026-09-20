@@ -1,5 +1,50 @@
 use super::*;
 
+/// Reject flags a subcommand does not define, and value-taking flags with a
+/// missing value (or a value that is itself a flag). The pluck-style parsers
+/// below never see a typo'd flag otherwise, so `--jsn` would silently change
+/// behavior and `--model-id --json` would swallow `--json` as the model id.
+pub(crate) fn reject_unknown_flags(
+    command: &str,
+    args: &[String],
+    value_flags: &[&str],
+    bool_flags: &[&str],
+) -> Result<(), CliError> {
+    let mut iter = args.iter();
+    while let Some(token) = iter.next() {
+        if !token.starts_with("--") {
+            return Err(CliError::Usage(format!(
+                "unexpected argument for {command}: {token}\n\n{}",
+                usage()
+            )));
+        }
+        if bool_flags.contains(&token.as_str()) {
+            continue;
+        }
+        if value_flags.contains(&token.as_str()) {
+            match iter.next() {
+                Some(value) if !value.starts_with("--") => {}
+                Some(value) => {
+                    return Err(CliError::Usage(format!(
+                        "{token} expects a value for {command}, found flag {value}"
+                    )));
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "{token} expects a value for {command}"
+                    )));
+                }
+            }
+            continue;
+        }
+        return Err(CliError::Usage(format!(
+            "unknown flag for {command}: {token}\n\n{}",
+            usage()
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn optional_named_flag(args: &[String], name: &str) -> Option<String> {
     let mut iter = args.iter();
     while let Some(candidate) = iter.next() {

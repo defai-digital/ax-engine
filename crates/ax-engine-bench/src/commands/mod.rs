@@ -54,6 +54,12 @@ pub(crate) fn run() -> Result<(), CliError> {
 }
 
 pub(crate) fn handle_scenario(args: &[String]) -> Result<(), CliError> {
+    reject_unknown_flags(
+        "scenario",
+        args,
+        &["--manifest", "--output-root"],
+        &["--json", "--no-trace"],
+    )?;
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
     let json = has_flag(args, "--json");
@@ -114,6 +120,12 @@ pub(crate) fn handle_scenario(args: &[String]) -> Result<(), CliError> {
 }
 
 pub(crate) fn handle_replay(args: &[String]) -> Result<(), CliError> {
+    reject_unknown_flags(
+        "replay",
+        args,
+        &["--manifest", "--output-root"],
+        &["--json", "--no-trace"],
+    )?;
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
     let json = has_flag(args, "--json");
@@ -274,6 +286,12 @@ pub(crate) fn parse_autotune_args(args: &[String]) -> Result<AutotuneArgs, CliEr
 }
 
 pub(crate) fn handle_compare(args: &[String]) -> Result<(), CliError> {
+    reject_unknown_flags(
+        "compare",
+        args,
+        &["--baseline", "--candidate", "--output-root"],
+        &["--json"],
+    )?;
     let baseline = required_flag(args, "--baseline")?;
     let candidate = required_flag(args, "--candidate")?;
     let output_root = required_flag(args, "--output-root")?;
@@ -298,6 +316,12 @@ pub(crate) fn handle_compare(args: &[String]) -> Result<(), CliError> {
 }
 
 pub(crate) fn handle_baseline(args: &[String]) -> Result<(), CliError> {
+    reject_unknown_flags(
+        "baseline",
+        args,
+        &["--source", "--name", "--output-root"],
+        &["--json"],
+    )?;
     let source = required_flag(args, "--source")?;
     let name = required_string_flag(args, "--name")?;
     let output_root = required_flag(args, "--output-root")?;
@@ -314,6 +338,12 @@ pub(crate) fn handle_baseline(args: &[String]) -> Result<(), CliError> {
 }
 
 pub(crate) fn handle_matrix_compare(args: &[String]) -> Result<(), CliError> {
+    reject_unknown_flags(
+        "matrix-compare",
+        args,
+        &["--baseline", "--candidate", "--output-root"],
+        &["--json"],
+    )?;
     let baseline = required_flag(args, "--baseline")?;
     let candidate = required_flag(args, "--candidate")?;
     let output_root = required_flag(args, "--output-root")?;
@@ -336,6 +366,12 @@ pub(crate) fn handle_matrix_compare(args: &[String]) -> Result<(), CliError> {
 }
 
 pub(crate) fn handle_matrix(args: &[String]) -> Result<(), CliError> {
+    reject_unknown_flags(
+        "matrix",
+        args,
+        &["--manifest", "--output-root"],
+        &["--json", "--no-trace"],
+    )?;
     let manifest = required_flag(args, "--manifest")?;
     let output_root = required_flag(args, "--output-root")?;
     let json = has_flag(args, "--json");
@@ -432,6 +468,22 @@ pub(crate) fn handle_generate(args: &[String]) -> Result<(), CliError> {
 }
 
 pub(crate) fn handle_serving_stress(args: &[String]) -> Result<(), CliError> {
+    reject_unknown_flags(
+        "serving-stress",
+        args,
+        &[
+            "--workload",
+            "--mlx-model-artifacts-dir",
+            "--model-id",
+            "--prefill-tokens",
+            "--decode-tokens",
+            "--concurrent-short-requests",
+            "--short-prefix-tokens",
+            "--seed",
+            "--output-path",
+        ],
+        &["--json"],
+    )?;
     use crate::harness::pressure_observer::{PlatformProbes, StaticProbes, observe_and_record};
     use crate::workloads::Workload;
     use crate::workloads::cancellation_during_prefill::CancellationDuringPrefill;
@@ -456,10 +508,21 @@ pub(crate) fn handle_serving_stress(args: &[String]) -> Result<(), CliError> {
     let output_path = optional_named_flag(args, "--output-path").map(PathBuf::from);
     let json = has_flag(args, "--json");
 
-    let ctx_artifacts = cli_artifacts_dir.filter(|p| p.exists()).or_else(|| {
+    // An explicit directory that does not exist is a usage error, never a
+    // silent fall-through to a "skipped" run that exits 0; only the
+    // environment fallback is optional.
+    if let Some(dir) = cli_artifacts_dir.as_deref()
+        && !dir.is_dir()
+    {
+        return Err(CliError::Usage(format!(
+            "--mlx-model-artifacts-dir {} is not a directory",
+            dir.display()
+        )));
+    }
+    let ctx_artifacts = cli_artifacts_dir.or_else(|| {
         std::env::var_os("AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR")
             .map(PathBuf::from)
-            .filter(|p| p.exists())
+            .filter(|p| p.is_dir())
     });
     let ctx = WorkloadContext {
         mlx_model_artifacts_dir: ctx_artifacts,
