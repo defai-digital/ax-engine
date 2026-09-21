@@ -2,7 +2,10 @@
 
 AX Engine is a Mac-first inference runtime **optimized first for Qwen 3.8 27B
 AXQ** (`qwen3.8-27b:axq`), with a local server, SDK bindings, and benchmark
-tooling. Other Certified families stay supported; they are not the first-run
+tooling. Product-path MTP on that pack is **31.05 tok/s** decode on the
+recommended Mac mini M4 Pro 64 GB (2.43× mlx-lm 12.78, which already sits at
+the DRAM ceiling) and **76.90 tok/s** decode / **795.3 tok/s** prefill on M5 Max
+128 GB. Other Certified families stay supported; they are not the first-run
 path. It is not only an MLX experiment: the repo-owned MLX runtime is one path,
 and delegated compatibility paths let users keep the same AX surface for
 broader model coverage.

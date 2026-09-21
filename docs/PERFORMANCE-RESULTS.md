@@ -39,6 +39,8 @@ denominator.
 
 | Session | Engine / peers | Host | When |
 | --- | --- | --- | --- |
+| Qwen 3.8 27B AXQ 6-bit MTP (Engine default) | AX **7.4.0** `ad999f3f` · MTPLX **2.11.3** · OMLX **0.6.4** · mlx-lm **0.31.3** | Mac mini **M4 Pro 64 GB** | [2026-09-17](../benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/) · **31.05** decode / **120.3** prefill |
+| Qwen 3.8 27B AXQ 6-bit MTP (campaign host) | AX **7.4.0** product-path MTP · MTPLX **2.11.2** · OMLX **0.6.4** · mlx-lm **0.31.3** | Apple **M5 Max** 128 GB | [2026-09-15](../benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/) · **76.90** decode / **795.3** prefill |
 | Tiel / Cyber-Tiel resident native API | AX candidate on `574d2d19` + Python mode fix · MTPLX **2.11.3** | M5 Max 128 GiB / M4 Pro 64 GiB / M2 Ultra 192 GiB / M3 Ultra 512 GiB | [2026-09-20](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md) |
 | Single-client serving vs peer MLX serving engine | AX Engine **6.13.1** · peer MLX serving engine **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
 | Multi-model S1 | AX Engine · multi-process peer MLX server **0.4.3** | Apple **M5 Max** 128 GB | 2026-08-06 |
@@ -68,6 +70,21 @@ share a same-artifact denominator.
 | Embeddings | Encoder-style embedding throughput and ingest scale | Chunks/s, tokens/s, latency at batch/chunk settings | Text generation decode/prefill/TTFT |
 
 ### Session Mode: MTP Generation
+
+#### Qwen 3.8 27B AXQ (Engine default)
+
+Product-path MTP on `qwen3.8-27b:axq`. Direct AR already saturates DRAM
+(mlx-lm 12.78 tok/s on M4 Pro, 27.90 on M5 Max). Headline rows:
+
+| Host | AX Engine decode / prefill | mlx-lm direct | MTPLX | OMLX |
+| --- | ---: | ---: | ---: | ---: |
+| Mac mini M4 Pro 64 GB (2026-09-17) | **31.05 / 120.3** | 12.78 (2.43×) | 28.16 / 114.0 | 15.02 |
+| M5 Max 128 GB (2026-09-15) | **76.90 / 795.3** | 27.90 (2.76×) | 70.62 / 686.6 | 38.47 |
+
+20-run medians, `flappy` contract. M5 Max peer table is pre-correction; a
+same-host A/B after the SwiGLU/target-head fixes stayed within 0.3% decode.
+Root README: [Qwen performance](../README.md#qwen-performance). Do not mix
+these dense-27B decode numbers with Tiel completion tok/s.
 
 #### Tiel and Cyber-Tiel resident peer comparison (2026-09-20)
 

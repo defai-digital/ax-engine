@@ -1,7 +1,12 @@
 # AX Engine
 
 AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
-for Qwen 3.8 27B AXQ**, benchmarked head-to-head in MTP mode against the two
+for Qwen 3.8 27B AXQ**. Dense 27B decode is already at the DRAM ceiling in
+direct AR (mlx-lm **12.78 tok/s** on the recommended Mac mini M4 Pro 64 GB,
+**27.90** on M5 Max 128 GB). Product-path MTP is **31.05 tok/s** on that mini
+(**2.43×**) and **76.90 tok/s** decode / **795.3 tok/s** prefill on M5 Max
+(**2.76×**). That is the Engine speed story: speculation past the memory wall
+on the default pack. It is benchmarked head-to-head in MTP mode against the two
 other MLX runtimes that load the same AXQ 6-bit MTP pack and run MTP —
 **MTPLX** (draft depth 3) and **OMLX** (Lightning depth 1). We publish those
 comparisons across Apple Silicon SKUs, wins and losses both, with checked-in
@@ -33,8 +38,8 @@ MiniCPM-V, and others) are documented under
 
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** Product SKUs:
 
-- **Mac mini M4 Pro 64 GB** — best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`)
-- **MacBook Pro M5 Max 128 GB** — qualification target for Qwen 3.8 Flash Next MXFP4 MTP
+- **Mac mini M4 Pro 64 GB** — best experience and qualification SKU for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); **31.05 tok/s** product-path MTP decode
+- **MacBook Pro M5 Max 128 GB** — 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill) and qualification target for Qwen 3.8 Flash Next MXFP4 MTP
   (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). The existing `qwen3.8-flash-next:axq` alias selects affine 4-bit, not MXFP4.
 
 Compact single models (Qwen 3.5 9B 4-bit preferred) still fit **16 GB**. Prefer
@@ -49,17 +54,19 @@ still depend on memory capacity and workload; see the
 
 ## Why AX Engine
 
-- **Benchmarked head-to-head in MTP mode** — MTPLX and OMLX are the public
-  peers that load the same `qwen3.8-27b:axq` AXQ 6-bit MTP pack and run MTP
-  (MTPLX at draft depth 3, OMLX at Lightning depth 1); on the Mac mini M4 Pro
-  64 GB SKU AX Engine leads both on decode (31.05 vs 28.16 vs 15.02 tok/s,
-  20-run medians, 2026-09-17). The Tiel MXFP4 four-SKU peer run is against
-  MTPLX. We publish version-pinned wins **and** losses with checked-in
-  artifacts ([Performance](#performance)); it is a measured snapshot, not a
+- **Dense 27B past the DRAM ceiling** — MTPLX and OMLX are the public peers
+  that load the same `qwen3.8-27b:axq` AXQ 6-bit MTP pack and run MTP
+  (MTPLX at draft depth 3, OMLX at Lightning depth 1). Direct AR already uses
+  95–98% of published bandwidth. Product-path MTP is **31.05 vs 28.16 vs 15.02
+  tok/s** on the Mac mini M4 Pro 64 GB SKU (2.43× mlx-lm 12.78) and
+  **76.90 tok/s** decode / **795.3 tok/s** prefill on M5 Max 128 GB (2.76×
+  mlx-lm 27.90). The Tiel MXFP4 four-SKU peer run is a separate MoE lane
+  against MTPLX. We publish version-pinned wins **and** losses with checked-in
+  artifacts ([Performance](#qwen-performance)); it is a measured snapshot, not a
   permanent ranking, and MTP Tier 2 is still pending
 - **Optimized first for Qwen 3.8 27B AXQ** — one download of
   `qwen3.8-27b:axq` is the default serve path. Product-path MTP on this pack is
-  the number in [Performance](#performance). Peers that cannot load this AXQ
+  the number in [Performance](#qwen-performance). Peers that cannot load this AXQ
   snapshot are recorded as unable to run the pack rather than substituted with
   another checkpoint
 - **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
@@ -353,6 +360,15 @@ pack: 20.84 GB of weights per token, already at the DRAM ceiling in direct AR.
 Tiel / Cyber-Tiel are AX Code's managed MoE coding packs. Their tok/s are not
 interchangeable with the 27B table.
 
+| Lane | Pack | Host | AX Engine | Direct AR (mlx-lm) | MTPLX |
+| --- | --- | --- | ---: | ---: | ---: |
+| Engine default (dense) | `qwen3.8-27b:axq` | Mac mini M4 Pro 64 GB | **31.05** decode / **120.3** prefill | 12.78 decode (**2.43×**) | 28.16 / 114.0 |
+| Engine default (dense) | `qwen3.8-27b:axq` | M5 Max 128 GB | **76.90** decode / **795.3** prefill | 27.90 decode (**2.76×**) | 70.62 / 686.6 |
+| AX Code default (MoE) | Tiel 35B MXFP4 MTP | M5 Max 128 GB | **194.88** completion (incl. TTFT) | — | 177.44 |
+
+Decode and prefill for Qwen 27B are 20-run medians. Tiel completion includes TTFT
+(six-sample median). Details below; do not quote 76.90 next to 194.88 as one number.
+
 <a id="qwen-performance"></a>
 
 ### Qualification SKU: Mac mini M4 Pro 64 GB (2026-09-17)
@@ -382,7 +398,7 @@ reps, 3 s cooldown); decode and prefill are **20-run medians**. Evidence:
   <img
     src="docs/assets/perf-mtp-peer-decode-m4-pro-2026-09-17.svg"
     width="780"
-    alt="Three-way MTP decode throughput on the Mac mini M4 Pro 64 GB: AX Engine 31.05, MTPLX 28.16, and OMLX 15.02 tokens per second on the qwen3.8-27b:axq AXQ 6-bit MTP pack (20-run medians, 2026-09-17)"
+    alt="MTP decode throughput on the Mac mini M4 Pro 64 GB: AX Engine 31.05, MTPLX 28.16, and OMLX 15.02 tokens per second on the qwen3.8-27b:axq AXQ 6-bit MTP pack, with a grey direct-AR mlx-lm 12.78 baseline bar (20-run medians, 2026-09-17)"
   >
 </p>
 
@@ -414,7 +430,50 @@ its prefill lead is 6x for both AX and MTPLX. Full analysis:
 | Mac mini M4 Pro 64 GB | 273 GB/s | 12.78 tok/s | 266 GB/s | 97.5% | 31.05 tok/s | 647 GB/s (237%) |
 | MacBook Pro M5 Max 128 GB | 614 GB/s | 27.90 tok/s | 581 GB/s | 94.7% | 76.90 tok/s | 1602 GB/s (261%) |
 
+The M4 Pro MTP column is the corrected 2026-09-17 build; the M5 Max value
+(76.90) is the pre-correction 2026-09-15 build below, where decode moved within
+0.3% after the corrections — the bandwidth ratios hold either way.
+
 <img src="docs/assets/perf-decode-bandwidth-utilization.svg" alt="Decode throughput expressed as weight-stream bandwidth against Apple's published memory bandwidth for Mac mini M4 Pro and MacBook Pro M5 Max">
+
+### Campaign host: Apple M5 Max 128 GB (2026-09-15)
+
+Same dense pack on the campaign host, not the Mac mini M4 Pro 64 GB SKU:
+[`qwen3.8-27b:axq`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
+@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`. `flappy` suite, four cases,
+256 gen, greedy, 2 warmups, 5 measured reps, 3 s cooldown. Decode is the
+**median of 20 measured runs**. Same snapshot directory for every runtime;
+no GGUF or community-4-bit substitute.
+
+These measurements predate the target-head precision fix that removes the
+automatic 2-bit decode cache and the low-precision SwiGLU correction that
+replaces the fused dense activation with the split MLX operations. They do not
+establish throughput or numerical parity for the corrected runtime. A
+same-session A/B on this campaign host (recorded under the 2026-09-17
+SwiGLU consistency evidence) measured decode within 0.3% and prefill
+0.5-1.4% below the 2026-09-15 binary after both corrections. The corrected
+runtime's peer numbers with a recorded build commit are the qualification-SKU
+table above; a refresh of this M5 Max peer table is still pending. Until that
+refresh, **76.90 / 795.3** remain the public M5 Max 27B numbers.
+
+| Runtime | Latest checked | Decode | Prefill |
+| --- | --- | ---: | ---: |
+| **AX Engine 7.4.0** (product-path MTP, depth 3; **pre-correction** 2026-09-15 build, see caveat above) | 2026-09-15 campaign | **76.90 tok/s** | **795.3 tok/s** |
+| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** (MTP depth 3) | PyPI / mtplx.com Latest | 70.62 tok/s | 686.6 tok/s |
+| [OMLX](https://github.com/jundot/omlx) **0.6.4** (Lightning MTP depth 1, imported sidecar) | GitHub Latest release | 38.47 tok/s | — |
+| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR, no MTP) | PyPI Latest | 27.90 tok/s | — |
+
+AX Engine, MTPLX, and OMLX all loaded the snapshot and completed the MTP
+contract — AX Engine and MTPLX at draft depth 3, OMLX at Lightning depth 1 —
+so this is a three-way MTP comparison; `mlx-lm` is the direct-AR (no MTP)
+baseline. Decode and prefill are **20-run medians** on the same `flappy`
+prompts (prompt lengths 264–432 tokens). The remaining runtimes evaluated in
+this campaign could not load the AXQ 6-bit affine pack (CUDA-only, cluster-only,
+non-GGUF, or no AXQ MLX loader on the host); they are recorded with artifacts in
+the archived campaign rather than shown as throughput peers, and an unsupported
+peer is never substituted with another checkpoint. MTP Tier 2 remains pending.
+Artifacts:
+[2026-09-15 campaign](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
 
 <a id="tiel-performance"></a>
 
@@ -499,45 +558,6 @@ change defaults or certify either pack. The subsequent
 [bounded M4 default-session residency change](docs/mtp/tiel-prefill-diagnostics.md#bounded-default-session-residency)
 has separate AX-only server acceptance evidence; MTPLX was not rerun for that
 later build, and these peer timings are not default-server measurements.
-
-### Campaign host: Apple M5 Max 128 GB (2026-09-15)
-
-Historical same-pack measurements with the runtimes available on 2026-09-15:
-[`qwen3.8-27b:axq`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
-@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`. Apple **M5 Max**, 128 GB
-(campaign host, not the Mac mini M4 Pro 64 GB SKU). `flappy` suite, four cases,
-256 gen, greedy, 2 warmups, 5 measured reps, 3 s cooldown. Decode is the
-**median of 20 measured runs**. Same snapshot directory for every runtime;
-no GGUF or community-4-bit substitute.
-
-These measurements predate the target-head precision fix that removes the
-automatic 2-bit decode cache and the low-precision SwiGLU correction that
-replaces the fused dense activation with the split MLX operations. They do not
-establish throughput or numerical parity for the corrected runtime. A
-same-session A/B on this campaign host (recorded under the 2026-09-17
-SwiGLU consistency evidence) measured decode within 0.3% and prefill
-0.5-1.4% below the 2026-09-15 binary after both corrections. The corrected
-runtime's peer numbers with a recorded build commit are the qualification-SKU
-table above; a refresh of this M5 Max table is still pending.
-
-| Runtime | Latest checked | Decode | Prefill |
-| --- | --- | ---: | ---: |
-| **AX Engine 7.4.0** (product-path MTP, depth 3; **pre-correction** 2026-09-15 build, see caveat above) | 2026-09-15 campaign | **76.90 tok/s** | **795.3 tok/s** |
-| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** (MTP depth 3) | PyPI / mtplx.com Latest | 70.62 tok/s | 686.6 tok/s |
-| [OMLX](https://github.com/jundot/omlx) **0.6.4** (Lightning MTP depth 1, imported sidecar) | GitHub Latest release | 38.47 tok/s | — |
-| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR, no MTP) | PyPI Latest | 27.90 tok/s | — |
-
-AX Engine, MTPLX, and OMLX all loaded the snapshot and completed the MTP
-contract — AX Engine and MTPLX at draft depth 3, OMLX at Lightning depth 1 —
-so this is a three-way MTP comparison; `mlx-lm` is the direct-AR (no MTP)
-baseline. Decode and prefill are **20-run medians** on the same `flappy`
-prompts (prompt lengths 264–432 tokens). The remaining runtimes evaluated in
-this campaign could not load the AXQ 6-bit affine pack (CUDA-only, cluster-only,
-non-GGUF, or no AXQ MLX loader on the host); they are recorded with artifacts in
-the archived campaign rather than shown as throughput peers, and an unsupported
-peer is never substituted with another checkpoint. MTP Tier 2 remains pending.
-Artifacts:
-[2026-09-15 campaign](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
 
 Archived Qwen 3.6 serving, multi-model S1, embeddings, and the 2026-08-31
 depth-1 AX / MTPLX 2.9.0 / OMLX 0.6.4 table stay in
