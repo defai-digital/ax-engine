@@ -440,44 +440,67 @@ The M4 Pro MTP column is the corrected 2026-09-17 build; the M5 Max value
 
 <img src="docs/assets/perf-decode-bandwidth-utilization.svg" alt="Decode throughput expressed as weight-stream bandwidth against Apple's published memory bandwidth for Mac mini M4 Pro and MacBook Pro M5 Max">
 
-### Campaign host: Apple M5 Max 128 GB (2026-09-15)
+### Campaign host: Apple M5 Max 128 GB (2026-09-21 refresh, AX Engine 7.5.3)
 
-Same dense pack on the campaign host, not the Mac mini M4 Pro 64 GB SKU:
-[`qwen3.8-27b:axq`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
-@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`. `flappy` suite, four cases,
-256 gen, greedy, 2 warmups, 5 measured reps, 3 s cooldown. Decode is the
-**median of 20 measured runs**. Same snapshot directory for every runtime;
-no GGUF or community-4-bit substitute.
+The pending refresh of the 2026-09-15 M5 Max peer table has landed: AX Engine
+**7.5.3** (`c5d22c4a`, built on the campaign host with Homebrew cargo 1.98.0 —
+campaign evidence, not SKU certification) re-ran the identical contract
+(`flappy`, four cases, 256 gen, greedy, 2 warmups, 5 measured reps, 3 s
+cooldown, **median of 20 runs**, same snapshot directory for every runtime,
+no GGUF or community-4-bit substitute) across four Qwen packs, added a
+`long_code` suite, and measured the Gemma 4 family for the first time.
+Superseded history: the 2026-09-15 7.4.0 pre-correction rows **76.90 /
+795.3** (decode moved within 0.3% after the 2026-09-17 SwiGLU corrections)
+stay in [2026-09-15 campaign artifacts](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
 
-These measurements predate the target-head precision fix that removes the
-automatic 2-bit decode cache and the low-precision SwiGLU correction that
-replaces the fused dense activation with the split MLX operations. They do not
-establish throughput or numerical parity for the corrected runtime. A
-same-session A/B on this campaign host (recorded under the 2026-09-17
-SwiGLU consistency evidence) measured decode within 0.3% and prefill
-0.5-1.4% below the 2026-09-15 binary after both corrections. The corrected
-runtime's peer numbers with a recorded build commit are the qualification-SKU
-table above; a refresh of this M5 Max peer table is still pending. Until that
-refresh, **76.90 / 795.3** remain the public M5 Max 27B numbers.
+**Qwen (product-path MTP, `mtp_head_only_verify_loop`):**
 
-| Runtime | Latest checked | Decode | Prefill |
-| --- | --- | ---: | ---: |
-| **AX Engine 7.4.0** (product-path MTP, depth 3; **pre-correction** 2026-09-15 build, see caveat above) | 2026-09-15 campaign | **76.90 tok/s** | **795.3 tok/s** |
-| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** (MTP depth 3) | PyPI / mtplx.com Latest | 70.62 tok/s | 686.6 tok/s |
-| [OMLX](https://github.com/jundot/omlx) **0.6.4** (Lightning MTP depth 1, imported sidecar) | GitHub Latest release | 38.47 tok/s | — |
-| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR, no MTP) | PyPI Latest | 27.90 tok/s | — |
+| Pack (suite) | AX Engine 7.5.3 | MTPLX 2.11.2 | OMLX 0.6.4 | mlx-lm 0.31.3 |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen 3.8 27B AXQ 6-bit MTP (flappy) | **76.04 / 768.7** | 73.07 / 650.6 | 37.71 | 27.92 |
+| Qwen 3.8 27B AXQ 6-bit MTP (long_code) | **72.71 / 856.9** | 57.82 / 833.1 | 35.85 | 27.86 |
+| Qwen 3.6 35B-A3B AXQ 6-bit MTP (flappy) | **239.52 / 2112.1** | 127.87 / 1590.7 | — | 109.97 |
+| Qwen 3.8 27B AXQ MXFP4 MTP (flappy) | **76.70 / 792.4** | 63.91 / 697.3 | — | 34.20 |
 
-AX Engine, MTPLX, and OMLX all loaded the snapshot and completed the MTP
-contract — AX Engine and MTPLX at draft depth 3, OMLX at Lightning depth 1 —
-so this is a three-way MTP comparison; `mlx-lm` is the direct-AR (no MTP)
-baseline. Decode and prefill are **20-run medians** on the same `flappy`
-prompts (prompt lengths 264–432 tokens). The remaining runtimes evaluated in
-this campaign could not load the AXQ 6-bit affine pack (CUDA-only, cluster-only,
-non-GGUF, or no AXQ MLX loader on the host); they are recorded with artifacts in
-the archived campaign rather than shown as throughput peers, and an unsupported
-peer is never substituted with another checkpoint. MTP Tier 2 remains pending.
+Decode / prefill tok/s (prefill: AX runner-internal; MTPLX derived from
+`prompt_eval_time_s`). `mlx-lm` rows are the direct-AR (no MTP) baseline.
+`—` means the runtime could not load that pack (OMLX runs the imported 6-bit
+sidecar only where one exists); an unsupported peer is never substituted
+with another checkpoint.
+
+**Gemma 4 (direct AR — community checkpoints, no Assistant-MTP sidecar; the
+catalog-pinned AXQ Gemma 4 chat packs are not published yet):**
+
+| Checkpoint (flappy) | AX Engine 7.5.3 | MTPLX 2.11.2 | OMLX 0.6.4 | mlx-lm 0.31.3 |
+| --- | ---: | ---: | ---: | ---: |
+| gemma-4-12B-it-4bit (`gemma4_unified`) | **67.68 / 1626.8** | — | 60.05 | — |
+| gemma-4-26b-a4b-it-4bit (`gemma4`) | **142.48 / 2644.9** | — | 112.23 | 134.06 |
+
+<p align="center">
+  <img src="docs/assets/perf-m5-peer-2026-09-21.svg" width="980"
+    alt="Two-panel horizontal grouped bar chart of decode tokens per second, median of 20 runs, on the M5 Max campaign host: dense band groups for Qwen 3.8 27B 6-bit flappy and long_code, Qwen 3.8 27B MXFP4, and Gemma 4 12B; MoE band groups for Qwen 3.6 35B-A3B and Gemma 4 26B-A4B; bars for AX Engine 7.5.3, MTPLX 2.11.2, OMLX 0.6.4, and mlx-lm 0.31.3 with unsupported lanes left blank">
+</p>
+
+Reading this snapshot honestly: against the 2026-09-15 baseline AX moved
+76.90 → 76.04 while MTPLX moved 70.62 → 73.07 at unchanged versions, so the
+dense-27B short-suite margin narrowed from 1.089× to 1.041× — inside
+single-host median spread, read it as parity there. The strongest signals in
+this campaign are on `long_code` (1.26× over MTPLX) and the MoE pack
+(1.87× over MTPLX at 239.5 vs 127.9 tok/s, where AX is highest in this
+snapshot); the MoE margin reflects MTP-path fit on that architecture and
+suite, not a standing cross-engine ranking. Gemma rows are native-graph
+load/decode evidence only — direct AR, not MTP, and not the 6-bit
+recommended publication lane. This is a version-pinned single-host snapshot
+(2026-09-21T07:07:55Z .. 09:48:41Z UTC, sequential lanes), not a permanent
+ranking, and MTP Tier 2 remains pending. Full contract, per-case medians,
+limitations, and the Flash Next `qwen4_exp` experimental status (loads and
+serves on the ADR-030 target spec; no peer version tested here loads it):
+[Qwen / Gemma M5 Max peer campaign](docs/mtp/qwen-gemma-peer-m5-2026-09-21.md).
 Artifacts:
-[2026-09-15 campaign](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
+[27B 6-bit](benchmarks/results/mtp-axq-peer/2026-09-21-apple-m5-max-128gb/) ·
+[Qwen family](benchmarks/results/mtp-axq-peer/2026-09-21-apple-m5-max-128gb-qwen-family/) ·
+[Gemma family](benchmarks/results/mtp-axq-peer/2026-09-21-apple-m5-max-128gb-gemma/).
+Chart regenerated deterministically by `scripts/render_m5_peer_2026_09_21.py`.
 
 <a id="tiel-performance"></a>
 
