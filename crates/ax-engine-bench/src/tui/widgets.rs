@@ -15,6 +15,7 @@ use ratatui::widgets::{
 };
 
 use super::theme;
+use unicode_width::UnicodeWidthStr;
 
 pub(super) const TOAST_TTL: Duration = Duration::from_secs(4);
 const TOAST_MAX_VISIBLE: usize = 3;
@@ -91,7 +92,7 @@ pub(super) fn expire_toasts(toasts: &mut Vec<Toast>) {
 pub(super) fn draw_toasts(frame: &mut Frame, area: Rect, toasts: &[Toast]) {
     for (i, toast) in toasts.iter().rev().take(TOAST_MAX_VISIBLE).enumerate() {
         let text = format!(" {} {} ", toast.icon(), toast.text);
-        let width = (text.chars().count() as u16).min(area.width.saturating_sub(2));
+        let width = (text.width() as u16).min(area.width.saturating_sub(2));
         let rect = Rect {
             x: area.x + area.width.saturating_sub(width + 1),
             y: area.y + 2 + i as u16,
@@ -367,8 +368,11 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
         .stdin(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            if let Some(stdin) = child.stdin.as_mut() {
+            // Take the pipe so it drops (EOF) before waiting; `Child::wait`
+            // also closes stdin, but pbcopy's EOF dependency is explicit here.
+            if let Some(mut stdin) = child.stdin.take() {
                 stdin.write_all(text.as_bytes())?;
+                drop(stdin);
             }
             child.wait()
         })
@@ -572,7 +576,7 @@ pub(super) fn draw_tab_bar(
         Span::raw(" "),
     ];
     // leading space + brand + trailing space
-    let mut col_cursor: u16 = 1 + brand.chars().count() as u16 + 1;
+    let mut col_cursor: u16 = 1 + brand.width() as u16 + 1;
 
     for (i, tab) in tabs.iter().enumerate() {
         let is_active = i == active;
@@ -583,7 +587,7 @@ pub(super) fn draw_tab_bar(
             }
             _ => format!(" {} {} ", tab.num, tab.label),
         };
-        let label_width = label_text.chars().count() as u16;
+        let label_width = label_text.width() as u16;
         let style = if is_active && tabs_focused {
             // Keyboard focus on the bar: same amber language as list selection.
             theme::tab_keyboard_focus()
@@ -613,10 +617,7 @@ pub(super) fn draw_tab_bar(
     }
 
     // Right-align status spans by padding with spaces.
-    let status_width: u16 = status_spans
-        .iter()
-        .map(|s| s.content.chars().count() as u16)
-        .sum();
+    let status_width: u16 = status_spans.iter().map(|s| s.content.width() as u16).sum();
     let used = col_cursor;
     let pad = area.width.saturating_sub(used + status_width + 2);
     if pad > 0 {

@@ -54,8 +54,7 @@ impl App {
                     } else {
                         let pairs = installed_variants(&self.families);
                         if let Some(&(fi, vi)) = pairs.get(self.serve_idx) {
-                            self.auto_chat_after_serve = true;
-                            self.serve_installed(fi, vi);
+                            self.auto_chat_after_serve = self.serve_installed(fi, vi);
                         } else if pairs.is_empty() {
                             self.toast_warn("no installed models — press 2 for Models");
                         }

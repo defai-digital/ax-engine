@@ -378,6 +378,13 @@ struct App {
     pub external_server: bool,
     /// In-flight background `/health` probe (never blocks the UI thread).
     server_probe: Option<Receiver<Option<ServerHealth>>>,
+    /// In-flight background catalog rescan (`build_families` walks the HF
+    /// cache and sizes every installed snapshot; tens of seconds on a full
+    /// cache, so it never runs on the UI thread).
+    families_reload: Option<Receiver<Vec<Family>>>,
+    /// A rescan was requested while one was in flight; run once more when
+    /// it lands so a download that finished mid-scan is not missed.
+    families_reload_again: bool,
     /// Last time a health probe was launched (rate-limit).
     last_server_probe: Option<Instant>,
     /// Base URL the in-flight/last probe targeted (re-probe immediately on change).
@@ -475,6 +482,8 @@ impl App {
             server_model: None,
             external_server: false,
             server_probe: None,
+            families_reload: None,
+            families_reload_again: false,
             last_server_probe: None,
             server_probe_url: None,
             chat: ChatState::new(),
@@ -493,8 +502,42 @@ impl App {
         }
     }
 
+    /// Rescan the catalog off the UI thread; the result lands in a later
+    /// `tick`. Until then the previous catalog stays on screen.
     pub fn reload_families(&mut self) {
-        self.families = build_families();
+        if self.families_reload.is_some() {
+            self.families_reload_again = true;
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(build_families());
+        });
+        self.families_reload = Some(rx);
+    }
+
+    /// Apply a finished catalog rescan. Returns whether the catalog changed.
+    fn tick_families_reload(&mut self) -> bool {
+        let Some(rx) = &self.families_reload else {
+            return false;
+        };
+        let families = match rx.try_recv() {
+            Ok(families) => Some(families),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.families_reload = None;
+        if self.families_reload_again {
+            self.families_reload_again = false;
+            self.reload_families();
+        }
+        match families {
+            Some(families) => {
+                self.families = families;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Push a toast, coalescing consecutive duplicates: when the newest toast
@@ -610,7 +653,11 @@ impl App {
                 if may_navigate {
                     self.navigate_to(Screen::Serve);
                 }
-                self.start_server_for_download(idx);
+                if !self.start_server_for_download(idx) {
+                    // The chain pre-armed the chat handoff; a refused start
+                    // must not leave it armed for an unrelated later serve.
+                    self.auto_chat_after_serve = false;
+                }
             } else {
                 self.toast_success(format!("{label} ready — Enter to serve"));
                 // Guided handoff: jump to Downloads unless the user is mid-flow.
@@ -631,6 +678,7 @@ impl App {
         // HTTP probe: discover external servers and backstop log-line readiness
         // for managed children (structured logs, RUST_LOG, etc.).
         server_material |= self.tick_server_health_probe();
+        let catalog_material = self.tick_families_reload();
         if self.server_ready && !was_ready {
             if self.auto_chat_after_serve {
                 self.auto_chat_after_serve = false;
@@ -689,6 +737,7 @@ impl App {
             || (metrics_sampled && self.screen == Screen::Home)
             || !self.toasts.is_empty()
             || download_material
+            || catalog_material
             || spinner_visible
             || server_material
             || (self.server_ready != was_ready)

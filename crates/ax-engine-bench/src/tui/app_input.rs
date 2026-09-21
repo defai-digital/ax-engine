@@ -197,7 +197,7 @@ impl App {
         self.precision_idx = vi;
         let installed = self.families[fi].variants[vi].installed;
         if installed {
-            self.auto_chat_after_serve = true;
+            // The modal confirm arms auto-chat only once a child launches.
             self.modal = Some(Modal::ServeInstalled {
                 family_idx: fi,
                 variant_idx: vi,
@@ -296,10 +296,11 @@ impl App {
             },
             Modal::ServeReady { download_idx } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
-                    if self.start_server_for_download(download_idx) {
-                        self.auto_chat_after_serve = true;
-                        self.navigate_to(Screen::Serve);
-                    }
+                    // Serve shows the child log (or the failure line and
+                    // binary path), so navigate either way; only a launched
+                    // child arms the chat handoff.
+                    self.auto_chat_after_serve = self.start_server_for_download(download_idx);
+                    self.navigate_to(Screen::Serve);
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
@@ -309,9 +310,10 @@ impl App {
                 variant_idx,
             } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
-                    if self.serve_installed(family_idx, variant_idx) {
-                        self.auto_chat_after_serve = true;
-                        self.navigate_to(Screen::Serve);
+                    let launched = self.serve_installed(family_idx, variant_idx);
+                    self.auto_chat_after_serve = launched;
+                    self.navigate_to(Screen::Serve);
+                    if launched {
                         self.stage = WizardStage::Families;
                         self.pending = None;
                     }
@@ -387,9 +389,7 @@ impl App {
                     // Same start path as Serve Enter / ServeInstalled, just
                     // after stopping the currently served model.
                     self.stop_server();
-                    if self.serve_installed(family_idx, variant_idx) {
-                        self.auto_chat_after_serve = true;
-                    }
+                    self.auto_chat_after_serve = self.serve_installed(family_idx, variant_idx);
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
