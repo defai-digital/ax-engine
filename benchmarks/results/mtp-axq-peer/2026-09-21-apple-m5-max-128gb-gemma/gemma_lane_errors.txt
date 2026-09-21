@@ -1,0 +1,5 @@
+# Lane failure evidence (2026-09-21 gemma campaign, df-macbookpro-m5)
+
+g12c mtplx: ERROR: Model type gemma4_unified not supported.
+g12c mlx_lm: ModuleNotFoundError: No module named 'mlx_lm.models.gemma4_unified' (mlx-lm 0.31.3)
+g26c mtplx: ERROR: generate_mtpk requires an MTP-enabled runtime

@@ -1,0 +1,142 @@
+{
+ "campaign": "gemma-family-peer-community-7.5.3-2026-09-21",
+ "host": "Apple M5 Max, 128 GB (df-macbookpro-m5, Mac17,6, macOS 27.0 / 26A428)",
+ "sku_note": "campaign host, not Mac mini M4 Pro 64 GB SKU; not a certification run",
+ "window_utc": "2026-09-21T09:35:05Z .. 09:48:41Z (lanes); native test 09:2x; embedding smoke later",
+ "pack_availability_finding": {
+  "ax_gemma4_chat_packs": "AutomatosX/AX-gemma-4-{12b,26b-a4b,31b}-MLX-AXQ-6bit-MTP are pinned in the alias catalog (revisions 7ad79df2 / 940a60b1 / 7b11bd51) but return 404 on huggingface.co with an org-member token; the authenticated org listing (31 repos) shows AX-EmbeddingGemma-300M-MLX-8bit as the only Gemma repo (consistent with unpublished or gated beyond this token's access)",
+  "consequence": "chat-lane comparison ran on public mlx-community 4-bit checkpoints instead; no Assistant-MTP sidecar exists in those packs, so every chat lane below is DIRECT autoregressive (no MTP claim possible)",
+  "download_env_note": "ax-engine download honors AX_ENGINE_PYTHON; host default python3 had a broken certifi (module 'certifi' has no attribute 'where')"
+ },
+ "contract": {
+  "suite": "flappy (4 cases; community tokenizer yields 309-521 prompt tokens)",
+  "generation_tokens": 256,
+  "sampling": "greedy",
+  "seed": 0,
+  "warmup": 2,
+  "repetitions": 5,
+  "cooldown_s": 3,
+  "decode": "median of 20 measured runs (4 cases x 5 reps)",
+  "lane_order": "ax -> mtplx -> omlx -> mlx_lm (fixed; see disclosures)",
+  "ax_prefix_cache": "disabled_for_cold_prefill_benchmark"
+ },
+ "models": {
+  "gemma4_12b_it_4bit_unified": {
+   "repo": "mlx-community/gemma-4-12B-it-4bit",
+   "revision": "73bcf09092aa277861d5a191b989b666f7f32e8f",
+   "architecture": "gemma4_unified (multimodal variant)",
+   "lanes": {
+    "ax_engine": {
+     "decode_tok_s_median_20": 67.68,
+     "prefill_tok_s_median_20": 1626.8,
+     "route": "direct_pipeline_baseline",
+     "per_case_medians": {
+      "flappy_pipes": 68.1,
+      "flappy_score_gates": 67.6,
+      "flappy_collision_checks": 67.1,
+      "flappy_sound_channels": 67.8
+     }
+    },
+    "omlx": {
+     "decode_tok_s_median_20": 60.05,
+     "per_case_medians": {
+      "flappy_pipes": 60.4,
+      "flappy_score_gates": 59.8,
+      "flappy_collision_checks": 58.4,
+      "flappy_sound_channels": 60.3
+     }
+    },
+    "mtplx": {
+     "status": "unsupported",
+     "reason": "Model type gemma4_unified not supported (MTPLX 2.11.2)"
+    },
+    "mlx_lm": {
+     "status": "unsupported",
+     "reason": "mlx-lm 0.31.3 lacks module mlx_lm.models.gemma4_unified"
+    }
+   },
+   "native_load_test": "ax-engine-server --mlx loaded the pack and served chat: HTTP 200, ready in ~10 s (g12_native_serve_probe.json)",
+   "ratios": {
+    "ax_over_omlx_decode": 1.13
+   }
+  },
+  "gemma4_26b_a4b_it_4bit": {
+   "repo": "mlx-community/gemma-4-26b-a4b-it-4bit",
+   "revision": "0d77464eeb233a2da68ebf9d7dc4edaac7db956d",
+   "lanes": {
+    "ax_engine": {
+     "decode_tok_s_median_20": 142.48,
+     "prefill_tok_s_median_20": 2644.9,
+     "route": "direct_pipeline_baseline",
+     "per_case_medians": {
+      "flappy_pipes": 142.8,
+      "flappy_score_gates": 142.2,
+      "flappy_collision_checks": 140.8,
+      "flappy_sound_channels": 143.0
+     }
+    },
+    "omlx": {
+     "decode_tok_s_median_20": 112.23,
+     "per_case_medians": {
+      "flappy_pipes": 112.5,
+      "flappy_score_gates": 111.2,
+      "flappy_collision_checks": 109.0,
+      "flappy_sound_channels": 112.3
+     }
+    },
+    "mlx_lm": {
+     "decode_tok_s_median_20": 134.06,
+     "per_case_medians": {
+      "flappy_pipes": 134.1,
+      "flappy_score_gates": 133.4,
+      "flappy_collision_checks": 132.2,
+      "flappy_sound_channels": 134.2
+     }
+    },
+    "mtplx": {
+     "status": "unsupported",
+     "reason": "generate_mtpk requires an MTP-enabled runtime (no MTP tensors in pack)"
+    }
+   },
+   "ratios": {
+    "ax_over_omlx_decode": 1.27,
+    "ax_over_mlx_lm_decode": "1.06 \u2014 within fixed-lane-order spread; treat as parity"
+   },
+   "architecture": "gemma4 (plain text MoE)"
+  },
+  "embeddinggemma_300m_axq_8bit": {
+   "repo": "AutomatosX/AX-EmbeddingGemma-300M-MLX-8bit",
+   "revision": "2dfd74748a36e1749753f576131bf6912154ec9a",
+   "serve_smoke_test": "POST /v1/embeddings HTTP 200, embed_dim 768, ready in ~10 s (emb_smoke.json)",
+   "fair_peer_bench": "not run: bench_embedding_fair.py needs the ax_engine Python extension (maturin develop) which is not installed on the campaign host"
+  }
+ },
+ "disclosures": [
+  "All chat lanes are DIRECT autoregressive: community packs carry no Gemma Assistant-MTP sidecar; numbers are native-graph decode evidence, not MTP or product claims",
+  "Fixed lane order; thermal drift may bias later lanes",
+  "Prefill: AX prefill_tok_s only (omlx/mlx-lm lanes are decode-only harnesses)",
+  "Community 4-bit checkpoints are not AXQ packs; the AXQ Gemma chat repos are unpublished (see pack_availability_finding)",
+  "n=20 correlated runs (4 cases x 5 reps); per-case medians included",
+  "12B pack is gemma4_unified (multimodal variant); 26B-A4B pack is plain gemma4 text \u2014 mlx-lm 0.31.3 supports the latter only"
+ ],
+ "provenance": {
+  "ax_engine": {
+   "commit": "c5d22c4a2b39f08243129118066eeb31d00ae366",
+   "engine_version": "7.5.3",
+   "toolchain": "Homebrew cargo 1.98.0 on host (no rustup; repo pin 1.97.1 not honored)"
+  },
+  "omlx": {
+   "version": "0.6.4"
+  },
+  "mtplx": {
+   "version": "2.11.2"
+  },
+  "mlx_lm": {
+   "version": "0.31.3"
+  },
+  "companion_campaigns": [
+   "../2026-09-21-apple-m5-max-128gb/",
+   "../2026-09-21-apple-m5-max-128gb-qwen-family/"
+  ]
+ }
+}
