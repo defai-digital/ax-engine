@@ -137,6 +137,56 @@ pub(crate) fn contains_dsml_tool_calls(text: &str) -> bool {
     find_dsml_tag(text, 0, false, TAG_TOOL_CALLS).is_some()
 }
 
+/// Byte offset of the first complete `<｜DSML｜tool_calls>` open tag.
+pub(crate) fn find_dsml_tool_calls_open(text: &str) -> Option<usize> {
+    find_dsml_tag(text, 0, false, TAG_TOOL_CALLS).map(|(start, _)| start)
+}
+
+/// `(start, end)` of the first complete `</｜DSML｜tool_calls>` close tag at
+/// or after `from`; `end` is just past the `>`.
+pub(crate) fn find_dsml_tool_calls_close(text: &str, from: usize) -> Option<(usize, usize)> {
+    find_dsml_tag(text, from, true, TAG_TOOL_CALLS)
+}
+
+/// Length of the longest buffer suffix that could still grow into a
+/// `<｜DSML｜tool_calls>` open tag (the stream scanner's holdback). Filler
+/// is tolerated at the same places the complete matcher tolerates it, so a
+/// tag split at any byte boundary is withheld until it can be classified.
+pub(crate) fn partial_dsml_tool_calls_open_len(text: &str) -> usize {
+    let Some(lt) = text.rfind('<') else {
+        return 0;
+    };
+    if is_partial_dsml_open(&text[lt..], TAG_TOOL_CALLS) {
+        text.len() - lt
+    } else {
+        0
+    }
+}
+
+/// Whether `s` (starting at `<`) is a proper prefix of a lenient DSML open
+/// tag of `kind`: `<`, filler, `DSML`, filler, `kind`, filler, `>`.
+fn is_partial_dsml_open(s: &str, kind: &str) -> bool {
+    let mut index = skip_dsml_filler(s, 1);
+    let rest = &s[index..];
+    if rest.is_empty() || (rest.len() < DSML_WORD.len() && DSML_WORD.starts_with(rest)) {
+        return true;
+    }
+    if !rest.starts_with(DSML_WORD) {
+        return false;
+    }
+    index = skip_dsml_filler(s, index + DSML_WORD.len());
+    let rest = &s[index..];
+    if rest.is_empty() || (rest.len() < kind.len() && kind.starts_with(rest)) {
+        return true;
+    }
+    if !rest.starts_with(kind) {
+        return false;
+    }
+    index = skip_dsml_filler(s, index + kind.len());
+    // Everything matched and the `>` has not arrived yet.
+    index == s.len()
+}
+
 /// Extract DSML tool calls from model output.
 ///
 /// Returns the parsed calls plus the leftover assistant content (text

@@ -134,15 +134,18 @@ pub(crate) async fn run_openai_text_generation(
         // Manifest family hint for registry-driven chat resolution (ADR-025 D2).
         let family_hint = crate::metadata::model_family_from_artifacts(&live);
         // Incremental tool-call streaming (ADR-040 D1) covers the product
-        // scope's text-marker families. GLM 4.x encodes tool markers as
-        // special tokens the plain incremental decode strips, and GPT-OSS
-        // calls ride Harmony commentary channels — both keep the buffered
-        // fallback until their stream decodes preserve the markers.
+        // scope's text-marker families, including DeepSeek's DSML stanzas.
+        // GLM 4.x encodes tool markers as special tokens the plain
+        // incremental decode strips, and GPT-OSS calls ride Harmony
+        // commentary channels — both keep the buffered fallback until their
+        // stream decodes preserve the markers.
         let incremental_tool_chat = tool_chat
             && live.runtime_report.selected_backend == SelectedBackend::Mlx
             && matches!(
                 crate::chat::resolve_chat_template(live.model_id.as_ref(), family_hint.as_deref()),
-                ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4
+                ChatPromptTemplate::QwenChatMl
+                    | ChatPromptTemplate::Gemma4
+                    | ChatPromptTemplate::DeepSeekChat
             );
         if tool_chat && !incremental_tool_chat {
             return stream_buffered_openai_tool_chat_response(

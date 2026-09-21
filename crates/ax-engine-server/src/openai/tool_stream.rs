@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use crate::openai::dsml;
 use crate::openai::requests::OpenAiToolContract;
 use crate::openai::responses::{
     extract_bare_gemma4_tool_call_payload_at, extract_closed_xml_tool_call_payload_at,
@@ -33,6 +34,9 @@ enum ToolSpanKind {
     Xml,
     Gemma4,
     BareGemma4,
+    /// DeepSeek `<｜DSML｜tool_calls>…</｜DSML｜tool_calls>` stanza; one
+    /// stanza may carry several invokes.
+    Dsml,
 }
 
 pub(crate) struct ToolCallStreamScanner {
@@ -118,11 +122,44 @@ impl ToolCallStreamScanner {
                     }
                     return events;
                 }
+                Some(ToolSpanKind::Dsml) => {
+                    // Lenient DSML closer (filler tolerated), then the shared
+                    // stanza parser, which yields every invoke in the stanza.
+                    let Some((_, close_end)) = dsml::find_dsml_tool_calls_close(&self.buffer, 0)
+                    else {
+                        return events;
+                    };
+                    match dsml::parse_dsml_tool_calls(&self.buffer[..close_end]) {
+                        Some((functions, _)) => {
+                            for function in functions {
+                                events.push(ToolScanEvent::Call(self.build_call(function)));
+                            }
+                            self.buffer.drain(..close_end);
+                        }
+                        None => {
+                            // Closer present but the stanza does not parse yet
+                            // (a later closer may complete it); only the end
+                            // of the stream flushes it as content.
+                            if !at_end {
+                                return events;
+                            }
+                            let end = self
+                                .next_opener_after_start(close_end)
+                                .map_or(close_end, |inner| inner.min(close_end));
+                            let content = self.buffer[..end].to_string();
+                            self.buffer.drain(..end);
+                            self.note_visible(&content);
+                            events.push(ToolScanEvent::Content(content));
+                        }
+                    }
+                    self.span = None;
+                    continue;
+                }
                 Some(kind) => {
                     let closer = match kind {
                         ToolSpanKind::Xml => Some(XML_CLOSE),
                         ToolSpanKind::Gemma4 => Some(GEMMA4_CLOSE),
-                        ToolSpanKind::BareGemma4 => None,
+                        ToolSpanKind::BareGemma4 | ToolSpanKind::Dsml => None,
                     };
                     if let Some(closer) = closer {
                         let Some(close_at) = self.buffer.find(closer) else {
@@ -192,6 +229,7 @@ impl ToolCallStreamScanner {
         [XML_OPEN, GEMMA4_OPEN]
             .iter()
             .filter_map(|opener| window.find(opener))
+            .chain(dsml::find_dsml_tool_calls_open(window))
             .min()
             .map(|index| index + 1)
     }
@@ -207,6 +245,10 @@ impl ToolCallStreamScanner {
         };
         consider(self.buffer.find(XML_OPEN), ToolSpanKind::Xml);
         consider(self.buffer.find(GEMMA4_OPEN), ToolSpanKind::Gemma4);
+        consider(
+            dsml::find_dsml_tool_calls_open(&self.buffer),
+            ToolSpanKind::Dsml,
+        );
         if !self.emitted_visible {
             consider(
                 find_bare_gemma4_call(&self.buffer),
@@ -226,6 +268,8 @@ impl ToolCallStreamScanner {
             ToolSpanKind::Xml => extract_closed_xml_tool_call_payload_at(&self.buffer, 0),
             ToolSpanKind::Gemma4 => extract_gemma4_tool_call_payload_at(&self.buffer, 0),
             ToolSpanKind::BareGemma4 => extract_bare_gemma4_tool_call_payload_at(&self.buffer, 0),
+            // DSML stanzas are parsed whole in `drain_events` (several calls).
+            ToolSpanKind::Dsml => None,
         }
     }
 
@@ -270,7 +314,10 @@ impl ToolCallStreamScanner {
                 hold = hold.max(trimmed.len());
             }
         }
-        hold
+        // DSML openers tolerate filler, so their holdback is computed by the
+        // DSML matcher rather than by byte-prefix comparison. The `<` it
+        // withholds is a char boundary; the rest of the suffix is whole chars.
+        hold.max(dsml::partial_dsml_tool_calls_open_len(&self.buffer))
     }
 
     fn note_visible(&mut self, content: &str) {
@@ -444,6 +491,75 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "b");
         assert_eq!(content(&events), "<tool_call>oops ");
+    }
+
+    const DSML_CALL: &str = "<｜DSML｜tool_calls><｜DSML｜invoke name=\"get_weather\"><｜DSML｜parameter name=\"city\" string=\"true\">Taipei</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>";
+
+    #[test]
+    fn dsml_stanza_streams_as_one_call_with_surrounding_content() {
+        let mut scanner = scanner();
+        let mut events = scanner.push(&format!("before {DSML_CALL} after"));
+        events.extend(scanner.finish());
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "get_weather");
+        let arguments: serde_json::Value =
+            serde_json::from_str(&calls[0].function.arguments).expect("json arguments");
+        assert_eq!(arguments, json!({"city": "Taipei"}));
+        assert_eq!(content(&events), "before  after");
+    }
+
+    #[test]
+    fn dsml_stanza_is_invariant_across_all_chunk_splits() {
+        let text = format!("x {DSML_CALL} y");
+        for split in 1..text.len() {
+            if !text.is_char_boundary(split) {
+                continue;
+            }
+            let mut scanner = scanner();
+            let mut events = scanner.push(&text[..split]);
+            events.extend(scanner.push(&text[split..]));
+            events.extend(scanner.finish());
+            assert_eq!(calls(&events).len(), 1, "split {split}");
+            assert_eq!(content(&events), "x  y", "split {split}");
+            assert!(!content(&events).contains("DSML"), "split {split}");
+        }
+    }
+
+    #[test]
+    fn dsml_stanza_with_two_invokes_emits_two_calls() {
+        let two = "<｜DSML｜tool_calls><｜DSML｜invoke name=\"a\"></｜DSML｜invoke><｜DSML｜invoke name=\"b\"></｜DSML｜invoke></｜DSML｜tool_calls>";
+        let mut scanner = scanner();
+        let mut events = scanner.push(two);
+        events.extend(scanner.finish());
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].function.name, "a");
+        assert_eq!(calls[1].function.name, "b");
+        assert_eq!(calls[0].id, "call_0");
+        assert_eq!(calls[1].id, "call_1");
+    }
+
+    #[test]
+    fn dsml_prose_with_a_lone_angle_bracket_is_not_withheld_forever() {
+        let mut scanner = scanner();
+        let mut events = scanner.push("a < b and <｜DSM");
+        // The partial opener is withheld until it can be classified.
+        assert_eq!(content(&events), "a < b and ");
+        events.extend(scanner.push("X> is prose"));
+        events.extend(scanner.finish());
+        assert!(calls(&events).is_empty());
+        assert_eq!(content(&events), "a < b and <｜DSMX> is prose");
+    }
+
+    #[test]
+    fn malformed_dsml_stanza_is_flushed_as_content_at_end() {
+        let text = "<｜DSML｜tool_calls>garbage</｜DSML｜tool_calls>tail";
+        let mut scanner = scanner();
+        let mut events = scanner.push(text);
+        events.extend(scanner.finish());
+        assert!(calls(&events).is_empty());
+        assert_eq!(content(&events), text);
     }
 
     #[test]
