@@ -79,6 +79,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod percentage_delta_tests {
     use super::percentage_delta;
 

@@ -882,6 +882,7 @@ pub(crate) fn unix_timestamp_secs() -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod xml_tool_call_tests {
     use super::extract_xml_tool_call_payload_at;
 

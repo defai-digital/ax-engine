@@ -201,6 +201,7 @@ impl Qwen3VlRuntimeInputs {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

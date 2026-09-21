@@ -1469,6 +1469,7 @@ fn openai_max_tokens(max_completion_tokens: Option<u32>, max_tokens: Option<u32>
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
