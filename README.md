@@ -1,17 +1,19 @@
 # AX Engine
 
 AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
-for Qwen 3.8 27B AXQ**, with maintained support for additional Qwen, Gemma, GLM,
-and other certified families. Install with Homebrew, download the pinned 27B
-pack, and serve OpenAI-compatible endpoints locally.
+for Qwen 3.8 27B AXQ**, benchmarked head-to-head against **MTPLX** — the only
+peer that loads the same AXQ 6-bit MTP pack, runs the same MLX 0.32.2, and does
+MTP. We publish that comparison across Apple Silicon SKUs, wins and losses both,
+with checked-in artifacts. Install with Homebrew, download the pinned 27B pack,
+and serve OpenAI-compatible endpoints locally.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 The default pack is `qwen3.8-27b:axq`
 ([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
-@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`). Other families stay supported;
-they are not the first-run or qualification center. Super-class Qwen 3.8 (2.4T)
-is experimental only.
+@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`). Additional Qwen, Gemma, GLM, and
+other certified families stay supported; they are not the first-run or
+qualification center. Super-class Qwen 3.8 (2.4T) is experimental only.
 
 NVIDIA/CUDA fleet serving lives in
 [AX Serving](https://github.com/defai-digital/ax-serving). AX Engine remains the
@@ -42,14 +44,17 @@ still depend on memory capacity and workload; see the
 
 ## Why AX Engine
 
+- **Benchmarked head-to-head against MTPLX** — MTPLX is the only public peer
+  that loads the same `qwen3.8-27b:axq` AXQ 6-bit MTP pack, runs the same
+  MLX 0.32.2, and does MTP. We publish that comparison across Apple Silicon
+  SKUs with version-pinned wins **and** losses and checked-in artifacts
+  ([Performance](#performance)); it is a measured snapshot, not a permanent
+  ranking, and MTP Tier 2 is still pending
 - **Optimized first for Qwen 3.8 27B AXQ** — one download of
-  `qwen3.8-27b:axq` is the default serve path. Direct and MTP refresh rows
-  live in [Performance](#performance); MTP speedup is workload-dependent and
-  MTP Tier 2 is still pending
-- **Speculative decode on the default pack** — product-path MTP on
-  `qwen3.8-27b:axq` is the number in [Performance](#performance). MTP Tier 2
-  is still pending. Same-package peers that cannot load this AXQ snapshot are
-  listed as unsupported rather than substituted with another checkpoint
+  `qwen3.8-27b:axq` is the default serve path. Product-path MTP on this pack is
+  the number in [Performance](#performance). Peers that cannot load this AXQ
+  snapshot are recorded as unable to run the pack rather than substituted with
+  another checkpoint
 - **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
   Qwen3-Coder-Next, Gemma 4, and embedding models resident (`load_mode=add`),
   route by request `model` (chat + embeddings together), with fair Metal turn
@@ -347,7 +352,7 @@ reps, 3 s cooldown); decode and prefill are **20-run medians**. Evidence:
 
 | Runtime | Latest checked 2026-09-17 | Decode | Prefill |
 | --- | --- | ---: | ---: |
-| **AX Engine 7.4.0** (product-path MTP, depth 3, clean `ad999f3f`) | installed wheel | **31.05 tok/s** | **120.3 tok/s** |
+| **AX Engine 7.5.3** (product-path MTP, depth 3, build anchor `ad999f3f`) | installed wheel | **31.05 tok/s** | **120.3 tok/s** |
 | [MTPLX](https://github.com/youssofal/MTPLX) **2.11.3** | PyPI Latest | 28.16 tok/s | 114.0 tok/s |
 | [OMLX](https://github.com/jundot/omlx) **0.6.4** (imported sidecar, Lightning depth 1) | GitHub Latest release | 15.02 tok/s | — |
 | [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 12.78 tok/s | — |
@@ -387,12 +392,17 @@ Coding completion throughput includes TTFT. Each cell has six measured samples;
 the ranges below compare the four Python/Rust cells per host with MTPLX
 **2.11.3 sustained**, not pooled speedups. Both engines use MLX **0.32.2**.
 
-| Tested machine | AX completion difference | Observed tradeoff |
+| Tested machine | AX vs MTPLX 2.11.3 completion | Observed tradeoff |
 | --- | ---: | --- |
-| MacBook Pro M5 Max, 128 GiB | +3.1% to +18.0% | AX leads in completion, decode and TTFT. |
+| MacBook Pro M5 Max, 128 GiB | **+3.1% to +18.0%** | AX leads in completion, decode and TTFT. |
 | Mac mini M4 Pro, 64 GiB | -2.4% to -0.5% | MTPLX finishes slightly faster and starts sooner; AX decode is slightly faster. |
 | Mac Studio M2 Ultra, 192 GiB | -2.1% to +8.6% | Mixed completion results; AX decode is faster, MTPLX starts sooner. |
-| Mac Studio M3 Ultra, 512 GiB | +2.2% to +4.7% | AX finishes faster; MTPLX starts sooner. |
+| Mac Studio M3 Ultra, 512 GiB | **+2.2% to +4.7%** | AX finishes faster; MTPLX starts sooner. |
+
+This is a version-pinned snapshot against a strong, fast-moving open-source
+peer, not a permanent ranking: AX leads completion on M5 Max and M3 Ultra, is
+essentially level on M4 Pro, and is mixed on M2 Ultra. Earlier
+pre-residency-fix runs favored MTPLX on some hosts.
 
 The report includes both MTPLX profiles, separate decode/TTFT tables, memory,
 unwired controls and limitations. There is no comparable isolated prefill
@@ -428,27 +438,21 @@ table above; a refresh of this M5 Max table is still pending.
 
 | Runtime | Latest checked | Decode | Prefill |
 | --- | --- | ---: | ---: |
-| **AX Engine 7.4.0** (product-path MTP, depth 3) | 2026-09-15 campaign | **76.90 tok/s** | **795.3 tok/s** |
+| **AX Engine 7.5.3** (product-path MTP, depth 3; **pre-correction** 2026-09-15 build, see caveat above) | 2026-09-15 campaign | **76.90 tok/s** | **795.3 tok/s** |
 | [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** | PyPI / mtplx.com Latest | 70.62 tok/s | 686.6 tok/s |
 | [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 27.90 tok/s | — |
-| [mlxcel](https://github.com/lablup/mlxcel) **0.7.0** | GitHub Latest (2026-09-09) | unsupported (AXQ 6-bit affine group layout) | — |
 | [OMLX](https://github.com/jundot/omlx) **0.6.4** (imported sidecar, Lightning depth 1) | GitHub Latest release | 38.47 tok/s | — |
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) **0.4.0** (formula 0.4.1) | Homebrew | unsupported (not GGUF) | — |
-| [mistral.rs](https://github.com/EricLBuehler/mistral.rs) **0.9.3** | GitHub Latest | unsupported (no AXQ MLX loader on host) | — |
-| [exo](https://github.com/exo-explore/exo) **1.0.71** | GitHub Latest | unsupported (cluster runtime) | — |
-| [rMLX](https://github.com/Pushkinist/rMLX) **0.4.1** | GitHub Latest | unsupported (no campaign binary) | — |
-| [uzu](https://github.com/trymirai/uzu) **0.5.26** | PyPI | unsupported (Mirai checkpoints, not this pack) | — |
-| [vLLM](https://github.com/vllm-project/vllm) **0.29.0** | PyPI | unsupported (CUDA, not Apple Silicon) | — |
 
-AX and MTPLX loaded the snapshot and completed the MTP contract. Decode and
-prefill are **20-run medians** on the same `flappy` prompts (prompt lengths
-264–432 tokens). mlx-lm 0.31.3 is a direct-AR decode baseline (first generated
-token excluded; prefill not split in that harness). OMLX 0.6.4 required a
-writable snapshot plus `import_mtplx_sidecar`; Lightning MTP ran at draft
-depth 1 and the OMLX runner reports generate-wall tok/s (prefill not split).
-mlxcel 0.7.0 still fails to load this AXQ affine layout.
-Unsupported is not replaced with another checkpoint. MTP Tier 2 remains
-pending. Artifacts:
+AX and MTPLX loaded the snapshot and completed the MTP contract; those two
+Qwen MTP-capable rows are the peer comparison, while `mlx-lm` and OMLX are
+baselines on a different path (direct AR, and Lightning draft depth 1 via an
+imported sidecar). Decode and prefill are **20-run medians** on the same
+`flappy` prompts (prompt lengths 264–432 tokens). The remaining runtimes
+evaluated in this campaign could not load the AXQ 6-bit affine pack (CUDA-only,
+cluster-only, non-GGUF, or no AXQ MLX loader on the host); they are recorded
+with artifacts in the archived campaign rather than shown as throughput peers,
+and an unsupported peer is never substituted with another checkpoint. MTP Tier 2
+remains pending. Artifacts:
 [2026-09-15 campaign](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
 
 Archived Qwen 3.6 serving, multi-model S1, embeddings, and the 2026-08-31

@@ -7,6 +7,7 @@ decide which result table, method, or investigation note applies to a claim.
 
 | Need | Read |
 | --- | --- |
+| Headline peer benchmark: AX Engine vs MTPLX on the shared AXQ 6-bit MTP pack | [Root README: Performance](../../README.md#performance) · [four-machine Tiel report](tiel-vs-mtplx-2026-09-20.md) |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
 | Tiel / Cyber-Tiel vs MTPLX on M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Four-machine results, latency and memory](tiel-vs-mtplx-2026-09-20.md) |
 | Current MLX runtime admission | [MLX 0.32.2 admission](mlx-0.32.2-admission-2026-08-29.md) |
