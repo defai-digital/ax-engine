@@ -78,8 +78,6 @@ class MtpPeerDecodeChartTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class MtpPeerDecodeChartValidationTests(unittest.TestCase):
@@ -109,3 +107,5 @@ class MtpPeerDecodeChartValidationTests(unittest.TestCase):
     def test_display_path_outside_repo_does_not_raise(self) -> None:
         self.assertEqual(mod._display_path(Path("/nowhere/out.svg")), "/nowhere/out.svg")
 
+if __name__ == "__main__":
+    unittest.main()

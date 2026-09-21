@@ -66,8 +66,6 @@ class TielPeerChartTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TielPeerChartParserTests(unittest.TestCase):
@@ -114,3 +112,5 @@ class TielPeerChartParserTests(unittest.TestCase):
     def test_display_path_outside_repo_does_not_raise(self) -> None:
         self.assertEqual(chart._display_path(Path("/nowhere/out.svg")), "/nowhere/out.svg")
 
+if __name__ == "__main__":
+    unittest.main()
