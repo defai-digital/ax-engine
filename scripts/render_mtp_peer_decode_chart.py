@@ -3,7 +3,7 @@
 
 The chart compares the three runtimes that load the shared
 ``qwen3.8-27b:axq`` AXQ 6-bit pack and run MTP — AX Engine, MTPLX, and OMLX —
-using the published medians in
+against the direct-AR ``mlx-lm`` baseline, using the published medians in
 ``benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/summary.json``.
 It emits a deterministic SVG (no plotting library) and supports ``--check`` so
 the committed figure cannot drift from the artifact.
@@ -34,6 +34,8 @@ PEERS = {
     "mtplx": ("MTPLX", "MTP depth 3 · sustained", "#f2b705", "#9a6a00"),
     "omlx": ("OMLX", "Lightning MTP depth 1 · imported sidecar", "#3a7bd5", "#235a99"),
 }
+REFERENCE_COLOR = "#9aa6a0"
+REFERENCE_TEXT = "#5a6a62"
 
 
 class Peer(NamedTuple):
@@ -52,6 +54,7 @@ def _escape(text: str) -> str:
 
 
 def load_peers(summary: dict) -> list[Peer]:
+    """Return the three MTP-capable runtimes, in AX/MTPLX/OMLX order."""
     measured = summary.get("measured")
     if not isinstance(measured, dict):
         raise SystemExit("summary.json has no 'measured' object")
@@ -76,7 +79,26 @@ def load_peers(summary: dict) -> list[Peer]:
     return peers
 
 
-def render_svg(peers: list[Peer], direct_ar: float | None) -> str:
+def load_reference(summary: dict) -> Peer | None:
+    """Return the direct-AR mlx-lm baseline row, or None if absent."""
+    row = (summary.get("measured") or {}).get("mlx_lm")
+    if not isinstance(row, dict):
+        return None
+    value = row.get("decode_tok_s_median_20")
+    if not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return Peer(
+        name="mlx-lm",
+        config="direct AR · no MTP (baseline)",
+        color=REFERENCE_COLOR,
+        text_color=REFERENCE_TEXT,
+        decode_tok_s=float(value),
+        version=str(row.get("version", "")),
+    )
+
+
+def render_svg(peers: list[Peer], reference: Peer | None) -> str:
+    rows = list(peers) + ([reference] if reference else [])
     label_width = 250
     plot_left = label_width + 8
     plot_right = 748
@@ -84,9 +106,9 @@ def render_svg(peers: list[Peer], direct_ar: float | None) -> str:
     bar_height = 20
     top = 104
     width = 780
-    height = top + row_height * len(peers) + 66
+    height = top + row_height * len(rows) + 74
 
-    max_value = max(peer.decode_tok_s for peer in peers)
+    max_value = max(row.decode_tok_s for row in rows)
     scale_top = ((int(max_value) // 5) + 1) * 5  # round up to the next 5
     plot_width = plot_right - plot_left
 
@@ -111,44 +133,46 @@ def render_svg(peers: list[Peer], direct_ar: float | None) -> str:
     parts.append(
         f'<text x="24" y="74" font-size="12.5" fill="#4a5a52">'
         f"All three load the same pack and run MTP; OMLX uses Lightning draft "
-        f"depth 1"
-        + (f" · direct-AR mlx-lm baseline {direct_ar:.2f} tok/s" if direct_ar else "")
-        + "</text>"
+        f"depth 1, and the grey bar is the direct-AR baseline (no MTP)</text>"
     )
 
+    axis_bottom = top + row_height * len(rows) - 10
     for value in range(0, scale_top + 1, 5):
         gx = x_for(value)
         parts.append(
             f'<line x1="{gx:.1f}" y1="{top - 12}" x2="{gx:.1f}" '
-            f'y2="{top + row_height * len(peers) - 10}" stroke="#e6ece9" '
-            f'stroke-width="1"/>'
+            f'y2="{axis_bottom}" stroke="#e6ece9" stroke-width="1"/>'
         )
         parts.append(
-            f'<text x="{gx:.1f}" y="{top + row_height * len(peers) + 10}" '
+            f'<text x="{gx:.1f}" y="{axis_bottom + 16}" '
             f'font-size="10.5" fill="#7a8a82" text-anchor="middle">{value}</text>'
         )
+    parts.append(
+        f'<text x="{(plot_left + plot_right) / 2:.0f}" y="{axis_bottom + 34}" '
+        f'font-size="11" fill="#4a5a52" text-anchor="middle">decode tokens/s</text>'
+    )
 
-    for index, peer in enumerate(peers):
+    for index, row in enumerate(rows):
         row_top = top + index * row_height
         bar_y = row_top + 4
-        label = f"{peer.name} {peer.version}".strip()
+        label = f"{row.name} {row.version}".strip()
         parts.append(
             f'<text x="24" y="{row_top + 16}" font-size="13" font-weight="600" '
             f'fill="#22332c">{_escape(label)}</text>'
         )
         parts.append(
             f'<text x="24" y="{row_top + 33}" font-size="11" '
-            f'fill="#5a6a62">{_escape(peer.config)}</text>'
+            f'fill="#5a6a62">{_escape(row.config)}</text>'
         )
-        bar_w = x_for(peer.decode_tok_s) - plot_left
+        bar_w = x_for(row.decode_tok_s) - plot_left
         parts.append(
             f'<rect x="{plot_left}" y="{bar_y}" width="{bar_w:.1f}" '
-            f'height="{bar_height}" fill="{peer.color}"/>'
+            f'height="{bar_height}" fill="{row.color}"/>'
         )
         parts.append(
             f'<text x="{bar_w + plot_left + 6:.1f}" y="{bar_y + bar_height - 5}" '
-            f'font-size="12.5" font-weight="700" fill="{peer.text_color}">'
-            f"{peer.decode_tok_s:.2f}</text>"
+            f'font-size="12.5" font-weight="700" fill="{row.text_color}">'
+            f"{row.decode_tok_s:.2f}</text>"
         )
 
     parts.append(
@@ -173,8 +197,8 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = json.loads(SUMMARY.read_text(encoding="utf-8"))
     peers = load_peers(summary)
-    direct_ar = (summary.get("measured", {}).get("mlx_lm") or {}).get("decode_tok_s_median_20")
-    svg = render_svg(peers, float(direct_ar) if direct_ar else None)
+    reference = load_reference(summary)
+    svg = render_svg(peers, reference)
 
     if args.check:
         existing = args.output.read_text(encoding="utf-8") if args.output.is_file() else ""
@@ -190,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(svg, encoding="utf-8")
-    print(f"wrote {args.output.relative_to(REPO_ROOT)} ({len(peers)} peers)")
+    print(f"wrote {args.output.relative_to(REPO_ROOT)} ({len(peers)} MTP peers + reference)")
     return 0
 
 
