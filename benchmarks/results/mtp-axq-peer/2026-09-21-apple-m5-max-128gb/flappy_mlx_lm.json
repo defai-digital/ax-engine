@@ -1,0 +1,72 @@
+{
+  "engine": "mlx_lm",
+  "pack": "/Users/akiralam/.cache/huggingface/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1",
+  "prompts": "benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "results": [
+    {
+      "prompt_id": "flappy_pipes",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        27.932937816700637,
+        27.924695239325203,
+        27.94582960366189,
+        27.942615111797696,
+        27.933074997555114
+      ],
+      "decode_tok_s_median": 27.933074997555114
+    },
+    {
+      "prompt_id": "flappy_score_gates",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        27.895283496060003,
+        27.920200582363176,
+        27.9081003220897,
+        27.909527673309192,
+        27.91017196781859
+      ],
+      "decode_tok_s_median": 27.909527673309192
+    },
+    {
+      "prompt_id": "flappy_collision_checks",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        27.898281972432756,
+        27.897839787261315,
+        27.904525268795567,
+        27.88846124780256,
+        27.91512903109478
+      ],
+      "decode_tok_s_median": 27.898281972432756
+    },
+    {
+      "prompt_id": "flappy_sound_channels",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        27.93116898178607,
+        27.940371029766784,
+        27.946047181031467,
+        27.939983892954775,
+        27.92576366369447
+      ],
+      "decode_tok_s_median": 27.939983892954775
+    }
+  ],
+  "decode_tok_s_median_all": 27.924695239325203
+}

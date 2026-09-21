@@ -1,0 +1,72 @@
+{
+  "engine": "mlx_lm",
+  "pack": "/Users/akiralam/.cache/huggingface/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1",
+  "prompts": "benchmarks/prompts/mtp-suites/long_code.jsonl",
+  "results": [
+    {
+      "prompt_id": "long_code_c_audit",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        27.87037200354302,
+        27.873549456871025,
+        27.850927800040854,
+        27.853120517438327,
+        27.83826472295217
+      ],
+      "decode_tok_s_median": 27.853120517438327
+    },
+    {
+      "prompt_id": "long_code_api_audit",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        27.827229210360706,
+        27.81162206777913,
+        27.826996902711457,
+        27.82393264476129,
+        27.829057918818037
+      ],
+      "decode_tok_s_median": 27.826996902711457
+    },
+    {
+      "prompt_id": "long_code_test_stubs",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        27.873608997444016,
+        27.864177468196942,
+        27.848897631221142,
+        27.855556250037775,
+        27.84610069765586
+      ],
+      "decode_tok_s_median": 27.855556250037775
+    },
+    {
+      "prompt_id": "long_code_sql_schema",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        27.899649302390863,
+        27.906683042417594,
+        27.91040833922629,
+        27.917668840173082,
+        27.905719775907944
+      ],
+      "decode_tok_s_median": 27.906683042417594
+    }
+  ],
+  "decode_tok_s_median_all": 27.855556250037775
+}

@@ -1,0 +1,146 @@
+{
+ "baseline_2026_09_15_flappy": {
+  "ax_engine": 76.9,
+  "mlx_lm": 27.9,
+  "mtplx": 70.62,
+  "omlx": 38.47
+ },
+ "campaign": "qwen38-27b-axq-6bit-peer-7.5.3-2026-09-21",
+ "contract": {
+  "ax_ngram_stacking": "off",
+  "ax_prefix_cache": "disabled_for_cold_prefill_benchmark",
+  "cooldown_s": 3,
+  "decode": "median of 20 measured runs (4 cases x 5 reps)",
+  "generation_tokens": 256,
+  "lane_order": {
+   "flappy": "ax->mtplx->omlx->mlx_lm",
+   "long_code": "omlx->mlx_lm->ax->mtplx (rotated for thermal-drift mitigation)"
+  },
+  "repetitions": 5,
+  "sampling": "greedy",
+  "seed": 0,
+  "suites": {
+   "flappy": 4,
+   "long_code": 4
+  },
+  "warmup": 2
+ },
+ "host": "Apple M5 Max, 128 GB (df-macbookpro-m5, Mac17,6, macOS 27.0 / 26A428)",
+ "measured": {
+  "flappy": {
+   "ax_engine": {
+    "decode_tok_s_median_20": 76.04,
+    "per_case_medians": {
+     "flappy_collision_checks": 74.75,
+     "flappy_pipes": 77.19,
+     "flappy_score_gates": 75.33,
+     "flappy_sound_channels": 77.15
+    },
+    "prefill_tok_s_median_20": 768.7
+   },
+   "ax_engine_direct_ar_extra": {
+    "decode_tok_s_median_20": 30.14,
+    "per_case_medians": {
+     "flappy_collision_checks": 30.14,
+     "flappy_pipes": 30.07,
+     "flappy_score_gates": 30.15,
+     "flappy_sound_channels": 30.17
+    },
+    "prefill_tok_s_median_20": 740.6
+   },
+   "mlx_lm": {
+    "decode_tok_s_median_20": 27.92,
+    "per_case_medians": {
+     "flappy_collision_checks": 27.9,
+     "flappy_pipes": 27.93,
+     "flappy_score_gates": 27.91,
+     "flappy_sound_channels": 27.94
+    }
+   },
+   "mtplx": {
+    "decode_tok_s_median_20": 73.07,
+    "per_case_medians": {
+     "flappy_collision_checks": 62.38,
+     "flappy_pipes": 58.03,
+     "flappy_score_gates": 188.69,
+     "flappy_sound_channels": 83.78
+    },
+    "prefill_tok_s_median_20": 650.6
+   },
+   "omlx": {
+    "decode_tok_s_median_20": 37.71,
+    "per_case_medians": {
+     "flappy_collision_checks": 37.59,
+     "flappy_pipes": 37.6,
+     "flappy_score_gates": 37.71,
+     "flappy_sound_channels": 38.45
+    }
+   }
+  },
+  "long_code": {
+   "ax_engine": {
+    "decode_tok_s_median_20": 72.71,
+    "per_case_medians": {
+     "long_code_api_audit": 72.36,
+     "long_code_c_audit": 71.86,
+     "long_code_sql_schema": 73.8,
+     "long_code_test_stubs": 73.04
+    },
+    "prefill_tok_s_median_20": 856.9
+   },
+   "mlx_lm": {
+    "decode_tok_s_median_20": 27.86,
+    "per_case_medians": {
+     "long_code_api_audit": 27.83,
+     "long_code_c_audit": 27.85,
+     "long_code_sql_schema": 27.91,
+     "long_code_test_stubs": 27.86
+    }
+   },
+   "mtplx": {
+    "decode_tok_s_median_20": 57.82,
+    "per_case_medians": {
+     "long_code_api_audit": 61.92,
+     "long_code_c_audit": 53.48,
+     "long_code_sql_schema": 78.45,
+     "long_code_test_stubs": 53.76
+    },
+    "prefill_tok_s_median_20": 833.1
+   },
+   "omlx": {
+    "decode_tok_s_median_20": 35.85,
+    "per_case_medians": {
+     "long_code_api_audit": 35.07,
+     "long_code_c_audit": 35.85,
+     "long_code_sql_schema": 37.4,
+     "long_code_test_stubs": 35.88
+    }
+   }
+  }
+ },
+ "pack": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+ "provenance": {
+  "ax_engine": {
+   "commit": "c5d22c4a2b39f08243129118066eeb31d00ae366",
+   "engine_version": "7.5.3",
+   "toolchain": "Homebrew cargo 1.98.0 on host (no rustup; repo pin 1.97.1 not honored on this host)"
+  },
+  "harness_note": "bench_mlx_inference_stack.py on 7.5.3 requires --ax-ngram-accel together with --ax-qwen-linear-mtp-exact; effective route stays mtp_head_only_verify_loop (pure_mtp)",
+  "mlx_lm": {
+   "mode": "direct AR, no MTP sidecar",
+   "version": "0.31.3"
+  },
+  "mtplx": {
+   "git_commit": "71f6877d19f2179cf47caea84565083cdc950cc2",
+   "note": "run with --allow-unverified-model: pack fails MTPLX inspect guard (same as 2026-09-15)",
+   "version": "2.11.2"
+  },
+  "omlx": {
+   "note": "imported-snapshot conversion (raw AXQ tree fails Lightning loader), Lightning MTP depth 1 (same as 2026-09-15)",
+   "version": "0.6.4"
+  }
+ },
+ "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+ "sku_note": "campaign host, not Mac mini M4 Pro 64 GB SKU; not a certification run",
+ "window_utc": "2026-09-21T07:07:55Z .. 2026-09-21T07:43:08Z"
+}
