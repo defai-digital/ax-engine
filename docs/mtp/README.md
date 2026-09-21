@@ -76,6 +76,7 @@ backward-compatible Qwen benchmark checks.
 | Diagnose Tiel prefill latency and review M5 controls | [Tiel MTP prefill timing](tiel-prefill-diagnostics.md) |
 | Review Gemma assistant-MTP depth work | [Gemma 4 assistant MTP multi-depth drafting](gemma4-assistant-multi-depth.md) |
 | Review Qwen3.6 peer-engine MTP results | [Qwen3.6 MTP peer benchmark](qwen36-peer-comparison.md) |
+| Review the 2026-09-21 7.5.3 Qwen / Gemma M5 Max peer campaign | [Qwen / Gemma M5 Max peer campaign](qwen-gemma-peer-m5-2026-09-21.md) |
 | Review archived Qwen3.6 AX-only multi-suite MTP results | [Qwen3.6 AX-only multi-suite MTP results](qwen36-matrix-refresh.md) |
 | AX Engine native MTP vs Youssofal MTPLX bundle | [AX MTP vs Youssofal MTPLX-Optimized](ax-mtp-vs-youssofal.md) |
 | Review tree-draft investigation history | [Tree draft phase A](tree-draft-phase-a.md) |

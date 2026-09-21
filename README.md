@@ -63,7 +63,11 @@ still depend on memory capacity and workload; see the
   mlx-lm 27.90). The Tiel MXFP4 four-SKU peer run is a separate MoE lane
   against MTPLX. We publish version-pinned wins **and** losses with checked-in
   artifacts ([Performance](#qwen-performance)); it is a measured snapshot, not a
-  permanent ranking, and MTP Tier 2 is still pending
+  permanent ranking, and MTP Tier 2 is still pending. A dated 2026-09-21 7.5.3
+  follow-up on the same M5 Max host records dense-27B parity with MTPLX on the
+  short suite (76.04 vs 73.07 tok/s), a 1.87× lead on Qwen 3.6 35B-A3B
+  (239.5 vs 127.9), and the first Gemma 4 native-path peer numbers —
+  [Qwen / Gemma M5 Max peer campaign](docs/mtp/qwen-gemma-peer-m5-2026-09-21.md)
 - **Optimized first for Qwen 3.8 27B AXQ** — one download of
   `qwen3.8-27b:axq` is the default serve path. Product-path MTP on this pack is
   the number in [Performance](#qwen-performance). Peers that cannot load this AXQ
