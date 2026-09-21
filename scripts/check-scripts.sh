@@ -185,6 +185,8 @@ bash scripts/check-qa.sh
   scripts/test_readme_performance_artifacts.py \
   scripts/render_readme_performance_charts.py \
   scripts/test_render_readme_performance_charts.py \
+  scripts/render_tiel_peer_chart.py \
+  scripts/test_render_tiel_peer_chart.py \
   scripts/render_qwen36_mtp_bandwidth_diagnostic.py \
   scripts/test_render_qwen36_mtp_bandwidth_diagnostic.py \
   scripts/check_decode_hot_path_kernel_admission.py \
@@ -338,6 +340,7 @@ bash scripts/check-qa.sh
   scripts/test_check_quantization_quality_gate.py \
   scripts/test_bench_direct_telemetry_pass.py \
   scripts/test_render_readme_performance_charts.py \
+  scripts/test_render_tiel_peer_chart.py \
   scripts/test_render_qwen36_mtp_bandwidth_diagnostic.py \
   scripts/test_check_version_sync.py \
   scripts/test_check_github_release_parity.py \
@@ -359,6 +362,7 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_mla_prefix_restore_evidence.py
 "$PYTHON_BIN" scripts/check_mla_prefix_restore_retirement.py
 "$PYTHON_BIN" scripts/render_readme_performance_charts.py --check
+"$PYTHON_BIN" scripts/render_tiel_peer_chart.py --check
 "$PYTHON_BIN" scripts/check_no_mlxcel_public_docs.py
 "$PYTHON_BIN" scripts/check_qwen38_primary_claims.py
 "$PYTHON_BIN" scripts/qualify_qwen38_27b.py --dry-run

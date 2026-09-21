@@ -404,6 +404,32 @@ peer, not a permanent ranking: AX leads completion on M5 Max and M3 Ultra, is
 essentially level on M4 Pro, and is mixed on M2 Ultra. Earlier
 pre-residency-fix runs favored MTPLX on some hosts.
 
+<p align="center">
+  <img
+    src="docs/assets/perf-tiel-vs-mtplx-2026-09-20.svg"
+    width="820"
+    alt="Grouped bar chart of Tiel and Cyber-Tiel completion throughput in tokens per second, AX Engine versus MTPLX 2.11.3 sustained, across M5 Max, M4 Pro, M2 Ultra and M3 Ultra for the python-lru and rust-jsonl coding workloads"
+  >
+</p>
+
+**Coding completion throughput — Tiel pack (tokens/s, median incl. TTFT):**
+
+| Machine | Workload | AX Engine | MTPLX sustained | AX vs MTPLX |
+| --- | --- | ---: | ---: | ---: |
+| M5 Max 128 GiB | python-lru | **194.88** | 177.44 | **+9.8%** |
+| M5 Max 128 GiB | rust-jsonl | **172.08** | 145.82 | **+18.0%** |
+| M4 Pro 64 GiB | python-lru | 90.46 | 92.23 | -1.9% |
+| M4 Pro 64 GiB | rust-jsonl | 64.62 | 64.94 | -0.5% |
+| M2 Ultra 192 GiB | python-lru | **107.28** | 104.96 | **+2.2%** |
+| M2 Ultra 192 GiB | rust-jsonl | 81.24 | 82.98 | -2.1% |
+| M3 Ultra 512 GiB | python-lru | **160.35** | 153.48 | **+4.5%** |
+| M3 Ultra 512 GiB | rust-jsonl | **127.19** | 121.80 | **+4.4%** |
+
+Cyber-Tiel cells and the separate decode / TTFT tables are in the report; the
+chart above plots both packs. AX decode is faster in every coding cell, but the
+M4 Pro and M2 Ultra first-token wait offsets it on completion. The figure is
+generated from the report tables by `scripts/render_tiel_peer_chart.py`.
+
 The report includes both MTPLX profiles, separate decode/TTFT tables, memory,
 unwired controls and limitations. There is no comparable isolated prefill
 tokens/s claim. Both engines keep the model loaded throughout measured requests.
