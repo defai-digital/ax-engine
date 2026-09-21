@@ -840,8 +840,13 @@ const DENSE_WIDE_GEMV_SOURCE: &str = r#"
 /// what `static_cast<float>(bfloat16_t)` performs), so the output is
 /// bit-identical to `DENSE_WIDE_GEMV_SOURCE` and rows stay
 /// `Leading`-invariant. Requires `OutDim % Cols == 0` and a word-aligned
-/// weight buffer (a fresh row-contiguous allocation; the kernel wrapper
-/// row-contiguates inputs and `decode_weight_t` is materialized that way).
+/// weight buffer. The kernel wrapper row-contiguates inputs, so the only
+/// views that reach the kernel uncopied are row-contiguous ones; with
+/// `OutDim % Cols == 0` a row offset is a whole number of words, and the
+/// production `decode_weight_t` is a fresh allocation. A row-contiguous
+/// view carved out of a flattened buffer at an odd element offset is the
+/// one shape this cannot see (no caller builds one; documented rather
+/// than probed, since the C API exposes no device-address query).
 fn dense_wide_gemv_bf16_vec_source(cols: usize) -> String {
     debug_assert!(matches!(cols, 4 | 8), "vector tile must be 4 or 8 columns");
     let (word, lanes) = match cols {
@@ -902,6 +907,20 @@ fn dense_wide_gemv_bf16_vec_source(cols: usize) -> String {
 /// scalar). Wider rows take the 4-column tile.
 const DENSE_WIDE_GEMV_VEC8_MAX_LEADING: i32 = 6;
 
+/// `AX_MLX_DENSE_WIDE_GEMV_VEC8_MAX_LEADING` — override the 8-column row
+/// ceiling for a device whose register budget differs from the M5 Max
+/// measurement (0 disables the 8-column tile). Read once.
+fn dense_wide_gemv_vec8_max_leading() -> i32 {
+    static CEILING: OnceLock<i32> = OnceLock::new();
+    *CEILING.get_or_init(|| {
+        std::env::var("AX_MLX_DENSE_WIDE_GEMV_VEC8_MAX_LEADING")
+            .ok()
+            .and_then(|value| value.trim().parse::<i32>().ok())
+            .filter(|value| (0..=8).contains(value))
+            .unwrap_or(DENSE_WIDE_GEMV_VEC8_MAX_LEADING)
+    })
+}
+
 /// Columns per thread the dense wide GEMV tiles for this weight and row
 /// count: 8 or 4 for bf16 weights whose column count divides evenly (8 only
 /// while the accumulator set fits in registers), otherwise the scalar form.
@@ -909,7 +928,7 @@ fn dense_wide_gemv_cols(weight_dtype: MlxDtype, out_dim: i32, leading: i32) -> i
     if weight_dtype != MlxDtype::Bfloat16 {
         return 1;
     }
-    if out_dim % 8 == 0 && leading <= DENSE_WIDE_GEMV_VEC8_MAX_LEADING {
+    if out_dim % 8 == 0 && leading <= dense_wide_gemv_vec8_max_leading() {
         8
     } else if out_dim % 4 == 0 {
         4
@@ -3507,6 +3526,44 @@ mod tests {
                         av[i].to_bits(),
                         bv[i].to_bits(),
                         "out_dim {out_dim} x dtype {x_dtype:?} diverged at {i}"
+                    );
+                }
+            }
+            // A row-offset view of a larger buffer is row-contiguous and
+            // reaches the kernel uncopied; its offset is whole words, so the
+            // vector tiles must still match the scalar form bit for bit.
+            if expected_cols != 1 {
+                let padded_data: Vec<f32> = (0..((input_dim + 3) * out_dim) as usize)
+                    .map(|i| (((i % 743) as f32) - 370.0) * 0.002)
+                    .collect();
+                let padded = astype(
+                    &array_f32(&padded_data, &[input_dim + 3, out_dim]),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                let view = slice(&padded, &[3, 0], &[input_dim + 3, out_dim], &[1, 1], None);
+                let x_data: Vec<f32> = (0..(2 * input_dim) as usize)
+                    .map(|i| (((i % 251) as f32) - 125.0) * 0.01)
+                    .collect();
+                let x = astype(
+                    &array_f32(&x_data, &[1, 2, input_dim]),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                let scalar = dense_wide_gemv_weight_t_with_cols(&x, &view, 1)
+                    .expect("scalar dense wide GEMV must engage on a view");
+                let tiled = dense_wide_gemv_weight_t(&x, &view)
+                    .expect("dense wide GEMV must engage on a view");
+                let a = astype(&scalar, MlxDtype::Float32, None);
+                let b = astype(&tiled, MlxDtype::Float32, None);
+                eval(&[&a, &b]);
+                let av = a.data_f32();
+                let bv = b.data_f32();
+                for i in 0..av.len() {
+                    assert_eq!(
+                        av[i].to_bits(),
+                        bv[i].to_bits(),
+                        "row-offset view out_dim {out_dim} diverged at {i}"
                     );
                 }
             }

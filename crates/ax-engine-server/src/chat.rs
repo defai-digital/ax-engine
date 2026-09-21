@@ -1535,6 +1535,7 @@ pub(crate) fn strip_gpt_oss_harmony_output(text: &str) -> String {
         "<|start|>user",
         "<|start|>system",
         "<|start|>developer",
+        "<|start|>tool",
         "<|start|>",
         "<|end|>",
         "<|return|>",
@@ -2378,6 +2379,8 @@ mod tests {
         assert_eq!(strip_gpt_oss_harmony_output(raw), "hi");
         let raw = "<|start|>system<|message|>a<|end|><|start|>developer<|message|>b<|end|>";
         assert_eq!(strip_gpt_oss_harmony_output(raw), "ab");
+        let raw = "<|start|>tool<|message|>hi<|end|>";
+        assert_eq!(strip_gpt_oss_harmony_output(raw), "hi");
     }
 
     #[test]
