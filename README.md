@@ -348,7 +348,21 @@ matching serving evidence—see
 
 ## Performance
 
+Two lanes. **Do not mix them.** Dense Qwen 3.8 27B AXQ is AX Engine's first-run
+pack: 20.84 GB of weights per token, already at the DRAM ceiling in direct AR.
+Tiel / Cyber-Tiel are AX Code's managed MoE coding packs. Their tok/s are not
+interchangeable with the 27B table.
+
+<a id="qwen-performance"></a>
+
 ### Qualification SKU: Mac mini M4 Pro 64 GB (2026-09-17)
+
+Dense **Qwen 3.8 27B AXQ 6-bit MTP** (`qwen3.8-27b:axq`). Direct AR already
+streams **97.5%** of the mini's 273 GB/s (mlx-lm **12.78 tok/s**). Product-path
+MTP is **31.05 tok/s** here (**2.43×** that ceiling) and **76.90 tok/s** decode /
+**795.3 tok/s** prefill on M5 Max 128 GB (**2.76×** mlx-lm 27.90). That is the
+dense-27B speed story: speculation past the memory wall, not a Tiel-class
+token rate.
 
 Same-pack measurements on the selected SKU (Mac16,11, macOS 26.6.2) with the
 installed bundled wheel built from clean `ad999f3f`, which includes the
@@ -359,10 +373,25 @@ reps, 3 s cooldown); decode and prefill are **20-run medians**. Evidence:
 
 | Runtime | Latest checked 2026-09-17 | Decode | Prefill |
 | --- | --- | ---: | ---: |
-| **AX Engine 7.5.3** (product-path MTP, depth 3, build anchor `ad999f3f`) | installed wheel | **31.05 tok/s** | **120.3 tok/s** |
-| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.3** | PyPI Latest | 28.16 tok/s | 114.0 tok/s |
-| [OMLX](https://github.com/jundot/omlx) **0.6.4** (imported sidecar, Lightning depth 1) | GitHub Latest release | 15.02 tok/s | — |
-| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 12.78 tok/s | — |
+| **AX Engine 7.4.0** (product-path MTP, depth 3, build `ad999f3f`) | installed wheel | **31.05 tok/s** | **120.3 tok/s** |
+| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.3** (MTP depth 3, sustained) | PyPI Latest | 28.16 tok/s | 114.0 tok/s |
+| [OMLX](https://github.com/jundot/omlx) **0.6.4** (Lightning MTP depth 1, imported sidecar) | GitHub Latest release | 15.02 tok/s | — |
+| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR, no MTP) | PyPI Latest | 12.78 tok/s | — |
+
+<p align="center">
+  <img
+    src="docs/assets/perf-mtp-peer-decode-m4-pro-2026-09-17.svg"
+    width="780"
+    alt="Three-way MTP decode throughput on the Mac mini M4 Pro 64 GB: AX Engine 31.05, MTPLX 28.16, and OMLX 15.02 tokens per second on the qwen3.8-27b:axq AXQ 6-bit MTP pack (20-run medians, 2026-09-17)"
+  >
+</p>
+
+Three runtimes load this pack and run MTP — AX Engine and MTPLX at draft depth
+3, OMLX at Lightning depth 1 — and AX Engine leads both on decode and prefill;
+`mlx-lm` is the direct-AR (no MTP) baseline. The measured build is the 7.4.0
+line (`ad999f3f`); the current 7.5.x releases add SSE and SDK framing fixes
+that do not change throughput. The figure is generated from the campaign
+`summary.json` by `scripts/render_mtp_peer_decode_chart.py`.
 
 Two host daemons held about 1.2 CPU cores throughout; every lane ran under
 that condition and the AX lane was repeated with agreement within 0.4%. These
@@ -493,21 +522,21 @@ table above; a refresh of this M5 Max table is still pending.
 
 | Runtime | Latest checked | Decode | Prefill |
 | --- | --- | ---: | ---: |
-| **AX Engine 7.5.3** (product-path MTP, depth 3; **pre-correction** 2026-09-15 build, see caveat above) | 2026-09-15 campaign | **76.90 tok/s** | **795.3 tok/s** |
-| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** | PyPI / mtplx.com Latest | 70.62 tok/s | 686.6 tok/s |
-| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR baseline) | PyPI Latest | 27.90 tok/s | — |
-| [OMLX](https://github.com/jundot/omlx) **0.6.4** (imported sidecar, Lightning depth 1) | GitHub Latest release | 38.47 tok/s | — |
+| **AX Engine 7.4.0** (product-path MTP, depth 3; **pre-correction** 2026-09-15 build, see caveat above) | 2026-09-15 campaign | **76.90 tok/s** | **795.3 tok/s** |
+| [MTPLX](https://github.com/youssofal/MTPLX) **2.11.2** (MTP depth 3) | PyPI / mtplx.com Latest | 70.62 tok/s | 686.6 tok/s |
+| [OMLX](https://github.com/jundot/omlx) **0.6.4** (Lightning MTP depth 1, imported sidecar) | GitHub Latest release | 38.47 tok/s | — |
+| [mlx-lm](https://github.com/ml-explore/mlx-lm) **0.31.3** (direct AR, no MTP) | PyPI Latest | 27.90 tok/s | — |
 
-AX and MTPLX loaded the snapshot and completed the MTP contract; those two
-Qwen MTP-capable rows are the peer comparison, while `mlx-lm` and OMLX are
-baselines on a different path (direct AR, and Lightning draft depth 1 via an
-imported sidecar). Decode and prefill are **20-run medians** on the same
-`flappy` prompts (prompt lengths 264–432 tokens). The remaining runtimes
-evaluated in this campaign could not load the AXQ 6-bit affine pack (CUDA-only,
-cluster-only, non-GGUF, or no AXQ MLX loader on the host); they are recorded
-with artifacts in the archived campaign rather than shown as throughput peers,
-and an unsupported peer is never substituted with another checkpoint. MTP Tier 2
-remains pending. Artifacts:
+AX Engine, MTPLX, and OMLX all loaded the snapshot and completed the MTP
+contract — AX Engine and MTPLX at draft depth 3, OMLX at Lightning depth 1 —
+so this is a three-way MTP comparison; `mlx-lm` is the direct-AR (no MTP)
+baseline. Decode and prefill are **20-run medians** on the same `flappy`
+prompts (prompt lengths 264–432 tokens). The remaining runtimes evaluated in
+this campaign could not load the AXQ 6-bit affine pack (CUDA-only, cluster-only,
+non-GGUF, or no AXQ MLX loader on the host); they are recorded with artifacts in
+the archived campaign rather than shown as throughput peers, and an unsupported
+peer is never substituted with another checkpoint. MTP Tier 2 remains pending.
+Artifacts:
 [2026-09-15 campaign](benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/).
 
 Archived Qwen 3.6 serving, multi-model S1, embeddings, and the 2026-08-31
