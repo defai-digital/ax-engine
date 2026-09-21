@@ -1532,6 +1532,9 @@ pub(crate) fn strip_gpt_oss_harmony_output(text: &str) -> String {
 
     for token in [
         "<|start|>assistant",
+        "<|start|>user",
+        "<|start|>system",
+        "<|start|>developer",
         "<|start|>",
         "<|end|>",
         "<|return|>",
@@ -2365,6 +2368,16 @@ mod tests {
             "<|start|>assistant<|channel|>final<|message|>final answer<|return|>"
         );
         assert_eq!(strip_gpt_oss_harmony_output(raw), "final answer");
+    }
+
+    #[test]
+    fn strip_gpt_oss_harmony_fallback_strips_every_role_header() {
+        // Without a final channel the fallback strips control tokens; a
+        // hallucinated non-assistant turn must not leak its role word.
+        let raw = "<|start|>user<|message|>hi<|end|>";
+        assert_eq!(strip_gpt_oss_harmony_output(raw), "hi");
+        let raw = "<|start|>system<|message|>a<|end|><|start|>developer<|message|>b<|end|>";
+        assert_eq!(strip_gpt_oss_harmony_output(raw), "ab");
     }
 
     #[test]

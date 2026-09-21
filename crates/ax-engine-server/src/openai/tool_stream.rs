@@ -142,7 +142,15 @@ impl ToolCallStreamScanner {
                                 if !at_end {
                                     return events;
                                 }
+                                // The withheld span may hold a later, valid
+                                // opener (the model restarted its call):
+                                // release only up to it so the rescan can
+                                // still extract that call, as the
+                                // non-streaming extractor does.
                                 let end = close_at + closer.len();
+                                let end = self
+                                    .next_opener_after_start(end)
+                                    .map_or(end, |inner| inner.min(end));
                                 let content = self.buffer[..end].to_string();
                                 self.buffer.drain(..end);
                                 self.note_visible(&content);
@@ -176,6 +184,16 @@ impl ToolCallStreamScanner {
                 }
             }
         }
+    }
+
+    /// Earliest marker opener strictly after `buffer[0]` and before `limit`.
+    fn next_opener_after_start(&self, limit: usize) -> Option<usize> {
+        let window = self.buffer.get(1..limit)?;
+        [XML_OPEN, GEMMA4_OPEN]
+            .iter()
+            .filter_map(|opener| window.find(opener))
+            .min()
+            .map(|index| index + 1)
     }
 
     fn find_earliest_opener(&self) -> Option<(usize, ToolSpanKind)> {
@@ -411,6 +429,21 @@ mod tests {
         events.extend(scanner.finish());
         assert!(calls(&events).is_empty());
         assert_eq!(content(&events), malformed);
+    }
+
+    #[test]
+    fn restarted_call_inside_invalid_span_is_extracted_at_end() {
+        // Non-streaming extraction tries every opener; the stream scanner
+        // must not swallow the valid restarted call when the outer span
+        // never parses.
+        let mut scanner = scanner();
+        let mut events = scanner
+            .push("<tool_call>oops <tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call>");
+        events.extend(scanner.finish());
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "b");
+        assert_eq!(content(&events), "<tool_call>oops ");
     }
 
     #[test]

@@ -819,6 +819,71 @@ fn openai_chat_prompt_renderer_ministral_tools_roundtrip_matches_hub() {
 }
 
 #[test]
+fn openai_chat_prompt_renderer_ministral_folds_server_minted_ids_consistently() {
+    // The server mints `call_<n>` ids (responses.rs / tool_stream.rs); a client
+    // echoing them back must not be rejected, and the assistant call and its
+    // tool result must render the same hub-shaped 9-character id.
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": {"query": "AX"}}
+            }]
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": "AX Engine"}
+    ]))
+    .expect("roundtrip messages");
+    let tools = json!([{
+        "type": "function",
+        "function": {"name": "lookup", "parameters": {"type": "object"}}
+    }]);
+    let prompt = render_openai_chat_prompt_with_tools(
+        "ministral-8b-instruct",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("server-minted ids must render");
+    let id_start = prompt.find(", \"id\": \"").expect("TOOL_CALLS id") + ", \"id\": \"".len();
+    let id = &prompt[id_start..id_start + 9];
+    assert!(
+        id.bytes().all(|byte| byte.is_ascii_alphanumeric()),
+        "folded id must be hub-shaped: {id}"
+    );
+    assert!(
+        prompt.contains(&format!(", \"id\": \"{id}\"}}]</s>")),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!("\"call_id\": \"{id}\"}}[/TOOL_RESULTS]")),
+        "tool result must echo the same folded id: {prompt}"
+    );
+    assert!(!prompt.contains("call_0"), "raw id must not leak: {prompt}");
+
+    // Empty ids are still rejected rather than folded to a constant.
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "", "function": {"name": "lookup", "arguments": {}}}]
+        }
+    ]))
+    .expect("messages");
+    let error = render_openai_chat_prompt_with_tools(
+        "ministral-8b-instruct",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect_err("empty id must be rejected");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+}
+
+#[test]
 fn openai_chat_prompt_renderer_ministral_rejects_non_object_tool_function() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Look up AX"},

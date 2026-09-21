@@ -583,10 +583,11 @@ fn render_ministral_openai_chat_prompt(
                 let call_id = message
                     ._tool_call_id
                     .as_deref()
-                    .filter(|id| ministral_tool_call_id_is_valid(id))
+                    .filter(|id| !id.is_empty())
+                    .map(ministral_tool_call_id)
                     .ok_or_else(|| {
                         chat_error_response(
-                            "Ministral tool results require tool_call_id of length 9 \
+                            "Ministral tool results require a non-empty tool_call_id \
                              (hub chat_template.jinja)"
                                 .to_string(),
                         )
@@ -594,7 +595,7 @@ fn render_ministral_openai_chat_prompt(
                 prompt.push_str("[TOOL_RESULTS]{\"content\": ");
                 prompt.push_str(&content);
                 prompt.push_str(", \"call_id\": \"");
-                prompt.push_str(call_id);
+                prompt.push_str(&call_id);
                 prompt.push_str("\"}[/TOOL_RESULTS]");
             }
             _ => {
@@ -876,11 +877,11 @@ fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, Http
         let id = object
             .get("id")
             .and_then(Value::as_str)
-            .filter(|id| ministral_tool_call_id_is_valid(id))
+            .filter(|id| !id.is_empty())
+            .map(ministral_tool_call_id)
             .ok_or_else(|| {
                 chat_error_response(
-                    "Ministral tool call ids must be alphanumeric length 9 \
-                     (hub chat_template.jinja)"
+                    "Ministral tool calls require a non-empty id (hub chat_template.jinja)"
                         .to_string(),
                 )
             })?;
@@ -896,6 +897,31 @@ fn ministral_tool_calls_array(tool_calls: Option<&Value>) -> Result<String, Http
 
 fn ministral_tool_call_id_is_valid(id: &str) -> bool {
     id.len() == 9 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+/// The hub template renders `call_id` as a 9-character alphanumeric token.
+/// Ids the server itself mints (`call_<n>`, `openai/responses.rs`) and
+/// arbitrary client ids fold to that shape deterministically, so an
+/// assistant `tool_calls` entry and the `tool` result that echoes its id
+/// still render the same token. Ids already in hub shape pass through.
+fn ministral_tool_call_id(id: &str) -> String {
+    if ministral_tool_call_id_is_valid(id) {
+        return id.to_string();
+    }
+    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    // FNV-1a 64; 36^9 < 2^64 so nine base-36 digits never wrap.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut folded = String::with_capacity(9);
+    for _ in 0..9 {
+        let digit = (hash % 36) as usize;
+        folded.push(ALPHABET[digit] as char);
+        hash /= 36;
+    }
+    folded
 }
 
 fn pretty_tool_json_lines(tools: &Value) -> Vec<String> {
