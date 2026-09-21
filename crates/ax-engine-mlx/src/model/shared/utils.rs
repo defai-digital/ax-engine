@@ -800,11 +800,19 @@ fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
 }
 
 static DENSE_WIDE_GEMV_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static DENSE_WIDE_GEMV_BF16_VEC4_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static DENSE_WIDE_GEMV_BF16_VEC8_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 /// Multi-row dense GEMV over a contiguous `[in, out]` weight: one thread per
 /// output column, `Leading` (1..=8) f32 accumulators in registers, so each
 /// weight element is read exactly once and FMA'd against every row. Adjacent
 /// threads read adjacent columns (coalesced); `x` reads are warp-broadcast.
+///
+/// Scalar reference form. One 2-byte load per thread per `k` leaves the
+/// memory system under-subscribed: ~260-290 GB/s on the 2.54 GB
+/// Qwen3.8-27B bf16 head (M5 Max, 2026-09-21) against ~530-550 GB/s for
+/// the vector forms below. Kept for non-bf16 weights and column counts
+/// the vector forms cannot tile.
 const DENSE_WIDE_GEMV_SOURCE: &str = r#"
     uint n = thread_position_in_grid.x;
     if (n >= (uint)OutDim) {
@@ -825,6 +833,98 @@ const DENSE_WIDE_GEMV_SOURCE: &str = r#"
     }
 "#;
 
+/// bf16 weight, `Cols` adjacent output columns per thread, loaded as one
+/// 8-byte (`uint2`, Cols=4) or 16-byte (`uint4`, Cols=8) word per `k`.
+/// Each column keeps the scalar form's arithmetic exactly: sequential `k`,
+/// one f32 `fma` per (row, column), bf16 widened by bit extension (which is
+/// what `static_cast<float>(bfloat16_t)` performs), so the output is
+/// bit-identical to `DENSE_WIDE_GEMV_SOURCE` and rows stay
+/// `Leading`-invariant. Requires `OutDim % Cols == 0` and a word-aligned
+/// weight buffer (a fresh row-contiguous allocation; the kernel wrapper
+/// row-contiguates inputs and `decode_weight_t` is materialized that way).
+fn dense_wide_gemv_bf16_vec_source(cols: usize) -> String {
+    debug_assert!(matches!(cols, 4 | 8), "vector tile must be 4 or 8 columns");
+    let (word, lanes) = match cols {
+        4 => ("uint2", ["x", "y", "", ""]),
+        _ => ("uint4", ["x", "y", "z", "w"]),
+    };
+    let mut unpack = String::new();
+    for c in 0..cols {
+        let lane = lanes[c / 2];
+        if c % 2 == 0 {
+            unpack.push_str(&format!(
+                "        w[{c}] = as_type<float>(raw.{lane} << 16);\n"
+            ));
+        } else {
+            unpack.push_str(&format!(
+                "        w[{c}] = as_type<float>(raw.{lane} & 0xffff0000u);\n"
+            ));
+        }
+    }
+    format!(
+        r#"
+    uint n0 = thread_position_in_grid.x * {cols}u;
+    if (n0 >= (uint)OutDim) {{
+        return;
+    }}
+    float acc[Leading][{cols}];
+    for (uint s = 0; s < (uint)Leading; ++s) {{
+        for (uint c = 0; c < {cols}u; ++c) {{
+            acc[s][c] = 0.0f;
+        }}
+    }}
+    device const {word}* wv = (device const {word}*)(weight_t);
+    const uint words_per_row = (uint)OutDim / {cols}u;
+    const uint word_col = n0 / {cols}u;
+    for (uint k = 0; k < (uint)InputDim; ++k) {{
+        {word} raw = wv[k * words_per_row + word_col];
+        float w[{cols}];
+{unpack}        for (uint s = 0; s < (uint)Leading; ++s) {{
+            float xv = static_cast<float>(x[s * (uint)InputDim + k]);
+            for (uint c = 0; c < {cols}u; ++c) {{
+                acc[s][c] = fma(w[c], xv, acc[s][c]);
+            }}
+        }}
+    }}
+    for (uint s = 0; s < (uint)Leading; ++s) {{
+        for (uint c = 0; c < {cols}u; ++c) {{
+            out[s * (uint)OutDim + n0 + c] = static_cast<OutT>(acc[s][c]);
+        }}
+    }}
+"#
+    )
+}
+
+/// Widest row count the 8-column tile serves: `Leading * 8` f32
+/// accumulators live in registers, and the kernel spills past 48 of them
+/// (M5 Max, 2026-09-21, 2.54 GB head: S=6 4.7 ms, S=7 17.1 ms, S=8
+/// 17.4 ms with 8 columns, against 5.2-5.7 ms for 4 columns and ~8 ms
+/// scalar). Wider rows take the 4-column tile.
+const DENSE_WIDE_GEMV_VEC8_MAX_LEADING: i32 = 6;
+
+/// Columns per thread the dense wide GEMV tiles for this weight and row
+/// count: 8 or 4 for bf16 weights whose column count divides evenly (8 only
+/// while the accumulator set fits in registers), otherwise the scalar form.
+fn dense_wide_gemv_cols(weight_dtype: MlxDtype, out_dim: i32, leading: i32) -> i32 {
+    if weight_dtype != MlxDtype::Bfloat16 {
+        return 1;
+    }
+    if out_dim % 8 == 0 && leading <= DENSE_WIDE_GEMV_VEC8_MAX_LEADING {
+        8
+    } else if out_dim % 4 == 0 {
+        4
+    } else {
+        1
+    }
+}
+
+/// Product of every leading dimension of `x` (the row count `Leading`).
+fn dense_wide_gemv_leading(x_shape: &[i32]) -> Option<i32> {
+    x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i32, |product, dimension| product.checked_mul(*dimension))
+}
+
 /// `x [.., S, in] @ weight_t [in, out]` for `S ∈ 1..=8` without the steel
 /// GEMM's per-row weight re-read — and, crucially, without materializing a
 /// contiguous `[out, in]` copy of a `decode_weight_t`-prepared head whose
@@ -833,6 +933,19 @@ const DENSE_WIDE_GEMV_SOURCE: &str = r#"
 /// consistent. See `AX_MLX_DENSE_WIDE_GEMV` (non-exact opt-in hook) and
 /// `AX_MLX_EXACT_DENSE_WEIGHT_T_GEMV` (exact-profile routing).
 pub(crate) fn dense_wide_gemv_weight_t(x: &MlxArray, weight_t: &MlxArray) -> Option<MlxArray> {
+    let leading = dense_wide_gemv_leading(&x.shape())?;
+    let cols = dense_wide_gemv_cols(weight_t.dtype(), weight_t.shape().get(1).copied()?, leading);
+    dense_wide_gemv_weight_t_with_cols(x, weight_t, cols)
+}
+
+/// `dense_wide_gemv_weight_t` with an explicit column tile (1, 4 or 8). The
+/// public entry picks the widest tile the weight admits; tests pin the
+/// vector tiles against the scalar form.
+pub(crate) fn dense_wide_gemv_weight_t_with_cols(
+    x: &MlxArray,
+    weight_t: &MlxArray,
+    cols: i32,
+) -> Option<MlxArray> {
     if !matches!(
         x.dtype(),
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
@@ -855,24 +968,50 @@ pub(crate) fn dense_wide_gemv_weight_t(x: &MlxArray, weight_t: &MlxArray) -> Opt
     if x_shape.last().copied() != Some(input_dim) {
         return None;
     }
-    let leading = x_shape[..x_shape.len().saturating_sub(1)]
-        .iter()
-        .try_fold(1_i32, |product, dimension| product.checked_mul(*dimension))?;
+    let leading = dense_wide_gemv_leading(&x_shape)?;
     if !(1..=8).contains(&leading) {
         return None;
     }
-    let kernel = DENSE_WIDE_GEMV_KERNEL.get_or_init(|| {
-        MlxMetalKernel::new(
-            "ax_dense_wide_gemv_wt_v1",
-            &["x", "weight_t"],
-            &["out"],
-            DENSE_WIDE_GEMV_SOURCE,
-            "",
-            true,
-        )
-    });
+    let kernel = match cols {
+        8 if weight_t.dtype() == MlxDtype::Bfloat16 && out_dim % 8 == 0 => {
+            DENSE_WIDE_GEMV_BF16_VEC8_KERNEL.get_or_init(|| {
+                MlxMetalKernel::new(
+                    "ax_dense_wide_gemv_wt_bf16_c8_v1",
+                    &["x", "weight_t"],
+                    &["out"],
+                    &dense_wide_gemv_bf16_vec_source(8),
+                    "",
+                    true,
+                )
+            })
+        }
+        4 if weight_t.dtype() == MlxDtype::Bfloat16 && out_dim % 4 == 0 => {
+            DENSE_WIDE_GEMV_BF16_VEC4_KERNEL.get_or_init(|| {
+                MlxMetalKernel::new(
+                    "ax_dense_wide_gemv_wt_bf16_c4_v1",
+                    &["x", "weight_t"],
+                    &["out"],
+                    &dense_wide_gemv_bf16_vec_source(4),
+                    "",
+                    true,
+                )
+            })
+        }
+        1 => DENSE_WIDE_GEMV_KERNEL.get_or_init(|| {
+            MlxMetalKernel::new(
+                "ax_dense_wide_gemv_wt_v1",
+                &["x", "weight_t"],
+                &["out"],
+                DENSE_WIDE_GEMV_SOURCE,
+                "",
+                true,
+            )
+        }),
+        _ => return None,
+    };
     let x_flat = reshape(x, &[leading, input_dim], None);
-    let grid_x = out_dim
+    let threads = out_dim.checked_add(cols - 1)?.checked_div(cols)?;
+    let grid_x = threads
         .checked_add(255)?
         .checked_div(256)?
         .checked_mul(256)?;
@@ -3263,6 +3402,126 @@ mod tests {
                 "gather qmv wide rows={rows} E={num_experts} {input_dim}->{out_dim}: kernel {kernel_us:.1}us vs gather_qmm(sorted={sorted}) {mlx_us:.1}us ({:.3}x)",
                 mlx_us / kernel_us
             );
+        }
+    }
+
+    #[test]
+    fn dense_wide_gemv_bf16_vector_tiles_match_scalar_bit_exact() {
+        // The 8- and 4-column bf16 tiles must reproduce the scalar form bit
+        // for bit (same sequential-k f32 fma per column), for every row count
+        // the verify window can present and for column counts that select
+        // each tile. Column counts that divide by neither fall back to the
+        // scalar form through the public entry.
+        let input_dim = 96_i32;
+        for (out_dim, expected_cols) in [(40_i32, 8_i32), (44, 4), (42, 1), (264, 8)] {
+            for leading in [1, 4, 6] {
+                assert_eq!(
+                    dense_wide_gemv_cols(MlxDtype::Bfloat16, out_dim, leading),
+                    expected_cols,
+                    "tile selection for out_dim {out_dim} at {leading} rows"
+                );
+            }
+            // Past the register budget the 8-column tile is never selected.
+            for leading in [7, 8] {
+                assert_eq!(
+                    dense_wide_gemv_cols(MlxDtype::Bfloat16, out_dim, leading),
+                    expected_cols.min(4),
+                    "tile selection for out_dim {out_dim} at {leading} rows"
+                );
+            }
+            assert_eq!(dense_wide_gemv_cols(MlxDtype::Float32, out_dim, 1), 1);
+            let weight_t_data: Vec<f32> = (0..(input_dim * out_dim) as usize)
+                .map(|i| (((i % 739) as f32) - 360.0) * 0.002)
+                .collect();
+            let weight_t = astype(
+                &array_f32(&weight_t_data, &[input_dim, out_dim]),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            for leading in 1_i32..=8 {
+                let x_data: Vec<f32> = (0..(leading * input_dim) as usize)
+                    .map(|i| (((i % 263) as f32) - 130.0) * 0.01)
+                    .collect();
+                let x = astype(
+                    &array_f32(&x_data, &[1, leading, input_dim]),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                let scalar = dense_wide_gemv_weight_t_with_cols(&x, &weight_t, 1)
+                    .expect("scalar dense wide GEMV must engage");
+                let tiled =
+                    dense_wide_gemv_weight_t(&x, &weight_t).expect("dense wide GEMV must engage");
+                let a = astype(&scalar, MlxDtype::Float32, None);
+                let b = astype(&tiled, MlxDtype::Float32, None);
+                eval(&[&a, &b]);
+                assert_eq!(tiled.shape(), vec![1, leading, out_dim]);
+                let av = a.data_f32();
+                let bv = b.data_f32();
+                assert_eq!(av.len(), bv.len());
+                for i in 0..av.len() {
+                    assert_eq!(
+                        av[i].to_bits(),
+                        bv[i].to_bits(),
+                        "out_dim {out_dim} cols {expected_cols} Leading {leading} diverged at {i}"
+                    );
+                }
+                if expected_cols == 8 {
+                    // Both vector tiles are valid for a multiple of 8; pin
+                    // each explicitly, whichever the row count selects.
+                    for cols in [4, 8] {
+                        let tile = dense_wide_gemv_weight_t_with_cols(&x, &weight_t, cols)
+                            .expect("vector tile must engage on a multiple of 8");
+                        let c = astype(&tile, MlxDtype::Float32, None);
+                        eval(&[&c]);
+                        let cv = c.data_f32();
+                        for i in 0..av.len() {
+                            assert_eq!(
+                                av[i].to_bits(),
+                                cv[i].to_bits(),
+                                "{cols}-col tile Leading {leading} diverged at {i}"
+                            );
+                        }
+                    }
+                }
+            }
+            // f16 / f32 activations share the bf16-weight vector path (only
+            // the weight word is reinterpreted); pin them to the scalar form
+            // as well.
+            for x_dtype in [MlxDtype::Float16, MlxDtype::Float32] {
+                let x_data: Vec<f32> = (0..(4 * input_dim) as usize)
+                    .map(|i| (((i % 271) as f32) - 135.0) * 0.01)
+                    .collect();
+                let x = astype(&array_f32(&x_data, &[1, 4, input_dim]), x_dtype, None);
+                let scalar = dense_wide_gemv_weight_t_with_cols(&x, &weight_t, 1)
+                    .expect("scalar dense wide GEMV must engage");
+                let tiled =
+                    dense_wide_gemv_weight_t(&x, &weight_t).expect("dense wide GEMV must engage");
+                assert_eq!(tiled.dtype(), x_dtype);
+                let a = astype(&scalar, MlxDtype::Float32, None);
+                let b = astype(&tiled, MlxDtype::Float32, None);
+                eval(&[&a, &b]);
+                let av = a.data_f32();
+                let bv = b.data_f32();
+                for i in 0..av.len() {
+                    assert_eq!(
+                        av[i].to_bits(),
+                        bv[i].to_bits(),
+                        "out_dim {out_dim} x dtype {x_dtype:?} diverged at {i}"
+                    );
+                }
+            }
+            // A tile the weight cannot admit is refused rather than misread.
+            let x = astype(
+                &array_f32(&vec![0.5; input_dim as usize], &[1, 1, input_dim]),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            if out_dim % 8 != 0 {
+                assert!(dense_wide_gemv_weight_t_with_cols(&x, &weight_t, 8).is_none());
+            }
+            if out_dim % 4 != 0 {
+                assert!(dense_wide_gemv_weight_t_with_cols(&x, &weight_t, 4).is_none());
+            }
         }
     }
 
