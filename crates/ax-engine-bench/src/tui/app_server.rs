@@ -67,49 +67,54 @@ impl App {
             .is_some_and(|m| m == label || m == variant.profile.label)
     }
 
-    pub(super) fn serve_installed(&mut self, family_idx: usize, variant_idx: usize) {
+    /// Returns whether a server job was spawned. Callers that arm follow-up
+    /// state (auto-chat, wizard reset) must key on it: a refused start
+    /// (invalid host/port, server already running, unknown variant) leaves
+    /// the wizard where it was.
+    pub(super) fn serve_installed(&mut self, family_idx: usize, variant_idx: usize) -> bool {
         if let Some(err) = self.host_error() {
             self.toast_error(err);
-            return;
+            return false;
         }
         if let Some(err) = self.port_error() {
             self.toast_error(err);
-            return;
+            return false;
         }
         if self.server_running() {
             self.toast_warn("stop the running server first (x on Serve)");
-            return;
+            return false;
         }
         let Some(variant) = self
             .families
             .get(family_idx)
             .and_then(|f| f.variants.get(variant_idx))
         else {
-            return;
+            return false;
         };
         let profile = variant.profile;
         let artifacts_dir = catalog::repo_snapshot_dir(profile.repo_id);
-        self.spawn_server(profile.preset, artifacts_dir, profile.label);
+        self.spawn_server(profile.preset, artifacts_dir, profile.label)
     }
 
-    pub(super) fn start_server_for_download(&mut self, download_idx: usize) {
+    /// See [`Self::serve_installed`] for the return contract.
+    pub(super) fn start_server_for_download(&mut self, download_idx: usize) -> bool {
         if let Some(err) = self.host_error() {
             self.toast_error(err);
-            return;
+            return false;
         }
         if let Some(err) = self.port_error() {
             self.toast_error(err);
-            return;
+            return false;
         }
         if self.server_running() {
             self.toast_warn("stop the running server first (x on Serve)");
-            return;
+            return false;
         }
         let Some(task) = self.downloads.get(download_idx) else {
-            return;
+            return false;
         };
         if !task.is_ready() {
-            return;
+            return false;
         }
         // Prefer the path reported by the direct Hub download, then resolve
         // its usable cache snapshot. AutomatosX MTP packs are self-contained.
@@ -117,15 +122,20 @@ impl App {
             .output_path()
             .or_else(|| catalog::repo_snapshot_dir(&task.repo_id));
         let label = task.label.clone();
-        self.spawn_server(task.preset, artifacts_dir, &label);
+        self.spawn_server(task.preset, artifacts_dir, &label)
     }
 
+    /// Returns whether a child was launched. Any previous job is cancelled
+    /// first so a replaced entry never leaves an orphan holding the port.
     fn spawn_server(
         &mut self,
         preset: Option<&str>,
         artifacts_dir: Option<PathBuf>,
         model_label: &str,
-    ) {
+    ) -> bool {
+        if let Some(job) = &mut self.server {
+            job.cancel();
+        }
         self.server_ready = false;
         self.server_ready_scan = 0;
         self.external_server = false;
@@ -166,11 +176,12 @@ impl App {
                 cmd.arg("--resolve-model-artifacts").arg("hf-cache");
             }
             None => {
-                self.server = Some(Job::failed(
-                    "no server artifact path could be resolved for this download".into(),
-                ));
+                let reason = "no server artifact path could be resolved for this download";
+                self.server = Some(Job::failed(reason.into()));
                 self.server_url = None;
-                return;
+                self.server_model = None;
+                self.toast_error(reason);
+                return false;
             }
         }
         // Record the resolved binary in the log so Serve failures are diagnosable
@@ -183,15 +194,30 @@ impl App {
                 self.server = Some(job);
                 self.server_url = Some(format_http_base_url(&host, &port));
                 self.server_model = Some(model_label.to_string());
+                true
             }
             Err(err) => {
                 self.server = Some(Job::failed(format!(
                     "failed to launch server ({bin_display}): {err}"
                 )));
                 self.server_url = None;
+                self.server_model = None;
                 self.toast_error(format!("failed to launch server: {err}"));
+                false
             }
         }
+    }
+
+    /// URL a health probe should target: the spawn-time URL while our own
+    /// child is alive (editing the Serve fields must not re-point the probe
+    /// at some other listener), otherwise whatever the fields configure.
+    fn probe_target_url(&self) -> Option<String> {
+        if self.managed_server_alive()
+            && let Some(url) = &self.server_url
+        {
+            return Some(url.clone());
+        }
+        self.configured_server_url()
     }
 
     /// Track the managed server job in both directions: flip `server_ready` on
@@ -210,6 +236,12 @@ impl App {
                 self.server_ready = false;
                 self.toast_warn("server stopped — restart it on Serve");
             }
+            if !self.external_server {
+                // The label and URL described the dead child; keep the job
+                // (its log and exit code explain the failure).
+                self.server_model = None;
+                self.server_url = None;
+            }
             return;
         }
         if self.server_ready {
@@ -217,13 +249,13 @@ impl App {
             self.external_server = false;
             return;
         }
-        // Only scan lines that arrived since the last check. LOG_CAP can drain
-        // from the front and invalidate absolute indices — rescan from 0 then.
-        let start = if self.server_ready_scan > job.log.len() {
-            0
-        } else {
-            self.server_ready_scan
-        };
+        // Only scan lines that arrived since the last check. The cursor is a
+        // stable position (`log_dropped + index`), so a LOG_CAP front drain
+        // cannot hide lines that landed below the old absolute index.
+        let start = self
+            .server_ready_scan
+            .saturating_sub(job.log_dropped)
+            .min(job.log.len());
         for line in &job.log[start..] {
             if server_log_indicates_ready(line) {
                 self.server_ready = true;
@@ -231,7 +263,7 @@ impl App {
                 break;
             }
         }
-        self.server_ready_scan = job.log.len();
+        self.server_ready_scan = job.log_dropped + job.log.len();
     }
 
     /// Apply a completed `/health` result. Pure state transition used by the
@@ -242,8 +274,7 @@ impl App {
         let managed_alive = self.managed_server_alive();
         match health {
             Some(health) => {
-                let url = self.configured_server_url();
-                if let Some(url) = url {
+                if let Some(url) = self.probe_target_url() {
                     self.server_url = Some(url);
                 }
                 self.server_ready = true;
@@ -253,6 +284,9 @@ impl App {
                     self.external_server = false;
                 } else {
                     self.external_server = true;
+                    // A finished (failed or exited) job no longer describes
+                    // the listener; drop it so its error line stops showing.
+                    self.server = None;
                     if let Some(model_id) = health.model_id {
                         self.server_model = Some(model_id);
                     }
@@ -282,7 +316,14 @@ impl App {
             match rx.try_recv() {
                 Ok(result) => {
                     self.server_probe = None;
-                    return self.apply_server_health(result);
+                    // A probe answers for the URL it was launched with. If the
+                    // Serve fields changed (or became invalid) meanwhile, that
+                    // answer says nothing about the configured server: drop
+                    // it and let the re-probe below run against the new URL.
+                    if self.server_probe_url == self.probe_target_url() {
+                        return self.apply_server_health(result);
+                    }
+                    self.server_probe_url = None;
                 }
                 Err(TryRecvError::Empty) => return false,
                 Err(TryRecvError::Disconnected) => {
@@ -299,7 +340,7 @@ impl App {
             return false;
         }
 
-        let Some(url) = self.configured_server_url() else {
+        let Some(url) = self.probe_target_url() else {
             return false;
         };
         let url_changed = self.server_probe_url.as_deref() != Some(url.as_str());
@@ -322,6 +363,7 @@ impl App {
 
     pub(super) fn stop_server(&mut self) {
         let had_managed = self.managed_server_alive();
+        let had_external = self.external_server;
         if let Some(job) = &mut self.server {
             job.cancel();
         }
@@ -335,7 +377,7 @@ impl App {
         self.last_server_probe = None;
         self.server_probe_url = None;
         self.serve_log_scroll.pin_to_bottom();
-        if !had_managed {
+        if !had_managed && had_external {
             // External-only: we cannot kill the process; detach so the UI
             // stops claiming it. User stops the real process outside.
             self.toast_warn("detached external server — stop the process outside the TUI");

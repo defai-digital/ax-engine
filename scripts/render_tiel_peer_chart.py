@@ -11,6 +11,7 @@ SVG drifts from the source tables.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -58,7 +59,7 @@ def parse_completion_table(markdown_text: str) -> list[Cell]:
     in_table = False
     for line in lines[start:]:
         stripped = line.strip()
-        if stripped.startswith("|") and "Machine" in stripped:
+        if not in_table and stripped.startswith("|") and "Machine" in stripped:
             in_table = True
             continue
         if not in_table:
@@ -68,8 +69,13 @@ def parse_completion_table(markdown_text: str) -> list[Cell]:
                 break
             continue
         row = [part.strip() for part in stripped.strip("|").split("|")]
-        if len(row) != 7 or set(row[0]) <= set("-: "):
-            continue
+        if row and row[0] and set(row[0]) <= set("-: "):
+            continue  # markdown alignment separator
+        # A malformed data row is a source-doc defect, not something to skip:
+        # silently dropping it would render a wrong chart that `--check`
+        # then blesses.
+        if len(row) != 7:
+            raise SystemExit(f"completion table row has {len(row)} cells, expected 7: {stripped}")
         machine, model, workload = row[0], row[1], row[2]
         try:
             cell = Cell(
@@ -80,12 +86,22 @@ def parse_completion_table(markdown_text: str) -> list[Cell]:
                 mtplx_tok_s=float(row[4]),
                 delta_pct=_parse_delta(row[6]),
             )
-        except ValueError:
-            continue
+        except ValueError as error:
+            raise SystemExit(f"completion table row is not numeric: {stripped}") from error
+        if not all(math.isfinite(v) for v in (cell.ax_tok_s, cell.mtplx_tok_s, cell.delta_pct)):
+            raise SystemExit(f"completion table row is not finite: {stripped}")
         cells.append(cell)
     if len(cells) < 8:
         raise SystemExit(f"expected the full four-machine completion table, got {len(cells)} rows")
     return cells
+
+
+def _display_path(path: Path) -> str:
+    """Repo-relative when inside the repo; otherwise the path as given."""
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def _escape(text: str) -> str:
@@ -170,10 +186,11 @@ def render_svg(cells: list[Cell]) -> str:
             f'<text x="24" y="{row_top + bar_height + 6}" font-size="11.5" '
             f'fill="#22332c">{_escape(label)}</text>'
         )
-        sign = "+" if cell.delta_pct >= 0 else ""
+        delta_text = f"{cell.delta_pct:.1f}"
+        sign = "" if delta_text.startswith("-") else "+"
         parts.append(
             f'<text x="{plot_right}" y="{row_top + bar_height + 6}" font-size="11" '
-            f'fill="#5a6a62" text-anchor="end">{sign}{cell.delta_pct:.1f}%</text>'
+            f'fill="#5a6a62" text-anchor="end">{sign}{delta_text}%</text>'
         )
         ax_w = x_for(cell.ax_tok_s) - plot_left
         mt_w = x_for(cell.mtplx_tok_s) - plot_left
@@ -221,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         existing = args.output.read_text(encoding="utf-8") if args.output.is_file() else ""
         if existing != svg:
             print(
-                f"ERROR: {args.output.relative_to(REPO_ROOT)} is stale; "
+                f"ERROR: {_display_path(args.output)} is stale; "
                 f"run scripts/render_tiel_peer_chart.py",
                 file=sys.stderr,
             )
@@ -231,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(svg, encoding="utf-8")
-    print(f"wrote {args.output.relative_to(REPO_ROOT)} ({len(cells)} cells)")
+    print(f"wrote {_display_path(args.output)} ({len(cells)} cells)")
     return 0
 
 

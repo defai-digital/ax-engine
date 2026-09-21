@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -64,7 +65,7 @@ def load_peers(summary: dict) -> list[Peer]:
         if not isinstance(row, dict):
             raise SystemExit(f"summary.json measured is missing engine {key!r}")
         value = row.get("decode_tok_s_median_20")
-        if not isinstance(value, (int, float)) or value <= 0:
+        if not _positive_finite(value):
             raise SystemExit(f"summary.json {key} lacks a positive decode median")
         peers.append(
             Peer(
@@ -79,13 +80,32 @@ def load_peers(summary: dict) -> list[Peer]:
     return peers
 
 
+def _positive_finite(value: object) -> bool:
+    """A real, finite, positive number. `bool` is an int subclass and JSON
+    `NaN` / `Infinity` parse as floats, so both need explicit rejection."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def _display_path(path: Path) -> str:
+    """Repo-relative when inside the repo; otherwise the path as given."""
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def load_reference(summary: dict) -> Peer | None:
     """Return the direct-AR mlx-lm baseline row, or None if absent."""
     row = (summary.get("measured") or {}).get("mlx_lm")
     if not isinstance(row, dict):
         return None
     value = row.get("decode_tok_s_median_20")
-    if not isinstance(value, (int, float)) or value <= 0:
+    if not _positive_finite(value):
         return None
     return Peer(
         name="mlx-lm",
@@ -204,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         existing = args.output.read_text(encoding="utf-8") if args.output.is_file() else ""
         if existing != svg:
             print(
-                f"ERROR: {args.output.relative_to(REPO_ROOT)} is stale; "
+                f"ERROR: {_display_path(args.output)} is stale; "
                 f"run scripts/render_mtp_peer_decode_chart.py",
                 file=sys.stderr,
             )
@@ -214,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(svg, encoding="utf-8")
-    print(f"wrote {args.output.relative_to(REPO_ROOT)} ({len(peers)} MTP peers + reference)")
+    suffix = " + reference" if reference is not None else ""
+    print(f"wrote {_display_path(args.output)} ({len(peers)} MTP peers{suffix})")
     return 0
 
 

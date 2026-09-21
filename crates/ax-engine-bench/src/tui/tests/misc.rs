@@ -84,8 +84,9 @@ fn serve_restart_confirm_stops_then_starts_selected_model() {
         "the restart reached the serve path (blocked at validation)"
     );
     assert!(
-        app.auto_chat_after_serve,
-        "restart re-arms the chat handoff like a fresh serve"
+        !app.auto_chat_after_serve,
+        "a restart refused at validation must not arm the chat handoff, \
+         or an unrelated later serve would auto-jump to Chat"
     );
 }
 

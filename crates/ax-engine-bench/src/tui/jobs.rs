@@ -32,6 +32,9 @@ pub(super) struct Job {
     rx: Receiver<JobMsg>,
     child: Option<Child>,
     pub log: Vec<String>,
+    /// Lines drained from the front of `log` by `LOG_CAP`. `log_dropped +
+    /// index` is a stable position, so scanners can resume across drains.
+    pub log_dropped: usize,
     pub done: Option<i32>,
     /// When set, polled each tick for the live byte counter (downloads only).
     watch_dir: Option<PathBuf>,
@@ -101,6 +104,7 @@ impl Job {
             rx,
             child: Some(child),
             log: Vec::new(),
+            log_dropped: 0,
             done: None,
             watch_dir,
             bytes: 0,
@@ -118,6 +122,7 @@ impl Job {
             rx,
             child: None,
             log: vec![message],
+            log_dropped: 0,
             done: Some(-1),
             watch_dir: None,
             bytes: 0,
@@ -136,6 +141,7 @@ impl Job {
             rx,
             child: None,
             log,
+            log_dropped: 0,
             done: None,
             watch_dir: None,
             bytes: 0,
@@ -154,6 +160,7 @@ impl Job {
             rx,
             child: None,
             log: Vec::new(),
+            log_dropped: 0,
             done: Some(code),
             watch_dir: None,
             bytes: 0,
@@ -181,6 +188,7 @@ impl Job {
             if self.log.len() > LOG_CAP {
                 let overflow = self.log.len() - LOG_CAP;
                 self.log.drain(0..overflow);
+                self.log_dropped += overflow;
             }
         }
         if self.done.is_none()

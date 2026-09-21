@@ -577,6 +577,59 @@ fn external_health_probe_marks_server_ready_without_child_job() {
 }
 
 #[test]
+fn stale_health_probe_for_a_previous_url_is_discarded() {
+    // A probe answers for the URL it was launched with. Editing the port
+    // while it is in flight must not let the old listener's OK mark the
+    // new, unlistened URL ready.
+    let mut app = new_app();
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(Some(super::super::server_probe::ServerHealth {
+        model_id: Some("gemma4-e2b".into()),
+    }))
+    .expect("probe result");
+    app.server_probe = Some(rx);
+    app.server_probe_url = Some("http://127.0.0.1:31418".into());
+    app.port = "39999".into();
+    let changed = app.tick_server_health_probe();
+    assert!(!changed, "stale probe must not change readiness");
+    assert!(!app.server_ready);
+    assert!(!app.external_server);
+    assert!(app.server_url.is_none());
+    assert!(app.server_model.is_none());
+
+    // The same applies when the fields became invalid meanwhile.
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(Some(super::super::server_probe::ServerHealth {
+        model_id: None,
+    }))
+    .expect("probe result");
+    app.server_probe = Some(rx);
+    app.server_probe_url = Some("http://127.0.0.1:39999".into());
+    app.port = "abc".into();
+    assert!(!app.tick_server_health_probe());
+    assert!(!app.server_ready);
+}
+
+#[test]
+fn stop_without_any_server_does_not_claim_a_detach() {
+    let mut app = new_app();
+    app.stop_server();
+    assert!(
+        !app.toasts.iter().any(|t| t.text.contains("detached")),
+        "nothing was attached: {:?}",
+        app.toasts
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<Vec<_>>()
+    );
+    app.apply_server_health(Some(super::super::server_probe::ServerHealth {
+        model_id: Some("gemma4-e2b".into()),
+    }));
+    app.stop_server();
+    assert!(app.toasts.iter().any(|t| t.text.contains("detached")));
+}
+
+#[test]
 fn external_health_loss_detaches_ready_state() {
     let mut app = new_app();
     app.apply_server_health(Some(super::super::server_probe::ServerHealth {

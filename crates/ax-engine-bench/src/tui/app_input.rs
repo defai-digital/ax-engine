@@ -296,9 +296,10 @@ impl App {
             },
             Modal::ServeReady { download_idx } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
-                    self.auto_chat_after_serve = true;
-                    self.start_server_for_download(download_idx);
-                    self.navigate_to(Screen::Serve);
+                    if self.start_server_for_download(download_idx) {
+                        self.auto_chat_after_serve = true;
+                        self.navigate_to(Screen::Serve);
+                    }
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
@@ -308,11 +309,12 @@ impl App {
                 variant_idx,
             } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => {
-                    self.auto_chat_after_serve = true;
-                    self.serve_installed(family_idx, variant_idx);
-                    self.navigate_to(Screen::Serve);
-                    self.stage = WizardStage::Families;
-                    self.pending = None;
+                    if self.serve_installed(family_idx, variant_idx) {
+                        self.auto_chat_after_serve = true;
+                        self.navigate_to(Screen::Serve);
+                        self.stage = WizardStage::Families;
+                        self.pending = None;
+                    }
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),
@@ -385,8 +387,9 @@ impl App {
                     // Same start path as Serve Enter / ServeInstalled, just
                     // after stopping the currently served model.
                     self.stop_server();
-                    self.auto_chat_after_serve = true;
-                    self.serve_installed(family_idx, variant_idx);
+                    if self.serve_installed(family_idx, variant_idx) {
+                        self.auto_chat_after_serve = true;
+                    }
                 }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
                 _ => self.modal = Some(modal),

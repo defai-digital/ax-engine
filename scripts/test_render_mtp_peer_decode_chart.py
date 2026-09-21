@@ -80,3 +80,32 @@ class MtpPeerDecodeChartTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MtpPeerDecodeChartValidationTests(unittest.TestCase):
+    def _summary(self, value):
+        measured = {
+            key: {"decode_tok_s_median_20": 50.0, "version": "x"} for key in mod.PEERS
+        }
+        first = next(iter(mod.PEERS))
+        measured[first]["decode_tok_s_median_20"] = value
+        return {"measured": measured}
+
+    def test_boolean_is_not_a_decode_median(self) -> None:
+        with self.assertRaises(SystemExit):
+            mod.load_peers(self._summary(True))
+
+    def test_non_finite_is_not_a_decode_median(self) -> None:
+        for value in (float("nan"), float("inf")):
+            with self.assertRaises(SystemExit):
+                mod.load_peers(self._summary(value))
+
+    def test_reference_rejects_boolean_and_non_finite(self) -> None:
+        for value in (True, float("nan")):
+            self.assertIsNone(
+                mod.load_reference({"measured": {"mlx_lm": {"decode_tok_s_median_20": value}}})
+            )
+
+    def test_display_path_outside_repo_does_not_raise(self) -> None:
+        self.assertEqual(mod._display_path(Path("/nowhere/out.svg")), "/nowhere/out.svg")
+

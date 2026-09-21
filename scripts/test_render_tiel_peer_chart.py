@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from textwrap import dedent
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,3 +68,49 @@ class TielPeerChartTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TielPeerChartParserTests(unittest.TestCase):
+    HEADER = dedent(
+        """
+        ### Completion throughput
+
+        | Machine | Model | Workload | AX tok/s | MTPLX tok/s | Ratio | Delta |
+        |---|---|---|---:|---:|---:|---:|
+        """
+    )
+
+    def _doc(self, rows: str) -> str:
+        return "## Completion throughput\n" + self.HEADER + rows
+
+    def test_malformed_row_is_an_error_not_a_skip(self) -> None:
+        rows = "| M5 Max | Tiel | short | 100.0 | 90.0 | 1.11x | +11.1% |\n" * 8
+        rows += "| M5 Max | Tiel | long | — | 90.0 | — | — |\n"
+        with self.assertRaises(SystemExit) as raised:
+            chart.parse_completion_table(self._doc(rows))
+        self.assertIn("not numeric", str(raised.exception))
+
+    def test_short_row_is_an_error(self) -> None:
+        rows = "| M5 Max | Tiel | short | 100.0 | 90.0 | 1.11x | +11.1% |\n" * 8
+        rows += "| M5 Max | Tiel | long | 100.0 |\n"
+        with self.assertRaises(SystemExit) as raised:
+            chart.parse_completion_table(self._doc(rows))
+        self.assertIn("expected 7", str(raised.exception))
+
+    def test_data_row_mentioning_machine_is_not_a_header(self) -> None:
+        rows = "| Machine Studio | Tiel | short | 100.0 | 90.0 | 1.11x | +11.1% |\n" * 8
+        cells = chart.parse_completion_table(self._doc(rows))
+        self.assertEqual(len(cells), 8)
+
+    def test_negative_zero_delta_renders_without_double_sign(self) -> None:
+        cell = chart.Cell(
+            machine="M5 Max", model="Tiel", workload="short",
+            ax_tok_s=100.0, mtplx_tok_s=100.0, delta_pct=-0.0,
+        )
+        svg = chart.render_svg([cell] * 8)
+        self.assertNotIn("+-0.0%", svg)
+        self.assertIn("-0.0%", svg)
+
+    def test_display_path_outside_repo_does_not_raise(self) -> None:
+        self.assertEqual(chart._display_path(Path("/nowhere/out.svg")), "/nowhere/out.svg")
+
