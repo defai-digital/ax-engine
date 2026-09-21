@@ -90,6 +90,17 @@ Synthetic `random128` results remain in the
 [full artifact tables](../../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md).
 Their larger gains in some cells are not generalized to coding workloads.
 
+## Public quoting
+
+- AX Code's managed default is **Tiel**. Quote **194.88 vs 177.44 completion tok/s
+  including TTFT** (M5 Max 128 GiB, `python-lru`) as the product number.
+- **249.01** is Cyber-Tiel **decode** on the same host and workload. It is the
+  campaign's fastest decode cell. It is not the default pack and is not
+  completion throughput.
+- Do not label decode as generation speed, and do not present native-API tok/s
+  as AX Code session speed. AX Engine's own first-run default remains
+  `qwen3.8-27b:axq` on the M4 Pro qualification SKU.
+
 ## Decode and first-token latency
 
 Decode excludes the first callback's tokens and elapsed time. TTFT measures

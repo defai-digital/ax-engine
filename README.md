@@ -1,11 +1,12 @@
 # AX Engine
 
 AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
-for Qwen 3.8 27B AXQ**, benchmarked head-to-head against **MTPLX** — the only
-peer that loads the same AXQ 6-bit MTP pack, runs the same MLX 0.32.2, and does
-MTP. We publish that comparison across Apple Silicon SKUs, wins and losses both,
-with checked-in artifacts. Install with Homebrew, download the pinned 27B pack,
-and serve OpenAI-compatible endpoints locally.
+for Qwen 3.8 27B AXQ**, benchmarked head-to-head in MTP mode against the two
+other MLX runtimes that load the same AXQ 6-bit MTP pack and run MTP —
+**MTPLX** (draft depth 3) and **OMLX** (Lightning depth 1). We publish those
+comparisons across Apple Silicon SKUs, wins and losses both, with checked-in
+artifacts. Install with Homebrew, download the pinned 27B pack, and serve
+OpenAI-compatible endpoints locally.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -14,6 +15,10 @@ The default pack is `qwen3.8-27b:axq`
 @ `3e290738e96972307c6aeb9934ab170ca0eae1c1`). Additional Qwen, Gemma, GLM, and
 other certified families stay supported; they are not the first-run or
 qualification center. Super-class Qwen 3.8 (2.4T) is experimental only.
+
+**AX Code's managed local default is not this 27B Qwen alias.** The coding harness
+selects [Tiel Coder 35B A3B MXFP4 MTP](#tiel-performance), with Cyber-Tiel as the
+alternate pack. Do not mix the Qwen 27B qualification table with the Tiel campaign.
 
 NVIDIA/CUDA fleet serving lives in
 [AX Serving](https://github.com/defai-digital/ax-serving). AX Engine remains the
@@ -44,12 +49,14 @@ still depend on memory capacity and workload; see the
 
 ## Why AX Engine
 
-- **Benchmarked head-to-head against MTPLX** — MTPLX is the only public peer
-  that loads the same `qwen3.8-27b:axq` AXQ 6-bit MTP pack, runs the same
-  MLX 0.32.2, and does MTP. We publish that comparison across Apple Silicon
-  SKUs with version-pinned wins **and** losses and checked-in artifacts
-  ([Performance](#performance)); it is a measured snapshot, not a permanent
-  ranking, and MTP Tier 2 is still pending
+- **Benchmarked head-to-head in MTP mode** — MTPLX and OMLX are the public
+  peers that load the same `qwen3.8-27b:axq` AXQ 6-bit MTP pack and run MTP
+  (MTPLX at draft depth 3, OMLX at Lightning depth 1); on the Mac mini M4 Pro
+  64 GB SKU AX Engine leads both on decode (31.05 vs 28.16 vs 15.02 tok/s,
+  20-run medians, 2026-09-17). The Tiel MXFP4 four-SKU peer run is against
+  MTPLX. We publish version-pinned wins **and** losses with checked-in
+  artifacts ([Performance](#performance)); it is a measured snapshot, not a
+  permanent ranking, and MTP Tier 2 is still pending
 - **Optimized first for Qwen 3.8 27B AXQ** — one download of
   `qwen3.8-27b:axq` is the default serve path. Product-path MTP on this pack is
   the number in [Performance](#performance). Peers that cannot load this AXQ
@@ -380,13 +387,18 @@ its prefill lead is 6x for both AX and MTPLX. Full analysis:
 
 <img src="docs/assets/perf-decode-bandwidth-utilization.svg" alt="Decode throughput expressed as weight-stream bandwidth against Apple's published memory bandwidth for Mac mini M4 Pro and MacBook Pro M5 Max">
 
+<a id="tiel-performance"></a>
+
 ### Tiel / Cyber-Tiel peer refresh (2026-09-20)
 
-The [four-machine performance report](docs/performance/tiel-vs-mtplx-2026-09-20.md)
+These two MXFP4 MTP packs are what **AX Code** manages as local defaults (Tiel) and
+alternate (Cyber-Tiel). They are not AX Engine's first-run Qwen 27B alias. The
+[four-machine performance report](docs/performance/tiel-vs-mtplx-2026-09-20.md)
 reports both packs separately on M5 Max 128 GiB, M4 Pro 64 GiB, M2 Ultra
 192 GiB and M3 Ultra 512 GiB. It uses identical model files and prompt tokens, fixed output counts,
 cold KV, two reversed-order blocks, and completion throughput including TTFT.
-These are explicit throughput-MTP, full-resident native API measurements.
+These are explicit throughput-MTP, full-resident native API measurements, not
+default `ax-engine serve` and not AX Code session speed.
 
 Coding completion throughput includes TTFT. Each cell has six measured samples;
 the ranges below compare the four Python/Rust cells per host with MTPLX
@@ -425,10 +437,27 @@ pre-residency-fix runs favored MTPLX on some hosts.
 | M3 Ultra 512 GiB | python-lru | **160.35** | 153.48 | **+4.5%** |
 | M3 Ultra 512 GiB | rust-jsonl | **127.19** | 121.80 | **+4.4%** |
 
-Cyber-Tiel cells and the separate decode / TTFT tables are in the report; the
-chart above plots both packs. AX decode is faster in every coding cell, but the
-M4 Pro and M2 Ultra first-token wait offsets it on completion. The figure is
-generated from the report tables by `scripts/render_tiel_peer_chart.py`.
+**Coding completion throughput — Cyber-Tiel pack (tokens/s, median incl. TTFT):**
+
+| Machine | Workload | AX Engine | MTPLX sustained | AX vs MTPLX |
+| --- | --- | ---: | ---: | ---: |
+| M5 Max 128 GiB | python-lru | **219.43** | 194.15 | **+13.0%** |
+| M5 Max 128 GiB | rust-jsonl | **169.14** | 163.99 | **+3.1%** |
+
+**Decode (excludes first callback; not the primary metric):**
+
+| Machine | Pack | Workload | AX decode | MTPLX decode |
+| --- | --- | --- | ---: | ---: |
+| M5 Max 128 GiB | Tiel (AX Code default) | python-lru | 217.85 | 198.40 |
+| M5 Max 128 GiB | Cyber-Tiel (alternate) | python-lru | **249.01** | 219.84 |
+
+**194.88** is the public completion number for AX Code's managed default Tiel pack.
+**249.01** is the fastest decode cell in the campaign; it is Cyber-Tiel, not the
+default, and is not an AX Code session measurement. Do not quote decode as
+completion. The chart above plots both packs. AX decode is faster in every coding
+cell, but the M4 Pro and M2 Ultra first-token wait offsets it on completion. The
+figure is generated from the report tables by `scripts/render_tiel_peer_chart.py`.
+Remaining Cyber-Tiel hosts and TTFT tables stay in the report.
 
 The report includes both MTPLX profiles, separate decode/TTFT tables, memory,
 unwired controls and limitations. There is no comparable isolated prefill
