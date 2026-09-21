@@ -28,6 +28,36 @@ fn family_list_renders_with_sizes_and_mtp_badge() {
 }
 
 #[test]
+fn wide_family_panel_renders_long_names_in_full() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    // The longest catalog display name is the row a fixed 16-column cap used
+    // to cut off mid-word.
+    let longest = app
+        .families
+        .iter()
+        .map(|family| family.display_name())
+        .max_by_key(|name| name.chars().count())
+        .expect("catalog is non-empty");
+    assert!(
+        longest.chars().count() > 16,
+        "fixture must exceed the old fixed cap: {longest}"
+    );
+    // Keep the Details panel on a different family so the only source of this
+    // exact string in the buffer is the left-hand list row.
+    app.family_idx = app
+        .families
+        .iter()
+        .position(|family| family.display_name() != longest)
+        .expect("more than one family");
+    let text = render_sized(&app, 200, 50);
+    assert!(
+        text.contains(&longest),
+        "a wide panel must render the full family name, not an ellipsis: {longest}"
+    );
+}
+
+#[test]
 fn precision_screen_lists_quants_with_fit_badges() {
     let mut app = new_app();
     app.screen = Screen::Models;

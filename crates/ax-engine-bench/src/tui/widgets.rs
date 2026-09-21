@@ -451,6 +451,38 @@ pub(super) fn ellipsis(text: &str, width: usize) -> String {
     }
 }
 
+/// Columns a list row spends before its content: a 1-cell border on each side
+/// plus the 2-column selection highlight symbol.
+pub(super) const LIST_ROW_CHROME_COLUMNS: u16 = 4;
+
+/// Floor for a model-name column — the fixed width both model lists used
+/// before the name was sized from the panel, so narrow panels are unchanged.
+pub(super) const MODEL_NAME_MIN_COLUMNS: usize = 16;
+
+/// Width of a model-name column in a `panel_width`-column list panel whose
+/// longest name is `longest_name` characters, with `trailing_columns`
+/// reserved after the name for the quant/size/fit badges.
+///
+/// Sizing the column from the real panel width keeps long model names
+/// readable instead of truncating every row at a fixed width. The result never
+/// exceeds the room left after the reserved trailing cells, and never drops
+/// below [`MODEL_NAME_MIN_COLUMNS`].
+///
+/// The floor is a behaviour floor, not a guarantee: a panel narrower than
+/// `16 + trailing_columns` plus chrome still clips the trailing cells, exactly
+/// as it did before names were sized from the panel.
+pub(super) fn model_name_width(
+    panel_width: u16,
+    longest_name: usize,
+    trailing_columns: u16,
+) -> usize {
+    let reserved = LIST_ROW_CHROME_COLUMNS.saturating_add(trailing_columns);
+    let available = panel_width.saturating_sub(reserved) as usize;
+    available
+        .max(MODEL_NAME_MIN_COLUMNS)
+        .min(longest_name.max(MODEL_NAME_MIN_COLUMNS))
+}
+
 /// Scrolling log pane fed from a job's captured output.
 /// Applies basic coloring to ERROR/WARN/INFO lines for scannability.
 ///

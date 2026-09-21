@@ -534,6 +534,18 @@ impl App {
 
     /// Family list panel — always visible on the left.
     fn draw_families_panel(&self, frame: &mut Frame, area: Rect, active: bool) {
+        // Size the name column from the real panel width: a fixed cap cut
+        // long family names (`AX Qwen3-VL 30B-A3B Instruct AXQ`) mid-word on
+        // wide terminals. The trailing quant/status/MTP/tag cells keep their
+        // reserved space so rows stay aligned.
+        let longest_name = self
+            .families
+            .iter()
+            .map(|family| family.display_name().chars().count())
+            .max()
+            .unwrap_or(0);
+        let name_width =
+            widgets::model_name_width(area.width, longest_name, FAMILY_ROW_TRAILING_COLUMNS);
         let indices = self.filtered_family_indices();
         let rows: Vec<ListItem> = indices
             .iter()
@@ -561,7 +573,7 @@ impl App {
                     Span::styled(" preview", theme::label())
                 };
                 let name = family.display_name();
-                let name_cell = widgets::ellipsis(&name, 16);
+                let name_cell = widgets::ellipsis(&name, name_width);
                 // Compact quant: "4–8b" when multi, else single / MXFP4.
                 let quant = compact_quant_summary(family);
                 ListItem::new(Line::from(vec![
@@ -874,6 +886,11 @@ impl App {
         );
     }
 }
+
+/// Columns reserved after the family name: the quant summary (` {:<9}`, so 10
+/// columns), the install badge (at most 5 columns, e.g. `✓all` or `10/12`),
+/// the MTP mark (` ⚡` = 3 columns), and the ` preview` tag (8). 26 total.
+const FAMILY_ROW_TRAILING_COLUMNS: u16 = 26;
 
 /// Compact quant range for dense family rows (`4–8b` / `6b`).
 fn compact_quant_summary(family: &crate::tui::catalog::Family) -> String {

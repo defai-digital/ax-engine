@@ -3,7 +3,7 @@
 //! and log scrolling.
 use super::super::jobs::Job;
 use super::super::{App, Modal, Screen, ServeFocus};
-use super::{key, mouse, new_app, render, test_task};
+use super::{key, mouse, new_app, render, render_sized, test_task};
 use ratatui::crossterm::event::KeyCode;
 use ratatui::crossterm::event::MouseEventKind;
 use std::process;
@@ -125,6 +125,34 @@ fn serve_screen_renders_fields() {
     assert!(text.contains("Models") || text.contains("Installed"));
     assert!(text.contains("Host"));
     assert!(text.contains("Port"));
+}
+
+#[test]
+fn serve_list_renders_long_model_names_in_full() {
+    let mut app = new_app();
+    app.screen = Screen::Serve;
+    // Install the longest-named family so the list has a row to draw. The
+    // serve panel spans the full width, so the row was only short of room
+    // because the name was capped at a fixed 16 columns.
+    let fi = app
+        .families
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, family)| family.display_name().chars().count())
+        .map(|(index, _)| index)
+        .expect("catalog is non-empty");
+    let longest = app.families[fi].display_name();
+    assert!(
+        longest.chars().count() > 16,
+        "fixture must exceed the old fixed cap: {longest}"
+    );
+    app.families[fi].variants[0].installed = true;
+    app.serve_idx = 0;
+    let text = render_sized(&app, 200, 40);
+    assert!(
+        text.contains(&longest),
+        "serve list must render the full model name, not an ellipsis: {longest}"
+    );
 }
 
 #[test]

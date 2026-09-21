@@ -14,6 +14,15 @@ use crate::tui::theme;
 use crate::tui::widgets::{self, ToastLevel, field_line};
 use crate::tui::{App, Modal, Screen, ServeFocus};
 
+/// Columns a serve row spends after the model name, excluding the precision
+/// cell: the size cell (`{:>9}`, 9), a spacer (1), and the RAM-fit badge
+/// (`{:<10}`, 10).
+const SERVE_ROW_TRAILING_FIXED_COLUMNS: usize = 9 + 1 + 10;
+
+/// Minimum precision-cell width (the old `{:<7}`), so short quant tags keep
+/// the size column where it has always been.
+const SERVE_PRECISION_MIN_COLUMNS: usize = 7;
+
 impl App {
     pub(crate) fn on_key_serve(&mut self, code: KeyCode) {
         match self.serve_focus {
@@ -233,6 +242,26 @@ impl App {
 
     fn draw_serve_model_list(&self, frame: &mut Frame, area: Rect) {
         let pairs = installed_variants(&self.families);
+        // Size the name column from the panel and the longest installed model
+        // (a fixed 16-column cap cut long names mid-word), and pad every
+        // precision cell to the widest recipe tag so the size column stays
+        // aligned across rows. Both widths are reserved before the name is
+        // allowed to grow, so badges cannot be pushed off the panel.
+        let precision_width = pairs
+            .iter()
+            .map(|&(fi, vi)| self.families[fi].variants[vi].precision().chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(SERVE_PRECISION_MIN_COLUMNS);
+        let name_width = widgets::model_name_width(
+            area.width,
+            pairs
+                .iter()
+                .map(|&(fi, _)| self.families[fi].display_name().chars().count())
+                .max()
+                .unwrap_or(0),
+            (precision_width + SERVE_ROW_TRAILING_FIXED_COLUMNS) as u16,
+        );
         let rows: Vec<ListItem> = if pairs.is_empty() {
             vec![
                 ListItem::new(Line::raw("")),
@@ -264,12 +293,15 @@ impl App {
                     ));
                     ListItem::new(Line::from(vec![
                         Span::styled(
-                            widgets::ellipsis(&family.display_name(), 16),
+                            widgets::ellipsis(&family.display_name(), name_width),
                             Style::default()
                                 .fg(theme::colors().text)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("{:<7}", v.precision()), theme::body_dim()),
+                        Span::styled(
+                            format!("{:<precision_width$}", v.precision()),
+                            theme::body_dim(),
+                        ),
                         Span::styled(
                             format!("{:>9}", catalog::format_bytes(v.size)),
                             theme::body_dim(),
