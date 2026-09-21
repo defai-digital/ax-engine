@@ -1,0 +1,166 @@
+{
+ "campaign": "qwen-family-peer-7.5.3-2026-09-21",
+ "host": "Apple M5 Max, 128 GB (df-macbookpro-m5, Mac17,6, macOS 27.0 / 26A428)",
+ "sku_note": "campaign host, not Mac mini M4 Pro 64 GB SKU; not a certification run",
+ "window_utc": "2026-09-21T07:59:41Z .. 08:20:57Z (measured lanes); Flash Next serve probe 08:55:28Z",
+ "contract": {
+  "suite": "flappy (4 cases, 264-432 prompt tokens)",
+  "generation_tokens": 256,
+  "sampling": "greedy",
+  "seed": 0,
+  "warmup": 2,
+  "repetitions": 5,
+  "cooldown_s": 3,
+  "decode": "median of 20 measured runs (4 cases x 5 reps)",
+  "lane_order": "ax -> mtplx -> omlx -> mlx_lm (fixed per model; see disclosures)",
+  "ax_prefix_cache": "disabled_for_cold_prefill_benchmark",
+  "ax_ngram_stacking": "off"
+ },
+ "models": {
+  "qwen36_35b_a3b_axq_6bit_mtp": {
+   "repo": "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
+   "revision": "6a4c220734f81112555ee8783d91e0065c54301c",
+   "lanes": {
+    "ax_engine": {
+     "decode_tok_s_median_20": 239.52,
+     "prefill_tok_s_median_20": 2112.1,
+     "per_case_medians": {
+      "flappy_pipes": 239.87,
+      "flappy_score_gates": 232.55,
+      "flappy_collision_checks": 238.93,
+      "flappy_sound_channels": 240.01
+     },
+     "routes": [
+      "mtp_head_only_verify_loop"
+     ]
+    },
+    "mtplx": {
+     "decode_tok_s_median_20": 127.87,
+     "prefill_tok_s_median_20": 1590.7,
+     "per_case_medians": {
+      "flappy_pipes": 118.2,
+      "flappy_score_gates": 134.71,
+      "flappy_collision_checks": 133.83,
+      "flappy_sound_channels": 122.05
+     }
+    },
+    "mlx_lm": {
+     "decode_tok_s_median_20": 109.96,
+     "per_case_medians": {
+      "flappy_pipes": 110.0,
+      "flappy_score_gates": 109.86,
+      "flappy_collision_checks": 109.8,
+      "flappy_sound_channels": 110.0
+     }
+    },
+    "omlx": {
+     "status": "unsupported",
+     "reason": "raw AXQ pack lacks mtp.* tensors for OMLX Lightning loader (ValueError at load); no imported sidecar snapshot exists for this model"
+    }
+   },
+   "ratios": {
+    "ax_over_mtplx_decode": 1.87,
+    "ax_over_mlx_lm_decode": 2.18,
+    "ax_over_mtplx_prefill": 1.33
+   }
+  },
+  "qwen38_27b_axq_mxfp4_mtp": {
+   "repo": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+   "revision": "b2c5354f779e430d0c1733143db848a72b71c16e",
+   "lanes": {
+    "ax_engine": {
+     "decode_tok_s_median_20": 76.7,
+     "prefill_tok_s_median_20": 792.4,
+     "per_case_medians": {
+      "flappy_pipes": 76.99,
+      "flappy_score_gates": 76.43,
+      "flappy_collision_checks": 75.22,
+      "flappy_sound_channels": 77.01
+     },
+     "routes": [
+      "mtp_head_only_verify_loop"
+     ]
+    },
+    "mtplx": {
+     "decode_tok_s_median_20": 63.91,
+     "prefill_tok_s_median_20": 697.3,
+     "per_case_medians": {
+      "flappy_pipes": 67.04,
+      "flappy_score_gates": 68.51,
+      "flappy_collision_checks": 60.78,
+      "flappy_sound_channels": 57.04
+     }
+    },
+    "mlx_lm": {
+     "decode_tok_s_median_20": 34.2,
+     "per_case_medians": {
+      "flappy_pipes": 34.21,
+      "flappy_score_gates": 34.18,
+      "flappy_collision_checks": 34.16,
+      "flappy_sound_channels": 34.22
+     }
+    },
+    "omlx": {
+     "status": "unsupported",
+     "reason": "same missing mtp.* tensors as 35B lane"
+    }
+   },
+   "ratios": {
+    "ax_over_mtplx_decode": 1.2,
+    "ax_over_mlx_lm_decode": 2.24
+   },
+   "mtplx_6bit_vs_mxfp4_decode": {
+    "6bit": 73.07,
+    "mxfp4": 63.91,
+    "delta_pct": -12.5
+   }
+  },
+  "qwen38_flash_next_mxfp4_mtp": {
+   "repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+   "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+   "admission": "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 required (fail-closed, ADR-030)",
+   "ax_native_path": {
+    "status": "loads_and_serves",
+    "serve_probe": "HTTP 200 /v1/chat/completions, greedy reply 'Hello!' (2 completion tokens, 30.1 s wall incl. first-request cold route) - flashnext_serve_probe.json",
+    "warm_restart_ready_s": 10,
+    "bench_20run": "not completed: server ran the direct path (policy=direct_no_ngram_acceleration; MTP gates MTP-S/P/D not assessed for this experimental trunk) at roughly 2 tok/s decode; the 4-case x 5-rep contract was abandoned after 30 min and is NOT a performance claim"
+   },
+   "peers": {
+    "mlx_lm": {
+     "status": "unsupported",
+     "reason": "ValueError: Model type qwen4_exp not supported (flashnext_probe_mlxlm.txt)"
+    },
+    "mtplx": {
+     "status": "unsupported",
+     "reason": "inspect: recognized=True, supported=False; no mtplx_runtime.json contract, exit_code=3 (flashnext_probe_mtplx.txt)"
+    },
+    "omlx": {
+     "status": "not_measured",
+     "reason": "ModelSettings parses model_type=qwen4_exp; engine init not attempted (GPU-excluded probe) (flashnext_probe_omlx.txt)"
+    }
+   }
+  }
+ },
+ "disclosures": [
+  "Sequential fixed lane order per model; thermal drift may bias later lanes (mitigated by rotation in the companion 27B 6-bit campaign)",
+  "Prefill for AX is prefill_tok_s (median of 20); MTPLX is prompt_tokens / prompt_eval_time_s (median of 20)",
+  "n=20 runs are correlated within prompt (4 cases x 5 reps); per-case medians are included",
+  "MTPLX ran with --allow-unverified-model (AXQ packs fail its inspect guard); OMLX would need an imported sidecar snapshot as done for 27B 6-bit",
+  "Flash Next numbers are experimental-path evidence only; no MTP or product claim"
+ ],
+ "provenance": {
+  "ax_engine": {
+   "commit": "c5d22c4a2b39f08243129118066eeb31d00ae366",
+   "engine_version": "7.5.3",
+   "toolchain": "Homebrew cargo 1.98.0 on host (no rustup; repo pin 1.97.1 not honored on this host)"
+  },
+  "mtplx": {
+   "version": "2.11.2",
+   "git_commit": "71f6877d19f2179cf47caea84565083cdc950cc2"
+  },
+  "mlx_lm": {
+   "version": "0.31.3"
+  },
+  "companion_campaign": "benchmarks/results/mtp-axq-peer/2026-09-21-apple-m5-max-128gb/ (27B AXQ 6-bit, flappy + long_code)"
+ }
+}

@@ -1,0 +1,72 @@
+{
+  "engine": "mlx_lm",
+  "pack": "/Users/akiralam/.cache/huggingface/hub/models--AutomatosX--AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP/snapshots/6a4c220734f81112555ee8783d91e0065c54301c/",
+  "prompts": "benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "results": [
+    {
+      "prompt_id": "flappy_pipes",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        110.00449147522637,
+        109.9504728702037,
+        110.09594575684864,
+        109.94778056794091,
+        110.15747297253436
+      ],
+      "decode_tok_s_median": 110.00449147522637
+    },
+    {
+      "prompt_id": "flappy_score_gates",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        109.72560423408271,
+        109.85869801568518,
+        110.08946765878778,
+        109.71258046395293,
+        110.04642589634916
+      ],
+      "decode_tok_s_median": 109.85869801568518
+    },
+    {
+      "prompt_id": "flappy_collision_checks",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        109.80164085218345,
+        109.64483833471098,
+        109.84313877766444,
+        109.84986592596776,
+        109.79250470737088
+      ],
+      "decode_tok_s_median": 109.80164085218345
+    },
+    {
+      "prompt_id": "flappy_sound_channels",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        110.28249873167566,
+        110.09520104720983,
+        109.9677401016807,
+        109.98763771616836,
+        110.00233431054714
+      ],
+      "decode_tok_s_median": 110.00233431054714
+    }
+  ],
+  "decode_tok_s_median_all": 109.9677401016807
+}

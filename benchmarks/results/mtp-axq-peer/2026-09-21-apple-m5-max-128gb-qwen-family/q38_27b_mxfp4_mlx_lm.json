@@ -1,0 +1,72 @@
+{
+  "engine": "mlx_lm",
+  "pack": "/Users/akiralam/.cache/huggingface/hub/models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP/snapshots/b2c5354f779e430d0c1733143db848a72b71c16e/",
+  "prompts": "benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "results": [
+    {
+      "prompt_id": "flappy_pipes",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        34.218414621065435,
+        34.21884050853228,
+        34.20854020053919,
+        34.202669821328705,
+        34.20984375192594
+      ],
+      "decode_tok_s_median": 34.20984375192594
+    },
+    {
+      "prompt_id": "flappy_score_gates",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        34.184921051513875,
+        34.17221658096653,
+        34.18921832818589,
+        34.17236502643055,
+        34.17775775702799
+      ],
+      "decode_tok_s_median": 34.17775775702799
+    },
+    {
+      "prompt_id": "flappy_collision_checks",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        34.169362916717276,
+        34.161987412580785,
+        34.1586761596262,
+        34.16273570828403,
+        34.16213749011343
+      ],
+      "decode_tok_s_median": 34.16213749011343
+    },
+    {
+      "prompt_id": "flappy_sound_channels",
+      "engine": "mlx_lm",
+      "method": "mlx_lm.generate stream_generate greedy",
+      "max_tokens": 256,
+      "warmup": 2,
+      "repetitions": 5,
+      "decode_tok_s_values": [
+        34.21308422023735,
+        34.219659415998215,
+        34.21410425945314,
+        34.2188923598147,
+        34.2167756282241
+      ],
+      "decode_tok_s_median": 34.2167756282241
+    }
+  ],
+  "decode_tok_s_median_all": 34.202669821328705
+}

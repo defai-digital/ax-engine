@@ -1,0 +1,2 @@
+OMLX sees model_type: qwen4_exp
+ModelSettings parsed ok; engine init not attempted (GPU-excluded probe)

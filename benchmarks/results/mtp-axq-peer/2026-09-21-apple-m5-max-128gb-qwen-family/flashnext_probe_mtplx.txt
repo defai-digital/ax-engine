@@ -1,0 +1,4 @@
+can_run: n/a
+reasons: n/a
+architecture: Qwen4ExpForConditionalGeneration
+model_type: qwen4_exp_text
