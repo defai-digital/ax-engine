@@ -79,7 +79,19 @@ pub fn batched_sampling_class(
     {
         return None;
     }
-    // Branch 2 (single decode): host `sample_categorical_into`.
+    // Branch 2 (single decode): host `sample_categorical_into` — but only
+    // when single decode would take it too. With the GPU top-k / top-p
+    // samplers on (`AX_MLX_DECODE_SAMPLING_GPU_TOPK`, default ON) a single
+    // decode samples from the GPU softmax candidates first; that is
+    // distribution-exact but not bit-exact with the host scan, so such
+    // requests stay on the per-item path to keep the token-exact contract.
+    if temp_positive
+        && !sampling.uses_min_p()
+        && (sampling.top_k > 0 || (sampling.top_p > 0.0 && sampling.top_p < 1.0))
+        && crate::fastpath::decode_sampling_gpu_topk_enabled()
+    {
+        return None;
+    }
     if temp_positive || uses_processors {
         return Some(BatchedSamplingClass::HostSampled);
     }
@@ -281,14 +293,31 @@ mod tests {
             batched_sampling_class(MlxSamplingParams::new(0.7, 0.9, 40), true),
             Some(BatchedSamplingClass::Greedy)
         );
-        // Branch 2a: temperature + top-p filtering → host sampler.
+        // Branch 2a/2b: temperature + top-p / top-k filtering. Single decode
+        // takes the GPU candidate samplers first when
+        // `AX_MLX_DECODE_SAMPLING_GPU_TOPK` is on (the default), which are not
+        // bit-exact with the host scan, so the batched class is ineligible
+        // then and `HostSampled` only with the GPU samplers switched off.
+        let host_when_gpu_off = if crate::fastpath::decode_sampling_gpu_topk_enabled() {
+            None
+        } else {
+            Some(BatchedSamplingClass::HostSampled)
+        };
         assert_eq!(
             batched_sampling_class(MlxSamplingParams::new(0.7, 0.9, 0), false),
-            Some(BatchedSamplingClass::HostSampled)
+            host_when_gpu_off
         );
-        // Branch 2b: temperature + top-k filtering → host sampler.
         assert_eq!(
             batched_sampling_class(MlxSamplingParams::new(0.7, 1.0, 40), false),
+            host_when_gpu_off
+        );
+        // Top-k plus min-p never takes the GPU samplers (they cannot apply
+        // min-p), so it stays on the host sampler in both modes.
+        assert_eq!(
+            batched_sampling_class(
+                MlxSamplingParams::new(0.7, 1.0, 40).with_min_p(Some(0.1)),
+                false
+            ),
             Some(BatchedSamplingClass::HostSampled)
         );
         // Branch 2c: repetition penalty at temperature 0 → host sampler.

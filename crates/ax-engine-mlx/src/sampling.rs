@@ -31,8 +31,14 @@ impl Xorshift64 {
     }
 
     /// Uniform float in [0, 1).
+    ///
+    /// The 53-bit draw is rounded to f32, which lands on exactly 1.0 for the
+    /// top ~2^28 values; clamp to the largest float below 1.0 so the
+    /// documented half-open range holds and every consumer's `cumsum >=
+    /// u * sum` scan can terminate inside the support.
     pub fn next_f32(&mut self) -> f32 {
-        (self.next_u64() >> 11) as f32 * (1.0 / (1u64 << 53) as f32)
+        let value = (self.next_u64() >> 11) as f32 * (1.0 / (1u64 << 53) as f32);
+        value.min(f32::from_bits(0x3f7f_ffff))
     }
 }
 
@@ -257,7 +263,9 @@ pub fn sample_categorical_into(
         let mut cumsum = 0.0f32;
         for (i, p) in probs_buf.iter().enumerate() {
             cumsum += p;
-            if cumsum >= threshold {
+            // `threshold` can be exactly 0.0 (a zero RNG draw); never let a
+            // probability-zero token (ngram-banned / underflowed) win.
+            if cumsum >= threshold && *p > 0.0 {
                 return i as u32;
             }
         }
@@ -303,7 +311,7 @@ pub fn sample_categorical_into(
     let mut cumsum = 0.0f32;
     for (i, p) in candidates_buf.iter() {
         cumsum += p;
-        if cumsum >= threshold {
+        if cumsum >= threshold && *p > 0.0 {
             return *i as u32;
         }
     }
@@ -415,7 +423,7 @@ pub fn sample_categorical_with_topp_gpu(
     let mut cumsum = 0.0f32;
     for (idx, prob) in candidates.iter() {
         cumsum += *prob;
-        if cumsum >= threshold {
+        if cumsum >= threshold && *prob > 0.0 {
             return Some(*idx as u32);
         }
     }
@@ -500,7 +508,7 @@ pub fn sample_indexed_categorical(
     let mut cumsum = 0.0f32;
     for (idx, prob) in candidates.iter() {
         cumsum += *prob;
-        if cumsum >= threshold {
+        if cumsum >= threshold && *prob > 0.0 {
             return Some(*idx as u32);
         }
     }
@@ -718,7 +726,7 @@ pub fn sample_from_token_distribution(
     let mut cumsum = 0.0f32;
     for (token, prob) in distribution.entries.iter().copied() {
         cumsum += prob;
-        if cumsum >= threshold {
+        if cumsum >= threshold && prob > 0.0 {
             return Some(token);
         }
     }
@@ -864,7 +872,7 @@ fn sample_indexed_full_probability_categorical(
     let mut cumsum = 0.0f32;
     for (token, prob) in candidates.iter().copied() {
         cumsum += prob;
-        if cumsum >= threshold {
+        if cumsum >= threshold && prob > 0.0 {
             return Some(token);
         }
     }
@@ -973,6 +981,45 @@ fn argmax_f32(logits: &[f32]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn next_f32_stays_below_one() {
+        // Xorshift64 state that yields a 53-bit draw in the top rounding band.
+        let mut rng = Xorshift64(u64::MAX);
+        for _ in 0..4096 {
+            let value = rng.next_f32();
+            assert!((0.0..1.0).contains(&value), "{value}");
+        }
+        assert!(f32::from_bits(0x3f7f_ffff) < 1.0);
+    }
+
+    #[test]
+    fn zero_threshold_draw_never_emits_a_probability_zero_token() {
+        // This state's next xorshift output is exactly 1, so the 53-bit draw
+        // is 0 and `threshold == 0.0`. Token 0 is banned (-inf) and must not
+        // be returned by the unfiltered fast path.
+        const ZERO_DRAW_STATE: u64 = 0xbe6d_f32f_185a_864d;
+        let mut probe = Xorshift64(ZERO_DRAW_STATE);
+        assert_eq!(probe.next_f32(), 0.0);
+
+        let logits = vec![f32::NEG_INFINITY, 1.0, 2.0, 0.5];
+        let sampling = MlxSamplingParams::new(0.8, 1.0, 0);
+        let mut rng = Xorshift64(ZERO_DRAW_STATE);
+        let mut probs = Vec::new();
+        let mut scratch = Vec::new();
+        let mut candidates = Vec::new();
+        let token = sample_categorical_into(
+            &logits,
+            sampling,
+            &[],
+            &mut rng,
+            &mut probs,
+            &mut scratch,
+            &mut candidates,
+        );
+        assert_ne!(token, 0, "zero draw selected the banned token");
+        assert_eq!(token, 1);
+    }
     use super::*;
 
     #[test]
