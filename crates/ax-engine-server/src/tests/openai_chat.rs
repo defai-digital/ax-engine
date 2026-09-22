@@ -1497,6 +1497,90 @@ fn openai_gemma4_tool_roundtrip_with_thinking_opens_thought_channel() {
 }
 
 #[test]
+fn openai_gemma4_renders_assistant_content_before_tool_calls() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "Let me check.",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "weather", "arguments": {"city": "NYC"}}
+            }]
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "Sunny"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let tools = json!([{
+        "type": "function",
+        "function": {
+            "name": "weather",
+            "description": "Get weather",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"]
+            }
+        }
+    }]);
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "gemma4-e2b",
+        &messages,
+        Some(&tools),
+        Some(&json!("auto")),
+    )
+    .expect("gemma4 content+tool prompt should render");
+
+    assert!(
+        prompt.contains(
+            "<|turn>model\nLet me check.<|tool_call>call:weather{city:<|\"|>NYC<|\"|>}<tool_call|><|tool_response>response:weather{value:<|\"|>Sunny<|\"|>}<tool_response|>"
+        ),
+        "assistant content must render before its tool call and response: {prompt}"
+    );
+}
+
+#[test]
+fn openai_gemma4_skips_tool_message_after_assistant_without_tool_call() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Hello"},
+        {"role": "tool", "tool_call_id": "nonexistent", "content": "42"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt("gemma4-e2b", &messages).expect("gemma4 history");
+
+    assert!(
+        !prompt.contains("tool_response"),
+        "orphan tool message must not render as a tool response: {prompt}"
+    );
+    assert!(
+        prompt.ends_with("<|turn>model\n<|channel>thought\n<channel|>"),
+        "prompt must close the model turn and reopen a fresh generation turn: {prompt}"
+    );
+}
+
+#[test]
+fn openai_gemma4_separates_consecutive_assistant_contents() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "First"},
+        {"role": "assistant", "content": "Second"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt("gemma4-e2b", &messages).expect("gemma4 history");
+
+    assert!(
+        prompt.contains("<|turn>model\nFirst\nSecond<turn|>\n"),
+        "consecutive assistant contents must be separated by a newline in one model turn: {prompt}"
+    );
+}
+
+#[test]
 fn openai_chat_prompt_renderer_replays_assistant_tool_calls() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Read README.md"},
@@ -2246,6 +2330,58 @@ fn deepseek_replays_reasoning_per_turn_rules() {
     )
     .expect("deepseek replay with tools should render");
     assert!(with_tools.contains("<think>early-thought</think>a1"));
+}
+
+#[test]
+fn deepseek_empty_tool_calls_array_is_not_tool_context() {
+    let messages_with_empty: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": "early-thought", "tool_calls": []},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2", "reasoning_content": "late-thought"}
+    ]))
+    .expect("messages with an empty tool_calls array should deserialize");
+
+    let messages_without_key: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": "early-thought"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2", "reasoning_content": "late-thought"}
+    ]))
+    .expect("messages without a tool_calls key should deserialize");
+
+    let options = ChatPromptRenderOptions {
+        enable_thinking: true,
+        preserve_thinking: false,
+        deepseek_v4_framing: None,
+    };
+
+    let with_empty = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-R1",
+        &messages_with_empty,
+        None,
+        None,
+        options,
+    )
+    .expect("deepseek with empty tool_calls should render");
+
+    let without_key = render_openai_chat_prompt_with_options(
+        "deepseek-ai/DeepSeek-R1",
+        &messages_without_key,
+        None,
+        None,
+        options,
+    )
+    .expect("deepseek without tool_calls key should render");
+
+    assert_eq!(
+        with_empty, without_key,
+        "an empty tool_calls array must not enable tool context"
+    );
+    assert!(
+        !with_empty.contains("early-thought"),
+        "empty tool_calls must not preserve prior-turn reasoning: {with_empty}"
+    );
 }
 
 #[test]
