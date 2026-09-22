@@ -161,7 +161,7 @@ pub(super) fn grpc_embedding_prompt_tokens(inputs: &[Vec<u32>]) -> u32 {
 mod tests {
     use super::*;
     use crate::app_state::{AppState, build_app_state};
-    use crate::args::ServerArgs;
+    use crate::args::{ServerArgs, ServerEnvConfig};
     use clap::Parser;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -193,7 +193,12 @@ mod tests {
             artifact_dir.to_str().expect("artifact dir should be UTF-8"),
         ]);
         let session_config = args.session_config().expect("session config should build");
-        build_app_state(args.model_id.clone(), session_config).expect("app state should build")
+        build_app_state(
+            args.model_id.clone(),
+            session_config,
+            ServerEnvConfig::default(),
+        )
+        .expect("app state should build")
     }
 
     #[test]

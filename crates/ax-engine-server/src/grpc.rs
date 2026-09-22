@@ -340,10 +340,9 @@ impl AxEngine for AxEngineGrpcService {
                 "embedding input must not be empty",
             ));
         }
-        let max_tokens = crate::embeddings::parse_embedding_max_tokens(
-            std::env::var("AX_ENGINE_EMBED_MAX_TOKENS").ok(),
-            crate::openai::embeddings::DEFAULT_EMBED_MAX_TOKENS,
-        );
+        // Start-up-resolved AX_ENGINE_EMBED_MAX_TOKENS (default 8192;
+        // see ServerEnvConfig for the accepted values).
+        let max_tokens = self.state.env.embed_max_tokens;
         let token_count: usize = batch.iter().map(Vec::len).sum();
         if token_count > max_tokens {
             return Err(Status::invalid_argument(format!(

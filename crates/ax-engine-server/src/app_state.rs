@@ -89,6 +89,10 @@ pub(crate) struct AppState {
     parked: Arc<parking_lot::Mutex<BTreeMap<String, LiveState>>>,
     pub(crate) api_key: Option<Arc<String>>,
     pub(crate) metrics: Arc<ServerMetrics>,
+    /// Start-up-resolved process-environment configuration (parsed once in
+    /// `main`); request-path code reads these fields instead of the
+    /// process environment.
+    pub(crate) env: Arc<crate::args::ServerEnvConfig>,
     /// Set to true while a model load is in progress; prevents concurrent loads.
     pub(crate) loading: Arc<AtomicBool>,
     pub(crate) limits: Arc<ServerLimits>,
@@ -114,10 +118,13 @@ pub(crate) enum ParkedLookup {
 }
 
 impl AppState {
-    pub(crate) fn new(mut live: LiveState) -> Self {
+    pub(crate) fn new(mut live: LiveState, env: crate::args::ServerEnvConfig) -> Self {
         live.generation = 1;
         let metrics = Arc::new(ServerMetrics::default());
-        let execution_arbiter = Arc::new(ModelExecutionArbiter::default());
+        let execution_arbiter = Arc::new(ModelExecutionArbiter::with_policy(
+            env.exec_arbiter_max_concurrent,
+            env.long_prefill_exclusive,
+        ));
         let request_owners = Arc::new(parking_lot::RwLock::new(RequestOwners::default()));
         attach_live_state(&live, &metrics, &execution_arbiter, &request_owners);
         let default_model_id = live.model_id.as_ref().clone();
@@ -131,6 +138,7 @@ impl AppState {
             parked: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
             api_key: None,
             metrics,
+            env: Arc::new(env),
             loading: Arc::new(AtomicBool::new(false)),
             limits: Arc::new(ServerLimits::default()),
             media: crate::tasks::MediaPreprocessor::default(),
@@ -1342,8 +1350,9 @@ fn accumulate_cumulative_route_counter(total: &mut u64, last: &mut u64, observed
 pub(crate) fn build_live_state(
     model_id: String,
     session_config: EngineSessionConfig,
+    env: &crate::args::ServerEnvConfig,
 ) -> Result<LiveState, GenerationServiceStartError> {
-    build_live_state_inner(model_id, session_config, false)
+    build_live_state_inner(model_id, session_config, env, false)
 }
 
 /// Build a replacement `LiveState` after the current generation has drained.
@@ -1352,13 +1361,15 @@ pub(crate) fn build_live_state(
 pub(crate) fn build_replacement_live_state(
     model_id: String,
     session_config: EngineSessionConfig,
+    env: &crate::args::ServerEnvConfig,
 ) -> Result<LiveState, GenerationServiceStartError> {
-    build_live_state_inner(model_id, session_config, true)
+    build_live_state_inner(model_id, session_config, env, true)
 }
 
 fn build_live_state_inner(
     model_id: String,
     session_config: EngineSessionConfig,
+    env: &crate::args::ServerEnvConfig,
     replacement: bool,
 ) -> Result<LiveState, GenerationServiceStartError> {
     // Parse tokenizer.json before the first HTTP request. The file is ~20 MB for
@@ -1370,9 +1381,9 @@ fn build_live_state_inner(
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
     let (generation_service, runtime_report) = if replacement {
-        NativeGenerationService::spawn_replacement(session_config.clone())?
+        NativeGenerationService::spawn_replacement(session_config.clone(), env)?
     } else {
-        NativeGenerationService::spawn(session_config.clone())?
+        NativeGenerationService::spawn(session_config.clone(), env)?
     };
     // Full native-MLX production-path warm-up: first external request under a
     // fresh process otherwise still pays ~80 ms of engine/request setup that
@@ -1402,7 +1413,12 @@ fn build_live_state_inner(
             // so solo Qwen S0 is not slowed.
         }
     }
-    let embedding_batcher = EmbeddingMicroBatcher::spawn(generation_service.clone());
+    let embedding_batcher = EmbeddingMicroBatcher::spawn(
+        generation_service.clone(),
+        env.embed_microbatch_window,
+        env.embed_microbatch_max_batch,
+        env.embed_microbatch_queue_capacity,
+    );
     Ok(LiveState {
         generation: 0,
         model_id: Arc::new(model_id),
@@ -1447,15 +1463,6 @@ pub(crate) fn run_production_path_warmup(
         model_id,
         &[(0_u64, 34_usize, 8_u32), (1, 13, 16), (2, 512, 1)],
     );
-}
-
-pub(crate) fn long_prefill_warmup_enabled() -> bool {
-    // Keep the benchmark-specific long warm opt-in. The flip target enables it
-    // explicitly; ordinary multi-model Gemma loads should not pay this cost.
-    matches!(
-        std::env::var("AX_SERVER_LONG_PREFILL_WARM").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-    )
 }
 
 /// Exact flip S1 Gemma long-prefill prompt (replay multimodel_prefill_isolation).
@@ -1629,9 +1636,10 @@ pub(crate) fn unix_now_secs() -> u64 {
 pub(crate) fn build_app_state(
     model_id: String,
     session_config: EngineSessionConfig,
+    env: crate::args::ServerEnvConfig,
 ) -> Result<AppState, GenerationServiceStartError> {
-    let live = build_live_state(model_id, session_config)?;
-    Ok(AppState::new(live))
+    let live = build_live_state(model_id, session_config, &env)?;
+    Ok(AppState::new(live, env))
 }
 
 #[cfg(test)]
@@ -1870,7 +1878,12 @@ mod tests {
             ..PreviewSessionConfigRequest::default()
         })
         .expect("preview session config should build");
-        build_app_state(model_id.to_string(), config).expect("app state should build")
+        build_app_state(
+            model_id.to_string(),
+            config,
+            crate::args::ServerEnvConfig::default(),
+        )
+        .expect("app state should build")
     }
 
     fn trigger_command_saturation(service: &Arc<NativeGenerationService>) {
@@ -1967,8 +1980,12 @@ mod tests {
     async fn registry_routes_explicit_models_and_unloads_safely() {
         let state = test_state("first");
         let first = state.snapshot();
-        let second = build_live_state("second".to_string(), first.session_config.as_ref().clone())
-            .expect("second model state should build");
+        let second = build_live_state(
+            "second".to_string(),
+            first.session_config.as_ref().clone(),
+            &crate::args::ServerEnvConfig::default(),
+        )
+        .expect("second model state should build");
 
         assert!(state.publish_live(second, true).is_none());
         assert_eq!(state.snapshot().model_id.as_ref(), "second");
@@ -1995,8 +2012,12 @@ mod tests {
     async fn request_owners_route_directly_and_are_pruned_on_unload() {
         let state = test_state("first");
         let config = state.snapshot().session_config.as_ref().clone();
-        let second = build_live_state("second".to_string(), config)
-            .expect("second model state should build");
+        let second = build_live_state(
+            "second".to_string(),
+            config,
+            &crate::args::ServerEnvConfig::default(),
+        )
+        .expect("second model state should build");
         state.publish_live(second, false);
         let second = state
             .snapshot_for_model(Some("second"))
@@ -2048,8 +2069,12 @@ mod tests {
         let advertisement = Arc::new(RecordedAdvertisement::default());
         state.set_model_advertisement(advertisement.clone());
         let config = state.snapshot().session_config.as_ref().clone();
-        let second = build_live_state("second".to_string(), config)
-            .expect("second model state should build");
+        let second = build_live_state(
+            "second".to_string(),
+            config,
+            &crate::args::ServerEnvConfig::default(),
+        )
+        .expect("second model state should build");
         state.publish_live(second, true);
         state.metrics.record_step_report(
             "second",

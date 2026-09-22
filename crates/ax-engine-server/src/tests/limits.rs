@@ -86,6 +86,7 @@ async fn per_model_limit_and_drain_do_not_block_a_sibling_model() {
     let second = build_live_state(
         "gemma-4-12b-it".to_string(),
         first.session_config.as_ref().clone(),
+        &crate::args::ServerEnvConfig::default(),
     )
     .expect("second model should build");
     state.publish_live(second, false);

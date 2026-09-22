@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,11 +18,18 @@ const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
 const DEFAULT_EMBEDDING_MICROBATCH_QUEUE_CAPACITY: usize = 1024;
 
 impl EmbeddingMicroBatcher {
-    pub(crate) fn spawn(generation_service: std::sync::Arc<NativeGenerationService>) -> Arc<Self> {
-        let capacity = embedding_microbatch_queue_capacity();
-        let (sender, receiver) = mpsc::channel(capacity);
-        let batch_window = embedding_microbatch_window();
-        let max_batch = embedding_microbatch_max_batch();
+    /// Start the microbatch worker. `window`, `max_batch`, and
+    /// `queue_capacity` are the start-up-resolved
+    /// `AX_ENGINE_EMBED_MICROBATCH_*` values (see
+    /// [`crate::args::ServerEnvConfig`]); the batcher never reads the
+    /// process environment.
+    pub(crate) fn spawn(
+        generation_service: std::sync::Arc<NativeGenerationService>,
+        window: Duration,
+        max_batch: usize,
+        queue_capacity: usize,
+    ) -> Arc<Self> {
+        let (sender, receiver) = mpsc::channel(queue_capacity);
         // The worker must NOT hold a sender clone: the channel closing when
         // the last external sender drops is what lets the worker drain any
         // queued items and exit after a model hot-swap replaces LiveState.
@@ -32,7 +38,7 @@ impl EmbeddingMicroBatcher {
         tokio::spawn(run_embedding_microbatch_worker(
             receiver,
             generation_service,
-            batch_window,
+            window,
             max_batch,
         ));
         Arc::new(Self { sender })
@@ -242,27 +248,31 @@ fn pooling_from_code(code: u8) -> EmbeddingPooling {
     }
 }
 
-fn embedding_microbatch_window() -> Duration {
-    let millis = env::var("AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
+/// Resolve `AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS` from a raw value
+/// (default [`DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS`], capped at 100 ms).
+/// The value is parsed as-is: no trimming, and a parseable out-of-range
+/// value (e.g. `0`) is kept after the cap rather than falling back.
+pub(crate) fn embedding_microbatch_window_from_raw(raw: Option<&str>) -> Duration {
+    let millis = raw
+        .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS)
         .min(100);
     Duration::from_millis(millis)
 }
 
-fn embedding_microbatch_max_batch() -> usize {
-    env::var("AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
+/// Resolve `AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH` from a raw value
+/// (default [`DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH`], clamped to 1..=512).
+pub(crate) fn embedding_microbatch_max_batch_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH)
         .clamp(1, 512)
 }
 
-fn embedding_microbatch_queue_capacity() -> usize {
-    env::var("AX_ENGINE_EMBED_MICROBATCH_QUEUE_CAPACITY")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
+/// Resolve `AX_ENGINE_EMBED_MICROBATCH_QUEUE_CAPACITY` from a raw value
+/// (default [`DEFAULT_EMBEDDING_MICROBATCH_QUEUE_CAPACITY`], clamped to
+/// 64..=8192).
+pub(crate) fn embedding_microbatch_queue_capacity_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(DEFAULT_EMBEDDING_MICROBATCH_QUEUE_CAPACITY)
         .clamp(64, 8192)
 }

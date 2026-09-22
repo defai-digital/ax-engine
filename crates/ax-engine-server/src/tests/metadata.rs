@@ -128,8 +128,12 @@ async fn models_advertises_reasoning_for_openclaw_qwen_thinking_variants() {
 async fn models_lists_every_loaded_model() {
     let state = llama_cpp_state();
     let config = state.snapshot().session_config.as_ref().clone();
-    let second = build_live_state("gemma-4-12b-it".to_string(), config)
-        .expect("second delegated state should build");
+    let second = build_live_state(
+        "gemma-4-12b-it".to_string(),
+        config,
+        &crate::args::ServerEnvConfig::default(),
+    )
+    .expect("second delegated state should build");
     assert!(state.publish_live(second, true).is_none());
     let app = build_router(state.clone());
 
@@ -162,8 +166,12 @@ async fn models_lists_every_loaded_model() {
 async fn health_and_discovery_list_every_loaded_model() {
     let state = llama_cpp_state();
     let config = state.snapshot().session_config.as_ref().clone();
-    let second = build_live_state("gemma-4-12b-it".to_string(), config)
-        .expect("second delegated state should build");
+    let second = build_live_state(
+        "gemma-4-12b-it".to_string(),
+        config,
+        &crate::args::ServerEnvConfig::default(),
+    )
+    .expect("second delegated state should build");
     assert!(state.publish_live(second, false).is_none());
     let app = build_router(state.clone());
 
@@ -201,8 +209,12 @@ async fn health_and_discovery_list_every_loaded_model() {
 async fn readiness_fails_when_any_loaded_model_worker_is_unavailable() {
     let state = llama_cpp_state();
     let config = state.snapshot().session_config.as_ref().clone();
-    let second = build_live_state("gemma-4-12b-it".to_string(), config)
-        .expect("second delegated state should build");
+    let second = build_live_state(
+        "gemma-4-12b-it".to_string(),
+        config,
+        &crate::args::ServerEnvConfig::default(),
+    )
+    .expect("second delegated state should build");
     let second_service = second.generation_service.clone();
     state.publish_live(second, false);
     second_service

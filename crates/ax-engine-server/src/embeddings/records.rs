@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::app_state::{AppState, LiveState};
-use crate::embeddings::{
-    parse_embedding_max_tokens, parse_embedding_pooling, parse_embedding_timeout_ms,
-};
+use crate::embeddings::parse_embedding_pooling;
 use crate::errors::{
     ErrorResponse, admission_error_response, error_response, map_generation_service_error,
 };
@@ -23,7 +21,10 @@ const DEFAULT_CHUNK_MAX_TOKENS: usize = 512;
 const DEFAULT_CHUNK_OVERLAP_TOKENS: usize = 0;
 const MAX_RECORDS_PER_REQUEST: usize = 2048;
 const MAX_CHUNKS_PER_REQUEST: usize = 8192;
-const DEFAULT_EMBED_RECORDS_TIMEOUT_MS: u64 = 60_000;
+/// Default for `AX_ENGINE_EMBED_TIMEOUT_MS` on this endpoint. The records
+/// endpoint chunk-embeds whole documents and intentionally keeps a longer
+/// timeout than `/v1/embeddings` (`DEFAULT_EMBED_TIMEOUT_MS`).
+pub(crate) const DEFAULT_EMBED_RECORDS_TIMEOUT_MS: u64 = 60_000;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct EmbeddingRecordsRequest {
@@ -135,11 +136,9 @@ pub(crate) async fn embedding_records(
     let token_count: usize = chunks.iter().map(|chunk| chunk.token_count).sum();
     // Same total-token guard as /v1/embeddings: the runner does not bound
     // input length itself, and one oversized chunk would stall the shared
-    // worker or exhaust memory.
-    let max_tokens = parse_embedding_max_tokens(
-        std::env::var("AX_ENGINE_EMBED_MAX_TOKENS").ok(),
-        crate::openai::embeddings::DEFAULT_EMBED_MAX_TOKENS,
-    );
+    // worker or exhaust memory. Start-up-resolved
+    // AX_ENGINE_EMBED_MAX_TOKENS (default 8192).
+    let max_tokens = state.env.embed_max_tokens;
     if token_count > max_tokens {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
@@ -151,10 +150,9 @@ pub(crate) async fn embedding_records(
         ));
     }
     let generation_service = live.generation_service.clone();
-    let timeout_ms = parse_embedding_timeout_ms(
-        std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS").ok(),
-        DEFAULT_EMBED_RECORDS_TIMEOUT_MS,
-    );
+    // Start-up-resolved AX_ENGINE_EMBED_TIMEOUT_MS with this endpoint's
+    // longer default (60_000; see DEFAULT_EMBED_RECORDS_TIMEOUT_MS).
+    let timeout_ms = state.env.embed_records_timeout_ms;
     let timeout = Duration::from_millis(timeout_ms);
     let permit = state.try_admit(&live).map_err(admission_error_response)?;
 

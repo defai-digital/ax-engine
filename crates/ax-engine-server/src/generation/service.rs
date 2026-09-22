@@ -52,20 +52,37 @@ pub(crate) struct ModelExecutionArbiter {
     state: parking_lot::Mutex<ModelExecutionState>,
     ready: parking_lot::Condvar,
     max_concurrent: usize,
+    /// `AX_SERVER_LONG_PREFILL_EXCLUSIVE` resolved at start-up: multi-token
+    /// prefill quanta force an exclusive window only while enabled.
+    long_prefill_exclusive: bool,
 }
 
 impl Default for ModelExecutionArbiter {
     fn default() -> Self {
-        Self::with_max_concurrent(exec_arbiter_max_concurrent_from_env())
+        // Unset-environment policy: exclusive single turn with the
+        // long-prefill isolation window armed. Start-up plumbing passes the
+        // operator's resolved `crate::args::ServerEnvConfig` through
+        // [`ModelExecutionArbiter::with_policy`] instead.
+        Self::with_policy(1, true)
     }
 }
 
 impl ModelExecutionArbiter {
+    // Test-only convenience after start-up plumbing moved production
+    // construction to `with_policy` with the ServerEnvConfig-resolved
+    // long-prefill policy; the in-file arbiter tests construct through
+    // this helper with the exclusive window armed.
+    #[cfg(test)]
     pub(crate) fn with_max_concurrent(max_concurrent: usize) -> Self {
+        Self::with_policy(max_concurrent, true)
+    }
+
+    pub(crate) fn with_policy(max_concurrent: usize, long_prefill_exclusive: bool) -> Self {
         Self {
             state: parking_lot::Mutex::new(ModelExecutionState::default()),
             ready: parking_lot::Condvar::new(),
             max_concurrent: max_concurrent.max(1),
+            long_prefill_exclusive,
         }
     }
 
@@ -82,7 +99,7 @@ impl ModelExecutionArbiter {
     /// while both models submit. Set `AX_SERVER_LONG_PREFILL_EXCLUSIVE=0` to
     /// re-open dual-hold for experimental thr A/Bs.
     pub(crate) fn mark_long_prefill_quantum(&self) {
-        if !long_prefill_exclusive_enabled() {
+        if !self.long_prefill_exclusive {
             return;
         }
         // Cover late S1 quanta + grace so interactive decode re-enters exclusive
@@ -121,14 +138,13 @@ struct ModelExecutionState {
     long_prefill_exclusive_until: Option<Instant>,
 }
 
-/// Resolve `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT` (default 1 = exclusive).
+/// Resolve `AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT` (default 1 = exclusive)
+/// from a raw value.
 ///
 /// Values < 1 fall back to 1. Cap at 8 so a mis-set env cannot unbounded-open
 /// device contention on large multi-model hosts.
-pub(crate) fn exec_arbiter_max_concurrent_from_env() -> usize {
-    std::env::var("AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
+pub(crate) fn resolve_exec_arbiter_max_concurrent(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|n| *n >= 1)
         .map(|n| n.min(8))
         .unwrap_or(1)
@@ -141,18 +157,15 @@ pub(crate) fn exec_arbiter_max_concurrent_from_env() -> usize {
 /// without this window failed S1 gap (160–220 ms p95) and thr on M5; keep
 /// exclusive isolation for long sibling prefills and rely on pure GPU cuts
 /// for thr ≥1.15×.
-fn long_prefill_exclusive_enabled() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        match std::env::var("AX_SERVER_LONG_PREFILL_EXCLUSIVE") {
-            Ok(raw) => {
-                let v = raw.trim();
-                // Explicit off only.
-                !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
-            }
-            Err(_) => true,
+pub(crate) fn resolve_long_prefill_exclusive(raw: Option<&str>) -> bool {
+    match raw {
+        Some(raw) => {
+            let v = raw.trim();
+            // Explicit off only.
+            !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
         }
-    })
+        None => true,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -415,17 +428,6 @@ pub(crate) fn resolve_adaptive_prefill_latency_tokens(raw: Option<&str>) -> u32 
         .unwrap_or(ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT)
 }
 
-fn adaptive_prefill_latency_tokens_per_step() -> u32 {
-    static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        resolve_adaptive_prefill_latency_tokens(
-            std::env::var("AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
 /// Size the next sibling prefill quantum from measured µs/token so one turn's
 /// wall time targets [`ADAPTIVE_PREFILL_GAP_SLO_US`].
 ///
@@ -527,6 +529,44 @@ impl ServiceCommand {
     }
 }
 
+/// Worker-loop scheduling tuning, resolved once from
+/// [`crate::args::ServerEnvConfig`] at service start-up so the generation
+/// worker never reads the process environment on the request path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WorkerTuning {
+    /// `AX_SERVER_LONG_PREFILL_EXCLUSIVE` (default on): force an exclusive
+    /// arbiter window after multi-token prefill quanta.
+    pub(crate) long_prefill_exclusive: bool,
+    /// `AX_SERVER_ADAPTIVE_PREFILL_LATENCY_TOKENS` (default 64): the
+    /// sibling-active prefill quantum the adaptive controller starts from.
+    pub(crate) adaptive_prefill_latency_tokens: u32,
+    /// `AX_SERVER_SIBLING_ENGINE_STEP_BURST` (default 16, capped at
+    /// [`STREAM_ENGINE_STEP_BURST`]): engine steps per worker tick while a
+    /// sibling model is active.
+    pub(crate) sibling_engine_step_burst: usize,
+    /// `AX_SERVER_SCHED_DEBUG` (default off): per-tick scheduler eprintln
+    /// traces. Presence-based (any value enables it).
+    pub(crate) sched_debug: bool,
+}
+
+impl WorkerTuning {
+    pub(crate) fn from_env_config(config: &crate::args::ServerEnvConfig) -> Self {
+        Self {
+            long_prefill_exclusive: config.long_prefill_exclusive,
+            adaptive_prefill_latency_tokens: config.adaptive_prefill_latency_tokens,
+            sibling_engine_step_burst: config.sibling_engine_step_burst,
+            sched_debug: config.sched_debug,
+        }
+    }
+}
+
+impl Default for WorkerTuning {
+    fn default() -> Self {
+        // Unset-environment values; see the per-field docs.
+        Self::from_env_config(&crate::args::ServerEnvConfig::default())
+    }
+}
+
 struct ServiceState {
     alive: AtomicBool,
     expert_streaming_active: AtomicBool,
@@ -539,6 +579,10 @@ struct ServiceState {
     stepwise_terminal_observer: parking_lot::RwLock<Option<StepwiseTerminalObserver>>,
     terminal_request_observer: parking_lot::RwLock<Option<TerminalRequestObserver>>,
     execution_target: parking_lot::RwLock<Option<ModelExecutionTarget>>,
+    /// Start-up-resolved scheduling knobs (env keys documented on
+    /// [`crate::args::ServerEnvConfig`]); the worker loop reads these instead
+    /// of the process environment.
+    tuning: WorkerTuning,
     adaptive_prefill_isolation: AtomicBool,
     /// Last engine-step runner wall time (µs) used to feedback-control the
     /// sibling prefill quantum under adaptive isolation.
@@ -639,31 +683,42 @@ async fn collect_generate_response(
 impl NativeGenerationService {
     pub(crate) fn spawn(
         config: EngineSessionConfig,
+        env: &crate::args::ServerEnvConfig,
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError> {
-        Self::spawn_with_factory(move || EngineSession::new(config.clone()))
+        Self::spawn_with_factory(move || EngineSession::new(config.clone()), env)
     }
 
     pub(crate) fn spawn_replacement(
         config: EngineSessionConfig,
+        env: &crate::args::ServerEnvConfig,
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError> {
-        Self::spawn_with_factory(move || {
-            EngineSession::clear_native_model_compile_caches();
-            EngineSession::new(config.clone())
-        })
+        Self::spawn_with_factory(
+            move || {
+                EngineSession::clear_native_model_compile_caches();
+                EngineSession::new(config.clone())
+            },
+            env,
+        )
     }
 
     fn spawn_with_factory<F>(
         factory: F,
+        env: &crate::args::ServerEnvConfig,
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError>
     where
         F: FnMut() -> Result<EngineSession, EngineSessionError> + Send + 'static,
     {
-        Self::spawn_with_recycle_threshold(factory, worker_recycle_after_ticks())
+        Self::spawn_with_recycle_threshold(
+            factory,
+            env.worker_recycle_after_ticks,
+            WorkerTuning::from_env_config(env),
+        )
     }
 
     fn spawn_with_recycle_threshold<F>(
         factory: F,
         recycle_after: u64,
+        tuning: WorkerTuning,
     ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError>
     where
         F: FnMut() -> Result<EngineSession, EngineSessionError> + Send + 'static,
@@ -682,6 +737,7 @@ impl NativeGenerationService {
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
             terminal_request_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
+            tuning,
             adaptive_prefill_isolation: AtomicBool::new(false),
             last_step_runner_time_us: AtomicU64::new(0),
             last_step_scheduled_tokens: AtomicU32::new(0),
@@ -922,7 +978,7 @@ impl NativeGenerationService {
             .adaptive_prefill_isolation
             .store(enabled, Ordering::Release);
         if enabled {
-            let start = adaptive_prefill_latency_tokens_per_step();
+            let start = self.state.tuning.adaptive_prefill_latency_tokens;
             self.state
                 .adaptive_prefill_tokens
                 .store(start, Ordering::Release);
@@ -1121,9 +1177,10 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
     }
 }
 
-/// `AX_SERVER_WORKER_RECYCLE_AFTER_TICKS` — rebuild the engine session
-/// after this many worker engine ticks, at the next fully idle moment
-/// (no active streams, no queued commands, no live stepwise requests). `0`/unset = off.
+/// Resolve `AX_SERVER_WORKER_RECYCLE_AFTER_TICKS` from a raw value: rebuild
+/// the engine session after this many worker engine ticks, at the next fully
+/// idle moment (no active streams, no queued commands, no live stepwise
+/// requests). `0`/unset/invalid = off.
 ///
 /// ADR-RUNTIME-TOOLCHAIN-PINNING decision C1: the eval-wall steady-state
 /// degradation accumulates one-way per process on the admitted MLX wheel
@@ -1131,14 +1188,9 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
 /// can bound it by periodically rebuilding the session. The rebuild is a
 /// FULL model reload and only fires while idle; size the threshold for
 /// hours of traffic, not minutes.
-fn worker_recycle_after_ticks() -> u64 {
-    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_SERVER_WORKER_RECYCLE_AFTER_TICKS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .unwrap_or(0)
-    })
+pub(crate) fn resolve_worker_recycle_after_ticks(raw: Option<&str>) -> u64 {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 fn run_worker_loop(
@@ -1346,16 +1398,14 @@ fn should_continue_single_stream_burst(request_still_active: bool, queued_comman
 /// unaffected — see `active_streams.len() == 1` guard).
 const SIBLING_ENGINE_STEP_BURST_DEFAULT: usize = 16;
 
-fn sibling_engine_step_burst() -> usize {
-    static CACHED: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_SERVER_SIBLING_ENGINE_STEP_BURST")
-            .ok()
-            .and_then(|v| v.trim().parse().ok())
-            .filter(|n: &usize| *n > 0)
-            .unwrap_or(SIBLING_ENGINE_STEP_BURST_DEFAULT)
-            .min(STREAM_ENGINE_STEP_BURST)
-    })
+/// Resolve `AX_SERVER_SIBLING_ENGINE_STEP_BURST` from a raw value (default
+/// [`SIBLING_ENGINE_STEP_BURST_DEFAULT`], capped at
+/// [`STREAM_ENGINE_STEP_BURST`]; empty/invalid/zero fall back to the default).
+pub(crate) fn resolve_sibling_engine_step_burst(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse().ok())
+        .filter(|n: &usize| *n > 0)
+        .unwrap_or(SIBLING_ENGINE_STEP_BURST_DEFAULT)
+        .min(STREAM_ENGINE_STEP_BURST)
 }
 
 fn handle_command(
@@ -1618,7 +1668,7 @@ fn advance_shared_engine(
     // quanta alone are not enough; the worker-level burst must also stay
     // under the stream-gap SLO so Qwen decode kernels keep getting airtime.
     let mut sibling_active_for_burst = false;
-    if std::env::var_os("AX_SERVER_SCHED_DEBUG").is_some() {
+    if service_state.tuning.sched_debug {
         let gate = execution_target.as_ref().map(|target| {
             service_state
                 .adaptive_prefill_isolation
@@ -1649,7 +1699,7 @@ fn advance_shared_engine(
             target.model_id.as_ref(),
             ADAPTIVE_PREFILL_SIBLING_ACTIVITY_GRACE,
         );
-        if std::env::var_os("AX_SERVER_SCHED_DEBUG").is_some() {
+        if service_state.tuning.sched_debug {
             let (enabled, current_tokens, inflight) = session.multi_prefill_policy();
             eprintln!(
                 "AX_SCHED_DEBUG model={} sibling_active={sibling_active} fair_enabled={enabled} fair_tokens={current_tokens} inflight={inflight} adaptive_tokens={}",
@@ -1698,7 +1748,7 @@ fn advance_shared_engine(
             // length (S1 teardown: 55 x 255-token chunks = 10.1 s of eval
             // vs 0.63 ms/token at 512). Pin the quantum to the operator
             // chunk in that mode; dual-hold keeps the adaptive size.
-            let adjusted = if long_prefill_exclusive_enabled() {
+            let adjusted = if service_state.tuning.long_prefill_exclusive {
                 session
                     .mlx_prefill_chunk_limit()
                     .and_then(|limit| u32::try_from(limit).ok())
@@ -1725,7 +1775,7 @@ fn advance_shared_engine(
             }
         } else {
             // Sibling idle: restore single-model prefill throughput.
-            let start = adaptive_prefill_latency_tokens_per_step();
+            let start = service_state.tuning.adaptive_prefill_latency_tokens;
             let start = match session.mlx_prefill_chunk_limit() {
                 Some(limit) => start.min(limit as u32),
                 None => start,
@@ -1761,9 +1811,9 @@ fn advance_shared_engine(
             // Under multi-model load (sibling active), use a small sibling
             // burst so the Metal queue is not flooded with prefill quanta
             // and the interactive stream keeps gap headroom (see
-            // sibling_engine_step_burst).
+            // WorkerTuning::sibling_engine_step_burst).
             let engine_burst = if sibling_active_for_burst {
-                sibling_engine_step_burst()
+                service_state.tuning.sibling_engine_step_burst
             } else {
                 STREAM_ENGINE_STEP_BURST
             };
@@ -1781,38 +1831,67 @@ fn advance_shared_engine(
                 && engine_burst > 1
                 && !(sibling_active_for_burst && step_is_prefill_quantum(service_state))
             {
-                let request_id = request_ids[0];
-                for _ in 1..engine_burst {
-                    if !should_continue_single_stream_burst(
-                        active_streams.contains_key(&request_id),
-                        service_state.queued_commands.load(Ordering::Acquire),
-                    ) {
-                        break;
-                    }
-                    match session.step_report_with_request_ids() {
-                        Ok((report, ids)) => {
-                            record_step_report(service_state, &report);
-                            apply_step_to_streams(
-                                session,
-                                active_streams,
-                                &ids,
-                                &report,
-                                service_state,
-                            );
-                            if sibling_active_for_burst && step_is_prefill_quantum(service_state) {
+                // `request_ids.len() == 1` holds above; route through
+                // `first()` so an engine invariant violation still surfaces
+                // as the standard detach-with-error path instead of a
+                // panicking direct index on the worker thread.
+                if let Some(&request_id) = request_ids.first() {
+                    for _ in 1..engine_burst {
+                        if !should_continue_single_stream_burst(
+                            active_streams.contains_key(&request_id),
+                            service_state.queued_commands.load(Ordering::Acquire),
+                        ) {
+                            break;
+                        }
+                        match session.step_report_with_request_ids() {
+                            Ok((report, ids)) => {
+                                record_step_report(service_state, &report);
+                                apply_step_to_streams(
+                                    session,
+                                    active_streams,
+                                    &ids,
+                                    &report,
+                                    service_state,
+                                );
+                                if sibling_active_for_burst
+                                    && step_is_prefill_quantum(service_state)
+                                {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                // The next tick's primary step retries and, if the
+                                // failure persists, detaches the streams; a burst
+                                // failure must still leave an operator-visible trace.
+                                tracing::warn!(
+                                    %error,
+                                    "single-stream burst engine step failed; retrying on the next tick"
+                                );
                                 break;
                             }
                         }
-                        Err(error) => {
-                            // The next tick's primary step retries and, if the
-                            // failure persists, detaches the streams; a burst
-                            // failure must still leave an operator-visible trace.
-                            tracing::warn!(
-                                %error,
-                                "single-stream burst engine step failed; retrying on the next tick"
-                            );
-                            break;
-                        }
+                    }
+                } else {
+                    tracing::error!(
+                        "engine step reported no request ids while exactly one stream is active"
+                    );
+                    for (request_id, stream) in active_streams.iter_mut() {
+                        detach_stream_with_error(
+                            session,
+                            *request_id,
+                            stream,
+                            EngineSessionError::RequestReportInvariantViolation {
+                                request_id: *request_id,
+                                message: "single-stream burst found no request id after a \
+                                          one-request engine step",
+                            },
+                            service_state,
+                        );
+                    }
+                    let detached_streams = active_streams.len();
+                    active_streams.clear();
+                    for _ in 0..detached_streams {
+                        complete_job(service_state);
                     }
                 }
             }
@@ -2388,7 +2467,13 @@ mod tests {
     #[test]
     fn long_prefill_exclusive_defaults_on_for_gap_isolation() {
         // Dual-hold without exclusive failed S1 gap; default stays isolation-on.
-        assert!(long_prefill_exclusive_enabled());
+        assert!(resolve_long_prefill_exclusive(None));
+        assert!(resolve_long_prefill_exclusive(Some("")));
+        assert!(resolve_long_prefill_exclusive(Some("1")));
+        assert!(!resolve_long_prefill_exclusive(Some("0")));
+        assert!(!resolve_long_prefill_exclusive(Some("false")));
+        assert!(!resolve_long_prefill_exclusive(Some("FALSE")));
+        assert!(!resolve_long_prefill_exclusive(Some(" off ")));
     }
 
     fn delegated_config() -> EngineSessionConfig {
@@ -2404,7 +2489,7 @@ mod tests {
     }
 
     fn delegated_service() -> Arc<NativeGenerationService> {
-        NativeGenerationService::spawn(delegated_config())
+        NativeGenerationService::spawn(delegated_config(), &crate::args::ServerEnvConfig::default())
             .expect("service should start")
             .0
     }
@@ -2442,6 +2527,84 @@ mod tests {
 
         // The worker thread exits normally (the panic was caught), so
         // shutdown joins cleanly instead of surfacing a panicked join.
+        service
+            .shutdown()
+            .await
+            .expect("panicked worker should shut down cleanly");
+    }
+
+    #[tokio::test]
+    async fn worker_panic_with_active_request_detaches_the_poisoned_request() {
+        // Poisoned-request case for the injected-panic containment contract:
+        // a panic raised while a stream request is mid-flight (here: the
+        // engine's first step, via the step observer) must detach that
+        // request with a terminal channel close -- never a hang and never a
+        // Response event -- release its admission permit, and retire the
+        // worker while the process keeps running.
+        let (service, _) = NativeGenerationService::spawn_with_factory(
+            || Ok(EngineSession::new_deterministic_native_for_tests()),
+            &crate::args::ServerEnvConfig::default(),
+        )
+        .expect("service should start");
+        let admission = Arc::new(crate::admission::AdmissionController::new(Some(1)));
+        let first_step = AtomicBool::new(true);
+        service.set_step_observer(move |_| {
+            if first_step.swap(false, Ordering::AcqRel) {
+                panic!("injected engine panic during an active request");
+            }
+        });
+        let mut events = service
+            .start_stream(
+                9001,
+                GenerateRequest {
+                    model_id: "qwen3".to_string(),
+                    input_tokens: vec![1, 2, 3, 4],
+                    input_text: None,
+                    multimodal_inputs: Default::default(),
+                    max_output_tokens: 8,
+                    sampling: Default::default(),
+                    stop_sequences: Vec::new(),
+                    metadata: None,
+                },
+                admission.try_admit().unwrap(),
+            )
+            .await
+            .expect("poisoned stream should start");
+
+        // The panicked unwind drops the worker's event sender, so the
+        // consumer's recv loop must terminate (bounded, no hang) and must
+        // never observe a terminal Response for the poisoned request.
+        let saw_response = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut saw_response = false;
+            while let Some(event) = events.recv().await {
+                if matches!(event, Ok(GenerateStreamEvent::Response(_))) {
+                    saw_response = true;
+                }
+            }
+            saw_response
+        })
+        .await
+        .expect("the poisoned request must terminate, not hang");
+        assert!(
+            !saw_response,
+            "a poisoned request must detach without a Response event"
+        );
+
+        // The unwound worker drops the ActiveStream (and with it the
+        // admission permit), then retires; bound-poll both transitions.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while (admission.active_jobs() != 0 || service.is_ready()) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(admission.active_jobs(), 0);
+        assert!(!service.is_ready());
+        let followup = service
+            .execute(|session| Ok(session.runtime_report().selected_backend))
+            .await;
+        assert!(
+            matches!(followup, Err(GenerationServiceError::Unavailable)),
+            "post-panic submissions must fail unavailable, got {followup:?}"
+        );
         service
             .shutdown()
             .await
@@ -2500,9 +2663,10 @@ mod tests {
 
     #[tokio::test]
     async fn active_stream_gauge_is_visible_during_first_engine_step() {
-        let (service, _) = NativeGenerationService::spawn_with_factory(|| {
-            Ok(EngineSession::new_deterministic_native_for_tests())
-        })
+        let (service, _) = NativeGenerationService::spawn_with_factory(
+            || Ok(EngineSession::new_deterministic_native_for_tests()),
+            &crate::args::ServerEnvConfig::default(),
+        )
         .unwrap();
         let (entered_tx, entered_rx) = std_mpsc::channel();
         let (release_tx, release_rx) = std_mpsc::channel();
@@ -2564,6 +2728,7 @@ mod tests {
                 Ok(EngineSession::new_deterministic_native_for_tests())
             },
             1,
+            WorkerTuning::default(),
         )
         .unwrap();
         let admission = Arc::new(crate::admission::AdmissionController::new(Some(1)));
@@ -2606,10 +2771,13 @@ mod tests {
     async fn worker_constructs_and_executes_session_on_same_thread() {
         let construction_thread = Arc::new(parking_lot::Mutex::new(None));
         let recorded_thread = Arc::clone(&construction_thread);
-        let (service, _) = NativeGenerationService::spawn_with_factory(move || {
-            *recorded_thread.lock() = Some(std::thread::current().id());
-            EngineSession::new(delegated_config())
-        })
+        let (service, _) = NativeGenerationService::spawn_with_factory(
+            move || {
+                *recorded_thread.lock() = Some(std::thread::current().id());
+                EngineSession::new(delegated_config())
+            },
+            &crate::args::ServerEnvConfig::default(),
+        )
         .expect("service should start");
 
         let execution_thread = service
@@ -2629,9 +2797,10 @@ mod tests {
 
     #[test]
     fn worker_startup_propagates_session_error() {
-        let result = NativeGenerationService::spawn_with_factory(|| {
-            Err(EngineSessionError::InvalidMaxBatchTokens)
-        });
+        let result = NativeGenerationService::spawn_with_factory(
+            || Err(EngineSessionError::InvalidMaxBatchTokens),
+            &crate::args::ServerEnvConfig::default(),
+        );
 
         assert!(matches!(
             result,
@@ -2943,6 +3112,7 @@ mod tests {
             stepwise_terminal_observer: parking_lot::RwLock::new(None),
             terminal_request_observer: parking_lot::RwLock::new(None),
             execution_target: parking_lot::RwLock::new(None),
+            tuning: WorkerTuning::default(),
             adaptive_prefill_isolation: AtomicBool::new(false),
             last_step_runner_time_us: AtomicU64::new(0),
             last_step_scheduled_tokens: AtomicU32::new(0),

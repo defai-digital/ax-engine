@@ -6,9 +6,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 
 use crate::app_state::AppState;
-use crate::embeddings::{
-    parse_embedding_max_tokens, parse_embedding_pooling, parse_embedding_timeout_ms,
-};
+use crate::embeddings::parse_embedding_pooling;
 use crate::errors::map_generation_service_error;
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::openai::compat::tokenizer_for_live_op;
@@ -19,7 +17,7 @@ use crate::openai::schema::{
 use crate::openai::validation::select_model;
 
 pub(crate) const DEFAULT_EMBED_MAX_TOKENS: usize = 8192;
-const DEFAULT_EMBED_TIMEOUT_MS: u64 = 30_000;
+pub(crate) const DEFAULT_EMBED_TIMEOUT_MS: u64 = 30_000;
 
 pub(crate) async fn openai_embeddings(
     State(state): State<AppState>,
@@ -81,10 +79,9 @@ pub(crate) async fn openai_embeddings(
             ));
         }
     }
-    let max_tokens = parse_embedding_max_tokens(
-        std::env::var("AX_ENGINE_EMBED_MAX_TOKENS").ok(),
-        DEFAULT_EMBED_MAX_TOKENS,
-    );
+    // Start-up-resolved AX_ENGINE_EMBED_MAX_TOKENS (default 8192; see
+    // ServerEnvConfig for the accepted values).
+    let max_tokens = state.env.embed_max_tokens;
     // The cap is per item: each embedding input must fit within max_tokens
     // on its own (matching OpenAI, where batch items are embedded
     // independently); a batch is only rejected when a single item exceeds
@@ -105,10 +102,9 @@ pub(crate) async fn openai_embeddings(
             ));
         }
     }
-    let embed_timeout = parse_embedding_timeout_ms(
-        std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS").ok(),
-        DEFAULT_EMBED_TIMEOUT_MS,
-    );
+    // Start-up-resolved AX_ENGINE_EMBED_TIMEOUT_MS (default 30_000 for
+    // this endpoint; the records endpoint keeps its own longer default).
+    let embed_timeout = state.env.embed_timeout_ms;
     let timeout = Duration::from_millis(embed_timeout);
     let permit = state.try_admit(&live).map_err(admission_error_response)?;
 

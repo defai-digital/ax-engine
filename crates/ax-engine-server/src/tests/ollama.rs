@@ -518,8 +518,12 @@ async fn ollama_generate_keep_alive_zero_unloads_loaded_model() {
     // loaded model (the last-model guard refuses to leave the registry empty).
     let state = llama_cpp_state();
     let config = state.snapshot().session_config.as_ref().clone();
-    let second = crate::app_state::build_live_state("second".to_string(), config)
-        .expect("second model state should build");
+    let second = crate::app_state::build_live_state(
+        "second".to_string(),
+        config,
+        &crate::args::ServerEnvConfig::default(),
+    )
+    .expect("second model state should build");
     state.publish_live(second, false);
     let app = build_router(state);
 

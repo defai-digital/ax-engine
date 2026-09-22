@@ -557,7 +557,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         }
     }
 
-    append_saturation_metrics(&mut body, &lives, metrics, &step_models);
+    append_saturation_metrics(&mut body, &lives, metrics, &step_models, &state.env);
 
     let mut arbiter_models = state.execution_arbiter_stats();
     arbiter_models.retain(|(model_id, _, _)| loaded_model_ids.contains(model_id.as_str()));
@@ -855,6 +855,7 @@ fn append_saturation_metrics(
     lives: &[crate::app_state::LiveState],
     metrics: &crate::app_state::ServerMetrics,
     step_models: &[(String, crate::app_state::EngineStepGauges)],
+    env: &crate::args::ServerEnvConfig,
 ) {
     let kv_blocks_total: u64 = lives
         .iter()
@@ -907,7 +908,7 @@ fn append_saturation_metrics(
             body,
             "ax_runtime_max_batch_size",
             "Configured batched-decode cohort cap (AX_MLX_BATCHED_DECODE_MAX; AX Serving fleet-dispatch contract). Subtract the latest per-step scheduled-request gauge for batch headroom. Exported only while at least one native MLX model is loaded.",
-            batched_decode_cohort_cap(),
+            env.mlx_batched_decode_max,
         );
     }
 
@@ -943,20 +944,6 @@ fn append_saturation_metrics(
             error_rate,
         );
     }
-}
-
-/// Mirrors the MLX runner's batched-decode cohort cap
-/// (`AX_MLX_BATCHED_DECODE_MAX`, default 8) so fleet consumers can derive
-/// batch headroom without scraping runner internals.
-fn batched_decode_cohort_cap() -> u64 {
-    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_BATCHED_DECODE_MAX")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .filter(|cap| *cap >= 1)
-            .unwrap_or(8)
-    })
 }
 
 fn append_model_topology_info(

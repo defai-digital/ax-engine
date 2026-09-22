@@ -68,8 +68,12 @@ async fn submit_request_is_not_globally_blocked_by_a_model_load() {
 async fn step_routes_to_an_explicit_loaded_model() {
     let state = super::fixtures::llama_cpp_state();
     let config = state.snapshot().session_config.as_ref().clone();
-    let second = build_live_state("gemma-4-12b-it".to_string(), config)
-        .expect("second delegated state should build");
+    let second = build_live_state(
+        "gemma-4-12b-it".to_string(),
+        config,
+        &crate::args::ServerEnvConfig::default(),
+    )
+    .expect("second delegated state should build");
     state.publish_live(second, false);
     let app = build_router(state.clone());
 
@@ -115,8 +119,12 @@ async fn request_lifecycle_routes_directly_past_an_unrelated_saturated_worker() 
     );
     let state = super::fixtures::llama_cpp_server_state(llama_server_url);
     let config = state.snapshot().session_config.as_ref().clone();
-    let second = build_live_state("gemma-4-12b-it".to_string(), config)
-        .expect("second delegated state should build");
+    let second = build_live_state(
+        "gemma-4-12b-it".to_string(),
+        config,
+        &crate::args::ServerEnvConfig::default(),
+    )
+    .expect("second delegated state should build");
     state.publish_live(second, false);
     let app = build_router(state.clone());
 

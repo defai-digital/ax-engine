@@ -3,10 +3,13 @@ use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
 mod artifacts;
+pub(crate) mod env_config;
 mod presets;
 mod session;
 
 pub use presets::{ServerPreset, render_presets};
+
+pub(crate) use env_config::ServerEnvConfig;
 
 pub const API_KEY_ENV: &str = "AX_ENGINE_API_KEY";
 pub const DEFAULT_INFERENCE_PORT: u16 = 31_418;

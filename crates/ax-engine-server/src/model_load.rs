@@ -360,16 +360,17 @@ pub(crate) async fn load_model(
         // Start the replacement from the blocking pool and wait for readiness there.
         // The service constructs the session on its dedicated owner worker; weight
         // loading can take tens of seconds and must not stall the async runtime.
+        let env = std::sync::Arc::clone(&state_clone.env);
         let result = tokio::task::spawn_blocking(move || {
             if load_mode == LoadModelMode::Replace
                 && load_policy == LoadModelPolicy::MemoryConstrained
             {
-                build_replacement_live_state(model_id, new_config)
+                build_replacement_live_state(model_id, new_config, &env)
             } else {
                 // Availability-first replace builds beside the live generation;
                 // clearing process-global compile caches here would disturb the
                 // very traffic this policy promises to preserve.
-                build_live_state(model_id, new_config)
+                build_live_state(model_id, new_config, &env)
             }
         })
         .await;
@@ -517,8 +518,9 @@ async fn rollback_after_failed_memory_constrained_build(
         return String::new();
     };
     let respawn_model_id = model_id.clone();
+    let env = std::sync::Arc::clone(&state.env);
     let respawned = tokio::task::spawn_blocking(move || {
-        build_replacement_live_state(respawn_model_id, Arc::unwrap_or_clone(session_config))
+        build_replacement_live_state(respawn_model_id, Arc::unwrap_or_clone(session_config), &env)
     })
     .await;
     match respawned {
@@ -1082,7 +1084,9 @@ fn rewarm_sibling_residents(state: &AppState, skip_model_id: &str) {
 /// prefill geometry on the newly published model (Gemma) so formal concurrent
 /// is not the first long work. No-op when long warm is disabled.
 fn rewarm_published_long_prefill(state: &AppState, model_id: &str) {
-    if !crate::app_state::long_prefill_warmup_enabled() {
+    // Start-up-resolved AX_SERVER_LONG_PREFILL_WARM (exact forms 1/true/
+    // TRUE/yes/YES; see ServerEnvConfig).
+    if !state.env.long_prefill_warm {
         return;
     }
     if !model_id.to_ascii_lowercase().contains("gemma") {
@@ -1502,8 +1506,12 @@ mod tests {
 
     #[tokio::test]
     async fn stopped_worker_does_not_block_recovery_load() {
-        let state = build_app_state("old".to_string(), delegated_config())
-            .expect("test app state should build");
+        let state = build_app_state(
+            "old".to_string(),
+            delegated_config(),
+            crate::args::ServerEnvConfig::default(),
+        )
+        .expect("test app state should build");
         let generation_service = state.snapshot().generation_service;
         generation_service
             .shutdown()
@@ -1520,12 +1528,17 @@ mod tests {
 
     #[tokio::test]
     async fn unloading_one_model_does_not_wait_for_a_busy_sibling() {
-        let state = build_app_state("first".to_string(), delegated_config())
-            .expect("test app state should build");
+        let state = build_app_state(
+            "first".to_string(),
+            delegated_config(),
+            crate::args::ServerEnvConfig::default(),
+        )
+        .expect("test app state should build");
         let first = state.snapshot();
         let second = crate::app_state::build_live_state(
             "second".to_string(),
             first.session_config.as_ref().clone(),
+            &crate::args::ServerEnvConfig::default(),
         )
         .expect("second model should build");
         state.publish_live(second, false);
@@ -1548,11 +1561,16 @@ mod tests {
 
     #[tokio::test]
     async fn multi_model_prefill_isolation_updates_every_resident_generation() {
-        let state = build_app_state("first".to_string(), delegated_config())
-            .expect("test app state should build");
+        let state = build_app_state(
+            "first".to_string(),
+            delegated_config(),
+            crate::args::ServerEnvConfig::default(),
+        )
+        .expect("test app state should build");
         let second = crate::app_state::build_live_state(
             "second".to_string(),
             state.snapshot().session_config.as_ref().clone(),
+            &crate::args::ServerEnvConfig::default(),
         )
         .expect("second model should build");
         state.publish_live(second, false);

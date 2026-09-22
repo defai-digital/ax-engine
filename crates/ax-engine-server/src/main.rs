@@ -46,7 +46,7 @@ mod routes;
 mod tasks;
 
 use app_state::{AppState, ServerLimits, build_app_state};
-use args::{ServerArgs, render_presets};
+use args::{ServerArgs, ServerEnvConfig, render_presets};
 use axum::body::Body;
 use axum::http::{Request, header};
 use routes::build_router;
@@ -94,6 +94,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .session_config()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     log_host_detection_warnings(&session_config);
+    // Resolve every AX_SERVER_* / AX_ENGINE_EMBED_* / mirrored AX_MLX_* key
+    // exactly once here; request-path code reads AppState.env instead of
+    // the process environment.
+    let env_config = ServerEnvConfig::from_env();
     let limits = ServerLimits {
         max_concurrent_requests: args.resolved_max_concurrent_requests(),
         max_concurrent_requests_per_model: args.resolved_max_concurrent_requests_per_model(),
@@ -107,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = args.resolved_api_key();
     let discovery_instance_id = new_instance_id();
     let lan_cluster = args.resolved_lan_cluster();
-    let state = build_app_state(model_id.clone(), session_config)?
+    let state = build_app_state(model_id.clone(), session_config, env_config)?
         .with_api_key(api_key.clone())
         .with_limits(limits)
         .with_discovery(app_state::DiscoveryMeta {
