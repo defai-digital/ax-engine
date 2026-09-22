@@ -1901,11 +1901,21 @@ def _preview_snapshot_path(
     return f"<resolved-hf-snapshot:{repo_id}>"
 
 
-def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
-    server_bin = str(_server_bin())
+def _serve_argv(
+    args: argparse.Namespace,
+    server_bin: str,
+) -> tuple[list[str], dict[str, Any]]:
     target = args.model
     target_path = pathlib.Path(target).expanduser()
-    argv = [server_bin, "--host", args.host, "--port", str(args.port)]
+    # The server parser rejects a repeated --host/--port, so when the
+    # passthrough args already carry one, only that copy reaches the
+    # child argv; the CLI fills in only what the passthrough omits.
+    passthrough_host, passthrough_port = _passthrough_endpoint_overrides(args.extra_server_args)
+    argv = [server_bin]
+    if passthrough_host is None:
+        argv.extend(["--host", args.host])
+    if passthrough_port is None:
+        argv.extend(["--port", str(args.port)])
 
     resolved: dict[str, Any]
     # Only a directory is a local artifacts dir; a stray file must not shadow
@@ -1997,17 +2007,21 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
     return argv, resolved
 
 
-def _announced_serve_url(host: str, port: int, extra_server_args: Sequence[str]) -> str:
-    """URL announced for the server, honouring passthrough endpoint overrides.
+def _passthrough_endpoint_overrides(
+    extra_server_args: Sequence[str],
+) -> tuple[str | None, str | None]:
+    """Effective ``--host``/``--port`` carried by the passthrough args.
 
-    Passthrough args after ``--`` are appended after the CLI's own
-    ``--host``/``--port`` and the server parser is last-wins, so the
-    announced endpoint must honour ``--host X``, ``--host=X``, ``--port N``
-    and ``--port=N`` from them (last occurrence wins). IPv6 hosts contain
-    ``:`` and must be bracketed (``http://[::1]:31418``).
+    Returns the last ``--host X``/``--host=X`` and ``--port N``/``--port=N``
+    values found after the ``--`` separator, or ``None`` for a flag the
+    passthrough does not carry. A trailing bare ``--host``/``--port`` with
+    no value does not count as an override (the CLI default stays in place
+    and the server rejects the dangling flag). Shared by ``_serve_argv``
+    and ``_announced_serve_url`` so the child argv and the announced
+    endpoint cannot disagree.
     """
-    effective_host = host
-    effective_port: str | int = port
+    host: str | None = None
+    port: str | None = None
     args = _strip_remainder_separator(list(extra_server_args))
     index = 0
     while index < len(args):
@@ -2015,15 +2029,28 @@ def _announced_serve_url(host: str, port: int, extra_server_args: Sequence[str])
         if token in ("--host", "--port"):
             if index + 1 < len(args):
                 if token == "--host":
-                    effective_host = args[index + 1]
+                    host = args[index + 1]
                 else:
-                    effective_port = args[index + 1]
+                    port = args[index + 1]
                 index += 1
         elif token.startswith("--host="):
-            effective_host = token[len("--host=") :]
+            host = token[len("--host=") :]
         elif token.startswith("--port="):
-            effective_port = token[len("--port=") :]
+            port = token[len("--port=") :]
         index += 1
+    return host, port
+
+
+def _announced_serve_url(host: str, port: int, extra_server_args: Sequence[str]) -> str:
+    """URL announced for the server, honouring passthrough endpoint overrides.
+
+    Passthrough args after ``--`` carry the winning ``--host``/``--port``
+    (last occurrence wins, detected by ``_passthrough_endpoint_overrides``).
+    IPv6 hosts contain ``:`` and must be bracketed (``http://[::1]:31418``).
+    """
+    override_host, override_port = _passthrough_endpoint_overrides(extra_server_args)
+    effective_host = host if override_host is None else override_host
+    effective_port: str | int = port if override_port is None else override_port
     bracketed = f"[{effective_host}]" if ":" in effective_host else effective_host
     return f"http://{bracketed}:{effective_port}"
 
@@ -2056,7 +2083,17 @@ def _redact_secret_arguments(argv: Sequence[str]) -> list[str]:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    argv, resolved = _serve_argv(args)
+    # A dry run never execs the child, so a source checkout without the
+    # native ax-engine-server can still print its plan, with the bare
+    # command name as argv[0]. Without --dry-run the missing-binary
+    # SystemExit propagates and the exec path keeps its hard requirement.
+    try:
+        server_bin = str(_server_bin())
+    except SystemExit:
+        if not args.dry_run:
+            raise
+        server_bin = "ax-engine-server"
+    argv, resolved = _serve_argv(args, server_bin)
     url = _announced_serve_url(args.host, args.port, args.extra_server_args)
     display_argv = _redact_secret_arguments(argv)
     plan = {

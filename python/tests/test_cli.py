@@ -113,6 +113,12 @@ EXPECTED_AUTOMATOSX_REPOS = {
 }
 
 
+def _endpoint_flag_occurrences(argv: list[str], flag: str) -> int:
+    # Count both the space form (--port N) and the equals form (--port=N);
+    # the clap server rejects more than one occurrence of either.
+    return sum(1 for token in argv if token == flag or token.startswith(f"{flag}="))
+
+
 class AxEngineCliTests(unittest.TestCase):
     def capture_main(self, argv: list[str]) -> tuple[int, str]:
         out = io.StringIO()
@@ -939,6 +945,14 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         self.assertEqual(payload["server"]["url"], "http://127.0.0.1:9999")
+        argv = payload["server"]["argv"]
+        # The passthrough --port is the only occurrence in the child argv;
+        # a second copy makes the clap server exit 2 ("cannot be used
+        # multiple times"). The CLI still fills in the unoverridden --host.
+        self.assertEqual(_endpoint_flag_occurrences(argv, "--port"), 1)
+        self.assertEqual(_endpoint_flag_occurrences(argv, "--host"), 1)
+        self.assertEqual(argv[argv.index("--port") + 1], "9999")
+        self.assertNotIn("31418", argv)
 
     def test_serve_passthrough_endpoint_last_occurrence_wins(self) -> None:
         cases = (
@@ -967,8 +981,28 @@ class AxEngineCliTests(unittest.TestCase):
                 )
 
             self.assertEqual(code, 0)
+            payload = json.loads(stdout)
+            argv = payload["server"]["argv"]
+            passthrough_host_count = _endpoint_flag_occurrences(extra_args, "--host")
+            passthrough_port_count = _endpoint_flag_occurrences(extra_args, "--port")
             with self.subTest(extra_args=extra_args):
-                self.assertEqual(json.loads(stdout)["server"]["url"], expected_url)
+                self.assertEqual(payload["server"]["url"], expected_url)
+                # The CLI never adds a second copy of a passthrough-
+                # overridden endpoint flag; occurrences come from the
+                # passthrough alone, or from the CLI's single copy when
+                # the passthrough does not carry the flag.
+                self.assertEqual(
+                    _endpoint_flag_occurrences(argv, "--host"),
+                    passthrough_host_count or 1,
+                )
+                self.assertEqual(
+                    _endpoint_flag_occurrences(argv, "--port"),
+                    passthrough_port_count or 1,
+                )
+                if passthrough_port_count:
+                    self.assertNotIn("31418", argv)
+                if passthrough_host_count:
+                    self.assertNotIn("127.0.0.1", argv)
 
     def test_serve_url_brackets_ipv6_host(self) -> None:
         with (
@@ -992,6 +1026,10 @@ class AxEngineCliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(stdout)["server"]["url"], "http://[::1]:31418")
+        argv = json.loads(stdout)["server"]["argv"]
+        self.assertEqual(_endpoint_flag_occurrences(argv, "--host"), 1)
+        self.assertEqual(_endpoint_flag_occurrences(argv, "--port"), 1)
+        self.assertEqual(argv[argv.index("--host") + 1], "::1")
 
         with (
             tempfile.TemporaryDirectory() as cache,
@@ -1014,7 +1052,79 @@ class AxEngineCliTests(unittest.TestCase):
             )
 
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(stdout)["server"]["url"], "http://[::1]:31418")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["server"]["url"], "http://[::1]:31418")
+        argv = payload["server"]["argv"]
+        # Only the passthrough copy of --host reaches the child argv.
+        self.assertEqual(_endpoint_flag_occurrences(argv, "--host"), 1)
+        self.assertEqual(_endpoint_flag_occurrences(argv, "--port"), 1)
+        self.assertEqual(argv[argv.index("--host") + 1], "::1")
+        self.assertNotIn("127.0.0.1", argv)
+
+    def test_serve_argv_carries_cli_endpoint_once_without_passthrough(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as cache,
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
+        ):
+            code, stdout = self.capture_main(
+                [
+                    "serve",
+                    "qwen36-35b",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "9010",
+                    "--hf-cache-root",
+                    cache,
+                    "--dry-run",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        argv = json.loads(stdout)["server"]["argv"]
+        self.assertEqual(_endpoint_flag_occurrences(argv, "--host"), 1)
+        self.assertEqual(_endpoint_flag_occurrences(argv, "--port"), 1)
+        self.assertEqual(argv[argv.index("--host") + 1], "127.0.0.1")
+        self.assertEqual(argv[argv.index("--port") + 1], "9010")
+
+    def test_serve_dry_run_json_without_native_binary_prints_plan(self) -> None:
+        # Source checkout: no bundled binary and nothing native on PATH.
+        # A dry run never execs the child, so it must still print the plan
+        # with the bare command name as argv[0].
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = pathlib.Path(tmp) / "model"
+            model_dir.mkdir()
+            with (
+                unittest.mock.patch.object(_cli, "_bundled_binary", return_value=None),
+                unittest.mock.patch.object(_cli.shutil, "which", return_value=None),
+            ):
+                code, stdout = self.capture_main(["serve", str(model_dir), "--dry-run", "--json"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["schema_version"], "ax.local_serve_plan.v1")
+        self.assertEqual(payload["server"]["argv"][0], "ax-engine-server")
+        self.assertEqual(payload["server"]["url"], "http://127.0.0.1:31418")
+
+    def test_serve_without_native_binary_and_no_dry_run_exits(self) -> None:
+        # The exec path keeps the hard requirement on the native binary.
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = pathlib.Path(tmp) / "model"
+            model_dir.mkdir()
+            with (
+                unittest.mock.patch.object(_cli, "_bundled_binary", return_value=None),
+                unittest.mock.patch.object(_cli.shutil, "which", return_value=None),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                self.capture_main(["serve", str(model_dir), "--json"])
+
+        self.assertNotEqual(raised.exception.code, 0)
+        message = str(raised.exception)
+        self.assertIn("ax-engine-server", message)
+        self.assertIn("cargo build", message)
 
     def test_serve_redacts_api_key_in_json_plan_and_banner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
