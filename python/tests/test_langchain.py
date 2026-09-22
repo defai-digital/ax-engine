@@ -469,6 +469,26 @@ class TestAXEngineChatModel(unittest.TestCase):
         self.assertAlmostEqual(body["repetition_penalty"], 1.1)
         self.assertEqual(body["seed"], 42)
 
+    def test_bind_sampling_kwargs_override_instance_defaults(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat(temperature=0.1, max_tokens=16)
+        chat.bind(temperature=0.9).invoke([HumanMessage(content="x")])
+        body = self.srv.last_body
+        self.assertAlmostEqual(body["temperature"], 0.9)
+        self.assertEqual(body["max_tokens"], 16)
+
+    def test_per_call_none_clears_instance_sampling_value(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat(temperature=0.5)
+        chat.invoke([HumanMessage(content="x")], temperature=None)
+        self.assertNotIn("temperature", self.srv.last_body)
+
+    def test_unknown_kwarg_raises_value_error(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat()
+        with self.assertRaisesRegex(ValueError, "bogus_param"):
+            chat.invoke([HumanMessage(content="x")], bogus_param=1)
+
     def test_stop_forwarded(self):
         self.srv.set_response(_chat_response())
         chat = self._make_chat(stop=["<|end|>"])
@@ -668,6 +688,21 @@ class TestAXEngineLLM(unittest.TestCase):
         self.assertEqual(body["max_tokens"], 32)
         self.assertAlmostEqual(body["temperature"], 0.8)
         self.assertEqual(body["seed"], 7)
+
+    def test_per_call_sampling_kwargs_override_instance_defaults(self):
+        self.srv.set_response(_completion_response())
+        llm = self._make_llm(temperature=0.3, seed=7)
+        llm.invoke("x", top_p=0.5)
+        body = self.srv.last_body
+        self.assertAlmostEqual(body["top_p"], 0.5)
+        self.assertAlmostEqual(body["temperature"], 0.3)
+        self.assertEqual(body["seed"], 7)
+
+    def test_unknown_kwarg_raises_value_error(self):
+        self.srv.set_response(_completion_response())
+        llm = self._make_llm()
+        with self.assertRaisesRegex(ValueError, "bogus_param"):
+            llm.invoke("x", bogus_param=1)
 
     def test_empty_per_call_stop_overrides_constructor_default(self):
         self.srv.set_response(_completion_response())

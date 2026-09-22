@@ -534,6 +534,24 @@ def truncate_at_stop(text: str, stops: list[str]) -> tuple[str, bool]:
     return text[:cut], True
 
 
+def split_held_stop_prefix(text: str, stops: list[str]) -> tuple[str, str]:
+    """Split pending stream text into (releasable, held) for stop handling.
+
+    ``held`` is the longest suffix of ``text`` that is a proper prefix of
+    any stop string. A stop string split across two stream deltas would
+    otherwise leak its prefix: the prefix alone fails the stop match, is
+    emitted, and the completed match on the next delta can no longer remove
+    it. The held suffix is re-examined when the next delta arrives and must
+    be flushed at end of stream when no stop ever completes.
+    """
+    longest_stop = max((len(stop) for stop in stops), default=0)
+    for hold_len in range(min(longest_stop - 1, len(text)), 0, -1):
+        suffix = text[-hold_len:]
+        if any(len(suffix) < len(stop) and stop.startswith(suffix) for stop in stops):
+            return text[:-hold_len], suffix
+    return text, ""
+
+
 def tool_choice_forces_tool_call(value: Any) -> bool:
     if value is None or value is False:
         return False
@@ -1102,7 +1120,9 @@ def stream_completion_chunks(
     role_emitted = False
     stops = client_stop_sequences(payload)
     emitted_text = ""
+    held_text = ""
     stop_hit = False
+    streamed_delta_text = False
     generator = session.stream_generate(input_tokens, **session_generate_kwargs(payload))
     for event in generator:
         if event.event == "step" and event.delta_tokens:
@@ -1111,6 +1131,7 @@ def stream_completion_chunks(
             # multi-token glyphs (ZWJ emoji) when a partial sequence yields
             # U+FFFD that is then counted as "already sent".
             if event.delta_text is not None:
+                streamed_delta_text = True
                 new_text = event.delta_text
                 if new_text:
                     # Keep prev_text_len aligned for any residual flush path.
@@ -1121,10 +1142,18 @@ def stream_completion_chunks(
                 prev_text_len = len(full_text)
             if new_text and stops:
                 # Client stop strings are enforced on the visible text:
-                # emit only up to the match, then finish with "stop".
-                candidate = emitted_text + new_text
+                # emit only up to the match, then finish with "stop". A stop
+                # split across two deltas must not leak its already-emitted
+                # prefix, so the longest suffix of the pending text that
+                # could still complete a stop is held back until the next
+                # delta disambiguates it.
+                candidate = emitted_text + held_text + new_text
                 truncated, stop_hit = truncate_at_stop(candidate, stops)
-                new_text = truncated[len(emitted_text) :]
+                pending = truncated[len(emitted_text) :]
+                if stop_hit:
+                    new_text, held_text = pending, ""
+                else:
+                    new_text, held_text = split_held_stop_prefix(pending, stops)
             if new_text:
                 emitted_text += new_text
                 emit_role = kind == "chat" and not role_emitted
@@ -1144,9 +1173,31 @@ def stream_completion_chunks(
                 yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
                 break
         elif event.event == "response" and event.response is not None:
+            # No later delta can complete a stop: flush whatever prefix was
+            # held back against a stop split across deltas.
+            if held_text:
+                emit_role = kind == "chat" and not role_emitted
+                role_emitted = role_emitted or emit_role
+                yield sse_chunk(
+                    stream_id,
+                    created,
+                    model_id,
+                    held_text,
+                    None,
+                    kind,
+                    emit_role=emit_role,
+                )
+                emitted_text += held_text
+                held_text = ""
             # Flush any remaining text from incomplete UTF-8 sequences when
-            # the stream path did not supply delta_text (legacy fallback).
-            if accumulated_tokens and event.delta_text is None:
+            # the stream path never supplied delta_text (legacy fallback).
+            # On a delta_text stream prev_text_len counts engine delta
+            # lengths, which can diverge from a cumulative re-decode (a
+            # max_tokens cut inside a multi-codepoint sequence decodes to a
+            # trailing U+FFFD the engine deliberately withheld), so the
+            # re-decode flush must be skipped there entirely; the
+            # delta_text-is-None check on this event cannot detect that.
+            if accumulated_tokens and not streamed_delta_text and event.delta_text is None:
                 final_text = tokenizer.decode(accumulated_tokens)
                 remaining = final_text[prev_text_len:]
                 if remaining:

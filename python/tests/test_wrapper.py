@@ -817,6 +817,61 @@ class RecordingShimSession:
             self.timeline.append(("stream", call_id, "end"))
 
 
+class ScriptedDeltaTextSession:
+    """Session double for direct stream_completion_chunks tests.
+
+    Yields one step event per scripted delta (with delta_text set so the
+    delta path is exercised), then a terminal response event.
+    """
+
+    def __init__(self, deltas: tuple[str, ...], finish_reason: str = "max_output_tokens"):
+        self.deltas = deltas
+        self.finish_reason = finish_reason
+        self.stream_kwargs: list[dict[str, object]] = []
+
+    def stream_generate(
+        self, input_tokens: list[int] | None = None, **kwargs: object
+    ) -> Iterator[object]:
+        self.stream_kwargs.append(kwargs)
+        for delta in self.deltas:
+            yield types.SimpleNamespace(
+                event="step",
+                delta_tokens=[4],
+                delta_text=delta,
+                response=None,
+            )
+        yield types.SimpleNamespace(
+            event="response",
+            delta_tokens=[],
+            delta_text=None,
+            response=types.SimpleNamespace(finish_reason=self.finish_reason),
+        )
+
+
+class ReplacementSuffixDecoder:
+    """Decoder whose cumulative decode is one U+FFFD longer than the
+    engine-provided delta text, as when max_tokens cuts inside a
+    multi-codepoint sequence.
+    """
+
+    def encode(self, text: str) -> object:
+        return types.SimpleNamespace(ids=[ord(ch) for ch in text])
+
+    def decode(self, tokens: list[int]) -> str:
+        return "ok" + "\ufffd" if tokens else ""
+
+
+def _sse_data_payloads(chunks: list[str]) -> list[dict[str, Any]]:
+    """Parse SSE chunk strings into their JSON payloads, skipping [DONE]."""
+    payloads: list[dict[str, Any]] = []
+    for chunk in chunks:
+        data = chunk.removeprefix("data: ").strip()
+        if not data or data == "[DONE]":
+            continue
+        payloads.append(json.loads(data))
+    return payloads
+
+
 def import_wrapper_module(
     session_cls: type[FakeNativeSession] = FakeNativeSession,
 ) -> types.ModuleType:
@@ -3796,6 +3851,66 @@ hello
             ("hello ", True),
         )
         self.assertEqual(openai_server.truncate_at_stop("hello", ["STOP"]), ("hello", False))
+        self.assertEqual(openai_server.split_held_stop_prefix("xxSTO", ["STOP"]), ("xx", "STO"))
+        self.assertEqual(openai_server.split_held_stop_prefix("xxSTOQ", ["STOP"]), ("xxSTOQ", ""))
+        self.assertEqual(openai_server.split_held_stop_prefix("STOP", ["STOP"]), ("STOP", ""))
+        self.assertEqual(openai_server.split_held_stop_prefix("xx", []), ("xx", ""))
+
+    def test_openai_mlx_shim_delta_text_stream_skips_legacy_redecode_flush(self) -> None:
+        # When steps supplied delta_text, prev_text_len counts engine delta
+        # lengths, which can diverge from a cumulative re-decode; the final
+        # flush would emit a spurious trailing chunk (here U+FFFD) that the
+        # engine deliberately withheld.
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        session = ScriptedDeltaTextSession(("ok",))
+
+        chunks = list(
+            openai_server.stream_completion_chunks(
+                session,
+                ReplacementSuffixDecoder(),
+                "qwen3_dense",
+                [1],
+                {"max_tokens": 1},
+                "completion",
+            )
+        )
+
+        payloads = _sse_data_payloads(chunks)
+        texts = [payload["choices"][0]["text"] for payload in payloads]
+        finishes = [payload["choices"][0]["finish_reason"] for payload in payloads]
+        self.assertEqual("".join(texts), "ok")
+        self.assertNotIn("\ufffd", "".join(texts))
+        self.assertEqual(finishes[-1], "length")
+
+    def test_openai_mlx_shim_streaming_stop_split_across_deltas(self) -> None:
+        # A stop string split across two deltas must not leak its prefix,
+        # matching what the non-streaming path returns for the same text.
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        cases = [
+            (("xxSTO", "Pyy"), "xx", "stop"),
+            (("xxSTO", "Qyy"), "xxSTOQyy", "length"),
+            (("xxSTO",), "xxSTO", "length"),
+        ]
+        for deltas, expected_text, expected_finish in cases:
+            with self.subTest(deltas=deltas):
+                session = ScriptedDeltaTextSession(deltas)
+                chunks = list(
+                    openai_server.stream_completion_chunks(
+                        session,
+                        FakeShimTokenizer(),
+                        "qwen3_dense",
+                        [1],
+                        {"max_tokens": 4, "stop": ["STOP"]},
+                        "completion",
+                    )
+                )
+
+                payloads = _sse_data_payloads(chunks)
+                texts = [payload["choices"][0]["text"] for payload in payloads]
+                finishes = [payload["choices"][0]["finish_reason"] for payload in payloads]
+                self.assertEqual("".join(texts), expected_text)
+                self.assertEqual(finishes[-1], expected_finish)
+                self.assertIn("stop_sequences", session.stream_kwargs[0])
 
     def test_openai_mlx_shim_builds_mlx_session_with_artifacts_dir(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

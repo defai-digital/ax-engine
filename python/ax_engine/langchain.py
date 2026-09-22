@@ -55,6 +55,56 @@ except ImportError as _e:
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:31418"
 
+# Sampling parameters that bind()/invoke() kwargs may override per call.
+_SAMPLING_PARAM_KEYS = (
+    "max_tokens",
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "repetition_penalty",
+    "seed",
+)
+# Arguments LangChain routes itself (named parameters such as stop and
+# run_manager, or bind_tools() injections); they are not sampling overrides
+# and must not be mistaken for unsupported extras.
+_ROUTED_KWARGS = frozenset(
+    {
+        "tools",
+        "tool_choice",
+        "stop",
+        "run_manager",
+        "callbacks",
+        "tags",
+        "metadata",
+        "run_name",
+        "run_id",
+    }
+)
+
+
+def _merge_sampling_kwargs(req: dict, kwargs: dict) -> None:
+    """Merge per-call sampling kwargs over the instance defaults in ``req``.
+
+    Values arriving through ``bind()`` or per-call kwargs win over the
+    instance fields; an explicit ``None`` clears the key, mirroring how the
+    server treats JSON null sampling parameters as absent. Anything that is
+    neither a sampling parameter nor a LangChain-routed argument raises
+    ``ValueError``: silently dropping it would hide mistakes, and silently
+    forwarding it would send unknown keys to the server.
+    """
+    for key, value in kwargs.items():
+        if key in _ROUTED_KWARGS:
+            continue
+        if key not in _SAMPLING_PARAM_KEYS:
+            raise ValueError(
+                f"Unsupported argument {key!r}; expected one of: " + ", ".join(_SAMPLING_PARAM_KEYS)
+            )
+        if value is None:
+            req.pop(key, None)
+        else:
+            req[key] = value
+
 
 def _normalize_tool_choice(tool_choice: Any) -> Any:
     if not isinstance(tool_choice, str):
@@ -314,6 +364,8 @@ class AXEngineChatModel(BaseChatModel):
             req["tools"] = kwargs["tools"]
         if kwargs.get("tool_choice") is not None:
             req["tool_choice"] = kwargs["tool_choice"]
+        # bind()/invoke() sampling kwargs override the instance defaults.
+        _merge_sampling_kwargs(req, kwargs)
         return req
 
     def _generate(
@@ -409,7 +461,12 @@ class AXEngineLLM(LLM):
     def _llm_type(self) -> str:
         return "ax-engine"
 
-    def _build_request(self, prompt: str, stop: list[str] | None = None) -> dict:
+    def _build_request(
+        self,
+        prompt: str,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict:
         req: dict = {"prompt": prompt}
         if self.model is not None:
             req["model"] = self.model
@@ -430,6 +487,8 @@ class AXEngineLLM(LLM):
             req["stop"] = effective_stop
         if self.seed is not None:
             req["seed"] = self.seed
+        # invoke()/bind() sampling kwargs override the instance defaults.
+        _merge_sampling_kwargs(req, kwargs)
         return req
 
     def _call(
@@ -440,7 +499,7 @@ class AXEngineLLM(LLM):
         **kwargs: Any,
     ) -> str:
         url = self.base_url.rstrip("/") + "/v1/completions"
-        resp = _post_json(url, self._build_request(prompt, stop), self.timeout)
+        resp = _post_json(url, self._build_request(prompt, stop, **kwargs), self.timeout)
         choices = resp.get("choices", [])
         if not choices:
             raise RuntimeError("Server returned empty choices array")
@@ -455,7 +514,7 @@ class AXEngineLLM(LLM):
         **kwargs: Any,
     ) -> Iterator[GenerationChunk]:
         url = self.base_url.rstrip("/") + "/v1/completions"
-        req = {**self._build_request(prompt, stop), "stream": True}
+        req = {**self._build_request(prompt, stop, **kwargs), "stream": True}
         for chunk_data in _stream_sse(url, req, self.timeout):
             text = (chunk_data.get("choices") or [{}])[0].get("text") or ""
             chunk = GenerationChunk(text=text)
