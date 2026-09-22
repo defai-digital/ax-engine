@@ -813,6 +813,32 @@ class DownloadModelScriptTest(unittest.TestCase):
             leftovers = [path.name for path in root.iterdir() if path.name.startswith(".dest.")]
             self.assertEqual(leftovers, [])
 
+    def test_atomic_copy_uses_cached_umask_and_never_toggles_umask(self) -> None:
+        def fail_umask(_mask: int) -> int:
+            raise AssertionError("os.umask must not be toggled during the staged install")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            write_safetensors(snapshot / "model.safetensors")
+
+            for cached_umask, expected_mode in ((0o022, 0o755), (0o077, 0o700)):
+                with (
+                    self.subTest(cached_umask=oct(cached_umask)),
+                    patch.object(download_model, "_CACHED_UMASK", cached_umask),
+                    patch.object(os, "umask", fail_umask),
+                ):
+                    dest = root / f"dest-{cached_umask:o}"
+                    download_model._copy_snapshot_to_dest(
+                        snapshot,
+                        dest,
+                        repo_id="owner/repo",
+                        revision=None,
+                    )
+                    self.assertEqual(dest.stat().st_mode & 0o777, expected_mode)
+
     def test_atomic_copy_never_deletes_legacy_reserved_siblings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -861,9 +887,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 )
 
             self.assertEqual((dest / "important.txt").read_text(), "keep")
-            leftovers = [
-                path.name for path in root.iterdir() if path.name.startswith(".dest.")
-            ]
+            leftovers = [path.name for path in root.iterdir() if path.name.startswith(".dest.")]
             self.assertEqual(leftovers, [])
 
     def test_atomic_copy_rejects_directory_and_out_of_cache_symlinks(self) -> None:
@@ -950,9 +974,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             other_snapshot.mkdir()
             (snapshot / "config.json").write_text("{}")
             write_safetensors(other_snapshot / "model.safetensors")
-            (snapshot / "model.safetensors").symlink_to(
-                other_snapshot / "model.safetensors"
-            )
+            (snapshot / "model.safetensors").symlink_to(other_snapshot / "model.safetensors")
             dest = root / "dest"
 
             with self.assertRaisesRegex(RuntimeError, "symlink outside"):
@@ -1811,9 +1833,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 self.assertTrue(download_model._try_generate_manifest(model_dir, quiet=True))
 
             # The bundled binary is used; the stale PATH binary is never invoked.
-            self.assertEqual(
-                calls, [[bundled, "generate-manifest", "--validate", str(model_dir)]]
-            )
+            self.assertEqual(calls, [[bundled, "generate-manifest", "--validate", str(model_dir)]])
 
     def test_manifest_validation_is_read_only_and_uses_native_loader(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1899,9 +1919,7 @@ class DownloadModelScriptTest(unittest.TestCase):
                 patch.object(download_model, "_bundled_bench_bin", return_value=bundled),
                 patch.object(download_model.subprocess, "run", fake_run),
             ):
-                self.assertTrue(
-                    download_model._try_generate_manifest(Path("-models"), quiet=True)
-                )
+                self.assertTrue(download_model._try_generate_manifest(Path("-models"), quiet=True))
 
             self.assertEqual(
                 calls,
@@ -2161,9 +2179,7 @@ class DownloadModelScriptTest(unittest.TestCase):
             manifest_path = model_dir / "model-manifest.json"
             manifest = json.loads(manifest_path.read_text())
             qkv = next(
-                tensor
-                for tensor in manifest["tensors"]
-                if tensor["role"] == "attention_qkv_packed"
+                tensor for tensor in manifest["tensors"] if tensor["role"] == "attention_qkv_packed"
             )
             qkv["role"] = "attention_qa"
             manifest_path.write_text(json.dumps(manifest))
@@ -2525,9 +2541,7 @@ class ManifestHeaderBindingTest(unittest.TestCase):
 
             # Drop every role except token_embedding; bindings stay exact.
             manifest["tensors"] = [
-                tensor
-                for tensor in manifest["tensors"]
-                if tensor["role"] == "token_embedding"
+                tensor for tensor in manifest["tensors"] if tensor["role"] == "token_embedding"
             ]
             (model_dir / "model-manifest.json").write_text(json.dumps(manifest))
             self.assertTrue(download_model._manifest_needs_rebuild(model_dir))
@@ -2537,13 +2551,19 @@ class ManifestHeaderBindingTest(unittest.TestCase):
 
     def _write_flash_next_role_fixture(self, model_dir: Path) -> dict:
         # Bind minimal source tensors; full Flash Next geometry remains native.
-        roles = [entry for entry in _MINIMAL_READY_ROLES
-                 if entry[0] not in {"final_norm", "attention_norm", "ffn_norm"}]
-        roles.extend((f"qwen4_exp_hc_mixer_{part}", None)
-                     for part in ("norm", "mix_down", "mix_up"))
-        roles.extend((f"qwen4_exp_{component}_hc_{part}", 0)
-                     for component in ("attn", "mlp")
-                     for part in ("norm", "mix_down", "mix_up", "inject"))
+        roles = [
+            entry
+            for entry in _MINIMAL_READY_ROLES
+            if entry[0] not in {"final_norm", "attention_norm", "ffn_norm"}
+        ]
+        roles.extend(
+            (f"qwen4_exp_hc_mixer_{part}", None) for part in ("norm", "mix_down", "mix_up")
+        )
+        roles.extend(
+            (f"qwen4_exp_{component}_hc_{part}", 0)
+            for component in ("attn", "mlp")
+            for part in ("norm", "mix_down", "mix_up", "inject")
+        )
         with patch(f"{__name__}._MINIMAL_READY_ROLES", roles):
             manifest = self._write_bound_fixture(model_dir)
         manifest["model_family"] = "qwen4_exp"
@@ -2564,9 +2584,10 @@ class ManifestHeaderBindingTest(unittest.TestCase):
                 if not tensor["role"].startswith("qwen4_exp_"):
                     continue
                 with self.subTest(role=tensor["role"]):
-                    incomplete = {**manifest, "tensors": [
-                        other for other in manifest["tensors"] if other is not tensor
-                    ]}
+                    incomplete = {
+                        **manifest,
+                        "tensors": [other for other in manifest["tensors"] if other is not tensor],
+                    }
                     reason = download_model._manifest_missing_required_roles(incomplete)
                     self.assertIsNotNone(reason)
                     self.assertIn(tensor["role"], reason)
@@ -2575,7 +2596,9 @@ class ManifestHeaderBindingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
             self._write_flash_next_role_fixture(model_dir)
-            with patch.object(download_model, "_try_validate_manifest", return_value=False) as validate:
+            with patch.object(
+                download_model, "_try_validate_manifest", return_value=False
+            ) as validate:
                 self.assertEqual(
                     download_model._manifest_readiness_error(model_dir, quiet=True),
                     "native manifest validation failed",
@@ -2605,9 +2628,7 @@ class ManifestHeaderBindingTest(unittest.TestCase):
             model_dir = Path(tmp)
             manifest = self._write_bound_fixture(model_dir)
             packed = next(
-                tensor
-                for tensor in manifest["tensors"]
-                if tensor["role"] == "attention_qkv_packed"
+                tensor for tensor in manifest["tensors"] if tensor["role"] == "attention_qkv_packed"
             )
             packed["role"] = "attention_q"
             manifest["tensors"].append({**packed, "role": "attention_k"})
@@ -2636,9 +2657,7 @@ class ManifestHeaderBindingTest(unittest.TestCase):
             self.assertIn("attention_qkv_packed", reason or "")
 
             packed = next(
-                tensor
-                for tensor in manifest["tensors"]
-                if tensor["role"] == "attention_qkv_packed"
+                tensor for tensor in manifest["tensors"] if tensor["role"] == "attention_qkv_packed"
             )
             packed["role"] = "attention_q"
             manifest["tensors"].append({**packed, "role": "attention_k"})
@@ -2686,14 +2705,16 @@ class ManifestHeaderBindingTest(unittest.TestCase):
                     model_dir = root / label
                     model_dir.mkdir()
                     self._write_bound_fixture(
-                        model_dir, source_dtype="I64", manifest_dtype=dtype,
+                        model_dir,
+                        source_dtype="I64",
+                        manifest_dtype=dtype,
                         source_length=length,
                     )
                     self.assertTrue(download_model._manifest_needs_rebuild(model_dir))
                     if label == "short":
-                        self.assertIsNotNone(download_model._safetensors_file_error(
-                            model_dir / "model.safetensors"
-                        ))
+                        self.assertIsNotNone(
+                            download_model._safetensors_file_error(model_dir / "model.safetensors")
+                        )
 
     def test_supported_tensor_rejects_inconsistent_shape_and_length(self) -> None:
         cases = {

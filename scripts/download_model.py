@@ -58,6 +58,15 @@ MAX_REPO_ID_BYTES = 96
 INVALID_REVISION_CHARS = frozenset("~^:?*[\\")
 HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
+# The umask can only be read by temporarily setting it, which mutates
+# process-wide state. Doing that inside the staged install races with other
+# threads (a concurrent copy can observe the transient value and end up with
+# a world-writable model directory), so read it once here at import time --
+# single-threaded under the import lock -- using a restrictive intermediate
+# value, and never toggle the umask again.
+_CACHED_UMASK = os.umask(0o077)
+os.umask(_CACHED_UMASK)
+
 
 def _standalone_is_control(character: str) -> bool:
     return unicodedata.category(character) == "Cc"
@@ -298,8 +307,7 @@ def _safetensors_files(model_dir: Path) -> list[Path]:
         return sorted(
             path
             for path in model_dir.rglob("*.safetensors")
-            if path.is_file()
-            and path.relative_to(model_dir).parts[:1] != ("assistant",)
+            if path.is_file() and path.relative_to(model_dir).parts[:1] != ("assistant",)
         )
     except OSError:
         return []
@@ -561,10 +569,7 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
     # Whisper preserves checkpoint names as role=other; skip language-model
     # role requirements here (native validates Whisper against config.json).
     if model_family == "whisper":
-        if any(
-            not isinstance(tensor, dict) or tensor.get("role") != "other"
-            for tensor in tensors
-        ):
+        if any(not isinstance(tensor, dict) or tensor.get("role") != "other" for tensor in tensors):
             return "whisper tensors must use role=other"
         return None
 
@@ -597,7 +602,8 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
     # native qwen4_exp validator owns full geometry and family validation.
     output_roles = (
         ("qwen4_exp_hc_mixer_norm", "qwen4_exp_hc_mixer_mix_down", "qwen4_exp_hc_mixer_mix_up")
-        if is_flash_next else ("final_norm",)
+        if is_flash_next
+        else ("final_norm",)
     )
     for role in output_roles:
         if role not in global_roles:
@@ -727,9 +733,7 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
             if "attention_o" not in roles:
                 return f"layer {layer_index} is missing required tensor role attention_o"
             uses_value_from_key = layer_index in value_from_key_layers
-            if uses_value_from_key and (
-                "attention_qkv_packed" in roles or "attention_v" in roles
-            ):
+            if uses_value_from_key and ("attention_qkv_packed" in roles or "attention_v" in roles):
                 return (
                     f"value-from-key layer {layer_index} must provide split "
                     "attention_q/attention_k without attention_v or attention_qkv_packed"
@@ -1594,10 +1598,9 @@ def _copy_snapshot_to_dest(
     )
     # mkdtemp creates mode 0700; restore the umask-derived mode a plain mkdir
     # would have used so the activated destination stays readable by other
-    # users and services.
-    current_umask = os.umask(0)
-    os.umask(current_umask)
-    os.chmod(tmp, 0o777 & ~current_umask)
+    # users and services. The umask was captured once at import; toggling it
+    # here would race with concurrent downloads in other threads.
+    os.chmod(tmp, 0o777 & ~_CACHED_UMASK)
     backup: Path | None = None
     activated = False
     try:
@@ -1674,11 +1677,9 @@ def _copy_snapshot_to_dest(
         if not activated:
             shutil.rmtree(tmp, ignore_errors=True)
         if backup is not None and not _path_exists(dest):
-            try:
+            # Keep the uniquely named backup: never delete the only copy.
+            with suppress(OSError):
                 backup.rename(dest)
-            except OSError:
-                # Keep the uniquely named backup: never delete the only copy.
-                pass
         raise
 
 
@@ -2304,9 +2305,8 @@ def _manifest_readiness_error(
             manifest = json.loads(manifest_path.read_bytes())
         except (OSError, ValueError, TypeError):
             return f"{MODEL_MANIFEST_FILE} is unreadable or contains invalid JSON"
-        if isinstance(manifest, dict):
-            if reason := _manifest_missing_required_roles(manifest):
-                return reason
+        if isinstance(manifest, dict) and (reason := _manifest_missing_required_roles(manifest)):
+            return reason
         return "manifest metadata is invalid or does not match the source safetensors"
     if manifest_needs_media_rebuild(dest):
         return "manifest omits vision or audio tensors present in the source weights"
@@ -2345,8 +2345,8 @@ def _prepare_staged_destination(
         )
     if reason := _manifest_readiness_error(dest, quiet=quiet):
         raise RuntimeError(
-            f"manifest generator reported success but the staged manifest is still invalid: {reason}; "
-            "the previous destination was preserved"
+            f"manifest generator reported success but the staged manifest "
+            f"is still invalid: {reason}; the previous destination was preserved"
         )
 
 
