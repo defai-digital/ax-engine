@@ -1180,11 +1180,39 @@ def _profile_certification(profile: ModelProfile) -> str | None:
     return None
 
 
+def _is_native_executable(path: str | pathlib.Path) -> bool:
+    """True when ``path`` is a native binary, not a script or this CLI itself.
+
+    On an editable install ``shutil.which("ax-engine-server")`` resolves to
+    this package's own console script, so accepting any ``which()`` hit makes
+    ``server()`` re-exec itself forever. A hit is native only when it is not
+    the running ``sys.argv[0]`` file and does not start with a ``#!`` shebang.
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0:
+        with contextlib.suppress(OSError):
+            if os.path.samefile(path, argv0):
+                return False
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) != b"#!"
+    except OSError:
+        return False
+
+
 def _server_bin() -> pathlib.Path | str:
     bundled = _bundled_binary("ax-engine-server")
     if bundled is not None:
         return bundled
-    return shutil.which("ax-engine-server") or "ax-engine-server"
+    found = shutil.which("ax-engine-server")
+    if found is not None and _is_native_executable(found):
+        return found
+    raise SystemExit(
+        "ax-engine serve requires the native ax-engine-server binary, which was not "
+        "found.\n"
+        "Reinstall ax-engine, or build it from a source checkout:\n"
+        "  cargo build --release -p ax-engine-server --bin ax-engine-server"
+    )
 
 
 def _bench_bin() -> pathlib.Path | str:
@@ -1642,6 +1670,25 @@ def _wizard_input(prompt: str) -> str:
         raise
 
 
+def _parse_menu_selection(raw: str, item_count: int) -> int | None:
+    """Parse a 1-based menu selection from raw wizard input; None if invalid.
+
+    ``str.isdecimal`` (not ``isdigit``) keeps the check in line with what
+    ``int()`` accepts: superscript digits (U+00B2) pass ``isdigit`` but make
+    ``int()`` raise, which previously escaped the wizard as a traceback. The
+    ``ValueError`` guard covers any remaining gap so bad input re-prompts.
+    """
+    if not raw.isdecimal():
+        return None
+    try:
+        choice = int(raw)
+    except ValueError:
+        return None
+    if 1 <= choice <= item_count:
+        return choice
+    return None
+
+
 def _select_profile_interactive() -> ModelProfile | None:
     profiles = _downloadable_profiles()
     print("AX Engine — download a model\n")
@@ -1654,10 +1701,9 @@ def _select_profile_interactive() -> ModelProfile | None:
         raw = _wizard_input(f"Select a model [1-{len(profiles)}] (q to cancel): ").strip().lower()
         if raw in {"", "q", "quit", "exit"}:
             return None
-        if raw.isdigit():
-            choice = int(raw)
-            if 1 <= choice <= len(profiles):
-                return profiles[choice - 1]
+        choice = _parse_menu_selection(raw, len(profiles))
+        if choice is not None:
+            return profiles[choice - 1]
         print("  invalid selection; enter a number from the list or q to cancel")
 
 
@@ -1951,9 +1997,68 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
     return argv, resolved
 
 
+def _announced_serve_url(host: str, port: int, extra_server_args: Sequence[str]) -> str:
+    """URL announced for the server, honouring passthrough endpoint overrides.
+
+    Passthrough args after ``--`` are appended after the CLI's own
+    ``--host``/``--port`` and the server parser is last-wins, so the
+    announced endpoint must honour ``--host X``, ``--host=X``, ``--port N``
+    and ``--port=N`` from them (last occurrence wins). IPv6 hosts contain
+    ``:`` and must be bracketed (``http://[::1]:31418``).
+    """
+    effective_host = host
+    effective_port: str | int = port
+    args = _strip_remainder_separator(list(extra_server_args))
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in ("--host", "--port"):
+            if index + 1 < len(args):
+                if token == "--host":
+                    effective_host = args[index + 1]
+                else:
+                    effective_port = args[index + 1]
+                index += 1
+        elif token.startswith("--host="):
+            effective_host = token[len("--host=") :]
+        elif token.startswith("--port="):
+            effective_port = token[len("--port=") :]
+        index += 1
+    bracketed = f"[{effective_host}]" if ":" in effective_host else effective_host
+    return f"http://{bracketed}:{effective_port}"
+
+
+_REDACTED_SECRET = "<redacted>"
+_SECRET_VALUE_ARGUMENTS = ("--api-key",)
+
+
+def _redact_secret_arguments(argv: Sequence[str]) -> list[str]:
+    """Display copy of argv with secret argument values masked.
+
+    Only the printed banner and the JSON plan use the copy; the child
+    process still receives the real values via the untouched argv.
+    """
+    redacted: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in _SECRET_VALUE_ARGUMENTS and index + 1 < len(argv):
+            redacted.extend((token, _REDACTED_SECRET))
+            index += 2
+            continue
+        if any(token.startswith(f"{flag}=") for flag in _SECRET_VALUE_ARGUMENTS):
+            redacted.append(f"{token.split('=', 1)[0]}={_REDACTED_SECRET}")
+            index += 1
+            continue
+        redacted.append(token)
+        index += 1
+    return redacted
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     argv, resolved = _serve_argv(args)
-    url = f"http://{args.host}:{args.port}"
+    url = _announced_serve_url(args.host, args.port, args.extra_server_args)
+    display_argv = _redact_secret_arguments(argv)
     plan = {
         "schema_version": "ax.local_serve_plan.v1",
         "command": "serve",
@@ -1961,7 +2066,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         "resolved": resolved,
         "server": {
             "url": url,
-            "argv": argv,
+            "argv": display_argv,
         },
     }
 
@@ -1970,7 +2075,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     else:
         print(f"AX Engine server: {url}")
         print("Command:")
-        print("  " + shlex.join(argv))
+        print("  " + shlex.join(display_argv))
 
     if args.dry_run:
         return 0
@@ -1984,6 +2089,8 @@ def _cmd_download(args: argparse.Namespace) -> int:
         raise SystemExit("download --progress-json cannot be combined with --list")
     if args.progress_json and args.interactive:
         raise SystemExit("download --progress-json cannot be combined with --interactive")
+    if args.json and args.interactive:
+        raise SystemExit("download --json cannot be combined with --interactive")
     if args.force and args.local_only:
         raise SystemExit("download --force cannot be combined with --local-only")
 
@@ -2364,6 +2471,16 @@ def _probe_binary(label: str, bin_path: pathlib.Path | str) -> dict:
     }
 
 
+def _probe_server_binary() -> dict:
+    """Probe the server binary; a missing native binary is a failed check."""
+    try:
+        bin_path = _server_bin()
+    except SystemExit as error:
+        detail = error.code if isinstance(error.code, str) else "ax-engine-server not found"
+        return {"id": "server_binary", "status": "fail", "detail": detail}
+    return _probe_binary("server_binary", bin_path)
+
+
 def _doctor_check(check_id: str, passed: bool, detail: str) -> dict:
     return {"id": check_id, "status": "pass" if passed else "fail", "detail": detail}
 
@@ -2424,7 +2541,7 @@ def _format_doctor_text(report: dict) -> str:
 
 
 def _user_doctor_report(bench_report: dict) -> dict:
-    server_check = _probe_binary("server_binary", _server_bin())
+    server_check = _probe_server_binary()
     bench_check = _probe_binary("bench_binary", _bench_bin())
     bench_status = _value_str(bench_report, ("status",))
     mlx_ready = _value_bool(bench_report, ("mlx_runtime_ready",))
@@ -2530,10 +2647,27 @@ def _user_doctor_report(bench_report: dict) -> dict:
     }
 
 
-def _unavailable_bench_doctor_report(bench_bin: pathlib.Path | str, exc: OSError) -> dict:
-    path = str(bench_bin)
+_BENCH_DOCTOR_SCHEMA = "ax.engine_bench.doctor.v1"
+
+
+def _bench_doctor_payload(stdout: str) -> dict | None:
+    """The bench doctor JSON document in stdout, or None when it is not one."""
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict) and payload.get("schema_version") == _BENCH_DOCTOR_SCHEMA:
+        return payload
+    return None
+
+
+def _bench_failure_doctor_report(
+    bench_bin: pathlib.Path | str,
+    *,
+    bench_detail: str,
+    issue: str,
+) -> dict:
     version = _package_version()
-    detail = f"{path}: {exc}"
     return {
         "schema_version": "ax.engine.doctor.v1",
         "result": "not_ready",
@@ -2545,10 +2679,10 @@ def _unavailable_bench_doctor_report(bench_bin: pathlib.Path | str, exc: OSError
         },
         "host": _host_system_summary(),
         "checks": [
-            _probe_binary("server_binary", _server_bin()),
-            {"id": "bench_binary", "status": "fail", "detail": detail},
+            _probe_server_binary(),
+            {"id": "bench_binary", "status": "fail", "detail": bench_detail},
         ],
-        "issues": [f"Required ax-engine-bench binary is unavailable: {detail}"],
+        "issues": [issue],
         "model_issues": [],
         "next_actions": [
             "Reinstall via Homebrew (primary): brew reinstall defai-digital/ax-engine/ax-engine",
@@ -2564,15 +2698,39 @@ def _unavailable_bench_doctor_report(bench_bin: pathlib.Path | str, exc: OSError
     }
 
 
-def _emit_unavailable_bench_doctor_report(
-    bench_bin: pathlib.Path | str, exc: OSError, *, as_json: bool
-) -> int:
-    report = _unavailable_bench_doctor_report(bench_bin, exc)
+def _unavailable_bench_doctor_report(bench_bin: pathlib.Path | str, exc: OSError) -> dict:
+    detail = f"{bench_bin}: {exc}"
+    return _bench_failure_doctor_report(
+        bench_bin,
+        bench_detail=detail,
+        issue=f"Required ax-engine-bench binary is unavailable: {detail}",
+    )
+
+
+def _invalid_bench_doctor_output_report(bench_bin: pathlib.Path | str, returncode: int) -> dict:
+    detail = (
+        f"{bench_bin} exited with status {returncode} without emitting "
+        f"an {_BENCH_DOCTOR_SCHEMA} JSON report"
+    )
+    return _bench_failure_doctor_report(
+        bench_bin,
+        bench_detail=detail,
+        issue=f"Required ax-engine-bench doctor run failed: {detail}",
+    )
+
+
+def _emit_doctor_report(report: dict, *, as_json: bool) -> int:
     if as_json:
         _json_dump(report)
     else:
         print(_format_doctor_text(report))
     return 1
+
+
+def _emit_unavailable_bench_doctor_report(
+    bench_bin: pathlib.Path | str, exc: OSError, *, as_json: bool
+) -> int:
+    return _emit_doctor_report(_unavailable_bench_doctor_report(bench_bin, exc), as_json=as_json)
 
 
 def _default_mtp_depth_max(base_model: str, mtp_source: str) -> int:
@@ -2724,8 +2882,16 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         return _emit_unavailable_bench_doctor_report(bench_bin, exc, as_json=args.json)
     sys.stderr.write(result.stderr)
     if result.returncode != 0:
-        sys.stdout.write(result.stdout)
-        return result.returncode
+        if _bench_doctor_payload(result.stdout) is not None:
+            # The bench emitted its own JSON failure document; forward it as-is.
+            sys.stdout.write(result.stdout)
+            return result.returncode
+        # Non-zero exit without a bench doctor document (e.g. empty stdout):
+        # emit the CLI's own error report instead of raw non-JSON output.
+        return _emit_doctor_report(
+            _invalid_bench_doctor_output_report(bench_bin, result.returncode),
+            as_json=args.json,
+        )
     try:
         bench_report = json.loads(result.stdout)
     except json.JSONDecodeError as exc:

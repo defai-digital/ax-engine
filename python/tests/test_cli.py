@@ -5,6 +5,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ if os.environ.get("AX_ENGINE_RUN_INSTALLED_TESTS") != "1":
     REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(REPO_ROOT / "python"))
 
+import ax_engine  # noqa: E402, I001
 from ax_engine import _cli  # noqa: E402, I001
 
 
@@ -544,6 +546,21 @@ class AxEngineCliTests(unittest.TestCase):
                 self.assertIn(conflict, terminal["errors"][0])
                 self.assertIn(conflict, stderr.getvalue())
 
+    def test_download_json_rejects_interactive(self) -> None:
+        with (
+            unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            unittest.mock.patch.object(_cli, "_run_interactive_download") as wizard,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            self.capture_main(["download", "--interactive", "--json"])
+
+        wizard.assert_not_called()
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertIn(
+            "download --json cannot be combined with --interactive",
+            str(raised.exception),
+        )
+
     def test_download_unknown_alias_shows_targets(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             self.capture_main(["download", "unknown-model"])
@@ -864,6 +881,195 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertNotIn("--revision", commands[0])
         self.assertNotIn("--dest", commands[0])
 
+    def test_server_bin_rejects_path_script_hit(self) -> None:
+        # On an editable install shutil.which("ax-engine-server") can resolve
+        # to this package's own console script; a #! hit must be rejected so
+        # server()/serve never re-exec themselves.
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = pathlib.Path(tmp) / "ax-engine-server"
+            fake.write_text("#!/bin/sh\nexit 0\n")
+            fake.chmod(0o755)
+            with (
+                unittest.mock.patch.object(_cli, "_bundled_binary", return_value=None),
+                unittest.mock.patch.dict(os.environ, {"PATH": tmp}),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                _cli._server_bin()
+
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertIn("ax-engine-server", str(raised.exception))
+
+    def test_server_bin_accepts_native_path_hit(self) -> None:
+        echo = pathlib.Path("/bin/echo")
+        if not echo.is_file():
+            self.skipTest("/bin/echo is unavailable on this platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = pathlib.Path(tmp) / "ax-engine-server"
+            # copyfile (not copy2): copying metadata from a SIP-protected
+            # system binary fails with chflags EPERM on macOS.
+            shutil.copyfile(echo, fake)
+            fake.chmod(0o755)
+            with (
+                unittest.mock.patch.object(_cli, "_bundled_binary", return_value=None),
+                unittest.mock.patch.dict(os.environ, {"PATH": tmp}),
+            ):
+                self.assertEqual(_cli._server_bin(), str(fake))
+
+    def test_serve_json_announces_passthrough_port(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as cache,
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
+        ):
+            code, stdout = self.capture_main(
+                [
+                    "serve",
+                    "qwen36-35b",
+                    "--hf-cache-root",
+                    cache,
+                    "--dry-run",
+                    "--json",
+                    "--",
+                    "--port",
+                    "9999",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["server"]["url"], "http://127.0.0.1:9999")
+
+    def test_serve_passthrough_endpoint_last_occurrence_wins(self) -> None:
+        cases = (
+            (["--port", "1111", "--port=2222"], "http://127.0.0.1:2222"),
+            (["--host=0.0.0.0"], "http://0.0.0.0:31418"),
+            (["--host", "127.0.0.2", "--port", "7070"], "http://127.0.0.2:7070"),
+        )
+        for extra_args, expected_url in cases:
+            with (
+                tempfile.TemporaryDirectory() as cache,
+                unittest.mock.patch.object(
+                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+                ),
+            ):
+                code, stdout = self.capture_main(
+                    [
+                        "serve",
+                        "qwen36-35b",
+                        "--hf-cache-root",
+                        cache,
+                        "--dry-run",
+                        "--json",
+                        "--",
+                        *extra_args,
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            with self.subTest(extra_args=extra_args):
+                self.assertEqual(json.loads(stdout)["server"]["url"], expected_url)
+
+    def test_serve_url_brackets_ipv6_host(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as cache,
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
+        ):
+            code, stdout = self.capture_main(
+                [
+                    "serve",
+                    "qwen36-35b",
+                    "--host",
+                    "::1",
+                    "--hf-cache-root",
+                    cache,
+                    "--dry-run",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["server"]["url"], "http://[::1]:31418")
+
+        with (
+            tempfile.TemporaryDirectory() as cache,
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
+        ):
+            code, stdout = self.capture_main(
+                [
+                    "serve",
+                    "qwen36-35b",
+                    "--hf-cache-root",
+                    cache,
+                    "--dry-run",
+                    "--json",
+                    "--",
+                    "--host",
+                    "::1",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout)["server"]["url"], "http://[::1]:31418")
+
+    def test_serve_redacts_api_key_in_json_plan_and_banner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = pathlib.Path(tmp) / "model"
+            model_dir.mkdir()
+            with unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ):
+                code, stdout = self.capture_main(
+                    [
+                        "serve",
+                        str(model_dir),
+                        "--dry-run",
+                        "--json",
+                        "--",
+                        "--api-key",
+                        "SECRET",
+                        "--api-key=SECRET2",
+                    ]
+                )
+                banner_code, banner = self.capture_main(
+                    ["serve", str(model_dir), "--dry-run", "--", "--api-key", "SECRET"]
+                )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        argv = payload["server"]["argv"]
+        self.assertEqual(argv[argv.index("--api-key") + 1], "<redacted>")
+        self.assertIn("--api-key=<redacted>", argv)
+        self.assertNotIn("SECRET", stdout)
+        self.assertNotIn("SECRET2", stdout)
+        self.assertEqual(banner_code, 0)
+        # shlex.join quotes <redacted> because of the angle brackets.
+        self.assertIn("--api-key '<redacted>'", banner)
+        self.assertNotIn("SECRET", banner)
+
+    def test_serve_child_argv_keeps_real_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = pathlib.Path(tmp) / "model"
+            model_dir.mkdir()
+            with (
+                unittest.mock.patch.object(
+                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+                ),
+                unittest.mock.patch.object(
+                    os, "execvp", side_effect=RuntimeError("stop")
+                ) as execvp,
+                self.assertRaisesRegex(RuntimeError, "stop"),
+            ):
+                self.capture_main(["serve", str(model_dir), "--", "--api-key", "SECRET"])
+
+        child_argv = execvp.call_args.args[1]
+        self.assertIn("SECRET", child_argv)
+        self.assertNotIn("<redacted>", child_argv)
+
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
         with (
             tempfile.TemporaryDirectory() as cache,
@@ -919,10 +1125,12 @@ class AxEngineCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             stray = pathlib.Path(tmp) / "not-a-model"
             stray.write_text("x")
-            with unittest.mock.patch.object(_cli, "_server_bin", return_value="ax-engine-server"):
-                with self.assertRaises(SystemExit) as raised:
-                    with contextlib.redirect_stderr(io.StringIO()):
-                        _cli.main(["serve", str(stray), "--dry-run", "--json"])
+            with (
+                unittest.mock.patch.object(_cli, "_server_bin", return_value="ax-engine-server"),
+                self.assertRaises(SystemExit) as raised,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                _cli.main(["serve", str(stray), "--dry-run", "--json"])
         self.assertNotEqual(raised.exception.code, 0)
 
     def test_serve_dry_run_json_uses_local_model_dir(self) -> None:
@@ -1024,7 +1232,14 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertTrue(run.call_args.kwargs["allow_unmanaged_alias"])
 
     def test_serve_unknown_alias_suggests_close_match(self) -> None:
-        with self.assertRaises(SystemExit) as raised:
+        # _server_bin must be satisfied first; an unknown alias is only
+        # diagnosed once a native server binary exists.
+        with (
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
+            self.assertRaises(SystemExit) as raised,
+        ):
             self.capture_main(["serve", "qwen3.6-27"])
 
         message = str(raised.exception)
@@ -1213,6 +1428,9 @@ class AxEngineCliTests(unittest.TestCase):
         passed_probe = {"id": "binary", "status": "pass", "detail": "ok"}
 
         with (
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
             unittest.mock.patch.object(_cli, "_probe_binary", return_value=passed_probe),
             unittest.mock.patch.object(_cli, "_host_system_summary", return_value={}),
         ):
@@ -1295,6 +1513,61 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("ax-engine-bench", stdout)
         self.assertIn("brew reinstall defai-digital/ax-engine/ax-engine", stdout)
         self.assertIn("--force-reinstall", stdout)
+
+    def test_doctor_json_emits_cli_error_when_bench_exits_nonzero_without_schema(self) -> None:
+        host = {
+            "os": "darwin",
+            "arch": "arm64",
+            "os_version": "26.2",
+            "os_build": "25C56",
+            "ram_gib": 64,
+            "cpu_cores": {"physical": 16, "logical": 16},
+            "gpu_cores": 40,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_bench = pathlib.Path(tmp) / "ax-engine-bench"
+            fake_bench.write_text("#!/bin/sh\nexit 1\n")
+            fake_bench.chmod(0o755)
+            with (
+                unittest.mock.patch.object(_cli, "_bench_bin", return_value=fake_bench),
+                unittest.mock.patch.object(
+                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+                ),
+                unittest.mock.patch.object(_cli, "_package_version", return_value="6.9.0"),
+                unittest.mock.patch.object(_cli, "_host_system_summary", return_value=host),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                code, stdout = self.capture_main(["doctor", "--json"])
+
+        self.assertEqual(code, 1)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["schema_version"], "ax.engine.doctor.v1")
+        self.assertEqual(payload["result"], "not_ready")
+        bench_checks = [check for check in payload["checks"] if check["id"] == "bench_binary"]
+        self.assertEqual(bench_checks[0]["status"], "fail")
+        self.assertIn("exited with status 1", bench_checks[0]["detail"])
+        self.assertTrue(payload["issues"])
+        self.assertIn("doctor run failed", payload["issues"][0])
+
+    def test_doctor_forwards_bench_failure_document_with_schema(self) -> None:
+        bench_document = json.dumps(
+            {"schema_version": "ax.engine_bench.doctor.v1", "status": "not_ready"}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_bench = pathlib.Path(tmp) / "ax-engine-bench"
+            fake_bench.write_text("#!/bin/sh\ncat <<'JSON'\n" + bench_document + "\nJSON\nexit 3\n")
+            fake_bench.chmod(0o755)
+            with (
+                unittest.mock.patch.object(_cli, "_bench_bin", return_value=fake_bench),
+                unittest.mock.patch.object(
+                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+                ),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                code, stdout = self.capture_main(["doctor", "--json"])
+
+        self.assertEqual(code, 3)
+        self.assertEqual(json.loads(stdout)["schema_version"], "ax.engine_bench.doctor.v1")
 
     def test_download_alias_wraps_download_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1860,6 +2133,30 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         )
         self.assertIn("Status: ready", stdout)
 
+    def test_parse_menu_selection_rejects_nondecimal_digits(self) -> None:
+        self.assertEqual(_cli._parse_menu_selection("1", 92), 1)
+        self.assertEqual(_cli._parse_menu_selection("92", 92), 92)
+        self.assertIsNone(_cli._parse_menu_selection("0", 92))
+        self.assertIsNone(_cli._parse_menu_selection("93", 92))
+        self.assertIsNone(_cli._parse_menu_selection("", 92))
+        self.assertIsNone(_cli._parse_menu_selection("q", 92))
+        # Superscript two passes str.isdigit() but int() raises ValueError for
+        # it; the wizard used to crash on such input instead of re-prompting.
+        self.assertTrue("\u00b2".isdigit())
+        self.assertIsNone(_cli._parse_menu_selection("\u00b2", 92))
+
+    def test_wizard_reprompts_on_nondecimal_selection(self) -> None:
+        inputs = iter(["\u00b2", "q"])
+        out = io.StringIO()
+        with (
+            unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
+            contextlib.redirect_stdout(out),
+        ):
+            profile = _cli._select_profile_interactive()
+
+        self.assertIsNone(profile)
+        self.assertIn("invalid selection", out.getvalue())
+
     def test_wizard_cancel_returns_130(self) -> None:
         with (
             unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
@@ -1871,6 +2168,64 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         download.assert_not_called()
         self.assertEqual(code, 130)
         self.assertIn("Cancelled.", stdout)
+
+
+class ManifestSymlinkRestoreTests(unittest.TestCase):
+    """_try_generate_manifest must restore a shipped manifest symlink even
+    when regeneration is interrupted before it can produce a manifest."""
+
+    def _make_snapshot(self, tmp: str) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+        dest = pathlib.Path(tmp)
+        target = dest / "blobs" / "manifest.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}", encoding="utf-8")
+        manifest = dest / "model-manifest.json"
+        manifest.symlink_to(target)
+        return dest, target, manifest
+
+    def test_interrupt_during_regeneration_restores_manifest_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest, target, manifest = self._make_snapshot(tmp)
+            with (
+                unittest.mock.patch.object(
+                    ax_engine,
+                    "_run_manifest_generators",
+                    side_effect=KeyboardInterrupt,
+                ),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                ax_engine._try_generate_manifest(dest)
+
+            self.assertTrue(manifest.is_symlink())
+            self.assertEqual(os.readlink(manifest), str(target))
+
+    def test_failed_regeneration_restores_manifest_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest, target, manifest = self._make_snapshot(tmp)
+            with unittest.mock.patch.object(
+                ax_engine, "_run_manifest_generators", return_value=False
+            ):
+                generated = ax_engine._try_generate_manifest(dest)
+
+            self.assertFalse(generated)
+            self.assertTrue(manifest.is_symlink())
+            self.assertEqual(os.readlink(manifest), str(target))
+
+    def test_generated_manifest_is_not_replaced_by_symlink(self) -> None:
+        def generate(dest: pathlib.Path, *, force: bool = False) -> bool:
+            (dest / "model-manifest.json").write_text("{}", encoding="utf-8")
+            return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest, _target, manifest = self._make_snapshot(tmp)
+            with unittest.mock.patch.object(
+                ax_engine, "_run_manifest_generators", side_effect=generate
+            ):
+                generated = ax_engine._try_generate_manifest(dest)
+
+            self.assertTrue(generated)
+            self.assertFalse(manifest.is_symlink())
+            self.assertTrue(manifest.is_file())
 
 
 if __name__ == "__main__":

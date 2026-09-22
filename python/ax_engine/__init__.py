@@ -2551,14 +2551,21 @@ def _try_generate_manifest(dest: Path, *, force: bool = False) -> bool:
         # might otherwise open the symlink target for writing.
         symlink_target = os.readlink(manifest_path)
         manifest_path.unlink()
-    generated = _run_manifest_generators(dest, force=force)
-    if not generated and symlink_target is not None and not manifest_path.exists():
-        # No generator produced a manifest: put the snapshot entry back so a
-        # failed attempt does not leave the Hub cache without its manifest.
-        try:
-            manifest_path.symlink_to(symlink_target)
-        except OSError as error:
-            print(f"failed to restore {manifest_path}: {error}")
+    # Sentinel so an interrupt during regeneration (generated never assigned)
+    # counts as "nothing generated" in the finally below and restores the
+    # shipped symlink instead of losing the manifest.
+    generated = False
+    try:
+        generated = _run_manifest_generators(dest, force=force)
+    finally:
+        if not generated and symlink_target is not None and not manifest_path.exists():
+            # No generator produced a manifest: put the snapshot entry back so
+            # a failed or interrupted attempt does not leave the Hub cache
+            # without its manifest.
+            try:
+                manifest_path.symlink_to(symlink_target)
+            except OSError as error:
+                print(f"failed to restore {manifest_path}: {error}")
     return generated
 
 
