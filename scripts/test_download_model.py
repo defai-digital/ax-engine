@@ -1339,6 +1339,116 @@ class DownloadModelScriptTest(unittest.TestCase):
                     revision="v2",
                 )
 
+    def _write_ready_local_model(self, root: Path) -> Path:
+        model_dir = root / "local-model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text('{"model_type":"qwen3"}')
+        write_safetensors(model_dir / "model.safetensors")
+        write_manifest(model_dir / "model-manifest.json")
+        return model_dir
+
+    def test_local_directory_is_ready_without_any_hub_client(self) -> None:
+        # The offline path: a local directory must be usable with no Hub client
+        # and no network, so it can never reach snapshot_download.
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = self._write_ready_local_model(Path(tmp))
+            with patch.object(
+                download_model,
+                "_run_hf_snapshot_download",
+                side_effect=AssertionError("a local source must never touch the Hub"),
+            ):
+                resolved = download_model.download(str(model_dir), None, quiet=True)
+            self.assertEqual(resolved, model_dir.resolve())
+
+    def test_local_directory_is_ready_from_the_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = self._write_ready_local_model(Path(tmp))
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH), str(model_dir), "--json"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertEqual(summary["schema_version"], "ax.download_model.v1")
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["dest"], str(model_dir.resolve()))
+            self.assertTrue(summary["manifest_present"])
+
+    def test_local_directory_rejects_dest_and_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = self._write_ready_local_model(Path(tmp))
+            with self.assertRaisesRegex(RuntimeError, "--dest cannot be combined"):
+                download_model.download_local_source(model_dir, Path(tmp) / "dest")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    str(model_dir),
+                    "--revision",
+                    "main",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("--revision cannot be combined", result.stdout)
+
+    def test_local_directory_reports_an_unusable_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp) / "not-a-model"
+            model_dir.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "not a usable MLX model"):
+                download_model.download_local_source(model_dir)
+
+    def test_local_source_detection_ignores_repo_ids(self) -> None:
+        self.assertIsNone(download_model.resolve_local_model_source("owner/repo"))
+        self.assertIsNone(download_model.resolve_local_model_source("/nonexistent/model/directory"))
+
+    def test_hub_failures_are_classified_into_actionable_messages(self) -> None:
+        # The real field 401 bundles three unrelated causes; the expired-token
+        # case must win, because unsetting the token is the actual fix and the
+        # Hub's own text also claims the repository does not exist.
+        expired = download_model._hub_failure_message(
+            "owner/repo",
+            Exception(
+                "401 Client Error. (Request ID: Root=1-6ab288e4)\n"
+                "Repository Not Found for url: https://huggingface.co/api/models/o/r/tree/abc\n"
+                "If you are trying to access a private or gated repo, make sure you are "
+                "authenticated and your token has the required permissions.\n"
+                'OAuth token has expired: "exp claim timestamp check failed"'
+            ),
+        )
+        self.assertIn("expired", expired)
+        self.assertIn("unset HF_TOKEN", expired)
+        # Public repos must be stated as account-free.
+        self.assertIn("need no account", expired)
+
+        gated = download_model._hub_failure_message(
+            "owner/repo", Exception("Access to model owner/repo is restricted")
+        )
+        self.assertIn("gated", gated)
+        self.assertIn("https://huggingface.co/owner/repo", gated)
+
+        missing = download_model._hub_failure_message(
+            "owner/repo", Exception("404 Client Error: Repository Not Found for url: /api/models")
+        )
+        self.assertIn("no repository", missing)
+
+        network = download_model._hub_failure_message(
+            "owner/repo",
+            Exception("Max retries exceeded with url: /api/models (Caused by ProxyError)"),
+        )
+        self.assertIn("HF_ENDPOINT", network)
+
+        # Every classified failure offers the offline escape hatch.
+        for message in (expired, gated, missing, network):
+            self.assertIn("/path/to/local/model-dir", message)
+
     def test_download_uses_huggingface_hub_snapshot_download(self) -> None:
         repo_id = "mlx-community/Qwen3-4B-4bit"
         with tempfile.TemporaryDirectory() as tmp:

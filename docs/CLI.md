@@ -209,10 +209,37 @@ through Hugging Face Hub, validate `config.json` and safetensors, and run
 productivity stack (Gemma 4, Qwen 3.5/3.6, GLM 4.7 Flash) plus secondary
 preview-direct targets for research and regional use: Llama 3.1/3.3/4 Scout,
 Mistral Small / Ministral / Devstral, and GPT-OSS 20B/120B MXFP4-Q4. Other
-models should use an explicit repo id or local path. If the model argument is
-missing or an alias is unknown, `download` prints the same target list. The
-JSON form of `download --list` emits an `ax.download_options.v1` document for
-automation.
+models should use an explicit repo id or a local directory path. If the model
+argument is missing or an alias is unknown, `download` prints the same target
+list. The JSON form of `download --list` emits an `ax.download_options.v1`
+document for automation.
+
+#### Download sources
+
+`download` accepts two sources:
+
+- **Hugging Face Hub** (default). Public repositories need **no Hugging Face
+  account and no `hf` CLI**. Only gated or private repositories need an account,
+  accepted model terms, and a token. Hub access uses the optional
+  `huggingface_hub` Python package, installed into the interpreter the CLI runs
+  (`AX_ENGINE_PYTHON`, otherwise `python3`). Install it there with
+  `pip install 'ax-engine[download]'`, or into a dedicated venv for a Homebrew
+  install — see [Getting started](GETTING-STARTED.md).
+- **A local model directory.** Point `download` at a directory that already
+  holds `config.json` and safetensors, and it validates the weights and generates
+  `model-manifest.json` **entirely offline**: no Hub client, no network access,
+  and no account. The directory is used in place, so `--dest` and `--revision`
+  do not apply.
+
+```text
+ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP
+ax-engine download /path/to/local/mlx-model
+```
+
+A failed Hub download reports the specific cause — a missing `huggingface_hub`,
+an expired or rejected token, a gated repository, a nonexistent repository, or a
+network or proxy failure — together with the command that resolves it. Behind a
+mirror, set `HF_ENDPOINT`; `huggingface_hub` reads it directly.
 
 For the initial Tiel pack revisions, see the [hash-bound MTP norm correction](mtp/tiel-norm-compatibility.md).
 

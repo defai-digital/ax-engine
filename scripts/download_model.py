@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Download an MLX model through Hugging Face Hub for use with ax-engine.
+"""Download an MLX model for use with ax-engine.
+
+The default source is the Hugging Face Hub, which needs no account for public
+repos. An existing local model directory is also accepted and is validated
+entirely offline, with no Hub client and no network access.
 
 Downloads model weights and automatically generates the ax-engine manifest
 (model-manifest.json). Prefers the ax-engine-bench bundled in the installed wheel,
@@ -9,6 +13,7 @@ Usage:
   python scripts/download_model.py mlx-community/Qwen3-4B-4bit
   python scripts/download_model.py mlx-community/Qwen3-4B-4bit --dest /path/to/dest
   python scripts/download_model.py mlx-community/Qwen3-4B-4bit --force
+  python scripts/download_model.py /path/to/existing/model-dir
 
 For raw HuggingFace checkpoints (not from mlx-community), convert first:
   pip install mlx-lm
@@ -233,6 +238,26 @@ def _parse_repo_ref(value: str) -> tuple[str, str | None]:
     ):
         raise RuntimeError("ax_engine/_repo_ref.py returned an invalid repo reference")
     return parsed
+
+
+def resolve_local_model_source(value: str) -> Path | None:
+    """Return the directory when ``value`` names an existing local model directory.
+
+    A local source never touches the Hub: no ``huggingface_hub`` import and no
+    network access. This is the offline path for weights obtained by any other
+    means (browser download, ``git clone``, rsync from another host, a vendor
+    archive), and it needs no Hugging Face account.
+    """
+    text = _trim_standalone_reference(value)
+    if not text:
+        return None
+    try:
+        candidate = Path(text).expanduser()
+        if candidate.is_dir():
+            return candidate.resolve()
+    except OSError:
+        return None
+    return None
 
 
 def _weight_tensor_names(model_dir: Path) -> set[str]:
@@ -1374,6 +1399,98 @@ def _prefer_classic_hf_transfer() -> None:
         os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 
+def _hub_failure_message(repo_id: str, error: Exception) -> str:
+    """Classify a Hub client failure into one actionable message.
+
+    ``snapshot_download`` raises ``RepositoryNotFoundError`` for several
+    unrelated situations (a typo'd id, a private repo, a gated repo that hides
+    its existence) and HTTP 401 both for an expired token and for missing
+    credentials. Reporting the raw blob leaves the operator unable to tell
+    which fix applies, so classify before reporting.
+    """
+    detail = str(error)
+    lowered = detail.lower()
+
+    def has(*needles: str) -> bool:
+        return any(needle in lowered for needle in needles)
+
+    offline_hint = (
+        "If you already have the weights on disk, skip the Hub entirely:\n"
+        "  ax-engine download /path/to/local/model-dir\n"
+    )
+
+    # An expired token is checked first: it also masks public repositories, and
+    # the Hub's own message additionally claims the repository does not exist.
+    if has("exp claim timestamp check failed", "token has expired", "expired token"):
+        return (
+            f"Hugging Face Hub authentication failed for {repo_id}: the stored "
+            "token has expired.\n"
+            "A stale token also breaks public repos, which need no authentication "
+            "at all. Clear it and retry:\n"
+            "  unset HF_TOKEN\n"
+            "  hf auth logout          # or: huggingface-cli logout\n"
+            "Public repos need no account; only gated or private repos need a "
+            "fresh token (hf auth login).\n"
+            f"{offline_hint}"
+            f"Original error: {detail}"
+        )
+    if has("gated", "is restricted", "awaiting a review", "you have been granted access"):
+        return (
+            f"{repo_id} is a gated repository on Hugging Face Hub.\n"
+            "An HF account is required and the model terms must be accepted on "
+            "its model page first:\n"
+            f"  https://huggingface.co/{repo_id}\n"
+            "Then authenticate locally (hf auth login) and retry.\n"
+            f"{offline_hint}"
+            f"Original error: {detail}"
+        )
+    if has("repository not found", "revisionnotfound", "404 client error"):
+        return (
+            f"Hugging Face Hub has no repository {repo_id!r}, or it is private.\n"
+            "Check the id for a typo and confirm the repo is public. Public repos "
+            "need no account; private and gated repos need one (hf auth login).\n"
+            f"{offline_hint}"
+            f"Original error: {detail}"
+        )
+    if has(
+        "401 client error",
+        "403 client error",
+        "unauthorized",
+        "forbidden",
+        "invalid credentials",
+        "authentication",
+    ):
+        return (
+            f"Hugging Face Hub rejected the credentials for {repo_id}.\n"
+            "If HF_TOKEN is set in this shell, clear it and retry:\n"
+            "  unset HF_TOKEN\n"
+            "Public repos download anonymously. Otherwise authenticate with a "
+            "token that can access this repo (hf auth login).\n"
+            f"{offline_hint}"
+            f"Original error: {detail}"
+        )
+    if has(
+        "max retries exceeded",
+        "connection",
+        "timed out",
+        "timeout",
+        "temporary failure in name resolution",
+        "ssl",
+        "proxy",
+        "offline",
+        "network is unreachable",
+    ):
+        return (
+            f"could not reach Hugging Face Hub for {repo_id}: this is a network or "
+            "proxy failure, not an authentication problem.\n"
+            "Behind a mirror, set HF_ENDPOINT to its base URL. On a host with no "
+            "egress, use weights already on disk instead.\n"
+            f"{offline_hint}"
+            f"Original error: {detail}"
+        )
+    return f"Hugging Face Hub download failed for {repo_id}: {detail}"
+
+
 def _run_hf_snapshot_download(
     repo_id: str,
     *,
@@ -1400,10 +1517,18 @@ def _run_hf_snapshot_download(
             else:
                 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = previous_progress
         raise RuntimeError(
-            "huggingface_hub is required for model downloads. Install it with:\n"
-            "  pip install huggingface_hub\n"
-            "or:\n"
-            "  pip install 'ax-engine[download]'"
+            "huggingface_hub is required for Hugging Face Hub downloads.\n"
+            f"This helper is running under: {sys.executable}\n"
+            "Install it into that exact interpreter:\n"
+            f"  {sys.executable} -m pip install 'ax-engine[download]'\n"
+            "If that interpreter is managed by Homebrew or the OS (an "
+            "externally-managed environment), use a venv instead:\n"
+            "  python3 -m venv ~/.local/share/ax-engine/download-env\n"
+            "  ~/.local/share/ax-engine/download-env/bin/pip install huggingface-hub\n"
+            "  export AX_ENGINE_PYTHON=~/.local/share/ax-engine/download-env/bin/python\n"
+            "No Hugging Face account is needed for public repos. If you already "
+            "have the weights on disk, skip the Hub entirely:\n"
+            "  ax-engine download /path/to/local/model-dir"
         ) from error
 
     started_at = time.monotonic()
@@ -1671,6 +1796,62 @@ def _preflight_disk_space(
     return total
 
 
+def download_local_source(
+    source: Path,
+    dest: Path | None = None,
+    *,
+    force: bool = False,
+    quiet: bool = False,
+    progress_json: bool = False,
+) -> Path:
+    """Validate a local model directory and ensure its ax-engine manifest.
+
+    Runs entirely offline: nothing in this path imports ``huggingface_hub`` or
+    opens a socket, so it also works on air-gapped hosts. ``--dest`` is refused
+    because the weights already live at ``source``; moving them is the
+    operator's decision, not part of validating a model in place.
+    """
+    if dest is not None:
+        raise RuntimeError(
+            f"--dest cannot be combined with a local model source ({source}); "
+            "the directory is used as-is. Copy it first if you want the model in "
+            "another location."
+        )
+
+    errors = _validation_errors(source)
+    if errors:
+        raise RuntimeError(
+            f"local model directory {source} is not a usable MLX model: " + "; ".join(errors)
+        )
+
+    if not quiet:
+        print(f"  using local model directory: {source}")
+
+    rebuild_needed, force_rebuild = _manifest_rebuild_plan(source, quiet=quiet)
+    if force:
+        force_rebuild = True
+    if rebuild_needed or force:
+        if not quiet:
+            print("  generating manifest...")
+        if progress_json:
+            _emit_progress(90, 100, "Generating manifest")
+        if not _try_generate_manifest(source, quiet=quiet, force=force_rebuild):
+            raise RuntimeError("model manifest is missing or invalid and regeneration failed")
+
+    if reason := _manifest_readiness_error(
+        source,
+        quiet=quiet,
+        validate_native=rebuild_needed or force,
+    ):
+        raise RuntimeError(
+            f"manifest generator reported success but the manifest is still invalid: {reason}"
+        )
+
+    if progress_json:
+        _emit_progress(100, 100, "Ready")
+    return source
+
+
 def download(
     repo_id: str,
     dest: Path | None,
@@ -1683,6 +1864,21 @@ def download(
     local_only: bool = False,
     prepare_destination: Callable[[Path], None] | None = None,
 ) -> Path:
+    # A local directory is a source, not a repo id: it needs no Hub client and
+    # no network. Check before alias/reference parsing, which would reject a
+    # filesystem path. The Hub-only `--force`/`--local-only` conflict does not
+    # apply here: a local source is already offline, and `--force` only means
+    # "regenerate the manifest".
+    local_source = resolve_local_model_source(repo_id)
+    if local_source is not None:
+        return download_local_source(
+            local_source,
+            dest,
+            force=force,
+            quiet=quiet,
+            progress_json=progress_json,
+        )
+
     parsed_repo_id, embedded_revision = _parse_repo_ref(repo_id)
     repo_id = parsed_repo_id
     if revision is not None:
@@ -2228,9 +2424,18 @@ def _download_argument_error_summary() -> dict:
 def main() -> int:
     progress_requested = "--progress-json" in sys.argv[1:]
     parser = argparse.ArgumentParser(
-        description="Download an MLX model through Hugging Face Hub for ax-engine"
+        description=(
+            "Download an MLX model for ax-engine from Hugging Face Hub, or validate an "
+            "existing local model directory offline"
+        )
     )
-    parser.add_argument("repo_id", help="MLX LLM repo id, e.g. mlx-community/Qwen3-4B-4bit")
+    parser.add_argument(
+        "repo_id",
+        help=(
+            "MLX LLM repo id (e.g. mlx-community/Qwen3-4B-4bit), a huggingface.co URL, "
+            "or an existing local model directory"
+        ),
+    )
     parser.add_argument(
         "--dest",
         type=Path,
@@ -2274,7 +2479,8 @@ def main() -> int:
     dest = args.dest
     repo_id = args.repo_id
     revision = args.revision
-    summary_dest = dest or default_mlx_lm_repo_cache_dir(repo_id)
+    local_source = resolve_local_model_source(repo_id)
+    summary_dest = dest or local_source or default_mlx_lm_repo_cache_dir(repo_id)
 
     def prepare_explicit_destination(candidate: Path) -> None:
         _prepare_staged_destination(
@@ -2284,31 +2490,46 @@ def main() -> int:
         )
 
     try:
-        repo_id, parsed_revision = _parse_repo_ref(args.repo_id)
-        if args.revision is not None:
-            _, revision = _parse_repo_ref(f"{repo_id}@{args.revision}")
+        if local_source is not None:
+            if args.revision is not None:
+                raise ValueError("--revision cannot be combined with a local model source")
+            repo_id = str(local_source)
+            if not machine_json:
+                print(f"\n[local model directory: {local_source}]")
+            dest = download(
+                args.repo_id,
+                dest,
+                force=args.force,
+                quiet=machine_json,
+                progress_json=args.progress_json,
+                local_only=args.local_only,
+            )
         else:
-            revision = parsed_revision
-        summary_dest = dest or default_mlx_lm_repo_cache_dir(repo_id)
-        if not machine_json:
-            revision_note = f" @ {revision}" if revision else ""
-            print(f"\n[{repo_id}{revision_note}]")
-        if args.progress_json:
-            _emit_progress(0, 100, "Starting Hugging Face Hub download")
-        # Pass the raw reference and revision through: download() applies the
-        # same single normalization pass as above, so its effective revision
-        # matches the one reported in the summary.
-        dest = download(
-            args.repo_id,
-            dest,
-            force=args.force,
-            revision=args.revision,
-            quiet=machine_json,
-            progress_json=args.progress_json,
-            progress_bar=args.progress_bar,
-            local_only=args.local_only,
-            prepare_destination=prepare_explicit_destination if dest is not None else None,
-        )
+            repo_id, parsed_revision = _parse_repo_ref(args.repo_id)
+            if args.revision is not None:
+                _, revision = _parse_repo_ref(f"{repo_id}@{args.revision}")
+            else:
+                revision = parsed_revision
+            summary_dest = dest or default_mlx_lm_repo_cache_dir(repo_id)
+            if not machine_json:
+                revision_note = f" @ {revision}" if revision else ""
+                print(f"\n[{repo_id}{revision_note}]")
+            if args.progress_json:
+                _emit_progress(0, 100, "Starting Hugging Face Hub download")
+            # Pass the raw reference and revision through: download() applies the
+            # same single normalization pass as above, so its effective revision
+            # matches the one reported in the summary.
+            dest = download(
+                args.repo_id,
+                dest,
+                force=args.force,
+                revision=args.revision,
+                quiet=machine_json,
+                progress_json=args.progress_json,
+                progress_bar=args.progress_bar,
+                local_only=args.local_only,
+                prepare_destination=prepare_explicit_destination if dest is not None else None,
+            )
     except (RuntimeError, ValueError, OSError, shutil.Error) as error:
         if machine_json:
             summary = _summary(

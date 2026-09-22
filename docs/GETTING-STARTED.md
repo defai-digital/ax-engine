@@ -124,6 +124,12 @@ Keep that export in shells running the CLI. Offline aliases still use the Python
 helpers; serving an already prepared directory with `ax-engine serve /path/to/model`
 does not. The helper environment does not require the AX Engine wheel or Python MLX.
 
+Public Hugging Face repositories download anonymously: no account, no token, and
+no `hf` CLI are needed. An account is required only for gated or private
+repositories. If you already have model weights on disk, skip the Hub and this
+helper environment entirely — `ax-engine download /path/to/model` validates the
+directory and writes `model-manifest.json` offline, without `huggingface-hub`.
+
 #### Homebrew troubleshooting
 
 Artifacts produced by the self-contained release pipeline bundle the pinned

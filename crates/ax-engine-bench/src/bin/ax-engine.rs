@@ -3160,7 +3160,11 @@ fn run_download(args: &DownloadArgs) -> Result<u8, String> {
         return Ok(2);
     };
 
-    ensure_download_python_deps()?;
+    // A local model directory is validated offline by the helper, so it must
+    // not require the optional Hub client. Only a real Hub download does.
+    if local_model_dir(model).is_none() {
+        ensure_download_python_deps()?;
+    }
     let profile = profile_for_model(model);
     let (code, summary, stderr) = run_download_summary(
         model,
@@ -3994,6 +3998,9 @@ fn download_repo_id(
     value: &str,
     profile: Option<ModelProfile>,
 ) -> Result<(String, Option<ModelProfile>, Option<String>), String> {
+    if let Some(dir) = local_model_dir(value) {
+        return Ok((dir.to_string_lossy().into_owned(), None, None));
+    }
     if let Some(profile) = profile {
         if !profile.downloadable {
             return Err(format!(
@@ -4014,7 +4021,8 @@ fn download_repo_id(
     }
     Err(format!(
         "unknown model alias or repo id: {value:?}; pass a Hugging Face repo id, \
-         a https://huggingface.co/owner/repo link, or one of these targets:\n{}",
+         a https://huggingface.co/owner/repo link, a local model directory, or one of \
+         these targets:\n{}",
         format_download_options()
     ))
 }
@@ -4335,12 +4343,18 @@ fn ensure_download_python_deps() -> Result<(), String> {
     }
     let py_display = py.to_string_lossy();
     Err(format!(
-        "huggingface_hub is required for model downloads.\n\
-         Install it into the same Python the CLI uses:\n\
-           {py_display} -m pip install huggingface_hub\n\
-         or:\n\
+        "huggingface_hub is required for Hugging Face Hub downloads.\n\
+         This CLI downloads through: {py_display}\n\
+         Install it into that exact interpreter:\n\
            {py_display} -m pip install 'ax-engine[download]'\n\
-         Optional: set AX_ENGINE_PYTHON to a venv that already has the package."
+         If that interpreter is managed by Homebrew or the OS (an\n\
+         externally-managed environment), use a venv instead:\n\
+           python3 -m venv ~/.local/share/ax-engine/download-env\n\
+           ~/.local/share/ax-engine/download-env/bin/pip install huggingface-hub\n\
+           export AX_ENGINE_PYTHON=~/.local/share/ax-engine/download-env/bin/python\n\
+         No Hugging Face account is needed for public repos. If you already have\n\
+         the weights on disk, skip the Hub entirely:\n\
+           ax-engine download /path/to/local/model-dir"
     ))
 }
 
@@ -4351,6 +4365,16 @@ fn expand_home(value: &str) -> PathBuf {
         return PathBuf::from(home).join(rest);
     }
     PathBuf::from(value)
+}
+
+/// Resolve `value` to an existing local model directory when it names one.
+///
+/// A local directory is a *source*, not a repo id: it is validated offline and
+/// needs neither the optional Hub client nor network access. Checked ahead of
+/// alias and repo-reference parsing, which would reject a filesystem path.
+fn local_model_dir(value: &str) -> Option<PathBuf> {
+    let expanded = expand_home(value);
+    expanded.is_dir().then_some(expanded)
 }
 
 fn default_hf_cache_root() -> PathBuf {
@@ -4761,6 +4785,32 @@ mod tests {
         assert_eq!(repo, "mlx-community/gemma-4-12B-it-4bit");
         assert_eq!(resolved.map(|profile| profile.label), Some("gemma4-12b"));
         assert_eq!(rev, None);
+    }
+
+    #[test]
+    fn download_repo_id_passes_through_an_existing_local_directory() {
+        // A local model directory is a source: it must survive alias and
+        // repo-reference parsing (which reject every filesystem path) so the
+        // helper can validate it offline with no Hub client.
+        let dir = std::env::temp_dir().join("ax-engine-download-local-dir-test");
+        std::fs::create_dir_all(&dir).expect("create local model dir");
+        let value = dir.to_string_lossy().into_owned();
+
+        let (source, profile, revision) = download_repo_id(&value, None).unwrap();
+        assert_eq!(source, value);
+        assert!(profile.is_none());
+        assert_eq!(revision, None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn local_model_dir_ignores_repo_ids_and_missing_paths() {
+        // Repo ids and unreachable paths must not be mistaken for local
+        // sources, or every Hub download would break.
+        assert!(local_model_dir("owner/repo").is_none());
+        assert!(local_model_dir("mlx-community/Qwen3-4B-4bit").is_none());
+        assert!(local_model_dir("/definitely/not/a/real/model/directory").is_none());
     }
 
     #[test]

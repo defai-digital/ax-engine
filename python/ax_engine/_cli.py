@@ -1388,6 +1388,7 @@ def _download_options_payload() -> dict:
             "ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
             "ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
             "ax-engine download owner/repo@revision",
+            "ax-engine download /path/to/local/model-dir",
         ],
     }
 
@@ -1416,6 +1417,11 @@ def _format_download_options() -> str:
             "  ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
             "  ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
             "  ax-engine download owner/repo@revision  (or /tree/<revision> links)",
+            "  ax-engine download /path/to/local/model-dir   (offline; no account needed)",
+            "",
+            "Sources:",
+            "  Hugging Face Hub (default). Public repos need no account and no `hf` CLI.",
+            "  A local model directory, validated offline with no Hub client.",
             "",
             "Destination:",
             "  Default: Hugging Face Hub cache shared by mlx-lm and huggingface_hub.",
@@ -1434,11 +1440,30 @@ SERVER_PRESET_ALIASES = {
 }
 
 
+def _local_model_dir(value: str) -> pathlib.Path | None:
+    """Return the directory when `value` names an existing local model directory.
+
+    A local source never touches the Hub, so it needs no `huggingface_hub` and
+    no account. Keep this check ahead of alias and repo-reference parsing, which
+    would otherwise reject a filesystem path.
+    """
+    try:
+        candidate = pathlib.Path(value).expanduser()
+        if candidate.is_dir():
+            return candidate.resolve()
+    except OSError:
+        return None
+    return None
+
+
 def _download_repo_id(
     value: str,
     *,
     allow_unmanaged_alias: bool = False,
 ) -> tuple[str, ModelProfile | None, str | None]:
+    local_source = _local_model_dir(value)
+    if local_source is not None:
+        return str(local_source), None, None
     profile = _profile_for_model(value)
     if profile is not None:
         if not allow_unmanaged_alias and not _is_managed_download_profile(profile):
