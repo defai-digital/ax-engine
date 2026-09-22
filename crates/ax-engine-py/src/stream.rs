@@ -10,11 +10,30 @@ use crate::dicts::stream_event_dict;
 use crate::errors::to_py_runtime_error;
 use crate::session::SessionSlot;
 
-#[pyclass(module = "ax_engine._ax_engine", unsendable)]
+/// A streaming iterator over [`GenerateStreamEvent`]s, shareable across
+/// threads. The OpenAI shim drives `__next__` through
+/// `anyio.iterate_in_threadpool` on worker threads, so `next_event_dict` may
+/// run on any thread. The owner slot, the native [`EngineSession`], and the
+/// native [`GenerateStreamState`] are wrapped in mutexes so the class is
+/// `Send + Sync`; the `session`/`state` mutexes are never locked across
+/// threads (they are only touched through `&mut self`), so they exist purely
+/// to satisfy pyo3's `Send + Sync` pyclass bound.
+#[pyclass(module = "ax_engine._ax_engine")]
 pub(crate) struct GenerateStreamIterator {
     pub(crate) owner: Arc<Mutex<SessionSlot>>,
-    pub(crate) session: Option<EngineSession>,
-    pub(crate) state: Option<GenerateStreamState>,
+    pub(crate) session: Mutex<Option<EngineSession>>,
+    pub(crate) state: Mutex<Option<GenerateStreamState>>,
+}
+
+/// Mutable access to the inner `Option<T>` of a per-iterator `Mutex`, for use
+/// under `&mut self`. The mutex exists only to make the pyclass `Send + Sync`;
+/// `get_mut` performs no locking because `&mut self` already guarantees
+/// exclusive access, so there is never a lock to poison. Borrowing
+/// `&mut self.<field>` (rather than `&mut self`) keeps the borrow disjoint
+/// from the other fields so they can be used together.
+fn slot_mut<T>(slot: &mut Mutex<Option<T>>) -> &mut Option<T> {
+    slot.get_mut()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[pymethods]
@@ -30,10 +49,20 @@ impl GenerateStreamIterator {
 
 impl GenerateStreamIterator {
     pub(crate) fn next_event_dict<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Py<PyDict>>> {
-        let Some(session) = self.session.as_mut() else {
+        // If the owning Session was closed while this stream was live, stop
+        // immediately. restore_session cancels the in-flight native request
+        // and tears down the native session; the iterator then terminates with
+        // a clean StopIteration instead of decoding a closed session to
+        // exhaustion.
+        if self.owner_closed() {
+            self.restore_session();
+            return Ok(None);
+        }
+
+        let Some(session) = slot_mut(&mut self.session).as_mut() else {
             return Ok(None);
         };
-        let Some(state) = self.state.as_mut() else {
+        let Some(state) = slot_mut(&mut self.state).as_mut() else {
             self.restore_session();
             return Ok(None);
         };
@@ -46,7 +75,7 @@ impl GenerateStreamIterator {
                     // Terminal Response: the native request is already done.
                     // Clear state before restore so we do not cancel a finished
                     // request (cancel is only for abandon/error paths).
-                    self.state = None;
+                    *slot_mut(&mut self.state) = None;
                 }
                 if is_terminal || payload.is_err() {
                     self.restore_session();
@@ -70,8 +99,15 @@ impl GenerateStreamIterator {
         }
     }
 
+    fn owner_closed(&self) -> bool {
+        self.owner
+            .lock()
+            .map(|slot| matches!(*slot, SessionSlot::Closed))
+            .unwrap_or(true)
+    }
+
     fn restore_session(&mut self) {
-        let Some(mut session) = self.session.take() else {
+        let Some(mut session) = slot_mut(&mut self.session).take() else {
             return;
         };
 
@@ -82,23 +118,42 @@ impl GenerateStreamIterator {
         // generate/stream call on this session. A request whose finishing Step
         // was already delivered is terminal and must not be re-cancelled: that
         // would drain its finished record with `cancel_requested` set.
-        if let Some(state) = self.state.take()
+        if let Some(state) = slot_mut(&mut self.state).take()
             && state.needs_native_cancel()
         {
             let _ = session.cancel_request(state.request_id());
         }
 
         let Ok(mut owner) = self.owner.lock() else {
+            // Poisoned owner: the session is unrecoverable; tear it down
+            // without the GIL (see drop_session_without_gil).
+            drop_session_without_gil(session);
             return;
         };
         match &*owner {
-            SessionSlot::Closed => {}
+            SessionSlot::Closed => {
+                // The owning Session was closed while this stream was live.
+                drop_session_without_gil(session);
+            }
             SessionSlot::Streaming => {
                 *owner = SessionSlot::Ready(Box::new(session));
             }
-            SessionSlot::Ready(_) => {}
+            SessionSlot::Ready(_) => {
+                // Defensive: another session already owns the slot.
+                drop_session_without_gil(session);
+            }
         }
     }
+}
+
+/// Tear down a native [`EngineSession`] without holding the GIL.
+///
+/// Releasing a loaded session frees Metal buffers and KV state, which can take
+/// a while for large models; doing it detached keeps other Python threads and
+/// signal handlers running (mirrors `Session::close`). When the interpreter is
+/// not available (e.g. finalizing), the session is dropped normally.
+fn drop_session_without_gil(session: EngineSession) {
+    let _ = Python::try_attach(|py| py.detach(move || drop(session)));
 }
 
 impl Drop for GenerateStreamIterator {
@@ -139,8 +194,8 @@ mod tests {
     ) -> GenerateStreamIterator {
         GenerateStreamIterator {
             owner: Arc::new(Mutex::new(SessionSlot::Streaming)),
-            session: Some(session),
-            state: Some(state),
+            session: Mutex::new(Some(session)),
+            state: Mutex::new(Some(state)),
         }
     }
 
@@ -160,8 +215,8 @@ mod tests {
         let owner = Arc::new(Mutex::new(SessionSlot::Streaming));
         let mut iter = GenerateStreamIterator {
             owner: Arc::clone(&owner),
-            session: Some(session),
-            state: Some(state),
+            session: Mutex::new(Some(session)),
+            state: Mutex::new(Some(state)),
         };
         iter.restore_session();
 
@@ -226,11 +281,11 @@ mod tests {
         });
 
         assert!(
-            iter.session.is_none(),
+            iter.session.get_mut().expect("session mutex").is_none(),
             "error path must restore the session to the owner"
         );
         assert!(
-            iter.state.is_none(),
+            iter.state.get_mut().expect("state mutex").is_none(),
             "restore_session consumes state after cancel"
         );
 
@@ -329,7 +384,7 @@ mod tests {
         // Terminal path: clear state then restore — cancel must not re-fire on a
         // finished request (state is already None).
         let mut iter = streaming_iterator(session, state);
-        iter.state = None;
+        *iter.state.get_mut().expect("state mutex") = None;
         iter.restore_session();
 
         let guard = iter.owner.lock().expect("owner lock");
@@ -342,6 +397,55 @@ mod tests {
         assert!(
             !report.cancel_requested,
             "terminal path must not mark a finished request as cancel_requested"
+        );
+    }
+
+    #[test]
+    fn closed_owner_stops_iterator_on_next_call() {
+        // Regression: Session::close() flips the shared owner slot to Closed
+        // while a stream is live, but next_event_dict used to ignore the slot
+        // and keep decoding the closed session to exhaustion. The iterator must
+        // observe Closed and terminate with a clean StopIteration (None).
+        use pyo3::Python;
+        use std::sync::Once;
+
+        static PYTHON_INIT: Once = Once::new();
+        PYTHON_INIT.call_once(pyo3::Python::initialize);
+
+        let mut session = EngineSession::new_deterministic_native_for_tests();
+        let state = session
+            .stream_generate_state(sample_request())
+            .expect("native stream state should start");
+        assert!(
+            session.has_active_stepwise_requests(),
+            "submitted stream request must be active"
+        );
+
+        let owner = Arc::new(Mutex::new(SessionSlot::Streaming));
+        let mut iter = GenerateStreamIterator {
+            owner: Arc::clone(&owner),
+            session: Mutex::new(Some(session)),
+            state: Mutex::new(Some(state)),
+        };
+
+        // Simulate Session::close() while the stream is live.
+        *owner.lock().expect("owner lock") = SessionSlot::Closed;
+
+        Python::attach(|py| {
+            let event = iter
+                .next_event_dict(py)
+                .expect("a closed stream should stop cleanly, not error");
+            assert!(event.is_none(), "closed stream must yield StopIteration");
+        });
+
+        assert!(
+            iter.session.get_mut().expect("session mutex").is_none(),
+            "closed stream must release the native session"
+        );
+        let guard = owner.lock().expect("owner lock");
+        assert!(
+            matches!(*guard, SessionSlot::Closed),
+            "owner slot must remain Closed after the iterator stops"
         );
     }
 }

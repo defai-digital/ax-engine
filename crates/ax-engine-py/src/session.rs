@@ -17,7 +17,13 @@ use crate::request::{
 };
 use crate::stream::GenerateStreamIterator;
 
-#[pyclass(module = "ax_engine._ax_engine", unsendable)]
+/// A handle to a live [`EngineSession`], shareable across threads.
+///
+/// The OpenAI shim drives generation from anyio worker threads
+/// (`anyio.to_thread.run_sync` / `iterate_in_threadpool`), so callers may
+/// invoke methods from any thread. The inner `Arc<Mutex<SessionSlot>>`
+/// serializes access to the single native session.
+#[pyclass(module = "ax_engine._ax_engine")]
 pub(crate) struct Session {
     model_id: String,
     inner: Arc<Mutex<SessionSlot>>,
@@ -387,8 +393,8 @@ impl Session {
             py,
             GenerateStreamIterator {
                 owner: Arc::clone(&self.inner),
-                session: Some(session),
-                state: Some(state),
+                session: Mutex::new(Some(session)),
+                state: Mutex::new(Some(state)),
             },
         )
     }
@@ -599,6 +605,18 @@ fn sampling_from_params(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Compile-time guard: pyo3 requires non-`unsendable` pyclasses to be
+    /// `Send + Sync` (the macro emits `assert_pyclass_send_sync`). If a field
+    /// ever becomes `!Send`/`!Sync`, this fails the build rather than raising
+    /// a `PanicException` at runtime when the OpenAI shim drives the class from
+    /// an anyio worker thread.
+    #[test]
+    fn pyclasses_are_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Session>();
+        assert_send_sync::<crate::stream::GenerateStreamIterator>();
+    }
 
     #[test]
     fn stream_experts_resolves_explicit_then_environment_then_auto() {
