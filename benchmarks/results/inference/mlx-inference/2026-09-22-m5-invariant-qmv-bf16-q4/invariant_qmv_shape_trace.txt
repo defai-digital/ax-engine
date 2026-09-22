@@ -1,0 +1,17 @@
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=16384 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=96 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=17408 bits=4 group_size=64 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=14336 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=17408 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=10240 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=6144 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=48 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=48 bits=6 group_size=64 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=96 bits=6 group_size=64 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=48 bits=6 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=12288 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=1024 bits=6 group_size=64 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=5120 out_dim=248320 bits=4 group_size=64 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=6144 out_dim=5120 bits=4 group_size=32 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=17408 out_dim=5120 bits=4 group_size=64 dtype=Bfloat16
+invariant affine qmv_fast shape leading=1 input_dim=17408 out_dim=5120 bits=4 group_size=32 dtype=Bfloat16

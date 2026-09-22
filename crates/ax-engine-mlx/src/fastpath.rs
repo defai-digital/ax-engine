@@ -1168,7 +1168,8 @@ env_flag_default_on!(
     /// through its bf16/4-bit specialisation (raw-bit x registers, unscaled
     /// nibble unpack). Bit-identical per row to the generic kernel; measured
     /// 4-11% faster on the M5 Max at the S=3..4 verify shapes, neutral at
-    /// S=1..2 and end-to-end neutral on the 6bit-MTP pack.
+    /// S=1..2; end-to-end neutral on the 6bit-MTP pack, whose default
+    /// relaxed verifier only sends S=1 steps through this route.
     ///
     /// **Default: ON** (kill-switch via `AX_MLX_INVARIANT_QMV_BF16_Q4=0`).
     invariant_qmv_bf16_q4_enabled,

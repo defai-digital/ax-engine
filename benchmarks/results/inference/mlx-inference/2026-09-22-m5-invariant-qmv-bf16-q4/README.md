@@ -97,16 +97,29 @@ Block order `head -> patched` on `flappy`, then `patched -> head` on
 | long_code | 78.67 (77.71 / 78.33 / 79.01 / 79.87) | 78.76 (77.79 / 78.41 / 79.12 / 79.99) | 1.001x | 47.91 -> 47.87 ms | identical (950 / 950 / 945 / 955) |
 
 Prefill is unchanged (flappy 767.9 -> 772.3 tok/s, long_code 856.7 -> 856.1
-tok/s). **End-to-end the change is neutral on this pack**: the route
-telemetry in the result files shows the verify bytes are carried mostly by
-the packed linear-attention qkvz/ba projections (230 packed / 10 split
-layers), the packed dense attention qkv (75 / 5) and the Qwen gate/up matvec
-kernel (610 / 610 hits), none of which use this kernel; only the split
-remainder, out_proj / down_proj and the attention output projection reach
-it, and the 0.25 ms/cycle verify-eval saving on flappy is inside run-to-run
-noise. The kernel-level gain is real and bit-identical, so the change lands
-as an exact kernel improvement with no performance claim; the packed and
-matvec routes are where the next verify-side lever lives.
+tok/s). **End-to-end the change is neutral on this pack, and the reason is
+the profile, not the kernel.** `invariant_qmv_shape_trace.txt` (server run
+with `AX_MLX_INVARIANT_QMV_TRACE=1`, one flappy prompt, 64 greedy tokens under
+the same flags) lists every distinct shape that reached the invariant
+qmv_fast route: all of them are `leading=1`. Under the default throughput
+profile (`AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP`, which also engages
+`AX_MLX_MTP_RELAXED_TARGET_VERIFY`) the S=2..4 target verify is built with
+stock MLX arithmetic (`qmv_wide` / qmm) plus the MTPLX-derived split-K
+verify QMM for projections at least 16384 wide, so the multi-row verify
+shape this kernel was tuned for is only exercised by the exact
+(non-relaxed) verifier profile. At S=1 the specialisation is neutral
+(1.00-1.04x), which is what the A/B shows.
+
+`splitk_microbench.py` / `splitk_microbench.txt` measure the split-K verify
+QMM on the gate/up shape (5120 x 17408 and the fused 5120 x 34816, gs 64,
+4-bit) against MLX at M=1..4: at M=4 the split-K kernel runs at 450-465 GB/s
+on 17408 columns, at parity with MLX (450-452 GB/s), and on the fused width
+MLX is faster (461 vs 370-395 GB/s). The relaxed verify's large projections
+are therefore already close to the host's sustained bandwidth; the remaining
+verify-cycle cost sits in the 5120-wide projections (MLX qmv_wide at
+360-375 GB/s at S=4), the gated-delta / attention kernels and the draft
+head, each a small slice. The kernel-level gain is real and bit-identical, so
+the change lands as an exact kernel improvement with no performance claim.
 
 ## Greedy output identity (`identity_probe.py`)
 

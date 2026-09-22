@@ -1,0 +1,16 @@
+gate_up        K=5120 N=17408 M=1 KParts=2  split_k  0.107 ms ( 469 GB/s)  mlx  0.099 ms ( 507 GB/s)  |diff|max=0.0234
+gate_up        K=5120 N=17408 M=1 KParts=4  split_k  0.097 ms ( 517 GB/s)  mlx  0.098 ms ( 512 GB/s)  |diff|max=0.0234
+gate_up        K=5120 N=17408 M=2 KParts=2  split_k  0.103 ms ( 486 GB/s)  mlx  0.100 ms ( 499 GB/s)  |diff|max=0.0002
+gate_up        K=5120 N=17408 M=2 KParts=4  split_k  0.100 ms ( 501 GB/s)  mlx  0.101 ms ( 498 GB/s)  |diff|max=0.0002
+gate_up        K=5120 N=17408 M=3 KParts=2  split_k  0.103 ms ( 489 GB/s)  mlx  0.103 ms ( 489 GB/s)  |diff|max=0.0039
+gate_up        K=5120 N=17408 M=3 KParts=4  split_k  0.102 ms ( 489 GB/s)  mlx  0.103 ms ( 487 GB/s)  |diff|max=0.0039
+gate_up        K=5120 N=17408 M=4 KParts=2  split_k  0.108 ms ( 465 GB/s)  mlx  0.111 ms ( 452 GB/s)  |diff|max=0.0078
+gate_up        K=5120 N=17408 M=4 KParts=4  split_k  0.111 ms ( 450 GB/s)  mlx  0.111 ms ( 450 GB/s)  |diff|max=0.0005
+gate_up_fused  K=5120 N=34816 M=1 KParts=2  split_k  0.185 ms ( 543 GB/s)  mlx  0.181 ms ( 553 GB/s)  |diff|max=0.0215
+gate_up_fused  K=5120 N=34816 M=1 KParts=4  split_k  0.172 ms ( 582 GB/s)  mlx  0.181 ms ( 555 GB/s)  |diff|max=0.0215
+gate_up_fused  K=5120 N=34816 M=2 KParts=2  split_k  0.183 ms ( 549 GB/s)  mlx  0.182 ms ( 549 GB/s)  |diff|max=0.0039
+gate_up_fused  K=5120 N=34816 M=2 KParts=4  split_k  0.182 ms ( 551 GB/s)  mlx  0.182 ms ( 551 GB/s)  |diff|max=0.0039
+gate_up_fused  K=5120 N=34816 M=3 KParts=2  split_k  0.190 ms ( 527 GB/s)  mlx  0.187 ms ( 537 GB/s)  |diff|max=0.0039
+gate_up_fused  K=5120 N=34816 M=3 KParts=4  split_k  0.188 ms ( 533 GB/s)  mlx  0.187 ms ( 535 GB/s)  |diff|max=0.0039
+gate_up_fused  K=5120 N=34816 M=4 KParts=2  split_k  0.254 ms ( 395 GB/s)  mlx  0.217 ms ( 461 GB/s)  |diff|max=0.0020
+gate_up_fused  K=5120 N=34816 M=4 KParts=4  split_k  0.271 ms ( 370 GB/s)  mlx  0.217 ms ( 461 GB/s)  |diff|max=0.0039

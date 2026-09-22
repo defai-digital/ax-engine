@@ -509,8 +509,9 @@ const INVARIANT_AFFINE_QMV_FAST_KERNEL_SOURCE: &str = r#"
 ///   number and each is rounded once, so the products are identical.
 ///
 /// Measured on the M5 Max verify shapes (2026-09-22): neutral at `Leading`
-/// 1..2, 4-11% faster at 3..4; end-to-end neutral on the 6bit-MTP pack,
-/// whose verify bytes mostly take the packed / matvec routes (evidence in
+/// 1..2, 4-11% faster at 3..4; end-to-end neutral on the 6bit-MTP pack
+/// because the default throughput profile verifies with the relaxed stock
+/// MLX arithmetic and only S=1 singleton steps reach this route (evidence in
 /// `benchmarks/results/inference/mlx-inference/2026-09-22-m5-invariant-qmv-bf16-q4/`).
 const INVARIANT_AFFINE_QMV_FAST_BF16_Q4_KERNEL_SOURCE: &str = r#"
     constexpr uint PacksPerThread = 2;
@@ -1556,6 +1557,42 @@ fn invariant_mxfp4_qmv_fast_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option<M
         .pop()
 }
 
+/// `AX_MLX_INVARIANT_QMV_TRACE=1`: log each distinct (leading, K, N, bits,
+/// group size, dtype) shape the invariant affine qmv_fast route launches, once,
+/// so a profile can tell which projections actually reach this kernel.
+fn trace_invariant_qmv_shape(
+    leading: i32,
+    input_dim: i32,
+    out_dim: i32,
+    bits: i32,
+    group_size: i32,
+    dtype: MlxDtype,
+) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("AX_MLX_INVARIANT_QMV_TRACE").is_ok_and(|v| v == "1"))
+    {
+        return;
+    }
+    type ShapeKey = (i32, i32, i32, i32, i32, MlxDtype);
+    static SEEN: std::sync::Mutex<Vec<ShapeKey>> = std::sync::Mutex::new(Vec::new());
+    let key: ShapeKey = (leading, input_dim, out_dim, bits, group_size, dtype);
+    if let Ok(mut seen) = SEEN.lock()
+        && !seen.contains(&key)
+    {
+        seen.push(key);
+        tracing::info!(
+            target: "ax_engine_mlx::invariant_qmv",
+            leading,
+            input_dim,
+            out_dim,
+            bits,
+            group_size,
+            ?dtype,
+            "invariant affine qmv_fast shape"
+        );
+    }
+}
+
 /// The bf16 / 4-bit specialisation of the invariant affine qmv_fast kernel
 /// is bit-identical to the generic kernel; `AX_MLX_INVARIANT_QMV_BF16_Q4=0`
 /// is the kill switch back to the generic form.
@@ -1874,6 +1911,14 @@ fn invariant_projection_metal_impl_with_kernel(
             && qw.group_size >= values_per_thread
             && qw.group_size % values_per_thread == 0;
         if qmv_fast_eligible {
+            trace_invariant_qmv_shape(
+                leading,
+                input_dim,
+                out_dim,
+                qw.bits,
+                qw.group_size,
+                x.dtype(),
+            );
             let launch = |kernel: &MlxMetalKernel| {
                 kernel
                     .try_apply_with_template(
