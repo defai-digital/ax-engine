@@ -2988,7 +2988,7 @@ fn doctor_detects_rpath_mlx_runtime_when_version_matches_pin() {
     for name in ["libmlx.dylib", "libjaccl.dylib", "mlx.metallib"] {
         fs::write(lib_dir.join(name), b"runtime").expect("runtime fixture should write");
     }
-    let pin = include_str!("../../../mlx.version").trim();
+    let pin = crate::doctor::mlx_pin_header_version(include_str!("../../../mlx.version"));
     let mut parts = pin.split('.');
     let header = format!(
         "#define MLX_VERSION_MAJOR {}\n#define MLX_VERSION_MINOR {}\n#define MLX_VERSION_PATCH {}\n",

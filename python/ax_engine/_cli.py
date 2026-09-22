@@ -2218,7 +2218,22 @@ def _package_version() -> str:
     try:
         return importlib.metadata.version("ax-engine")
     except importlib.metadata.PackageNotFoundError:
-        return "unknown"
+        return _checkout_version() or "unknown"
+
+
+def _checkout_version() -> str | None:
+    """Version from the repo `pyproject.toml` when running from a source checkout.
+
+    Keeps `ax-engine --version` in step with the native binary's package
+    version when no distribution metadata is installed.
+    """
+    pyproject = pathlib.Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
+    return match.group(1) if match else None
 
 
 def _command_stdout(command: list[str]) -> str | None:

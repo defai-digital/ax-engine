@@ -658,7 +658,17 @@ pub(crate) fn detect_rpath_mlx_runtime(executable: &Path) -> Option<DoctorRuntim
 }
 
 fn pinned_mlx_version() -> &'static str {
-    include_str!("../../../mlx.version").trim()
+    mlx_pin_header_version(include_str!("../../../mlx.version"))
+}
+
+/// Header version a `mlx.version` pin resolves to: `MAJOR.MINOR.PATCH` as
+/// written, or the version after `@` for an admitted `git:<sha>@<version>`
+/// source build (the same shape `mlx-sys/build_pin.rs` accepts).
+pub(crate) fn mlx_pin_header_version(raw: &str) -> &str {
+    let raw = raw.trim();
+    raw.strip_prefix("git:")
+        .and_then(|rest| rest.split_once('@'))
+        .map_or(raw, |(_, version)| version.trim())
 }
 
 fn mlx_version_beside_lib(lib_dir: &Path) -> Option<String> {
@@ -672,18 +682,26 @@ fn mlx_version_beside_lib(lib_dir: &Path) -> Option<String> {
 
 fn read_mlx_version_header(path: &Path) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;
-    let field = |name: &str| -> Option<u32> {
-        text.lines()
-            .find(|line| line.contains(name))
-            .and_then(|line| line.split_whitespace().last())
-            .and_then(|value| value.parse().ok())
-    };
     Some(format!(
         "{}.{}.{}",
-        field("MLX_VERSION_MAJOR")?,
-        field("MLX_VERSION_MINOR")?,
-        field("MLX_VERSION_PATCH")?
+        mlx_version_define(&text, "MLX_VERSION_MAJOR")?,
+        mlx_version_define(&text, "MLX_VERSION_MINOR")?,
+        mlx_version_define(&text, "MLX_VERSION_PATCH")?
     ))
+}
+
+/// Value of `#define <name> <integer>` in `text`. Matches the macro name as
+/// a whole token so a comment or a `MLX_VERSION_NUMERIC` expression that
+/// mentions the name cannot shadow the define, and reads the token after the
+/// name so a trailing comment does not become the value.
+fn mlx_version_define(text: &str, name: &str) -> Option<u32> {
+    text.lines().find_map(|line| {
+        let mut tokens = line.split_whitespace();
+        if tokens.next()? != "#define" || tokens.next()? != name {
+            return None;
+        }
+        tokens.next()?.parse().ok()
+    })
 }
 
 /// `@executable_path` and `@loader_path` are relative to the binary.
@@ -2337,6 +2355,41 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
     );
 
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod mlx_version_header_tests {
+    use super::mlx_version_define;
+
+    #[test]
+    fn defines_are_matched_as_whole_tokens_with_the_value_after_the_name() {
+        let header = "\
+// Version macros; MLX_VERSION_MAJOR etc. are defined below.
+#define MLX_VERSION_NUMERIC \\
+  (100000 * MLX_VERSION_MAJOR + 1000 * MLX_VERSION_MINOR + MLX_VERSION_PATCH)
+#define MLX_VERSION_MAJOR 0 // major
+#define MLX_VERSION_MINOR 32
+#define MLX_VERSION_PATCH 2
+#define MLX_VERSION \"0.32.2\"
+";
+        assert_eq!(mlx_version_define(header, "MLX_VERSION_MAJOR"), Some(0));
+        assert_eq!(mlx_version_define(header, "MLX_VERSION_MINOR"), Some(32));
+        assert_eq!(mlx_version_define(header, "MLX_VERSION_PATCH"), Some(2));
+        assert_eq!(mlx_version_define(header, "MLX_VERSION_BUILD"), None);
+        assert_eq!(
+            mlx_version_define("#define MLX_VERSION_MAJOR", "MLX_VERSION_MAJOR"),
+            None
+        );
+    }
+
+    #[test]
+    fn pin_header_version_accepts_plain_and_git_pins() {
+        assert_eq!(super::mlx_pin_header_version("0.32.2\n"), "0.32.2");
+        assert_eq!(
+            super::mlx_pin_header_version("git:1a2b3c4d5e6f@0.32.2\n"),
+            "0.32.2"
+        );
+    }
 }
 
 #[cfg(test)]

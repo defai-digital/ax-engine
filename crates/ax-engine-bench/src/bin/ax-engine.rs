@@ -4531,6 +4531,29 @@ mod tests {
     /// (extra fields are ignored). Renaming or removing any of them breaks
     /// the `quantize-mtp-sidecar --capability-command` gate.
     #[test]
+    fn mtp_capability_contract_fields_are_stable() {
+        let value = mtp_capability_json();
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["mtp_enabled"], true);
+        assert_eq!(value["layout"], "ax-engine-qwen36-v1");
+        assert!(
+            !value["ax_engine_version"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty()
+        );
+        let bits: Vec<i64> = value["supported_bits"]
+            .as_array()
+            .expect("supported_bits array")
+            .iter()
+            .filter_map(serde_json::Value::as_i64)
+            .collect();
+        assert_eq!(bits, vec![2, 4, 6, 8, 16]);
+        // One-line output: the serialized form must contain no newlines.
+        assert!(!value.to_string().contains('\n'));
+    }
+
+    #[test]
     fn version_flag_prints_package_version_and_exits_zero() {
         assert_eq!(run(vec![OsString::from("--version")]).ok(), Some(0));
         assert_eq!(run(vec![OsString::from("-V")]).ok(), Some(0));
@@ -4553,29 +4576,6 @@ mod tests {
             metal_detail(&report),
             "MLX runtime resolved from the binary rpath; Metal compiler only needed for kernel rebuilds"
         );
-    }
-
-    #[test]
-    fn mtp_capability_contract_fields_are_stable() {
-        let value = mtp_capability_json();
-        assert_eq!(value["ok"], true);
-        assert_eq!(value["mtp_enabled"], true);
-        assert_eq!(value["layout"], "ax-engine-qwen36-v1");
-        assert!(
-            !value["ax_engine_version"]
-                .as_str()
-                .unwrap_or_default()
-                .is_empty()
-        );
-        let bits: Vec<i64> = value["supported_bits"]
-            .as_array()
-            .expect("supported_bits array")
-            .iter()
-            .filter_map(serde_json::Value::as_i64)
-            .collect();
-        assert_eq!(bits, vec![2, 4, 6, 8, 16]);
-        // One-line output: the serialized form must contain no newlines.
-        assert!(!value.to_string().contains('\n'));
     }
 
     const EXPECTED_AUTOMATOSX_REPOS: [&str; 80] = [
