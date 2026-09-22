@@ -7482,11 +7482,20 @@ fn moe_experts_forward_impl(
         && w.up_exps.is_none()
         && w.down_exps.is_none()
     {
-        w.expert_stream.as_ref().map(|source| {
-            source
-                .stack()
-                .expect("expert stream paging failed for MoE layer")
-        })
+        match w.expert_stream.as_ref().map(|source| source.stack()) {
+            Some(Ok(stack)) => Some(stack),
+            Some(Err(error)) => {
+                // A truncated shard or transient read error is a per-request
+                // failure, not a reason to abort a panic=abort server: record
+                // it for the runner, which fails the step's requests, and
+                // return a zero contribution so the graph stays well-formed.
+                crate::expert_stream::record_paging_failure(format!(
+                    "expert stream paging failed for MoE layer: {error}"
+                ));
+                return mlx_sys::zeros(&x.shape(), x.dtype(), None);
+            }
+            None => None,
+        }
     } else {
         None
     };
@@ -7533,7 +7542,13 @@ fn moe_experts_forward_impl(
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
     let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
-    let down_exps = down_exps_ref.expect("MoE layer must have down_exps");
+    let Some(down_exps) = down_exps_ref else {
+        crate::expert_stream::record_paging_failure(
+            "MoE layer has no down_exps: the expert stack is neither resident nor paged"
+                .to_string(),
+        );
+        return mlx_sys::zeros(&x.shape(), x.dtype(), None);
+    };
 
     // Phase 1B: when the expert gate_up is packed and the flag is on, try the
     // packed SwiGLU Metal kernel directly on the gather_qmm output, fusing the

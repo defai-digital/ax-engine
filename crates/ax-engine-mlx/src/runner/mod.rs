@@ -4469,6 +4469,24 @@ impl ExecutionRunner for MlxRunner {
             .map(|i| i.scheduled_token_count)
             .sum();
 
+        // A recoverable expert paging failure during any forward of this
+        // step cannot return through the generic MoE path; it is recorded
+        // per thread and turned into a per-request error here so the engine
+        // fails those requests and the process (and sibling models) go on.
+        if let Some(message) = crate::expert_stream::take_paging_failure() {
+            tracing::error!(
+                target: "ax_engine_mlx::runner",
+                %message,
+                "expert paging failed during the step; failing its requests"
+            );
+            for update in &mut request_updates {
+                update.error = Some(message.clone());
+                update.output_token = None;
+                update.output_tokens.clear();
+                update.tokens_executed = 0;
+            }
+        }
+
         RunnerOutput {
             step_id,
             request_updates,

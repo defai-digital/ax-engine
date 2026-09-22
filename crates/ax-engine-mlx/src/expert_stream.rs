@@ -401,8 +401,34 @@ const STREAM_MODE_OFF: u8 = 1;
 const STREAM_MODE_AUTO: u8 = 2;
 const STREAM_MODE_ON: u8 = 3;
 
-static STREAM_EXPERTS_OVERRIDE: std::sync::atomic::AtomicU8 =
-    std::sync::atomic::AtomicU8::new(STREAM_MODE_UNSET);
+thread_local! {
+    /// Per-session stream-mode latch. A session sets it on the thread that
+    /// then builds the runner and loads the weights (the same thread), so
+    /// concurrent multi-model builds cannot overwrite each other's mode the
+    /// way a process-global latch did.
+    static STREAM_EXPERTS_OVERRIDE: std::cell::Cell<u8> = const { std::cell::Cell::new(STREAM_MODE_UNSET) };
+
+    /// First expert paging failure recorded on this thread during a forward
+    /// that could not propagate a `Result` (the generic MoE path returns a
+    /// bare array). The runner drains it at the end of the step and fails
+    /// the affected requests instead of aborting the process.
+    static PAGING_FAILURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Record a recoverable expert paging failure for the current step.
+pub(crate) fn record_paging_failure(message: String) {
+    PAGING_FAILURE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(message);
+        }
+    });
+}
+
+/// Take the paging failure recorded on this thread, if any.
+pub(crate) fn take_paging_failure() -> Option<String> {
+    PAGING_FAILURE.with(|slot| slot.borrow_mut().take())
+}
 
 fn mode_to_u8(mode: StreamExpertsMode) -> u8 {
     match mode {
@@ -423,7 +449,7 @@ fn mode_from_u8(raw: u8) -> Option<StreamExpertsMode> {
 
 /// Install the CLI/SDK stream mode before weights load.
 pub fn set_stream_experts_mode(mode: StreamExpertsMode) {
-    STREAM_EXPERTS_OVERRIDE.store(mode_to_u8(mode), std::sync::atomic::Ordering::Relaxed);
+    STREAM_EXPERTS_OVERRIDE.with(|latch| latch.set(mode_to_u8(mode)));
 }
 
 /// Backward-compatible latch: `true` is On, `false` leaves Auto (env/default).
@@ -441,9 +467,7 @@ pub fn set_stream_experts_override(enabled: bool) {
 /// Load admission must use this checked form: an invalid `AX_STREAM_EXPERTS`
 /// is an error, not a silent Auto.
 pub fn stream_experts_mode_checked() -> Result<StreamExpertsMode, ExpertStreamError> {
-    if let Some(mode) =
-        mode_from_u8(STREAM_EXPERTS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed))
-    {
+    if let Some(mode) = mode_from_u8(STREAM_EXPERTS_OVERRIDE.with(|latch| latch.get())) {
         return Ok(mode);
     }
     Ok(
