@@ -159,6 +159,15 @@ pub enum ExpertStreamError {
     Paging(String),
 }
 
+/// `n` from the first `layers.<n>.` segment of a tensor name, when present.
+fn layer_ordinal_in_name(name: &str) -> Option<u32> {
+    name.split('.')
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find(|pair| pair[0] == "layers")
+        .and_then(|pair| pair[1].parse().ok())
+}
+
 impl ExpertStreamManifest {
     /// Parse and validate a manifest. Unknown `schema_version` or `mode` fail
     /// closed; v1 only supports `layer-stack` paging of packed expert stacks.
@@ -184,6 +193,9 @@ impl ExpertStreamManifest {
         }
         let mut seen_slots: std::collections::HashSet<(u32, ExpertProj)> =
             std::collections::HashSet::new();
+        let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut packed_layers: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut split_layers: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for tensor in &mut manifest.tensors {
             // Shards are resolved as `root.join(file)`: an absolute path would
             // replace the root and `..` would escape it, so a manifest must
@@ -235,6 +247,51 @@ impl ExpertStreamManifest {
                     tensor.name, tensor.proj, tensor.layer
                 )));
             }
+            // The same tensor name under two slots would satisfy only the
+            // first slot at page-in and fail every forward through the layer.
+            if !seen_names.insert(tensor.name.clone()) {
+                return Err(ExpertStreamError::InvalidManifest(format!(
+                    "tensor {}: listed more than once",
+                    tensor.name
+                )));
+            }
+            // The `layer` field binds the pager to a decoder layer; a name
+            // that carries a different `layers.<n>.` ordinal would page one
+            // layer's experts into another silently (shapes match).
+            if let Some(ordinal) = layer_ordinal_in_name(&tensor.name)
+                && ordinal != tensor.layer
+            {
+                return Err(ExpertStreamError::InvalidManifest(format!(
+                    "tensor {}: layer {} does not match the layer ordinal in its name",
+                    tensor.name, tensor.layer
+                )));
+            }
+            if !is_quantization_sidecar_name(&tensor.name) {
+                match proj {
+                    ExpertProj::GateUp => {
+                        packed_layers.insert(tensor.layer);
+                    }
+                    ExpertProj::Gate | ExpertProj::Up => {
+                        split_layers.insert(tensor.layer);
+                    }
+                    ExpertProj::Down => {}
+                }
+            }
+        }
+        if let Some(layer) = packed_layers.intersection(&split_layers).min() {
+            return Err(ExpertStreamError::InvalidManifest(format!(
+                "layer {layer}: declares both a packed gate_up stack and split gate/up stacks"
+            )));
+        }
+        // Auto pages an optional pack only when this estimate plus headroom
+        // exceeds unified memory; a manifest that lost the field (serde
+        // default 0) would admit any optional pack as fully resident. Required
+        // packs page regardless of the estimate.
+        if !manifest.required && manifest.estimated_full_resident_bytes == 0 {
+            return Err(ExpertStreamError::InvalidManifest(
+                "estimated_full_resident_bytes must be positive for a pack that is not stream-required"
+                    .to_string(),
+            ));
         }
         Ok(manifest)
     }
@@ -1119,6 +1176,135 @@ impl ExpertLayerSource {
 
 #[cfg(test)]
 mod tests {
+
+    fn stream_manifest_json(required: bool, estimate: u64, tensors: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": "axquant.expert-stream.v1",
+            "mode": "layer-stack",
+            "required": required,
+            "num_experts": 8,
+            "experts_per_tok": 2,
+            "estimated_full_resident_bytes": estimate,
+            "tensors": tensors,
+        }))
+        .expect("manifest json")
+    }
+
+    fn stream_tensor_json(name: &str, layer: u32, proj: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name, "file": "shard.safetensors", "layer": layer, "proj": proj,
+            "expert_axis": 0, "num_experts": 8, "bits": 4, "group_size": 64
+        })
+    }
+
+    #[test]
+    fn parse_rejects_crossed_layer_ordinals_duplicate_names_and_mixed_layouts() {
+        // A `layer` that disagrees with the `layers.<n>.` ordinal in the name
+        // would page one layer's experts into another.
+        let crossed = stream_manifest_json(
+            true,
+            1,
+            serde_json::json!([
+                stream_tensor_json(
+                    "model.layers.31.mlp.switch_mlp.gate_up_proj.weight",
+                    30,
+                    "gate_up"
+                ),
+                stream_tensor_json(
+                    "model.layers.31.mlp.switch_mlp.down_proj.weight",
+                    30,
+                    "down"
+                ),
+            ]),
+        );
+        let error = ExpertStreamManifest::parse(&crossed).expect_err("crossed layer ordinal");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match the layer ordinal"),
+            "{error}"
+        );
+
+        // The same name under two slots satisfies only the first at page-in.
+        let duplicate = stream_manifest_json(
+            true,
+            1,
+            serde_json::json!([
+                stream_tensor_json(
+                    "model.layers.0.mlp.switch_mlp.gate_up_proj.weight",
+                    0,
+                    "gate"
+                ),
+                stream_tensor_json("model.layers.0.mlp.switch_mlp.gate_up_proj.weight", 0, "up"),
+            ]),
+        );
+        let error = ExpertStreamManifest::parse(&duplicate).expect_err("duplicate name");
+        assert!(
+            error.to_string().contains("listed more than once"),
+            "{error}"
+        );
+
+        // Packed and split stacks for one layer: the forward would silently
+        // prefer the packed copy.
+        let mixed = stream_manifest_json(
+            true,
+            1,
+            serde_json::json!([
+                stream_tensor_json(
+                    "model.layers.0.mlp.switch_mlp.gate_up_proj.weight",
+                    0,
+                    "gate_up"
+                ),
+                stream_tensor_json("model.layers.0.mlp.switch_mlp.gate_proj.weight", 0, "gate"),
+                stream_tensor_json("model.layers.0.mlp.switch_mlp.up_proj.weight", 0, "up"),
+            ]),
+        );
+        let error = ExpertStreamManifest::parse(&mixed).expect_err("mixed layout");
+        assert!(
+            error.to_string().contains("both a packed gate_up stack"),
+            "{error}"
+        );
+
+        // A well-formed manifest still parses, with or without an ordinal in
+        // the name.
+        let ok = stream_manifest_json(
+            true,
+            1,
+            serde_json::json!([
+                stream_tensor_json(
+                    "model.layers.3.mlp.switch_mlp.gate_up_proj.weight",
+                    3,
+                    "gate_up"
+                ),
+                stream_tensor_json("experts.down.3", 3, "down"),
+            ]),
+        );
+        assert!(ExpertStreamManifest::parse(&ok).is_ok());
+    }
+
+    #[test]
+    fn parse_requires_a_resident_estimate_for_optional_packs() {
+        let tensors = serde_json::json!([
+            stream_tensor_json(
+                "model.layers.0.mlp.switch_mlp.gate_up_proj.weight",
+                0,
+                "gate_up"
+            ),
+            stream_tensor_json("model.layers.0.mlp.switch_mlp.down_proj.weight", 0, "down"),
+        ]);
+        // Optional pack without the estimate: Auto would treat it as free.
+        let error = ExpertStreamManifest::parse(&stream_manifest_json(false, 0, tensors.clone()))
+            .expect_err("optional pack needs an estimate");
+        assert!(
+            error.to_string().contains("estimated_full_resident_bytes"),
+            "{error}"
+        );
+        // Required packs page regardless, so the estimate may be absent.
+        assert!(
+            ExpertStreamManifest::parse(&stream_manifest_json(true, 0, tensors.clone())).is_ok()
+        );
+        assert!(ExpertStreamManifest::parse(&stream_manifest_json(false, 1, tensors)).is_ok());
+    }
     use super::*;
 
     #[test]
