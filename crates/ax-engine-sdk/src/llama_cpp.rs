@@ -14,7 +14,7 @@ use crate::delegated_http::{
 };
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
-    GenerateStatus, finish_reason_from_stop_type,
+    finish_reason_from_stop_type, generate_status_from_finish_reason,
 };
 
 const LLAMA_CPP_CLI_TIMEOUT: Duration = Duration::from_secs(300);
@@ -95,6 +95,7 @@ pub struct LlamaCppStreamHandle {
     format: LlamaCppStreamFormat,
     reader: BufReader<Box<dyn Read + Send>>,
     bos_space_stripped: bool,
+    done_seen: bool,
 }
 
 impl LlamaCppStreamHandle {
@@ -104,10 +105,17 @@ impl LlamaCppStreamHandle {
             format,
             reader: BufReader::new(reader),
             bos_space_stripped: false,
+            done_seen: false,
         }
     }
 
     pub fn next_chunk(&mut self) -> Result<Option<LlamaCppStreamChunk>, LlamaCppBackendError> {
+        // A [DONE] line that arrived with a still-pending payload reports the
+        // end only on this later call; see the [DONE] handling below.
+        if self.done_seen {
+            return Ok(None);
+        }
+
         let mut payload = String::new();
 
         loop {
@@ -140,7 +148,17 @@ impl LlamaCppStreamHandle {
                 .map(|s| s.strip_prefix(' ').unwrap_or(s))
             {
                 if value == "[DONE]" {
-                    return Ok(None);
+                    if payload.is_empty() {
+                        return Ok(None);
+                    }
+                    // Some servers send `data: [DONE]` immediately after the
+                    // final payload without the blank-line separator. The
+                    // pending payload is the terminal chunk: deliver it now
+                    // and report the stream end on the next call instead of
+                    // discarding it (which lost the terminal chunk and made
+                    // the stream end look like a premature disconnect).
+                    self.done_seen = true;
+                    break;
                 }
                 if !payload.is_empty() {
                     payload.push('\n');
@@ -502,7 +520,12 @@ fn run_llama_cpp_server_completion_generate(
     let endpoint = config.completion_url();
     let payload = build_llama_cpp_completion_request(prompt, request, false, false);
 
-    let response = send_llama_cpp_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response = send_llama_cpp_json_post_request(
+        &endpoint,
+        &payload,
+        None,
+        config.timeouts.for_blocking_generation(),
+    )?;
     let response: LlamaCppCompletionResponse = parse_llama_cpp_json_response(response, &endpoint)?;
 
     let output_tokens = response.tokens;
@@ -538,7 +561,12 @@ fn run_llama_cpp_server_chat_completion_generate(
     let endpoint = config.chat_completions_url();
     let payload = build_llama_cpp_chat_completion_request(request, false);
 
-    let response = send_llama_cpp_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response = send_llama_cpp_json_post_request(
+        &endpoint,
+        &payload,
+        None,
+        config.timeouts.for_blocking_generation(),
+    )?;
     let response: LlamaCppChatCompletionResponse =
         parse_llama_cpp_json_response(response, &endpoint)?;
     let choice = response.choices.into_iter().next().ok_or_else(|| {
@@ -587,7 +615,7 @@ fn build_llama_cpp_blocking_response(
         output_text: Some(output_text),
         prompt_token_count,
         output_token_count,
-        status: GenerateStatus::Finished,
+        status: generate_status_from_finish_reason(finish_reason),
         finish_reason,
         step_count: 0,
         ttft_step: None,
@@ -1057,6 +1085,38 @@ fn llama_cpp_server_completion_route(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_completion_stream_done_after_payload_without_blank_line_is_not_lost() {
+        // Regression: when `data: [DONE]` follows a payload line without the
+        // blank-line separator, the pending payload used to be discarded and
+        // the terminal chunk was lost (stream looked like a premature
+        // disconnect). The payload must be delivered first, with the clean
+        // end reported on the next call.
+        let body = b"data: {\"content\":\"x\",\"stop\":true}\ndata: [DONE]\n\n";
+        let mut stream = LlamaCppStreamHandle::new(
+            "http://127.0.0.1:8081/completion".to_string(),
+            LlamaCppStreamFormat::LlamaCppCompletion,
+            Box::new(std::io::Cursor::new(body.to_vec())),
+        );
+
+        let chunk = stream
+            .next_chunk()
+            .expect("terminal chunk should parse")
+            .expect("terminal chunk must be delivered before the end");
+        assert_eq!(chunk.content, "x");
+        assert!(chunk.stop);
+
+        assert_eq!(
+            stream.next_chunk().expect("post-DONE call should parse"),
+            None,
+            "the stream end must be reported on the call after the payload"
+        );
+        assert_eq!(
+            stream.next_chunk().expect("repeated end call should parse"),
+            None
+        );
+    }
 
     #[test]
     fn openai_chat_stream_tool_call_finish_is_a_normal_stop() {

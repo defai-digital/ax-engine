@@ -28,7 +28,7 @@ use crate::backend::{
     BackendPolicy, NativeModelArtifactsSource, NativeRuntimeArtifactsSource, PreviewBackendRequest,
     ResolvedBackend, SupportTier,
 };
-use crate::generate::{GenerateFinishReason, GenerateSampling};
+use crate::generate::{GenerateFinishReason, GenerateSampling, GenerateStatus};
 use crate::{LlamaCppBackendError, MlxLmConfig};
 
 fn sample_submission() -> RequestSubmission {
@@ -974,6 +974,71 @@ fn llama_cpp_stream_generate_supports_server_completion_adapter() {
     assert_eq!(
         response_event.response.finish_reason,
         Some(crate::generate::GenerateFinishReason::MaxOutputTokens)
+    );
+}
+
+#[test]
+fn llama_cpp_stream_backend_error_terminal_chunk_fails_the_request() {
+    // Regression: a terminal chunk with stop_type "backend_error" (or
+    // "content_filter") used to set the request state to Finished and the
+    // response status was hardcoded Finished, so a backend failure streamed
+    // to the client as a successful completion with no last_error.
+    let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
+        1,
+        vec![serde_json::json!({
+            "content": "partial",
+            "tokens": [4],
+            "stop": true,
+            "stop_type": "backend_error"
+        })],
+        |_| {},
+    );
+    let mut session = llama_cpp_server_session(server_url);
+
+    let events = session
+        .stream_generate(GenerateRequest {
+            model_id: "qwen3".to_string(),
+            input_tokens: vec![1, 2, 3],
+            input_text: None,
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 2,
+            sampling: Default::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        })
+        .expect("llama.cpp stream should start")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("llama.cpp stream should complete");
+
+    server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+
+    let GenerateStreamEvent::Step(terminal_step) = &events[1] else {
+        panic!("second event should be the terminal step");
+    };
+    assert_eq!(terminal_step.request.state, SessionRequestState::Failed);
+    assert_eq!(
+        terminal_step.request.finish_reason,
+        Some(GenerateFinishReason::Error)
+    );
+    let last_error = terminal_step
+        .request
+        .last_error
+        .as_deref()
+        .expect("backend_error terminal chunk must set last_error");
+    assert!(
+        last_error.contains("backend_error"),
+        "last_error must name the stop type, got: {last_error}"
+    );
+
+    let GenerateStreamEvent::Response(response_event) = &events[2] else {
+        panic!("final event should be response");
+    };
+    assert_eq!(response_event.response.status, GenerateStatus::Failed);
+    assert_eq!(
+        response_event.response.finish_reason,
+        Some(GenerateFinishReason::Error)
     );
 }
 

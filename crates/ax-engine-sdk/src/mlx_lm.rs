@@ -9,7 +9,8 @@ use crate::delegated_http::{
     send_json_post_request,
 };
 use crate::generate::{
-    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateStatus,
+    GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport,
+    generate_status_from_finish_reason,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -380,7 +381,12 @@ fn run_mlx_lm_server_completion_generate(
     let prompt = completion_prompt_text(request)?;
     let payload = build_mlx_lm_completion_request(request, &prompt, false);
 
-    let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response = send_mlx_lm_json_post_request(
+        &endpoint,
+        &payload,
+        None,
+        config.timeouts.for_blocking_generation(),
+    )?;
     let response: MlxLmCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
     let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
@@ -406,7 +412,12 @@ fn run_mlx_lm_server_chat_completion_generate(
     let endpoint = config.chat_completions_url();
     let payload = build_mlx_lm_chat_completion_request(request, false);
 
-    let response = send_mlx_lm_json_post_request(&endpoint, &payload, None, config.timeouts)?;
+    let response = send_mlx_lm_json_post_request(
+        &endpoint,
+        &payload,
+        None,
+        config.timeouts.for_blocking_generation(),
+    )?;
     let response: MlxLmChatCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
     let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
@@ -444,7 +455,7 @@ fn build_mlx_lm_delegated_response(
         output_text: Some(output_text),
         prompt_token_count,
         output_token_count,
-        status: GenerateStatus::Finished,
+        status: generate_status_from_finish_reason(finish_reason),
         finish_reason,
         step_count: 0,
         ttft_step: None,
@@ -513,12 +524,24 @@ fn build_mlx_lm_chat_completion_request(
     }
 }
 
+/// Map an mlx-lm finish reason onto the SDK finish reason, mirroring the
+/// llama.cpp `finish_reason_from_stop_type` table: an unknown non-empty
+/// reason (for example `abort`) is a reported error, not a clean finish with
+/// no reason; otherwise the stream would complete successfully while the
+/// backend actually failed.
 pub fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {
     match value {
         Some("stop") => Some(GenerateFinishReason::Stop),
         Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
         Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
-        Some(_) | None => None,
+        Some(unknown) => {
+            tracing::warn!(
+                finish_reason = unknown,
+                "mlx-lm delegated backend returned unknown finish_reason; reporting error finish reason"
+            );
+            Some(GenerateFinishReason::Error)
+        }
+        None => None,
     }
 }
 
@@ -655,6 +678,34 @@ mod tests {
     use super::*;
     use crate::backend::{BackendPolicy, ResolvedBackend, RuntimeReport};
     use crate::generate::{GenerateRequest, GenerateSampling};
+
+    #[test]
+    fn finish_reason_from_mlx_lm_maps_unknown_reasons_to_error() {
+        // Regression: an unknown non-empty finish_reason (for example
+        // "abort") used to map to None, so the chunk still counted as
+        // terminal but the stream completed with no finish reason.
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("abort")),
+            Some(GenerateFinishReason::Error)
+        );
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("backend_error")),
+            Some(GenerateFinishReason::Error)
+        );
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("stop")),
+            Some(GenerateFinishReason::Stop)
+        );
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("length")),
+            Some(GenerateFinishReason::MaxOutputTokens)
+        );
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("content_filter")),
+            Some(GenerateFinishReason::ContentFilter)
+        );
+        assert_eq!(finish_reason_from_mlx_lm(None), None);
+    }
 
     #[test]
     fn server_completion_url_normalizes_trailing_slashes() {

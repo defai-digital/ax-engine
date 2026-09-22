@@ -316,6 +316,22 @@ pub enum GenerateFinishReason {
     Error,
 }
 
+/// Map a delegated backend's finish reason onto the response status. Error and
+/// ContentFilter terminations are failures (the response carries the mapped
+/// finish reason plus the report's `last_error`), Cancelled stays cancelled,
+/// and everything else (including no finish reason) is a normal finish.
+pub(crate) fn generate_status_from_finish_reason(
+    finish_reason: Option<GenerateFinishReason>,
+) -> GenerateStatus {
+    match finish_reason {
+        Some(GenerateFinishReason::Error) | Some(GenerateFinishReason::ContentFilter) => {
+            GenerateStatus::Failed
+        }
+        Some(GenerateFinishReason::Cancelled) => GenerateStatus::Cancelled,
+        _ => GenerateStatus::Finished,
+    }
+}
+
 /// Map a delegated backend's terminal `stop`/`stop_type` pair onto the SDK
 /// finish reason. One shared mapping serves both the blocking and streaming
 /// llama.cpp paths — they previously diverged, and the streaming copy lacked

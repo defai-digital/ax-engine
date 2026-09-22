@@ -11,7 +11,10 @@ use super::errors::EngineSessionError;
 #[cfg(feature = "mlx-native")]
 use ax_engine_mlx::{MlxPrefixCacheStore, MlxSharedWeightsCell, WhisperModel};
 
-#[cfg(any(feature = "mlx-native", test))]
+// Only compiled under the mlx-native feature: the sole consumer,
+// `native_prefix_reuse_enabled`, is feature-gated, and a test-only cfg here
+// trips dead_code on `--all-targets` builds without the feature.
+#[cfg(feature = "mlx-native")]
 const PREFIX_REUSE_DISABLED_ENV: &str = "AX_ENGINE_PREFIX_REUSE_DISABLED";
 
 #[cfg(any(feature = "mlx-native", test))]

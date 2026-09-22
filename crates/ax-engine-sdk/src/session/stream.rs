@@ -2,9 +2,10 @@ use std::time::Instant;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::generate::{
-    GenerateMtpReport, GeneratePerformanceReport, GenerateRequest, GenerateResponse,
-    GenerateRouteReport, GenerateStreamEvent, GenerateStreamRequestEvent,
-    GenerateStreamResponseEvent, GenerateStreamStepEvent, finish_reason_from_stop_type,
+    GenerateFinishReason, GenerateMtpReport, GeneratePerformanceReport, GenerateRequest,
+    GenerateResponse, GenerateRouteReport, GenerateStatus, GenerateStreamEvent,
+    GenerateStreamRequestEvent, GenerateStreamResponseEvent, GenerateStreamStepEvent,
+    finish_reason_from_stop_type,
 };
 use crate::llama_cpp::{LlamaCppPromptProgress, LlamaCppStreamChunk, LlamaCppStreamHandle};
 use crate::mlx_lm::{MlxLmStreamChunkResult, MlxLmStreamHandle, finish_reason_from_mlx_lm};
@@ -543,7 +544,15 @@ impl MlxLmGenerateStreamState {
             self.output_token_count = Some(ct);
         }
         self.current_report.state = if is_terminal {
-            SessionRequestState::Finished
+            let (state, last_error) = delegated_terminal_request_state(
+                finish_reason,
+                &format!(
+                    "mlx-lm terminal chunk finish_reason {:?}",
+                    chunk.finish_reason.as_deref().unwrap_or("unreported")
+                ),
+            );
+            self.current_report.last_error = last_error;
+            state
         } else if !delta_text.is_empty() {
             SessionRequestState::Running
         } else {
@@ -648,13 +657,39 @@ fn delegated_stream_response(
         output_text,
         prompt_token_count,
         output_token_count,
-        status: crate::generate::GenerateStatus::Finished,
+        status: generate_status_from_request_state(report.state),
         finish_reason: report.finish_reason,
         step_count,
         ttft_step,
         route: report.route.clone(),
         runtime: runtime.clone(),
         performance: GeneratePerformanceReport::default(),
+    }
+}
+
+/// Terminal request state for a delegated stream's terminal chunk, derived
+/// from the mapped finish reason. Error and ContentFilter terminations (for
+/// example a llama.cpp `stop_type: "backend_error"` or an unknown mlx-lm
+/// `finish_reason`) must fail the request instead of reporting a clean
+/// finish, with `last_error` naming what the backend reported.
+pub(super) fn delegated_terminal_request_state(
+    finish_reason: Option<GenerateFinishReason>,
+    failure_detail: &str,
+) -> (SessionRequestState, Option<String>) {
+    match finish_reason {
+        Some(GenerateFinishReason::Error) | Some(GenerateFinishReason::ContentFilter) => (
+            SessionRequestState::Failed,
+            Some(format!("delegated generation failed: {failure_detail}")),
+        ),
+        _ => (SessionRequestState::Finished, None),
+    }
+}
+
+fn generate_status_from_request_state(state: SessionRequestState) -> GenerateStatus {
+    match state {
+        SessionRequestState::Failed => GenerateStatus::Failed,
+        SessionRequestState::Cancelled => GenerateStatus::Cancelled,
+        _ => GenerateStatus::Finished,
     }
 }
 
@@ -726,8 +761,20 @@ pub(super) fn apply_llama_cpp_stream_chunk(
         report.finish_reason = finish_reason;
         report.terminal_stop_reason = terminal_stop_reason_from_finish_reason(finish_reason);
     }
-    report.state = if chunk.stop || was_terminal {
-        SessionRequestState::Finished
+    report.state = if chunk.stop {
+        let (state, last_error) = delegated_terminal_request_state(
+            finish_reason,
+            &format!(
+                "llama.cpp terminal chunk stop_type {:?}",
+                chunk.stop_type.as_deref().unwrap_or("unreported")
+            ),
+        );
+        report.last_error = last_error;
+        state
+    } else if was_terminal {
+        // Trailing chunks after the terminal one keep the already-terminal
+        // state (Finished, or Failed from an error/content-filter stop).
+        report.state
     } else if request_selected {
         SessionRequestState::Running
     } else {
@@ -874,7 +921,7 @@ pub(super) fn terminal_stop_reason_from_finish_reason(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::generate::GenerateFinishReason;
@@ -988,6 +1035,62 @@ mod tests {
             .expect("clean stream end should not error")
             .expect("response event should be Some");
         assert!(matches!(response, GenerateStreamEvent::Response(_)));
+
+        assert!(
+            next_mlx_lm_stream_event(&mut state)
+                .expect("phase Done returns Ok(None)")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mlx_lm_stream_unknown_finish_reason_fails_the_request() {
+        // Regression: an unknown non-empty mlx-lm finish_reason (for example
+        // "abort") used to map to None while the chunk still counted as
+        // terminal, so a failed generation completed cleanly with no finish
+        // reason. It must map to Error and fail the request.
+        let mut state = mlx_lm_delegated_stream_state(
+            "data: {\"choices\":[{\"index\":0,\"text\":\"partial\",\"finish_reason\":\"abort\"}]}\n\n\
+             data: [DONE]\n\n",
+        );
+
+        let request_event = next_mlx_lm_stream_event(&mut state)
+            .expect("request event should apply cleanly")
+            .expect("request event should be Some");
+        assert!(matches!(request_event, GenerateStreamEvent::Request(_)));
+
+        let step = next_mlx_lm_stream_event(&mut state)
+            .expect("terminal chunk should apply cleanly")
+            .expect("step event should be Some");
+        let GenerateStreamEvent::Step(step) = step else {
+            panic!("expected a step event");
+        };
+        assert_eq!(step.request.state, SessionRequestState::Failed);
+        assert_eq!(
+            step.request.finish_reason,
+            Some(GenerateFinishReason::Error)
+        );
+        let last_error = step
+            .request
+            .last_error
+            .as_deref()
+            .expect("unknown finish_reason must set last_error");
+        assert!(
+            last_error.contains("abort"),
+            "last_error must name the finish reason, got: {last_error}"
+        );
+
+        let response = next_mlx_lm_stream_event(&mut state)
+            .expect("clean stream end should not error")
+            .expect("response event should be Some");
+        let GenerateStreamEvent::Response(response) = response else {
+            panic!("expected a response event");
+        };
+        assert_eq!(response.response.status, GenerateStatus::Failed);
+        assert_eq!(
+            response.response.finish_reason,
+            Some(GenerateFinishReason::Error)
+        );
 
         assert!(
             next_mlx_lm_stream_event(&mut state)
