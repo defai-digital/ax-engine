@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ax_engine_sdk::{GenerateFinishReason, GenerateResponse, GenerateRouteReport};
+use ax_engine_sdk::{EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateRouteReport};
 use axum::Json;
 use axum::response::IntoResponse;
 use serde_json::Value;
@@ -13,6 +13,7 @@ use super::schema::{
     OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiToolCall, OpenAiUsage,
 };
 use super::tool_names;
+use crate::app_state::LiveState;
 
 impl OpenAiStreamKind {
     pub(crate) fn response_id(self, request_id: u64) -> String {
@@ -35,27 +36,43 @@ impl OpenAiStreamKind {
         request_id: u64,
         options: OpenAiResponseOptions,
         native_reasoning: Option<String>,
+        tokenizer: Option<EngineTokenizer>,
     ) -> axum::response::Response {
         let id = self.response_id(request_id);
         match self {
-            Self::Completion => {
-                Json(openai_completion_response(response, id, options)).into_response()
-            }
+            Self::Completion => Json(openai_completion_response(
+                response,
+                id,
+                options,
+                tokenizer.as_ref(),
+            ))
+            .into_response(),
             Self::ChatCompletion => Json(openai_chat_completion_response(
                 response,
                 id,
                 options,
                 native_reasoning,
+                tokenizer.as_ref(),
             ))
             .into_response(),
         }
     }
 }
 
+/// Best-effort tokenizer for building non-stream OpenAI responses: logprob
+/// blocks decode sampled token ids into token text through it. Routes
+/// without a local tokenizer (delegated text-only backends) get `None`, and
+/// their logprob blocks are omitted instead of emitting token-id strings.
+pub(crate) fn response_decode_tokenizer(live: &LiveState) -> Option<EngineTokenizer> {
+    let model_dir = live.session_config.mlx_model_artifacts_dir()?;
+    EngineTokenizer::from_model_dir_cached(model_dir).ok()
+}
+
 pub(crate) fn openai_completion_response(
     response: &GenerateResponse,
     id: String,
     options: OpenAiResponseOptions,
+    tokenizer: Option<&EngineTokenizer>,
 ) -> OpenAiCompletionResponse {
     let mut text = response.output_text.clone().unwrap_or_default();
     let stop_hit = crate::openai::stop::truncate_at_stop(&mut text, &options.client_stop_sequences);
@@ -73,7 +90,7 @@ pub(crate) fn openai_completion_response(
             logprobs: if stop_hit {
                 None
             } else {
-                openai_completion_logprobs(response, options)
+                openai_completion_logprobs(response, options, tokenizer)
             },
             finish_reason: if stop_hit {
                 Some("stop")
@@ -90,6 +107,7 @@ pub(crate) fn openai_chat_completion_response(
     id: String,
     options: OpenAiResponseOptions,
     native_reasoning: Option<String>,
+    tokenizer: Option<&EngineTokenizer>,
 ) -> OpenAiChatCompletionResponse {
     let mut raw_content = response.output_text.clone().unwrap_or_default();
     // Response building has no manifest access, so the framing hint is
@@ -149,7 +167,7 @@ pub(crate) fn openai_chat_completion_response(
             logprobs: if stop_hit {
                 None
             } else {
-                openai_chat_logprobs(response, options)
+                openai_chat_logprobs(response, options, tokenizer)
             },
             finish_reason,
         }],
@@ -160,18 +178,30 @@ pub(crate) fn openai_chat_completion_response(
 fn openai_completion_logprobs(
     response: &GenerateResponse,
     options: OpenAiResponseOptions,
+    tokenizer: Option<&EngineTokenizer>,
 ) -> Option<OpenAiCompletionLogprobs> {
     if !options.include_logprobs || response.output_tokens.is_empty() {
         return None;
     }
     let token_logprobs = sampled_token_logprobs(response)?;
+    // Legacy completions logprobs carry the decoded token text plus
+    // cumulative byte offsets into the completion text. Without a tokenizer
+    // handle the block is omitted rather than emitting opaque token-id
+    // strings. (Per-token decode can render U+FFFD for codepoints split
+    // across tokens; accepted here since offsets are per-token.)
+    let tokenizer = tokenizer?;
+    let mut tokens = Vec::with_capacity(response.output_tokens.len());
+    let mut text_offset = Vec::with_capacity(response.output_tokens.len());
+    let mut offset = 0u32;
+    for token in &response.output_tokens {
+        let decoded = tokenizer.decode(std::slice::from_ref(token), false).ok()?;
+        text_offset.push(offset);
+        offset = offset.saturating_add(decoded.len() as u32);
+        tokens.push(decoded);
+    }
     Some(OpenAiCompletionLogprobs {
-        tokens: response
-            .output_tokens
-            .iter()
-            .map(|token| token.to_string())
-            .collect(),
-        text_offset: (0..response.output_tokens.len() as u32).collect(),
+        tokens,
+        text_offset,
         top_logprobs: vec![None; response.output_tokens.len()],
         token_logprobs,
     })
@@ -180,22 +210,29 @@ fn openai_completion_logprobs(
 fn openai_chat_logprobs(
     response: &GenerateResponse,
     options: OpenAiResponseOptions,
+    tokenizer: Option<&EngineTokenizer>,
 ) -> Option<OpenAiChatLogprobs> {
     if !options.include_logprobs || response.output_tokens.is_empty() {
         return None;
     }
     let token_logprobs = sampled_token_logprobs(response)?;
+    // Each entry carries the decoded token text and its UTF-8 bytes; the
+    // raw token id is never exposed to clients.
+    let tokenizer = tokenizer?;
     let content = response
         .output_tokens
         .iter()
         .zip(token_logprobs)
-        .map(|(token, logprob)| OpenAiChatTokenLogprob {
-            token: token.to_string(),
-            logprob: logprob.unwrap_or_default(),
-            bytes: None,
-            top_logprobs: Vec::new(),
+        .map(|(token, logprob)| {
+            let decoded = tokenizer.decode(std::slice::from_ref(token), false).ok()?;
+            Some(OpenAiChatTokenLogprob {
+                token: decoded.clone(),
+                logprob: logprob.unwrap_or_default(),
+                bytes: (!decoded.is_empty()).then(|| decoded.into_bytes()),
+                top_logprobs: Vec::new(),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Option<Vec<_>>>()?;
     (!content.is_empty()).then_some(OpenAiChatLogprobs { content })
 }
 

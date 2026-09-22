@@ -25,7 +25,7 @@ use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
     OpenAiResponseOptions, build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
 };
-use crate::openai::responses::openai_chat_completion_response;
+use crate::openai::responses::{openai_chat_completion_response, response_decode_tokenizer};
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::streaming::{
     StreamReasoningFamily, stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request,
@@ -72,6 +72,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         request_id,
         response_options,
         None,
+        response_decode_tokenizer(&live),
     ))
 }
 
@@ -114,6 +115,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         request_id,
         response_options,
         None,
+        response_decode_tokenizer(&live),
     ))
 }
 
@@ -194,7 +196,13 @@ pub(crate) async fn run_openai_text_generation(
     )?;
     validate_openai_response_format(&response, &response_options)?;
 
-    Ok(kind.build_non_stream_response(&response, request_id, response_options, native_reasoning))
+    Ok(kind.build_non_stream_response(
+        &response,
+        request_id,
+        response_options,
+        native_reasoning,
+        response_decode_tokenizer(&live),
+    ))
 }
 
 async fn stream_buffered_openai_tool_chat_response(
@@ -219,6 +227,7 @@ async fn stream_buffered_openai_tool_chat_response(
         OpenAiStreamKind::ChatCompletion.response_id(request_id),
         response_options,
         native_reasoning,
+        response_decode_tokenizer(&live).as_ref(),
     );
     let Some(choice) = chat_response.choices.into_iter().next() else {
         return Err(error_response(

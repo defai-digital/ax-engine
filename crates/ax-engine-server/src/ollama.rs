@@ -36,7 +36,9 @@ use crate::openai::requests::{
     build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
     openai_chat_prompt_render_options_for_live,
 };
-use crate::openai::responses::{openai_chat_completion_response, openai_finish_reason};
+use crate::openai::responses::{
+    openai_chat_completion_response, openai_finish_reason, response_decode_tokenizer,
+};
 use crate::openai::schema::{
     OpenAiChatCompletionHttpRequest, OpenAiChatCompletionResponse, OpenAiChatContent,
     OpenAiChatContentPart, OpenAiChatMessage, OpenAiChatTemplateKwargs,
@@ -1461,6 +1463,7 @@ async fn run_ollama_chat_completion(
             OpenAiStreamKind::ChatCompletion.response_id(request_id),
             response_options,
             None,
+            response_decode_tokenizer(&live).as_ref(),
         ));
     }
 
@@ -1487,6 +1490,7 @@ async fn run_ollama_chat_completion(
             OpenAiStreamKind::ChatCompletion.response_id(request_id),
             response_options,
             None,
+            response_decode_tokenizer(&live).as_ref(),
         ));
     }
 
@@ -1510,6 +1514,7 @@ async fn run_ollama_chat_completion(
         OpenAiStreamKind::ChatCompletion.response_id(request_id),
         response_options,
         native_reasoning,
+        response_decode_tokenizer(&live).as_ref(),
     ))
 }
 

@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 
 use crate::app_state::AppState;
@@ -22,8 +23,18 @@ const DEFAULT_EMBED_TIMEOUT_MS: u64 = 30_000;
 
 pub(crate) async fn openai_embeddings(
     State(state): State<AppState>,
-    Json(request): Json<OpenAiEmbeddingRequest>,
+    payload: Result<Json<OpenAiEmbeddingRequest>, JsonRejection>,
 ) -> Result<Json<OpenAiEmbeddingResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Fold axum's JSON rejections (shape mismatch, malformed JSON) into the
+    // documented 400 invalid_request envelope; the default Json extractor
+    // would answer with a plain-text 422 that OpenAI clients cannot parse.
+    let Json(request) = payload.map_err(|rejection| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("invalid request body: {}", rejection.body_text()),
+        )
+    })?;
     let live = select_model(&state, request.model.as_deref())?;
     if request
         .encoding_format
@@ -74,16 +85,25 @@ pub(crate) async fn openai_embeddings(
         std::env::var("AX_ENGINE_EMBED_MAX_TOKENS").ok(),
         DEFAULT_EMBED_MAX_TOKENS,
     );
-    let token_count: usize = batch.iter().map(Vec::len).sum();
-    if token_count > max_tokens {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            format!(
-                "input token count ({token_count}) exceeds maximum ({max_tokens}); \
-                 set AX_ENGINE_EMBED_MAX_TOKENS to override"
-            ),
-        ));
+    // The cap is per item: each embedding input must fit within max_tokens
+    // on its own (matching OpenAI, where batch items are embedded
+    // independently); a batch is only rejected when a single item exceeds
+    // the cap. No batch-total limit exists. The running total still feeds
+    // usage reporting below.
+    let mut token_count = 0usize;
+    for (i, ids) in batch.iter().enumerate() {
+        token_count += ids.len();
+        if ids.len() > max_tokens {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!(
+                    "input[{i}] token count ({}) exceeds maximum ({max_tokens}); \
+                     set AX_ENGINE_EMBED_MAX_TOKENS to override",
+                    ids.len()
+                ),
+            ));
+        }
     }
     let embed_timeout = parse_embedding_timeout_ms(
         std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS").ok(),

@@ -5,8 +5,8 @@ use crate::openai::responses::{
     openai_chat_completion_response, openai_completion_response, openai_finish_reason,
 };
 use ax_engine_sdk::{
-    CapabilityReport, GenerateFinishReason, GenerateResponse, GenerateRouteReport, GenerateStatus,
-    ResolutionPolicy, RuntimeReport, SelectedBackend, SupportTier,
+    CapabilityReport, EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateRouteReport,
+    GenerateStatus, ResolutionPolicy, RuntimeReport, SelectedBackend, SupportTier,
 };
 use axum::http::StatusCode;
 use serde_json::json;
@@ -38,8 +38,13 @@ fn finish_reason_maps_terminal_labels_without_hiding_cancellations() {
 }
 
 #[test]
-fn completion_response_includes_sampled_logprobs_when_available() {
-    let response = sample_generate_response("hello", vec![10, 11], vec![Some(-0.25), Some(-0.5)]);
+fn completion_logprobs_decode_token_text_and_byte_offsets() {
+    // Fixture vocab: id 1 = "hello" (5 bytes), id 5 = "openai".
+    let artifact_dir = super::fixtures::minimal_tokenizer_artifact("openai-completion-logprobs");
+    let tokenizer =
+        EngineTokenizer::from_model_dir(&artifact_dir).expect("fixture tokenizer should load");
+    let response =
+        sample_generate_response("hello openai", vec![1, 5], vec![Some(-0.25), Some(-0.5)]);
 
     let openai = openai_completion_response(
         &response,
@@ -48,15 +53,74 @@ fn completion_response_includes_sampled_logprobs_when_available() {
             include_logprobs: true,
             ..Default::default()
         },
+        Some(&tokenizer),
     );
 
     let logprobs = openai.choices[0]
         .logprobs
         .as_ref()
         .expect("sampled logprobs should be present");
-    assert_eq!(logprobs.tokens, vec!["10", "11"]);
+    // Decoded token strings, not decimal token-id strings, with cumulative
+    // byte offsets into the completion text.
+    assert_eq!(logprobs.tokens, vec!["hello", "openai"]);
+    assert_eq!(logprobs.text_offset, vec![0, 5]);
     assert_eq!(logprobs.token_logprobs, vec![Some(-0.25), Some(-0.5)]);
     assert_eq!(logprobs.top_logprobs, vec![None, None]);
+
+    // Without a tokenizer handle the block is omitted rather than emitting
+    // opaque token-id strings.
+    let openai = openai_completion_response(
+        &response,
+        "cmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_logprobs: true,
+            ..Default::default()
+        },
+        None,
+    );
+    assert!(openai.choices[0].logprobs.is_none());
+
+    std::fs::remove_dir_all(artifact_dir).expect("tokenizer artifact should clean up");
+}
+
+#[test]
+fn chat_logprobs_decode_token_text_and_bytes() {
+    let artifact_dir = super::fixtures::minimal_tokenizer_artifact("openai-chat-logprobs");
+    let tokenizer =
+        EngineTokenizer::from_model_dir(&artifact_dir).expect("fixture tokenizer should load");
+    let response =
+        sample_generate_response("hello openai", vec![1, 5], vec![Some(-0.25), Some(-0.5)]);
+
+    let chat = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_logprobs: true,
+            ..Default::default()
+        },
+        None,
+        Some(&tokenizer),
+    );
+
+    let logprobs = chat.choices[0]
+        .logprobs
+        .as_ref()
+        .expect("sampled chat logprobs should be present");
+    assert_eq!(logprobs.content.len(), 2);
+    // Decoded token text plus its UTF-8 bytes, never the token id.
+    assert_eq!(logprobs.content[0].token, "hello");
+    assert_eq!(
+        logprobs.content[0].bytes.as_deref(),
+        Some(b"hello".as_slice())
+    );
+    assert_eq!(logprobs.content[0].logprob, -0.25);
+    assert_eq!(logprobs.content[1].token, "openai");
+    assert_eq!(
+        logprobs.content[1].bytes.as_deref(),
+        Some(b"openai".as_slice())
+    );
+
+    std::fs::remove_dir_all(artifact_dir).expect("tokenizer artifact should clean up");
 }
 
 #[test]
@@ -70,6 +134,7 @@ fn completion_response_omits_unavailable_logprobs() {
             include_logprobs: true,
             ..Default::default()
         },
+        None,
     );
 
     assert!(openai.choices[0].logprobs.is_none());
@@ -84,11 +149,16 @@ fn logprobs_are_omitted_when_partially_observed_to_keep_arrays_aligned() {
         ..Default::default()
     };
     let completion =
-        openai_completion_response(&response, "cmpl-test".to_string(), options.clone());
+        openai_completion_response(&response, "cmpl-test".to_string(), options.clone(), None);
     assert!(completion.choices[0].logprobs.is_none());
 
-    let chat =
-        openai_chat_completion_response(&response, "chatcmpl-test".to_string(), options, None);
+    let chat = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        options,
+        None,
+        None,
+    );
     assert!(chat.choices[0].logprobs.is_none());
 }
 
@@ -104,6 +174,7 @@ fn chat_response_exposes_reasoning_only_when_requested() {
         &response,
         "chatcmpl-test".to_string(),
         Default::default(),
+        None,
         None,
     );
     assert_eq!(
@@ -124,6 +195,7 @@ fn chat_response_exposes_reasoning_only_when_requested() {
             include_reasoning: true,
             ..Default::default()
         },
+        None,
         None,
     );
     assert_eq!(explicit_openai.choices[0].message.content, "final answer");
@@ -151,6 +223,7 @@ fn chat_response_prefers_native_decode_reasoning_over_text_markers() {
             ..Default::default()
         },
         Some("check constraints".to_string()),
+        None,
     );
     assert_eq!(openai.choices[0].message.content, "final answer");
     assert_eq!(
@@ -164,6 +237,7 @@ fn chat_response_prefers_native_decode_reasoning_over_text_markers() {
         "chatcmpl-test".to_string(),
         Default::default(),
         Some("check constraints".to_string()),
+        None,
     );
     assert!(
         default_openai.choices[0]
@@ -188,6 +262,7 @@ fn chat_response_extracts_tool_call_when_tool_contract_requested() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -222,6 +297,7 @@ fn chat_response_extracts_glm_tool_call() {
             ..Default::default()
         },
         None,
+        None,
     );
 
     let message = &openai.choices[0].message;
@@ -255,6 +331,7 @@ fn chat_response_extracts_glm_tool_call_with_no_arguments() {
             ..Default::default()
         },
         None,
+        None,
     );
 
     let message = &openai.choices[0].message;
@@ -283,6 +360,7 @@ fn chat_response_extracts_gemma4_tool_call_from_ollama_dsl() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -313,6 +391,7 @@ fn chat_response_extracts_bare_gemma4_tool_call_from_live_output() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -345,6 +424,7 @@ fn chat_response_extracts_multiple_tool_calls() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -381,6 +461,7 @@ fn chat_response_extracts_mixed_tool_calls_in_source_order() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -420,6 +501,7 @@ fn chat_response_skips_invalid_bare_call_prefix_before_explicit_tool_call() {
             ..Default::default()
         },
         None,
+        None,
     );
 
     let message = &openai.choices[0].message;
@@ -450,6 +532,7 @@ fn chat_response_skips_invalid_xml_tool_call_before_later_explicit_tool_call() {
             ..Default::default()
         },
         None,
+        None,
     );
 
     let message = &openai.choices[0].message;
@@ -479,6 +562,7 @@ fn chat_response_skips_invalid_json_tool_call_name_before_later_explicit_tool_ca
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -512,6 +596,7 @@ fn chat_response_extracts_qwen_function_parameter_tool_call() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -548,6 +633,7 @@ fn chat_response_recovers_qwen_function_tool_call_without_closing_tags() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -589,6 +675,7 @@ fn chat_response_recovers_qwen_tool_call_when_parameter_close_is_truncated() {
             ..Default::default()
         },
         None,
+        None,
     );
 
     let message = &openai.choices[0].message;
@@ -627,6 +714,7 @@ fn chat_response_recovers_qwen_tool_call_when_parameter_close_missing_and_functi
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -672,6 +760,7 @@ hello
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -725,6 +814,7 @@ fn chat_response_canonicalizes_qwen_tool_calls_against_openai_tools_contract() {
             ..Default::default()
         },
         None,
+        None,
     );
 
     let tool_call = &openai.choices[0]
@@ -753,6 +843,7 @@ fn chat_tool_call_stream_chunks_use_openai_delta_shape() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
     let tool_calls = openai.choices[0]
@@ -798,6 +889,7 @@ fn chat_response_leaves_bare_json_content_alone_even_with_tools_enabled() {
             parse_tool_calls: true,
             ..Default::default()
         },
+        None,
         None,
     );
 
@@ -854,6 +946,7 @@ fn chat_response_truncates_at_client_stop_and_reports_stop_finish() {
             ..Default::default()
         },
         None,
+        None,
     );
     let choice = &openai.choices[0];
     assert_eq!(choice.message.content, "hello ");
@@ -873,6 +966,7 @@ fn completion_response_truncates_at_client_stop() {
             client_stop_sequences: vec!["###".to_string()],
             ..Default::default()
         },
+        None,
     );
     assert_eq!(openai.choices[0].text, "alpha");
     assert_eq!(openai.choices[0].finish_reason, Some("stop"));
@@ -896,6 +990,7 @@ fn client_stop_inside_tool_call_body_cannot_truncate_the_call() {
             client_stop_sequences: vec!["\n\n".to_string()],
             ..Default::default()
         },
+        None,
         None,
     );
     let choice = &openai.choices[0];
@@ -948,7 +1043,8 @@ fn usage_reports_cached_tokens_from_prefix_reuse() {
         .route
         .crossover_decisions
         .insert("prefix_reused_tokens".to_string(), 512);
-    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    let openai =
+        openai_completion_response(&response, "cmpl-test".to_string(), Default::default(), None);
     let usage = openai.usage.expect("usage should be present");
     assert_eq!(
         usage
@@ -960,7 +1056,8 @@ fn usage_reports_cached_tokens_from_prefix_reuse() {
 
     // No recorded reuse: the details block is omitted entirely.
     let response = sample_generate_response("hello", vec![10], vec![Some(-0.1)]);
-    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    let openai =
+        openai_completion_response(&response, "cmpl-test".to_string(), Default::default(), None);
     assert!(
         openai
             .usage
@@ -982,7 +1079,8 @@ fn usage_prefers_physical_mlx_prefix_reuse_over_scheduler_affinity() {
         .crossover_decisions
         .insert("ax_mlx_prefix_cache_reused_tokens".to_string(), 0);
 
-    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    let openai =
+        openai_completion_response(&response, "cmpl-test".to_string(), Default::default(), None);
     assert!(
         openai
             .usage
@@ -996,7 +1094,8 @@ fn usage_prefers_physical_mlx_prefix_reuse_over_scheduler_affinity() {
         .route
         .crossover_decisions
         .insert("ax_mlx_prefix_cache_reused_tokens".to_string(), 128);
-    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    let openai =
+        openai_completion_response(&response, "cmpl-test".to_string(), Default::default(), None);
     assert_eq!(
         openai
             .usage
@@ -1020,7 +1119,8 @@ fn usage_does_not_report_scheduler_affinity_for_partial_mlx_telemetry() {
         .crossover_decisions
         .insert("ax_mlx_prefill_steps".to_string(), 2);
 
-    let openai = openai_completion_response(&response, "cmpl-test".to_string(), Default::default());
+    let openai =
+        openai_completion_response(&response, "cmpl-test".to_string(), Default::default(), None);
     assert!(
         openai
             .usage

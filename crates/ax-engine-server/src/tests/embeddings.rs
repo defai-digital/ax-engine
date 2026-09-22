@@ -252,6 +252,79 @@ async fn openai_embeddings_endpoint_rejects_unknown_pooling() {
 }
 
 #[tokio::test]
+async fn openai_embeddings_token_cap_is_enforced_per_item() {
+    // The 8192 DEFAULT_EMBED_MAX_TOKENS cap bounds each item alone: two
+    // 5000-token inputs (batch total 10000) must pass validation, while a
+    // single 9000-token input is rejected. Model-matched state so the
+    // request reaches the cap check; the passing case then fails later on
+    // the unreachable delegated backend (never with the cap message).
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    let batch: Vec<Vec<u32>> = (0..2).map(|_| (0..5000).collect()).collect();
+    let body = json!({
+        "model": super::fixtures::TEST_MODEL_ID,
+        "input": batch,
+    });
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&body)))
+            .expect("request should build"),
+    )
+    .await;
+    let message = json["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        status != StatusCode::BAD_REQUEST || !message.contains("exceeds maximum"),
+        "two per-item-valid inputs must not hit the token cap, got {status}: {message}"
+    );
+
+    let single: Vec<u32> = (0..9000).collect();
+    let body = json!({
+        "model": super::fixtures::TEST_MODEL_ID,
+        "input": single,
+    });
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&body)))
+            .expect("request should build"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid_request_response(&json, "exceeds maximum");
+}
+
+#[tokio::test]
+async fn openai_embeddings_mixed_input_shapes_return_the_json_envelope() {
+    // A mixed input array fails the untagged EmbeddingInput enum; it must
+    // come back as the documented 400 invalid_request JSON envelope, not
+    // axum's plain-text 422.
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": super::fixtures::TEST_MODEL_ID,
+                "input": ["hello", [1, 2, 3]]
+            }))))
+            .expect("request should build"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid_request_response(&json, "invalid request body");
+}
+
+#[tokio::test]
 async fn embedding_records_endpoint_requires_tokenizer_artifacts() {
     let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
     let body = serde_json::json!({

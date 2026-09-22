@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use axum::Json;
 use axum::body::to_bytes;
 use axum::extract::State;
@@ -262,9 +264,43 @@ fn responses_messages(
             if items.is_empty() {
                 return Err(invalid("input must not be empty"));
             }
+            // Call ids of function_call items seen so far; a
+            // function_call_output must reference an earlier matching call.
+            let mut seen_call_ids = HashSet::new();
+            // Consecutive function_call items coalesce into a single
+            // assistant message: the standard parallel round trip
+            // [fc A, fc B, out A, out B] must render as one assistant turn
+            // with two tool calls followed by the tool messages. Separate
+            // per-call assistant turns insert an extra assistant boundary on
+            // Qwen ChatML and mis-attach outputs on Gemma 4.
+            let mut pending_tool_calls: Vec<Value> = Vec::new();
             for (index, item) in items.iter().enumerate() {
-                messages.push(response_input_item(item, index)?);
+                let object = item
+                    .as_object()
+                    .ok_or_else(|| invalid(format!("input[{index}] must be an object")))?;
+                match object.get("type").and_then(Value::as_str) {
+                    Some("function_call") => {
+                        let (call_id, tool_call) = response_function_tool_call(object, index)?;
+                        seen_call_ids.insert(call_id);
+                        pending_tool_calls.push(tool_call);
+                    }
+                    Some("function_call_output") => {
+                        flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
+                        let call_id = required_string(object, "call_id", index)?;
+                        if !seen_call_ids.contains(call_id) {
+                            return Err(invalid(format!(
+                                "No tool call found for function call output with call_id '{call_id}'"
+                            )));
+                        }
+                        messages.push(response_function_output_item(object, index)?);
+                    }
+                    _ => {
+                        flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
+                        messages.push(response_input_item(item, index)?);
+                    }
+                }
             }
+            flush_pending_tool_calls(&mut messages, &mut pending_tool_calls);
         }
         _ => {
             return Err(invalid(
@@ -282,14 +318,27 @@ fn response_input_item(item: &Value, index: usize) -> Result<Value, HttpErrorRes
     let object = item
         .as_object()
         .ok_or_else(|| invalid(format!("input[{index}] must be an object")))?;
+    // function_call / function_call_output items are routed by
+    // responses_messages (call coalescing + dangling-output rejection).
     match object.get("type").and_then(Value::as_str) {
         None | Some("message") => response_message_item(object, index),
-        Some("function_call") => response_function_call_item(object, index),
-        Some("function_call_output") => response_function_output_item(object, index),
         Some(item_type) => Err(unsupported(format!(
             "input[{index}] type '{item_type}' is not supported by the stateless /v1/responses subset"
         ))),
     }
+}
+
+/// Emit the pending run of function_call items as one assistant message
+/// whose tool_calls array holds every call in order.
+fn flush_pending_tool_calls(messages: &mut Vec<Value>, pending_tool_calls: &mut Vec<Value>) {
+    if pending_tool_calls.is_empty() {
+        return;
+    }
+    messages.push(json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": std::mem::take(pending_tool_calls)
+    }));
 }
 
 fn response_message_item(
@@ -341,10 +390,13 @@ fn response_item_text(content: Option<&Value>, index: usize) -> Result<String, H
     }
 }
 
-fn response_function_call_item(
+/// Parse one Responses function_call item into the chat-contract tool-call
+/// object, returning its call id so callers can track which outputs have a
+/// matching earlier call.
+fn response_function_tool_call(
     object: &Map<String, Value>,
     index: usize,
-) -> Result<Value, HttpErrorResponse> {
+) -> Result<(String, Value), HttpErrorResponse> {
     let name = required_string(object, "name", index)?;
     let call_id = object
         .get("call_id")
@@ -356,15 +408,14 @@ fn response_function_call_item(
         .filter(|value| !value.is_null())
         .map(value_as_text)
         .unwrap_or_else(|| "{}".to_string());
-    Ok(json!({
-        "role": "assistant",
-        "content": null,
-        "tool_calls": [{
+    Ok((
+        call_id.to_string(),
+        json!({
             "id": call_id,
             "type": "function",
             "function": {"name": name, "arguments": arguments}
-        }]
-    }))
+        }),
+    ))
 }
 
 fn response_function_output_item(
@@ -598,36 +649,30 @@ fn build_responses_output(
 }
 
 fn responses_usage(usage: Option<&Value>) -> Value {
-    // The Responses shape always carries a usage object; an absent inner
-    // usage becomes a zeroed object, never `null`.
+    // Matching /v1/chat/completions: unknown counts are never fabricated as
+    // zeros. A missing/inner-null usage becomes an explicit null, and a
+    // partially known usage surfaces only the counts that are known.
     let Some(usage) = usage.filter(|value| !value.is_null()) else {
-        return json!({
-            "input_tokens": 0,
-            "input_tokens_details": {"cached_tokens": 0},
-            "output_tokens": 0,
-            "output_tokens_details": {"reasoning_tokens": 0},
-            "total_tokens": 0
-        });
+        return Value::Null;
     };
-    let prompt_tokens = usage
-        .get("prompt_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let completion_tokens = usage
-        .get("completion_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let prompt_tokens = usage.get("prompt_tokens").and_then(Value::as_u64);
+    let completion_tokens = usage.get("completion_tokens").and_then(Value::as_u64);
     let cached_tokens = usage
         .get("prompt_tokens_details")
-        .and_then(|value| value.get("cached_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64);
+    // Sum of the known parts; null when nothing is known.
+    let total_tokens = match (prompt_tokens, completion_tokens) {
+        (Some(prompt), Some(completion)) => Some(prompt.saturating_add(completion)),
+        (Some(known), None) | (None, Some(known)) => Some(known),
+        (None, None) => None,
+    };
     json!({
         "input_tokens": prompt_tokens,
         "input_tokens_details": {"cached_tokens": cached_tokens},
         "output_tokens": completion_tokens,
         "output_tokens_details": {"reasoning_tokens": 0},
-        "total_tokens": prompt_tokens.saturating_add(completion_tokens)
+        "total_tokens": total_tokens
     })
 }
 
@@ -799,12 +844,8 @@ mod tests {
 
         assert_eq!(response["status"], "incomplete");
         assert_eq!(response["incomplete_details"]["reason"], "content_filter");
-        // Absent inner usage still yields a usage object.
-        assert_eq!(response["usage"]["total_tokens"], 0);
-        assert_eq!(
-            response["usage"]["input_tokens_details"]["cached_tokens"],
-            0
-        );
+        // Unknown usage surfaces as null instead of fabricated zero counts.
+        assert!(response["usage"].is_null());
     }
 
     #[test]
@@ -824,7 +865,155 @@ mod tests {
         call.insert("name".to_string(), json!("f"));
         call.insert("call_id".to_string(), json!("c"));
         call.insert("arguments".to_string(), Value::Null);
-        let item = response_function_call_item(&call, 0).expect("null arguments default");
-        assert_eq!(item["tool_calls"][0]["function"]["arguments"], "{}");
+        let (_, tool_call) = response_function_tool_call(&call, 0).expect("null arguments default");
+        assert_eq!(tool_call["function"]["arguments"], "{}");
+    }
+
+    #[test]
+    fn function_call_output_without_matching_call_is_rejected() {
+        let error = responses_messages(
+            None,
+            &json!([
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "run the tool"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_ghost",
+                    "output": "result"
+                }
+            ]),
+        )
+        .expect_err("dangling function_call_output must be rejected");
+        let (status, Json(body)) = error;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.error.code.as_deref(), Some("invalid_request"));
+        assert_eq!(
+            body.error.message,
+            "No tool call found for function call output with call_id 'call_ghost'"
+        );
+
+        // An output that arrives before its call is equally dangling.
+        let error = responses_messages(
+            None,
+            &json!([
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_later",
+                    "output": "result"
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_later",
+                    "name": "lookup",
+                    "arguments": "{}"
+                }
+            ]),
+        )
+        .expect_err("output before its function_call must be rejected");
+        let (status, Json(body)) = error;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.error.code.as_deref(), Some("invalid_request"));
+    }
+
+    #[test]
+    fn consecutive_function_calls_coalesce_into_one_assistant_message() {
+        let messages = responses_messages(
+            None,
+            &json!([
+                {"type": "message", "role": "user", "content": "run both"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_a",
+                    "name": "alpha",
+                    "arguments": "{\"n\":1}"
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_b",
+                    "name": "beta",
+                    "arguments": "{\"n\":2}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_a",
+                    "output": "a result"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_b",
+                    "output": "b result"
+                }
+            ]),
+        )
+        .expect("parallel round trip should map");
+        assert_eq!(
+            Value::Array(messages),
+            json!([
+                {"role": "user", "content": "run both"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_a",
+                            "type": "function",
+                            "function": {"name": "alpha", "arguments": "{\"n\":1}"}
+                        },
+                        {
+                            "id": "call_b",
+                            "type": "function",
+                            "function": {"name": "beta", "arguments": "{\"n\":2}"}
+                        }
+                    ]
+                },
+                {"role": "tool", "tool_call_id": "call_a", "content": "a result"},
+                {"role": "tool", "tool_call_id": "call_b", "content": "b result"}
+            ])
+        );
+    }
+
+    #[test]
+    fn responses_usage_surfaces_known_counts_and_never_fabricates_zeros() {
+        let request: OpenAiResponsesRequest = serde_json::from_value(json!({"input": "hello"}))
+            .expect("Responses request should deserialize");
+        // Prompt count known, output count unknown: surface the prompt
+        // count, keep the unknown output count null.
+        let response = build_responses_output(
+            &request,
+            &json!({
+                "id": "chatcmpl-partial",
+                "created": 123,
+                "model": "qwen3",
+                "choices": [{
+                    "message": {"content": "answer"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 11}
+            }),
+        )
+        .expect("partial usage should map");
+        assert_eq!(response["usage"]["input_tokens"], 11);
+        assert!(response["usage"]["output_tokens"].is_null());
+        assert_eq!(response["usage"]["total_tokens"], 11);
+
+        // Nothing known at all: emit null, matching /v1/chat/completions.
+        let response = build_responses_output(
+            &request,
+            &json!({
+                "id": "chatcmpl-unknown",
+                "created": 123,
+                "model": "qwen3",
+                "choices": [{
+                    "message": {"content": "answer"},
+                    "finish_reason": "stop"
+                }],
+                "usage": null
+            }),
+        )
+        .expect("unknown usage should map");
+        assert!(response["usage"].is_null());
     }
 }

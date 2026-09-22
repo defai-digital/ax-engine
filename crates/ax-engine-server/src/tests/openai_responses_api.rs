@@ -160,3 +160,44 @@ async fn responses_endpoint_rejects_empty_input_array() {
             .is_some_and(|message| message.contains("input must not be empty"))
     );
 }
+
+#[tokio::test]
+async fn responses_endpoint_rejects_dangling_function_call_output() {
+    // A function_call_output with no earlier matching function_call must be
+    // a 400 invalid_request (matching OpenAI), never a silently dangling
+    // tool message.
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    let (status, response) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/responses")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": "run the tool"
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_missing",
+                        "output": "result"
+                    }
+                ]
+            }))))
+            .expect("request should build"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(response["error"]["code"], "invalid_request");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(
+                "No tool call found for function call output with call_id 'call_missing'"
+            ))
+    );
+}
