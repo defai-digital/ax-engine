@@ -14,8 +14,8 @@
 //! throughput admission pass on Apple Silicon.
 
 use mlx_sys::{
-    KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, concatenate,
-    contiguous, reshape, slice, zeros,
+    KernelOutputSpec, KernelTemplateArg, LazyKernel, MlxArray, MlxDtype, MlxMetalKernel,
+    concatenate, contiguous, reshape, slice, zeros,
 };
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -108,8 +108,47 @@ fn verify_qmm_armed() -> bool {
     VERIFY_QMM_ARMED.get()
 }
 
-static VERIFY_QMM_SPLIT_K: OnceLock<MlxMetalKernel> = OnceLock::new();
-static VERIFY_QMM_MSG: OnceLock<MlxMetalKernel> = OnceLock::new();
+static VERIFY_QMM_SPLIT_K: LazyKernel = LazyKernel::new(
+    "ax_qwen_mtp_verify_qmm_split_k_v4",
+    &["x", "weight", "scales", "biases"],
+    &["out"],
+    VERIFY_QMM_SPLIT_K_SOURCE,
+    "",
+    true,
+);
+static VERIFY_QMM_MSG: LazyKernel = LazyKernel::new(
+    "ax_qwen_mtp_verify_qmm_msg_v4",
+    &["x", "weight", "scales", "biases"],
+    &["out"],
+    VERIFY_QMM_MSG_SOURCE,
+    "",
+    true,
+);
+
+/// Test-only switch that forces the lazy verify-QMM kernels to report as
+/// unavailable, so the fail-closed fallback route can be exercised without a
+/// genuine Metal compile failure.
+#[cfg(test)]
+static FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Fail-closed lookup for the split-K verify kernel.
+fn verify_qmm_split_k_kernel() -> Option<&'static MlxMetalKernel> {
+    #[cfg(test)]
+    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    VERIFY_QMM_SPLIT_K.get()
+}
+
+/// Fail-closed lookup for the multi-simdgroup verify kernel.
+fn verify_qmm_msg_kernel() -> Option<&'static MlxMetalKernel> {
+    #[cfg(test)]
+    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    VERIFY_QMM_MSG.get()
+}
 
 const VERIFY_QMM_SPLIT_K_SOURCE: &str = r#"
     uint part = simdgroup_index_in_threadgroup;
@@ -529,16 +568,7 @@ fn try_qwen_mtp_verify_qmm_for_min_n(
             padded = contiguous(&concatenate(&[&x_flat, &pad], 0, None), None);
             &padded
         };
-        let kernel = VERIFY_QMM_MSG.get_or_init(|| {
-            MlxMetalKernel::new(
-                "ax_qwen_mtp_verify_qmm_msg_v4",
-                &["x", "weight", "scales", "biases"],
-                &["out"],
-                VERIFY_QMM_MSG_SOURCE,
-                "",
-                true,
-            )
-        });
+        let kernel = verify_qmm_msg_kernel()?;
         let mut args = common_args(output_rows);
         args.push(KernelTemplateArg::Int {
             name: "NumSimdgroups",
@@ -559,16 +589,7 @@ fn try_qwen_mtp_verify_qmm_for_min_n(
             .ok()?;
         (outputs, output_rows)
     } else {
-        let kernel = VERIFY_QMM_SPLIT_K.get_or_init(|| {
-            MlxMetalKernel::new(
-                "ax_qwen_mtp_verify_qmm_split_k_v4",
-                &["x", "weight", "scales", "biases"],
-                &["out"],
-                VERIFY_QMM_SPLIT_K_SOURCE,
-                "",
-                true,
-            )
-        });
+        let kernel = verify_qmm_split_k_kernel()?;
         // Small output projections expose too few column tiles to saturate an
         // M5 GPU with only two K partitions. Four partitions restore occupancy;
         // wider projections keep the lower-reduction-overhead two-way split.
@@ -621,6 +642,79 @@ mod tests {
             assert!(verify_qmm_armed());
         }
         assert!(!verify_qmm_armed());
+    }
+
+    #[test]
+    fn kernel_unavailable_falls_back_to_reference_qmm() {
+        let k = 64_i32;
+        let n = SPLIT_K_TEST_N;
+        let m = 3;
+        let dense_data: Vec<f32> = (0..(n * k) as usize)
+            .map(|index| ((index % 127) as f32 - 63.0) / 512.0)
+            .collect();
+        let dense = reshape(&MlxArray::from_f32_slice(&dense_data), &[n, k], None);
+        let quantized = quantize(
+            &dense,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let weight = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(astype(&quantized[1], MlxDtype::Bfloat16, None)),
+            biases: Some(astype(&quantized[2], MlxDtype::Bfloat16, None)),
+            group_size: 32,
+            bits: 4,
+            mode: "affine".to_owned(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+        };
+        let input_data: Vec<f32> = (0..(m * k) as usize)
+            .map(|index| ((index % 29) as f32 - 14.0) / 128.0)
+            .collect();
+        let input = astype(
+            &reshape(&MlxArray::from_f32_slice(&input_data), &[1, m, k], None),
+            MlxDtype::Bfloat16,
+            None,
+        );
+
+        let _guard = QwenMtpVerifyQmmGuard::arm(true);
+        // Mock the kernel as unavailable: the routed path must signal fallback
+        // (None) rather than panicking, and the caller's MLX reference QMM must
+        // still produce the projection.
+        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            try_qwen_mtp_verify_qmm(&input, &weight).is_none(),
+            "unavailable kernel must fall back to None (reference route)"
+        );
+        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.store(false, std::sync::atomic::Ordering::Release);
+
+        let reference = quantized_matmul_with_mode(
+            &input,
+            &weight.weight,
+            weight.scales.as_ref().unwrap(),
+            weight.biases.as_ref(),
+            true,
+            Some(weight.group_size),
+            Some(weight.bits),
+            MlxQuantizationMode::Affine,
+            None,
+        );
+        let reference_f32 = astype(&reference, MlxDtype::Float32, None);
+        eval(&[&reference_f32]);
+        assert_eq!(reference.shape(), vec![1, m, n]);
+        assert!(
+            reference_f32
+                .data_f32()
+                .iter()
+                .all(|value| value.is_finite()),
+            "reference QMM must remain usable when the kernel is unavailable"
+        );
     }
 
     fn assert_route_matches_affine_qmm(n: i32, min_route_n: i32, m: i32, route: &str) {

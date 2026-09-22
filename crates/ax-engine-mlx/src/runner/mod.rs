@@ -1265,10 +1265,6 @@ where
     }
 }
 
-/// Default minimum `batch_size * max_seq_len` before the mean-pool compiled
-/// closure path is attempted. Override via `AX_EMBED_MEAN_COMPILE_THRESHOLD`.
-const EMBED_MEAN_COMPILE_DEFAULT_THRESHOLD: usize = 512;
-
 /// Cached flag: when `AX_EMBED_GPU_NORMALIZE=1`, L2 normalization runs on
 /// the GPU instead of the default CPU read-back path.
 static EMBED_GPU_NORMALIZE: LazyLock<bool> = LazyLock::new(|| {
@@ -5173,10 +5169,7 @@ impl MlxRunner {
         );
 
         // Size-gating: skip compilation for small batches.
-        let threshold: usize = std::env::var("AX_EMBED_MEAN_COMPILE_THRESHOLD")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(EMBED_MEAN_COMPILE_DEFAULT_THRESHOLD);
+        let threshold: usize = crate::fastpath::embed_mean_compile_threshold();
         if batch * max_len < threshold {
             return None;
         }
@@ -9527,10 +9520,8 @@ impl MlxRunner {
         let mut pending = state.mtp_pending_draft.clone();
         let token_offset = state.cache.seq_len();
         let has_linear_attention = self.cfg.linear_attention.is_some();
-        let replay_kill_switch = has_linear_attention
-            && std::env::var("AX_MLX_MTP_LINEAR_EXACT_REPLAY")
-                .map(|value| value != "0")
-                .unwrap_or(false);
+        let replay_kill_switch =
+            has_linear_attention && crate::fastpath::mtp_linear_exact_replay_enabled();
         let forced_greedy_replay = has_linear_attention
             && forced_linear_mtp_greedy_revalidation(
                 replay_kill_switch || self.qwen_linear_mtp_force_replay,
@@ -11843,9 +11834,7 @@ impl MlxRunner {
                     // accumulated positional context so the next MTP step starts
                     // with correct RoPE offsets. Gated by env var; defaults to
                     // the previous reset behavior for safety.
-                    let preserve_cache = std::env::var("AX_MLX_MTP_NGRAM_CACHE_POLICY")
-                        .map(|v| v != "reset")
-                        .unwrap_or(true);
+                    let preserve_cache = crate::fastpath::mtp_ngram_cache_preserved();
                     if preserve_cache {
                         if let Some(ref mut cache) = state.mtp_cache {
                             // N-gram tokens don't produce MTP KV entries, so advance
@@ -12765,9 +12754,7 @@ fn ngram_draft_is_cycle(draft: &[u32], recent: &[u32]) -> bool {
 }
 
 fn gemma4_moe_long_mt_enabled() -> bool {
-    std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    crate::fastpath::gemma4_moe_long_mt_enabled()
 }
 
 /// Compute the think-block state after observing a sequence of tokens, without
@@ -14545,19 +14532,15 @@ fn apply_loop_detection_stop(
 fn loop_detection_config_for_family(
     model_family: &str,
 ) -> Option<ax_engine_core::LoopDetectionConfig> {
-    let env = std::env::var("AX_GEMMA4_LOOP_DETECTION")
-        .unwrap_or_else(|_| "on".to_string())
-        .trim()
-        .to_ascii_lowercase();
-    match env.as_str() {
-        "off" | "0" | "false" | "no" => return None,
-        "force" => {
-            return Some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT);
+    match crate::fastpath::gemma4_loop_detection_mode() {
+        crate::fastpath::Gemma4LoopDetectionMode::Off => None,
+        crate::fastpath::Gemma4LoopDetectionMode::Force => {
+            Some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT)
         }
-        _ => {}
+        crate::fastpath::Gemma4LoopDetectionMode::Default => model_family
+            .starts_with("gemma4")
+            .then_some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT),
     }
-    let is_gemma4 = model_family.starts_with("gemma4");
-    is_gemma4.then_some(ax_engine_core::LoopDetectionConfig::GEMMA4_DEFAULT)
 }
 
 /// Loop detection for one request. Fixed-token `ignore_eos` benches never arm

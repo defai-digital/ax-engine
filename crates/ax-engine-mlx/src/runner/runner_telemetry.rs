@@ -3,13 +3,7 @@ use super::*;
 /// Process gate for multimodal prefix reuse (WS-M3 / R-M3).
 /// Default off until fixtures promote; set `AX_MLX_MULTIMODAL_PREFIX_REUSE=1`.
 pub(crate) fn multimodal_prefix_reuse_enabled() -> bool {
-    match std::env::var("AX_MLX_MULTIMODAL_PREFIX_REUSE") {
-        Ok(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            v == "1" || v == "true" || v == "on" || v == "yes"
-        }
-        Err(_) => false,
-    }
+    crate::fastpath::multimodal_prefix_reuse_enabled()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

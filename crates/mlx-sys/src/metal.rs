@@ -1,5 +1,6 @@
 use std::ffi::CString;
 use std::ptr;
+use std::sync::OnceLock;
 
 use crate::array::{MlxArray, MlxDtype};
 use crate::error::{last_error_message, panic_on_status, prepare_error_capture, status_to_result};
@@ -16,17 +17,22 @@ unsafe impl Send for MlxMetalKernel {}
 unsafe impl Sync for MlxMetalKernel {}
 
 impl MlxMetalKernel {
-    /// Register a custom Metal kernel.
+    /// Register a custom Metal kernel, surfacing construction failure as `Err`
+    /// instead of panicking.
     ///
-    /// `input_names` and `output_names` must match the buffer bindings in `source`.
-    pub fn new(
+    /// `input_names` and `output_names` must match the buffer bindings in
+    /// `source`. Note that Metal kernel compilation is lazy: a source with a
+    /// syntax error constructs successfully and only fails when the kernel is
+    /// applied/evaluated, so callers must pair this with
+    /// [`Self::try_apply_with_template`] for full fail-closed coverage.
+    pub fn try_new(
         name: &str,
         input_names: &[&str],
         output_names: &[&str],
         source: &str,
         header: &str,
         ensure_row_contiguous: bool,
-    ) -> Self {
+    ) -> Result<Self, String> {
         prepare_error_capture();
         unsafe {
             let c_name = CString::new(name).expect("Metal kernel name must not contain NUL bytes");
@@ -52,14 +58,39 @@ impl MlxMetalKernel {
             ffi::mlx_vector_string_free(outputs);
 
             if inner.ctx.is_null() {
-                panic!("{}", last_error_message("mlx_fast_metal_kernel_new"));
+                return Err(last_error_message("mlx_fast_metal_kernel_new"));
             }
 
-            Self {
+            Ok(Self {
                 inner,
                 name: name.to_string(),
-            }
+            })
         }
+    }
+
+    /// Register a custom Metal kernel, panicking on construction failure.
+    ///
+    /// `input_names` and `output_names` must match the buffer bindings in
+    /// `source`. Callers with a fallback path should use [`Self::try_new`]
+    /// instead; this remains for callers that are truly infallible at load
+    /// time.
+    pub fn new(
+        name: &str,
+        input_names: &[&str],
+        output_names: &[&str],
+        source: &str,
+        header: &str,
+        ensure_row_contiguous: bool,
+    ) -> Self {
+        Self::try_new(
+            name,
+            input_names,
+            output_names,
+            source,
+            header,
+            ensure_row_contiguous,
+        )
+        .unwrap_or_else(|message| panic!("{message}"))
     }
 
     /// Call the kernel.
@@ -276,6 +307,67 @@ impl Drop for MlxMetalKernel {
     }
 }
 
+/// A lazily-compiled custom Metal kernel that fails closed.
+///
+/// Unlike a bare `OnceLock<MlxMetalKernel>`, a [`LazyKernel`] caches
+/// `None` when construction fails (via [`MlxMetalKernel::try_new`]) instead of
+/// panicking, so a request-path caller can take its fallback route. Kernel
+/// *application* failures are still surfaced by [`MlxMetalKernel::try_apply_with_template`],
+/// which callers must use to stay fail-closed under `panic = "abort"`.
+///
+/// The kernel spec must be `'static` (the crate's kernel sources are
+/// compile-time constants), which lets this be stored directly in a `static`.
+pub struct LazyKernel {
+    cell: OnceLock<Option<MlxMetalKernel>>,
+    name: &'static str,
+    input_names: &'static [&'static str],
+    output_names: &'static [&'static str],
+    source: &'static str,
+    header: &'static str,
+    ensure_row_contiguous: bool,
+}
+
+impl LazyKernel {
+    /// Create a lazy kernel spec. Nothing is compiled until [`Self::get`] is
+    /// first called.
+    pub const fn new(
+        name: &'static str,
+        input_names: &'static [&'static str],
+        output_names: &'static [&'static str],
+        source: &'static str,
+        header: &'static str,
+        ensure_row_contiguous: bool,
+    ) -> Self {
+        Self {
+            cell: OnceLock::new(),
+            name,
+            input_names,
+            output_names,
+            source,
+            header,
+            ensure_row_contiguous,
+        }
+    }
+
+    /// Return the compiled kernel, or `None` if construction failed (the
+    /// failure is cached so it is logged once, on the first attempt).
+    pub fn get(&self) -> Option<&MlxMetalKernel> {
+        self.cell
+            .get_or_init(|| {
+                MlxMetalKernel::try_new(
+                    self.name,
+                    self.input_names,
+                    self.output_names,
+                    self.source,
+                    self.header,
+                    self.ensure_row_contiguous,
+                )
+                .ok()
+            })
+            .as_ref()
+    }
+}
+
 /// Shape and dtype for one output buffer declared in the kernel.
 pub struct KernelOutputSpec {
     pub shape: Vec<i32>,
@@ -388,5 +480,52 @@ mod tests {
         let refs = outputs.iter().collect::<Vec<_>>();
         try_eval(&refs).expect("valid kernel evaluates after a prior failure");
         assert_eq!(outputs[0].data_f32(), &[2.0, 4.0, 6.0, 8.0]);
+    }
+
+    #[test]
+    fn try_new_and_lazy_kernel_fail_closed() {
+        // A valid kernel constructs through try_new.
+        let ok = MlxMetalKernel::try_new(
+            "mlx_sys_test_try_new_ok",
+            &["input"],
+            &["output"],
+            "uint i = thread_position_in_grid.x; output[i] = input[i];",
+            "",
+            true,
+        );
+        assert!(ok.is_ok(), "a valid source must construct");
+
+        // Metal kernel compilation is lazy, so a syntax error constructs fine
+        // and only surfaces at apply/eval. LazyKernel::get must not panic and
+        // the apply path must surface Err (fail-closed) rather than abort.
+        let lazy = LazyKernel::new(
+            "mlx_sys_test_lazy_broken",
+            &["input"],
+            &["output"],
+            "this is not valid metal source;",
+            "",
+            true,
+        );
+        let kernel = lazy.get().expect("lazy construction is deferred");
+        let input = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0, 4.0]);
+        let outputs = kernel.try_apply_with_template(
+            &[&input],
+            &[KernelOutputSpec {
+                shape: vec![4],
+                dtype: MlxDtype::Float32,
+            }],
+            &[],
+            (4, 1, 1),
+            (4, 1, 1),
+            None,
+        );
+        let eval_result = match outputs {
+            Err(message) => Err(message),
+            Ok(outputs) => {
+                let refs = outputs.iter().collect::<Vec<_>>();
+                try_eval(&refs)
+            }
+        };
+        assert!(eval_result.is_err(), "broken kernel must surface an error");
     }
 }

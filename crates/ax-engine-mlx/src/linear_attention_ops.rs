@@ -44,11 +44,7 @@ static RMS_NORM_FULL_GATE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 /// group's arithmetic independent and unchanged. Keep this as an A/B knob
 /// until the matched hardware gate selects a default.
 fn gated_delta_verify_threadgroup_y(value_head_dim: i32) -> i32 {
-    let requested = std::env::var("AX_MLX_MTP_GDN_TGY")
-        .ok()
-        .and_then(|raw| raw.parse::<i32>().ok())
-        .filter(|value| matches!(value, 4 | 8 | 16 | 32))
-        .unwrap_or(4);
+    let requested = fastpath::gated_delta_verify_threadgroup_y_env();
     if value_head_dim % requested == 0 {
         requested
     } else {

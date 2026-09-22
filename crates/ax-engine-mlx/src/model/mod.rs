@@ -2083,9 +2083,7 @@ pub fn forward_all_positions_with_post_norm_greedy(
     // LONG_MT uses physical cache length (heuristic), then map to MRoPE origin.
     let moe_long_mt = cfg.moe_expert_count > 0
         && token_offset >= 512
-        && std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT")
-            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        && crate::fastpath::gemma4_moe_long_mt_enabled();
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     // LONG_MT aligns both the materialized S=1 baseline and the multi-token
     // verifier on the invariant affine projection kernel. RowExact MLX reads
