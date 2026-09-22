@@ -218,7 +218,13 @@ pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: 
     if !decide_clear_wired_residency(&inputs) {
         // Metadata already matched an audited Tiel/Cyber export. The no-wire
         // policy itself stays M5 Max / >= 128 GiB. M4 Pro 64 GiB uses
-        // tiel-session-resident-v1 and keeps this wiring decision.
+        // tiel-session-resident-v1 and keeps this wiring decision. Warn once
+        // per process: worker recycles and repeated loads would otherwise
+        // repeat the same host-level message on every load.
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if WARNED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
         tracing::warn!(
             target: "ax_engine_mlx::runner",
             policy = POLICY_ID,
