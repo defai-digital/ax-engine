@@ -525,15 +525,18 @@ fn build_mlx_lm_chat_completion_request(
 }
 
 /// Map an mlx-lm finish reason onto the SDK finish reason, mirroring the
-/// llama.cpp `finish_reason_from_stop_type` table: an unknown non-empty
-/// reason (for example `abort`) is a reported error, not a clean finish with
-/// no reason; otherwise the stream would complete successfully while the
-/// backend actually failed.
+/// llama.cpp `finish_reason_from_stop_type` table. An empty or absent reason
+/// is a non-terminal chunk, tool-call terminations are clean stops, and an
+/// unknown non-empty reason (for example `abort`) is a reported error rather
+/// than a clean finish with no reason; otherwise the stream would complete
+/// successfully while the backend actually failed.
 pub fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {
     match value {
         Some("stop") => Some(GenerateFinishReason::Stop),
         Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
         Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
+        Some("tool_calls" | "function_call") => Some(GenerateFinishReason::Stop),
+        Some("") | None => None,
         Some(unknown) => {
             tracing::warn!(
                 finish_reason = unknown,
@@ -541,7 +544,6 @@ pub fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishRe
             );
             Some(GenerateFinishReason::Error)
         }
-        None => None,
     }
 }
 
@@ -680,18 +682,8 @@ mod tests {
     use crate::generate::{GenerateRequest, GenerateSampling};
 
     #[test]
-    fn finish_reason_from_mlx_lm_maps_unknown_reasons_to_error() {
-        // Regression: an unknown non-empty finish_reason (for example
-        // "abort") used to map to None, so the chunk still counted as
-        // terminal but the stream completed with no finish reason.
-        assert_eq!(
-            finish_reason_from_mlx_lm(Some("abort")),
-            Some(GenerateFinishReason::Error)
-        );
-        assert_eq!(
-            finish_reason_from_mlx_lm(Some("backend_error")),
-            Some(GenerateFinishReason::Error)
-        );
+    fn finish_reason_from_mlx_lm_maps_reason_table() {
+        // Terminal reasons.
         assert_eq!(
             finish_reason_from_mlx_lm(Some("stop")),
             Some(GenerateFinishReason::Stop)
@@ -704,7 +696,27 @@ mod tests {
             finish_reason_from_mlx_lm(Some("content_filter")),
             Some(GenerateFinishReason::ContentFilter)
         );
+        // Tool-call terminations are clean stops, not errors.
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("tool_calls")),
+            Some(GenerateFinishReason::Stop)
+        );
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("function_call")),
+            Some(GenerateFinishReason::Stop)
+        );
+        // Empty or absent reasons are non-terminal.
+        assert_eq!(finish_reason_from_mlx_lm(Some("")), None);
         assert_eq!(finish_reason_from_mlx_lm(None), None);
+        // Unknown non-empty reasons are reported errors, mirroring llama.cpp.
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("abort")),
+            Some(GenerateFinishReason::Error)
+        );
+        assert_eq!(
+            finish_reason_from_mlx_lm(Some("backend_error")),
+            Some(GenerateFinishReason::Error)
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ import threading
 import time
 import types
 import unittest
+import warnings
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -483,11 +484,93 @@ class TestAXEngineChatModel(unittest.TestCase):
         chat.invoke([HumanMessage(content="x")], temperature=None)
         self.assertNotIn("temperature", self.srv.last_body)
 
-    def test_unknown_kwarg_raises_value_error(self):
+    def test_unknown_kwarg_warns_and_is_ignored(self):
+        # NOTE: assertWarns* is unusable here: its __enter__ sweeps
+        # getattr(module, "__warningregistry__") over sys.modules, and the
+        # installed transformers package forwards unknown attribute lookups
+        # to lazy submodule imports that die on the missing torch dep.
+        # warnings.catch_warnings does not perform that sweep.
         self.srv.set_response(_chat_response())
         chat = self._make_chat()
-        with self.assertRaisesRegex(ValueError, "bogus_param"):
-            chat.invoke([HumanMessage(content="x")], bogus_param=1)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = chat.invoke([HumanMessage(content="x")], bogus_param=1)
+        self.assertEqual(result.content, "Hello!")
+        self.assertNotIn("bogus_param", self.srv.last_body)
+        self.assertTrue(
+            any(
+                issubclass(w.category, UserWarning) and "bogus_param" in str(w.message)
+                for w in caught
+            )
+        )
+
+    def test_bind_response_format_reaches_request_body(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat()
+        chat.bind(response_format={"type": "json_object"}).invoke([HumanMessage(content="x")])
+        self.assertEqual(self.srv.last_body["response_format"], {"type": "json_object"})
+
+    def test_bind_tools_parallel_tool_calls_forwarded(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat()
+        bound = chat.bind_tools(
+            [
+                {
+                    "name": "weather",
+                    "description": "Get the weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                }
+            ],
+            parallel_tool_calls=False,
+        )
+        bound.invoke([HumanMessage(content="What is the weather?")])
+        self.assertIs(self.srv.last_body["parallel_tool_calls"], False)
+
+    def test_standard_request_keys_forwarded(self):
+        # metadata is deliberately absent: langchain-core 1.x consumes a
+        # metadata kwarg itself (run metadata), so bind(metadata=...) can
+        # never reach the shim as a request kwarg. Its allow-list entry is
+        # covered by TestMergeSamplingKwargs below, and callers can still
+        # send request metadata via extra_body={"metadata": ...}.
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat()
+        chat.bind(
+            logprobs=True,
+            top_logprobs=5,
+            user="acct-1",
+            n=1,
+        ).invoke([HumanMessage(content="x")])
+        body = self.srv.last_body
+        self.assertIs(body["logprobs"], True)
+        self.assertEqual(body["top_logprobs"], 5)
+        self.assertEqual(body["user"], "acct-1")
+        self.assertEqual(body["n"], 1)
+
+    def test_stream_options_forwarded_on_stream_requests(self):
+        self.srv.set_response(_chat_sse("ok"))
+        chat = self._make_chat()
+        list(
+            chat.stream(
+                [HumanMessage(content="x")],
+                stream_options={"include_usage": True},
+            )
+        )
+        self.assertEqual(self.srv.last_body["stream_options"], {"include_usage": True})
+
+    def test_extra_body_contents_merged_into_request_body(self):
+        self.srv.set_response(_chat_response())
+        chat = self._make_chat(temperature=0.5)
+        chat.invoke(
+            [HumanMessage(content="x")],
+            extra_body={"repetition_penalty": 1.2, "custom_flag": True},
+        )
+        body = self.srv.last_body
+        self.assertAlmostEqual(body["repetition_penalty"], 1.2)
+        self.assertIs(body["custom_flag"], True)
+        self.assertAlmostEqual(body["temperature"], 0.5)
 
     def test_stop_forwarded(self):
         self.srv.set_response(_chat_response())
@@ -698,11 +781,21 @@ class TestAXEngineLLM(unittest.TestCase):
         self.assertAlmostEqual(body["temperature"], 0.3)
         self.assertEqual(body["seed"], 7)
 
-    def test_unknown_kwarg_raises_value_error(self):
+    def test_unknown_kwarg_warns_and_is_ignored(self):
+        # Same assertWarns* caveat as the chat-model test above.
         self.srv.set_response(_completion_response())
         llm = self._make_llm()
-        with self.assertRaisesRegex(ValueError, "bogus_param"):
-            llm.invoke("x", bogus_param=1)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = llm.invoke("x", bogus_param=1)
+        self.assertEqual(result, "world")
+        self.assertNotIn("bogus_param", self.srv.last_body)
+        self.assertTrue(
+            any(
+                issubclass(w.category, UserWarning) and "bogus_param" in str(w.message)
+                for w in caught
+            )
+        )
 
     def test_empty_per_call_stop_overrides_constructor_default(self):
         self.srv.set_response(_completion_response())
@@ -743,6 +836,50 @@ class TestAXEngineLLM(unittest.TestCase):
     def test_llm_type(self):
         llm = self._make_llm()
         self.assertEqual(llm._llm_type, "ax-engine")
+
+
+@unittest.skipIf(_SKIP, _SKIP_REASON)
+class TestMergeSamplingKwargs(unittest.TestCase):
+    """Direct coverage of the kwargs allow-list, independent of the
+    langchain-core version's public invoke() surface (langchain-core 1.x
+    intercepts some keys, such as metadata, before they reach the shim)."""
+
+    @classmethod
+    def setUpClass(cls):
+        _install_ax_engine_stub()
+
+    @classmethod
+    def tearDownClass(cls):
+        _remove_ax_engine_stub()
+
+    def _merge(self, req, kwargs):
+        from ax_engine.langchain import _merge_sampling_kwargs
+
+        _merge_sampling_kwargs(req, kwargs)
+        return req
+
+    def test_metadata_forwarded_into_request_body(self):
+        req = self._merge({"temperature": 0.5}, {"metadata": {"trace": "abc"}, "user": "acct-1"})
+        self.assertEqual(req["metadata"], {"trace": "abc"})
+        self.assertEqual(req["user"], "acct-1")
+        self.assertAlmostEqual(req["temperature"], 0.5)
+
+    def test_forwarded_key_none_clears_entry(self):
+        req = self._merge({"user": "acct-1"}, {"user": None})
+        self.assertNotIn("user", req)
+
+    def test_extra_body_non_dict_warns_and_is_ignored(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            req = self._merge({"temperature": 0.5}, {"extra_body": "nope"})
+        self.assertAlmostEqual(req["temperature"], 0.5)
+        self.assertNotIn("extra_body", req)
+        self.assertTrue(
+            any(
+                issubclass(w.category, UserWarning) and "extra_body" in str(w.message)
+                for w in caught
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ import contextlib
 import json
 import urllib.error
 import urllib.request
+import warnings
 from collections.abc import Iterator, Sequence
 from typing import Any
 
@@ -76,34 +77,69 @@ _ROUTED_KWARGS = frozenset(
         "run_manager",
         "callbacks",
         "tags",
-        "metadata",
         "run_name",
         "run_id",
     }
 )
+# Standard OpenAI chat request keys that the ax-engine server accepts.
+# bind()/invoke() may set them per call -- for example bind(response_format=)
+# or bind_tools(..., parallel_tool_calls=False) -- and they are forwarded
+# verbatim into the request body instead of being rejected as unknown.
+_FORWARDED_REQUEST_KEYS = frozenset(
+    {
+        "response_format",
+        "parallel_tool_calls",
+        "stream_options",
+        "logprobs",
+        "top_logprobs",
+        "user",
+        "metadata",
+        "n",
+    }
+)
+_SUPPORTED_KWARG_KEYS = sorted(set(_SAMPLING_PARAM_KEYS) | _FORWARDED_REQUEST_KEYS)
 
 
 def _merge_sampling_kwargs(req: dict, kwargs: dict) -> None:
-    """Merge per-call sampling kwargs over the instance defaults in ``req``.
+    """Merge per-call kwargs over the instance defaults in ``req``.
 
     Values arriving through ``bind()`` or per-call kwargs win over the
     instance fields; an explicit ``None`` clears the key, mirroring how the
-    server treats JSON null sampling parameters as absent. Anything that is
-    neither a sampling parameter nor a LangChain-routed argument raises
-    ``ValueError``: silently dropping it would hide mistakes, and silently
-    forwarding it would send unknown keys to the server.
+    server treats JSON null sampling parameters as absent. Recognised
+    sampling parameters override the instance defaults, standard OpenAI
+    chat request keys (``response_format``, ``parallel_tool_calls``, ...)
+    are forwarded into the request body, and the contents of an
+    ``extra_body`` dict are merged into it. LangChain-routed arguments
+    (``tools``, ``tool_choice``, ``stop``, callbacks/run_manager style)
+    keep their existing handling. Anything else is ignored with a warning:
+    raising would break callers that bind standard kwargs the shim does
+    not model explicitly.
     """
     for key, value in kwargs.items():
         if key in _ROUTED_KWARGS:
             continue
-        if key not in _SAMPLING_PARAM_KEYS:
-            raise ValueError(
-                f"Unsupported argument {key!r}; expected one of: " + ", ".join(_SAMPLING_PARAM_KEYS)
-            )
-        if value is None:
-            req.pop(key, None)
+        if key == "extra_body":
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                req.update(value)
+            else:
+                warnings.warn(
+                    f"Ignoring extra_body={value!r}: expected a dict",
+                    stacklevel=2,
+                )
+            continue
+        if key in _SAMPLING_PARAM_KEYS or key in _FORWARDED_REQUEST_KEYS:
+            if value is None:
+                req.pop(key, None)
+            else:
+                req[key] = value
         else:
-            req[key] = value
+            warnings.warn(
+                f"Ignoring unsupported argument {key!r}; supported arguments: "
+                + ", ".join(_SUPPORTED_KWARG_KEYS),
+                stacklevel=2,
+            )
 
 
 def _normalize_tool_choice(tool_choice: Any) -> Any:
