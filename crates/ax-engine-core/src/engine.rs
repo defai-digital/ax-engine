@@ -296,6 +296,12 @@ impl EngineCore {
     pub fn submit(&mut self, submission: RequestSubmission) -> Result<RequestId, EngineCoreError> {
         validate_submission(&submission)?;
         let request_id = submission.request_id;
+        // One duplicate contract whether the id is live or only retained as a
+        // terminal snapshot: the KV manager would otherwise report the live
+        // case with its own variant.
+        if self.request_manager.record(request_id).is_some() {
+            return Err(RequestManagerError::DuplicateRequest(request_id).into());
+        }
         self.kv_manager
             .register_request(request_id, submission.input_tokens.clone())?;
         // Bind generation kind atomically with insert (ADR-038) so a failed
@@ -331,11 +337,13 @@ impl EngineCore {
         let _step_entered = step_span.enter();
         let _ = self.kv_manager.take_recent_evictions();
 
+        // Allocate the step id before any request transitions: an overflow
+        // must not admit or retry requests for a step that then fails.
+        let step_id = self.allocate_step_id()?;
         let mut cleanup_results = self.drain_terminal_cleanup()?;
         let retried_memory_blocked = self.request_manager.retry_memory_blocked()?;
         let admitted_requests = self.request_manager.admit_waiting()?;
         self.refresh_execution_plan_refs()?;
-        let step_id = self.allocate_step_id()?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
@@ -493,6 +501,36 @@ impl EngineCore {
             runner_output,
             sampled_tokens,
         })
+    }
+
+    /// Best-effort recovery for a step that cannot complete: fail every
+    /// selected request still `Running` and drain their terminal cleanup.
+    /// Requests already resolved keep their progress.
+    fn fail_unresolved_step_requests(&mut self, selected: &[RequestId], failure_message: &str) {
+        let unresolved_requests = selected
+            .iter()
+            .copied()
+            .filter(|request_id| {
+                self.request_manager
+                    .record(*request_id)
+                    .is_some_and(|record| record.state == RequestState::Running)
+            })
+            .collect::<Vec<_>>();
+        if let Err(fail_error) = self
+            .request_manager
+            .fail_nonterminal_requests(&unresolved_requests, failure_message)
+        {
+            error!(
+                error = %fail_error,
+                "failed to mark scheduled requests failed after engine step error"
+            );
+        }
+        if let Err(cleanup_error) = self.drain_terminal_cleanup() {
+            error!(
+                error = %cleanup_error,
+                "failed to complete terminal cleanup after engine step error"
+            );
+        }
     }
 
     fn allocate_step_id(&mut self) -> Result<StepId, EngineCoreError> {
@@ -972,6 +1010,14 @@ impl EngineCore {
                         "runner panic threshold reached (or containment disabled); \
                          re-raising so the worker retires"
                     );
+                    // The worker retires, but the engine value may outlive
+                    // the unwind (tests, embedders): fail the scheduled
+                    // requests and release their KV before re-raising so
+                    // nothing stays Running with blocks reserved.
+                    self.fail_unresolved_step_requests(
+                        &schedule_plan.selected_requests,
+                        &format!("engine step failed: runner panicked: {message}"),
+                    );
                     std::panic::resume_unwind(payload);
                 }
                 error!(
@@ -990,7 +1036,29 @@ impl EngineCore {
         // to a runner dispatch; only the per-value logits scan inside remains
         // debug/env gated.
         self.validate_runner_output(&execution_batch, &runner_output)?;
-        let sampled_tokens = self.sample_runner_output(&execution_batch, &runner_output)?;
+        // The sampler runs on the same boundary as the runner: a panic in it
+        // would otherwise unwind past the recovery arm and strand this
+        // step's Running requests with their KV reserved.
+        let sampled_tokens = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.sample_runner_output(&execution_batch, &runner_output)
+        })) {
+            Ok(sampled) => sampled?,
+            Err(payload) => {
+                let message = runner_panic_payload_message(payload.as_ref()).to_string();
+                if step_panic_containment_disabled() {
+                    self.fail_unresolved_step_requests(
+                        &schedule_plan.selected_requests,
+                        &format!("engine step failed: sampler panicked: {message}"),
+                    );
+                    std::panic::resume_unwind(payload);
+                }
+                error!(panic = %message, "sampler panicked; failing this step's scheduled requests");
+                return Err(EngineCoreError::RunnerPanicked {
+                    step_id,
+                    message: format!("sampler panicked: {message}"),
+                });
+            }
+        };
         let sampled_request_ids = sampled_tokens
             .iter()
             .map(|sampled| sampled.request_id)
@@ -2581,12 +2649,67 @@ mod tests {
         }
 
         engine.submit(make_submission(99, 99, 1)).unwrap();
+        let blocks_before = engine.kv_manager().used_block_count();
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = engine.step(8, true);
         }));
         assert!(
             unwound.is_err(),
             "panic at the consecutive-failure threshold must re-raise so the worker retires"
+        );
+        // The re-raise must not strand the scheduled request in Running with
+        // its KV reserved: it is failed and cleaned before the unwind.
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(99))
+                .map(|snapshot| snapshot.state),
+            Some(RequestState::Failed)
+        );
+        assert!(
+            engine.kv_manager().used_block_count() <= blocks_before,
+            "KV reserved for the failed step must be released"
+        );
+    }
+
+    #[test]
+    fn duplicate_submit_reports_one_error_variant() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
+        engine.submit(make_submission(1, 1, 1)).unwrap();
+        let live = engine
+            .submit(make_submission(1, 1, 1))
+            .expect_err("live duplicate");
+        assert!(
+            matches!(
+                live,
+                EngineCoreError::RequestManager(RequestManagerError::DuplicateRequest(RequestId(
+                    1
+                )))
+            ),
+            "{live:?}"
+        );
+    }
+
+    #[test]
+    fn step_id_overflow_leaves_request_state_untouched() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
+        engine.submit(make_submission(7, 7, 1)).unwrap();
+        let state_before = engine
+            .request_manager()
+            .snapshot(RequestId(7))
+            .map(|snapshot| snapshot.state);
+        engine.next_step_id = u64::MAX;
+        let error = engine.step(8, true).expect_err("step id overflow");
+        assert!(matches!(error, EngineCoreError::StepIdOverflow));
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(7))
+                .map(|snapshot| snapshot.state),
+            state_before,
+            "an overflowing step must not admit or transition requests"
         );
     }
 
