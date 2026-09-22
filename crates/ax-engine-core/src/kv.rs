@@ -493,6 +493,11 @@ impl KvManager {
         scheduled_tokens: u32,
     ) -> Result<AllocationPlan, KvManagerError> {
         if scheduled_tokens == 0 {
+            // Same contract as `can_allocate`: an unknown request is an
+            // error even when nothing needs to be appended.
+            if !self.block_tables.contains_key(&request_id) {
+                return Err(KvManagerError::UnknownRequest(request_id));
+            }
             return Ok(AllocationPlan {
                 request_id,
                 new_block_ids: Vec::new(),

@@ -343,11 +343,9 @@ impl RequestManager {
             let blocked_count = {
                 let record = self
                     .records
-                    .get_mut(request_id)
+                    .get(request_id)
                     .ok_or(RequestManagerError::UnknownRequest(*request_id))?;
-                record.memory_blocked_step_count =
-                    record.memory_blocked_step_count.saturating_add(1);
-                record.memory_blocked_step_count
+                record.memory_blocked_step_count.saturating_add(1)
             };
             if blocked_count >= MEMORY_BLOCKED_STEP_LIMIT {
                 // Starvation bound (mistral.rs WAITING_TIMEOUT practice): a
@@ -363,6 +361,9 @@ impl RequestManager {
                 continue;
             }
             self.transition_request(*request_id, RequestRecord::mark_blocked_on_memory)?;
+            if let Some(record) = self.records.get_mut(request_id) {
+                record.memory_blocked_step_count = blocked_count;
+            }
         }
 
         Ok(())
@@ -658,6 +659,26 @@ impl RequestManager {
                 return Err(RequestManagerError::ProgressInvariantViolation {
                     request_id: *request_id,
                     message: "runnable request missing from schedule plan",
+                });
+            }
+        }
+
+        // Selected and memory-blocked entries transition out of Runnable
+        // below; reject a stale plan before any record is touched so a
+        // failed apply never leaves an earlier entry stranded in Running.
+        for request_id in schedule_plan
+            .selected_requests
+            .iter()
+            .chain(schedule_plan.memory_blocked_requests.iter())
+        {
+            if self
+                .records
+                .get(request_id)
+                .is_some_and(|record| record.state != RequestState::Runnable)
+            {
+                return Err(RequestManagerError::ProgressInvariantViolation {
+                    request_id: *request_id,
+                    message: "schedule plan selects a request that is not Runnable",
                 });
             }
         }
