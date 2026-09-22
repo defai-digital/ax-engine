@@ -1314,76 +1314,39 @@ pub fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
+    // Keep the MTP warmup suffix out of the cache-only prefix, as the Qwen
+    // path does: the cache-only split used to return a single-row history,
+    // so the nextn head was warmed with one transition instead of the
+    // retained prompt suffix.
+    let history_cap = crate::fastpath::mtp_warmup_cap();
     let cache_only_prefix_len =
         if crate::fastpath::skip_cache_only_split_for_family(&cfg.model_family, total) {
             0
         } else {
-            mlx_lm_style_cache_only_prefix_len(total, sampling)
-        };
-    if cache_only_prefix_len > 0 {
-        let mut offset = 0;
-        while offset < cache_only_prefix_len {
-            let end = (offset + chunk_size).min(cache_only_prefix_len);
-            let chunk = &prompt_tokens[offset..end];
-            let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
-            cache.advance(chunk.len());
-            if end == cache_only_prefix_len || crate::fastpath::cache_only_chunk_eval_enabled() {
-                let is_final = end == cache_only_prefix_len;
-                if crate::fastpath::cache_only_chunk_should_async_eval(is_final) {
-                    async_eval_kv_refs(cache);
-                } else {
-                    eval_kv_refs(cache);
-                }
+            let split = mlx_lm_style_cache_only_prefix_len(total, sampling);
+            if history_cap == 0 {
+                0
+            } else {
+                split.min(total.saturating_sub(history_cap))
             }
-            offset = end;
-        }
-        let last_tok = prompt_tokens[cache_only_prefix_len];
-        let last_offset = cache.seq_len();
-        let (logits_all, packed) = deepseek_v4_forward_all_positions_with_packed(
-            cfg,
-            weights,
-            &[last_tok],
-            cache,
-            last_offset,
-        );
-        cache.advance(1);
-        let logits_row = {
-            let lv = slice(
-                &logits_all,
-                &[0, 0],
-                &[1, cfg.vocab_size as i32],
-                &[1, 1],
-                None,
-            );
-            let lv = astype(&lv, MlxDtype::Float32, None);
-            reshape(&lv, &[cfg.vocab_size as i32], None)
         };
-        let tok = if sampling.temperature > 0.0 {
-            eval_with_kv_refs(&logits_row, cache);
-            sample_prefill_token_gpu_first(
-                &logits_row,
-                sampling,
-                sampling_request.repetition_tokens,
-                rng,
-                || eval(&[&logits_row, &packed]),
-                sampling_probs_buf,
-                sampling_logits_buf,
-                sampling_candidates_buf,
-            )
-        } else {
-            let token_arr = argmax(&logits_row, None);
-            eval_kv_refs(cache);
-            eval(&[&token_arr, &packed]);
-            token_arr.data_u32()[0]
-        };
-        if sampling.temperature > 0.0 {
-            eval(&[&packed]);
+    let mut offset = 0;
+    while offset < cache_only_prefix_len {
+        let end = (offset + chunk_size).min(cache_only_prefix_len);
+        let chunk = &prompt_tokens[offset..end];
+        let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len());
+        cache.advance(chunk.len());
+        if end == cache_only_prefix_len || crate::fastpath::cache_only_chunk_eval_enabled() {
+            let is_final = end == cache_only_prefix_len;
+            if crate::fastpath::cache_only_chunk_should_async_eval(is_final) {
+                async_eval_kv_refs(cache);
+            } else {
+                eval_kv_refs(cache);
+            }
         }
-        clear_cache();
-        return (tok, packed, vec![tok]);
+        offset = end;
     }
 
-    let mut offset = 0;
     loop {
         let end = (offset + chunk_size).min(total);
         let chunk = &prompt_tokens[offset..end];
