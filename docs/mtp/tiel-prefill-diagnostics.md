@@ -134,9 +134,12 @@ unparseable memory still does not qualify for automatic unwiring.
 
 To inspect skipped application in native CLI/server logs, enable
 `RUST_LOG=ax_engine_mlx::runner=debug`. Startup debug events distinguish an
-operator override or active expert streaming, unknown/unreadable export
-metadata, and unknown/unqualified hardware. Hardware skips include detected
-memory and CPU brand; these events contain no model paths or metadata hashes.
+operator override or active expert streaming, and unknown/unreadable export
+metadata. When the audited export matches but the host is outside Apple M5
+Max with at least 128 GiB, the skip is a warning: existing wiring stays in
+place, and Apple M4 Pro with exactly 64 GiB uses `tiel-session-resident-v1`
+for expert residency. Hardware events include detected memory and CPU brand
+and contain no model paths or metadata hashes.
 They describe the existing guards and do not change admission. Non-Tiel loads
 can also emit the metadata-skip event at debug level. Embedded library users
 need a tracing subscriber; the environment variable alone does not install one.

@@ -1617,6 +1617,13 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
         print_usage();
         return Ok(0);
     }
+    // Downstream launchers (AX Code MTP policy) probe `<binary> --version`
+    // and require exit 0. An unknown-command exit drops the version even
+    // when `doctor --json` already printed `install.version`.
+    if args[0] == "--version" || args[0] == "-V" {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(0);
+    }
     match args[0].to_string_lossy().as_ref() {
         "serve" => cmd_serve(&args[1..]),
         "download" => cmd_download(&args[1..]),
@@ -1634,7 +1641,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--offline|--local-only] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force|--local-only] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine mtp-capability [--json]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
+        "Usage:\n  ax-engine --version\n  ax-engine -V\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--offline|--local-only] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force|--local-only] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine mtp-capability [--json]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
     );
 }
 
@@ -2121,8 +2128,13 @@ fn metal_detail(report: &Value) -> String {
     if value_bool(report, &["metal_toolchain", "fully_available"]).unwrap_or(false) {
         "Metal compiler and metallib available".to_string()
     } else if value_str(report, &["runtime_assets", "status"]) == Some("ready") {
-        "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds"
-            .to_string()
+        if value_str(report, &["runtime_assets", "source"]) == Some("rpath") {
+            "MLX runtime resolved from the binary rpath; Metal compiler only needed for kernel rebuilds"
+                .to_string()
+        } else {
+            "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds"
+                .to_string()
+        }
     } else {
         "Metal compiler or metallib missing".to_string()
     }
@@ -4518,6 +4530,31 @@ mod tests {
     /// the last stdout line as JSON and requires exactly these four fields
     /// (extra fields are ignored). Renaming or removing any of them breaks
     /// the `quantize-mtp-sidecar --capability-command` gate.
+    #[test]
+    fn version_flag_prints_package_version_and_exits_zero() {
+        assert_eq!(run(vec![OsString::from("--version")]).ok(), Some(0));
+        assert_eq!(run(vec![OsString::from("-V")]).ok(), Some(0));
+    }
+
+    #[test]
+    fn unknown_command_is_still_rejected() {
+        let error = run(vec![OsString::from("bogus")]).expect_err("unknown command");
+        assert!(error.contains("unknown command: bogus"));
+    }
+
+    #[test]
+    fn metal_detail_names_an_rpath_mlx_runtime() {
+        let report = json!({
+            "runtime_assets": {"status": "ready", "source": "rpath"},
+            "metal_toolchain": {"fully_available": false}
+        });
+        assert!(metal_check_pass(&report));
+        assert_eq!(
+            metal_detail(&report),
+            "MLX runtime resolved from the binary rpath; Metal compiler only needed for kernel rebuilds"
+        );
+    }
+
     #[test]
     fn mtp_capability_contract_fields_are_stable() {
         let value = mtp_capability_json();

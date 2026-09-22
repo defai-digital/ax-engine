@@ -2977,6 +2977,123 @@ fn doctor_rejects_incomplete_homebrew_bundled_mlx_runtime() {
 }
 
 #[test]
+fn doctor_detects_rpath_mlx_runtime_when_version_matches_pin() {
+    let root = unique_test_dir("doctor-rpath-runtime");
+    let bin_dir = root.join("bin");
+    let lib_dir = root.join("mlx/lib");
+    let include_dir = root.join("mlx/include/mlx");
+    fs::create_dir_all(&bin_dir).expect("bin dir should create");
+    fs::create_dir_all(&lib_dir).expect("lib dir should create");
+    fs::create_dir_all(&include_dir).expect("include dir should create");
+    for name in ["libmlx.dylib", "libjaccl.dylib", "mlx.metallib"] {
+        fs::write(lib_dir.join(name), b"runtime").expect("runtime fixture should write");
+    }
+    let pin = include_str!("../../../mlx.version").trim();
+    let mut parts = pin.split('.');
+    let header = format!(
+        "#define MLX_VERSION_MAJOR {}\n#define MLX_VERSION_MINOR {}\n#define MLX_VERSION_PATCH {}\n",
+        parts.next().expect("major"),
+        parts.next().expect("minor"),
+        parts.next().expect("patch")
+    );
+    fs::write(include_dir.join("version.h"), header).expect("version header should write");
+    let lib_dir = fs::canonicalize(&lib_dir).expect("lib dir should canonicalize");
+    let executable = bin_dir.join("ax-engine-bench");
+    fs::write(
+        &executable,
+        macho64_with_rpath(lib_dir.to_str().expect("utf8 path")),
+    )
+    .expect("mach-o fixture should write");
+
+    let runtime_assets =
+        detect_rpath_mlx_runtime(&executable).expect("rpath runtime should be detected");
+    assert_eq!(runtime_assets.status, DoctorRuntimeAssetsStatus::Ready);
+    assert_eq!(
+        runtime_assets.path.as_deref(),
+        Some(lib_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(runtime_assets.source.as_deref(), Some("rpath"));
+    assert!(runtime_assets.issue.is_none());
+
+    let selected = select_runtime_assets(None, None, Some(runtime_assets.clone()));
+    assert_eq!(selected.status, DoctorRuntimeAssetsStatus::Ready);
+    assert_eq!(selected.source.as_deref(), Some("rpath"));
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_rejects_rpath_mlx_runtime_when_version_differs_from_pin() {
+    let root = unique_test_dir("doctor-rpath-mismatch");
+    let bin_dir = root.join("bin");
+    let lib_dir = root.join("mlx/lib");
+    let include_dir = root.join("mlx/include/mlx");
+    fs::create_dir_all(&bin_dir).expect("bin dir should create");
+    fs::create_dir_all(&lib_dir).expect("lib dir should create");
+    fs::create_dir_all(&include_dir).expect("include dir should create");
+    for name in ["libmlx.dylib", "libjaccl.dylib", "mlx.metallib"] {
+        fs::write(lib_dir.join(name), b"runtime").expect("runtime fixture should write");
+    }
+    fs::write(
+        include_dir.join("version.h"),
+        "#define MLX_VERSION_MAJOR 0\n#define MLX_VERSION_MINOR 0\n#define MLX_VERSION_PATCH 1\n",
+    )
+    .expect("version header should write");
+    let lib_dir = fs::canonicalize(&lib_dir).expect("lib dir should canonicalize");
+    let executable = bin_dir.join("ax-engine-bench");
+    fs::write(
+        &executable,
+        macho64_with_rpath(lib_dir.to_str().expect("utf8 path")),
+    )
+    .expect("mach-o fixture should write");
+
+    let runtime_assets =
+        detect_rpath_mlx_runtime(&executable).expect("mismatched rpath runtime should be detected");
+    assert_eq!(runtime_assets.status, DoctorRuntimeAssetsStatus::NotReady);
+    assert_eq!(runtime_assets.source.as_deref(), Some("rpath"));
+    assert!(
+        runtime_assets
+            .issue
+            .as_deref()
+            .is_some_and(|issue| issue.contains("does not match pinned mlx.version"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_ignores_non_macho_executables_for_rpath_detection() {
+    let root = unique_test_dir("doctor-rpath-not-macho");
+    fs::create_dir_all(&root).expect("dir should create");
+    let executable = root.join("ax-engine-bench");
+    fs::write(&executable, b"not a mach-o").expect("fixture should write");
+    assert!(detect_rpath_mlx_runtime(&executable).is_none());
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+fn macho64_with_rpath(rpath: &str) -> Vec<u8> {
+    let path = rpath.as_bytes();
+    let raw = 12 + path.len() + 1;
+    let cmdsize = raw.div_ceil(8) * 8;
+    let mut bytes = Vec::with_capacity(32 + cmdsize);
+    bytes.extend_from_slice(&0xfeedfacfu32.to_le_bytes());
+    bytes.extend_from_slice(&0x0100000cu32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&(cmdsize as u32).to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0x8000001cu32.to_le_bytes());
+    bytes.extend_from_slice(&(cmdsize as u32).to_le_bytes());
+    bytes.extend_from_slice(&12u32.to_le_bytes());
+    bytes.extend_from_slice(path);
+    bytes.push(0);
+    bytes.resize(32 + cmdsize, 0);
+    bytes
+}
+
+#[test]
 fn doctor_detects_standalone_bundled_mlx_runtime_next_to_executable() {
     let root = unique_test_dir("doctor-standalone-runtime");
     fs::create_dir_all(&root).expect("standalone dir should create");

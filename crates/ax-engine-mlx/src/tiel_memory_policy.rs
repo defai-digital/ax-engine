@@ -216,12 +216,18 @@ pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: 
         cpu_brand_string: cpu_brand_string(),
     };
     if !decide_clear_wired_residency(&inputs) {
-        tracing::debug!(
+        // Metadata already matched an audited Tiel/Cyber export. The no-wire
+        // policy itself stays M5 Max / >= 128 GiB. M4 Pro 64 GiB uses
+        // tiel-session-resident-v1 and keeps this wiring decision.
+        tracing::warn!(
             target: "ax_engine_mlx::runner",
             policy = POLICY_ID,
             unified_memory_bytes = ?inputs.unified_memory_bytes,
             cpu_brand = ?inputs.cpu_brand_string,
-            "automatic no-wire residency skipped: hardware is unknown or outside the audited target"
+            "automatic no-wire residency kept the existing wiring policy: \
+             tiel-auto-no-wire-v1 applies to Apple M5 Max hosts with at least \
+             128 GiB. On Apple M4 Pro with exactly 64 GiB, expert residency is \
+             decided by tiel-session-resident-v1"
         );
         return;
     }

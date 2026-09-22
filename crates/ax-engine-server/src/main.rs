@@ -29,6 +29,7 @@ mod backends;
 mod chat;
 mod embeddings;
 mod errors;
+mod fatal;
 mod generation;
 mod grpc;
 mod grpc_auth;
@@ -73,12 +74,16 @@ fn log_host_detection_warnings(session_config: &EngineSessionConfig) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    fatal::install_abort_panic_hook();
     let tracing_enabled = init_tracing();
 
     let args = ServerArgs::parse();
     if args.list_presets {
         println!("{}", render_presets());
         return Ok(());
+    }
+    if cfg!(panic = "abort") {
+        eprintln!("{}", fatal::ABORT_BUILD_NOTICE);
     }
     let bind_address = args.bind_address();
     let model_id = args

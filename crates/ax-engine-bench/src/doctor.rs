@@ -507,21 +507,27 @@ pub(crate) fn detect_runtime_assets_report_with_executable(
     }
 
     let bundled_runtime = current_executable.and_then(detect_bundled_mlx_runtime_from_executable);
-    if let Some(report) = bundled_runtime.as_ref()
-        && report.is_ready()
-    {
-        return report.clone();
-    }
-
     let repo_runtime = current_dir.and_then(detect_repo_runtime_assets_from);
-    if let Some(report) = repo_runtime.as_ref()
-        && report.is_ready()
-    {
-        return report.clone();
-    }
+    // Cargo embeds an absolute LC_RPATH to the MLX wheel lib directory.
+    let rpath_runtime = current_executable.and_then(detect_rpath_mlx_runtime);
+    select_runtime_assets(bundled_runtime, repo_runtime, rpath_runtime)
+}
 
-    bundled_runtime
-        .or(repo_runtime)
+pub(crate) fn select_runtime_assets(
+    bundled: Option<DoctorRuntimeAssetsReport>,
+    repo: Option<DoctorRuntimeAssetsReport>,
+    rpath: Option<DoctorRuntimeAssetsReport>,
+) -> DoctorRuntimeAssetsReport {
+    for candidate in [&bundled, &repo, &rpath] {
+        if let Some(report) = candidate
+            && report.is_ready()
+        {
+            return report.clone();
+        }
+    }
+    bundled
+        .or(repo)
+        .or(rpath)
         .unwrap_or_else(DoctorRuntimeAssetsReport::not_found)
 }
 
@@ -542,7 +548,8 @@ pub(crate) fn detect_bundled_mlx_runtime_from_executable(
 
     let mut first_diagnostic = None;
     for candidate in candidates {
-        let Some(report) = bundled_mlx_runtime_report_for_dir(&candidate) else {
+        let Some(report) = mlx_runtime_files_report_for_dir(&candidate, "bundled_mlx_runtime")
+        else {
             continue;
         };
         if report.is_ready() {
@@ -553,7 +560,10 @@ pub(crate) fn detect_bundled_mlx_runtime_from_executable(
     first_diagnostic
 }
 
-fn bundled_mlx_runtime_report_for_dir(path: &Path) -> Option<DoctorRuntimeAssetsReport> {
+fn mlx_runtime_files_report_for_dir(
+    path: &Path,
+    source: &str,
+) -> Option<DoctorRuntimeAssetsReport> {
     let mut observed_runtime_file = false;
     let mut problems = Vec::new();
 
@@ -586,20 +596,181 @@ fn bundled_mlx_runtime_report_for_dir(path: &Path) -> Option<DoctorRuntimeAssets
         Some(DoctorRuntimeAssetsReport {
             status: DoctorRuntimeAssetsStatus::Ready,
             path: Some(path_string(path)),
-            source: Some("bundled_mlx_runtime".to_string()),
+            source: Some(source.to_string()),
             issue: None,
         })
     } else {
         Some(DoctorRuntimeAssetsReport {
             status: DoctorRuntimeAssetsStatus::NotReady,
             path: Some(path_string(path)),
-            source: Some("bundled_mlx_runtime".to_string()),
+            source: Some(source.to_string()),
             issue: Some(format!(
-                "bundled MLX runtime is incomplete: {}",
+                "{} MLX runtime is incomplete: {}",
+                if source == "rpath" {
+                    "rpath"
+                } else {
+                    "bundled"
+                },
                 problems.join(", ")
             )),
         })
     }
+}
+
+/// MLX linked from an `LC_RPATH` on `executable`. Ready only when the three
+/// runtime files are present and `mlx/version.h` matches `mlx.version`.
+pub(crate) fn detect_rpath_mlx_runtime(executable: &Path) -> Option<DoctorRuntimeAssetsReport> {
+    let bytes = fs::read(executable).ok()?;
+    let rpaths = parse_macho_rpaths(&bytes);
+    if rpaths.is_empty() {
+        return None;
+    }
+    let mut first_diagnostic = None;
+    for raw in rpaths {
+        let Some(dir) = expand_load_rpath(&raw, executable) else {
+            continue;
+        };
+        let Some(mut report) = mlx_runtime_files_report_for_dir(&dir, "rpath") else {
+            continue;
+        };
+        if report.is_ready() {
+            match mlx_version_beside_lib(&dir) {
+                Some(found) if found == pinned_mlx_version() => return Some(report),
+                Some(found) => {
+                    report.status = DoctorRuntimeAssetsStatus::NotReady;
+                    report.issue = Some(format!(
+                        "rpath MLX {found} does not match pinned mlx.version {}",
+                        pinned_mlx_version()
+                    ));
+                }
+                None => {
+                    report.status = DoctorRuntimeAssetsStatus::NotReady;
+                    report.issue = Some(
+                        "rpath MLX runtime is missing mlx/version.h; refusing an unidentified runtime"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        first_diagnostic.get_or_insert(report);
+    }
+    first_diagnostic
+}
+
+fn pinned_mlx_version() -> &'static str {
+    include_str!("../../../mlx.version").trim()
+}
+
+fn mlx_version_beside_lib(lib_dir: &Path) -> Option<String> {
+    for relative in ["../include/mlx/version.h", "include/mlx/version.h"] {
+        if let Some(version) = read_mlx_version_header(&lib_dir.join(relative)) {
+            return Some(version);
+        }
+    }
+    None
+}
+
+fn read_mlx_version_header(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let field = |name: &str| -> Option<u32> {
+        text.lines()
+            .find(|line| line.contains(name))
+            .and_then(|line| line.split_whitespace().last())
+            .and_then(|value| value.parse().ok())
+    };
+    Some(format!(
+        "{}.{}.{}",
+        field("MLX_VERSION_MAJOR")?,
+        field("MLX_VERSION_MINOR")?,
+        field("MLX_VERSION_PATCH")?
+    ))
+}
+
+/// `@executable_path` and `@loader_path` are relative to the binary.
+/// Absolute rpaths are used as written. Other tokens are skipped.
+fn expand_load_rpath(raw: &str, executable: &Path) -> Option<PathBuf> {
+    let exe_dir = executable.parent()?;
+    if let Some(rest) = raw.strip_prefix("@executable_path") {
+        return Some(exe_dir.join(rest.trim_start_matches('/')));
+    }
+    if let Some(rest) = raw.strip_prefix("@loader_path") {
+        return Some(exe_dir.join(rest.trim_start_matches('/')));
+    }
+    if raw.starts_with('/') {
+        return Some(PathBuf::from(raw));
+    }
+    None
+}
+
+/// `LC_RPATH` paths from a thin little-endian Mach-O 64 binary.
+/// Non-Mach-O bytes (including test fixtures that are not binaries) yield
+/// an empty list.
+fn parse_macho_rpaths(bytes: &[u8]) -> Vec<String> {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_RPATH: u32 = 0x8000_001c;
+    const HEADER_SIZE: usize = 32;
+    if bytes.len() < HEADER_SIZE || read_u32(bytes, 0) != Some(MH_MAGIC_64) {
+        return Vec::new();
+    }
+    let Some(ncmds) = read_u32(bytes, 16) else {
+        return Vec::new();
+    };
+    let Some(sizeofcmds) = read_u32(bytes, 20) else {
+        return Vec::new();
+    };
+    let Some(end) = HEADER_SIZE.checked_add(sizeofcmds as usize) else {
+        return Vec::new();
+    };
+    if end > bytes.len() {
+        return Vec::new();
+    }
+    let mut offset = HEADER_SIZE;
+    let mut paths = Vec::new();
+    for _ in 0..ncmds {
+        let Some(next_header) = offset.checked_add(8) else {
+            break;
+        };
+        if next_header > end {
+            break;
+        }
+        let Some(cmd) = read_u32(bytes, offset) else {
+            break;
+        };
+        let Some(cmdsize) = read_u32(bytes, offset + 4) else {
+            break;
+        };
+        let cmdsize = cmdsize as usize;
+        let Some(next) = offset.checked_add(cmdsize) else {
+            break;
+        };
+        if cmdsize < 8 || next > end {
+            break;
+        }
+        if cmd == LC_RPATH && cmdsize >= 12 {
+            if let Some(path_off) = read_u32(bytes, offset + 8) {
+                let path_off = path_off as usize;
+                if path_off < cmdsize {
+                    let start = offset + path_off;
+                    if let Some(relative_end) =
+                        bytes[start..next].iter().position(|byte| *byte == 0)
+                    {
+                        if let Ok(text) = std::str::from_utf8(&bytes[start..start + relative_end])
+                            && !text.is_empty()
+                        {
+                            paths.push(text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        offset = next;
+    }
+    paths
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let bytes = bytes.get(offset..offset + 4)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn detect_repo_runtime_assets_from(start_dir: &Path) -> Option<DoctorRuntimeAssetsReport> {

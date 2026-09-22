@@ -2947,6 +2947,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # Same contract as the native binary: exit 0 and print only the version.
+    # argparse would otherwise require a subcommand and exit 2.
+    if argv and argv[0] in {"--version", "-V"}:
+        print(_package_version())
+        return 0
     download_progress_requested = bool(argv and argv[0] == "download" and "--progress-json" in argv)
     extra_server_args: list[str] = []
     if argv and argv[0] == "serve" and "--" in argv:

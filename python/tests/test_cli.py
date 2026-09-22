@@ -118,6 +118,13 @@ class AxEngineCliTests(unittest.TestCase):
             code = _cli.main(argv)
         return code, out.getvalue()
 
+    def test_version_flag_prints_package_version(self) -> None:
+        for flag in ("--version", "-V"):
+            code, stdout = self.capture_main([flag])
+            self.assertEqual(code, 0)
+            self.assertEqual(stdout.strip(), _cli._package_version())
+            self.assertNotIn("\n", stdout.strip())
+
     def test_download_list_json_shows_targets(self) -> None:
         code, stdout = self.capture_main(["download", "--list", "--json"])
 

@@ -1087,8 +1087,11 @@ fn run_worker(
         run_worker_loop(session, receiver, state, &mut factory, recycle_after);
     }));
     if let Err(payload) = loop_outcome {
+        let (step_id, kv_usage_blocks) = crate::fatal::last_step_snapshot();
         tracing::error!(
             panic = %panic_payload_message(payload.as_ref()),
+            ?step_id,
+            ?kv_usage_blocks,
             "native generation worker panicked; this model's worker is retiring \
              (in-flight requests fail, the process and sibling models continue). \
              Recover with POST /v1/model/load"
@@ -2215,6 +2218,7 @@ fn rollback_failed_enqueue(state: &ServiceState) {
 }
 
 fn record_step_report(state: &ServiceState, report: &EngineStepReport) {
+    crate::fatal::note_completed_step(report.step_id, report.kv_usage_blocks);
     // Prefer runner_time_us (GPU/host model work); fall back to cpu_time_us.
     let wall_us = if report.runner_time_us > 0 {
         report.runner_time_us
