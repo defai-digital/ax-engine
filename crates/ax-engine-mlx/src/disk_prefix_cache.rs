@@ -910,7 +910,7 @@ impl DiskPrefixCache {
             .and_then(|n| n.checked_add(payload_len))
             .ok_or(ReadEntryError::Invalid)?;
         if total_len != meta.len()
-            || payload_len > self.policy.max_entry_bytes.max(self.policy.max_bytes)
+            || payload_len > self.policy.max_entry_bytes
             || (flags == PAGE_MANIFEST_FLAG && payload_len > MAX_PAGE_MANIFEST_BYTES as u64)
             || payload_len > usize::MAX as u64
         {
@@ -971,7 +971,7 @@ impl DiskPrefixCache {
             let manifest = PageManifest::decode(
                 &stored_payload,
                 Some(expected_key),
-                self.policy.max_entry_bytes.max(self.policy.max_bytes),
+                self.policy.max_entry_bytes,
             )
             .map_err(page_read_error)?;
             let (payload, page_stats) =
@@ -1066,7 +1066,7 @@ impl DiskPrefixCache {
             .and_then(|n| n.checked_add(payload_len))
             .ok_or(ReadEntryError::Invalid)?;
         if total_len != meta.len()
-            || payload_len > self.policy.max_entry_bytes.max(self.policy.max_bytes)
+            || payload_len > self.policy.max_entry_bytes
             || (flags == PAGE_MANIFEST_FLAG && payload_len > MAX_PAGE_MANIFEST_BYTES as u64)
             || payload_len > usize::MAX as u64
         {
@@ -1117,7 +1117,7 @@ impl DiskPrefixCache {
             let manifest = PageManifest::decode(
                 &manifest_bytes,
                 Some(expected_key),
-                self.policy.max_entry_bytes.max(self.policy.max_bytes),
+                self.policy.max_entry_bytes,
             )
             .map_err(page_read_error)?;
             let mut reader = page_store.reader(manifest);
