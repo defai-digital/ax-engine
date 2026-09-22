@@ -6,10 +6,11 @@
 //! single `tracing::info!` line emitted from `load_weights` when the
 //! `AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION` env var is set to `shadow`.
 //!
-//! Unset / "off" / "0" / "false": no behavior change. Any other value than
-//! `shadow` is fail-closed (panics at first call) so misconfiguration is
-//! caught immediately rather than silently doing the wrong thing — same
-//! contract as `ngram_accel::parse_confidence_threshold`.
+//! Unset / "off" / "0" / "false": no behavior change. `shadow`, `enable` and
+//! `apply` select the experimental modes. Any other value falls back to
+//! `Off` with a warning on both `tracing` and stderr (the Python extension
+//! installs no subscriber), so a misspelled mode is visible on every
+//! front-end even though it is not fatal.
 
 use std::sync::OnceLock;
 
@@ -67,6 +68,12 @@ pub fn parse_weight_rotation_mode(raw: Option<&str>) -> WeightRotationMode {
             tracing::warn!(
                 "{WEIGHT_ROTATION_ENV} must be one of off|shadow|enable|apply; got {other:?}; \
                  falling back to off"
+            );
+            // Mirror to stderr: an experiment that silently runs unrotated
+            // would measure the baseline while the operator believes the
+            // rotation is active.
+            eprintln!(
+                "[ax_mlx::weight_rotation] {WEIGHT_ROTATION_ENV} must be one of off|shadow|enable|apply; got {other:?}; falling back to off"
             );
             WeightRotationMode::Off
         }
