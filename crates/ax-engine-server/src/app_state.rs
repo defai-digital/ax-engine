@@ -102,6 +102,17 @@ pub(crate) struct AppState {
     next_request_id: Arc<AtomicU64>,
 }
 
+/// Result of looking up a parked generation for a model id.
+pub(crate) enum ParkedLookup {
+    /// No generation is parked under the id.
+    None,
+    /// The parked generation serves the requested artifacts path.
+    Matched(LiveState),
+    /// A generation was parked under the id for a different path; it has
+    /// been removed and must be retired by the caller.
+    Stale(LiveState),
+}
+
 impl AppState {
     pub(crate) fn new(mut live: LiveState) -> Self {
         live.generation = 1;
@@ -150,33 +161,44 @@ impl AppState {
     }
 
     /// Take a parked generation when its artifacts path still matches.
+    ///
+    /// A parked generation for the same id but a different path is removed
+    /// and returned as [`ParkedLookup::Stale`] so the caller retires it: left
+    /// in place it would keep a second full weight residency alive with no
+    /// registry or metrics visibility until the id is unloaded again.
     pub(crate) fn take_parked_live(
         &self,
         model_id: &str,
         model_path: &std::path::Path,
-    ) -> Option<LiveState> {
+    ) -> ParkedLookup {
         let mut parked = self.parked.lock();
-        let candidate = parked.get(model_id)?;
-        let parked_path = candidate
+        let Some(candidate) = parked.get(model_id) else {
+            return ParkedLookup::None;
+        };
+        let path_matches = candidate
             .session_config
             .mlx_model_artifacts_dir
-            .as_deref()?;
-        let path_matches = parked_path == model_path
-            || parked_path
-                .canonicalize()
-                .ok()
-                .as_deref()
-                .is_some_and(|canonical| canonical == model_path);
+            .as_deref()
+            .is_some_and(|parked_path| {
+                parked_path == model_path
+                    || parked_path
+                        .canonicalize()
+                        .ok()
+                        .as_deref()
+                        .is_some_and(|canonical| canonical == model_path)
+            });
+        let Some(live) = parked.remove(model_id) else {
+            return ParkedLookup::None;
+        };
         if !path_matches {
-            return None;
+            return ParkedLookup::Stale(live);
         }
-        let live = parked.remove(model_id)?;
         // A parked generation carries the `last_used` stamp from before it was
         // idle-evicted, which is by construction older than the idle timeout.
         // Republishing must grant the same grace period a fresh build gets, or
         // the next evictor sweep unloads a model the operator just loaded.
         live.last_used.store(unix_now_secs(), Ordering::Relaxed);
-        Some(live)
+        ParkedLookup::Matched(live)
     }
 
     /// Clone all live-model fields atomically. The read lock is held only for
@@ -1707,7 +1729,7 @@ mod step_metrics_tests {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc as std_mpsc;
     use std::time::{Duration, Instant};
 
@@ -1786,6 +1808,43 @@ mod tests {
         let live = state.snapshot();
         assert_eq!(live.model_id.as_ref().as_str(), "first");
         assert_eq!(live.generation, 1);
+    }
+
+    fn parked_fixture(model_id: &str, artifacts_dir: &str) -> LiveState {
+        let mut live = test_state(model_id).snapshot();
+        let mut config = (*live.session_config).clone();
+        config.mlx_model_artifacts_dir = Some(PathBuf::from(artifacts_dir));
+        live.session_config = Arc::new(config);
+        live
+    }
+
+    #[tokio::test]
+    async fn take_parked_live_hands_back_a_stale_generation_for_retirement() {
+        let state = test_state("first");
+        state.park_live(parked_fixture("first", "/packs/a"));
+        // Same id, different artifacts: the parked worker cannot be republished
+        // and must not stay parked as a hidden residency.
+        let lookup = state.take_parked_live("first", Path::new("/packs/b"));
+        assert!(
+            matches!(lookup, ParkedLookup::Stale(_)),
+            "path mismatch must hand back the stale generation"
+        );
+        if let ParkedLookup::Stale(stale) = lookup {
+            stale.retire().await.expect("stale generation retires");
+        }
+        assert!(matches!(
+            state.take_parked_live("first", Path::new("/packs/a")),
+            ParkedLookup::None
+        ));
+        state.park_live(parked_fixture("first", "/packs/a"));
+        let lookup = state.take_parked_live("first", Path::new("/packs/a"));
+        assert!(
+            matches!(lookup, ParkedLookup::Matched(_)),
+            "matching path must republish"
+        );
+        if let ParkedLookup::Matched(matched) = lookup {
+            matched.retire().await.expect("matched generation retires");
+        }
     }
 
     #[tokio::test]

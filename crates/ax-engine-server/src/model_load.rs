@@ -273,9 +273,28 @@ pub(crate) async fn load_model(
         let _loading_guard = loading_guard;
         // Fast path: soft-parked same-id reload (flip S2). Republish without
         // rebuild so sibling interactive decode is not GPU-stalled.
-        if load_mode == LoadModelMode::Add
-            && let Some(parked) = state_clone.take_parked_live(&model_id, &model_path)
-        {
+        let parked = if load_mode == LoadModelMode::Add {
+            match state_clone.take_parked_live(&model_id, &model_path) {
+                crate::app_state::ParkedLookup::Matched(parked) => Some(parked),
+                crate::app_state::ParkedLookup::Stale(stale) => {
+                    // Same id, different artifacts: the parked worker cannot
+                    // be republished and must not outlive this load as a
+                    // hidden second residency.
+                    if let Err(error) = stale.retire().await {
+                        tracing::warn!(
+                            model_id = %model_id,
+                            %error,
+                            "failed to retire a parked generation that no longer matches the requested path"
+                        );
+                    }
+                    None
+                }
+                crate::app_state::ParkedLookup::None => None,
+            }
+        } else {
+            None
+        };
+        if let Some(parked) = parked {
             let ctx_len = crate::metadata::context_length(&parked);
             let published_model_id = Arc::clone(&parked.model_id);
             let previous = state_clone.publish_live(parked, make_default);
@@ -290,18 +309,19 @@ pub(crate) async fn load_model(
             if multi_model_after_load {
                 rewarm_sibling_residents(&state_clone, published_model_id.as_ref());
             }
-            if let Some(previous) = previous {
+            if let Some(previous) = previous
+                && let Err(error) = previous.retire().await
+            {
                 // Replacing a live same-id entry should still retire the
                 // outgoing generation; soft-park is only for unload→reload.
-                previous.retire().await.map_err(|error| {
-                    error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "server_error",
-                        format!(
-                            "parked model republished but previous generation failed to retire: {error}"
-                        ),
-                    )
-                })?;
+                // The republish has already committed, so a retire failure
+                // (a panicked outgoing worker) is reported, not turned into
+                // a failed load the client would retry against a live model.
+                tracing::error!(
+                    model_id = %model_id,
+                    %error,
+                    "parked model republished but previous generation failed to retire"
+                );
             }
             return Ok(ctx_len);
         }
@@ -410,16 +430,18 @@ pub(crate) async fn load_model(
                     // the warm-process microbench envelope (~9.4s / thr ~18).
                     rewarm_published_long_prefill(&state_clone, published_model_id.as_ref());
                 }
-                if let Some(previous) = previous {
-                    previous.retire().await.map_err(|error| {
-                        error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "server_error",
-                            format!(
-                                "new model loaded but previous generation failed to retire: {error}"
-                            ),
-                        )
-                    })?;
+                if let Some(previous) = previous
+                    && let Err(error) = previous.retire().await
+                {
+                    // The new generation is published and serving; a retire
+                    // failure of the outgoing worker is an operator signal,
+                    // not a failed load (an Add retry would 409, a Replace
+                    // retry would rebuild for nothing).
+                    tracing::error!(
+                        model_id = %published_model_id,
+                        %error,
+                        "new model loaded but previous generation failed to retire"
+                    );
                 }
                 Ok(ctx_len)
             }

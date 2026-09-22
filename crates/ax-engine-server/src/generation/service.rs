@@ -243,8 +243,17 @@ impl ModelExecutionArbiter {
             .stats
             .retain(|(stats_model_id, _), _| stats_model_id != model_id);
         state.last_activity.remove(model_id);
-        state.waiters.remove(model_id);
-        state.held_models.remove(model_id);
+        // A worker of this model may still be inside `acquire` (its waiter
+        // count is live) or holding a turn (it is in `held_models`) when the
+        // registry drops the model: unload and replace remove tracking before
+        // the outgoing worker is retired. Those entries are released by the
+        // waiter itself and by `ModelExecutionTurn::drop`; deleting them here
+        // would let a same-id successor enter an "exclusive" turn while the
+        // old step still runs, and in exclusive mode would strand the waiter
+        // (it can only be served while it is the round-robin head).
+        if state.waiters.get(model_id).is_none_or(|count| *count == 0) {
+            state.waiters.remove(model_id);
+        }
         if state.last_served.as_deref() == Some(model_id) {
             state.last_served = None;
         }
@@ -2847,6 +2856,62 @@ mod tests {
             .expect("alpha stats should exist");
         assert_eq!(alpha.turns_total, 2);
         assert!(alpha.hold_us_total >= alpha.hold_us_max);
+    }
+
+    #[test]
+    fn execution_arbiter_remove_model_keeps_a_held_turn_exclusive() {
+        // Unload/replace drop the registry entry before the outgoing worker
+        // retires: removing tracking while its turn is held must not let a
+        // successor enter the exclusive slot alongside it.
+        let arbiter = Arc::new(ModelExecutionArbiter::with_max_concurrent(1));
+        let held = arbiter.acquire("alpha", ExecutionWorkClass::EngineStep);
+        arbiter.remove_model("alpha");
+        let (acquired_tx, acquired_rx) = std_mpsc::channel();
+        let worker_arbiter = Arc::clone(&arbiter);
+        let worker = std::thread::spawn(move || {
+            let _turn = worker_arbiter.acquire("alpha-v2", ExecutionWorkClass::EngineStep);
+            acquired_tx
+                .send(())
+                .expect("acquisition should be observed");
+        });
+        assert!(
+            acquired_rx
+                .recv_timeout(Duration::from_millis(200))
+                .is_err(),
+            "successor entered while the removed model still held the slot"
+        );
+        drop(held);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("successor acquires once the held turn drops");
+        worker.join().expect("arbiter worker should finish");
+    }
+
+    #[test]
+    fn execution_arbiter_remove_model_does_not_strand_a_waiting_worker() {
+        // A worker blocked in `acquire` when its model is removed must still
+        // be served (its waiter entry is what makes it the round-robin head).
+        let arbiter = Arc::new(ModelExecutionArbiter::with_max_concurrent(1));
+        let beta_turn = arbiter.acquire("beta", ExecutionWorkClass::EngineStep);
+        let (acquired_tx, acquired_rx) = std_mpsc::channel();
+        let worker_arbiter = Arc::clone(&arbiter);
+        let worker = std::thread::spawn(move || {
+            let _turn = worker_arbiter.acquire("alpha", ExecutionWorkClass::EngineStep);
+            acquired_tx
+                .send(())
+                .expect("acquisition should be observed");
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !arbiter.state.lock().waiters.contains_key("alpha") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(arbiter.state.lock().waiters.contains_key("alpha"));
+        arbiter.remove_model("alpha");
+        drop(beta_turn);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the waiting worker must acquire after removal");
+        worker.join().expect("arbiter worker should finish");
     }
 
     #[test]
