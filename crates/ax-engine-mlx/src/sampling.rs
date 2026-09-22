@@ -577,6 +577,22 @@ pub fn indexed_token_distribution(
         return TokenDistribution::new(vec![(indices[best_i], 1.0)]);
     }
 
+    // Same law as `token_distribution`: the min_p retain (relative to the
+    // candidate-set maximum) runs before top-k/top-p, so a draft law built
+    // from a candidate set cannot diverge from the target law on min_p.
+    if sampling.uses_min_p() {
+        let min_p = sampling.min_p.unwrap_or(0.0);
+        let max_prob = candidates
+            .iter()
+            .map(|(_, prob)| *prob)
+            .fold(0.0f32, f32::max);
+        let cutoff = min_p * max_prob;
+        candidates.retain(|(_, prob)| *prob >= cutoff);
+        if candidates.is_empty() {
+            return TokenDistribution::new(vec![(indices[best_i], 1.0)]);
+        }
+    }
+
     // Apply the sampler's top-k/top-p over the caller-provided candidate set.
     // The set is usually already narrowed on GPU for bandwidth, but it can be
     // much larger than the sampler's requested top-k.
@@ -1380,6 +1396,23 @@ mod tests {
             sample_categorical(&logits, MlxSamplingParams::greedy(), &[], &mut rng),
             1
         );
+    }
+
+    #[test]
+    fn indexed_token_distribution_applies_min_p_like_the_full_distribution() {
+        let logits = [10.0, 1.0, 1.0, 1.0, 1.0];
+        let indices = [7u32, 8, 9, 10, 11];
+        let sampling = MlxSamplingParams::new(1.0, 1.0, 0).with_min_p(Some(0.05));
+        let indexed =
+            indexed_token_distribution(&logits, &indices, sampling).expect("indexed distribution");
+        assert_eq!(
+            indexed.entries.len(),
+            1,
+            "min_p must drop the 1e-4 tail: {:?}",
+            indexed.entries
+        );
+        assert_eq!(indexed.entries[0].0, 7);
+        assert!((indexed.entries[0].1 - 1.0).abs() < 1e-6);
     }
 
     #[test]
