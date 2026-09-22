@@ -271,12 +271,20 @@ pub(crate) fn verify_submit_interval_for_build(
     seq: usize,
     layer_count: usize,
     configured: usize,
+    model_family: &str,
 ) -> usize {
     // Depth-1 Qwen linear verify is S=2..4. Mid-loop async_eval of `hidden`
     // is a win on long prefill-shaped graphs (35B-A3B interval 8) and pure
     // overhead on the short teacher-forced step when stacked on
-    // AX_MLX_PIPELINE_GRANULARITY=layer.
-    if seq <= qwen_linear_mtp_max_verify_seq() as usize
+    // AX_MLX_PIPELINE_GRANULARITY=layer. The widened throughput window only
+    // applies to the Qwen linear families; other families keep the certified
+    // S=2..=4 short-verify band.
+    if seq
+        <= qwen_linear_mtp_max_verify_seq_for_family(
+            qwen_linear_throughput_mtp_enabled(),
+            qwen_linear_throughput_mtp_depth(),
+            qwen_linear_throughput_family(model_family),
+        ) as usize
         || configured == 0
         || configured >= layer_count
     {
@@ -983,6 +991,62 @@ pub fn qwen_linear_mtp_verify_seq_window() -> std::ops::RangeInclusive<i32> {
 /// Whether `seq` (any integer width) is a multi-token verify shape.
 pub fn qwen_linear_mtp_verify_seq_contains(seq: i64) -> bool {
     (2..=i64::from(qwen_linear_mtp_max_verify_seq())).contains(&seq)
+}
+
+/// Families the Qwen linear throughput profile is measured on (the same
+/// predicate `qwen_linear_attention_direct_cpp_default_family` uses). The
+/// widened verify window under `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH` only
+/// applies to these families; every other family keeps the certified width.
+pub fn qwen_linear_throughput_family(model_family: &str) -> bool {
+    matches!(model_family, "qwen3_5" | "qwen3_next")
+}
+
+/// Effective Qwen linear verify width (in drafts) for one model family.
+///
+/// Families outside the throughput profile keep
+/// [`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED`] whatever the configured
+/// throughput depth says, so a widened `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH`
+/// cannot widen a Gemma (or any non-Qwen-linear) model's verify window.
+pub const fn qwen_linear_mtp_max_verify_drafts_for_family(
+    throughput_enabled: bool,
+    throughput_depth: usize,
+    throughput_family: bool,
+) -> usize {
+    if throughput_family {
+        qwen_linear_mtp_max_verify_drafts_for(throughput_enabled, throughput_depth)
+    } else {
+        QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED
+    }
+}
+
+/// Pure helper: widest verify sequence (drafts + 1) for one model family.
+pub const fn qwen_linear_mtp_max_verify_seq_for_family(
+    throughput_enabled: bool,
+    throughput_depth: usize,
+    throughput_family: bool,
+) -> i32 {
+    qwen_linear_mtp_max_verify_drafts_for_family(
+        throughput_enabled,
+        throughput_depth,
+        throughput_family,
+    ) as i32
+        + 1
+}
+
+/// Whether `seq` is a multi-token verify shape for one model family (family-
+/// scoped [`qwen_linear_mtp_verify_seq_contains`]).
+pub fn qwen_linear_mtp_verify_seq_contains_for_family(
+    seq: i64,
+    throughput_enabled: bool,
+    throughput_depth: usize,
+    throughput_family: bool,
+) -> bool {
+    (2..=i64::from(qwen_linear_mtp_max_verify_seq_for_family(
+        throughput_enabled,
+        throughput_depth,
+        throughput_family,
+    )))
+        .contains(&seq)
 }
 
 env_flag_default_on!(
@@ -9062,19 +9126,59 @@ mod tests {
 
     #[test]
     fn verify_chunked_submit_is_opt_in_and_multi_position_only() {
+        // Non-throughput family: the certified S=2..=4 short-verify band
+        // applies whatever the throughput depth env says.
+        const GEMMA: &str = "gemma";
         // Default (unset env resolves to 0) never splits a build.
-        assert_eq!(verify_submit_interval_for_build(2, 40, 0), 0);
+        assert_eq!(verify_submit_interval_for_build(2, 40, 0, GEMMA), 0);
         // A single-position build belongs to the direct pipeline, which
         // already double-buffers; splitting it would only add submits.
-        assert_eq!(verify_submit_interval_for_build(1, 40, 8), 0);
+        assert_eq!(verify_submit_interval_for_build(1, 40, 8, GEMMA), 0);
         // A speculative verify build splits at the configured interval.
-        assert_eq!(verify_submit_interval_for_build(2, 40, 8), 0);
-        assert_eq!(verify_submit_interval_for_build(4, 40, 8), 0);
-        assert_eq!(verify_submit_interval_for_build(5, 40, 4), 4);
+        assert_eq!(verify_submit_interval_for_build(2, 40, 8, GEMMA), 0);
+        assert_eq!(verify_submit_interval_for_build(4, 40, 8, GEMMA), 0);
+        assert_eq!(verify_submit_interval_for_build(5, 40, 4, GEMMA), 4);
         // An interval that cannot produce a submit before the caller's own
         // terminating eval is pure overhead, so it is refused.
-        assert_eq!(verify_submit_interval_for_build(2, 40, 40), 0);
-        assert_eq!(verify_submit_interval_for_build(2, 40, 64), 0);
+        assert_eq!(verify_submit_interval_for_build(2, 40, 40, GEMMA), 0);
+        assert_eq!(verify_submit_interval_for_build(2, 40, 64, GEMMA), 0);
+    }
+
+    /// Finding B: the Qwen throughput depth only widens the verify window for
+    /// the Qwen linear families it is measured on; every other family keeps the
+    /// certified depth-3 width.
+    #[test]
+    fn qwen_throughput_depth_is_family_scoped() {
+        // Widened throughput depth for a Qwen linear family.
+        assert_eq!(
+            qwen_linear_mtp_max_verify_drafts_for_family(true, 7, true),
+            7
+        );
+        assert_eq!(qwen_linear_mtp_max_verify_seq_for_family(true, 7, true), 8);
+        // A Gemma (non-Qwen-linear) family keeps the certified width.
+        assert_eq!(
+            qwen_linear_mtp_max_verify_drafts_for_family(true, 7, false),
+            QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED
+        );
+        assert_eq!(
+            qwen_linear_mtp_max_verify_seq_for_family(true, 7, false),
+            QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED as i32 + 1
+        );
+        // The family predicate matches exactly the two served families.
+        assert!(qwen_linear_throughput_family("qwen3_5"));
+        assert!(qwen_linear_throughput_family("qwen3_next"));
+        assert!(!qwen_linear_throughput_family("gemma"));
+        assert!(!qwen_linear_throughput_family("deepseek_v4"));
+        // seq containment follows the family-scoped window.
+        assert!(qwen_linear_mtp_verify_seq_contains_for_family(
+            8, true, 7, true
+        ));
+        assert!(!qwen_linear_mtp_verify_seq_contains_for_family(
+            8, true, 7, false
+        ));
+        assert!(qwen_linear_mtp_verify_seq_contains_for_family(
+            4, true, 7, false
+        ));
     }
 
     #[test]

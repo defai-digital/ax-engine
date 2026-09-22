@@ -1108,6 +1108,30 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
         );
     }
 
+    // Greedy (temperature 0) verification must commit tokens matching the
+    // singleton production route: the batched multi-token verifier can pick a
+    // different argmax than MTP-off direct decode on near-ties. Revalidate the
+    // provisional drafts through `forward_argmax` (the same route the MTP path
+    // uses) and take the production correction/bonus token, then fall back to
+    // the singleton route for any diverging draft.
+    if sampling.temperature <= 0.0 {
+        let token_offset = cache.seq_len();
+        let replay = revalidate_greedy_prefix_with_argmax(
+            cfg,
+            weights,
+            cache,
+            last_token,
+            draft,
+            token_offset,
+        );
+        let mut result = draft[..replay.accept_count].to_vec();
+        result.push(replay.correction_token);
+        ngram.record_draft_feedback(draft, replay.accept_count, draft_policy);
+        ngram.feed(&draft[..replay.accept_count]);
+        ngram.feed(&result[replay.accept_count..]); // correction or bonus
+        return result;
+    }
+
     let token_offset = cache.seq_len();
     let verification = verify_draft(
         cfg,
@@ -1156,6 +1180,28 @@ fn ngram_accel_decode_step_linear_safe(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Vec<u32> {
+    // Greedy (temperature 0): rebuild the committed prefix and take the
+    // correction/bonus token from the singleton production route
+    // (`recompute_committed_prefix_with_argmax`) rather than the batched
+    // multi-token verifier, whose recurrent reduction can diverge on near-ties.
+    if sampling.temperature <= 0.0 {
+        let token_offset = cache.seq_len();
+        let replay = revalidate_greedy_prefix_with_argmax(
+            cfg,
+            weights,
+            cache,
+            last_token,
+            draft,
+            token_offset,
+        );
+        let mut result = draft[..replay.accept_count].to_vec();
+        result.push(replay.correction_token);
+        ngram.record_draft_feedback(draft, replay.accept_count, draft_policy);
+        ngram.feed(&draft[..replay.accept_count]);
+        ngram.feed(&result[replay.accept_count..]); // correction or bonus
+        return result;
+    }
+
     let token_offset = cache.seq_len();
     let mut verify_cache = cache.clone();
     let verification = verify_draft(
@@ -1769,10 +1815,29 @@ pub fn single_decode_with_sampling_buffers(
         && sampling.top_p >= 1.0
         && !sampling.uses_min_p()
     {
-        // GPU-side sampling: no logits transfer to CPU.
-        // The forward pass already updated the KV cache (it's in logits' graph);
-        // sample_categorical_gpu evals the token internally.
-        sample_categorical_gpu(&logits, sampling.temperature)
+        if rng.is_seeded() {
+            // Seeded pure-temperature: sample on the host with the request rng
+            // so the seed is honored (mlx-sys has no keyed categorical).
+            let kv_refs = cache.collect_eval_refs();
+            let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+            targets.push(&logits);
+            targets.extend(kv_refs);
+            eval(&targets);
+            sample_categorical_into(
+                logits.data_f32(),
+                sampling,
+                repetition_tokens,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            )
+        } else {
+            // GPU-side sampling: no logits transfer to CPU.
+            // The forward pass already updated the KV cache (it's in logits' graph);
+            // sample_categorical_gpu evals the token internally.
+            sample_categorical_gpu(&logits, sampling.temperature)
+        }
     } else if let Some(tok) =
         sample_categorical_with_topk_gpu(&logits, sampling, repetition_tokens, rng)
             .or_else(|| sample_categorical_with_topp_gpu(&logits, sampling, repetition_tokens, rng))

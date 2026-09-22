@@ -439,6 +439,13 @@ impl MlxNativePrefixCache {
                 .is_some_and(|entry| entry.snapshot.tokens == requested_tokens)
     }
 
+    /// Whether a snapshot with this many `logical_bytes` is too large to be
+    /// admitted (its footprint alone exceeds the byte budget). Callers record
+    /// `blocked_entry_too_large` telemetry when this returns true.
+    pub(crate) fn rejects_oversized(&self, logical_bytes: u64) -> bool {
+        logical_bytes > self.policy.max_bytes
+    }
+
     pub(crate) fn insert(
         &mut self,
         key: MlxPrefixCacheKey,
@@ -452,6 +459,21 @@ impl MlxNativePrefixCache {
             || snapshot.cache.seq_len() != snapshot.token_count
             || !snapshot.cache.is_native_fa_shareable()
         {
+            retired.push(snapshot);
+            return MlxNativePrefixCacheInsertOutcome {
+                stored: false,
+                evictions: 0,
+                retired,
+                evicted,
+            };
+        }
+
+        // Refuse an oversized snapshot up front: its `logical_bytes` alone
+        // exceeds the policy budget, so admitting it would let the LRU eviction
+        // loop below destroy every healthy entry before the oversized one
+        // self-evicts (leaving the cache empty). Mirror the invalid-snapshot
+        // path: retire, stored=false, evictions=0, touch nothing else.
+        if snapshot.logical_bytes > self.policy.max_bytes {
             retired.push(snapshot);
             return MlxNativePrefixCacheInsertOutcome {
                 stored: false,
@@ -613,8 +635,19 @@ impl DiskCostModel {
     pub(crate) fn record_write(&self, bytes: u64, wall_us: u64) {
         if let Some(rate) = throughput(bytes, wall_us) {
             let mut inner = self.inner.lock();
-            if let Some(snapshot) = inner.as_mut() {
-                snapshot.write_bytes_per_us = ewma(snapshot.write_bytes_per_us, rate);
+            match inner.as_mut() {
+                Some(snapshot) => {
+                    snapshot.write_bytes_per_us = ewma(snapshot.write_bytes_per_us, rate);
+                }
+                None => {
+                    // The first successful real background write seeds the model
+                    // so adaptive admission can bootstrap even when the open-time
+                    // calibration probe failed or raced with a sibling writer.
+                    *inner = Some(crate::disk_prefix_cache::DiskThroughputSnapshot {
+                        write_bytes_per_us: rate,
+                        restore_bytes_per_us: rate,
+                    });
+                }
             }
         }
     }
@@ -835,6 +868,18 @@ fn elapsed_wall_us(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
+/// Unique calibration probe filename for one writer.
+///
+/// Two `DiskPrefixCacheWriter` instances in one process (multi-model serving,
+/// or a reload whose old writer detached) used to share `.calib.tmp.{pid}`,
+/// so the loser read `NotFound` and never seeded its cost model. The process-
+/// wide counter disambiguates concurrent writers on the same cache directory.
+fn next_calibration_probe_filename() -> String {
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!(".calib.tmp.{}.{}", std::process::id(), n)
+}
+
 /// One-shot storage calibration: write, fsync, read back, and checksum a
 /// single io-chunk-sized probe file in the cache directory, seeding the
 /// cost model's write/restore throughput. Best-effort — on any failure the
@@ -847,9 +892,7 @@ fn calibrate_disk_throughput(
     use sha2::Digest;
     use std::io::{Read, Write};
 
-    let path = disk
-        .dir()
-        .join(format!(".calib.tmp.{}", std::process::id()));
+    let path = disk.dir().join(next_calibration_probe_filename());
     let data = vec![0xA5u8; chunk_bytes.max(64 * 1024)];
 
     let write_started = std::time::Instant::now();
@@ -1845,7 +1888,7 @@ mod tests {
     }
 
     #[test]
-    fn native_prefix_byte_budget_evicts_oversized_entry() {
+    fn native_prefix_byte_budget_refuses_oversized_entry() {
         let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
             block_size_tokens: 4,
             max_blocks: 1,
@@ -1854,7 +1897,7 @@ mod tests {
         .expect("pool");
         let producer = native_test_cache(&pool, 1.0);
         let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
-            // Snapshot charge is 64 payload + 16 token bytes.
+            // Snapshot charge is 64 payload + 16 token bytes = 80 > budget.
             max_bytes: 79,
             max_entries: 2,
         });
@@ -1863,14 +1906,57 @@ mod tests {
             MlxNativePrefixSnapshot::new(producer, vec![3; 4], 64, None),
         );
         assert!(!outcome.stored);
-        assert_eq!(outcome.evictions, 1);
-        assert!(outcome.retired.is_empty());
-        assert_eq!(outcome.evicted.len(), 1);
+        assert_eq!(outcome.evictions, 0);
+        assert_eq!(outcome.retired.len(), 1);
+        assert!(outcome.evicted.is_empty());
         assert_eq!(cache.stats().entries, 0);
+        assert_eq!(cache.stats().logical_bytes, 0);
         assert_eq!(pool.snapshot().allocated_blocks, 1);
         drop(outcome.retired);
         drop(outcome.evicted);
         assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn native_prefix_oversized_insert_leaves_healthy_entries_untouched() {
+        let pool = SharedFaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 4,
+            max_blocks: 2,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let mut cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 4,
+        });
+        // Healthy entry fits comfortably.
+        let healthy = native_test_cache(&pool, 1.0);
+        let healthy_key = native_prefix_key(1);
+        let ok = cache.insert(
+            healthy_key.clone(),
+            MlxNativePrefixSnapshot::new(healthy, vec![1; 4], 64, None),
+        );
+        assert!(ok.stored);
+        assert_eq!(ok.evictions, 0);
+        assert_eq!(cache.stats().entries, 1);
+        let healthy_bytes = cache.stats().logical_bytes;
+        assert!(healthy_bytes > 0);
+        // Oversized entry: its logical_bytes alone exceed the byte budget, so
+        // it must be refused up front without disturbing the healthy entry.
+        let oversized = native_test_cache(&pool, 2.0);
+        let outcome = cache.insert(
+            native_prefix_key(2),
+            MlxNativePrefixSnapshot::new(oversized, vec![2; 4], 4096, None),
+        );
+        assert!(!outcome.stored);
+        assert_eq!(outcome.evictions, 0);
+        assert!(outcome.evicted.is_empty());
+        assert_eq!(outcome.retired.len(), 1);
+        assert_eq!(cache.stats().entries, 1);
+        assert_eq!(cache.stats().logical_bytes, healthy_bytes);
+        assert!(cache.contains_exact_tokens(&healthy_key, &[1; 4]));
+        drop(outcome.retired);
+        drop(outcome.evicted);
     }
 
     #[test]
@@ -1970,5 +2056,24 @@ mod tests {
 
         drop(writer);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_write_seeds_empty_cost_model() {
+        let model = DiskCostModel::new();
+        assert!(model.snapshot().is_none());
+        model.record_write(1000, 100); // 10 B/us
+        let snapshot = model.snapshot().expect("first write must seed the model");
+        assert!(snapshot.write_bytes_per_us > 0.0);
+        assert!(snapshot.restore_bytes_per_us > 0.0);
+    }
+
+    #[test]
+    fn calibration_probe_filenames_are_unique_per_writer() {
+        let a = next_calibration_probe_filename();
+        let b = next_calibration_probe_filename();
+        assert_ne!(a, b, "concurrent writers must not share a probe path");
+        assert!(a.starts_with(".calib.tmp."));
+        assert!(b.starts_with(".calib.tmp."));
     }
 }

@@ -1623,6 +1623,14 @@ pub fn prepare_direct_pipeline_advance(
 /// When `temperature` is 0.0, uses GPU argmax.  When > 0.0, evals
 /// logits to CPU and samples from the temperature-scaled categorical
 /// distribution.  The caller must pass a per-request `rng` for reproducibility.
+///
+/// A seeded `rng` (see [`Xorshift64::new`]) makes pure-temperature sampling
+/// (`temperature > 0` with no top-k/top-p/min-p and no repetition penalty)
+/// reproducible: because `mlx_sys` exposes no keyed categorical, the seeded
+/// case samples the full vocabulary on the host through
+/// [`sample_categorical_into`] instead of MLX's global GPU RNG. Unseeded
+/// requests (`Xorshift64::new_unseeded`) keep the GPU `random_categorical`
+/// fast path that avoids the full-vocab readback.
 pub fn decode_step(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1670,7 +1678,23 @@ pub fn sample_token_from_prefill_logits(
         && sampling.top_p >= 1.0
         && !sampling.uses_min_p()
     {
-        sample_categorical_gpu(logits, sampling.temperature)
+        if rng.is_seeded() {
+            // Seeded pure-temperature: sample on the host so the request rng
+            // (not MLX's global GPU RNG) drives the draw. Logits are already
+            // evaluated by the staged batched-prefill producer.
+            let logits_data = logits.data_f32();
+            sample_categorical_into(
+                logits_data,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            )
+        } else {
+            sample_categorical_gpu(logits, sampling.temperature)
+        }
     } else if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
         if let Some(tok) = sample_categorical_with_topk_gpu(
             logits,
@@ -1736,8 +1760,24 @@ pub fn decode_step_with_sampling_buffers(
         && sampling.top_p >= 1.0
         && !sampling.uses_min_p()
     {
-        // GPU-side sampling: no logits transfer to CPU.
-        sample_categorical_gpu(&logits, sampling.temperature)
+        if rng.is_seeded() {
+            // Seeded pure-temperature: sample on the host with the request rng
+            // so the seed is honored (mlx-sys has no keyed categorical).
+            eval_with_kv_refs(&logits, cache);
+            let logits_data = logits.data_f32();
+            sample_categorical_into(
+                logits_data,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            )
+        } else {
+            // GPU-side sampling: no logits transfer to CPU.
+            sample_categorical_gpu(&logits, sampling.temperature)
+        }
     } else if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
         if let Some(tok) = sample_categorical_with_topk_gpu(
             &logits,
@@ -1933,5 +1973,78 @@ mod tests {
             &mut candidates,
         );
         assert_eq!(greedy_tok, 7);
+    }
+
+    /// Pure-temperature seed reproducibility (Finding A): with `temperature > 0`
+    /// and no top-k/top-p/min-p/repetition penalty, a seeded `rng` must drive the
+    /// draw (host `sample_categorical_into`) instead of MLX's global GPU RNG, so
+    /// the same seed yields the same token and different seeds can differ. The
+    /// unseeded path still runs on the GPU global-RNG route.
+    #[test]
+    fn pure_temperature_sampling_is_seed_deterministic() {
+        // Near-uniform logits so distinct seeds can pick distinct tokens.
+        let logits_data: Vec<f32> = (0..32).map(|i| 1.0 + (i as f32) * 0.01).collect();
+        let logits = MlxArray::from_f32_slice(&logits_data);
+        let sampling = MlxSamplingParams::new(1.0, 1.0, 0); // pure temperature
+
+        let draw_seeded = |seed: u64| {
+            let mut rng = Xorshift64::new(seed);
+            let mut probs = Vec::new();
+            let mut logits_buf = Vec::new();
+            let mut candidates = Vec::new();
+            sample_token_from_prefill_logits(
+                &logits,
+                MlxSamplingRequest::new(sampling, &[]),
+                &mut rng,
+                &mut probs,
+                &mut logits_buf,
+                &mut candidates,
+            )
+        };
+
+        for seed in [1u64, 42, 987] {
+            assert_eq!(
+                draw_seeded(seed),
+                draw_seeded(seed),
+                "seed {seed} must be reproducible under pure temperature"
+            );
+        }
+
+        // Positive control: widely-spaced seeds draw distinct tokens.
+        let distinct: std::collections::BTreeSet<u32> = [
+            0x1234_5678_9abc_def0_u64,
+            0xdead_beef_1357_2468,
+            0x0f0f_0f0f_f0f0_f0f0,
+            0x7777_1111_9999_3333,
+            0xaaaa_bbbb_cccc_dddd,
+            0x0246_8ace_1357_9bdf,
+            0xfeed_face_cafe_beef,
+            0x0101_0202_0404_0808,
+        ]
+        .into_iter()
+        .map(draw_seeded)
+        .collect();
+        assert!(
+            distinct.len() >= 2,
+            "positive control: near-uniform pure-temperature logits drew only {distinct:?}"
+        );
+
+        // Unseeded request still samples via the GPU global-RNG path.
+        let mut unseeded_rng = Xorshift64::new_unseeded(7);
+        let mut probs = Vec::new();
+        let mut logits_buf = Vec::new();
+        let mut candidates = Vec::new();
+        let token = sample_token_from_prefill_logits(
+            &logits,
+            MlxSamplingRequest::new(sampling, &[]),
+            &mut unseeded_rng,
+            &mut probs,
+            &mut logits_buf,
+            &mut candidates,
+        );
+        assert!(
+            (token as usize) < logits_data.len(),
+            "unseeded token in range"
+        );
     }
 }

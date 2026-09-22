@@ -255,7 +255,10 @@ mod tests {
             let want = sample_categorical(row_logits, params[row], recent[row], &mut ref_rng);
             assert_eq!(got[row], want, "row {row} sample differs from single path");
             // RNG state must have advanced exactly as the single path's did.
-            assert_eq!(rngs[row].0, ref_rng.0, "row {row} RNG advanced differently");
+            assert_eq!(
+                rngs[row].state, ref_rng.state,
+                "row {row} RNG advanced differently"
+            );
         }
     }
 

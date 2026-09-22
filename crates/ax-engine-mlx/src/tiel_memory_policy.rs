@@ -17,6 +17,7 @@
 
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Fixed stable identifier for the automatic no-wire policy event.
 const POLICY_ID: &str = "tiel-auto-no-wire-v1";
@@ -50,6 +51,10 @@ struct ResidencyDecision {
     wired_limit_scale_override: Option<f64>,
     /// True when expert streaming is active for this load.
     expert_streaming_active: bool,
+    /// Number of *other* live runners currently holding wired residency.
+    /// Clearing the process-wide wired limit would unwire those sibling models,
+    /// so a non-zero count blocks the clear.
+    sibling_wired_holders: usize,
     /// Hex SHA256 of `config.json` (`None` when unreadable/oversized).
     config_sha256: Option<String>,
     /// Hex SHA256 of `axquant_manifest.json` (`None` when unreadable/oversized).
@@ -72,18 +77,22 @@ fn decide_clear_wired_residency(inputs: &ResidencyDecision) -> bool {
     if inputs.expert_streaming_active {
         return false;
     }
-    // Guard 3: config digest must match the tested export configuration.
+    // Guard 3: never clear while a sibling runner holds wired residency.
+    if inputs.sibling_wired_holders > 0 {
+        return false;
+    }
+    // Guard 4: config digest must match the tested export configuration.
     if inputs.config_sha256.as_deref() != Some(CONFIG_SHA256) {
         return false;
     }
-    // Guard 4: manifest digest must match the Tiel or Cyber pack.
+    // Guard 5: manifest digest must match the Tiel or Cyber pack.
     if !matches!(
         inputs.manifest_sha256.as_deref(),
         Some(TIEL_MANIFEST_SHA256) | Some(CYBER_MANIFEST_SHA256)
     ) {
         return false;
     }
-    // Guard 5: hardware (>= 128 GiB and exactly `Apple M5 Max`).
+    // Guard 6: hardware (>= 128 GiB and exactly `Apple M5 Max`).
     let enough_memory = inputs
         .unified_memory_bytes
         .is_some_and(|bytes| bytes >= MIN_UNIFIED_MEMORY_BYTES);
@@ -94,6 +103,43 @@ fn decide_clear_wired_residency(inputs: &ResidencyDecision) -> bool {
         return false;
     }
     true
+}
+
+/// Process-wide count of live runners currently holding wired residency.
+static WIRED_RESIDENCY_HOLDERS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII guard: marks one runner as holding wired residency and releases the
+/// hold on drop, keeping [`WIRED_RESIDENCY_HOLDERS`] accurate so a sibling
+/// model's wired residency is never silently cleared by a Tiel export loading
+/// second.
+pub(crate) struct WiredResidencyGuard {
+    held: bool,
+}
+
+impl WiredResidencyGuard {
+    /// Record that this runner wired residency (call after `set_wired_limit`).
+    pub(crate) fn acquire() -> Self {
+        WIRED_RESIDENCY_HOLDERS.fetch_add(1, Ordering::AcqRel);
+        Self { held: true }
+    }
+
+    /// A guard that holds no residency (the `wired_cap == 0` path).
+    pub(crate) fn unheld() -> Self {
+        Self { held: false }
+    }
+}
+
+impl Drop for WiredResidencyGuard {
+    fn drop(&mut self) {
+        if self.held {
+            WIRED_RESIDENCY_HOLDERS.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+/// Number of live runners currently holding wired residency.
+pub(crate) fn wired_residency_holders() -> usize {
+    WIRED_RESIDENCY_HOLDERS.load(Ordering::Acquire)
 }
 
 /// Exact metadata identity shared by the two independent residency policies.
@@ -207,15 +253,36 @@ pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: 
 
     // Metadata matched; resolve the remaining guards and apply the pure
     // decision (which re-checks every guard as the single source of truth).
+    // This runner already wired residency (the constructor does so before this
+    // call), so `saturating_sub(1)` yields the number of *sibling* runners.
+    let sibling_wired_holders = wired_residency_holders().saturating_sub(1);
     let inputs = ResidencyDecision {
         wired_limit_scale_override,
         expert_streaming_active,
+        sibling_wired_holders,
         config_sha256,
         manifest_sha256,
         unified_memory_bytes: crate::expert_stream::unified_memory_bytes(),
         cpu_brand_string: cpu_brand_string(),
     };
     if !decide_clear_wired_residency(&inputs) {
+        if sibling_wired_holders > 0 {
+            // A sibling model already wired residency; clearing the
+            // process-wide limit would silently unwire it too. Log once per
+            // process rather than on every recycle/load.
+            static SIBLING_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if SIBLING_WARNED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                return;
+            }
+            tracing::warn!(
+                target: "ax_engine_mlx::runner",
+                policy = POLICY_ID,
+                sibling_wired_holders,
+                "automatic no-wire residency skipped: a sibling model holds wired residency"
+            );
+            return;
+        }
         // Metadata already matched an audited Tiel/Cyber export. The no-wire
         // policy itself stays M5 Max / >= 128 GiB. M4 Pro 64 GiB uses
         // tiel-session-resident-v1 and keeps this wiring decision. Warn once
@@ -284,6 +351,7 @@ mod tests {
         ResidencyDecision {
             wired_limit_scale_override: None,
             expert_streaming_active: false,
+            sibling_wired_holders: 0,
             config_sha256: Some(CONFIG_SHA256.to_string()),
             manifest_sha256: Some(TIEL_MANIFEST_SHA256.to_string()),
             unified_memory_bytes: Some(MIN_UNIFIED_MEMORY_BYTES),
@@ -294,6 +362,39 @@ mod tests {
     #[test]
     fn tiel_pack_full_match_clears() {
         assert!(decide_clear_wired_residency(&matching_decision()));
+    }
+
+    #[test]
+    fn sibling_wired_holder_skips_clear() {
+        // With a sibling runner holding wired residency the clear is skipped.
+        let mut inputs = matching_decision();
+        inputs.sibling_wired_holders = 1;
+        assert!(!decide_clear_wired_residency(&inputs));
+        // At zero (no sibling) the same inputs clear.
+        let mut inputs = matching_decision();
+        inputs.sibling_wired_holders = 0;
+        assert!(decide_clear_wired_residency(&inputs));
+    }
+
+    #[test]
+    fn wired_residency_guard_tracks_holders() {
+        assert_eq!(wired_residency_holders(), 0);
+        {
+            let _guard = WiredResidencyGuard::acquire();
+            assert_eq!(wired_residency_holders(), 1);
+            {
+                let _second = WiredResidencyGuard::acquire();
+                assert_eq!(wired_residency_holders(), 2);
+            }
+            assert_eq!(wired_residency_holders(), 1);
+        }
+        assert_eq!(wired_residency_holders(), 0);
+        // An unheld guard does not touch the count.
+        {
+            let _unheld = WiredResidencyGuard::unheld();
+            assert_eq!(wired_residency_holders(), 0);
+        }
+        assert_eq!(wired_residency_holders(), 0);
     }
 
     #[test]

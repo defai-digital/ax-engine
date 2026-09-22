@@ -2020,7 +2020,12 @@ fn lm_head_verify_window_projection(
     seq: i32,
     hidden_size: i32,
 ) -> MlxArray {
-    if crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64) {
+    if crate::fastpath::qwen_linear_mtp_verify_seq_contains_for_family(
+        seq as i64,
+        crate::fastpath::qwen_linear_throughput_mtp_enabled(),
+        crate::fastpath::qwen_linear_throughput_mtp_depth(),
+        crate::fastpath::qwen_linear_throughput_family(model_family),
+    ) {
         let _gemma_verify_qmm = (is_gemma4_text_target_family(model_family)
             && crate::fastpath::gemma4_verify_qmm_lm_head_enabled())
         .then(|| shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true));
@@ -2249,6 +2254,7 @@ pub fn forward_all_positions_with_post_norm_ids(
         seq,
         layer_count,
         crate::fastpath::mtp_verify_submit_layer_interval(),
+        &cfg.model_family,
     );
     let exact_short_verify = crate::fastpath::qwen_linear_mtp_exact_enabled()
         && crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64);

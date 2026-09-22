@@ -1121,6 +1121,9 @@ pub struct MlxRunner {
     batched_session: Mutex<BatchedDecodeSession>,
     /// Dedicated GPU stream kept alive for the runner's lifetime.
     _stream: MlxStream,
+    /// Releases this runner's process-wide wired-residency hold on drop so a
+    /// Tiel/Cyber export loading later cannot silently unwire a sibling model.
+    _wired_residency: crate::tiel_memory_policy::WiredResidencyGuard,
     /// When true, disable n-gram acceleration. Model-based MTP is controlled
     /// independently by `mtp_requested`.
     disable_ngram_acceleration: bool,
@@ -1910,14 +1913,17 @@ impl MlxRunner {
         // panics caused by wiring the full max (documented in mlx-lm#883).
         // Override via AX_MLX_WIRED_LIMIT_SCALE (0.0-1.0).
         let wired_cap = max_recommended_working_set_size();
-        if wired_cap > 0 {
+        let wired_residency = if wired_cap > 0 {
             let scale: f64 = std::env::var("AX_MLX_WIRED_LIMIT_SCALE")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.9);
             let scaled = (wired_cap as f64 * scale.clamp(0.0, 1.0)) as usize;
             set_wired_limit(scaled);
-        }
+            crate::tiel_memory_policy::WiredResidencyGuard::acquire()
+        } else {
+            crate::tiel_memory_policy::WiredResidencyGuard::unheld()
+        };
 
         // Bound — but do NOT disable — MLX's internal buffer cache. The cache
         // recycles freed GPU buffers; with it off, every transient allocation
@@ -2436,6 +2442,7 @@ impl MlxRunner {
             batched_decode_model_rejections,
             batched_session,
             _stream: stream,
+            _wired_residency: wired_residency,
             disable_ngram_acceleration,
             mtp_requested,
             mtp_model_policy,
@@ -8154,15 +8161,21 @@ impl MlxRunner {
             let mut native_snapshot_ready = native_store_enabled && !native_store_needed;
             if native_store_needed && native_snapshot_eligible {
                 let logical_kv_bytes = snapshot_cache.usage_snapshot().logical_bytes;
-                let native_outcome = self.native_prefix_cache.lock().insert(
-                    key.clone(),
-                    MlxNativePrefixSnapshot::new(
-                        snapshot_cache.clone(),
-                        tokens.to_vec(),
-                        logical_kv_bytes,
-                        snapshot_prefill_output_token,
-                    ),
-                );
+                let native_outcome = {
+                    let mut native = self.native_prefix_cache.lock();
+                    if native.rejects_oversized(logical_kv_bytes) {
+                        telemetry.record_blocked_entry_too_large();
+                    }
+                    native.insert(
+                        key.clone(),
+                        MlxNativePrefixSnapshot::new(
+                            snapshot_cache.clone(),
+                            tokens.to_vec(),
+                            logical_kv_bytes,
+                            snapshot_prefill_output_token,
+                        ),
+                    )
+                };
                 native_snapshot_ready = native_outcome.stored;
                 if native_outcome.stored {
                     telemetry.native_stores = telemetry.native_stores.saturating_add(1);
@@ -16094,6 +16107,46 @@ mod tests {
             assert!(crate::fastpath::qwen_linear_mtp_relaxed_session_enabled());
             assert!(crate::fastpath::qwen_linear_mtp_whole_verify_trace_enabled());
         }
+    }
+
+    #[test]
+    fn ngram_greedy_revalidation_commits_production_token() {
+        // Finding D: the n-gram accelerator's batched multi-token verifier can
+        // diverge from singleton production on near-ties. At temperature 0 the
+        // greedy path must commit the production correction/bonus token
+        // (recompute_committed_prefix_with_argmax), not the batched argmax.
+        let (cfg, weights) = forced_replay_test_model();
+        let mut expected = MlxKVCache::new_contiguous(1);
+        let production_correction =
+            recompute_committed_prefix_with_argmax(&cfg, &weights, &mut expected, 3, &[1, 1], 0);
+        let mut ngram = NgramTable::new();
+        let mut cache = MlxKVCache::new_contiguous(1);
+        let mut rng = Xorshift64::new(7);
+        let mut probs = Vec::new();
+        let mut logits_buf = Vec::new();
+        let mut candidates = Vec::new();
+        let draft = vec![1, 1];
+        let result = ngram_accel_decode_step_with_sampling_buffers(
+            &cfg,
+            &weights,
+            &mut cache,
+            &mut ngram,
+            3,
+            &draft,
+            NgramDraftPolicy::majority(2, 1, 0.4),
+            MlxSamplingParams::greedy(),
+            &[],
+            &mut rng,
+            &mut probs,
+            &mut logits_buf,
+            &mut candidates,
+        );
+        assert_eq!(&result[..draft.len()], draft.as_slice(), "accepted drafts");
+        assert_eq!(
+            result.last().copied(),
+            Some(production_correction),
+            "greedy n-gram must commit the production correction token"
+        );
     }
 
     #[test]

@@ -13,21 +13,41 @@ use crate::fastpath;
 /// independent RNG seeded from the request ID so deterministic seeds produce
 /// reproducible outputs.
 #[derive(Clone, Copy)]
-pub struct Xorshift64(pub u64);
+pub struct Xorshift64 {
+    pub state: u64,
+    pub seeded: bool,
+}
 
 impl Xorshift64 {
     pub fn new(seed: u64) -> Self {
         // Seed must be non-zero; mix with a prime to avoid bad seeds like 0.
         let s = seed.wrapping_add(0x9e3779b97f4a7c15);
-        Self(if s == 0 { 1 } else { s })
+        Self {
+            state: if s == 0 { 1 } else { s },
+            seeded: true,
+        }
+    }
+
+    /// Same state mixing as [`Xorshift64::new`] but marked unseeded, so the
+    /// pure-temperature sampler may keep using MLX's global GPU RNG instead of
+    /// this stream. Use for requests that do not need seed reproducibility.
+    pub fn new_unseeded(seed: u64) -> Self {
+        let mut rng = Self::new(seed);
+        rng.seeded = false;
+        rng
+    }
+
+    /// Whether this stream carries a reproducible request seed.
+    pub fn is_seeded(&self) -> bool {
+        self.seeded
     }
 
     /// Generate next random u64.
     pub fn next_u64(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        self.state
     }
 
     /// Uniform float in [0, 1).
@@ -823,6 +843,12 @@ pub fn full_vocab_token_logprob(logits: &[f32], token: u32, temperature: f32) ->
 ///   samples the full distribution, so min-p requests must use the host sampler
 ///
 /// When any of these constraints are violated, fall back to `sample_categorical`.
+///
+/// **Reproducibility:** `mlx_sys` exposes only the global-RNG `random_categorical`
+/// (no keyed categorical), so this path is *not* seed-reproducible. Callers must
+/// route requests that carry a seeded per-request `rng` through
+/// [`sample_categorical_into`] instead and reserve this path for unseeded
+/// requests.
 pub fn sample_categorical_gpu(logits: &MlxArray, temperature: f32) -> u32 {
     // Scale logits by 1/temperature on GPU, then sample.
     let inv_temp = 1.0 / temperature;
@@ -1001,7 +1027,10 @@ mod tests {
     #[test]
     fn next_f32_stays_below_one() {
         // Xorshift64 state that yields a 53-bit draw in the top rounding band.
-        let mut rng = Xorshift64(u64::MAX);
+        let mut rng = Xorshift64 {
+            state: u64::MAX,
+            seeded: false,
+        };
         for _ in 0..4096 {
             let value = rng.next_f32();
             assert!((0.0..1.0).contains(&value), "{value}");
@@ -1015,12 +1044,18 @@ mod tests {
         // is 0 and `threshold == 0.0`. Token 0 is banned (-inf) and must not
         // be returned by the unfiltered fast path.
         const ZERO_DRAW_STATE: u64 = 0xbe6d_f32f_185a_864d;
-        let mut probe = Xorshift64(ZERO_DRAW_STATE);
+        let mut probe = Xorshift64 {
+            state: ZERO_DRAW_STATE,
+            seeded: false,
+        };
         assert_eq!(probe.next_f32(), 0.0);
 
         let logits = vec![f32::NEG_INFINITY, 1.0, 2.0, 0.5];
         let sampling = MlxSamplingParams::new(0.8, 1.0, 0);
-        let mut rng = Xorshift64(ZERO_DRAW_STATE);
+        let mut rng = Xorshift64 {
+            state: ZERO_DRAW_STATE,
+            seeded: false,
+        };
         let mut probs = Vec::new();
         let mut scratch = Vec::new();
         let mut candidates = Vec::new();
