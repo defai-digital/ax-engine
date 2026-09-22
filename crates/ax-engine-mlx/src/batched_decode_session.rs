@@ -498,6 +498,12 @@ impl BatchedDecodeSession {
                 let keep = seed_len
                     .map(|n| n.min(full as usize) as i32)
                     .unwrap_or(full);
+                if keep == 0 {
+                    // A one-token prefill whose only token is `first_token`
+                    // (fed by `step`) leaves nothing to seed: the row stays
+                    // empty and the first step appends at position 0.
+                    continue;
+                }
                 let (k, v) = if keep < full {
                     let heads = k.shape()[1];
                     let dim = k.shape()[3];
