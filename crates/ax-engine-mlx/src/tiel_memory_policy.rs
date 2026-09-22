@@ -127,6 +127,13 @@ impl WiredResidencyGuard {
     pub(crate) fn unheld() -> Self {
         Self { held: false }
     }
+
+    /// Whether this runner actually holds wired residency. The no-wire policy
+    /// must subtract one from the process-wide holder count only when this is
+    /// true; an unheld runner's own wired cap is zero.
+    pub(crate) fn is_held(&self) -> bool {
+        self.held
+    }
 }
 
 impl Drop for WiredResidencyGuard {
@@ -140,6 +147,14 @@ impl Drop for WiredResidencyGuard {
 /// Number of live runners currently holding wired residency.
 pub(crate) fn wired_residency_holders() -> usize {
     WIRED_RESIDENCY_HOLDERS.load(Ordering::Acquire)
+}
+
+/// Number of *sibling* runners holding wired residency: the process-wide count
+/// minus one for this runner when it itself holds a guard. An unheld runner
+/// (its own wired cap was zero) must not subtract, or a single sibling holder
+/// would be miscounted as zero and its residency silently cleared.
+fn sibling_holder_count(total_holders: usize, current_held: bool) -> usize {
+    total_holders.saturating_sub(usize::from(current_held))
 }
 
 /// Exact metadata identity shared by the two independent residency policies.
@@ -219,7 +234,11 @@ pub(crate) fn session_auto_resident_fits(
 /// `sysctl`) once those digests match, so non-matching models never fork a
 /// process. On a pass, clears wired residency and traces an info event with
 /// the stable [`POLICY_ID`] and no private paths.
-pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: bool) {
+pub(crate) fn maybe_clear_wired_residency(
+    root: &Path,
+    expert_streaming_active: bool,
+    held_wired_residency: bool,
+) {
     let wired_limit_scale_override = wired_limit_scale_override();
     if wired_limit_scale_override.is_some() || expert_streaming_active {
         tracing::debug!(
@@ -253,9 +272,11 @@ pub(crate) fn maybe_clear_wired_residency(root: &Path, expert_streaming_active: 
 
     // Metadata matched; resolve the remaining guards and apply the pure
     // decision (which re-checks every guard as the single source of truth).
-    // This runner already wired residency (the constructor does so before this
-    // call), so `saturating_sub(1)` yields the number of *sibling* runners.
-    let sibling_wired_holders = wired_residency_holders().saturating_sub(1);
+    // Subtract this runner only when it actually wired residency; an unheld
+    // runner (its own wired cap was zero) must not subtract, or a single
+    // sibling holder would be miscounted as zero and its residency cleared.
+    let sibling_wired_holders =
+        sibling_holder_count(wired_residency_holders(), held_wired_residency);
     let inputs = ResidencyDecision {
         wired_limit_scale_override,
         expert_streaming_active,
@@ -374,6 +395,23 @@ mod tests {
         let mut inputs = matching_decision();
         inputs.sibling_wired_holders = 0;
         assert!(decide_clear_wired_residency(&inputs));
+    }
+
+    #[test]
+    fn unheld_current_runner_does_not_miscount_sibling_holders() {
+        // One other runner holds residency while the current guard is unheld
+        // (its own wired cap was zero). Subtracting 1 unconditionally would
+        // miscount zero siblings and clear the process-wide limit, unwiring
+        // runner A; the sibling count must stay 1 and the clear is skipped.
+        assert_eq!(sibling_holder_count(1, false), 1);
+        assert!(!decide_clear_wired_residency(&ResidencyDecision {
+            sibling_wired_holders: sibling_holder_count(1, false),
+            ..matching_decision()
+        }));
+        // A held current runner still subtracts itself from the count.
+        assert_eq!(sibling_holder_count(1, true), 0);
+        // No holders plus an unheld current runner stays zero.
+        assert_eq!(sibling_holder_count(0, false), 0);
     }
 
     #[test]

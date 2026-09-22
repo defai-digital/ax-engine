@@ -1,5 +1,14 @@
 use super::*;
 
+/// Full byte charge of one snapshot: the KV payload plus the token identity
+/// (`4 * token_len`, one `u32` per token). Both the oversize pre-check
+/// [`MlxNativePrefixCache::rejects_oversized`] and [`MlxNativePrefixCache::insert`]
+/// must use the same charge so a snapshot refused by `insert` is also reported
+/// as blocked instead of silently slipping past the telemetry.
+pub(crate) fn snapshot_charge_bytes(payload_bytes: u64, token_len: usize) -> u64 {
+    payload_bytes.saturating_add((token_len as u64).saturating_mul(size_of::<u32>() as u64))
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct MlxPrefixCacheKey {
     pub(crate) model_id: String,
@@ -34,8 +43,7 @@ impl MlxPrefixSnapshot {
         // Charge the token vector against the byte budget too: a 32K-token
         // prefix carries 128 KiB of tokens per entry, which the payload-only
         // accounting silently exempted from `max_bytes`.
-        let bytes = (payload.len() as u64)
-            .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
+        let bytes = snapshot_charge_bytes(payload.len() as u64, tokens.len());
         Self {
             kv_cache_payload: payload,
             tokens,
@@ -296,8 +304,7 @@ impl MlxNativePrefixSnapshot {
         greedy_prefill_output_token: Option<u32>,
     ) -> Self {
         let token_count = tokens.len();
-        let logical_bytes = logical_kv_bytes
-            .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
+        let logical_bytes = snapshot_charge_bytes(logical_kv_bytes, tokens.len());
         Self {
             cache,
             tokens,
@@ -439,11 +446,13 @@ impl MlxNativePrefixCache {
                 .is_some_and(|entry| entry.snapshot.tokens == requested_tokens)
     }
 
-    /// Whether a snapshot with this many `logical_bytes` is too large to be
-    /// admitted (its footprint alone exceeds the byte budget). Callers record
+    /// Whether a snapshot with this `payload_bytes` KV payload and `token_len`
+    /// tokens is too large to be admitted. Uses the same full charge as
+    /// [`Self::insert`] (`payload + 4 * token_len`) so a snapshot `insert`
+    /// refuses is also reported as blocked. Callers record
     /// `blocked_entry_too_large` telemetry when this returns true.
-    pub(crate) fn rejects_oversized(&self, logical_bytes: u64) -> bool {
-        logical_bytes > self.policy.max_bytes
+    pub(crate) fn rejects_oversized(&self, payload_bytes: u64, token_len: usize) -> bool {
+        snapshot_charge_bytes(payload_bytes, token_len) > self.policy.max_bytes
     }
 
     pub(crate) fn insert(
@@ -1915,6 +1924,21 @@ mod tests {
         drop(outcome.retired);
         drop(outcome.evicted);
         assert_eq!(pool.snapshot().allocated_blocks, 0);
+    }
+
+    #[test]
+    fn rejects_oversized_charges_payload_plus_token_bytes() {
+        // Budget 79: payload 64 + 4 tokens (16 bytes) = 80 > 79. The pre-check
+        // must use the same full charge `insert` uses, or a snapshot `insert`
+        // refuses slips past `rejects_oversized` and the blocked counter is
+        // undercounted.
+        let cache = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 79,
+            max_entries: 2,
+        });
+        assert!(cache.rejects_oversized(64, 4));
+        // Three tokens charge 64 + 12 = 76 <= 79, so it is not oversized.
+        assert!(!cache.rejects_oversized(64, 3));
     }
 
     #[test]

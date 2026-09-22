@@ -804,12 +804,13 @@ struct PromptPrefixSnapshotStoreOptions<'a> {
 impl RequestState {
     #[cfg(test)]
     fn new(num_layers: usize, seed: u64, fa_block_pool_config: Option<FaBlockPoolConfig>) -> Self {
-        Self::new_with_shared_fa_pool(num_layers, seed, fa_block_pool_config, None)
+        Self::new_with_shared_fa_pool(num_layers, Some(seed), seed, fa_block_pool_config, None)
     }
 
     fn new_with_shared_fa_pool(
         num_layers: usize,
-        seed: u64,
+        explicit_seed: Option<u64>,
+        fallback_seed: u64,
         fa_block_pool_config: Option<FaBlockPoolConfig>,
         shared_fa_block_pool: Option<SharedFaBlockPool>,
     ) -> Self {
@@ -827,7 +828,7 @@ impl RequestState {
             cached_prefill_output_token: None,
             prefill_boundary_snapshot: None,
             ngram: NgramTable::new(),
-            rng: Xorshift64::new(seed),
+            rng: crate::sampling::request_rng(explicit_seed, fallback_seed),
             sampling_probs_buf: Vec::new(),
             sampling_logits_buf: Vec::new(),
             sampling_candidates_buf: Vec::new(),
@@ -2001,6 +2002,7 @@ impl MlxRunner {
         crate::tiel_memory_policy::maybe_clear_wired_residency(
             artifacts.root_dir(),
             weights.expert_stream.is_some(),
+            wired_residency.is_held(),
         );
         let has_mxfp4_linears = artifacts.tensor_specs().iter().any(|tensor| {
             tensor
@@ -5654,6 +5656,9 @@ impl MlxRunner {
                     .with_min_p(c.min_p)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
+                    // `seed == 0` is the native no-seed default; only a non-zero
+                    // seed marks an explicitly reproducible request.
+                    .with_seed((c.seed != 0).then_some(c.seed))
             })
             .unwrap_or_default();
         // Prefer the engine's deterministic-argmax bit, but also treat
@@ -5684,7 +5689,8 @@ impl MlxRunner {
             states.remove(&item.request_id).unwrap_or_else(|| {
                 RequestState::new_with_shared_fa_pool(
                     self.cfg.layer_count,
-                    ctx.map(|c| c.seed).unwrap_or(item.request_id.0),
+                    sampling.seed,
+                    item.request_id.0,
                     self.fa_block_pool_config,
                     self.shared_fa_block_pool.clone(),
                 )
@@ -7660,7 +7666,9 @@ impl MlxRunner {
         let mut warmup_rng = if capture_prefill_output {
             state.rng
         } else {
-            Xorshift64::new(request_id.0 ^ 0xA5A5_5A5A_F00D_CAFE)
+            // Request-id fallback: no explicit client seed, so keep the stream
+            // unseeded (greedy warmup never draws anyway, but stay consistent).
+            crate::sampling::request_rng(None, request_id.0 ^ 0xA5A5_5A5A_F00D_CAFE)
         };
         let repetition_history = if capture_prefill_output {
             state.repetition_history(tokens, sampling)
@@ -8156,7 +8164,7 @@ impl MlxRunner {
                 let logical_kv_bytes = snapshot_cache.usage_snapshot().logical_bytes;
                 let native_outcome = {
                     let mut native = self.native_prefix_cache.lock();
-                    if native.rejects_oversized(logical_kv_bytes) {
+                    if native.rejects_oversized(logical_kv_bytes, tokens.len()) {
                         telemetry.record_blocked_entry_too_large();
                     }
                     native.insert(
@@ -12201,7 +12209,12 @@ impl MlxRunner {
                 && crate::fastpath::qwen_linear_throughput_mtp_enabled()
             {
                 // Drafts plus the committed token: 4 at the default depth 3.
-                crate::fastpath::qwen_linear_mtp_max_verify_seq() as u32
+                // Family-scoped so a widened env cannot enlarge a non-Qwen model.
+                crate::fastpath::qwen_linear_mtp_max_verify_seq_for_family(
+                    crate::fastpath::qwen_linear_throughput_mtp_enabled(),
+                    crate::fastpath::qwen_linear_throughput_mtp_depth(),
+                    crate::fastpath::qwen_linear_throughput_family(&self.cfg.model_family),
+                ) as u32
             } else {
                 2
             };
@@ -12216,7 +12229,12 @@ impl MlxRunner {
             throughput_depth3: crate::fastpath::mtp_profitability_throughput_enabled()
                 && crate::fastpath::qwen_linear_throughput_mtp_enabled()
                 && self.mtp_max_depth() > 0
-                && self.mtp_max_depth() <= crate::fastpath::qwen_linear_mtp_max_verify_drafts(),
+                && self.mtp_max_depth()
+                    <= crate::fastpath::qwen_linear_mtp_max_verify_drafts_for_family(
+                        crate::fastpath::qwen_linear_throughput_mtp_enabled(),
+                        crate::fastpath::qwen_linear_throughput_mtp_depth(),
+                        crate::fastpath::qwen_linear_throughput_family(&self.cfg.model_family),
+                    ),
             dense_lm_head: !self.weights.lm_head.is_quantized(),
             greedy: is_greedy,
             skip_state_disabled: !self.mtp_skip_state,
@@ -15173,8 +15191,20 @@ mod tests {
             hard_cap: true,
         };
         let shared = SharedFaBlockPool::new(config).expect("shared pool");
-        let left = RequestState::new_with_shared_fa_pool(2, 1, Some(config), Some(shared.clone()));
-        let right = RequestState::new_with_shared_fa_pool(2, 2, Some(config), Some(shared.clone()));
+        let left = RequestState::new_with_shared_fa_pool(
+            2,
+            Some(1),
+            1,
+            Some(config),
+            Some(shared.clone()),
+        );
+        let right = RequestState::new_with_shared_fa_pool(
+            2,
+            Some(2),
+            2,
+            Some(config),
+            Some(shared.clone()),
+        );
         assert!(left.cache.shares_fa_block_pool_with(&right.cache));
         assert!(left.cache.uses_fa_block_pool(&shared));
 

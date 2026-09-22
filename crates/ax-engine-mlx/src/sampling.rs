@@ -62,6 +62,17 @@ impl Xorshift64 {
     }
 }
 
+/// Build the per-request RNG from an explicit-seed flag plus a fallback stream
+/// key. `Some(seed)` yields a seeded, reproducible stream (routing pure-
+/// temperature sampling through the host path); `None` yields an unseeded
+/// stream so the GPU `random_categorical` fast path stays reachable.
+pub fn request_rng(explicit_seed: Option<u64>, fallback_seed: u64) -> Xorshift64 {
+    match explicit_seed {
+        Some(seed) => Xorshift64::new(seed),
+        None => Xorshift64::new_unseeded(fallback_seed),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MlxSamplingParams {
     pub temperature: f32,
@@ -74,6 +85,10 @@ pub struct MlxSamplingParams {
     pub repetition_context_size: Option<u32>,
     pub no_repeat_ngram_size: u32,
     pub ngram_window: u32,
+    /// Explicit sampling seed. `Some(seed)` marks a reproducible request whose
+    /// pure-temperature draw must go through the seeded host path; `None`
+    /// keeps the unseeded stream so pure-temperature sampling stays on the GPU.
+    pub seed: Option<u64>,
 }
 
 impl MlxSamplingParams {
@@ -87,11 +102,24 @@ impl MlxSamplingParams {
             repetition_context_size: None,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
+            seed: None,
         }
     }
 
     pub const fn greedy() -> Self {
         Self::new(0.0, 1.0, 0)
+    }
+
+    pub const fn with_seed(mut self, seed: Option<u64>) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Build the per-request RNG for these sampling params. `seed == Some(..)`
+    /// yields a reproducible seeded stream; `seed == None` yields an unseeded
+    /// stream (pure-temperature sampling keeps the GPU fast path).
+    pub fn request_rng(&self, fallback_seed: u64) -> Xorshift64 {
+        request_rng(self.seed, fallback_seed)
     }
 
     pub const fn with_repetition_penalty(
@@ -1072,6 +1100,24 @@ mod tests {
         assert_eq!(token, 1);
     }
     use super::*;
+
+    #[test]
+    fn request_rng_marks_only_explicit_seed_as_seeded() {
+        // No explicit seed: the RNG is unseeded so pure-temperature sampling
+        // keeps the GPU fast path instead of a full-vocabulary host readback.
+        let unseeded = request_rng(None, 7);
+        assert!(!unseeded.is_seeded());
+
+        // An explicit seed marks a reproducible request (seeded host path).
+        let seeded = request_rng(Some(42), 7);
+        assert!(seeded.is_seeded());
+
+        // The sampling-params fixture carries the same explicit-seed signal.
+        let params = MlxSamplingParams::new(1.0, 1.0, 0);
+        assert!(!params.request_rng(7).is_seeded());
+        let seeded_params = params.with_seed(Some(42));
+        assert!(seeded_params.request_rng(7).is_seeded());
+    }
 
     #[test]
     fn categorical_with_zero_temperature_is_argmax() {

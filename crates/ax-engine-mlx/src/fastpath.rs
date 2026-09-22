@@ -9333,6 +9333,30 @@ mod tests {
     }
 
     #[test]
+    fn gemma_family_keeps_certified_verify_window_under_widened_depth() {
+        // Sequence-classification sites must be family scoped: a widened
+        // throughput depth (7 drafts -> verify seq 2..=8) must not widen a
+        // Gemma family, which stays at the certified S=2..=4 window.
+        let gemma = qwen_linear_throughput_family("gemma");
+        assert!(!gemma);
+        // seq 5 is outside Gemma's certified window even at depth 7.
+        assert!(!qwen_linear_mtp_verify_seq_contains_for_family(
+            5, true, 7, gemma
+        ));
+        // seq 4 remains a verify shape for Gemma.
+        assert!(qwen_linear_mtp_verify_seq_contains_for_family(
+            4, true, 7, gemma
+        ));
+        // The same widened depth does widen a Qwen linear family to seq 5.
+        assert!(qwen_linear_mtp_verify_seq_contains_for_family(
+            5,
+            true,
+            7,
+            qwen_linear_throughput_family("qwen3_5")
+        ));
+    }
+
+    #[test]
     fn exact_short_verify_uses_configured_interval_instead_of_zero() {
         // Official harness sets VERIFY_SUBMIT_LAYERS=8; honor it as the
         // sole mid-loop stride (not stacked on PIPELINE=layer).

@@ -2255,7 +2255,12 @@ pub fn forward_all_positions_with_post_norm_ids(
         &cfg.model_family,
     );
     let exact_short_verify = crate::fastpath::qwen_linear_mtp_exact_enabled()
-        && crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64);
+        && crate::fastpath::qwen_linear_mtp_verify_seq_contains_for_family(
+            seq as i64,
+            crate::fastpath::qwen_linear_throughput_mtp_enabled(),
+            crate::fastpath::qwen_linear_throughput_mtp_depth(),
+            crate::fastpath::qwen_linear_throughput_family(&cfg.model_family),
+        );
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward(
