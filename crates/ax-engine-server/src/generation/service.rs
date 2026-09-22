@@ -1054,6 +1054,9 @@ fn run_worker(
     recycle_after: u64,
 ) {
     let _exit_guard = WorkerExitGuard(state);
+    // Arms the per-thread engine_panic snapshot for this worker (load
+    // included); sibling workers and non-engine threads stay unarmed.
+    let _fatal_scope = crate::fatal::WorkerScope::enter();
     let mut factory = factory;
     let session = match factory() {
         Ok(session) => session,

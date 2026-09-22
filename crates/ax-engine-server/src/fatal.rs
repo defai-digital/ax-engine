@@ -5,33 +5,66 @@
 //! finished before that panic. The hook writes one line to stderr and flushes
 //! it. `release-server` keeps unwind and reports the same snapshot from the
 //! worker's catch path instead.
+//!
+//! The snapshot is thread-local and only armed inside a generation worker:
+//! the panic hook and the worker's `catch_unwind` both run on the panicking
+//! thread, so a panic in one model's worker can never report a sibling
+//! model's step, and a panic on an HTTP / gRPC / runtime thread is not
+//! labelled `engine_panic`.
 
+use std::cell::Cell;
 use std::io::{Write, stderr};
 use std::panic::PanicHookInfo;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-static HAS_STEP: AtomicBool = AtomicBool::new(false);
-static STEP_ID_PRESENT: AtomicBool = AtomicBool::new(false);
-static STEP_ID: AtomicU64 = AtomicU64::new(0);
-static KV_USAGE_BLOCKS: AtomicU32 = AtomicU32::new(0);
+#[derive(Clone, Copy)]
+struct LastStep {
+    step_id: Option<u64>,
+    kv_usage_blocks: u32,
+}
+
+thread_local! {
+    /// `Some` while the current thread runs a generation worker.
+    static WORKER_LAST_STEP: Cell<Option<Option<LastStep>>> = const { Cell::new(None) };
+}
+
+/// Marks the current thread as a generation worker until dropped. Created at
+/// the top of the worker body so that load-time panics are attributed too.
+pub(crate) struct WorkerScope(());
+
+impl WorkerScope {
+    pub(crate) fn enter() -> Self {
+        WORKER_LAST_STEP.with(|slot| slot.set(Some(None)));
+        WorkerScope(())
+    }
+}
+
+impl Drop for WorkerScope {
+    fn drop(&mut self) {
+        let _ = WORKER_LAST_STEP.try_with(|slot| slot.set(None));
+    }
+}
 
 pub(crate) fn note_completed_step(step_id: Option<u64>, kv_usage_blocks: u32) {
-    if let Some(step_id) = step_id {
-        STEP_ID.store(step_id, Ordering::Release);
-        STEP_ID_PRESENT.store(true, Ordering::Release);
-    }
-    KV_USAGE_BLOCKS.store(kv_usage_blocks, Ordering::Release);
-    HAS_STEP.store(true, Ordering::Release);
+    let _ = WORKER_LAST_STEP.try_with(|slot| {
+        if slot.get().is_some() {
+            slot.set(Some(Some(LastStep {
+                step_id,
+                kv_usage_blocks,
+            })));
+        }
+    });
+}
+
+/// `None` outside a generation worker.
+fn worker_snapshot() -> Option<Option<LastStep>> {
+    WORKER_LAST_STEP.try_with(|slot| slot.get()).ok().flatten()
 }
 
 pub(crate) fn last_step_snapshot() -> (Option<u64>, Option<u32>) {
-    if !HAS_STEP.load(Ordering::Acquire) {
-        return (None, None);
+    match worker_snapshot() {
+        Some(Some(step)) => (step.step_id, Some(step.kv_usage_blocks)),
+        _ => (None, None),
     }
-    let step_id = STEP_ID_PRESENT
-        .load(Ordering::Acquire)
-        .then(|| STEP_ID.load(Ordering::Acquire));
-    (step_id, Some(KV_USAGE_BLOCKS.load(Ordering::Acquire)))
 }
 
 pub(crate) fn install_abort_panic_hook() {
@@ -40,16 +73,19 @@ pub(crate) fn install_abort_panic_hook() {
     }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let (step_id, kv_usage_blocks) = last_step_snapshot();
-        let line = format_engine_panic_line(
-            &panic_message(info),
-            info.location().map(|location| location.to_string()),
-            step_id,
-            kv_usage_blocks,
-        );
-        let mut err = stderr().lock();
-        let _ = err.write_all(line.as_bytes());
-        let _ = err.flush();
+        if let Some(step) = worker_snapshot() {
+            let line = format_engine_panic_line(
+                &panic_message(info),
+                info.location().map(|location| location.to_string()),
+                step.and_then(|step| step.step_id),
+                step.map(|step| step.kv_usage_blocks),
+            );
+            {
+                let mut err = stderr().lock();
+                let _ = err.write_all(line.as_bytes());
+                let _ = err.flush();
+            }
+        }
         previous(info);
     }));
 }
@@ -57,7 +93,7 @@ pub(crate) fn install_abort_panic_hook() {
 pub(crate) const ABORT_BUILD_NOTICE: &str = "\
 ax-engine-server: this binary uses panic=abort, so an MLX failure exits the process. \
 Build with --profile release-server (panic=unwind) to keep the process up and fail the request. \
-A panic still writes one stderr line: error_code=engine_panic step_id=<id> kv_usage_blocks=<n>.";
+A generation-worker panic still writes one stderr line: error_code=engine_panic step_id=<id> kv_usage_blocks=<n>.";
 
 pub(crate) fn format_engine_panic_line(
     message: &str,
@@ -96,6 +132,7 @@ fn one_line(message: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -121,5 +158,35 @@ mod tests {
         assert!(line.contains("location=unknown"));
         assert!(line.ends_with('\n'));
         assert_eq!(line.lines().count(), 1);
+    }
+
+    #[test]
+    fn snapshot_is_per_worker_thread_and_only_inside_a_worker_scope() {
+        // Outside a worker scope nothing is recorded.
+        note_completed_step(Some(7), 3);
+        assert_eq!(last_step_snapshot(), (None, None));
+
+        let scope = WorkerScope::enter();
+        assert_eq!(last_step_snapshot(), (None, None));
+        note_completed_step(Some(15), 8);
+        assert_eq!(last_step_snapshot(), (Some(15), Some(8)));
+        // A later step without an id does not keep the previous id.
+        note_completed_step(None, 3);
+        assert_eq!(last_step_snapshot(), (None, Some(3)));
+        note_completed_step(Some(16), 4);
+
+        // A sibling worker on another thread sees only its own steps.
+        let sibling = std::thread::spawn(|| {
+            let _scope = WorkerScope::enter();
+            note_completed_step(Some(42), 100);
+            last_step_snapshot()
+        })
+        .join()
+        .expect("sibling worker");
+        assert_eq!(sibling, (Some(42), Some(100)));
+        assert_eq!(last_step_snapshot(), (Some(16), Some(4)));
+
+        drop(scope);
+        assert_eq!(last_step_snapshot(), (None, None));
     }
 }
