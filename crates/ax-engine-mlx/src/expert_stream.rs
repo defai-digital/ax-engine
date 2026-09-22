@@ -516,7 +516,9 @@ pub fn session_auto_resident_fits(
 
 pub fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
     match available_bytes {
-        None => false,
+        // Unknown capacity (both sysctl probes failed, e.g. a sandboxed
+        // service) cannot prove residency: page rather than risk an OOM.
+        None => full_resident_bytes > 0,
         Some(available) => {
             full_resident_bytes.saturating_add(AUTO_RESIDENT_HEADROOM_BYTES) > available
         }
@@ -1733,7 +1735,9 @@ mod tests {
             800 * 1024 * 1024 * 1024,
             Some(studio_512)
         ));
-        assert!(!should_auto_stream(flash, None));
+        // Unknown capacity pages: it cannot prove the pack fits.
+        assert!(should_auto_stream(flash, None));
+        assert!(!should_auto_stream(0, None));
     }
 
     #[test]
