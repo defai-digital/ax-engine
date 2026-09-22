@@ -121,6 +121,30 @@ verify-cycle cost sits in the 5120-wide projections (MLX qmv_wide at
 head, each a small slice. The kernel-level gain is real and bit-identical, so
 the change lands as an exact kernel improvement with no performance claim.
 
+## Follow-up probes (same host, same contract)
+
+**Split-K verify QMM on the 5120-wide projections** (`splitk_small_microbench.py`):
+routing out_proj / in_proj_z / attention-o (6144 x 5120, 5120 x 6144) and
+in_proj_qkv through the split-K kernel at M=2..4 lands within 5% of MLX
+`qmv_wide` (350-380 GB/s either way), and down_proj (17408 x 5120) is 30-50%
+slower on split-K (270 vs 378 GB/s at M=4). Lowering
+`AX_MLX_MTP_VERIFY_QMM_MIN_N` below 16384 is therefore not a lever.
+
+**Draft depth 4** (`flappy_depth4.json`, an experimental override of the
+throughput draft width that is not in the tree): with 100% acceptance on
+flappy the deeper window still collapses decode from 82.5 to **26.7 tok/s**.
+Per cycle: verify 51-56 ms (S=5), draft 5.1-5.8 ms (no longer hidden) and
+rollback **124-138 ms**, because the projected-replay rollback covers at most
+three drafts and every cycle beyond that falls to singleton state replay.
+`flappy_depth3.json` is the same binary at depth 3 (82.69 tok/s, matching
+`flappy_head.json`). Deeper windows need a new rollback contract before they
+can be measured meaningfully.
+
+**Where the cycle goes.** ~17-18 GB of weights per verify cycle at 400-420
+GB/s average against 450-500 GB/s sustained on the large projections: the
+default profile on this pack is at the host's bandwidth wall, and the only
+structural lever left is tokens per cycle.
+
 ## Greedy output identity (`identity_probe.py`)
 
 Both binaries served the same eight prompts (the harness's `flappy` and
