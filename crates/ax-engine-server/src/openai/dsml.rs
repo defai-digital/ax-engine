@@ -199,12 +199,27 @@ pub(crate) fn parse_dsml_tool_calls(text: &str) -> Option<(Vec<OpenAiFunctionCal
     let mut cursor = first_start;
     loop {
         let (_, body_start) = find_dsml_tag(text, cursor, false, TAG_TOOL_CALLS)?;
-        let (close_start, after) = find_dsml_tag(text, body_start, true, TAG_TOOL_CALLS)?;
-        let before = calls.len();
-        parse_dsml_stanza(&text[body_start..close_start], &mut calls)?;
-        if calls.len() == before {
-            return None;
+        // A string parameter value can contain a literal `</tool_calls>`
+        // closer, so the first closer may not terminate the stanza. Try each
+        // successive closer and accept the first whose body parses into at
+        // least one call.
+        let mut close_from = body_start;
+        let mut after = None;
+        while let Some((close_start, close_end)) =
+            find_dsml_tag(text, close_from, true, TAG_TOOL_CALLS)
+        {
+            close_from = close_end;
+            let before = calls.len();
+            if parse_dsml_stanza(&text[body_start..close_start], &mut calls).is_some()
+                && calls.len() > before
+            {
+                after = Some(close_end);
+                break;
+            }
+            // Roll back any partial calls a failed stanza attempt pushed.
+            calls.truncate(before);
         }
+        let after = after?;
         match find_dsml_tag(text, after, false, TAG_TOOL_CALLS) {
             Some((next_start, _)) => {
                 let between = text[after..next_start].trim();

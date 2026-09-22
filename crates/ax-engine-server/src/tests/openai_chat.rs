@@ -7,7 +7,7 @@ use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
     build_openai_chat_request_offloading_media, build_openai_llama_cpp_chat_request,
     build_openai_mlx_lm_chat_request, delegated_chat_template_kwargs,
-    openai_chat_prompt_render_options, openai_chat_stop_sequences,
+    openai_chat_prompt_render_options,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
@@ -1666,20 +1666,23 @@ fn openai_chat_prompt_renderer_rejects_raw_media_parts_with_tensor_route_guidanc
 
 #[test]
 fn openai_chat_stop_sequences_merge_family_defaults_with_user_stop() {
+    // The delegated builders now validate user stops before merging via
+    // `chat::stop_sequences`; assert that merge directly (same behavior the
+    // removed `openai_chat_stop_sequences` wrapper exposed).
+    fn merge(model_id: &str, stop: Option<OpenAiStopInput>) -> Vec<String> {
+        chat::stop_sequences(
+            model_id,
+            stop.map(OpenAiStopInput::into_vec).unwrap_or_default(),
+        )
+    }
+    assert_eq!(merge("qwen3", None), vec!["<|im_end|>".to_string()]);
     assert_eq!(
-        openai_chat_stop_sequences("qwen3", None),
-        vec!["<|im_end|>".to_string()]
-    );
-    assert_eq!(
-        openai_chat_stop_sequences("Meta-Llama-3.1-8B-Instruct", None),
+        merge("Meta-Llama-3.1-8B-Instruct", None),
         vec!["<|eot_id|>".to_string()]
     );
+    assert_eq!(merge("gemma4-e2b", None), vec!["<turn|>".to_string()]);
     assert_eq!(
-        openai_chat_stop_sequences("gemma4-e2b", None),
-        vec!["<turn|>".to_string()]
-    );
-    assert_eq!(
-        openai_chat_stop_sequences("mlx-community/GLM-4.7-Flash-4bit", None),
+        merge("mlx-community/GLM-4.7-Flash-4bit", None),
         vec![
             "<|endoftext|>".to_string(),
             "<|user|>".to_string(),
@@ -1687,14 +1690,14 @@ fn openai_chat_stop_sequences_merge_family_defaults_with_user_stop() {
         ]
     );
     assert_eq!(
-        openai_chat_stop_sequences(
+        merge(
             "gemma4-e2b",
             Some(OpenAiStopInput::Multiple(vec!["custom".to_string()]))
         ),
         vec!["custom".to_string(), "<turn|>".to_string()]
     );
     assert_eq!(
-        openai_chat_stop_sequences(
+        merge(
             "gemma4-e2b",
             Some(OpenAiStopInput::Multiple(vec![
                 "custom".to_string(),
@@ -3433,6 +3436,93 @@ async fn delegated_openai_chat_rejects_tool_result_history() {
         "unexpected error: {}",
         error.1.error.message
     );
+}
+
+#[tokio::test]
+async fn delegated_openai_chat_validates_client_stop_sequences() {
+    // Both delegated chat builders must reject empty and over-limit stop
+    // sequences with the same 400 the native chat path returns.
+    let cases: Vec<(Value, &str)> = vec![
+        (
+            json!({
+                "model": "glm4_moe_lite",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stop": [""],
+                "max_tokens": 8
+            }),
+            "must not be empty",
+        ),
+        (
+            json!({
+                "model": "glm4_moe_lite",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stop": ["a", "b", "c", "d", "e"],
+                "max_tokens": 8
+            }),
+            "at most 4 sequences",
+        ),
+    ];
+
+    for (body, expected_message) in cases {
+        let mlx_request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body.clone()).expect("empty stop request");
+        let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+        let live = state.snapshot();
+        let error = match build_openai_mlx_lm_chat_request(&live, mlx_request) {
+            Ok(_) => panic!("mlx-lm delegated chat must reject invalid stops"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1.error.message.contains(expected_message),
+            "unexpected error: {}",
+            error.1.error.message
+        );
+
+        let llama_request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body).expect("empty stop request");
+        let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+        let live = state.snapshot();
+        let error = match build_openai_llama_cpp_chat_request(&live, llama_request) {
+            Ok(_) => panic!("llama.cpp delegated chat must reject invalid stops"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(
+            error.1.error.message.contains(expected_message),
+            "unexpected error: {}",
+            error.1.error.message
+        );
+    }
+}
+
+#[tokio::test]
+async fn delegated_openai_chat_carries_thinking_budget_metadata() {
+    // `ax_max_think_tokens` must reach the delegated chat request's metadata,
+    // mirroring the native path's `merge_thinking_budget_metadata`.
+    let body = json!({
+        "model": "glm4_moe_lite",
+        "messages": [{"role": "user", "content": "hi"}],
+        "ax_max_think_tokens": 100,
+        "max_tokens": 8
+    });
+
+    let mlx_request: OpenAiChatCompletionHttpRequest =
+        serde_json::from_value(body.clone()).expect("thinking-budget request");
+    let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let built = build_openai_mlx_lm_chat_request(&live, mlx_request).expect("mlx-lm chat builds");
+    let hints = RequestWorkloadHints::from_metadata(built.chat_request.metadata.as_deref());
+    assert_eq!(hints.max_think_tokens, Some(100));
+
+    let llama_request: OpenAiChatCompletionHttpRequest =
+        serde_json::from_value(body).expect("thinking-budget request");
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let built =
+        build_openai_llama_cpp_chat_request(&live, llama_request).expect("llama.cpp chat builds");
+    let hints = RequestWorkloadHints::from_metadata(built.chat_request.metadata.as_deref());
+    assert_eq!(hints.max_think_tokens, Some(100));
 }
 
 #[tokio::test]

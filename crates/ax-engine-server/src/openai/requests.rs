@@ -23,6 +23,7 @@ use crate::openai::schema::{
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+pub(crate) use crate::openai::chat_requests::delegated_chat_template_kwargs;
 use crate::openai::chat_requests::{
     ChatPromptRenderOptions, is_minicpm_v46_model_id, is_nemotron_omni_model_dir,
     is_nemotron_omni_model_id, is_qwen3_vl_model_id, messages_contain_inline_media,
@@ -30,9 +31,6 @@ use crate::openai::chat_requests::{
     render_gemma4_unified_chat_with_media, render_minicpm_v46_chat_with_media,
     render_nemotron_omni_chat_with_media, render_openai_chat_prompt_with_family,
     render_qwen3_vl_chat_with_media,
-};
-pub(crate) use crate::openai::chat_requests::{
-    delegated_chat_template_kwargs, openai_chat_stop_sequences,
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
@@ -710,10 +708,20 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     response_options.reject_unsupported_streaming_contract(request.stream, false)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
-    let stop_sequences = openai_chat_stop_sequences(live.model_id.as_ref(), request.stop);
+    let user_stop = request
+        .stop
+        .map(OpenAiStopInput::into_vec)
+        .unwrap_or_default();
+    validate_client_stop_sequences(&user_stop)?;
+    let stop_sequences = chat::stop_sequences(live.model_id.as_ref(), user_stop);
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
+    let metadata = merge_thinking_budget_metadata(
+        metadata,
+        request.ax_max_think_tokens,
+        request.ax_answer_reserve_tokens,
+    );
 
     Ok(OpenAiBuiltMlxLmChatRequest {
         chat_request: MlxLmChatGenerateRequest {
@@ -759,10 +767,20 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     response_options.reject_unsupported_streaming_contract(request.stream, false)?;
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
-    let stop_sequences = openai_chat_stop_sequences(live.model_id.as_ref(), request.stop);
+    let user_stop = request
+        .stop
+        .map(OpenAiStopInput::into_vec)
+        .unwrap_or_default();
+    validate_client_stop_sequences(&user_stop)?;
+    let stop_sequences = chat::stop_sequences(live.model_id.as_ref(), user_stop);
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
+    let metadata = merge_thinking_budget_metadata(
+        metadata,
+        request.ax_max_think_tokens,
+        request.ax_answer_reserve_tokens,
+    );
 
     Ok(OpenAiBuiltLlamaCppChatRequest {
         chat_request: LlamaCppChatGenerateRequest {

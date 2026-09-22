@@ -398,7 +398,18 @@ fn patchify_rgb(
 
     // `model_patch_size == patch_size * pooling_kernel_size`; use it for both the
     // resize unit (core parity) and patch extraction (internal consistency).
-    let patch = vision.patch_size * vision.pooling_kernel_size;
+    // The two operands are config-supplied u32s, so the product can overflow and
+    // wrap to zero in release; that would make the `target_w / patch` below a
+    // divide-by-zero panic. Reject it up front with the same config error as the
+    // zero checks above.
+    let patch = vision
+        .patch_size
+        .checked_mul(vision.pooling_kernel_size)
+        .ok_or_else(|| {
+            MediaError::Config(
+                "vision processor patch_size * pooling_kernel_size overflows u32".to_string(),
+            )
+        })?;
     let (target_w, target_h) = vision.resize_target(width, height);
     let resized = if target_w == width && target_h == height {
         std::borrow::Cow::Borrowed(frame)
@@ -810,10 +821,13 @@ fn parse_showinfo_field<'a>(fields: &'a str, label: &str) -> Option<&'a str> {
 /// Python SDK's `_sample_video_frames`. A plain `i * len / max` floor never
 /// includes the last frame and shifts most indices.
 fn sample_frame_indices(len: usize, max: usize) -> Vec<usize> {
+    if max == 0 {
+        return Vec::new();
+    }
     if len <= max {
         return (0..len).collect();
     }
-    if max <= 1 {
+    if max == 1 {
         return vec![0];
     }
     (0..max)
@@ -1792,6 +1806,32 @@ mod tests {
             assert_eq!(*got.first().unwrap(), 0);
             assert_eq!(*got.last().unwrap(), len - 1);
         }
+    }
+
+    #[test]
+    fn sample_frame_indices_zero_max_yields_no_frames() {
+        // A `num_frames: 0` video cap must contribute no frames, not a single
+        // `[0]` frame as the pre-fix `max <= 1` arm did.
+        assert!(sample_frame_indices(10, 0).is_empty());
+        assert!(sample_frame_indices(0, 0).is_empty());
+        // `max >= 1` keeps the existing endpoint-anchored behavior unchanged.
+        assert_eq!(sample_frame_indices(10, 1), vec![0]);
+    }
+
+    #[test]
+    fn patchify_rejects_patch_product_overflow() {
+        // patch_size * pooling_kernel_size == 2^32 wraps to zero in release,
+        // which would make the `target_w / patch` divide-by-zero panic. The
+        // checked_mul must surface a config error instead.
+        let vision = Gemma4UnifiedVisionProcessor {
+            patch_size: 65536,
+            model_patch_size: 0,
+            pooling_kernel_size: 65536,
+            max_soft_tokens: 280,
+        };
+        let frame = image::RgbImage::from_pixel(16, 16, image::Rgb([10, 20, 30]));
+        let error = patchify_rgb(&frame, &vision, &ImageNormalization::default()).unwrap_err();
+        assert!(matches!(error, MediaError::Config(_)), "{error}");
     }
 
     fn parse_golden(

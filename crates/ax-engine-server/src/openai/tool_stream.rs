@@ -125,33 +125,50 @@ impl ToolCallStreamScanner {
                 Some(ToolSpanKind::Dsml) => {
                     // Lenient DSML closer (filler tolerated), then the shared
                     // stanza parser, which yields every invoke in the stanza.
-                    let Some((_, close_end)) = dsml::find_dsml_tool_calls_close(&self.buffer, 0)
+                    // An argument string can contain a literal `</tool_calls>`
+                    // closer, so the first closer may not terminate the stanza;
+                    // try each successive closer and emit the calls from the
+                    // first slice that parses.
+                    let mut parsed = false;
+                    let mut from = 0usize;
+                    while let Some((_, close_end)) =
+                        dsml::find_dsml_tool_calls_close(&self.buffer, from)
+                    {
+                        from = close_end;
+                        match dsml::parse_dsml_tool_calls(&self.buffer[..close_end]) {
+                            Some((functions, _)) => {
+                                for function in functions {
+                                    events.push(ToolScanEvent::Call(self.build_call(function)));
+                                }
+                                self.buffer.drain(..close_end);
+                                parsed = true;
+                                break;
+                            }
+                            None => continue,
+                        }
+                    }
+                    if parsed {
+                        self.span = None;
+                        continue;
+                    }
+                    // No closer parsed a complete stanza. Release through the
+                    // first closer as content (stopping at a later valid opener
+                    // so a restarted call can still be rescanned, as the XML
+                    // branch does at end of stream) instead of withholding the
+                    // whole stream until EOS. With no closer at all we keep
+                    // withholding and wait for more data.
+                    let Some((_, first_close_end)) =
+                        dsml::find_dsml_tool_calls_close(&self.buffer, 0)
                     else {
                         return events;
                     };
-                    match dsml::parse_dsml_tool_calls(&self.buffer[..close_end]) {
-                        Some((functions, _)) => {
-                            for function in functions {
-                                events.push(ToolScanEvent::Call(self.build_call(function)));
-                            }
-                            self.buffer.drain(..close_end);
-                        }
-                        None => {
-                            // Closer present but the stanza does not parse yet
-                            // (a later closer may complete it); only the end
-                            // of the stream flushes it as content.
-                            if !at_end {
-                                return events;
-                            }
-                            let end = self
-                                .next_opener_after_start(close_end)
-                                .map_or(close_end, |inner| inner.min(close_end));
-                            let content = self.buffer[..end].to_string();
-                            self.buffer.drain(..end);
-                            self.note_visible(&content);
-                            events.push(ToolScanEvent::Content(content));
-                        }
-                    }
+                    let end = self
+                        .next_opener_after_start(first_close_end)
+                        .map_or(first_close_end, |inner| inner.min(first_close_end));
+                    let content = self.buffer[..end].to_string();
+                    self.buffer.drain(..end);
+                    self.note_visible(&content);
+                    events.push(ToolScanEvent::Content(content));
                     self.span = None;
                     continue;
                 }
@@ -560,6 +577,40 @@ mod tests {
         events.extend(scanner.finish());
         assert!(calls(&events).is_empty());
         assert_eq!(content(&events), text);
+    }
+
+    #[test]
+    fn dsml_empty_stanza_streams_prose_before_eos() {
+        let bar = "\u{FF5C}";
+        let empty_stanza = format!("<{bar}DSML{bar}tool_calls></{bar}DSML{bar}tool_calls>");
+        let mut scanner = scanner();
+        let first = scanner.push(&empty_stanza);
+        // The empty stanza yields no call and is released immediately (not held
+        // back to EOS), so following prose streams as content deltas before EOS.
+        assert!(calls(&first).is_empty());
+        let mut events = scanner.push("hello");
+        events.extend(scanner.push(" world"));
+        assert_eq!(content(&events), "hello world");
+        assert!(scanner.finish().is_empty());
+    }
+
+    #[test]
+    fn dsml_closer_inside_argument_string_does_not_prematurely_complete() {
+        let bar = "\u{FF5C}";
+        let stanza = format!(
+            "<{bar}DSML{bar}tool_calls><{bar}DSML{bar}invoke name=\"echo\"><{bar}DSML{bar}parameter name=\"text\" string=\"true\">a</{bar}DSML{bar}tool_calls>b</{bar}DSML{bar}parameter></{bar}DSML{bar}invoke></{bar}DSML{bar}tool_calls>"
+        );
+        let mut scanner = scanner();
+        let mut events = scanner.push(&stanza);
+        events.extend(scanner.finish());
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1, "content: {:?}", content(&events));
+        assert_eq!(calls[0].function.name, "echo");
+        assert!(
+            calls[0].function.arguments.contains("a</"),
+            "arguments should preserve the embedded closer: {}",
+            calls[0].function.arguments
+        );
     }
 
     #[test]

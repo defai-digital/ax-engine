@@ -5,6 +5,7 @@
 //! the request up front — partial validation must never masquerade as full
 //! validation. Constrained decoding (Phase B) will reuse this request shape.
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use axum::Json;
@@ -263,8 +264,8 @@ fn validate_value_at(schema: &Value, value: &Value, path: &str) -> Result<(), St
         return Err(format!("output{}: is not one of enum", display_path()));
     }
 
-    if let Some(number) = value.as_f64() {
-        validate_numeric_bounds(object, number, display_path())?;
+    if value.is_number() {
+        validate_numeric_bounds(object, value, display_path())?;
     }
     if let Some(text) = value.as_str() {
         let chars = text.chars().count() as u64;
@@ -386,44 +387,100 @@ fn validate_type(expected: &Value, value: &Value, display_path: &str) -> Result<
     }
 }
 
+/// Whether an output number violates a numeric bound. When both the output and
+/// the bound are exact JSON integers (`as_i64`/`as_u64` succeed), they compare
+/// exactly so values above 2^53 are not silently collapsed through f64;
+/// non-integral cases fall back to the f64 comparison.
+fn bound_violated(value: &Value, bound: &Value, kind: BoundKind) -> bool {
+    let Some(ordering) = compare_numbers(value, bound) else {
+        return false;
+    };
+    match kind {
+        BoundKind::Minimum => ordering == Ordering::Less,
+        BoundKind::Maximum => ordering == Ordering::Greater,
+        BoundKind::ExclusiveMinimum => matches!(ordering, Ordering::Less | Ordering::Equal),
+        BoundKind::ExclusiveMaximum => matches!(ordering, Ordering::Greater | Ordering::Equal),
+    }
+}
+
+fn compare_numbers(value: &Value, bound: &Value) -> Option<Ordering> {
+    match (exact_integer(value), exact_integer(bound)) {
+        (Some(lhs), Some(rhs)) => Some(lhs.cmp(&rhs)),
+        _ => value.as_f64()?.partial_cmp(&bound.as_f64()?),
+    }
+}
+
+fn exact_integer(value: &Value) -> Option<i128> {
+    if let Some(integer) = value.as_i64() {
+        Some(integer as i128)
+    } else {
+        value.as_u64().map(|integer| integer as i128)
+    }
+}
+
+fn display_number(value: &Value) -> String {
+    if let Some(integer) = value.as_i64() {
+        integer.to_string()
+    } else if let Some(integer) = value.as_u64() {
+        integer.to_string()
+    } else {
+        value
+            .as_f64()
+            .map(|number| number.to_string())
+            .unwrap_or_else(|| value.to_string())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BoundKind {
+    Minimum,
+    Maximum,
+    ExclusiveMinimum,
+    ExclusiveMaximum,
+}
+
 fn validate_numeric_bounds(
     schema: &Map<String, Value>,
-    number: f64,
+    value: &Value,
     display_path: &str,
 ) -> Result<(), String> {
-    if let Some(min) = keyword_f64(schema, "minimum")
-        && number < min
+    if let Some(bound) = schema.get("minimum")
+        && bound_violated(value, bound, BoundKind::Minimum)
     {
         return Err(format!(
-            "output{display_path}: {number} is below minimum {min}"
+            "output{display_path}: {} is below minimum {}",
+            display_number(value),
+            display_number(bound)
         ));
     }
-    if let Some(max) = keyword_f64(schema, "maximum")
-        && number > max
+    if let Some(bound) = schema.get("maximum")
+        && bound_violated(value, bound, BoundKind::Maximum)
     {
         return Err(format!(
-            "output{display_path}: {number} is above maximum {max}"
+            "output{display_path}: {} is above maximum {}",
+            display_number(value),
+            display_number(bound)
         ));
     }
-    if let Some(min) = keyword_f64(schema, "exclusiveMinimum")
-        && number <= min
+    if let Some(bound) = schema.get("exclusiveMinimum")
+        && bound_violated(value, bound, BoundKind::ExclusiveMinimum)
     {
         return Err(format!(
-            "output{display_path}: {number} is not above exclusiveMinimum {min}"
+            "output{display_path}: {} is not above exclusiveMinimum {}",
+            display_number(value),
+            display_number(bound)
         ));
     }
-    if let Some(max) = keyword_f64(schema, "exclusiveMaximum")
-        && number >= max
+    if let Some(bound) = schema.get("exclusiveMaximum")
+        && bound_violated(value, bound, BoundKind::ExclusiveMaximum)
     {
         return Err(format!(
-            "output{display_path}: {number} is not below exclusiveMaximum {max}"
+            "output{display_path}: {} is not below exclusiveMaximum {}",
+            display_number(value),
+            display_number(bound)
         ));
     }
     Ok(())
-}
-
-fn keyword_f64(schema: &Map<String, Value>, keyword: &str) -> Option<f64> {
-    schema.get(keyword).and_then(Value::as_f64)
 }
 
 fn keyword_u64(schema: &Map<String, Value>, keyword: &str) -> Option<u64> {
@@ -687,5 +744,19 @@ mod tests {
         check(schema.clone(), json!("a")).expect("string accepted");
         check(schema.clone(), Value::Null).expect("null accepted");
         check(schema, json!(1)).expect_err("number rejected");
+    }
+
+    #[test]
+    fn large_integer_bounds_compare_exactly() {
+        // 2^53 + 1 rounds to 2^53 in f64, so a float comparison would wrongly
+        // accept the out-of-range value. Exact integer comparison must reject
+        // it and accept the boundary itself.
+        let maximum = json!({"type": "integer", "maximum": 9_007_199_254_740_992u64});
+        check(maximum.clone(), json!(9_007_199_254_740_993u64)).expect_err("above maximum");
+        check(maximum, json!(9_007_199_254_740_992u64)).expect("at maximum");
+
+        let minimum = json!({"type": "integer", "minimum": 9_007_199_254_740_992u64});
+        check(minimum.clone(), json!(9_007_199_254_740_991u64)).expect_err("below minimum");
+        check(minimum, json!(9_007_199_254_740_992u64)).expect("at minimum");
     }
 }

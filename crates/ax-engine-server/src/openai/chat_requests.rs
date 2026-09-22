@@ -20,9 +20,7 @@ use crate::multimodal::{
     self, MediaError, MediaProcessors, PreprocessedAudio, PreprocessedImage, PreprocessedVideo,
     VideoFrame,
 };
-use crate::openai::schema::{
-    OpenAiChatContent, OpenAiChatContentPart, OpenAiChatMessage, OpenAiStopInput,
-};
+use crate::openai::schema::{OpenAiChatContent, OpenAiChatContentPart, OpenAiChatMessage};
 use crate::openai::tool_names;
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
@@ -1155,16 +1153,6 @@ pub(crate) fn delegated_chat_template_kwargs(
         }
     }
     (!kwargs.is_empty()).then_some(Value::Object(kwargs))
-}
-
-pub(crate) fn openai_chat_stop_sequences(
-    model_id: &str,
-    stop: Option<OpenAiStopInput>,
-) -> Vec<String> {
-    chat::stop_sequences(
-        model_id,
-        stop.map(OpenAiStopInput::into_vec).unwrap_or_default(),
-    )
 }
 
 fn render_openai_chat_message_pairs(
