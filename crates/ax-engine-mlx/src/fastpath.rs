@@ -1263,20 +1263,50 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
-    /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4` — when the target lm_head is dense
-    /// (unquantized) and no draft-head spec was configured, derive a 4-bit
-    /// gs64 `draft_lm_head` at MTP load. Draft logits only propose tokens
-    /// (verify decides on the target head's own arithmetic); the dense head
-    /// otherwise costs a full-weight read per draft step — 2.54 GB on
-    /// Qwen3.8-27B, ~6.4 ms of the 11.5 ms draft wall measured on the
-    /// 6bit-MTP pack. 4-bit argmax tracks bf16 closely; the 2-bit decode
-    /// overlay tried first collapsed acceptance and tripped the MTP bypass
-    /// gate (2026-08-19 M5 A/B). Costs one ~320 MB buffer at load.
+    /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4` - kill-switch for the dense-head draft
+    /// requantization (the historical name is kept for compatibility). When
+    /// the target lm_head is dense (unquantized) and no draft-head spec was
+    /// configured, derive a `draft_lm_head` at MTP load whose width now comes
+    /// from `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS` (default 3, group 64; 3-bit
+    /// measured +1.7% flappy / +1.6% long_code / +1.8% python_modules_long vs
+    /// 4-bit on the Qwen 3.8 27B AXQ-6bit-MTP pack with greedy identity
+    /// unchanged). Draft logits only propose tokens (verify decides on the
+    /// target head's own arithmetic); the dense head otherwise costs a
+    /// full-weight read per draft step - 2.54 GB on Qwen3.8-27B. The 2-bit
+    /// decode overlay tried first collapsed acceptance and tripped the MTP
+    /// bypass gate (2026-08-19 M5 A/B). Costs one ~320 MB buffer at load.
     ///
     /// **Default: ON** (kill-switch via `AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4=0`).
     mtp_dense_head_draft_q4_enabled,
     "AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4"
 );
+
+/// `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS` - width of the requantized draft-only
+/// lm_head built for dense (unquantized) targets. Defaults to 3 (group 64);
+/// accepts only `3` or `4`, and any other value falls back to the default.
+/// The explicit `AX_MLX_MTP_DRAFT_LM_HEAD_BITS`/`_GROUP_SIZE` override and the
+/// runtime spec still take precedence over this fallback.
+pub fn mtp_dense_head_draft_bits() -> i32 {
+    static CACHED: OnceLock<i32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        mtp_dense_head_draft_bits_for(
+            std::env::var("AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// Pure parser for `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS`: `3` or `4`, defaulting
+/// to 3 for any other (including unset) value. Kept side-effect free so it can
+/// be unit-tested without touching the process environment.
+pub fn mtp_dense_head_draft_bits_for(raw: Option<&str>) -> i32 {
+    match raw.map(str::trim) {
+        Some("3") => 3,
+        Some("4") => 4,
+        _ => 3,
+    }
+}
 
 env_flag!(
     /// `AX_MLX_MTP_FORCE_REQUESTED` — treat every pack as certified for
@@ -9217,6 +9247,16 @@ mod tests {
                 "expected invalid sparse threshold for {value:?}"
             );
         }
+    }
+
+    #[test]
+    fn mtp_dense_head_draft_bits_defaults_to_three_unless_three_or_four() {
+        assert_eq!(mtp_dense_head_draft_bits_for(None), 3);
+        assert_eq!(mtp_dense_head_draft_bits_for(Some("3")), 3);
+        assert_eq!(mtp_dense_head_draft_bits_for(Some("4")), 4);
+        assert_eq!(mtp_dense_head_draft_bits_for(Some("2")), 3);
+        assert_eq!(mtp_dense_head_draft_bits_for(Some("garbage")), 3);
+        assert_eq!(mtp_dense_head_draft_bits_for(Some(" 4 ")), 4);
     }
 
     #[test]
