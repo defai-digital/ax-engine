@@ -128,7 +128,7 @@ environment:
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=7.5.4,<8"
+python3 -m pip install --upgrade "ax-engine[download]>=7.5.5,<8"
 ax-engine doctor
 ```
 
