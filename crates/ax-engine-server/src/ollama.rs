@@ -124,8 +124,9 @@ pub(crate) struct OllamaOptions {
     repeat_penalty: Option<f32>,
     #[serde(default)]
     repeat_last_n: Option<u32>,
+    /// Ollama accepts negative seeds (`-1` = unseeded); they map to `None`.
     #[serde(default)]
-    seed: Option<u64>,
+    seed: Option<i64>,
     #[serde(default)]
     stop: Option<OllamaStopInput>,
     #[serde(default, flatten)]
@@ -312,7 +313,8 @@ async fn ollama_show_inner(
     if request.verbose == Some(true) {
         reject_unused_field(request.verbose, "verbose")?;
     }
-    let live = select_openai_model(&state, request.model.as_deref())?;
+    let live =
+        select_openai_model(&state, request.model.as_deref()).map_err(ollama_model_status)?;
     let tag = ollama_model_tag(&live);
     Ok(Json(OllamaShowResponse {
         license: String::new(),
@@ -364,11 +366,24 @@ pub(crate) async fn ollama_chat(
     }
 }
 
+/// Ollama clients branch on 404 for an unknown model (pull-on-miss); the
+/// OpenAI surface keeps its 400.
+fn ollama_model_status(
+    (status, body): (StatusCode, Json<ErrorResponse>),
+) -> (StatusCode, Json<ErrorResponse>) {
+    if body.error.code.as_deref() == Some("model_not_found") {
+        (StatusCode::NOT_FOUND, body)
+    } else {
+        (status, body)
+    }
+}
+
 async fn ollama_chat_inner(
     State(state): State<AppState>,
     Json(request): Json<OllamaChatRequest>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = select_openai_model(&state, request.model.as_deref())?;
+    let live =
+        select_openai_model(&state, request.model.as_deref()).map_err(ollama_model_status)?;
     reject_ollama_tools_without_support(&live, request.tools.as_ref())?;
     validate_ollama_num_ctx(&live, request.options.num_ctx)?;
     let thinking = resolve_ollama_thinking(request.think.as_ref())?;
@@ -415,8 +430,14 @@ async fn ollama_chat_inner(
         )
         .await;
     }
+    let started = std::time::Instant::now();
     let response = run_ollama_chat_completion(state, live, openai_request).await?;
-    let ollama = ollama_chat_response_from_openai(response)?;
+    let mut ollama = ollama_chat_response_from_openai(response)?;
+    // Wall time of the completion: clients derive throughput as
+    // `eval_count / eval_duration`, and a zero duration divides by zero.
+    let elapsed_ns = duration_nanos(started.elapsed());
+    ollama.total_duration = elapsed_ns;
+    ollama.eval_duration = elapsed_ns;
     if stream {
         return ollama_ndjson_response(vec![
             ollama_chat_stream_chunk(&ollama),
@@ -440,7 +461,8 @@ async fn ollama_generate_inner(
     State(state): State<AppState>,
     Json(request): Json<OllamaGenerateRequest>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = select_openai_model(&state, request.model.as_deref())?;
+    let live =
+        select_openai_model(&state, request.model.as_deref()).map_err(ollama_model_status)?;
     validate_ollama_num_ctx(&live, request.options.num_ctx)?;
     if let Some(response) = ollama_generate_lifecycle_response(&live, &request) {
         return Ok(Json(response).into_response());
@@ -511,44 +533,62 @@ async fn stream_ollama_native(
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(128);
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_monitor = Arc::clone(&cancel);
+    // Mirror the SSE path: a client hangup must reach the generation worker
+    // (not just the blocking adapter) so it cancels at the next scheduler
+    // boundary instead of finishing the prefill for a dead connection.
+    let service_disconnect = match &stream_context {
+        StreamStateSource::Service(events) => Some(events.disconnect_flag()),
+        StreamStateSource::Stateless { .. } | StreamStateSource::Stateful { .. } => None,
+    };
     let monitor_tx = tx.clone();
+    let error_tx = tx.clone();
     tokio::spawn(async move {
         monitor_tx.closed().await;
         cancel_monitor.store(true, Ordering::Relaxed);
-    });
-    match stream_context {
-        StreamStateSource::Service(mut events) => {
-            tokio::task::spawn_blocking(move || {
-                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
-                    events.blocking_recv().transpose()
-                });
-            });
+        if let Some(disconnected) = service_disconnect {
+            disconnected.store(true, Ordering::Release);
         }
+    });
+    let handle = match stream_context {
+        StreamStateSource::Service(mut events) => tokio::task::spawn_blocking(move || {
+            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+                events.blocking_recv().transpose()
+            });
+        }),
         StreamStateSource::Stateless {
             mut state,
             context,
             permit,
-        } => {
-            tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
-                    context.next_stream_event(&mut state)
-                });
+        } => tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+                context.next_stream_event(&mut state)
             });
-        }
+        }),
         StreamStateSource::Stateful {
             mut state,
             mut session,
             permit,
-        } => {
-            tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
-                    session.next_stream_event(&mut state)
-                });
+        } => tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            drive_ollama_native_events(kind, &tx, &cancel, tokenizer, stop_scanner, || {
+                session.next_stream_event(&mut state)
             });
+        }),
+    };
+    // A panic in the drive task would otherwise drop the sender and end the
+    // NDJSON body with a bare EOF that clients cannot tell from success.
+    tokio::spawn(async move {
+        if let Err(error) = handle.await {
+            tracing::error!(%error, "Ollama stream task failed");
+            let _ = error_tx
+                .send(Ok(format!(
+                    "{}\n",
+                    json!({ "error": format!("generation stream task failed: {error}") })
+                )))
+                .await;
         }
-    }
+    });
 
     Ok((
         StatusCode::OK,
@@ -582,7 +622,17 @@ fn drive_ollama_native_events<N>(
             return;
         }
         match next() {
-            Ok(None) => return,
+            Ok(None) => {
+                // The event channel closed without a terminal `Response`
+                // (worker retired or the stream was cancelled server-side):
+                // name it, so the client does not read a truncated body as
+                // a complete answer.
+                let _ = send_ollama_ndjson_line(
+                    tx,
+                    &json!({ "error": "generation stream ended before a terminal frame" }),
+                );
+                return;
+            }
             Err(error) => {
                 // Ollama surfaces mid-stream failures as an NDJSON error line.
                 let _ = send_ollama_ndjson_line(tx, &json!({ "error": error.to_string() }));
@@ -785,7 +835,10 @@ fn ollama_chat_to_openai_request(
         skip_special_tokens: None,
         vllm_xargs: None,
         stop: request.options.stop.map(OllamaStopInput::into_openai_stop),
-        seed: request.options.seed,
+        seed: request
+            .options
+            .seed
+            .and_then(|seed| u64::try_from(seed).ok()),
         stream: false,
         stream_options: Default::default(),
         n: None,
@@ -843,7 +896,10 @@ fn ollama_generate_to_openai_request(
         skip_special_tokens: None,
         vllm_xargs: None,
         stop: request.options.stop.map(OllamaStopInput::into_openai_stop),
-        seed: request.options.seed,
+        seed: request
+            .options
+            .seed
+            .and_then(|seed| u64::try_from(seed).ok()),
         stream: false,
         stream_options: Default::default(),
         n: None,
@@ -1301,6 +1357,7 @@ async fn run_ollama_completion(
     live: LiveState,
     request: OpenAiCompletionHttpRequest,
 ) -> Result<OllamaGenerateResponse, (StatusCode, Json<ErrorResponse>)> {
+    let started = std::time::Instant::now();
     let OpenAiBuiltRequest {
         generate_request,
         response_options,
@@ -1323,7 +1380,15 @@ async fn run_ollama_completion(
         &mut response,
         &response_options.client_stop_sequences,
     );
-    Ok(ollama_generate_response_from_generate(response))
+    let mut ollama = ollama_generate_response_from_generate(response);
+    let elapsed_ns = duration_nanos(started.elapsed());
+    ollama.total_duration = elapsed_ns;
+    ollama.eval_duration = elapsed_ns;
+    Ok(ollama)
+}
+
+fn duration_nanos(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn ollama_chat_response_from_openai(
@@ -1707,6 +1772,46 @@ fn civil_from_days(days_since_unix_epoch: i64) -> (i32, u32, u32) {
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_seed_is_unseeded_and_model_not_found_maps_to_404() {
+        let request: OllamaGenerateRequest = serde_json::from_value(json!({
+            "model": "m", "prompt": "hi", "options": {"seed": -1}
+        }))
+        .expect("negative seed parses");
+        assert_eq!(request.options.seed, Some(-1));
+        assert_eq!(
+            request
+                .options
+                .seed
+                .and_then(|seed| u64::try_from(seed).ok()),
+            None
+        );
+        let request: OllamaGenerateRequest = serde_json::from_value(json!({
+            "model": "m", "prompt": "hi", "options": {"seed": 7}
+        }))
+        .expect("positive seed parses");
+        assert_eq!(
+            request
+                .options
+                .seed
+                .and_then(|seed| u64::try_from(seed).ok()),
+            Some(7)
+        );
+
+        let (status, _) = ollama_model_status(error_response(
+            StatusCode::BAD_REQUEST,
+            "model_not_found",
+            "missing".to_string(),
+        ));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = ollama_model_status(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "bad".to_string(),
+        ));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
     use crate::openai::schema::{
         OpenAiChatCompletionChoice, OpenAiChatMessageResponse, OpenAiFunctionCall, OpenAiToolCall,
         OpenAiUsage,
