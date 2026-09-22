@@ -301,7 +301,14 @@ impl OpenAiStreamDriver {
                 if delta_text.is_empty() {
                     return true;
                 }
-                if let Some(filter) = self.channel_filter.as_mut() {
+                // Whitespace-only text is not an answer: the non-stream path
+                // trims kept text before deciding whether to serve the channel
+                // body, and marking it here would disable that fallback and
+                // deliver a bare " " when the whole answer sat inside the
+                // channel.
+                if !delta_text.trim().is_empty()
+                    && let Some(filter) = self.channel_filter.as_mut()
+                {
                     filter.mark_kept_output();
                 }
                 let content_text = if let Some(StreamReasoningMode::QwenThink(scanner)) =
@@ -348,6 +355,18 @@ impl OpenAiStreamDriver {
                     && !self.process_text(tx, request_id, &model_id, body_text)
                 {
                     return false;
+                }
+                // Text the incremental decoder was still holding for a
+                // trailing codepoint is content too; route it through the
+                // same scanners as any other delta.
+                if let Some(decoder) = self.decoder.as_mut() {
+                    let tail = match map_stream_decode_result(decoder.finish(), tx) {
+                        Ok(tail) => tail.unwrap_or_default(),
+                        Err(()) => return false,
+                    };
+                    if !tail.is_empty() && !self.process_text(tx, request_id, &model_id, tail) {
+                        return false;
+                    }
                 }
                 // Flush the think scanner before the tool/stop scanners so
                 // its residual content flows through them.
@@ -661,9 +680,18 @@ impl ChatChannelStreamFilter {
             )));
         }
         let ids = Gemma4ChannelIds::from_tokenizer(tokenizer)?;
+        // Whitespace pieces the model may emit before re-stating the channel
+        // name; only single-piece encodings count so no text token is held.
+        let lead_whitespace = [" ", "\n", "\n\n", " \n"]
+            .iter()
+            .filter_map(|text| tokenizer.encode(text, false).ok())
+            .filter(|ids| ids.len() == 1)
+            .map(|ids| ids[0])
+            .collect();
         Some(Self::Gemma4(Gemma4ChannelStreamFilter::new(
             ids,
             tokenizer.token_to_id("thought"),
+            lead_whitespace,
         )))
     }
 
@@ -743,6 +771,11 @@ pub(crate) struct Gemma4ChannelStreamFilter {
     /// Token id of the bare channel-name word (`thought`), when the tokenizer
     /// has it as a single piece.
     thought_lead: Option<u32>,
+    /// Whitespace-only token ids (space / newline pieces): while the lead is
+    /// still pending they are held rather than deciding pass-through, so a
+    /// leading space before `thought` still suppresses the continuation.
+    lead_whitespace: Vec<u32>,
+    pending_lead: Vec<u32>,
     state: Gemma4ChannelStreamState,
     in_channel: bool,
     last_channel_body: Vec<u32>,
@@ -766,10 +799,16 @@ enum Gemma4ChannelStreamState {
 }
 
 impl Gemma4ChannelStreamFilter {
-    pub(crate) fn new(ids: Gemma4ChannelIds, thought_lead: Option<u32>) -> Self {
+    pub(crate) fn new(
+        ids: Gemma4ChannelIds,
+        thought_lead: Option<u32>,
+        lead_whitespace: Vec<u32>,
+    ) -> Self {
         Self {
             ids,
             thought_lead,
+            lead_whitespace,
+            pending_lead: Vec::new(),
             state: Gemma4ChannelStreamState::LeadPending,
             in_channel: false,
             last_channel_body: Vec::new(),
@@ -809,11 +848,18 @@ impl Gemma4ChannelStreamFilter {
             }
             match self.state {
                 Gemma4ChannelStreamState::LeadPending => {
-                    if self.thought_lead == Some(token) {
+                    if self.thought_lead.is_some() && self.lead_whitespace.contains(&token) {
+                        // Neither an answer nor the channel name yet: hold it
+                        // until the next token decides.
+                        self.pending_lead.push(token);
+                    } else if self.thought_lead == Some(token) {
                         self.state = Gemma4ChannelStreamState::Suppressing;
+                        // The held whitespace belongs to the continuation.
+                        self.pending_lead.clear();
                         self.push_channel_body(token);
                     } else {
                         self.state = Gemma4ChannelStreamState::Passing;
+                        kept.append(&mut self.pending_lead);
                         if token != self.ids.close {
                             kept.push(token);
                         }
@@ -1111,6 +1157,29 @@ impl IncrementalDecoder {
             prefix_offset: 0,
             read_offset: 0,
         }
+    }
+
+    /// Text still held at end of stream: a window whose trailing codepoint
+    /// never completed (the model produced a literal `U+FFFD`, or the stream
+    /// ended mid-codepoint). `push` withholds it waiting for more tokens, so
+    /// without this flush the tail would be dropped from the stream while the
+    /// non-stream decode of the same tokens still renders it.
+    pub(crate) fn finish(&mut self) -> Result<String, EngineTokenizerError> {
+        if self.read_offset >= self.tokens.len() {
+            return Ok(String::new());
+        }
+        let prefix = self
+            .tokenizer
+            .decode(&self.tokens[self.prefix_offset..self.read_offset], true)?;
+        let whole = self
+            .tokenizer
+            .decode(&self.tokens[self.prefix_offset..], true)?;
+        self.prefix_offset = self.tokens.len();
+        self.read_offset = self.tokens.len();
+        Ok(whole
+            .strip_prefix(prefix.as_str())
+            .map(str::to_string)
+            .unwrap_or_default())
     }
 
     pub(crate) fn push(&mut self, delta_tokens: &[u32]) -> Result<String, EngineTokenizerError> {
@@ -1442,6 +1511,45 @@ fn send_openai_llama_cpp_chat_final_chunk(
 }
 
 #[cfg(test)]
+mod gemma4_channel_stream_filter_tests {
+    use super::Gemma4ChannelStreamFilter;
+    use crate::chat::Gemma4ChannelIds;
+
+    const IDS: Gemma4ChannelIds = Gemma4ChannelIds { open: 1, close: 2 };
+    const THOUGHT: u32 = 10;
+    const SPACE: u32 = 20;
+    const NEWLINE: u32 = 21;
+
+    fn filter() -> Gemma4ChannelStreamFilter {
+        Gemma4ChannelStreamFilter::new(IDS, Some(THOUGHT), vec![SPACE, NEWLINE])
+    }
+
+    #[test]
+    fn whitespace_before_the_channel_name_still_suppresses_the_continuation() {
+        let mut filter = filter();
+        // " thought\n<reasoning><channel|>answer"
+        assert!(filter.filter(&[SPACE]).is_empty());
+        assert!(filter.filter(&[THOUGHT, NEWLINE, 100, 101]).is_empty());
+        assert_eq!(filter.filter(&[IDS.close, 200, 201]), vec![200, 201]);
+    }
+
+    #[test]
+    fn held_whitespace_is_released_when_the_answer_starts() {
+        let mut filter = filter();
+        assert!(filter.filter(&[NEWLINE]).is_empty());
+        assert_eq!(filter.filter(&[300]), vec![NEWLINE, 300]);
+        assert_eq!(filter.filter(&[SPACE, 301]), vec![SPACE, 301]);
+    }
+
+    #[test]
+    fn plain_answer_streams_unchanged() {
+        let mut filter = filter();
+        assert_eq!(filter.filter(&[300, 301]), vec![300, 301]);
+        assert_eq!(filter.filter(&[THOUGHT]), vec![THOUGHT]);
+    }
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod gpt_oss_harmony_stream_filter_tests {
     use super::GptOssHarmonyStreamFilter;
@@ -1511,6 +1619,68 @@ mod gpt_oss_harmony_stream_filter_tests {
         ];
         // Unknown channel body dropped; trailing content after end is emitted.
         assert_eq!(filter.filter(&tokens), vec![300]);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod incremental_decoder_tests {
+    use super::IncrementalDecoder;
+    use ax_engine_sdk::EngineTokenizer;
+
+    /// Byte-level vocabulary where token 1 is the lead byte of `é` (0xC3)
+    /// and token 2 its continuation (0xA9), so a lone token 1 decodes to an
+    /// incomplete codepoint.
+    fn byte_level_tokenizer(label: &str) -> EngineTokenizer {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("ax-engine-decoder-{label}-{unique}"));
+        std::fs::create_dir_all(&dir).expect("tokenizer dir");
+        std::fs::write(dir.join("config.json"), r#"{"eos_token_id":3}"#).expect("config");
+        std::fs::write(
+            dir.join("tokenizer.json"),
+            r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": false},
+  "post_processor": null,
+  "decoder": {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": false},
+  "model": {
+    "type": "WordLevel",
+    "vocab": {"[UNK]": 0, "\u00c3": 1, "\u00a9": 2, "<eos>": 3, "ok": 4},
+    "unk_token": "[UNK]"
+  }
+}"#,
+        )
+        .expect("tokenizer json");
+        EngineTokenizer::from_model_dir(&dir).expect("byte-level fixture tokenizer loads")
+    }
+
+    #[test]
+    fn finish_flushes_a_held_incomplete_codepoint() {
+        let mut decoder = IncrementalDecoder::new(byte_level_tokenizer("finish-held"));
+        assert_eq!(decoder.push(&[4]).expect("decode"), "ok");
+        // The lead byte alone is an incomplete sequence: held, nothing emitted.
+        assert_eq!(decoder.push(&[1]).expect("decode"), "");
+        let tail = decoder.finish().expect("finish");
+        assert_eq!(
+            tail, "\u{FFFD}",
+            "the held tail must be flushed, not dropped"
+        );
+        assert_eq!(decoder.finish().expect("second finish"), "");
+    }
+
+    #[test]
+    fn finish_is_empty_after_a_complete_emit() {
+        let mut decoder = IncrementalDecoder::new(byte_level_tokenizer("finish-complete"));
+        assert_eq!(decoder.push(&[1]).expect("decode"), "");
+        assert_eq!(decoder.push(&[2]).expect("decode"), "\u{e9}");
+        assert_eq!(decoder.finish().expect("finish"), "");
     }
 }
 
