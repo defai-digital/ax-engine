@@ -222,6 +222,12 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) tools: Option<Value>,
     #[serde(default)]
     pub(crate) tool_choice: Option<Value>,
+    /// OpenAI tool-call concurrency switch. `true` and absent are the default
+    /// (AX may emit several tool calls); `false` fails closed at request build
+    /// because AX cannot guarantee single-call output, mirroring the stateless
+    /// `/v1/responses` surface.
+    #[serde(default)]
+    pub(crate) parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]

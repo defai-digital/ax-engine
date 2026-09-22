@@ -476,6 +476,55 @@ fn find_matching_gemma4_object_end(content: &str, body_start: usize) -> Option<u
     None
 }
 
+/// Resumable result of brace-matching a bare Gemma4 object body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Gemma4ObjectScan {
+    /// The matching close brace was found at `end` (byte index of the `}`).
+    Complete(usize),
+    /// The object is not complete yet; resume scanning at `from` with `depth`.
+    Incomplete { from: usize, depth: usize },
+}
+
+/// Incrementally brace-match a bare Gemma4 object body, resuming at byte
+/// offset `from` of `content` with the given brace `depth`. Mirrors
+/// `find_matching_gemma4_object_end` but can pause and resume across pushes
+/// instead of re-scanning the whole body from `body_start` every time.
+pub(crate) fn scan_gemma4_object_body(
+    content: &str,
+    mut from: usize,
+    mut depth: usize,
+) -> Gemma4ObjectScan {
+    while from < content.len() {
+        if content[from..].starts_with("<|\"|>") {
+            let open_at = from;
+            from += "<|\"|>".len();
+            let Some(relative_end) = content[from..].find("<|\"|>") else {
+                return Gemma4ObjectScan::Incomplete {
+                    from: open_at,
+                    depth,
+                };
+            };
+            from += relative_end + "<|\"|>".len();
+            continue;
+        }
+        let Some(ch) = content[from..].chars().next() else {
+            break;
+        };
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Gemma4ObjectScan::Complete(from);
+                }
+            }
+            _ => {}
+        }
+        from += ch.len_utf8();
+    }
+    Gemma4ObjectScan::Incomplete { from, depth }
+}
+
 fn parse_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
         return parse_tool_call_function(&value);

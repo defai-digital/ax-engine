@@ -12,8 +12,9 @@ use std::sync::Arc;
 use crate::openai::dsml;
 use crate::openai::requests::OpenAiToolContract;
 use crate::openai::responses::{
-    extract_bare_gemma4_tool_call_payload_at, extract_closed_xml_tool_call_payload_at,
-    extract_gemma4_tool_call_payload_at, extract_xml_tool_call_payload_at, find_bare_gemma4_call,
+    Gemma4ObjectScan, extract_bare_gemma4_tool_call_payload_at,
+    extract_closed_xml_tool_call_payload_at, extract_gemma4_tool_call_payload_at,
+    extract_xml_tool_call_payload_at, find_bare_gemma4_call, scan_gemma4_object_body,
 };
 use crate::openai::schema::{OpenAiFunctionCall, OpenAiToolCall};
 
@@ -47,6 +48,20 @@ pub(crate) struct ToolCallStreamScanner {
     /// True once any non-whitespace content has been emitted; gates the
     /// bare-Gemma4 form, which is only valid as the leading output.
     emitted_visible: bool,
+    /// True once a DSML stanza has emitted at least one call for this
+    /// response. The non-streaming extractor hands the DSML leftover back as
+    /// content without re-running the XML/Gemma4 extractors, so after a DSML
+    /// stanza later non-DSML openers are content (further DSML stanzas are
+    /// still parsed).
+    dsml_emitted: bool,
+    /// Per-span resume offset for the XML / Gemma4 closer search: bytes of the
+    /// current span already known to hold no (or only already-failed) closer,
+    /// so the next push scans only the appended tail instead of the whole
+    /// growing buffer. Reset when the span changes.
+    span_scan_offset: usize,
+    /// Per-span resume state for the bare Gemma4 brace matcher.
+    bare_scan_from: usize,
+    bare_scan_depth: usize,
     calls_emitted: u32,
     contract: Option<Arc<OpenAiToolContract>>,
 }
@@ -57,6 +72,10 @@ impl ToolCallStreamScanner {
             buffer: String::new(),
             span: None,
             emitted_visible: false,
+            dsml_emitted: false,
+            span_scan_offset: 0,
+            bare_scan_from: 0,
+            bare_scan_depth: 0,
             calls_emitted: 0,
             contract,
         }
@@ -106,6 +125,9 @@ impl ToolCallStreamScanner {
                             events.push(ToolScanEvent::Content(content));
                         }
                         self.span = Some(kind);
+                        self.span_scan_offset = 0;
+                        self.bare_scan_from = 0;
+                        self.bare_scan_depth = 0;
                         continue;
                     }
                     let hold = if at_end {
@@ -148,6 +170,7 @@ impl ToolCallStreamScanner {
                         }
                     }
                     if parsed {
+                        self.dsml_emitted = true;
                         self.span = None;
                         continue;
                     }
@@ -179,50 +202,97 @@ impl ToolCallStreamScanner {
                         ToolSpanKind::BareGemma4 | ToolSpanKind::Dsml => None,
                     };
                     if let Some(closer) = closer {
-                        let Some(close_at) = self.buffer.find(closer) else {
+                        if at_end {
+                            // End of stream: a closer must be present for the
+                            // span to still be withheld here (no closer means
+                            // `finish`'s unterminated-span handling owns it).
+                            let Some(close_at) = self.buffer.find(closer) else {
+                                return events;
+                            };
+                            match self.extract_span_at_start(kind, true) {
+                                Some((function, remaining)) => {
+                                    events.push(ToolScanEvent::Call(self.build_call(function)));
+                                    self.buffer = remaining;
+                                }
+                                None => {
+                                    // The withheld span may hold a later, valid
+                                    // opener (the model restarted its call):
+                                    // release only up to it so the rescan can
+                                    // still extract that call, as the
+                                    // non-streaming extractor does.
+                                    let end = close_at + closer.len();
+                                    let end = self
+                                        .next_opener_after_start(end)
+                                        .map_or(end, |inner| inner.min(end));
+                                    let content = self.buffer[..end].to_string();
+                                    self.buffer.drain(..end);
+                                    self.note_visible(&content);
+                                    events.push(ToolScanEvent::Content(content));
+                                }
+                            }
+                            self.span = None;
+                            self.span_scan_offset = 0;
+                            continue;
+                        }
+                        // Resume the closer search from the last scanned
+                        // offset instead of rescanning the whole buffer every
+                        // push: a closer whose body already failed to parse
+                        // can never succeed (the bytes before it are fixed).
+                        let rest = &self.buffer[self.span_scan_offset..];
+                        let Some(relative) = rest.find(closer) else {
+                            self.span_scan_offset = self
+                                .buffer
+                                .len()
+                                .saturating_sub(closer.len().saturating_sub(1));
                             return events;
                         };
-                        match self.extract_span_at_start(kind, at_end) {
-                            Some((function, remaining)) => {
-                                events.push(ToolScanEvent::Call(self.build_call(function)));
-                                self.buffer = remaining;
-                            }
-                            None => {
-                                // Closer present but the body does not parse
-                                // yet: an argument string may contain the
-                                // marker, so keep withholding until more data
-                                // (or the true closer) arrives; only the end
-                                // of the stream flushes the span as content.
-                                if !at_end {
-                                    return events;
-                                }
-                                // The withheld span may hold a later, valid
-                                // opener (the model restarted its call):
-                                // release only up to it so the rescan can
-                                // still extract that call, as the
-                                // non-streaming extractor does.
-                                let end = close_at + closer.len();
-                                let end = self
-                                    .next_opener_after_start(end)
-                                    .map_or(end, |inner| inner.min(end));
-                                let content = self.buffer[..end].to_string();
-                                self.buffer.drain(..end);
-                                self.note_visible(&content);
-                                events.push(ToolScanEvent::Content(content));
-                            }
+                        let close_at = self.span_scan_offset + relative;
+                        self.span_scan_offset = close_at + closer.len();
+                        // The extractor re-tries every closer from the start,
+                        // so call it only when a new closer arrived; a body
+                        // that has not parsed yet stays withheld.
+                        if let Some((function, remaining)) = self.extract_span_at_start(kind, false)
+                        {
+                            events.push(ToolScanEvent::Call(self.build_call(function)));
+                            self.buffer = remaining;
+                            self.span = None;
+                            self.span_scan_offset = 0;
                         }
-                        self.span = None;
                         continue;
                     }
                     // Bare Gemma4: no closer marker; complete when the brace
-                    // matcher inside the extractor succeeds.
-                    if let Some((function, remaining)) =
-                        self.extract_span_at_start(ToolSpanKind::BareGemma4, at_end)
-                    {
-                        events.push(ToolScanEvent::Call(self.build_call(function)));
-                        self.buffer = remaining;
-                        self.span = None;
-                        continue;
+                    // matcher inside the extractor succeeds. Resume the brace
+                    // scan from where the previous push left off so a long
+                    // bare body is not re-brace-matched from byte 0 every push.
+                    if let Some(body_start) = self.bare_body_start() {
+                        if self.bare_scan_from < body_start {
+                            self.bare_scan_from = body_start;
+                            self.bare_scan_depth = 1;
+                        }
+                        match scan_gemma4_object_body(
+                            &self.buffer,
+                            self.bare_scan_from,
+                            self.bare_scan_depth,
+                        ) {
+                            Gemma4ObjectScan::Complete(_) => {
+                                // The object is complete; re-run the shared
+                                // extractor once to build the call.
+                                if let Some((function, remaining)) =
+                                    self.extract_span_at_start(ToolSpanKind::BareGemma4, at_end)
+                                {
+                                    events.push(ToolScanEvent::Call(self.build_call(function)));
+                                    self.buffer = remaining;
+                                    self.span = None;
+                                    self.bare_scan_from = 0;
+                                    self.bare_scan_depth = 0;
+                                    continue;
+                                }
+                            }
+                            Gemma4ObjectScan::Incomplete { from, depth } => {
+                                self.bare_scan_from = from;
+                                self.bare_scan_depth = depth;
+                            }
+                        }
                     }
                     if !self.bare_span_still_viable() {
                         // The span can no longer become a valid bare call
@@ -243,12 +313,18 @@ impl ToolCallStreamScanner {
     /// Earliest marker opener strictly after `buffer[0]` and before `limit`.
     fn next_opener_after_start(&self, limit: usize) -> Option<usize> {
         let window = self.buffer.get(1..limit)?;
-        [XML_OPEN, GEMMA4_OPEN]
-            .iter()
-            .filter_map(|opener| window.find(opener))
-            .chain(dsml::find_dsml_tool_calls_open(window))
-            .min()
-            .map(|index| index + 1)
+        let mut candidates: Vec<usize> = Vec::new();
+        if !self.dsml_emitted {
+            for opener in [XML_OPEN, GEMMA4_OPEN] {
+                if let Some(index) = window.find(opener) {
+                    candidates.push(index);
+                }
+            }
+        }
+        if let Some(index) = dsml::find_dsml_tool_calls_open(window) {
+            candidates.push(index);
+        }
+        candidates.into_iter().min().map(|index| index + 1)
     }
 
     fn find_earliest_opener(&self) -> Option<(usize, ToolSpanKind)> {
@@ -260,6 +336,17 @@ impl ToolCallStreamScanner {
                 earliest = Some((index, kind));
             }
         };
+        if self.dsml_emitted {
+            // After a DSML stanza, later XML / Gemma4 / bare openers are
+            // ordinary content (the non-streaming extractor does not re-run
+            // them on the DSML leftover); only further DSML stanzas are
+            // parsed.
+            consider(
+                dsml::find_dsml_tool_calls_open(&self.buffer),
+                ToolSpanKind::Dsml,
+            );
+            return earliest;
+        }
         consider(self.buffer.find(XML_OPEN), ToolSpanKind::Xml);
         consider(self.buffer.find(GEMMA4_OPEN), ToolSpanKind::Gemma4);
         consider(
@@ -288,6 +375,14 @@ impl ToolCallStreamScanner {
             // DSML stanzas are parsed whole in `drain_events` (several calls).
             ToolSpanKind::Dsml => None,
         }
+    }
+
+    /// Absolute byte offset just past the opening `{` of a bare
+    /// `call:NAME{...}` body, once that brace has arrived.
+    fn bare_body_start(&self) -> Option<usize> {
+        let rest = self.buffer.strip_prefix(BARE_GEMMA4_LEAD)?;
+        let brace = rest.find('{')?;
+        Some(BARE_GEMMA4_LEAD.len() + brace + 1)
     }
 
     /// A bare span (`call:NAME{...}`) is abandoned as soon as the name region
@@ -702,5 +797,68 @@ mod tests {
         let arguments: serde_json::Value =
             serde_json::from_str(&calls[0].function.arguments).expect("json arguments");
         assert_eq!(arguments, json!({"path": "src/main.rs"}));
+    }
+
+    #[test]
+    fn dsml_stanza_then_xml_opener_is_content_not_a_second_call() {
+        // After a DSML stanza the non-streaming extractor hands the leftover
+        // back as content and never re-runs the XML extractor on it, so a
+        // later `<tool_call>` block is text. The stream scanner must agree:
+        // one call (the DSML invoke), and the XML block survives as content.
+        let bar = "\u{FF5C}";
+        let stanza = format!(
+            "<{bar}DSML{bar}tool_calls><{bar}DSML{bar}invoke name=\"a\"></{bar}DSML{bar}invoke></{bar}DSML{bar}tool_calls>"
+        );
+        let xml = "<tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call>";
+        let text = format!("{stanza}{xml}");
+
+        let (non_streaming, leftover) =
+            dsml::parse_dsml_tool_calls(&text).expect("DSML stanza parses");
+        assert_eq!(non_streaming.len(), 1);
+        assert_eq!(non_streaming[0].name.as_str(), "a");
+        assert_eq!(leftover, xml);
+
+        let mut scanner = scanner();
+        let mut events = Vec::new();
+        for (index, ch) in text.char_indices() {
+            events.extend(scanner.push(&text[index..index + ch.len_utf8()]));
+        }
+        events.extend(scanner.finish());
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1, "content: {:?}", content(&events));
+        assert_eq!(calls[0].function.name, "a");
+        assert_eq!(content(&events), xml);
+    }
+
+    #[test]
+    fn long_xml_argument_streams_linearly_and_matches_non_streaming() {
+        // A 64 KiB JSON argument streamed in 4-byte chunks must complete in
+        // linear time (the per-span resume offsets avoid re-scanning the whole
+        // growing buffer every push) and reproduce the whole-string extract.
+        let argument = "x".repeat(64 * 1024);
+        let body = format!("{{\"name\":\"f\",\"arguments\":{{\"payload\":\"{argument}\"}}}}");
+        let text = format!("<tool_call>{body}</tool_call>");
+
+        let (function, _) =
+            extract_xml_tool_call_payload_at(&text, 0).expect("whole-string XML call extracts");
+
+        let mut scanner = scanner();
+        let mut events = Vec::new();
+        let started = std::time::Instant::now();
+        for chunk in text.as_bytes().chunks(4) {
+            events.extend(scanner.push(std::str::from_utf8(chunk).expect("ASCII fixture")));
+        }
+        events.extend(scanner.finish());
+        let elapsed = started.elapsed();
+
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, function.name);
+        assert_eq!(calls[0].function.arguments, function.arguments);
+        assert!(content(&events).is_empty());
+        assert!(
+            elapsed.as_secs_f64() < 1.0,
+            "64 KiB in 4-byte chunks must not rescan quadratically: {elapsed:?}"
+        );
     }
 }

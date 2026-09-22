@@ -2102,6 +2102,58 @@ async fn openai_chat_request_rejects_unsupported_sampling_params() {
 }
 
 #[tokio::test]
+async fn openai_chat_request_rejects_parallel_tool_calls_false() {
+    // `parallel_tool_calls` is an OpenAI chat field, not an AX extension; the
+    // tool-call parser can still emit several calls, so `false` must fail
+    // closed (matching the stateless `/v1/responses` surface) instead of being
+    // silently ignored. `true` and absent stay accepted.
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 8,
+        "parallel_tool_calls": false
+    }))
+    .expect("sample chat request should deserialize");
+    let error = match build_openai_chat_request(&live, request) {
+        Ok(_) => panic!("parallel_tool_calls=false must fail closed instead of being ignored"),
+        Err(error) => error,
+    };
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+    assert!(
+        error
+            .1
+            .0
+            .error
+            .message
+            .contains("parallel_tool_calls=false")
+    );
+
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 8,
+        "parallel_tool_calls": true
+    }))
+    .expect("sample chat request should deserialize");
+    build_openai_chat_request(&live, request).expect("parallel_tool_calls=true should still build");
+
+    // Absent keeps the default (several calls allowed), like every other
+    // OpenAI-default field.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+    build_openai_chat_request(&live, request)
+        .expect("an omitted parallel_tool_calls should still build");
+}
+
+#[tokio::test]
 async fn openai_chat_request_carries_client_stop_for_native_enforcement() {
     // The native MLX backend enforces client stops server-side over decoded
     // text (ADR-040 D2): the raw client list rides response options into the

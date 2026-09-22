@@ -245,6 +245,18 @@ impl OpenAiResponseOptions {
             request.logit_bias.as_ref(),
         )?;
         reject_unsupported_top_logprobs(request.top_logprobs)?;
+        if request.parallel_tool_calls == Some(false) {
+            // Echoing `false` while the tool-call parser can still emit several
+            // calls would misrepresent the response; fail closed until it is
+            // enforced, matching the stateless `/v1/responses` surface.
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_parameter",
+                "parallel_tool_calls=false is not supported by AX Engine chat completions; the \
+                 tool-call parser may emit several calls"
+                    .to_string(),
+            ));
+        }
         Ok(Self {
             include_logprobs: request.logprobs,
             include_reasoning: openai_chat_thinking_is_enabled(request),

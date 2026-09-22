@@ -544,12 +544,20 @@ impl OpenAiStreamDriver {
                     // Text withheld by the stop scanner precedes the call in
                     // the model output; release it first so a stop string can
                     // never be assembled across the tool-call boundary.
-                    if let Some(pending) = self.pipeline.stop_scanner.as_mut().map(|s| s.finish())
-                        && !pending.is_empty()
-                        && !self.send_content_chunk(tx, request_id, model_id, pending)
-                    {
-                        return false;
+                    if let Some(mut stop_scanner) = self.pipeline.stop_scanner.take() {
+                        let pending = stop_scanner.finish();
+                        if !pending.is_empty()
+                            && !self.send_content_chunk(tx, request_id, model_id, pending)
+                        {
+                            return false;
+                        }
                     }
+                    // Once a call has been emitted, disable the stop scanner
+                    // for the rest of the stream (ADR-040 D2): stops match
+                    // visible content only, never text that follows a tool
+                    // call, so `AAA<tool_call>...</tool_call>BB STOP CC` keeps
+                    // `BB STOP CC` and finishes `tool_calls`, mirroring the
+                    // non-streaming `!has_tool_calls` gate.
                     let role = next_chat_delta_role(&mut self.chat_role_emitted);
                     let chunk = chat_single_tool_call_delta_chunk(
                         request_id,
@@ -1881,5 +1889,237 @@ mod stream_usage_tests {
         // Later reports without the decision keep the last observed count.
         driver.track_prefix_reuse(&GenerateRouteReport::default());
         assert_eq!(driver.prefix_reused_tokens, Some(0));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod stop_tool_scanner_tests {
+    use ax_engine_sdk::{
+        CapabilityReport, GenerateFinishReason, GenerateResponse, GenerateRouteReport,
+        GenerateStatus, GenerateStreamEvent, GenerateStreamResponseEvent, ResolutionPolicy,
+        RuntimeReport, SelectedBackend, SupportTier,
+    };
+    use serde_json::Value;
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    use super::{Event, OpenAiStreamDriver, OpenAiStreamKind, OpenAiStreamPipeline};
+    use crate::generation::streaming::StreamEvent;
+    use crate::openai::stop::StopSequenceScanner;
+    use crate::openai::tool_stream::ToolCallStreamScanner;
+
+    fn chat_driver(stops: &[&str]) -> OpenAiStreamDriver {
+        OpenAiStreamDriver {
+            stream_kind: OpenAiStreamKind::ChatCompletion,
+            chat_role_emitted: false,
+            decoder: None,
+            channel_filter: None,
+            pipeline: OpenAiStreamPipeline {
+                tool_scanner: Some(ToolCallStreamScanner::new(None)),
+                stop_scanner: StopSequenceScanner::new(
+                    stops.iter().map(|stop| (*stop).to_string()).collect(),
+                ),
+                include_usage: false,
+            },
+            reasoning: None,
+            calls_emitted: 0,
+            prompt_token_count: None,
+            output_token_count: None,
+            prefix_reused_tokens: None,
+        }
+    }
+
+    fn sample_response() -> GenerateResponse {
+        GenerateResponse {
+            request_id: 1,
+            model_id: "qwen3".to_string(),
+            prompt_tokens: vec![1],
+            prompt_text: None,
+            output_tokens: vec![1, 2],
+            output_token_logprobs: Vec::new(),
+            output_text: Some(String::new()),
+            prompt_token_count: None,
+            output_token_count: None,
+            status: GenerateStatus::Finished,
+            finish_reason: Some(GenerateFinishReason::Stop),
+            step_count: 1,
+            ttft_step: None,
+            route: GenerateRouteReport::default(),
+            runtime: RuntimeReport {
+                selected_backend: SelectedBackend::Mlx,
+                support_tier: SupportTier::MlxPreview,
+                resolution_policy: ResolutionPolicy::MlxOnly,
+                capabilities: CapabilityReport::mlx_preview(),
+                fallback_reason: None,
+                host: Default::default(),
+                metal_toolchain: Default::default(),
+                mlx_runtime: None,
+                mlx_model: None,
+                delegated_runtime: None,
+            },
+            performance: Default::default(),
+        }
+    }
+
+    /// Recover the JSON payload of a chunk `Event`. The SSE buffer is
+    /// private, so the Debug representation (a byte-string literal) is
+    /// unescaped back into the frame text and the `data: ` lines re-joined.
+    fn event_payload(event: &Event) -> String {
+        let debug = format!("{event:?}");
+        let start = debug.find("b\"").expect("debug renders the frame buffer") + 2;
+        let end = debug[start..]
+            .rfind("\", ")
+            .map_or(debug.len() - 1, |at| start + at);
+        let mut frame = String::new();
+        let mut chars = debug[start..end].chars();
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
+                frame.push(ch);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => frame.push('\n'),
+                Some('"') => frame.push('"'),
+                Some('\\') => frame.push('\\'),
+                Some(other) => {
+                    frame.push('\\');
+                    frame.push(other);
+                }
+                None => frame.push('\\'),
+            }
+        }
+        frame
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn collect_chunk_payloads(rx: &mut mpsc::Receiver<StreamEvent>) -> Vec<Value> {
+        let mut payloads = Vec::new();
+        while let Some(event) = rx.blocking_recv() {
+            let event = event.expect("stream chunk events never error");
+            let payload = event_payload(&event);
+            // A stop match terminates with the SSE `data: [DONE]` sentinel,
+            // which is not a JSON chunk.
+            if payload != "[DONE]" {
+                payloads.push(serde_json::from_str(&payload).expect("chunk payload parses"));
+            }
+        }
+        payloads
+    }
+
+    #[test]
+    fn stop_scanner_retires_after_tool_call_and_post_call_text_survives() {
+        // ADR-040 D2: client stops match visible content only, never text
+        // after a tool call. Non-streaming applies stops only when no call
+        // was extracted, so `AAA<tool_call>...</tool_call>BB STOP CC` keeps
+        // `BB STOP CC` and finishes `tool_calls`; the stream must agree
+        // instead of truncating at `STOP` and finishing `stop`.
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut driver = chat_driver(&["STOP"]);
+        let text = "AAA<tool_call>{\"name\":\"f\",\"arguments\":{}}</tool_call>BB STOP CC";
+        // 7-byte chunks split the opener, the JSON body, and the stop
+        // string across pushes, as a token stream would.
+        for chunk in text.as_bytes().chunks(7) {
+            let chunk = std::str::from_utf8(chunk).expect("ascii fixture");
+            assert!(
+                driver.process_text(&tx, 1, "qwen3", chunk.to_string()),
+                "no push may terminate the stream early: {chunk:?}"
+            );
+        }
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                response: sample_response(),
+            })
+        ));
+        drop(tx);
+
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+        let mut finish_reasons = Vec::new();
+        for choice in collect_chunk_payloads(&mut rx)
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+        {
+            if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                finish_reasons.push(reason.to_string());
+            }
+            let Some(delta) = choice.get("delta") else {
+                continue;
+            };
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                content.push_str(text);
+            }
+            if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                tool_calls.extend(calls.iter().cloned());
+            }
+        }
+
+        assert_eq!(
+            content, "AAABB STOP CC",
+            "the stop after a tool call must stay visible content"
+        );
+        assert_eq!(tool_calls.len(), 1, "exactly one tool call delta");
+        let function = tool_calls[0]
+            .get("function")
+            .expect("call carries function");
+        assert_eq!(
+            function.get("name").and_then(Value::as_str),
+            Some("f"),
+            "tool_calls: {tool_calls:?}"
+        );
+        let arguments: Value = serde_json::from_str(
+            function
+                .get("arguments")
+                .and_then(Value::as_str)
+                .expect("arguments are a JSON string"),
+        )
+        .expect("arguments parse");
+        assert_eq!(arguments, json!({}));
+        assert_eq!(
+            finish_reasons,
+            vec!["tool_calls".to_string()],
+            "the stream must finish tool_calls, never stop"
+        );
+    }
+
+    #[test]
+    fn stop_scanner_still_terminates_pure_content_streams() {
+        // Guard the other direction: without a tool call the stop scanner
+        // must keep matching (a stop match returns false and ends the
+        // stream), so the retirement is tied to call emission, not to the
+        // pipeline being built.
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut driver = chat_driver(&["STOP"]);
+        assert!(
+            !driver.process_text(&tx, 1, "qwen3", "BB STOP CC".to_string()),
+            "a stop match on pure content must end the stream"
+        );
+        drop(tx);
+        let payloads = collect_chunk_payloads(&mut rx);
+        let content: String = payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("delta"))
+            .filter_map(|delta| delta.get("content"))
+            .filter_map(Value::as_str)
+            .collect();
+        let finish_reasons: Vec<&str> = payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("finish_reason"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(content, "BB ");
+        assert_eq!(finish_reasons, vec!["stop"]);
     }
 }
