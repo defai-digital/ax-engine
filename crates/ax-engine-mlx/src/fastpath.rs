@@ -1163,6 +1163,19 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_INVARIANT_QMV_BF16_Q4` — route bf16-input, 4-bit affine
+    /// projections that take the invariant `qmv_fast` microbatch kernel
+    /// through its bf16/4-bit specialisation (raw-bit x registers, unscaled
+    /// nibble unpack). Bit-identical per row to the generic kernel; measured
+    /// 4-11% faster on the M5 Max at the S=3..4 verify shapes, neutral at
+    /// S=1..2 and end-to-end neutral on the 6bit-MTP pack.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_INVARIANT_QMV_BF16_Q4=0`).
+    invariant_qmv_bf16_q4_enabled,
+    "AX_MLX_INVARIANT_QMV_BF16_Q4"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4` — when the target lm_head is dense
     /// (unquantized) and no draft-head spec was configured, derive a 4-bit
     /// gs64 `draft_lm_head` at MTP load. Draft logits only propose tokens

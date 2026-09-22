@@ -1,0 +1,20 @@
+in_proj_qkv  K= 5120 N=10240 gs=32 S=1  generic  0.070 ms ( 467 GB/s)  bf16_q4  0.070 ms ( 466 GB/s)  ratio 0.998  mlx  0.069 ms ( 477 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0000
+in_proj_qkv  K= 5120 N=10240 gs=32 S=2  generic  0.071 ms ( 459 GB/s)  bf16_q4  0.070 ms ( 465 GB/s)  ratio 1.014  mlx  0.069 ms ( 476 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0176
+in_proj_qkv  K= 5120 N=10240 gs=32 S=3  generic  0.082 ms ( 399 GB/s)  bf16_q4  0.076 ms ( 432 GB/s)  ratio 1.081  mlx  0.070 ms ( 469 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0234
+in_proj_qkv  K= 5120 N=10240 gs=32 S=4  generic  0.102 ms ( 323 GB/s)  bf16_q4  0.093 ms ( 353 GB/s)  ratio 1.093  mlx  0.072 ms ( 455 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0195
+down_proj    K=17408 N= 5120 gs=64 S=1  generic  0.100 ms ( 503 GB/s)  bf16_q4  0.099 ms ( 504 GB/s)  ratio 1.002  mlx  0.097 ms ( 515 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0000
+down_proj    K=17408 N= 5120 gs=64 S=2  generic  0.104 ms ( 482 GB/s)  bf16_q4  0.102 ms ( 491 GB/s)  ratio 1.019  mlx  0.103 ms ( 488 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0391
+down_proj    K=17408 N= 5120 gs=64 S=3  generic  0.131 ms ( 384 GB/s)  bf16_q4  0.125 ms ( 401 GB/s)  ratio 1.046  mlx  0.116 ms ( 432 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0391
+down_proj    K=17408 N= 5120 gs=64 S=4  generic  0.171 ms ( 294 GB/s)  bf16_q4  0.157 ms ( 319 GB/s)  ratio 1.087  mlx  0.135 ms ( 370 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0508
+out_proj     K= 6144 N= 5120 gs=32 S=1  generic  0.053 ms ( 374 GB/s)  bf16_q4  0.053 ms ( 371 GB/s)  ratio 0.992  mlx  0.051 ms ( 389 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0000
+out_proj     K= 6144 N= 5120 gs=32 S=2  generic  0.054 ms ( 366 GB/s)  bf16_q4  0.053 ms ( 369 GB/s)  ratio 1.008  mlx  0.051 ms ( 384 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0195
+out_proj     K= 6144 N= 5120 gs=32 S=3  generic  0.061 ms ( 324 GB/s)  bf16_q4  0.056 ms ( 352 GB/s)  ratio 1.085  mlx  0.052 ms ( 379 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0215
+out_proj     K= 6144 N= 5120 gs=32 S=4  generic  0.072 ms ( 275 GB/s)  bf16_q4  0.067 ms ( 294 GB/s)  ratio 1.070  mlx  0.051 ms ( 384 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0234
+in_proj_z    K= 5120 N= 6144 gs=32 S=1  generic  0.053 ms ( 374 GB/s)  bf16_q4  0.053 ms ( 374 GB/s)  ratio 1.000  mlx  0.051 ms ( 385 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0000
+in_proj_z    K= 5120 N= 6144 gs=32 S=2  generic  0.053 ms ( 368 GB/s)  bf16_q4  0.053 ms ( 374 GB/s)  ratio 1.018  mlx  0.052 ms ( 377 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0176
+in_proj_z    K= 5120 N= 6144 gs=32 S=3  generic  0.061 ms ( 324 GB/s)  bf16_q4  0.055 ms ( 355 GB/s)  ratio 1.095  mlx  0.053 ms ( 370 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0195
+in_proj_z    K= 5120 N= 6144 gs=32 S=4  generic  0.072 ms ( 274 GB/s)  bf16_q4  0.067 ms ( 296 GB/s)  ratio 1.079  mlx  0.054 ms ( 362 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0195
+attn_o       K= 6144 N= 5120 gs=32 S=1  generic  0.053 ms ( 369 GB/s)  bf16_q4  0.052 ms ( 379 GB/s)  ratio 1.026  mlx  0.049 ms ( 398 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0000
+attn_o       K= 6144 N= 5120 gs=32 S=2  generic  0.054 ms ( 364 GB/s)  bf16_q4  0.053 ms ( 369 GB/s)  ratio 1.015  mlx  0.051 ms ( 384 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0234
+attn_o       K= 6144 N= 5120 gs=32 S=3  generic  0.060 ms ( 325 GB/s)  bf16_q4  0.057 ms ( 344 GB/s)  ratio 1.058  mlx  0.052 ms ( 382 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0215
+attn_o       K= 6144 N= 5120 gs=32 S=4  generic  0.072 ms ( 274 GB/s)  bf16_q4  0.068 ms ( 287 GB/s)  ratio 1.048  mlx  0.054 ms ( 363 GB/s)  bf16_q4==generic bits:True |generic-mlx|max=0.0234

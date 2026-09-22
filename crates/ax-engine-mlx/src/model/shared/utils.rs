@@ -252,6 +252,7 @@ fn cached_prefill_dequant_weight_t(qw: &QuantizedWeight) -> Option<MlxArray> {
 }
 
 static INVARIANT_AFFINE_QMV_FAST_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static INVARIANT_AFFINE_QMV_FAST_BF16_Q4_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static INVARIANT_MXFP4_QMV_FAST_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static INVARIANT_DENSE_PROJECTION_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
@@ -473,6 +474,133 @@ const INVARIANT_AFFINE_QMV_FAST_KERNEL_SOURCE: &str = r#"
                     for (uint value = 0; value < ValuesPerThread; ++value) {
                         accum += x_values[token][value] * packed[value];
                     }
+                }
+                result[token][row] +=
+                    scale * accum + x_sums[token] * bias;
+            }
+        }
+    }
+
+    for (uint token = 0; token < (uint)Leading; ++token) {
+        for (uint row = 0; row < 4; ++row) {
+            float total = simd_sum(result[token][row]);
+            if (lane == 0) {
+                out[token * (uint)OutDim + out_row + row] =
+                    static_cast<OutT>(total);
+            }
+        }
+    }
+"#;
+
+/// `ax_invariant_affine_qmv_fast_v1` specialised for bf16 inputs and 4-bit
+/// affine weights.
+///
+/// Same lane assignment, 512-wide K blocks, per-lane accumulation order,
+/// per-block `scale * accum + x_sum * bias` fold and `simd_sum` as the
+/// generic kernel, so every output row is bit-identical to it (pinned by
+/// `invariant_affine_bf16_q4_kernel_matches_generic_bit_exact`). Two changes
+/// keep the multi-row verify shape (`Leading` 3..4) off the register cliff
+/// the generic kernel hits when it holds four f32 copies of every x value:
+///
+/// - x stays in registers as raw bf16 bit pairs (half the registers) and is
+///   widened to f32 at use, which is exact;
+/// - weights are unpacked to unscaled nibbles instead of pre-scaling x by
+///   `1/16^i`: `x * n` and `(x / 16^i) * (16^i * n)` are the same real
+///   number and each is rounded once, so the products are identical.
+///
+/// Measured on the M5 Max verify shapes (2026-09-22): neutral at `Leading`
+/// 1..2, 4-11% faster at 3..4; end-to-end neutral on the 6bit-MTP pack,
+/// whose verify bytes mostly take the packed / matvec routes (evidence in
+/// `benchmarks/results/inference/mlx-inference/2026-09-22-m5-invariant-qmv-bf16-q4/`).
+const INVARIANT_AFFINE_QMV_FAST_BF16_Q4_KERNEL_SOURCE: &str = r#"
+    constexpr uint PacksPerThread = 2;
+    constexpr uint QmvPackFactor = Bits == 6 ? 4 : 32 / Bits;
+    constexpr uint BytesPerPack = Bits == 6 ? 3 : 4;
+    constexpr uint ValuesPerThread = QmvPackFactor * PacksPerThread;
+    constexpr uint BytesPerThread = BytesPerPack * PacksPerThread;
+    constexpr uint BlockSize = ValuesPerThread * 32;
+
+    uint lane = thread_index_in_simdgroup;
+    uint simd_group = simdgroup_index_in_threadgroup;
+    uint out_row = threadgroup_position_in_grid.y * 8 + simd_group * 4;
+
+    float result[4][4];
+    for (uint token = 0; token < 4; ++token) {
+        for (uint row = 0; row < 4; ++row) {
+            result[token][row] = 0.0f;
+        }
+    }
+
+    // bf16 x kept as raw bit pairs (half the registers of the f32 copy);
+    // each value is widened to f32 at use (exact), and 4-bit weights are
+    // unpacked to unscaled nibbles: x * n equals (x / 16) * (16 n) exactly,
+    // so the products and their summation order match the singleton kernel.
+    const device uchar* weight_bytes = reinterpret_cast<const device uchar*>(weight);
+    for (uint k = 0; k < (uint)InputDim; k += BlockSize) {
+        uint x_bits[4][8];
+        float x_sums[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        for (uint token = 0; token < (uint)Leading; ++token) {
+            const device uint4* x_row = reinterpret_cast<const device uint4*>(
+                x + token * (uint)InputDim + k + lane * ValuesPerThread);
+            uint4 xl = x_row[0];
+            uint4 xh = x_row[1];
+            x_bits[token][0] = xl.x; x_bits[token][1] = xl.y;
+            x_bits[token][2] = xl.z; x_bits[token][3] = xl.w;
+            x_bits[token][4] = xh.x; x_bits[token][5] = xh.y;
+            x_bits[token][6] = xh.z; x_bits[token][7] = xh.w;
+            for (uint i = 0; i < ValuesPerThread; i += 4) {
+                uint p0 = x_bits[token][i / 2];
+                uint p1 = x_bits[token][i / 2 + 1];
+                // Same OutT-typed 4-wide group sum as the generic kernel's
+                // static_cast<OutT>(x_row[i]) chain. `bfloat` is the native
+                // Metal 3.1+ type MLX uses for bf16 template arguments on the
+                // supported macOS, so the reinterpret is free; widening
+                // through f32 and converting back costs four extra
+                // conversions per group and measured slower than the generic
+                // kernel at S=4 (M5 Max, 2026-09-22).
+                OutT group_sum =
+                    static_cast<OutT>(as_type<bfloat>(static_cast<ushort>(p0 & 0xffff))) +
+                    static_cast<OutT>(as_type<bfloat>(static_cast<ushort>(p0 >> 16))) +
+                    static_cast<OutT>(as_type<bfloat>(static_cast<ushort>(p1 & 0xffff))) +
+                    static_cast<OutT>(as_type<bfloat>(static_cast<ushort>(p1 >> 16)));
+                x_sums[token] += static_cast<float>(group_sum);
+            }
+        }
+
+        for (uint row = 0; row < 4; ++row) {
+            uint current_row = out_row + row;
+            uint group = k / (uint)GroupSize +
+                lane / ((uint)GroupSize / ValuesPerThread);
+            uint sidecar_index = current_row * (uint)GroupCount + group;
+            float scale = static_cast<float>(scales[sidecar_index]);
+            float bias = static_cast<float>(biases[sidecar_index]);
+            const device uchar* packed_src =
+                weight_bytes + current_row * (uint)PackedCols * 4 +
+                k * (uint)Bits / 8 + lane * BytesPerThread;
+            uint2 raw = *reinterpret_cast<const device uint2*>(packed_src);
+
+            for (uint token = 0; token < (uint)Leading; ++token) {
+                float accum = 0.0f;
+                uint w0 = raw.x;
+                uint w1 = raw.y;
+                for (uint pack = 0; pack < PacksPerThread; ++pack) {
+                    uint w = pack == 0 ? w0 : w1;
+                    uint value = pack * 8;
+                    uint xa = x_bits[token][value / 2];
+                    uint xb = x_bits[token][value / 2 + 1];
+                    uint xc = x_bits[token][value / 2 + 2];
+                    uint xd = x_bits[token][value / 2 + 3];
+                    accum +=
+                        (as_type<float>(xa << 16) * (w & 0x0000000f) +
+                         as_type<float>(xa & 0xffff0000) * ((w >> 4) & 0x0000000f) +
+                         as_type<float>(xb << 16) * ((w >> 8) & 0x0000000f) +
+                         as_type<float>(xb & 0xffff0000) * ((w >> 12) & 0x0000000f));
+                    accum +=
+                        (as_type<float>(xc << 16) * ((w >> 16) & 0x0000000f) +
+                         as_type<float>(xc & 0xffff0000) * ((w >> 20) & 0x0000000f) +
+                         as_type<float>(xd << 16) * ((w >> 24) & 0x0000000f) +
+                         as_type<float>(xd & 0xffff0000) * (w >> 28));
                 }
                 result[token][row] +=
                     scale * accum + x_sums[token] * bias;
@@ -1428,7 +1556,30 @@ fn invariant_mxfp4_qmv_fast_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option<M
         .pop()
 }
 
+/// The bf16 / 4-bit specialisation of the invariant affine qmv_fast kernel
+/// is bit-identical to the generic kernel; `AX_MLX_INVARIANT_QMV_BF16_Q4=0`
+/// is the kill switch back to the generic form.
+fn invariant_affine_bf16_q4_kernel_selected(input_dtype: MlxDtype, bits: i32) -> bool {
+    input_dtype == MlxDtype::Bfloat16 && bits == 4 && fastpath::invariant_qmv_bf16_q4_enabled()
+}
+
 fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option<MlxArray> {
+    invariant_projection_metal_impl_with_kernel(
+        x,
+        qw,
+        invariant_affine_bf16_q4_kernel_selected(x.dtype(), qw.bits),
+    )
+}
+
+/// `invariant_projection_metal_impl` with the affine qmv_fast kernel choice
+/// made explicit (`bf16_q4`: the bf16 / 4-bit specialisation, which is only
+/// valid for bf16 inputs and 4-bit weights). Tests pin both kernels against
+/// each other through this entry.
+fn invariant_projection_metal_impl_with_kernel(
+    x: &MlxArray,
+    qw: &QuantizedWeight,
+    bf16_q4: bool,
+) -> Option<MlxArray> {
     // S=1 stays on MLX `fp_qmv_fast` so MTP-off and exact singleton steps
     // share one kernel. S=2 verify uses the microbatch that matches that
     // singleton arithmetic while reading weights once.
@@ -1575,7 +1726,7 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
                     decode_q2_biases: None,
                 };
                 // The aligned prefix hits qmv_fast.
-                let y_al = invariant_projection_metal_impl(&x_al, &qw_al)?;
+                let y_al = invariant_projection_metal_impl_with_kernel(&x_al, &qw_al, bf16_q4)?;
                 // Remainder: MLX singleton (Leading=1) or RowExact MLX
                 // (Leading>1) so multi-token matches pure-direct.
                 let y_rem = if leading > 1 {
@@ -1723,29 +1874,52 @@ fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option
             && qw.group_size >= values_per_thread
             && qw.group_size % values_per_thread == 0;
         if qmv_fast_eligible {
-            let kernel = INVARIANT_AFFINE_QMV_FAST_KERNEL.get_or_init(|| {
-                MlxMetalKernel::new(
-                    "ax_invariant_affine_qmv_fast_v1",
-                    &["x", "weight", "scales", "biases"],
-                    &["out"],
-                    INVARIANT_AFFINE_QMV_FAST_KERNEL_SOURCE,
-                    "",
-                    true,
-                )
-            });
-            kernel
-                .try_apply_with_template(
-                    &[x, &qw.weight, scales, biases],
-                    &[KernelOutputSpec {
-                        shape: out_shape,
-                        dtype: output_dtype,
-                    }],
-                    &common_template_args,
-                    (32, (out_dim / 8).saturating_mul(2), 1),
-                    (32, 2, 1),
-                    None,
-                )
-                .ok()?
+            let launch = |kernel: &MlxMetalKernel| {
+                kernel
+                    .try_apply_with_template(
+                        &[x, &qw.weight, scales, biases],
+                        &[KernelOutputSpec {
+                            shape: out_shape.clone(),
+                            dtype: output_dtype,
+                        }],
+                        &common_template_args,
+                        (32, (out_dim / 8).saturating_mul(2), 1),
+                        (32, 2, 1),
+                        None,
+                    )
+                    .ok()
+            };
+            // The specialisation is bit-identical to the generic kernel, so a
+            // launch failure (e.g. a Metal toolchain without native `bfloat`)
+            // falls back to the generic kernel rather than leaving the
+            // invariant route.
+            let specialised = (bf16_q4 && x.dtype() == MlxDtype::Bfloat16 && qw.bits == 4)
+                .then(|| {
+                    launch(INVARIANT_AFFINE_QMV_FAST_BF16_Q4_KERNEL.get_or_init(|| {
+                        MlxMetalKernel::new(
+                            "ax_invariant_affine_qmv_fast_bf16_q4_v1",
+                            &["x", "weight", "scales", "biases"],
+                            &["out"],
+                            INVARIANT_AFFINE_QMV_FAST_BF16_Q4_KERNEL_SOURCE,
+                            "",
+                            true,
+                        )
+                    }))
+                })
+                .flatten();
+            match specialised {
+                Some(out) => out,
+                None => launch(INVARIANT_AFFINE_QMV_FAST_KERNEL.get_or_init(|| {
+                    MlxMetalKernel::new(
+                        "ax_invariant_affine_qmv_fast_v1",
+                        &["x", "weight", "scales", "biases"],
+                        &["out"],
+                        INVARIANT_AFFINE_QMV_FAST_KERNEL_SOURCE,
+                        "",
+                        true,
+                    )
+                }))?,
+            }
         } else {
             // Non-fast custom kernel does not match MLX for Gemma-like shapes.
             // Use MLX quantized_matmul (bitexact for Leading=1; RowExact for S>1).
@@ -4634,6 +4808,94 @@ mod tests {
             maxd = maxd.max((da[i] - db[i]).abs());
         }
         assert!(maxd < 1e-3, "2112 split vs MLX maxΔ={maxd}");
+    }
+
+    #[test]
+    fn invariant_affine_bf16_q4_kernel_matches_generic_bit_exact() {
+        // The bf16 / 4-bit specialisation must reproduce the generic invariant
+        // kernel bit for bit at every verify width, for the production group
+        // sizes and for both the aligned and the split (K % 512 != 0) routes.
+        for (input_dim, output_dim, group_size, bf16_sidecars) in [
+            (512, 64, 32, false),
+            (1024, 64, 64, false),
+            (1536, 32, 32, false),
+            (768, 64, 64, false),
+            (1024, 64, 128, false),
+            (512, 64, 32, true),
+            (1024, 64, 64, true),
+        ] {
+            let weight_data: Vec<f32> = (0..input_dim * output_dim)
+                .map(|index| ((index % 251) as f32 - 125.0) * 0.00390625)
+                .collect();
+            let source_weight = array_f32(&weight_data, &[output_dim, input_dim]);
+            let quantized = quantize(
+                &source_weight,
+                Some(group_size),
+                Some(4),
+                MlxQuantizationMode::Affine,
+                None,
+                None,
+            );
+            // Production packs carry bf16 scales/biases, which makes OutT bf16;
+            // f32 sidecars exercise the f32 OutT path.
+            let sidecar = |array: &MlxArray| {
+                if bf16_sidecars {
+                    astype(array, MlxDtype::Bfloat16, None)
+                } else {
+                    array.clone()
+                }
+            };
+            let weight = QuantizedWeight {
+                weight: quantized[0].clone(),
+                scales: Some(sidecar(&quantized[1])),
+                biases: Some(sidecar(&quantized[2])),
+                group_size,
+                bits: 4,
+                mode: "affine".to_string(),
+                linear_bias: None,
+                decode_weight_t: None,
+                decode_q2_weight: None,
+                decode_q2_scales: None,
+                decode_q2_biases: None,
+            };
+            for leading in 1..=4 {
+                let input_data: Vec<f32> = (0..leading * input_dim)
+                    .map(|index| match index % 97 {
+                        // Special values: NaN, +/-inf and a bf16 subnormal must
+                        // widen identically in both kernels.
+                        0 => f32::NAN,
+                        1 => f32::INFINITY,
+                        2 => f32::NEG_INFINITY,
+                        3 => 1.0e-39,
+                        _ => ((index % 89) as f32 - 44.0) * 0.015625 + (index % 7) as f32 * 0.001,
+                    })
+                    .collect();
+                let input = astype(
+                    &array_f32(&input_data, &[1, leading, input_dim]),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                let generic = invariant_projection_metal_impl_with_kernel(&input, &weight, false)
+                    .expect("generic invariant affine projection");
+                let specialised =
+                    invariant_projection_metal_impl_with_kernel(&input, &weight, true)
+                        .expect("bf16 q4 invariant affine projection");
+                assert_eq!(generic.dtype(), specialised.dtype());
+                let a = astype(&generic, MlxDtype::Float32, None);
+                let b = astype(&specialised, MlxDtype::Float32, None);
+                eval(&[&a, &b]);
+                let av = a.data_f32();
+                let bv = b.data_f32();
+                assert_eq!(av.len(), bv.len());
+                for i in 0..av.len() {
+                    assert_eq!(
+                        av[i].to_bits(),
+                        bv[i].to_bits(),
+                        "K={input_dim} N={output_dim} gs={group_size} leading={leading} diverged at {i}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
