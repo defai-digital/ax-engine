@@ -96,7 +96,7 @@
     "eval": 14
   },
   "crates/ax-engine-mlx/src/ngram_accel.rs": {
-    "eval": 10
+    "eval": 11
   },
   "crates/ax-engine-mlx/src/ngram_table.rs": {
     "try_eval": 2
