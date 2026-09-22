@@ -2020,7 +2020,7 @@ fn lm_head_verify_window_projection(
     seq: i32,
     hidden_size: i32,
 ) -> MlxArray {
-    if (2..=4).contains(&seq) {
+    if crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64) {
         let _gemma_verify_qmm = (is_gemma4_text_target_family(model_family)
             && crate::fastpath::gemma4_verify_qmm_lm_head_enabled())
         .then(|| shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true));
@@ -2250,8 +2250,8 @@ pub fn forward_all_positions_with_post_norm_ids(
         layer_count,
         crate::fastpath::mtp_verify_submit_layer_interval(),
     );
-    let exact_short_verify =
-        crate::fastpath::qwen_linear_mtp_exact_enabled() && (2..=4).contains(&seq);
+    let exact_short_verify = crate::fastpath::qwen_linear_mtp_exact_enabled()
+        && crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         hidden = layer_forward(

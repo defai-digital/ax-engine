@@ -45,7 +45,7 @@ pub(crate) fn try_compiled_qwen_linear_verify_layer(
         || !crate::fastpath::qwen_linear_mtp_target_verify_enabled()
         || crate::fastpath::qwen_linear_mtp_whole_verify_trace_enabled()
         || !cfg.model_family.eq_ignore_ascii_case("qwen3_5")
-        || !(2..=4).contains(&seq)
+        || !crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
         || weights.linear_attn.is_none()
         || weights.router_proj.is_some()
         || weights.ffn_post_norm.is_some()
@@ -136,7 +136,7 @@ fn qwen_whole_verify_eligible(
     if !crate::fastpath::mtp_whole_verify_compile_enabled()
         || !crate::fastpath::qwen_linear_mtp_target_verify_enabled()
         || !cfg.model_family.eq_ignore_ascii_case("qwen3_5")
-        || !(2..=4).contains(&seq)
+        || !crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
         || cfg.linear_attention.is_none()
         || cfg.moe_expert_count != 0
         || cfg.uses_geglu

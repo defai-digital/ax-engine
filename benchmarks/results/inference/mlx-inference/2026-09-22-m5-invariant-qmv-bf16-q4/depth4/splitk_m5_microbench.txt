@@ -1,0 +1,21 @@
+=== M5 split-K M=5
+down_proj      K=17408 N= 5120 M=4 KParts=2  split_k  0.184 ms ( 273 GB/s)  mlx  0.136 ms ( 367 GB/s)  |diff|max=0.0005
+down_proj      K=17408 N= 5120 M=4 KParts=4  split_k  0.259 ms ( 194 GB/s)  mlx  0.135 ms ( 371 GB/s)  |diff|max=0.0000
+down_proj      K=17408 N= 5120 M=5 KParts=2  split_k  0.197 ms ( 255 GB/s)  mlx  0.155 ms ( 323 GB/s)  |diff|max=0.0156
+down_proj      K=17408 N= 5120 M=5 KParts=4  split_k  0.302 ms ( 166 GB/s)  mlx  0.156 ms ( 321 GB/s)  |diff|max=0.0156
+out_proj       K=6144 N= 5120 M=4 KParts=2  split_k  0.053 ms ( 368 GB/s)  mlx  0.053 ms ( 371 GB/s)  |diff|max=0.0001
+out_proj       K=6144 N= 5120 M=4 KParts=4  split_k  0.053 ms ( 368 GB/s)  mlx  0.055 ms ( 361 GB/s)  |diff|max=0.0010
+out_proj       K=6144 N= 5120 M=5 KParts=2  split_k  0.055 ms ( 360 GB/s)  mlx  0.060 ms ( 325 GB/s)  |diff|max=0.0078
+out_proj       K=6144 N= 5120 M=5 KParts=4  split_k  0.058 ms ( 336 GB/s)  mlx  0.060 ms ( 327 GB/s)  |diff|max=0.0039
+in_proj_z      K=5120 N= 6144 M=4 KParts=2  split_k  0.055 ms ( 359 GB/s)  mlx  0.053 ms ( 372 GB/s)  |diff|max=0.0010
+in_proj_z      K=5120 N= 6144 M=4 KParts=4  split_k  0.054 ms ( 366 GB/s)  mlx  0.053 ms ( 369 GB/s)  |diff|max=0.0010
+in_proj_z      K=5120 N= 6144 M=5 KParts=2  split_k  0.055 ms ( 358 GB/s)  mlx  0.058 ms ( 337 GB/s)  |diff|max=0.0010
+in_proj_z      K=5120 N= 6144 M=5 KParts=4  split_k  0.056 ms ( 353 GB/s)  mlx  0.059 ms ( 333 GB/s)  |diff|max=0.0005
+in_proj_qkv    K=5120 N=10240 M=4 KParts=2  split_k  0.071 ms ( 459 GB/s)  mlx  0.073 ms ( 450 GB/s)  |diff|max=0.0020
+in_proj_qkv    K=5120 N=10240 M=4 KParts=4  split_k  0.072 ms ( 453 GB/s)  mlx  0.072 ms ( 454 GB/s)  |diff|max=0.0020
+in_proj_qkv    K=5120 N=10240 M=5 KParts=2  split_k  0.084 ms ( 392 GB/s)  mlx  0.081 ms ( 403 GB/s)  |diff|max=0.0010
+in_proj_qkv    K=5120 N=10240 M=5 KParts=4  split_k  0.089 ms ( 368 GB/s)  mlx  0.081 ms ( 402 GB/s)  |diff|max=0.0078
+attn_o         K=6144 N= 5120 M=4 KParts=2  split_k  0.055 ms ( 355 GB/s)  mlx  0.054 ms ( 361 GB/s)  |diff|max=0.0001
+attn_o         K=6144 N= 5120 M=4 KParts=4  split_k  0.055 ms ( 360 GB/s)  mlx  0.055 ms ( 358 GB/s)  |diff|max=0.0001
+attn_o         K=6144 N= 5120 M=5 KParts=2  split_k  0.056 ms ( 353 GB/s)  mlx  0.059 ms ( 331 GB/s)  |diff|max=0.0000
+attn_o         K=6144 N= 5120 M=5 KParts=4  split_k  0.055 ms ( 354 GB/s)  mlx  0.059 ms ( 333 GB/s)  |diff|max=0.0001

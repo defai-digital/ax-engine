@@ -314,7 +314,7 @@ pub fn linear_attention_decode_post_input_metal(
     }
 
     let head_dim = cfg.key_head_dim as i32;
-    let simd32 = seq <= 4
+    let simd32 = seq <= fastpath::qwen_linear_mtp_max_verify_seq()
         && head_dim % 32 == 0
         && fastpath::qwen_linear_mtp_target_verify_enabled()
         && fastpath::mtp_gdn_prework_simd32_enabled();
@@ -455,7 +455,9 @@ pub(crate) fn gated_delta_fused_verify_from_qkv(
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray, MlxArray)> {
     const TGY: i32 = 8;
     let qkv_shape = qkv.shape();
-    if qkv_shape.len() != 3 || !(2..=4).contains(&qkv_shape[1]) {
+    if qkv_shape.len() != 3
+        || !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(qkv_shape[1]))
+    {
         return None;
     }
     let batch = qkv_shape[0];
@@ -647,7 +649,9 @@ pub(crate) fn gated_delta_fused_verify_no_checkpoint_from_qkv(
 ) -> Option<(MlxArray, MlxArray, MlxArray)> {
     const TGY: i32 = 8;
     let qkv_shape = qkv.shape();
-    if qkv_shape.len() != 3 || !(2..=4).contains(&qkv_shape[1]) {
+    if qkv_shape.len() != 3
+        || !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(qkv_shape[1]))
+    {
         return None;
     }
     let batch = qkv_shape[0];
@@ -942,7 +946,7 @@ pub(crate) fn gated_delta_kernel_with_prefix_checkpoint(
     // two decode launches plus five slice+contiguous copies + concat.
     let seq = q_shape[1];
     let state_shape = state.shape();
-    if (2..=4).contains(&seq)
+    if fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(seq))
         && let Some((y, state_out, checkpoint)) = gated_delta_decode_seq_kernel(
             q,
             k,
@@ -1033,7 +1037,7 @@ pub(crate) fn gated_delta_kernel_verify_no_checkpoint(
     let num_key_heads = q_shape[2];
     let key_head_dim = q_shape[3];
     let num_value_heads = v_shape[2];
-    if !(2..=4).contains(&seq)
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(seq))
         || key_head_dim <= 0
         || key_head_dim % 32 != 0
         || num_key_heads <= 0
@@ -1890,7 +1894,7 @@ fn gated_delta_decode_seq_kernel(
     value_head_dim: i32,
     state_shape: &[i32],
 ) -> Option<(MlxArray, MlxArray, MlxArray)> {
-    if !(2..=4).contains(&seq) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(seq)) {
         return None;
     }
     if key_head_dim <= 0 || key_head_dim % 32 != 0 {
@@ -2004,7 +2008,7 @@ pub(crate) fn gated_delta_kernel_with_tape(
     let key_head_dim = q_shape[3];
     let num_value_heads = v_shape[2];
     let value_head_dim = v_shape[3];
-    if !(2..=4).contains(&seq)
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(seq))
         || key_head_dim <= 0
         || key_head_dim % 32 != 0
         || num_key_heads <= 0
@@ -2274,7 +2278,7 @@ fn try_compiled_silu_mul_normed(
         return None;
     }
     let seq = normed.shape().get(1).copied().unwrap_or(0);
-    if !(2..=4).contains(&seq) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(seq)) {
         return None;
     }
     let key = (

@@ -9902,7 +9902,7 @@ impl MlxRunner {
                 // rejected speculative token. Verify on a clone; adopt it only
                 // when the full draft is accepted, otherwise recompute the
                 // committed prefix on the original cache.
-                // Exact profile + drafts within QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS
+                // Exact profile + drafts within qwen_linear_max_verify_drafts()
                 // use the lazy committed-prefix checkpoint (full accept adopts
                 // the verify cache; complete miss restores; partial recompute).
                 // AX_MLX_MTP_LINEAR_EXACT_REPLAY!=0 forces singleton replay.
@@ -12170,7 +12170,8 @@ impl MlxRunner {
             if crate::fastpath::mtp_profitability_throughput_enabled()
                 && crate::fastpath::qwen_linear_throughput_mtp_enabled()
             {
-                4
+                // Drafts plus the committed token: 4 at the default depth 3.
+                crate::fastpath::qwen_linear_mtp_max_verify_seq() as u32
             } else {
                 2
             };
@@ -12185,7 +12186,7 @@ impl MlxRunner {
             throughput_depth3: crate::fastpath::mtp_profitability_throughput_enabled()
                 && crate::fastpath::qwen_linear_throughput_mtp_enabled()
                 && self.mtp_max_depth() > 0
-                && self.mtp_max_depth() <= crate::fastpath::QWEN_LINEAR_THROUGHPUT_MTP_DEPTH,
+                && self.mtp_max_depth() <= crate::fastpath::qwen_linear_mtp_max_verify_drafts(),
             dense_lm_head: !self.weights.lm_head.is_quantized(),
             greedy: is_greedy,
             skip_state_disabled: !self.mtp_skip_state,
@@ -13392,7 +13393,7 @@ fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usiz
     if crate::fastpath::qwen_linear_throughput_mtp_enabled()
         && matches!(model_family, "qwen3_next" | "qwen3_5")
     {
-        return crate::fastpath::QWEN_LINEAR_THROUGHPUT_MTP_DEPTH.min(head_max_depth);
+        return crate::fastpath::qwen_linear_throughput_mtp_depth().min(head_max_depth);
     }
     match model_family {
         "qwen3_next" | "qwen3_5" => 2.min(head_max_depth),
@@ -13884,7 +13885,12 @@ fn replay_linear_mtp_accepted_prefix(
 /// singleton state replay. `AX_MLX_MTP_LINEAR_EXACT_REPLAY!=0` also revalidates
 /// greedy acceptance without logits processors in the non-optimistic path;
 /// unforced replay alone does not establish singleton acceptance identity.
-const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS: usize = 3;
+/// Drafts the lazy-checkpoint / projected-replay path serves in this
+/// process: the certified three, or the configured experimental throughput
+/// width when it is wider (`AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH`).
+fn qwen_linear_max_verify_drafts() -> usize {
+    crate::fastpath::qwen_linear_mtp_max_verify_drafts()
+}
 
 /// Exact arithmetic is the speculative-verifier contract.
 ///
@@ -13997,7 +14003,7 @@ fn qwen_linear_mtp_exact_model_eligible(
 ) -> bool {
     model_family == "qwen3_5"
         && has_linear_attention
-        && (1..=QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS).contains(&mtp_depth)
+        && (1..=qwen_linear_max_verify_drafts()).contains(&mtp_depth)
         && tensor_specs.iter().all(|tensor| {
             qwen_linear_mtp_exact_tensor_supported(
                 tensor.source_quantized,
@@ -14021,7 +14027,7 @@ fn linear_mtp_requires_singleton_replay(
     // checkpoint path (fast accept/restore). Kill switch, empty drafts, or
     // longer drafts keep singleton state recompute.
     pending_len == 0
-        || pending_len > QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS
+        || pending_len > qwen_linear_max_verify_drafts()
         || !exact_profile_enabled
         || replay_kill_switch
 }
@@ -14035,7 +14041,7 @@ fn linear_mtp_projected_replay_allowed(
     enabled
         && !replay_kill_switch
         && !model_force_replay
-        && (1..=QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS).contains(&pending_len)
+        && (1..=qwen_linear_max_verify_drafts()).contains(&pending_len)
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.

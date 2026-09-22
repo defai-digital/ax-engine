@@ -3995,7 +3995,7 @@ fn ffn_swiglu_with_policy_inner(
         // layer every step. Same split body as decode/prefill compile.
         if qwen_dense_ffn
             && crate::fastpath::qwen_linear_mtp_exact_enabled()
-            && (2..=4).contains(&leading_elements)
+            && fastpath::qwen_linear_mtp_verify_seq_contains(leading_elements)
             && !profile_decode
             && !profile_prefill
             && projection_policy == ProjectionBatchPolicy::Shared
@@ -4504,7 +4504,7 @@ fn qwen_compiled_split_verify_ffn(
     let leading_elements: i64 = x_shape[..x_shape.len() - 1]
         .iter()
         .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
-    if !(2..=4).contains(&leading_elements) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(leading_elements) {
         return None;
     }
     let down = down?;
@@ -4659,7 +4659,7 @@ pub(crate) fn qwen_compiled_split_verify_ffn_plus_residual(
     let leading_elements: i64 = shape[..shape.len() - 1]
         .iter()
         .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
-    if !(2..=4).contains(&leading_elements) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(leading_elements) {
         return None;
     }
     if fastpath::mtp_packed_verify_ffn_enabled()
@@ -4735,7 +4735,7 @@ pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj(
     if !cfg.model_family.starts_with("qwen") {
         return None;
     }
-    if !(2..=4).contains(&seq) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64) {
         return None;
     }
     if gd_out.shape() != z.shape() {
@@ -4818,7 +4818,7 @@ pub(crate) fn qwen_compiled_split_verify_la_gate_o_proj_ffn(
     if w.router_proj.is_some() || w.ffn_post_norm.is_some() {
         return None;
     }
-    if !(2..=4).contains(&seq) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64) {
         return None;
     }
     if gd_out.shape() != z.shape() || gd_out.shape().get(1).copied() != Some(seq) {
@@ -4933,7 +4933,7 @@ pub(crate) fn qwen_compiled_split_verify_fa_o_proj_ffn(
     if w.router_proj.is_some() || w.ffn_post_norm.is_some() || w.attn_post_norm.is_some() {
         return None;
     }
-    if !(2..=4).contains(&(query_seq as i32)) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains((query_seq as i32) as i64) {
         return None;
     }
     let hidden_shape = hidden.shape();
@@ -5033,7 +5033,7 @@ pub(crate) fn qwen_compiled_split_verify_fa_attn_norm_qkv(
     if !cfg.model_family.starts_with("qwen") || cfg.attn_output_gate {
         return None;
     }
-    if !(2..=4).contains(&(seq as i32)) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains((seq as i32) as i64) {
         return None;
     }
     if w.qkv_packed.is_some() {
@@ -5160,7 +5160,7 @@ pub(crate) fn qwen_compiled_split_verify_o_proj_ffn_plus_residual(
     let leading_elements: i64 = hidden_shape[..hidden_shape.len() - 1]
         .iter()
         .try_fold(1_i64, |acc, dim| acc.checked_mul(i64::from(*dim)))?;
-    if !(2..=4).contains(&leading_elements) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(leading_elements) {
         return None;
     }
     let out_proj = &w.linear_attn.as_ref()?.out_proj;
@@ -5678,7 +5678,7 @@ fn prefer_split_dense_ffn_gate_up(
     let qwen_speculative_row_exact = fastpath::qwen_linear_mtp_exact_enabled()
         && qwen_dense_ffn
         && leading_elements > 1
-        && leading_elements <= 4;
+        && leading_elements <= i64::from(fastpath::qwen_linear_mtp_max_verify_seq());
     // Gemma4 long-prefill historically preferred split gate/up (two qmatmuls)
     // over packed fixed-shape. Kill-switch `AX_MLX_GEMMA4_SPLIT_PREFILL_FFN=0`
     // forces packed + prefill-compile for pure thr A/B on M5 (S1 residual).

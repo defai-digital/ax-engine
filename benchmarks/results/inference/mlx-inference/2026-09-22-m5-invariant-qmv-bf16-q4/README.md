@@ -145,6 +145,74 @@ GB/s average against 450-500 GB/s sustained on the large projections: the
 default profile on this pack is at the host's bandwidth wall, and the only
 structural lever left is tokens per cycle.
 
+## Experimental depth-4 throughput profile (`AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH=4`)
+
+The reviewers (muse, DeepSeek, GLM, Qwen) agreed the only structural lever
+left on this pack is tokens per verify cycle, and the depth-4 probe above
+showed why a naive deeper window collapses: three width-bound gates were
+fixed at the certified three drafts. This change makes them follow a
+configured width instead, behind an experimental env knob whose default is
+the unchanged 3:
+
+- the projected-replay rollback bound (`qwen_linear_max_verify_drafts`):
+  beyond three drafts every cycle fell to singleton state replay
+  (124-138 ms/cycle);
+- the committed-fold async draft (`mtp_refold_committed_draft_greedy_async`
+  refused `seq_len > 4`): a full accept at depth 4 folds five rows, so the
+  next draft chain ran synchronously (5-6 ms/cycle visible);
+- every fixed-shape verify fusion, packed projection, compiled verify layer
+  and GDN verify kernel gate (`(2..=4).contains(&seq)`), now
+  `qwen_linear_mtp_verify_seq_contains`.
+
+The width only widens under the throughput profile; the exact
+(non-throughput) profile keeps its certified S=2..4 window whatever the
+environment says (`exact_profile_keeps_the_certified_window_whatever_the_depth_env_says`).
+The depth-3 hysteresis / miss-backoff controllers are off at other widths,
+and the widest configurable width is 7 drafts (the verify QMM epilogue
+writes `4 * rows <= 32` accumulators per simdgroup).
+
+### Server A/B, same binary, depth 3 vs depth 4 (`final_depth2/`)
+
+Same binary (this tree), `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH` 3 vs 4,
+harness contract as above, 5 measured repetitions per case, per-case
+medians and their median. Raw: `depth4/<suite>_depth{3,4}.json`.
+
+| suite | depth 3 | depth 4 | ratio | verify eval / cycle | accepted per case (depth 4) | acceptance depth0/1/2 (depth 4, x1000) |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| flappy | 82.57 (83.73 / 81.42 / 81.15 / 83.77) | **90.37** (92.71 / 88.02 / 87.64 / 92.78) | **1.094x** | 43.0-46.4 -> 46.3-52.3 ms | 1020 / 1005 / 1005 / 1020 | 1000 / 981-1000 / 962-1000 |
+| long_code | 78.80 (77.84 / 78.48 / 79.12 / 79.99) | **84.11** (84.91 / 83.31 / 84.96 / 83.02) | **1.067x** | 46.3-48.9 -> 49.9-52.5 ms | 1010 / 1005 / 1015 / 995 | 964-1000 / 946-966 / 885-943 |
+| python_modules_long | 75.30 (75.30 / 79.31 / 74.24) | **78.37** (78.02 / 80.44 / 78.37) | **1.041x** | 51.8-57.8 -> 56.6-60.1 ms | 955 / 980 / 965 | 952-984 / 891-967 / 774-852 |
+
+The draft chain stays hidden at depth 4 (draft wall 0.12-0.13 ms/cycle)
+and the projected replay keeps the rollback at 0.7-0.9 ms/cycle; the
+remaining cost is the S=5 verify itself (3-7 ms/cycle above S=4). The gain
+scales with acceptance: 100% on flappy, ~94% at depth 2 on long_code, ~80%
+at depth 2 on python_modules_long.
+
+### Greedy output identity, depth 3 vs depth 4
+
+Both widths served the same eight prompts (the harness's `flappy` and
+`long_code` token-id artifacts) twice each through `/v1/generate` (greedy,
+256 tokens, `ignore_eos`, `identity_probe_depth.py`). All 8 x 256 streams
+are identical between depth 3 and depth 4 and stable across repeats
+(`depth4/identity_depth3_vs_depth4_outputs.json`): **IDENTITY PASS**. An
+earlier build that left the Metal GDN verify kernels gated to S=2..4 (so S=5
+fell to the generic path) flipped one long_code prompt at token 221; with
+the kernels following the width the streams match.
+
+### Where the remaining S=5 cost sits
+
+`depth4/splitk_m5_microbench.txt`: at M=5 MLX `qmv_wide` on the 5120-wide
+class drops to 321-337 GB/s (from 360-372 at M=4), and the repo split-K
+verify QMM is 5-9% faster than MLX there on out_proj / in_proj_z / attn-o
+(0.055 vs 0.059-0.060 ms) but 15-20% slower on down_proj and in_proj_qkv. A
+per-shape M>=5 admission would recover roughly 0.4-0.5 ms per cycle (~1%),
+below this harness's resolution, so it is not taken.
+
+Status: experimental, opt-in, no default change; the near-tie flips make
+each width a distinct configuration that needs the identity probe and a
+certification pass before any default promotion (ADR-033 MTP-D).
+
 ## Greedy output identity (`identity_probe.py`)
 
 Both binaries served the same eight prompts (the harness's `flappy` and

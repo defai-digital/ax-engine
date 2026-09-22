@@ -276,7 +276,10 @@ pub(crate) fn verify_submit_interval_for_build(
     // is a win on long prefill-shaped graphs (35B-A3B interval 8) and pure
     // overhead on the short teacher-forced step when stacked on
     // AX_MLX_PIPELINE_GRANULARITY=layer.
-    if seq <= 4 || configured == 0 || configured >= layer_count {
+    if seq <= qwen_linear_mtp_max_verify_seq() as usize
+        || configured == 0
+        || configured >= layer_count
+    {
         return 0;
     }
     configured
@@ -877,7 +880,7 @@ pub fn should_mtp_async_dual_gate_up_for(
     enabled
         && relaxed_session
         && !qwen_linear_mtp_whole_verify_trace_enabled()
-        && (2..=4).contains(&seq)
+        && qwen_linear_mtp_verify_seq_contains(seq as i64)
         && model_family.eq_ignore_ascii_case("qwen3_5")
 }
 
@@ -898,6 +901,89 @@ env_flag_default_on!(
 /// `mtp_depth_max=1` but the head is applied recurrently. Matches the
 /// existing exact-verifier window (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS`).
 pub const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH: usize = 3;
+
+/// Widest configurable throughput draft width: the verify QMM epilogue
+/// writes `4 * rows` accumulators from one 32-lane simdgroup, so the verify
+/// window (`depth + 1` rows) must stay at or below 8.
+pub const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH_MAX: usize = 7;
+
+/// Recurrent Qwen MTP draft width under the throughput profile.
+///
+/// `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH=<1..=7>` overrides the default of
+/// [`QWEN_LINEAR_THROUGHPUT_MTP_DEPTH`]. Widths beyond 3 are experimental:
+/// the projected-replay rollback, the committed-fold async draft and every
+/// fixed-shape verify fusion follow the configured width through
+/// [`qwen_linear_mtp_max_verify_drafts`] / [`qwen_linear_mtp_verify_seq_window`],
+/// the verifier still decides every token (MTP-S), and the depth-3
+/// controllers stay off. Measured 2026-09-22 on the M5 Max 6bit-MTP pack at
+/// depth 4: flappy 82.7 -> 90.5 tok/s with 7 of 8 greedy streams identical to
+/// depth 3 (one near-tie flip under the relaxed S=5 arithmetic). Invalid or
+/// out-of-range values keep the default; changes no default.
+pub fn qwen_linear_throughput_mtp_depth() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|depth| (1..=QWEN_LINEAR_THROUGHPUT_MTP_DEPTH_MAX).contains(depth))
+            .unwrap_or(QWEN_LINEAR_THROUGHPUT_MTP_DEPTH)
+    })
+}
+
+/// Drafts the projected-replay / lazy-checkpoint verifier path serves: the
+/// certified 3 (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS`) or the configured
+/// throughput width when it is wider.
+pub fn qwen_linear_mtp_max_verify_drafts() -> usize {
+    qwen_linear_mtp_max_verify_drafts_for(
+        qwen_linear_throughput_mtp_enabled(),
+        qwen_linear_throughput_mtp_depth(),
+    )
+}
+
+/// Pure helper for [`qwen_linear_mtp_max_verify_drafts`]. The width only
+/// follows the configured depth under the throughput profile: the exact
+/// (non-throughput) profile keeps its certified S=2..4 window whatever the
+/// process environment says.
+pub const fn qwen_linear_mtp_max_verify_drafts_for(
+    throughput_enabled: bool,
+    throughput_depth: usize,
+) -> usize {
+    if throughput_enabled && throughput_depth > QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED {
+        throughput_depth
+    } else {
+        QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED
+    }
+}
+
+/// Certified verifier width in drafts (three drafts plus the committed token).
+pub const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED: usize = 3;
+
+/// Widest verify sequence (drafts + 1) the fixed-shape verify paths accept.
+pub fn qwen_linear_mtp_max_verify_seq() -> i32 {
+    qwen_linear_mtp_max_verify_seq_for(
+        qwen_linear_throughput_mtp_enabled(),
+        qwen_linear_throughput_mtp_depth(),
+    )
+}
+
+/// Pure helper for [`qwen_linear_mtp_max_verify_seq`].
+pub const fn qwen_linear_mtp_max_verify_seq_for(
+    throughput_enabled: bool,
+    throughput_depth: usize,
+) -> i32 {
+    qwen_linear_mtp_max_verify_drafts_for(throughput_enabled, throughput_depth) as i32 + 1
+}
+
+/// `2..=max_verify_seq`: the multi-token verify shapes the fixed-shape
+/// fusions, packed projections and compiled verify closures serve.
+pub fn qwen_linear_mtp_verify_seq_window() -> std::ops::RangeInclusive<i32> {
+    2..=qwen_linear_mtp_max_verify_seq()
+}
+
+/// Whether `seq` (any integer width) is a multi-token verify shape.
+pub fn qwen_linear_mtp_verify_seq_contains(seq: i64) -> bool {
+    (2..=i64::from(qwen_linear_mtp_max_verify_seq())).contains(&seq)
+}
 
 env_flag_default_on!(
     /// `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP` — optimization profile for
@@ -1103,7 +1189,7 @@ pub const QWEN_LINEAR_MTP_EXACT_MAX_EXACT_SEQ: i32 = 4;
 /// from the fully de-fused one — the verify/replay correctness mode is
 /// unaffected.
 pub fn qwen_linear_mtp_exact_for_seq(seq: i32) -> bool {
-    qwen_linear_mtp_exact_enabled() && seq <= QWEN_LINEAR_MTP_EXACT_MAX_EXACT_SEQ
+    qwen_linear_mtp_exact_enabled() && seq <= qwen_linear_mtp_max_verify_seq()
 }
 
 /// Exact S=2..=4 verify: `async_eval` kernel-boundary tensors (fused QKVZ+BA
@@ -1116,7 +1202,7 @@ pub fn qwen_linear_mtp_exact_for_seq(seq: i32) -> bool {
 /// grouping changes reproduced factory trial-2 `f4b5490d`.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn should_exact_verify_async_kernel_boundary(seq: i32) -> bool {
-    qwen_linear_mtp_exact_enabled() && (2..=4).contains(&seq)
+    qwen_linear_mtp_exact_enabled() && qwen_linear_mtp_verify_seq_contains(seq as i64)
 }
 
 env_flag!(
@@ -9542,5 +9628,40 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(lengths, sorted);
+    }
+}
+
+#[cfg(test)]
+mod qwen_linear_verify_width_tests {
+    use super::{
+        QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED, qwen_linear_mtp_max_verify_drafts_for,
+        qwen_linear_mtp_max_verify_seq_for,
+    };
+
+    #[test]
+    fn verify_width_follows_the_throughput_depth_only_beyond_the_certified_three() {
+        assert_eq!(QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED, 3);
+        for depth in 1..=3 {
+            assert_eq!(qwen_linear_mtp_max_verify_drafts_for(true, depth), 3);
+            assert_eq!(qwen_linear_mtp_max_verify_seq_for(true, depth), 4);
+        }
+        assert_eq!(qwen_linear_mtp_max_verify_drafts_for(true, 4), 4);
+        assert_eq!(qwen_linear_mtp_max_verify_seq_for(true, 4), 5);
+        // The widest configurable window (depth 7 -> 8 rows) is the verify
+        // QMM epilogue budget of 4 * rows <= 32 accumulators per simdgroup.
+        assert_eq!(
+            qwen_linear_mtp_max_verify_seq_for(true, super::QWEN_LINEAR_THROUGHPUT_MTP_DEPTH_MAX),
+            8
+        );
+    }
+
+    #[test]
+    fn exact_profile_keeps_the_certified_window_whatever_the_depth_env_says() {
+        // The exact (non-throughput) profile is the certified configuration:
+        // a stray AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH must not widen it.
+        for depth in 1..=8 {
+            assert_eq!(qwen_linear_mtp_max_verify_drafts_for(false, depth), 3);
+            assert_eq!(qwen_linear_mtp_max_verify_seq_for(false, depth), 4);
+        }
     }
 }

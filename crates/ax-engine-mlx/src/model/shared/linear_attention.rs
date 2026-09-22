@@ -184,7 +184,7 @@ pub(crate) fn linear_attention_forward_verify_functional(
     let linear_cfg = cfg.linear_attention.as_ref()?;
     let linear_w = w.linear_attn.as_ref()?;
     let seq = x.shape().get(1).copied()?;
-    if !(2..=4).contains(&seq) {
+    if !fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64) {
         return None;
     }
 
@@ -744,7 +744,9 @@ fn exact_verify_s1_metal_gate_o_proj(
     seq: i32,
     allow_full_gate_metal: bool,
 ) -> Option<MlxArray> {
-    if !fastpath::qwen_linear_mtp_exact_enabled() || !(2..=4).contains(&seq) {
+    if !fastpath::qwen_linear_mtp_exact_enabled()
+        || !fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
+    {
         return None;
     }
     if hidden.shape().len() != 4 || gate.shape().len() != 4 {
@@ -1096,8 +1098,8 @@ fn linear_attention_post_input(
         None
     };
     let qkv = qkv_storage.as_ref().unwrap_or(qkv);
-    let speculative_multi_token =
-        (2..=4).contains(&seq) && fastpath::qwen_linear_mtp_verify_fast_kernels_enabled();
+    let speculative_multi_token = fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
+        && fastpath::qwen_linear_mtp_verify_fast_kernels_enabled();
     let prefill_metal = seq > 1
         && seq <= crate::linear_attention_ops::GATED_DELTA_MEDIUM_THREADGROUP_CACHE_CAPACITY as i32
         && fastpath::qwen_linear_attention_prefill_post_input_metal_enabled();
@@ -1381,7 +1383,7 @@ pub(crate) fn linear_attention_inputs(
         if fuse_norm.is_none()
             && !profile_enabled
             && fastpath::qwen_linear_mtp_exact_enabled()
-            && (2..=4).contains(&seq)
+            && fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
             && qkvz_w.matching_mxfp4_quant(ba_w)
             && let Some(outputs) = linear_attention_inputs_fused_qmm(
                 model_cfg.compile_cache_identity,
@@ -1636,7 +1638,9 @@ const EXACT_S2_FULL_GATE_METAL_LAYER_LIMIT: usize = 16;
 
 #[allow(dead_code)]
 fn exact_s2_full_gate_metal_allowed(seq: i32, layer_idx: usize, family_allow: bool) -> bool {
-    family_allow && (2..=4).contains(&seq) && layer_idx < EXACT_S2_FULL_GATE_METAL_LAYER_LIMIT
+    family_allow
+        && fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
+        && layer_idx < EXACT_S2_FULL_GATE_METAL_LAYER_LIMIT
 }
 
 fn linear_attention_full_gate_metal_allowed_for_bits(
@@ -1844,7 +1848,10 @@ fn compiled_fused_qkvz_ba_qmm_unpack(
     batch: i32,
     seq: i32,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
-    if !fastpath::qwen_linear_mtp_exact_enabled() || batch != 1 || !(2..=4).contains(&seq) {
+    if !fastpath::qwen_linear_mtp_exact_enabled()
+        || batch != 1
+        || !fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
+    {
         return None;
     }
     // The closure below rebuilds the weight with `biases: None`, which is
@@ -1941,7 +1948,10 @@ fn compiled_split_packed_qkvz_ba_projection(
     batch: i32,
     seq: i32,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
-    if !fastpath::qwen_linear_mtp_exact_enabled() || batch != 1 || !(2..=4).contains(&seq) {
+    if !fastpath::qwen_linear_mtp_exact_enabled()
+        || batch != 1
+        || !fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
+    {
         return None;
     }
     let leading = i64::from(batch).checked_mul(i64::from(seq))?;

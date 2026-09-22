@@ -496,9 +496,11 @@ pub fn mtp_refold_committed_draft_greedy_async(
     let head = weights.mtp.as_ref()?;
     let max_depth = max_depth_cap.unwrap_or(head.max_depth).min(head.max_depth);
     let seq_len = committed_tokens.len();
+    // The committed fold carries the accepted drafts plus the correction
+    // token, so a full accept at depth D folds D + 1 rows.
     if max_depth == 0
         || seq_len == 0
-        || seq_len > 4
+        || seq_len > max_depth.saturating_add(1)
         || main_hidden.shape() != vec![1, seq_len as i32, cfg.hidden_size as i32]
         || retain_len > cache.seq_len()
         || !cache.trim_to(retain_len)

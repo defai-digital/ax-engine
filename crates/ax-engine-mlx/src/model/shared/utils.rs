@@ -745,7 +745,7 @@ fn exact_mxfp4_short_qmm(
     if !fastpath::qwen_linear_mtp_exact_enabled()
         || shape.len() != 3
         || shape[0] != 1
-        || !(2..=4).contains(&shape[1])
+        || !fastpath::qwen_linear_mtp_verify_seq_contains(i64::from(shape[1]))
     {
         return qmm(x);
     }

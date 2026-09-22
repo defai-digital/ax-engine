@@ -840,7 +840,7 @@ pub(crate) fn attention_mask_array(
             // causal uses qL_off = key_len - seq, matching create_causal_mask
             // without a 2×key bool array per full-attn layer.
             || (crate::fastpath::qwen_linear_mtp_verify_fast_kernels_enabled()
-                && (2..=4).contains(&seq_len))
+                && fastpath::qwen_linear_mtp_verify_seq_contains(seq_len as i64))
         {
             return None;
         }
@@ -1217,7 +1217,7 @@ pub(crate) fn should_upcast_multi_token_sdpa_to_f32(seq: usize) -> bool {
         // Exact Qwen linear MTP verify: factory MXFP4 A/B kept the same
         // tokens with f32 upcast off. Skip the extra cast on S=2..4.
         && !(fastpath::qwen_linear_mtp_verify_fast_kernels_enabled()
-            && (2..=4).contains(&seq))
+            && fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64))
 }
 
 /// Attention with per-head learned sinks (GPT-OSS).

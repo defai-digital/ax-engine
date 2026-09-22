@@ -56,7 +56,7 @@ pub(crate) fn layer_forward_verify_functional(
         return None;
     }
     let seq = hidden.shape().get(1).copied()?;
-    if !(2..=4).contains(&seq) {
+    if !crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64) {
         return None;
     }
 
@@ -166,7 +166,7 @@ pub(crate) fn layer_forward(
     // fused QKVZ+BA qmm+unpack closure. Not the portable output gate.
     let fold_exact_attn_norm = !fuse_la_norm
         && fastpath::qwen_linear_mtp_exact_enabled()
-        && (2..=4).contains(&(seq as i32));
+        && crate::fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64);
     if fuse_la_norm {
         crate::model::shared::set_qwen_la_norm_qkvz_fuse_weights(Some((
             w.attn_norm.clone(),

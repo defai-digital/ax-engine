@@ -3970,7 +3970,7 @@ pub(crate) fn default_mtp_depth_without_env_with_throughput(
         return 0;
     }
     if throughput {
-        crate::fastpath::QWEN_LINEAR_THROUGHPUT_MTP_DEPTH
+        crate::fastpath::qwen_linear_throughput_mtp_depth()
     } else {
         depth
     }
