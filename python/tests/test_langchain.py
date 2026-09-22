@@ -34,6 +34,7 @@ try:
         SystemMessage,
         ToolMessage,
     )
+
     _LANGCHAIN_AVAILABLE = True
 except ImportError:
     _LANGCHAIN_AVAILABLE = False
@@ -45,6 +46,7 @@ _SKIP_REASON = "langchain-core not installed"
 # ---------------------------------------------------------------------------
 # Bootstrap: make ax_engine importable without the compiled Rust extension
 # ---------------------------------------------------------------------------
+
 
 def _install_ax_engine_stub() -> None:
     """Insert a minimal stub for ax_engine._ax_engine so that ax_engine and
@@ -83,6 +85,7 @@ def _remove_ax_engine_stub() -> None:
 # ---------------------------------------------------------------------------
 # Minimal embedded HTTP server
 # ---------------------------------------------------------------------------
+
 
 class _HeldOpenSse:
     def __init__(self, first_frame):
@@ -166,6 +169,7 @@ class _TestServer:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _chat_response(content="Hello!", finish_reason="stop"):
     return {
         "id": "chatcmpl-1",
@@ -212,18 +216,22 @@ def _chat_sse(*deltas, finish_reason="stop"):
 def _chat_tool_sse():
     deltas = [
         {
-            "tool_calls": [{
-                "index": 0,
-                "id": "call-1",
-                "type": "function",
-                "function": {"name": "weather", "arguments": '{"city":'},
-            }]
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "weather", "arguments": '{"city":'},
+                }
+            ]
         },
         {
-            "tool_calls": [{
-                "index": 0,
-                "function": {"arguments": '"Toronto"}'},
-            }]
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "function": {"arguments": '"Toronto"}'},
+                }
+            ]
         },
     ]
     lines = []
@@ -260,6 +268,7 @@ def _completion_sse(*texts):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 @unittest.skipIf(_SKIP, _SKIP_REASON)
 class TestAXEngineChatModel(unittest.TestCase):
     @classmethod
@@ -274,6 +283,7 @@ class TestAXEngineChatModel(unittest.TestCase):
 
     def _make_chat(self, **kwargs):
         from ax_engine.langchain import AXEngineChatModel
+
         return AXEngineChatModel(base_url=self.srv.base_url, timeout=5, **kwargs)
 
     def test_invoke_returns_ai_message(self):
@@ -284,52 +294,64 @@ class TestAXEngineChatModel(unittest.TestCase):
         self.assertEqual(result.content, "Hi there!")
 
     def test_null_message_content_becomes_empty_string(self):
-        self.srv.set_response({
-            "id": "chatcmpl-null",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": None},
-                "finish_reason": "tool_calls",
-            }],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        })
+        self.srv.set_response(
+            {
+                "id": "chatcmpl-null",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": None},
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        )
         chat = self._make_chat()
         result = chat.invoke([HumanMessage(content="x")])
         self.assertEqual(result.content, "")
 
     def test_response_preserves_tool_calls(self):
-        self.srv.set_response({
-            "id": "chatcmpl-tool",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "weather",
-                            "arguments": '{"city":"Toronto"}',
+        self.srv.set_response(
+            {
+                "id": "chatcmpl-tool",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "weather",
+                                        "arguments": '{"city":"Toronto"}',
+                                    },
+                                }
+                            ],
                         },
-                    }],
-                },
-                "finish_reason": "tool_calls",
-            }],
-        })
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+        )
         chat = self._make_chat()
         result = chat.invoke([HumanMessage(content="What is the weather?")])
         self.assertEqual(result.content, "")
         self.assertEqual(
             result.tool_calls,
-            [{
-                "name": "weather",
-                "args": {"city": "Toronto"},
-                "id": "call-1",
-                "type": "tool_call",
-            }],
+            [
+                {
+                    "name": "weather",
+                    "args": {"city": "Toronto"},
+                    "id": "call-1",
+                    "type": "tool_call",
+                }
+            ],
         )
         self.assertEqual(result.additional_kwargs["tool_calls"][0]["id"], "call-1")
 
@@ -342,10 +364,12 @@ class TestAXEngineChatModel(unittest.TestCase):
     def test_request_body_messages(self):
         self.srv.set_response(_chat_response())
         chat = self._make_chat()
-        chat.invoke([
-            SystemMessage(content="You are AX."),
-            HumanMessage(content="Hello"),
-        ])
+        chat.invoke(
+            [
+                SystemMessage(content="You are AX."),
+                HumanMessage(content="Hello"),
+            ]
+        )
         body = self.srv.last_body
         self.assertEqual(len(body["messages"]), 2)
         self.assertEqual(body["messages"][0]["role"], "system")
@@ -354,20 +378,24 @@ class TestAXEngineChatModel(unittest.TestCase):
     def test_request_body_preserves_tool_history(self):
         self.srv.set_response(_chat_response())
         chat = self._make_chat()
-        chat.invoke([
-            HumanMessage(content="What is the weather?"),
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "weather",
-                    "args": {"city": "Toronto"},
-                    "id": "call-1",
-                    "type": "tool_call",
-                }],
-            ),
-            ToolMessage(content="sunny", tool_call_id="call-1", name="weather"),
-            FunctionMessage(content="legacy result", name="legacy_weather"),
-        ])
+        chat.invoke(
+            [
+                HumanMessage(content="What is the weather?"),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "weather",
+                            "args": {"city": "Toronto"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                ToolMessage(content="sunny", tool_call_id="call-1", name="weather"),
+                FunctionMessage(content="legacy result", name="legacy_weather"),
+            ]
+        )
 
         messages = self.srv.last_body["messages"]
         assistant_call = messages[1]["tool_calls"][0]
@@ -395,15 +423,17 @@ class TestAXEngineChatModel(unittest.TestCase):
         self.srv.set_response(_chat_response())
         chat = self._make_chat()
         bound = chat.bind_tools(
-            [{
-                "name": "weather",
-                "description": "Get the weather",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"city": {"type": "string"}},
-                    "required": ["city"],
-                },
-            }],
+            [
+                {
+                    "name": "weather",
+                    "description": "Get the weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                }
+            ],
             tool_choice="weather",
         )
         bound.invoke([HumanMessage(content="What is the weather?")])
@@ -459,9 +489,7 @@ class TestAXEngineChatModel(unittest.TestCase):
         self.assertEqual(text, "Hello world")
 
     def test_stream_yields_before_connection_closes(self):
-        first = {
-            "choices": [{"index": 0, "delta": {"content": "now"}, "finish_reason": None}]
-        }
+        first = {"choices": [{"index": 0, "delta": {"content": "now"}, "finish_reason": None}]}
         response = _HeldOpenSse(f"data: {json.dumps(first)}\n\n")
         self.srv.set_response(response)
         chat = self._make_chat()
@@ -483,19 +511,24 @@ class TestAXEngineChatModel(unittest.TestCase):
         combined = sum(chunks[1:], chunks[0])
         self.assertEqual(
             combined.tool_calls,
-            [{
-                "name": "weather",
-                "args": {"city": "Toronto"},
-                "id": "call-1",
-                "type": "tool_call",
-            }],
+            [
+                {
+                    "name": "weather",
+                    "args": {"city": "Toronto"},
+                    "id": "call-1",
+                    "type": "tool_call",
+                }
+            ],
         )
 
     def test_stream_flushes_trailing_event_without_blank_line(self):
-        # Server closes without a final \n\n after the last data frame.
+        # Server closes without a final \n\n: both the trailing content event
+        # and the [DONE] sentinel must still be read from the last buffer.
         trailing = (
             'data: {"id":"c1","object":"chat.completion.chunk","choices":'
             '[{"index":0,"delta":{"content":"tail"},"finish_reason":null}]}'
+            "\n\n"
+            "data: [DONE]"
         )
         self.srv.set_response(trailing)
         chat = self._make_chat()
@@ -503,17 +536,30 @@ class TestAXEngineChatModel(unittest.TestCase):
         text = "".join(c.content for c in chunks)
         self.assertEqual(text, "tail")
 
+    def test_stream_eof_without_done_sentinel_raises(self):
+        # A clean EOF before the [DONE] sentinel is a broken stream, not a
+        # short success; the reader must raise instead of returning quietly.
+        chunk = {
+            "id": "c1",
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {"content": "partial"}, "finish_reason": None}],
+        }
+        self.srv.set_response(f"data: {json.dumps(chunk)}\n\n")
+        chat = self._make_chat()
+        with self.assertRaisesRegex(RuntimeError, "ax-engine stream ended prematurely"):
+            list(chat.stream([HumanMessage(content="x")]))
+
+    def test_stream_with_done_sentinel_completes_normally(self):
+        self.srv.set_response(_chat_sse("ok"))
+        chat = self._make_chat()
+        chunks = list(chat.stream([HumanMessage(content="x")]))
+        self.assertEqual("".join(c.content for c in chunks), "ok")
+
     def test_stream_keeps_mixed_line_ending_events_separate(self):
-        first = {
-            "choices": [{"index": 0, "delta": {"content": "one"}, "finish_reason": None}]
-        }
-        second = {
-            "choices": [{"index": 0, "delta": {"content": "two"}, "finish_reason": "stop"}]
-        }
+        first = {"choices": [{"index": 0, "delta": {"content": "one"}, "finish_reason": None}]}
+        second = {"choices": [{"index": 0, "delta": {"content": "two"}, "finish_reason": "stop"}]}
         self.srv.set_response(
-            f"data: {json.dumps(first)}\n\n"
-            f"data: {json.dumps(second)}\r\n\r\n"
-            "data: [DONE]\n\n"
+            f"data: {json.dumps(first)}\n\ndata: {json.dumps(second)}\r\n\r\ndata: [DONE]\n\n"
         )
         chat = self._make_chat()
         chunks = list(chat.stream([HumanMessage(content="x")]))
@@ -542,7 +588,7 @@ class TestAXEngineChatModel(unittest.TestCase):
         self.assertEqual(chat._llm_type, "ax-engine")
 
     def test_http_error_raises_runtime_error(self):
-        # server returns empty/invalid JSON → will raise
+        # server returns empty/invalid JSON -> will raise
         self.srv.set_response(None)
         chat = self._make_chat()
         with self.assertRaises(RuntimeError):
@@ -576,6 +622,7 @@ class TestAXEngineLLM(unittest.TestCase):
 
     def _make_llm(self, **kwargs):
         from ax_engine.langchain import AXEngineLLM
+
         return AXEngineLLM(base_url=self.srv.base_url, timeout=5, **kwargs)
 
     def test_invoke_returns_string(self):
@@ -585,12 +632,14 @@ class TestAXEngineLLM(unittest.TestCase):
         self.assertEqual(result, "world")
 
     def test_null_completion_text_becomes_empty_string(self):
-        self.srv.set_response({
-            "id": "cmpl-null",
-            "object": "text_completion",
-            "choices": [{"index": 0, "text": None, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1},
-        })
+        self.srv.set_response(
+            {
+                "id": "cmpl-null",
+                "object": "text_completion",
+                "choices": [{"index": 0, "text": None, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1},
+            }
+        )
         llm = self._make_llm()
         self.assertEqual(llm.invoke("x"), "")
 
@@ -637,6 +686,18 @@ class TestAXEngineLLM(unittest.TestCase):
         else:
             text = "".join(c.text for c in chunks)
         self.assertEqual(text, "Hello there")
+
+    def test_stream_eof_without_done_sentinel_raises(self):
+        # The completion route shares the chat SSE reader; EOF before [DONE]
+        # must raise here exactly like it does for chat streams.
+        chunk = {
+            "id": "cmpl-1",
+            "choices": [{"index": 0, "text": "partial", "finish_reason": None}],
+        }
+        self.srv.set_response(f"data: {json.dumps(chunk)}\n\n")
+        llm = self._make_llm()
+        with self.assertRaisesRegex(RuntimeError, "ax-engine stream ended prematurely"):
+            list(llm.stream("x"))
 
     def test_stream_request_has_stream_true(self):
         self.srv.set_response(_completion_sse("x"))

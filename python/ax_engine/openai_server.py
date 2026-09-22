@@ -1,7 +1,6 @@
 import json
-import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,10 @@ QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK = "<|im_start|>assistant\n"
 MODEL_OWNER = "ax-engine"
 COMPLETION_REQUEST_ERROR = "invalid completion request"
 CHAT_COMPLETION_REQUEST_ERROR = "invalid chat completion request"
+# The native bindings take u32 for max_output_tokens/top_k and u64 for seed;
+# values outside those ranges must fail validation instead of overflowing.
+MAX_OUTPUT_TOKENS_LIMIT = 4294967295
+SAMPLING_PARAM_KEYS = ("temperature", "top_p", "top_k", "repetition_penalty", "seed", "min_p")
 
 
 class OpenAiShimError(ValueError):
@@ -27,9 +30,7 @@ def _escape_qwen_chatml_content(content: str) -> str:
     or a deliberate attempt) must not be read by the model as a real role
     switch.
     """
-    return content.replace("<|im_start|>", "&lt;|im_start|>").replace(
-        "<|im_end|>", "&lt;|im_end|>"
-    )
+    return content.replace("<|im_start|>", "&lt;|im_start|>").replace("<|im_end|>", "&lt;|im_end|>")
 
 
 def _escape_llama4_content(content: str) -> str:
@@ -223,13 +224,9 @@ def qwen_tool_contract_style(model_id: str) -> str:
     normalized = normalize_model_id_token(model_id)
     if uses_qwen_coder_xml_tool_contract(model_id):
         return "coder_xml"
-    if (
-        any(
-            marker in normalized
-            for marker in ("qwen3-next", "qwen3-5", "qwen35", "qwen3-6", "qwen36")
-        )
-        or is_qwen35_class_named_finetune(model_id)
-    ):
+    if any(
+        marker in normalized for marker in ("qwen3-next", "qwen3-5", "qwen35", "qwen3-6", "qwen36")
+    ) or is_qwen35_class_named_finetune(model_id):
         return "function_xml"
     return "json_tools"
 
@@ -389,9 +386,7 @@ def render_xml_tool_block(tool: Any) -> str | None:
     if not isinstance(tool, dict):
         return None
     function_candidate = tool.get("function")
-    function: dict[Any, Any] = (
-        function_candidate if isinstance(function_candidate, dict) else tool
-    )
+    function: dict[Any, Any] = function_candidate if isinstance(function_candidate, dict) else tool
     name = function.get("name")
     if not isinstance(name, str):
         return None
@@ -737,6 +732,7 @@ def create_app(
         import anyio
         from fastapi import FastAPI, Request
         from fastapi.responses import JSONResponse, StreamingResponse
+        from starlette.concurrency import iterate_in_threadpool
         from tokenizers import Tokenizer
     except ImportError as error:
         raise RuntimeError(
@@ -751,7 +747,25 @@ def create_app(
         session_factory=session_factory,
         session_kwargs=session_kwargs,
     )
-    lock = threading.Lock()
+    # Serialize generation behind an async-aware gate. Waiting suspends the
+    # ASGI task; with a threading.Lock every waiting handler parks a
+    # threadpool thread on acquire(), and a stream holding the lock across
+    # its yields can deadlock the server once all worker threads are parked.
+    generation_gate = anyio.Semaphore(1)
+
+    def serialized_stream(chunks: Iterator[str]) -> AsyncIterator[str]:
+        """Hold the generation gate for a stream's whole lifetime.
+
+        The gate is released in the ``async with`` unwind when the stream is
+        exhausted or the client disconnects (Starlette closes the generator).
+        """
+
+        async def _gated_chunks() -> AsyncIterator[str]:
+            async with generation_gate:
+                async for chunk in iterate_in_threadpool(chunks):
+                    yield chunk
+
+        return _gated_chunks()
 
     @asynccontextmanager
     async def lifespan(_app: Any):
@@ -775,12 +789,17 @@ def create_app(
 
     @app.post("/v1/completions")
     async def completions(request: Request) -> Any:
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except ValueError:
+            return openai_error(400, "request body must be valid JSON")
+        payload = drop_null_sampling_params(payload)
         error = (
             validate_payload_object(payload)
             or validate_model(payload, model_id)
             or require_max_tokens(payload)
             or validate_sampling_params(payload)
+            or validate_metadata(payload)
         )
         if error is not None:
             return openai_error(*error)
@@ -791,39 +810,27 @@ def create_app(
             return openai_error(400, COMPLETION_REQUEST_ERROR)
 
         if bool(payload.get("stream", False)):
-            events = stream_completion_chunks(
-                session,
-                lock,
-                tokenizer,
-                model_id,
-                input_tokens,
-                int(payload["max_tokens"]),
-                payload,
-                "completion",
+            events = serialized_stream(
+                stream_completion_chunks(
+                    session,
+                    tokenizer,
+                    model_id,
+                    input_tokens,
+                    payload,
+                    "completion",
+                )
             )
             return StreamingResponse(events, media_type="text/event-stream")
 
-        temperature = float(payload.get("temperature", 0.0))
-        default_rp = 1.1 if temperature <= 0.0 else 1.0
-
         def _blocking_completion() -> Any:
-            with lock:
-                return session.generate(
-                    input_tokens,
-                    max_output_tokens=int(payload["max_tokens"]),
-                    temperature=temperature,
-                    top_p=float(payload.get("top_p", 1.0)),
-                    top_k=int(payload.get("top_k", 0)),
-                    repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
-                    seed=int(payload.get("seed", 0)),
-                    stop_sequences=client_stop_sequences(payload) or None,
-                    metadata=payload.get("metadata"),
-                )
+            return session.generate(input_tokens, **session_generate_kwargs(payload))
 
         # generate() blocks for the whole generation; running it inline would
         # park the event loop and stall every concurrent request, /health
-        # included.
-        result = await anyio.to_thread.run_sync(_blocking_completion)
+        # included. The gate is awaited by the async task, so waiting for it
+        # never occupies a threadpool thread.
+        async with generation_gate:
+            result = await anyio.to_thread.run_sync(_blocking_completion)
         text = tokenizer.decode(list(result.output_tokens))
         text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
         return {
@@ -843,12 +850,17 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except ValueError:
+            return openai_error(400, "request body must be valid JSON")
+        payload = drop_null_sampling_params(payload)
         error = (
             validate_payload_object(payload)
             or validate_model(payload, model_id)
             or require_max_tokens(payload)
             or validate_sampling_params(payload)
+            or validate_metadata(payload)
         )
         if error is not None:
             return openai_error(*error)
@@ -869,28 +881,14 @@ def create_app(
         )
         if bool(payload.get("stream", False)):
             if parse_tool_calls:
-                temperature = float(payload.get("temperature", 0.0))
-                default_rp = 1.1 if temperature <= 0.0 else 1.0
 
                 def _blocking_tool_chat() -> Any:
-                    with lock:
-                        return session.generate(
-                            input_tokens,
-                            max_output_tokens=int(payload["max_tokens"]),
-                            temperature=temperature,
-                            top_p=float(payload.get("top_p", 1.0)),
-                            top_k=int(payload.get("top_k", 0)),
-                            repetition_penalty=float(
-                                payload.get("repetition_penalty", default_rp)
-                            ),
-                            seed=int(payload.get("seed", 0)),
-                            stop_sequences=client_stop_sequences(payload) or None,
-                            metadata=payload.get("metadata"),
-                        )
+                    return session.generate(input_tokens, **session_generate_kwargs(payload))
 
                 # Blocking generate off the event loop; see the completions
                 # handler for rationale.
-                result = await anyio.to_thread.run_sync(_blocking_tool_chat)
+                async with generation_gate:
+                    result = await anyio.to_thread.run_sync(_blocking_tool_chat)
                 text = tokenizer.decode(list(result.output_tokens))
                 # Client stops apply to visible content only; a parsed tool
                 # call is never truncated (same contract as the Rust server).
@@ -906,48 +904,41 @@ def create_app(
                     buffered_finish,
                 )
                 return StreamingResponse(events, media_type="text/event-stream")
-            events = stream_completion_chunks(
-                session,
-                lock,
-                tokenizer,
-                model_id,
-                input_tokens,
-                int(payload["max_tokens"]),
-                payload,
-                "chat",
+            gated_events = serialized_stream(
+                stream_completion_chunks(
+                    session,
+                    tokenizer,
+                    model_id,
+                    input_tokens,
+                    payload,
+                    "chat",
+                )
             )
-            return StreamingResponse(events, media_type="text/event-stream")
-
-        temperature = float(payload.get("temperature", 0.0))
-        default_rp = 1.1 if temperature <= 0.0 else 1.0
+            return StreamingResponse(gated_events, media_type="text/event-stream")
 
         def _blocking_chat() -> Any:
-            with lock:
-                return session.generate(
-                    input_tokens,
-                    max_output_tokens=int(payload["max_tokens"]),
-                    temperature=temperature,
-                    top_p=float(payload.get("top_p", 1.0)),
-                    top_k=int(payload.get("top_k", 0)),
-                    repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
-                    seed=int(payload.get("seed", 0)),
-                    stop_sequences=client_stop_sequences(payload) or None,
-                    metadata=payload.get("metadata"),
-                )
+            return session.generate(input_tokens, **session_generate_kwargs(payload))
 
         # Blocking generate off the event loop; see the completions handler
         # for rationale.
-        result = await anyio.to_thread.run_sync(_blocking_chat)
+        async with generation_gate:
+            result = await anyio.to_thread.run_sync(_blocking_chat)
         text = tokenizer.decode(list(result.output_tokens))
-        text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
-        message: dict[str, Any] = {"role": "assistant", "content": text}
-        response_finish_reason = "stop" if stop_hit else finish_reason(result.finish_reason)
+        # Client stops apply to visible content only; a parsed tool call is
+        # never truncated (same order as the streaming tool-chat path above).
+        tool_calls: list[dict[str, Any]] | None = None
         if parse_tool_calls:
-            content, tool_calls = extract_tool_calls(text)
-            if tool_calls:
-                message["content"] = content
-                message["tool_calls"] = tool_calls
-                response_finish_reason = "tool_calls"
+            text, tool_calls = extract_tool_calls(text)
+        response_finish_reason = finish_reason(result.finish_reason)
+        if tool_calls:
+            response_finish_reason = "tool_calls"
+        else:
+            text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
+            if stop_hit:
+                response_finish_reason = "stop"
+        message: dict[str, Any] = {"role": "assistant", "content": text}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         return {
             "id": f"chatcmpl-{result.request_id}",
             "object": "chat.completion",
@@ -968,6 +959,12 @@ def create_app(
             status_code=status,
             content={"error": {"code": "invalid_request", "message": message}},
         )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception(_request: Request, _exc: Exception) -> Any:
+        # Unexpected failures must surface as the OpenAI-style JSON error
+        # envelope instead of Starlette's plain-text 500.
+        return openai_error(500, "internal server error")
 
     return app
 
@@ -1013,11 +1010,31 @@ def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
     max_tokens = payload.get("max_tokens")
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         return 400, "OpenAI-compatible MLX shim requires max_tokens > 0"
+    if max_tokens > MAX_OUTPUT_TOKENS_LIMIT:
+        return (
+            400,
+            f"OpenAI-compatible MLX shim requires max_tokens <= {MAX_OUTPUT_TOKENS_LIMIT}",
+        )
     return None
 
 
+def drop_null_sampling_params(payload: dict[str, Any]) -> dict[str, Any]:
+    """Treat explicit JSON null sampling parameters as absent.
+
+    OpenAI clients routinely send ``"temperature": null``; without this,
+    ``float(None)`` turns a well-formed request into a server error.
+    """
+    if any(key in payload and payload[key] is None for key in SAMPLING_PARAM_KEYS):
+        normalized = dict(payload)
+        for key in SAMPLING_PARAM_KEYS:
+            if key in normalized and normalized[key] is None:
+                del normalized[key]
+        return normalized
+    return payload
+
+
 def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
-    for key in ("temperature", "top_p", "repetition_penalty"):
+    for key in ("temperature", "top_p", "repetition_penalty", "min_p"):
         value = payload.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
             return 400, f"OpenAI-compatible MLX shim requires {key} to be numeric"
@@ -1025,120 +1042,139 @@ def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
         value = payload.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             return 400, f"OpenAI-compatible MLX shim requires {key} to be an integer"
+        if value is not None and value < 0:
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be non-negative"
+    min_p = payload.get("min_p")
+    if min_p is not None and not 0.0 <= float(min_p) <= 1.0:
+        return 400, "OpenAI-compatible MLX shim requires min_p to be within [0, 1]"
     return None
+
+
+def validate_metadata(payload: dict[str, Any]) -> tuple[int, str] | None:
+    metadata = payload.get("metadata")
+    if metadata is not None and not isinstance(metadata, str):
+        return 400, "OpenAI-compatible MLX shim requires metadata to be a string"
+    return None
+
+
+def session_generate_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+    """Sampling kwargs shared by every generate/stream_generate call site.
+
+    ``min_p`` is forwarded only when the client provided it so the shim keeps
+    working against sessions built before min_p existed.
+    """
+    temperature = float(payload.get("temperature", 0.0))
+    default_rp = 1.1 if temperature <= 0.0 else 1.0
+    kwargs: dict[str, Any] = {
+        "max_output_tokens": int(payload["max_tokens"]),
+        "temperature": temperature,
+        "top_p": float(payload.get("top_p", 1.0)),
+        "top_k": int(payload.get("top_k", 0)),
+        "repetition_penalty": float(payload.get("repetition_penalty", default_rp)),
+        "seed": int(payload.get("seed", 0)),
+        "stop_sequences": client_stop_sequences(payload) or None,
+        "metadata": payload.get("metadata"),
+    }
+    if payload.get("min_p") is not None:
+        kwargs["min_p"] = float(payload["min_p"])
+    return kwargs
 
 
 def stream_completion_chunks(
     session: Any,
-    lock: threading.Lock,
     tokenizer: Any,
     model_id: str,
     input_tokens: list[int],
-    max_tokens: int,
     payload: dict[str, Any],
     kind: str,
 ) -> Iterator[str]:
+    """Emit one SSE chunk per generation event.
+
+    Mutually-exclusive access to the session is enforced by the caller (see
+    ``serialized_stream`` in ``create_app``): this generator must run inside
+    the generation gate for its whole lifetime, so it never takes a lock
+    itself.
+    """
     stream_id = f"{'chatcmpl' if kind == 'chat' else 'cmpl'}-{int(time.time() * 1000)}"
     created = int(time.time())
-    temperature = float(payload.get("temperature", 0.0))
-    default_rp = 1.1 if temperature <= 0.0 else 1.0
     accumulated_tokens: list[int] = []
     prev_text_len = 0
     role_emitted = False
     stops = client_stop_sequences(payload)
     emitted_text = ""
     stop_hit = False
-    # Hold the lock for the full stream lifetime so a concurrent stream_generate
-    # cannot enter while this generator is still iterating. The native session
-    # also rejects concurrent streams, but Python-side serialization keeps the
-    # error surface local and avoids races around generator setup.
-    with lock:
-        generator = session.stream_generate(
-            input_tokens,
-            max_output_tokens=max_tokens,
-            temperature=temperature,
-            top_p=float(payload.get("top_p", 1.0)),
-            top_k=int(payload.get("top_k", 0)),
-            repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
-            seed=int(payload.get("seed", 0)),
-            stop_sequences=stops or None,
-            metadata=payload.get("metadata"),
-        )
-        for event in generator:
-            if event.event == "step" and event.delta_tokens:
-                accumulated_tokens.extend(event.delta_tokens)
-                # Prefer engine-provided delta_text: cumulative re-decode corrupts
-                # multi-token glyphs (ZWJ emoji) when a partial sequence yields
-                # U+FFFD that is then counted as "already sent".
-                if event.delta_text is not None:
-                    new_text = event.delta_text
-                    if new_text:
-                        # Keep prev_text_len aligned for any residual flush path.
-                        prev_text_len += len(new_text)
-                else:
-                    full_text = tokenizer.decode(accumulated_tokens)
-                    new_text = full_text[prev_text_len:]
-                    prev_text_len = len(full_text)
-                if new_text and stops:
-                    # Client stop strings are enforced on the visible text:
-                    # emit only up to the match, then finish with "stop".
-                    candidate = emitted_text + new_text
-                    truncated, stop_hit = truncate_at_stop(candidate, stops)
-                    new_text = truncated[len(emitted_text) :]
+    generator = session.stream_generate(input_tokens, **session_generate_kwargs(payload))
+    for event in generator:
+        if event.event == "step" and event.delta_tokens:
+            accumulated_tokens.extend(event.delta_tokens)
+            # Prefer engine-provided delta_text: cumulative re-decode corrupts
+            # multi-token glyphs (ZWJ emoji) when a partial sequence yields
+            # U+FFFD that is then counted as "already sent".
+            if event.delta_text is not None:
+                new_text = event.delta_text
                 if new_text:
-                    emitted_text += new_text
+                    # Keep prev_text_len aligned for any residual flush path.
+                    prev_text_len += len(new_text)
+            else:
+                full_text = tokenizer.decode(accumulated_tokens)
+                new_text = full_text[prev_text_len:]
+                prev_text_len = len(full_text)
+            if new_text and stops:
+                # Client stop strings are enforced on the visible text:
+                # emit only up to the match, then finish with "stop".
+                candidate = emitted_text + new_text
+                truncated, stop_hit = truncate_at_stop(candidate, stops)
+                new_text = truncated[len(emitted_text) :]
+            if new_text:
+                emitted_text += new_text
+                emit_role = kind == "chat" and not role_emitted
+                role_emitted = role_emitted or emit_role
+                yield sse_chunk(
+                    stream_id,
+                    created,
+                    model_id,
+                    new_text,
+                    None,
+                    kind,
+                    emit_role=emit_role,
+                )
+            if stop_hit:
+                if kind == "chat" and not role_emitted:
+                    yield sse_chunk(stream_id, created, model_id, "", None, kind, emit_role=True)
+                yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
+                break
+        elif event.event == "response" and event.response is not None:
+            # Flush any remaining text from incomplete UTF-8 sequences when
+            # the stream path did not supply delta_text (legacy fallback).
+            if accumulated_tokens and event.delta_text is None:
+                final_text = tokenizer.decode(accumulated_tokens)
+                remaining = final_text[prev_text_len:]
+                if remaining:
                     emit_role = kind == "chat" and not role_emitted
                     role_emitted = role_emitted or emit_role
                     yield sse_chunk(
                         stream_id,
                         created,
                         model_id,
-                        new_text,
+                        remaining,
                         None,
                         kind,
                         emit_role=emit_role,
                     )
-                if stop_hit:
-                    if kind == "chat" and not role_emitted:
-                        yield sse_chunk(
-                            stream_id, created, model_id, "", None, kind, emit_role=True
-                        )
-                    yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
-                    break
-            elif event.event == "response" and event.response is not None:
-                # Flush any remaining text from incomplete UTF-8 sequences when
-                # the stream path did not supply delta_text (legacy fallback).
-                if accumulated_tokens and event.delta_text is None:
-                    final_text = tokenizer.decode(accumulated_tokens)
-                    remaining = final_text[prev_text_len:]
-                    if remaining:
-                        emit_role = kind == "chat" and not role_emitted
-                        role_emitted = role_emitted or emit_role
-                        yield sse_chunk(
-                            stream_id,
-                            created,
-                            model_id,
-                            remaining,
-                            None,
-                            kind,
-                            emit_role=emit_role,
-                        )
-                # OpenAI spec: the role must appear in at least one chunk. If no
-                # content chunks were emitted (0-token completion), emit a role-only
-                # chunk before the finish_reason chunk so clients can read the role.
-                if kind == "chat" and not role_emitted:
-                    yield sse_chunk(
-                        stream_id, created, model_id, "", None, kind, emit_role=True
-                    )
-                yield sse_chunk(
-                    stream_id,
-                    created,
-                    model_id,
-                    "",
-                    finish_reason(event.response.finish_reason),
-                    kind,
-                )
-        yield "data: [DONE]\n\n"
+            # OpenAI spec: the role must appear in at least one chunk. If no
+            # content chunks were emitted (0-token completion), emit a role-only
+            # chunk before the finish_reason chunk so clients can read the role.
+            if kind == "chat" and not role_emitted:
+                yield sse_chunk(stream_id, created, model_id, "", None, kind, emit_role=True)
+            yield sse_chunk(
+                stream_id,
+                created,
+                model_id,
+                "",
+                finish_reason(event.response.finish_reason),
+                kind,
+            )
+    yield "data: [DONE]\n\n"
 
 
 def sse_chunk(

@@ -172,6 +172,9 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
         raise _http_error_to_runtime(exc) from exc
+    # A clean EOF without the [DONE] sentinel means the server died
+    # mid-stream; that must surface as an error, never a short success.
+    seen_done = False
     with resp:
         buffer = b""
         while True:
@@ -197,13 +200,12 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                     continue
                 event_type, raw_data = parsed
                 if raw_data == "[DONE]":
-                    return
+                    seen_done = True
+                    break
                 # Surface mid-stream error events to the caller, matching the
                 # JavaScript SDK's AxEngineStreamError behavior.
                 if event_type == "error":
-                    raise RuntimeError(
-                        f"ax-engine stream error: {_sse_error_message(raw_data)}"
-                    )
+                    raise RuntimeError(f"ax-engine stream error: {_sse_error_message(raw_data)}")
                 try:
                     yield json.loads(raw_data)
                 except json.JSONDecodeError as exc:
@@ -212,20 +214,23 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                     raise RuntimeError(
                         f"ax-engine stream returned a non-JSON event: {raw_data[:120]!r}"
                     ) from exc
+            if seen_done:
+                break
 
         # Flush a trailing event if the server closed without a final blank line.
-        if buffer.strip():
+        if not seen_done and buffer.strip():
             parsed = _parse_sse_block(buffer)
             if parsed is not None:
                 event_type, raw_data = parsed
                 if raw_data == "[DONE]":
-                    return
-                if event_type == "error":
-                    raise RuntimeError(
-                        f"ax-engine stream error: {_sse_error_message(raw_data)}"
-                    )
-                with contextlib.suppress(json.JSONDecodeError):
-                    yield json.loads(raw_data)
+                    seen_done = True
+                elif event_type == "error":
+                    raise RuntimeError(f"ax-engine stream error: {_sse_error_message(raw_data)}")
+                else:
+                    with contextlib.suppress(json.JSONDecodeError):
+                        yield json.loads(raw_data)
+    if not seen_done:
+        raise RuntimeError("ax-engine stream ended prematurely")
 
 
 class AXEngineChatModel(BaseChatModel):
