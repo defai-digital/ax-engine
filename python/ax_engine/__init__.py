@@ -1358,9 +1358,7 @@ def _escape_qwen_chatml_content(content: str) -> str:
     ChatML docs, or a deliberate attempt) must not be read by the model as a
     real role switch.
     """
-    return content.replace("<|im_start|>", "&lt;|im_start|>").replace(
-        "<|im_end|>", "&lt;|im_end|>"
-    )
+    return content.replace("<|im_start|>", "&lt;|im_start|>").replace("<|im_end|>", "&lt;|im_end|>")
 
 
 def _escape_llama3_content(content: str) -> str:
@@ -1455,8 +1453,7 @@ def _safetensors_files(model_dir: Path) -> list[Path]:
         return sorted(
             path
             for path in model_dir.rglob("*.safetensors")
-            if path.is_file()
-            and path.relative_to(model_dir).parts[:1] != ("assistant",)
+            if path.is_file() and path.relative_to(model_dir).parts[:1] != ("assistant",)
         )
     except OSError:
         return []
@@ -1876,9 +1873,7 @@ def _validate_model_destination_before_activation(
     except RuntimeError:
         return
     manifest_path = dest / _MODEL_MANIFEST_FILE
-    if _manifest_is_structurally_valid(
-        manifest_path
-    ) and not _manifest_needs_media_rebuild(dest):
+    if _manifest_is_structurally_valid(manifest_path) and not _manifest_needs_media_rebuild(dest):
         raise RuntimeError(
             f"refusing to replace model destination {dest}: another process made it "
             "ready while this model was being prepared"
@@ -2006,10 +2001,7 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
         return "missing tensors"
 
     if model_family == "whisper":
-        if any(
-            not isinstance(tensor, dict) or tensor.get("role") != "other"
-            for tensor in tensors
-        ):
+        if any(not isinstance(tensor, dict) or tensor.get("role") != "other" for tensor in tensors):
             return "whisper tensors must use role=other"
         return None
 
@@ -2153,9 +2145,7 @@ def _manifest_missing_required_roles(manifest: dict) -> str | None:
                 return f"layer {layer_index} is missing required tensor role attention_o"
             has_packed_qkv = "attention_qkv_packed" in roles
             has_split_qkv = (
-                "attention_q" in roles
-                and "attention_k" in roles
-                and "attention_v" in roles
+                "attention_q" in roles and "attention_k" in roles and "attention_v" in roles
             )
             has_mla = any(
                 role in roles
@@ -2233,9 +2223,7 @@ def _manifest_is_structurally_valid(path: Path) -> bool:
         if (
             not isinstance(shape, list)
             or any(
-                not isinstance(dimension, int)
-                or isinstance(dimension, bool)
-                or dimension <= 0
+                not isinstance(dimension, int) or isinstance(dimension, bool) or dimension <= 0
                 for dimension in shape
             )
             or (not shape and tensor.get("role") != "other")
@@ -2623,9 +2611,7 @@ def _run_manifest_generators(dest: Path, *, force: bool) -> bool:
     repo_root = _source_checkout_root(payload_name=None)
     if repo_root is not None and shutil.which("cargo"):
         generate_args = (
-            ["--force", "--validate", manifest_dest]
-            if force
-            else ["--validate", manifest_dest]
+            ["--force", "--validate", manifest_dest] if force else ["--validate", manifest_dest]
         )
         try:
             result = subprocess.run(

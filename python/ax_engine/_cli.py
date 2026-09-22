@@ -1049,63 +1049,29 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP": (
         "d514dcebf3086068ed7968caf395083c95ebcfca"
     ),
-    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": (
-        "6182ccbc41c7397ff90670f740c6d9eacfa4b09f"
-    ),
-    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP": (
-        "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"
-    ),
+    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": ("6182ccbc41c7397ff90670f740c6d9eacfa4b09f"),
+    "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP": ("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"),
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit": (
         "e932be1b8ab79f5410f607de7eb7312756325fce"
     ),
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit": (
         "b48b626d9b00e45d6200aa3c15e40cc47d83b7e7"
     ),
-    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit": (
-        "323a48f2a821f7d0349466095b1b84562d11c9a0"
-    ),
-    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit": (
-        "e52d06296bf133b248a6572561c4f2e150dc3429"
-    ),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP": (
-        "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e"
-    ),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP": (
-        "3e290738e96972307c6aeb9934ab170ca0eae1c1"
-    ),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit": (
-        "6df63e00b1fa952bffd3b4ad5ecd182f9d48a8a4"
-    ),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit": (
-        "1a54b325bef89b056f8ee9a882452419cceb018e"
-    ),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit": (
-        "36f9d25c4b1ea2282774b9acf84fdad0241a8a54"
-    ),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP": (
-        "4037b7242a4de8deaf71247a685538591cad160a"
-    ),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4": (
-        "4797708af95b9d5cca343d0a4671511fc2765e1a"
-    ),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP": (
-        "b2c5354f779e430d0c1733143db848a72b71c16e"
-    ),
-    "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit": (
-        "a524f97c81ec82be3eead17aabcf652450d33842"
-    ),
-    "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit": (
-        "29e7bcf5e6ef2471cc3587783713e3631e98b50c"
-    ),
-    "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit": (
-        "20f2d2bd0b1055f8ab990e82fa0fc784a9de4c89"
-    ),
-    "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit": (
-        "14aee3b601240c5075fc4c84fb6f088400aeeba5"
-    ),
-    "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit": (
-        "306f5a9858cadd8e0a6b01201d37ad2d24ddcdd7"
-    ),
+    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit": ("323a48f2a821f7d0349466095b1b84562d11c9a0"),
+    "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit": ("e52d06296bf133b248a6572561c4f2e150dc3429"),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP": ("7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e"),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP": ("3e290738e96972307c6aeb9934ab170ca0eae1c1"),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit": ("6df63e00b1fa952bffd3b4ad5ecd182f9d48a8a4"),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit": ("1a54b325bef89b056f8ee9a882452419cceb018e"),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit": ("36f9d25c4b1ea2282774b9acf84fdad0241a8a54"),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP": ("4037b7242a4de8deaf71247a685538591cad160a"),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4": ("4797708af95b9d5cca343d0a4671511fc2765e1a"),
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP": ("b2c5354f779e430d0c1733143db848a72b71c16e"),
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit": ("a524f97c81ec82be3eead17aabcf652450d33842"),
+    "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit": ("29e7bcf5e6ef2471cc3587783713e3631e98b50c"),
+    "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit": ("20f2d2bd0b1055f8ab990e82fa0fc784a9de4c89"),
+    "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit": ("14aee3b601240c5075fc4c84fb6f088400aeeba5"),
+    "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit": ("306f5a9858cadd8e0a6b01201d37ad2d24ddcdd7"),
     "AutomatosX/AX-Ministral-3-8B-Instruct-2512-MLX-AXQ-6bit": (
         "93d9991a3636c6c46cb92e711d11f1be5de96b6a"
     ),
@@ -1133,33 +1099,15 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3-Nemotron-32B-GenRM-Principle-MLX-AXQ-6bit": (
         "5608f0c197a7ffcd3366894cce7eb9918b24c8c1"
     ),
-    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit": (
-        "17e0ce81a7d6aeb6729a0c84b92340e26fbe1a6d"
-    ),
-    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit": (
-        "04be51a3173b94e0a0d859be871cfb7a749405d2"
-    ),
-    "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8": (
-        "4d928dce639633f1138113d733dd11c120da87c9"
-    ),
-    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit": (
-        "1c3fb2a006883d88ee0b84a831b480e4a9dc97c6"
-    ),
-    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit": (
-        "d6de0453b22af8bbbcfebbd43326ccea6ed35e64"
-    ),
-    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit": (
-        "7b2256130cd55ea6b7489817a9a00c46e9874403"
-    ),
-    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit": (
-        "e6cc340b04bfcec57544e462ec756e48dd248cf9"
-    ),
-    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit": (
-        "9ff7a33b034a7e72cdc32a531ed8dd0d07e35116"
-    ),
-    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit": (
-        "41015da430ae62802d9357b0ef31bf46c2b13b58"
-    ),
+    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit": ("17e0ce81a7d6aeb6729a0c84b92340e26fbe1a6d"),
+    "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit": ("04be51a3173b94e0a0d859be871cfb7a749405d2"),
+    "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8": ("4d928dce639633f1138113d733dd11c120da87c9"),
+    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit": ("1c3fb2a006883d88ee0b84a831b480e4a9dc97c6"),
+    "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit": ("d6de0453b22af8bbbcfebbd43326ccea6ed35e64"),
+    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit": ("7b2256130cd55ea6b7489817a9a00c46e9874403"),
+    "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit": ("e6cc340b04bfcec57544e462ec756e48dd248cf9"),
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-4bit": ("9ff7a33b034a7e72cdc32a531ed8dd0d07e35116"),
+    "AutomatosX/AX-Ornith-1.0-35B-MLX-AXQ-6bit": ("41015da430ae62802d9357b0ef31bf46c2b13b58"),
     "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP": (
         "22cbca366b6b4f767bb7e71f9e6105f932878f42"
     ),
@@ -1169,36 +1117,16 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP": (
         "fe05e871ec69ad9ae8eac01fd285555514ac7daf"
     ),
-    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit": (
-        "bcfb0b748fc44487c1657fb6ae190592d515398b"
-    ),
-    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit": (
-        "367745bd05b77bf82188f3799677e4beba543e8d"
-    ),
-    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP": (
-        "952031cbfbb9cf31414a57eeb681c34dc08ec1e9"
-    ),
-    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP": (
-        "6a4c220734f81112555ee8783d91e0065c54301c"
-    ),
-    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP": (
-        "d2a6ac9d59655f0b86a57a64ed85616d0a10e27e"
-    ),
-    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP": (
-        "7ad79df2b0c272431f3e927b133b7dc3d70872f4"
-    ),
-    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP": (
-        "490b1183ce4505e79334423547422204fb9144d0"
-    ),
-    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP": (
-        "940a60b13e7298140c85d3762492dde6733f8a57"
-    ),
-    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP": (
-        "fdd851347f487c565b067c0593fdb5ac7a3057a2"
-    ),
-    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP": (
-        "7b11bd5179d71a74200fe56075cba5c21212fe6a"
-    ),
+    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit": ("bcfb0b748fc44487c1657fb6ae190592d515398b"),
+    "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit": ("367745bd05b77bf82188f3799677e4beba543e8d"),
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP": ("952031cbfbb9cf31414a57eeb681c34dc08ec1e9"),
+    "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP": ("6a4c220734f81112555ee8783d91e0065c54301c"),
+    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP": ("d2a6ac9d59655f0b86a57a64ed85616d0a10e27e"),
+    "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP": ("7ad79df2b0c272431f3e927b133b7dc3d70872f4"),
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP": ("490b1183ce4505e79334423547422204fb9144d0"),
+    "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-6bit-MTP": ("940a60b13e7298140c85d3762492dde6733f8a57"),
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-4bit-MTP": ("fdd851347f487c565b067c0593fdb5ac7a3057a2"),
+    "AutomatosX/AX-gemma-4-31b-MLX-AXQ-6bit-MTP": ("7b11bd5179d71a74200fe56075cba5c21212fe6a"),
 }
 
 # Hub Checkpoint Tier 1 packs are pinned but not labeled candidate
@@ -1631,9 +1559,7 @@ def _download_summary(
         )
     else:
         result = (
-            _run_capture(command)
-            if environment is None
-            else _run_capture(command, env=environment)
+            _run_capture(command) if environment is None else _run_capture(command, env=environment)
         )
     summary = _parse_download_summary(result.stdout)
     if summary is not None:
@@ -1964,9 +1890,7 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
                 "repo_id": repo_id,
                 "revision": revision,
                 "preset": preset,
-                "certification": (
-                    _profile_certification(profile) if profile is not None else None
-                ),
+                "certification": (_profile_certification(profile) if profile is not None else None),
                 "path": model_dir,
                 "resolution": "local_cache_then_download",
                 "download": {
@@ -2007,9 +1931,7 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict[str, Any]]:
                 "model": target,
                 "repo_id": summary.get("repo_id", repo_id),
                 "revision": summary.get("revision", revision),
-                "certification": (
-                    _profile_certification(profile) if profile is not None else None
-                ),
+                "certification": (_profile_certification(profile) if profile is not None else None),
                 "path": model_dir,
                 "resolution": "local_cache_then_download",
                 "download": {
@@ -2080,9 +2002,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
     )
     if interactive:
         try:
-            return _run_interactive_download(
-                args.force, local_only=args.local_only, dest=args.dest
-            )
+            return _run_interactive_download(args.force, local_only=args.local_only, dest=args.dest)
         except EOFError as error:
             # Piped answers work; an exhausted or closed stdin gets guidance,
             # not a traceback.

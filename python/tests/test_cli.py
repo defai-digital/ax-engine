@@ -811,9 +811,10 @@ class AxEngineCliTests(unittest.TestCase):
             ("qwen3.8-flash-next:axq-6bit", "d514dcebf3086068ed7968caf395083c95ebcfca"),
         )
         for alias, revision in cases:
-            with self.subTest(alias=alias), unittest.mock.patch.object(
-                _cli, "_run_capture", return_value=Result()
-            ) as capture:
+            with (
+                self.subTest(alias=alias),
+                unittest.mock.patch.object(_cli, "_run_capture", return_value=Result()) as capture,
+            ):
                 code, summary, _ = _cli._download_summary(alias)
             self.assertEqual(code, 0)
             self.assertIn(f"--revision={revision}", capture.call_args.args[0])
@@ -846,9 +847,7 @@ class AxEngineCliTests(unittest.TestCase):
     def test_download_helper_uses_equals_for_option_like_values(self) -> None:
         class Result:
             returncode = 0
-            stdout = json.dumps(
-                {"schema_version": "ax.download_model.v1", "status": "ready"}
-            )
+            stdout = json.dumps({"schema_version": "ax.download_model.v1", "status": "ready"})
             stderr = ""
 
         commands: list[list[str]] = []
@@ -868,7 +867,9 @@ class AxEngineCliTests(unittest.TestCase):
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
         with (
             tempfile.TemporaryDirectory() as cache,
-            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
         ):
             code, stdout = self.capture_main(
                 [
@@ -942,7 +943,9 @@ class AxEngineCliTests(unittest.TestCase):
     def test_serve_axq_dry_run_uses_pinned_candidate_snapshot(self) -> None:
         with (
             tempfile.TemporaryDirectory() as cache,
-            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
         ):
             code, stdout = self.capture_main(
                 [
@@ -968,9 +971,7 @@ class AxEngineCliTests(unittest.TestCase):
             "8c37715c7b5f5ebca00eda6f73be47116a3e4ebc",
         )
         self.assertTrue(
-            resolved["path"].endswith(
-                "snapshots/8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"
-            )
+            resolved["path"].endswith("snapshots/8c37715c7b5f5ebca00eda6f73be47116a3e4ebc")
         )
         self.assertTrue(resolved["download"]["required"])
 
@@ -1008,8 +1009,12 @@ class AxEngineCliTests(unittest.TestCase):
                 "status": "ready",
             }
             with (
-                unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
-                unittest.mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as run,
+                unittest.mock.patch.object(
+                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+                ),
+                unittest.mock.patch.object(
+                    _cli, "_download_summary", return_value=(0, summary, "")
+                ) as run,
                 unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")),
                 self.assertRaisesRegex(RuntimeError, "stop"),
             ):
@@ -1029,7 +1034,9 @@ class AxEngineCliTests(unittest.TestCase):
     def test_serve_dry_run_json_uses_gemma4_12b_server_preset(self) -> None:
         with (
             tempfile.TemporaryDirectory() as cache,
-            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
         ):
             code, stdout = self.capture_main(
                 [
@@ -1130,9 +1137,13 @@ class AxEngineCliTests(unittest.TestCase):
 
         with (
             unittest.mock.patch.object(_cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"),
-            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
             unittest.mock.patch.object(_cli, "_package_version", return_value="6.4.5"),
-            unittest.mock.patch.object(_cli, "_run_capture", side_effect=run_capture) as run_capture_mock,
+            unittest.mock.patch.object(
+                _cli, "_run_capture", side_effect=run_capture
+            ) as run_capture_mock,
         ):
             code, stdout = self.capture_main(
                 [
@@ -1269,7 +1280,9 @@ class AxEngineCliTests(unittest.TestCase):
         }
         with (
             unittest.mock.patch.object(_cli, "_bench_bin", return_value="ax-engine-bench"),
-            unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
+            unittest.mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
             unittest.mock.patch.object(_cli, "_package_version", return_value="6.9.0"),
             unittest.mock.patch.object(_cli, "_host_system_summary", return_value=host),
             unittest.mock.patch.object(_cli, "_run_capture", side_effect=run_capture),
@@ -1534,8 +1547,12 @@ class AxEngineCliTests(unittest.TestCase):
                         "FAKE_MODEL_DIR": str(model_dir),
                     },
                 ),
-                unittest.mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"),
-                unittest.mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+                unittest.mock.patch.object(
+                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+                ),
+                unittest.mock.patch.object(
+                    os, "execvp", side_effect=RuntimeError("stop")
+                ) as execvp,
                 self.assertRaisesRegex(RuntimeError, "stop"),
             ):
                 self.capture_main(["serve", "ax-qwen3.6-35b"])
@@ -1775,7 +1792,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         with (
             unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
             unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            unittest.mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
+            unittest.mock.patch.object(
+                _cli, "_download_summary", return_value=(0, summary, "")
+            ) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 
@@ -1805,7 +1824,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         with (
             unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
             unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            unittest.mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
+            unittest.mock.patch.object(
+                _cli, "_download_summary", return_value=(0, summary, "")
+            ) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 
@@ -1827,7 +1848,9 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         with (
             unittest.mock.patch.object(_cli, "_supports_interactive", return_value=True),
             unittest.mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
-            unittest.mock.patch.object(_cli, "_download_summary", return_value=(0, summary, "")) as download,
+            unittest.mock.patch.object(
+                _cli, "_download_summary", return_value=(0, summary, "")
+            ) as download,
         ):
             code, stdout = self.capture_main(["ui-downloader"])
 
