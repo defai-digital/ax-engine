@@ -454,4 +454,15 @@ async fn metrics_step_counters_survive_model_unload() {
     );
     // The retired generation's per-model labeled series is gone.
     assert!(!body.contains("ax_engine_steps_total{model=\"qwen3\"}"));
+    // With no live model holding a cached step, the gauge series must be
+    // skipped entirely: a `kv_free_blocks 0` line would read as an exhausted
+    // cache rather than an absent model.
+    assert!(
+        !body.contains("ax_engine_kv_free_blocks"),
+        "gauge series must not be emitted when no live model has a cached step: {body}"
+    );
+    assert!(
+        !body.contains("ax_engine_step_scheduled_requests"),
+        "step gauges must not be emitted when no live model has a cached step: {body}"
+    );
 }

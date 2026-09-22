@@ -240,10 +240,18 @@ impl ToolCallStreamScanner {
                         // can never succeed (the bytes before it are fixed).
                         let rest = &self.buffer[self.span_scan_offset..];
                         let Some(relative) = rest.find(closer) else {
-                            self.span_scan_offset = self
+                            // The remembered resume offset can land inside a
+                            // multi-byte UTF-8 character; the next push slices
+                            // `&buffer[offset..]`, so round it down to the
+                            // nearest char boundary first.
+                            let mut offset = self
                                 .buffer
                                 .len()
                                 .saturating_sub(closer.len().saturating_sub(1));
+                            while !self.buffer.is_char_boundary(offset) {
+                                offset -= 1;
+                            }
+                            self.span_scan_offset = offset;
                             return events;
                         };
                         let close_at = self.span_scan_offset + relative;
@@ -828,6 +836,31 @@ mod tests {
         assert_eq!(calls.len(), 1, "content: {:?}", content(&events));
         assert_eq!(calls[0].function.name, "a");
         assert_eq!(content(&events), xml);
+    }
+
+    #[test]
+    fn xml_call_with_multibyte_arguments_survives_byte_chunk_streaming() {
+        // The JSON argument carries accented letters and an ellipsis. Streamed
+        // one char at a time (1-3 bytes per push), the remembered resume
+        // offset (`len - (closer.len() - 1)`) can land inside a multi-byte
+        // character; it must be rounded to a char boundary instead of panicking
+        // on the next push's `&buffer[offset..]` slice.
+        let text = "<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"caf\u{e9} \u{2026} na\u{ef}ve\"}}</tool_call>";
+        let (function, _) =
+            extract_xml_tool_call_payload_at(text, 0).expect("whole-string XML call extracts");
+
+        let mut scanner = scanner();
+        let mut events = Vec::new();
+        for (index, ch) in text.char_indices() {
+            events.extend(scanner.push(&text[index..index + ch.len_utf8()]));
+        }
+        events.extend(scanner.finish());
+
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, function.name);
+        assert_eq!(calls[0].function.arguments, function.arguments);
+        assert!(content(&events).is_empty());
     }
 
     #[test]

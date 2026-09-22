@@ -570,6 +570,61 @@ async fn ollama_generate_keep_alive_zero_unloads_loaded_model() {
 }
 
 #[tokio::test]
+async fn ollama_generate_keep_alive_zero_on_single_model_answers_unload_and_keeps_model() {
+    // A single-model server cannot retire its last resident model (the serving
+    // arbiter keeps the registry non-empty so omitted-`model` requests resolve
+    // deterministically). A pure `keep_alive: 0` unload must honor the Ollama
+    // lifecycle contract -- `done_reason: "unload"` plus a warning -- and keep
+    // the model resident, never a 4xx.
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "keep_alive": 0
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["response"], json!(""));
+    assert_eq!(json["done"], json!(true));
+    assert_eq!(json["done_reason"], json!("unload"));
+    assert!(
+        json.get("warning")
+            .and_then(Value::as_str)
+            .is_some_and(|warning| warning.contains("last resident model")),
+        "single-model unload must document the refusal: {json}"
+    );
+
+    let (tags_status, tags_json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/api/tags")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(tags_status, StatusCode::OK);
+    let names = tags_json["models"]
+        .as_array()
+        .expect("tags should list models")
+        .iter()
+        .map(|model| model["name"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(
+        names.contains(&"qwen3"),
+        "the last resident model must stay loaded: {names:?}"
+    );
+}
+
+#[tokio::test]
 async fn ollama_generate_rejects_context_replay_until_supported() {
     let app = build_router(llama_cpp_state());
     let (status, json) = json_response(
@@ -634,6 +689,58 @@ async fn ollama_generate_rejects_num_ctx_above_ax_session_limit() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_ollama_error_response(&json, "options.num_ctx");
     assert_ollama_error_response(&json, "configured for 16384");
+}
+
+#[tokio::test]
+async fn ollama_generate_rejects_num_ctx_overflow_beyond_u32() {
+    // A positive num_ctx above the u32 range must be rejected (not mapped to
+    // the unset sentinel and silently skipped), so the window and prompt-budget
+    // checks still run.
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "prompt": "hello",
+                "options": {"num_ctx": 5000000000_u64}
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "options.num_ctx");
+    assert_ollama_error_response(&json, "exceeds the u32 range");
+}
+
+#[tokio::test]
+async fn ollama_generate_rejects_top_k_overflow_beyond_u32() {
+    // A huge top_k silently became the backend default; a positive value above
+    // the u32 range must now be rejected with the Ollama error envelope.
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "prompt": "hello",
+                "options": {"top_k": 5000000000_u64}
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "options.top_k");
+    assert_ollama_error_response(&json, "exceeds the u32 range");
 }
 
 #[tokio::test]

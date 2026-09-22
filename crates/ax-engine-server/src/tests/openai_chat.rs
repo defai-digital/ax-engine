@@ -2106,18 +2106,35 @@ async fn openai_chat_request_rejects_parallel_tool_calls_false() {
     // `parallel_tool_calls` is an OpenAI chat field, not an AX extension; the
     // tool-call parser can still emit several calls, so `false` must fail
     // closed (matching the stateless `/v1/responses` surface) instead of being
-    // silently ignored. `true` and absent stay accepted.
+    // silently ignored -- but only when tools are actually enabled. With no
+    // `tools` / `tool_choice` the constraint is vacuously satisfied and `false`
+    // is accepted. `true` and absent stay accepted.
     let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
     let live = state.snapshot();
 
+    // Without tools, `false` proceeds (nothing to constrain).
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": 8,
         "parallel_tool_calls": false
     }))
     .expect("sample chat request should deserialize");
+    build_openai_chat_request(&live, request)
+        .expect("parallel_tool_calls=false without tools should still build");
+
+    // With tools enabled, `false` fails closed.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 8,
+        "parallel_tool_calls": false,
+        "tools": [{
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {"type": "object"}}
+        }]
+    }))
+    .expect("sample chat request should deserialize");
     let error = match build_openai_chat_request(&live, request) {
-        Ok(_) => panic!("parallel_tool_calls=false must fail closed instead of being ignored"),
+        Ok(_) => panic!("parallel_tool_calls=false with tools must fail closed"),
         Err(error) => error,
     };
     assert_eq!(error.0, StatusCode::BAD_REQUEST);

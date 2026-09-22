@@ -1,6 +1,6 @@
 use crate::app_state::{EmbeddingBatchKey, EmbeddingBatchRequestOptions};
 use crate::embeddings::microbatch::{collect_embedding_batch_groups, pooling_code};
-use crate::openai::embeddings::embedding_input_tokens;
+use crate::openai::embeddings::{DEFAULT_EMBED_MAX_ITEMS, embedding_input_tokens};
 use crate::openai::schema::{EmbeddingInput, OpenAiEmbeddingRequest};
 use crate::routes::build_router;
 use ax_engine_sdk::EmbeddingPooling;
@@ -249,6 +249,61 @@ async fn openai_embeddings_endpoint_rejects_unknown_pooling() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_invalid_request_response(&json, "unknown pooling strategy");
+}
+
+#[tokio::test]
+async fn openai_embeddings_rejects_batches_above_the_item_cap() {
+    // The documented max_items cap (default 2048) bounds the batch size
+    // regardless of per-item token counts; a 2049-item batch of one-token
+    // inputs must be rejected with the invalid_request envelope.
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    let batch: Vec<Vec<u32>> = (0..=DEFAULT_EMBED_MAX_ITEMS).map(|_| vec![1]).collect();
+    let body = json!({
+        "model": super::fixtures::TEST_MODEL_ID,
+        "input": batch,
+    });
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&body)))
+            .expect("request should build"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid_request_response(
+        &json,
+        &format!("exceeding the maximum of {DEFAULT_EMBED_MAX_ITEMS}"),
+    );
+}
+
+#[tokio::test]
+async fn openai_embeddings_rejects_batches_above_the_total_token_cap() {
+    // The batch-total token cap (default 8192 * 64) bounds the sum of every
+    // item's tokens: 65 items of 8192 tokens each is 532480 > 524288 while
+    // every item stays under the 8192 per-item cap.
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    let batch: Vec<Vec<u32>> = (0..65).map(|_| vec![1_u32; 8192]).collect();
+    let body = json!({
+        "model": super::fixtures::TEST_MODEL_ID,
+        "input": batch,
+    });
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/embeddings")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&body)))
+            .expect("request should build"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid_request_response(&json, "batch token count");
 }
 
 #[tokio::test]

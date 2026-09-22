@@ -25,7 +25,9 @@ use crate::generation::service::{
     resolve_long_prefill_exclusive, resolve_sibling_engine_step_burst,
     resolve_worker_recycle_after_ticks,
 };
-use crate::openai::embeddings::{DEFAULT_EMBED_MAX_TOKENS, DEFAULT_EMBED_TIMEOUT_MS};
+use crate::openai::embeddings::{
+    DEFAULT_EMBED_MAX_BATCH_TOKENS, DEFAULT_EMBED_MAX_TOKENS, DEFAULT_EMBED_TIMEOUT_MS,
+};
 
 pub(crate) const AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT_ENV: &str =
     "AX_SERVER_EXEC_ARBITER_MAX_CONCURRENT";
@@ -39,6 +41,7 @@ pub(crate) const AX_SERVER_SIBLING_ENGINE_STEP_BURST_ENV: &str =
     "AX_SERVER_SIBLING_ENGINE_STEP_BURST";
 pub(crate) const AX_SERVER_SCHED_DEBUG_ENV: &str = "AX_SERVER_SCHED_DEBUG";
 pub(crate) const AX_ENGINE_EMBED_MAX_TOKENS_ENV: &str = "AX_ENGINE_EMBED_MAX_TOKENS";
+pub(crate) const AX_ENGINE_EMBED_MAX_BATCH_TOKENS_ENV: &str = "AX_ENGINE_EMBED_MAX_BATCH_TOKENS";
 pub(crate) const AX_ENGINE_EMBED_TIMEOUT_MS_ENV: &str = "AX_ENGINE_EMBED_TIMEOUT_MS";
 pub(crate) const AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS_ENV: &str =
     "AX_ENGINE_EMBED_MICROBATCH_WINDOW_MS";
@@ -99,6 +102,12 @@ pub(crate) struct ServerEnvConfig {
     /// Accepted: any positive integer; `0`, empty, or unparseable values
     /// fall back to the default. Whitespace is trimmed.
     pub(crate) embed_max_tokens: usize,
+    /// `AX_ENGINE_EMBED_MAX_BATCH_TOKENS` (default `8192 * 64` = `524288`):
+    /// maximum total tokens accepted across a whole `/v1/embeddings` batch
+    /// (the sum of every item's token count). Accepted: any positive integer;
+    /// `0`, empty, or unparseable values fall back to the default. Whitespace
+    /// is trimmed.
+    pub(crate) embed_max_batch_tokens: usize,
     /// `AX_ENGINE_EMBED_TIMEOUT_MS` for `/v1/embeddings` (default
     /// `30000`): per-request embedding timeout. Accepted: any positive
     /// integer; `0`, empty, or unparseable values fall back to the
@@ -163,6 +172,10 @@ impl ServerEnvConfig {
             embed_max_tokens: parse_embedding_max_tokens(
                 vars(AX_ENGINE_EMBED_MAX_TOKENS_ENV),
                 DEFAULT_EMBED_MAX_TOKENS,
+            ),
+            embed_max_batch_tokens: parse_embedding_max_tokens(
+                vars(AX_ENGINE_EMBED_MAX_BATCH_TOKENS_ENV),
+                DEFAULT_EMBED_MAX_BATCH_TOKENS,
             ),
             embed_timeout_ms: parse_embedding_timeout_ms(
                 vars(AX_ENGINE_EMBED_TIMEOUT_MS_ENV),
@@ -274,6 +287,7 @@ mod tests {
         assert_eq!(config.sibling_engine_step_burst, 16);
         assert!(!config.sched_debug);
         assert_eq!(config.embed_max_tokens, 8192);
+        assert_eq!(config.embed_max_batch_tokens, 8192 * 64);
         assert_eq!(config.embed_timeout_ms, 30_000);
         assert_eq!(config.embed_records_timeout_ms, 60_000);
         assert_eq!(config.embed_microbatch_window, Duration::from_millis(2));
@@ -410,6 +424,21 @@ mod tests {
         assert_eq!(resolve(Some("-1")), 8192);
         assert_eq!(resolve(Some("many")), 8192);
         assert_eq!(resolve(Some("")), 8192);
+    }
+
+    #[test]
+    fn embed_max_batch_tokens_round_trips() {
+        let resolve = |value: Option<&str>| {
+            ServerEnvConfig::from_vars(single_var(AX_ENGINE_EMBED_MAX_BATCH_TOKENS_ENV, value))
+                .embed_max_batch_tokens
+        };
+        assert_eq!(resolve(None), 8192 * 64);
+        assert_eq!(resolve(Some("1048576")), 1048576);
+        assert_eq!(resolve(Some(" 1048576 ")), 1048576);
+        assert_eq!(resolve(Some("0")), 8192 * 64);
+        assert_eq!(resolve(Some("-1")), 8192 * 64);
+        assert_eq!(resolve(Some("many")), 8192 * 64);
+        assert_eq!(resolve(Some("")), 8192 * 64);
     }
 
     #[test]

@@ -671,7 +671,7 @@ fn responses_usage(usage: Option<&Value>) -> Value {
         "input_tokens": prompt_tokens,
         "input_tokens_details": {"cached_tokens": cached_tokens},
         "output_tokens": completion_tokens,
-        "output_tokens_details": {"reasoning_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": null},
         "total_tokens": total_tokens
     })
 }
@@ -998,6 +998,13 @@ mod tests {
         assert_eq!(response["usage"]["input_tokens"], 11);
         assert!(response["usage"]["output_tokens"].is_null());
         assert_eq!(response["usage"]["total_tokens"], 11);
+        // The reasoning count is not surfaced by /v1/chat/completions, so it
+        // stays null rather than a fabricated 0 (matching the sibling counts).
+        assert!(
+            response["usage"]["output_tokens_details"]["reasoning_tokens"].is_null(),
+            "reasoning_tokens must be null when unknown: {}",
+            response["usage"]
+        );
 
         // Nothing known at all: emit null, matching /v1/chat/completions.
         let response = build_responses_output(

@@ -245,7 +245,12 @@ impl OpenAiResponseOptions {
             request.logit_bias.as_ref(),
         )?;
         reject_unsupported_top_logprobs(request.top_logprobs)?;
-        if request.parallel_tool_calls == Some(false) {
+        // `parallel_tool_calls: false` is only meaningful when tools are
+        // actually enabled; without `tools` / `tool_choice` the constraint is
+        // vacuously satisfied and echoing `false` misrepresents nothing.
+        if request.parallel_tool_calls == Some(false)
+            && openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref())
+        {
             // Echoing `false` while the tool-call parser can still emit several
             // calls would misrepresent the response; fail closed until it is
             // enforced, matching the stateless `/v1/responses` surface.

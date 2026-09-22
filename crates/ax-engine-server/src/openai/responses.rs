@@ -187,23 +187,42 @@ fn openai_completion_logprobs(
     // Legacy completions logprobs carry the decoded token text plus
     // cumulative byte offsets into the completion text. Without a tokenizer
     // handle the block is omitted rather than emitting opaque token-id
-    // strings. (Per-token decode can render U+FFFD for codepoints split
-    // across tokens; accepted here since offsets are per-token.)
+    // strings.
     let tokenizer = tokenizer?;
     let mut tokens = Vec::with_capacity(response.output_tokens.len());
     let mut text_offset = Vec::with_capacity(response.output_tokens.len());
-    let mut offset = 0u32;
-    for token in &response.output_tokens {
-        let decoded = tokenizer.decode(std::slice::from_ref(token), false).ok()?;
-        text_offset.push(offset);
-        offset = offset.saturating_add(decoded.len() as u32);
-        tokens.push(decoded);
+    let mut logprobs = Vec::with_capacity(response.output_tokens.len());
+    // Decode the prefix `tokens[..=i]` incrementally and take the delta, so
+    // each token renders exactly as the tokenizer renders it in context: a
+    // leading-space token decoded alone can render without its space, and
+    // summing per-token decode lengths would then misalign the offsets with
+    // the completion text. Offsets therefore index the running decoded output.
+    let mut decoded_prefix = String::new();
+    for (i, logprob) in token_logprobs.into_iter().enumerate() {
+        text_offset.push(u32::try_from(decoded_prefix.len()).unwrap_or(u32::MAX));
+        match tokenizer.decode(&response.output_tokens[..=i], false) {
+            Ok(prefix) => {
+                // The delta is the token's in-context rendering; `strip_prefix`
+                // degrades to an empty token if the decode is non-monotonic
+                // (e.g. byte-fallback) instead of panicking on a slice.
+                let token_text = prefix.strip_prefix(decoded_prefix.as_str()).unwrap_or("");
+                tokens.push(token_text.to_string());
+                logprobs.push(logprob);
+                decoded_prefix = prefix;
+            }
+            Err(_) => {
+                // A single decode failure no longer drops the whole block: emit
+                // an empty token with a null logprob for this entry.
+                tokens.push(String::new());
+                logprobs.push(None);
+            }
+        }
     }
     Some(OpenAiCompletionLogprobs {
         tokens,
         text_offset,
         top_logprobs: vec![None; response.output_tokens.len()],
-        token_logprobs,
+        token_logprobs: logprobs,
     })
 }
 

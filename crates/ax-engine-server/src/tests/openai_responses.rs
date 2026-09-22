@@ -61,8 +61,10 @@ fn completion_logprobs_decode_token_text_and_byte_offsets() {
         .as_ref()
         .expect("sampled logprobs should be present");
     // Decoded token strings, not decimal token-id strings, with cumulative
-    // byte offsets into the completion text.
-    assert_eq!(logprobs.tokens, vec!["hello", "openai"]);
+    // byte offsets into the completion text. The second token renders with its
+    // in-context leading space (the tokenizer joins decoded tokens with a
+    // space), so offsets index the actual completion text "hello openai".
+    assert_eq!(logprobs.tokens, vec!["hello", " openai"]);
     assert_eq!(logprobs.text_offset, vec![0, 5]);
     assert_eq!(logprobs.token_logprobs, vec![Some(-0.25), Some(-0.5)]);
     assert_eq!(logprobs.top_logprobs, vec![None, None]);

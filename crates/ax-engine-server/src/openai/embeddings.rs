@@ -18,6 +18,15 @@ use crate::openai::validation::select_model;
 
 pub(crate) const DEFAULT_EMBED_MAX_TOKENS: usize = 8192;
 pub(crate) const DEFAULT_EMBED_TIMEOUT_MS: u64 = 30_000;
+/// Maximum number of input items accepted per embedding request, matching
+/// OpenAI's batch-input ceiling. Applied to both `input` text batches and
+/// token batches.
+pub(crate) const DEFAULT_EMBED_MAX_ITEMS: usize = 2048;
+/// Maximum total tokens accepted across a whole embedding batch (the sum of
+/// every item's token count). Defaults to 64 times the per-item cap, matching
+/// OpenAI's 64x batch-total scale. Start-up-overridable via
+/// `AX_ENGINE_EMBED_MAX_BATCH_TOKENS` (see `ServerEnvConfig`).
+pub(crate) const DEFAULT_EMBED_MAX_BATCH_TOKENS: usize = DEFAULT_EMBED_MAX_TOKENS * 64;
 
 pub(crate) async fn openai_embeddings(
     State(state): State<AppState>,
@@ -79,13 +88,29 @@ pub(crate) async fn openai_embeddings(
             ));
         }
     }
+    // Item-count cap: OpenAI rejects batches above 2048 inputs, and AX must
+    // fail closed rather than silently queueing an unbounded batch.
+    if batch.len() > DEFAULT_EMBED_MAX_ITEMS {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "input has {} items, exceeding the maximum of {DEFAULT_EMBED_MAX_ITEMS}",
+                batch.len()
+            ),
+        ));
+    }
     // Start-up-resolved AX_ENGINE_EMBED_MAX_TOKENS (default 8192; see
     // ServerEnvConfig for the accepted values).
     let max_tokens = state.env.embed_max_tokens;
+    // Start-up-resolved AX_ENGINE_EMBED_MAX_BATCH_TOKENS (default 8192 * 64):
+    // the running total of every item's token count must also fit the batch
+    // budget, or a 1000-item batch of per-item-valid inputs would bypass any
+    // aggregate bound.
+    let max_batch_tokens = state.env.embed_max_batch_tokens;
     // The cap is per item: each embedding input must fit within max_tokens
     // on its own (matching OpenAI, where batch items are embedded
-    // independently); a batch is only rejected when a single item exceeds
-    // the cap. No batch-total limit exists. The running total still feeds
+    // independently). The running total still feeds the batch-total cap and
     // usage reporting below.
     let mut token_count = 0usize;
     for (i, ids) in batch.iter().enumerate() {
@@ -101,6 +126,16 @@ pub(crate) async fn openai_embeddings(
                 ),
             ));
         }
+    }
+    if token_count > max_batch_tokens {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "batch token count ({token_count}) exceeds maximum ({max_batch_tokens}); \
+                 set AX_ENGINE_EMBED_MAX_BATCH_TOKENS to override"
+            ),
+        ));
     }
     // Start-up-resolved AX_ENGINE_EMBED_TIMEOUT_MS (default 30_000 for
     // this endpoint; the records endpoint keeps its own longer default).

@@ -247,6 +247,12 @@ pub(crate) struct OllamaGenerateResponse {
     done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     done_reason: Option<&'static str>,
+    /// Set only when a `keep_alive: 0` unload was requested but the serving
+    /// arbiter refused to retire the last resident model; the client is still
+    /// answered with `done_reason: "unload"` so the Ollama lifecycle contract
+    /// holds, while this field documents that the model stayed resident.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     context: Vec<u32>,
     total_duration: u64,
@@ -522,18 +528,39 @@ async fn ollama_generate_inner(
         select_openai_model(&state, request.model.as_deref()).map_err(ollama_model_status)?;
     let num_ctx = validate_ollama_num_ctx(&live, request.options.num_ctx)?;
     let keep_alive_unload = keep_alive_requests_unload(request.keep_alive.as_ref());
-    if let Some(response) = ollama_generate_lifecycle_response(&live, &request) {
+    if let Some(mut response) = ollama_generate_lifecycle_response(&live, &request) {
         // Pure unload form: Ollama unloads the model before answering, so a
         // failed unload must surface instead of claiming `done_reason:
-        // "unload"` while the model stays resident.
+        // "unload"` while the model stays resident. The one exception is the
+        // last-model guard, which is a hard invariant of the serving arbiter
+        // (the registry must never be empty, so omitted-`model` requests keep
+        // resolving deterministically): on a single-model server there is no
+        // resident model to swap in, so honor the Ollama lifecycle contract by
+        // answering `done_reason: "unload"` with a documented warning and keep
+        // the model resident rather than returning a 4xx.
         if keep_alive_unload {
-            crate::model_load::perform_unload(
+            match crate::model_load::perform_unload(
                 &state,
                 live.model_id.as_ref().to_string(),
                 crate::model_load::UnloadWaitPolicy::WaitForIdle,
             )
             .await
-            .map_err(ollama_model_status)?;
+            {
+                Ok(()) => {}
+                Err((status, Json(body)))
+                    if status == StatusCode::CONFLICT
+                        && body.error.code.as_deref() == Some("last_model") =>
+                {
+                    tracing::warn!(
+                        model_id = %live.model_id,
+                        "keep_alive unload refused: last resident model cannot be unloaded; keeping it resident"
+                    );
+                    response.warning = Some(
+                        "last resident model cannot be unloaded; model kept resident".to_string(),
+                    );
+                }
+                Err(error) => return Err(ollama_model_status(error)),
+            }
         }
         return Ok(Json(response).into_response());
     }
@@ -910,16 +937,10 @@ fn ollama_chat_to_openai_request(
         max_completion_tokens: None,
         temperature: request.options.temperature,
         top_p: request.options.top_p,
-        top_k: request
-            .options
-            .top_k
-            .and_then(|top_k| u32::try_from(top_k).ok()),
+        top_k: ollama_u32_option(request.options.top_k, "top_k")?,
         min_p: request.options.min_p,
         repetition_penalty: request.options.repeat_penalty,
-        repetition_context_size: request
-            .options
-            .repeat_last_n
-            .and_then(|repeat_last_n| u32::try_from(repeat_last_n).ok()),
+        repetition_context_size: ollama_u32_option(request.options.repeat_last_n, "repeat_last_n")?,
         skip_special_tokens: None,
         vllm_xargs: None,
         stop: request.options.stop.map(OllamaStopInput::into_openai_stop),
@@ -978,16 +999,10 @@ fn ollama_generate_to_openai_request(
         max_completion_tokens: None,
         temperature: request.options.temperature,
         top_p: request.options.top_p,
-        top_k: request
-            .options
-            .top_k
-            .and_then(|top_k| u32::try_from(top_k).ok()),
+        top_k: ollama_u32_option(request.options.top_k, "top_k")?,
         min_p: request.options.min_p,
         repetition_penalty: request.options.repeat_penalty,
-        repetition_context_size: request
-            .options
-            .repeat_last_n
-            .and_then(|repeat_last_n| u32::try_from(repeat_last_n).ok()),
+        repetition_context_size: ollama_u32_option(request.options.repeat_last_n, "repeat_last_n")?,
         skip_special_tokens: None,
         vllm_xargs: None,
         stop: request.options.stop.map(OllamaStopInput::into_openai_stop),
@@ -1034,6 +1049,7 @@ fn ollama_generate_lifecycle_response(
         response: String::new(),
         done: true,
         done_reason: keep_alive_requests_unload(request.keep_alive.as_ref()).then_some("unload"),
+        warning: None,
         context: Vec::new(),
         total_duration: 0,
         load_duration: 0,
@@ -1101,6 +1117,30 @@ fn reject_ollama_tools_without_support(
     ))
 }
 
+/// Resolve a signed Ollama integer option into an optional `u32`. Negative
+/// values are Ollama's "unset/default" sentinel and map to `None`; a positive
+/// value above the `u32` range is a client error and is rejected with the
+/// Ollama error envelope instead of silently falling back to the default.
+fn ollama_u32_option(
+    value: Option<i64>,
+    field: &'static str,
+) -> Result<Option<u32>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value < 0 {
+        return Ok(None);
+    }
+    let Ok(converted) = u32::try_from(value) else {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("Ollama options.{field} value {value} exceeds the u32 range"),
+        ));
+    };
+    Ok(Some(converted))
+}
+
 /// Validate `options.num_ctx` against the session window and return the
 /// resolved positive value (negative means unset/default, mirroring Ollama's
 /// integer sentinels). The value is a client-side budget only: AX has no
@@ -1110,7 +1150,7 @@ fn validate_ollama_num_ctx(
     live: &LiveState,
     requested: Option<i64>,
 ) -> Result<Option<u32>, (StatusCode, Json<ErrorResponse>)> {
-    let Some(requested) = requested.and_then(|value| u32::try_from(value).ok()) else {
+    let Some(requested) = ollama_u32_option(requested, "num_ctx")? else {
         return Ok(None);
     };
     let available = context_length(live);
@@ -1607,6 +1647,7 @@ fn ollama_generate_response_from_generate(response: GenerateResponse) -> OllamaG
         response: response.output_text.unwrap_or_default(),
         done: true,
         done_reason: openai_finish_reason(response.finish_reason).and_then(ollama_done_reason),
+        warning: None,
         context: Vec::new(),
         total_duration: 0,
         load_duration: 0,
@@ -2400,6 +2441,28 @@ mod tests {
     }
 
     #[test]
+    fn ollama_u32_option_maps_negative_to_none_and_rejects_overflow() {
+        assert_eq!(ollama_u32_option(None, "num_ctx").unwrap(), None);
+        assert_eq!(ollama_u32_option(Some(-1), "num_ctx").unwrap(), None);
+        assert_eq!(ollama_u32_option(Some(0), "num_ctx").unwrap(), Some(0));
+        assert_eq!(
+            ollama_u32_option(Some(2048), "num_ctx").unwrap(),
+            Some(2048)
+        );
+        // A positive value above the u32 range must be rejected, never silently
+        // mapped to None like the negative unset sentinel.
+        let (status, Json(body)) = ollama_u32_option(Some(5_000_000_000), "num_ctx")
+            .expect_err("positive overflow must be rejected");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.error.code.as_deref(), Some("invalid_request"));
+        assert!(
+            body.error.message.contains("num_ctx"),
+            "unexpected message: {}",
+            body.error.message
+        );
+    }
+
+    #[test]
     fn generate_stream_final_chunk_omits_context() {
         // Per the Ollama API spec, the context field is only present in
         // non-streaming responses, not in streaming final chunks.
@@ -2409,6 +2472,7 @@ mod tests {
             response: String::new(),
             done: true,
             done_reason: Some("stop"),
+            warning: None,
             context: vec![1, 2, 3],
             total_duration: 100,
             load_duration: 10,
