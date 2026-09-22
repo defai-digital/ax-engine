@@ -13248,10 +13248,12 @@ fn mtp_next_adaptive_depth(
     draft_observations: Option<(u32, u32, u32, u32)>,
 ) -> (usize, bool) {
     let fixed_depth = crate::fastpath::mtp_fixed_draft_depth();
+    let w = qwen_linear_max_verify_drafts().min(max_depth);
     let conservative_depth = crate::fastpath::mtp_conservative_depth_enabled()
         && draft_observations.is_some_and(mtp_conservative_depth_admitted)
         && depth3_miss_backoff_enabled
-        && max_depth == 3
+        && w >= 3
+        && max_depth == w
         && fixed_depth.is_none();
     let depth = mtp_next_adaptive_depth_with_policy(
         current_depth,
@@ -13320,6 +13322,37 @@ fn mtp_next_adaptive_depth_with_policy(
     aggressive_miss_to_zero: bool,
     policy: MtpAdaptiveDepthPolicy,
 ) -> usize {
+    mtp_next_adaptive_depth_with_policy_for_window(
+        current_depth,
+        max_depth,
+        pending_len,
+        accept_count,
+        consecutive_misses,
+        aggressive_miss_to_zero,
+        policy,
+        qwen_linear_max_verify_drafts(),
+    )
+}
+
+/// Width-parameterized body of [`mtp_next_adaptive_depth_with_policy`].
+///
+/// `window` is the configured throughput window
+/// (`qwen_linear_max_verify_drafts()`); the effective controller width is
+/// `w = window.min(max_depth)`. A head whose loaded depth differs from the
+/// configured window still runs the miss-backoff / hysteresis controllers at
+/// the narrower width, while a head wider than the window stays on the generic
+/// progressive path exactly as before.
+#[allow(clippy::too_many_arguments)]
+fn mtp_next_adaptive_depth_with_policy_for_window(
+    current_depth: usize,
+    max_depth: usize,
+    pending_len: usize,
+    accept_count: usize,
+    consecutive_misses: u32,
+    aggressive_miss_to_zero: bool,
+    policy: MtpAdaptiveDepthPolicy,
+    window: usize,
+) -> usize {
     if max_depth == 0 {
         return 0;
     }
@@ -13328,7 +13361,14 @@ fn mtp_next_adaptive_depth_with_policy(
         return fixed_depth.min(max_depth);
     }
 
-    if policy.depth3_miss_backoff && max_depth == 3 {
+    let w = window.min(max_depth);
+
+    // The miss-backoff / hysteresis controllers were written for the
+    // three-draft throughput window; they apply to the effective width w
+    // (3 by default, 4 under `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH=4`)
+    // with the same shape: start at w, back off to w - 1 only after a
+    // complete miss, any accepted draft restores w.
+    if policy.depth3_miss_backoff && w >= 3 && max_depth == w {
         if policy.conservative_depth {
             let depth = current_depth.clamp(1, max_depth);
             if pending_len == 0 {
@@ -13347,9 +13387,13 @@ fn mtp_next_adaptive_depth_with_policy(
             };
         }
         if pending_len == 0 {
-            return if current_depth == 0 { 3 } else { current_depth };
+            return if current_depth == 0 {
+                w
+            } else {
+                current_depth.clamp(1, max_depth)
+            };
         }
-        return if accept_count == 0 { 2 } else { 3 };
+        return if accept_count == 0 { w - 1 } else { w };
     }
 
     let current_depth = if current_depth == 0 {
@@ -13366,8 +13410,13 @@ fn mtp_next_adaptive_depth_with_policy(
         return current_depth.saturating_add(1).min(max_depth);
     }
 
-    if policy.depth3_hysteresis && current_depth == 3 && pending_len == 3 && accept_count == 2 {
-        return 3.min(max_depth);
+    if policy.depth3_hysteresis
+        && w >= 3
+        && current_depth == w
+        && pending_len == w
+        && accept_count + 1 == w
+    {
+        return w;
     }
 
     // Short-gen stop-loss: complete miss, or half-or-worse accept rate on the
@@ -13415,8 +13464,9 @@ fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usiz
     if let Some(fixed_depth) = crate::fastpath::mtp_fixed_draft_depth() {
         return fixed_depth.min(head_max_depth);
     }
-    if crate::fastpath::mtp_depth3_miss_backoff_enabled() && head_max_depth == 3 {
-        return 3;
+    let w = qwen_linear_max_verify_drafts().min(head_max_depth);
+    if crate::fastpath::mtp_depth3_miss_backoff_enabled() && w >= 3 && head_max_depth == w {
+        return w;
     }
     if crate::fastpath::qwen_linear_throughput_mtp_enabled()
         && matches!(model_family, "qwen3_next" | "qwen3_5")
@@ -16220,6 +16270,64 @@ mod tests {
         assert!(!linear_mtp_projected_replay_allowed(2, false, false, false));
         assert!(!linear_mtp_projected_replay_allowed(2, true, true, false));
         assert!(!linear_mtp_projected_replay_allowed(2, true, false, true));
+    }
+
+    #[test]
+    fn width_generic_miss_backoff_mirrors_the_depth_three_controller() {
+        let policy = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            conservative_depth: false,
+            depth3_miss_backoff: true,
+            depth3_hysteresis: true,
+        };
+        // The controller is width-generic: exercise the `_for_window` helper
+        // explicitly at widths 3 and 4 so a width-4 regression cannot hide.
+        for w in [3, 4] {
+            // Start deep.
+            assert_eq!(
+                mtp_next_adaptive_depth_with_policy_for_window(0, w, 0, 0, 0, false, policy, w),
+                w
+            );
+            // A complete miss backs off by one; any accepted draft restores.
+            assert_eq!(
+                mtp_next_adaptive_depth_with_policy_for_window(w, w, w, 0, 0, false, policy, w),
+                w - 1
+            );
+            assert_eq!(
+                mtp_next_adaptive_depth_with_policy_for_window(
+                    w - 1,
+                    w,
+                    w - 1,
+                    1,
+                    0,
+                    false,
+                    policy,
+                    w
+                ),
+                w
+            );
+            // A stale current depth above max clamps back to the window.
+            assert_eq!(
+                mtp_next_adaptive_depth_with_policy_for_window(8, w, 0, 0, 0, false, policy, w),
+                w
+            );
+        }
+        // Window 4 with a 3-deep head still runs the controller at width 3,
+        // not the generic progressive floor (which would be 0 after two misses).
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy_for_window(3, 3, 3, 0, 2, false, policy, 4),
+            2
+        );
+        // Window 3 with an 8-deep head keeps the hysteresis hold.
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy_for_window(3, 8, 3, 2, 0, false, policy, 3),
+            3
+        );
+        // Window 4 hysteresis hold.
+        assert_eq!(
+            mtp_next_adaptive_depth_with_policy_for_window(4, 4, 4, 3, 0, false, policy, 4),
+            4
+        );
     }
 
     #[test]

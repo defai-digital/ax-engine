@@ -200,6 +200,34 @@ earlier build that left the Metal GDN verify kernels gated to S=2..4 (so S=5
 fell to the generic path) flipped one long_code prompt at token 221; with
 the kernels following the width the streams match.
 
+### Width-aware depth controllers (`depth4/controller/`)
+
+The miss-backoff / hysteresis / conservative-depth controllers were keyed
+to the three-draft window; they now follow the effective window
+`min(configured, head depth)` with the same shape (start at the window,
+back off by one only after a complete miss, any accepted draft restores,
+hold the window after accepting all but its last draft). Default width 3 is
+unchanged. Same binary and contract at depth 4 (`depth4/controller/`):
+
+| suite | depth 4, generic controller | depth 4, window controller | ratio |
+| --- | ---: | ---: | ---: |
+| flappy | 90.37 | 90.72 | 1.004x |
+| long_code | 84.11 | 85.82 | 1.020x |
+| python_modules_long | 78.37 | 80.04 | 1.021x |
+
+Mixed-acceptance suites gain because a partial accept no longer shrinks the
+next window below the configured width; flappy (100% acceptance) is
+unchanged within noise. Depth 3 (`python_modules_long_depth3.json`, 75.32)
+is identical to the earlier run, as expected for the unchanged default.
+
+### Deeper widths (`depth4/flappy_depth5.json`, `python_modules_long_depth5.json`, `flappy_depth6.json`)
+
+Same binary, same contract. Depth 5 loses: flappy 84.8 tok/s (verify 55-61 ms
+at S=6, rollback 4-8 ms/cycle), python_modules_long 71.2 (verify 65-69 ms,
+rollback 4-11 ms); depth 6 drops to 74.9 on flappy (verify 71-75 ms, rollback
+6-27 ms). The S=6+ verify no longer amortises the extra draft, and partial
+accepts pay the wider replay. Depth 4 is the optimum on this pack.
+
 ### Where the remaining S=5 cost sits
 
 `depth4/splitk_m5_microbench.txt`: at M=5 MLX `qmv_wide` on the 5120-wide
