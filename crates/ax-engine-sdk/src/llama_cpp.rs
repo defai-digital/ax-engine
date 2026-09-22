@@ -781,7 +781,17 @@ fn finish_reason_from_openai_finish_reason(value: Option<&str>) -> Option<Genera
         Some("stop") => Some(GenerateFinishReason::Stop),
         Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
         Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
-        Some(_) | None => None,
+        // A tool-call or function-call terminal is a normal stop, mirroring the
+        // OpenAI chat completion stream adapter, not an unknown reason.
+        Some("tool_calls" | "function_call") => Some(GenerateFinishReason::Stop),
+        Some("") | None => None,
+        Some(unknown) => {
+            tracing::warn!(
+                finish_reason = unknown,
+                "llama.cpp server returned unknown OpenAI finish_reason; reporting error finish reason"
+            );
+            Some(GenerateFinishReason::Error)
+        }
     }
 }
 
@@ -1085,6 +1095,15 @@ fn llama_cpp_server_completion_route(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::backend::{BackendPolicy, ResolvedBackend};
+    use crate::generate::GenerateStatus;
+
+    fn runtime_report() -> RuntimeReport {
+        RuntimeReport::from_resolution(
+            &BackendPolicy::allow_llama_cpp(),
+            &ResolvedBackend::llama_cpp(SelectedBackend::LlamaCpp, "test delegated route"),
+        )
+    }
 
     #[test]
     fn native_completion_stream_done_after_payload_without_blank_line_is_not_lost() {
@@ -1130,6 +1149,79 @@ mod tests {
             crate::generate::finish_reason_from_stop_type(chunk.stop, chunk.stop_type.as_deref()),
             Some(GenerateFinishReason::Stop)
         );
+    }
+
+    #[test]
+    fn finish_reason_from_openai_finish_reason_maps_unknown_reasons_to_error() {
+        // Regression: an unknown non-empty OpenAI finish_reason (for example
+        // "abort") used to map to None, so the blocking chat response reported
+        // a clean completion with no finish reason while the backend actually
+        // failed. It must map to Error, mirroring the stream adapter.
+        assert_eq!(
+            finish_reason_from_openai_finish_reason(Some("abort")),
+            Some(GenerateFinishReason::Error)
+        );
+        assert_eq!(
+            finish_reason_from_openai_finish_reason(Some("backend_error")),
+            Some(GenerateFinishReason::Error)
+        );
+        assert_eq!(
+            finish_reason_from_openai_finish_reason(Some("stop")),
+            Some(GenerateFinishReason::Stop)
+        );
+        assert_eq!(
+            finish_reason_from_openai_finish_reason(Some("length")),
+            Some(GenerateFinishReason::MaxOutputTokens)
+        );
+        assert_eq!(
+            finish_reason_from_openai_finish_reason(Some("content_filter")),
+            Some(GenerateFinishReason::ContentFilter)
+        );
+        assert_eq!(
+            finish_reason_from_openai_finish_reason(Some("tool_calls")),
+            Some(GenerateFinishReason::Stop)
+        );
+        assert_eq!(
+            finish_reason_from_openai_finish_reason(Some("function_call")),
+            Some(GenerateFinishReason::Stop)
+        );
+        assert_eq!(finish_reason_from_openai_finish_reason(Some("")), None);
+        assert_eq!(finish_reason_from_openai_finish_reason(None), None);
+    }
+
+    #[test]
+    fn blocking_chat_unknown_finish_reason_fails_the_response() {
+        // Regression: an unknown non-empty OpenAI finish_reason (for example
+        // "abort") used to map to None, so the blocking chat response reported
+        // status Finished with no finish reason. It must derive status Failed
+        // from the Error finish reason.
+        let parsed: LlamaCppChatCompletionResponse = serde_json::from_str(
+            r#"{"choices":[{"message":{"content":"partial"},"finish_reason":"abort"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}"#,
+        )
+        .expect("chat completion response parses");
+        let choice = parsed
+            .choices
+            .into_iter()
+            .next()
+            .expect("chat completion response has a choice");
+
+        let response = build_llama_cpp_blocking_response(
+            7,
+            "qwen3",
+            &runtime_report(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            choice.message.content,
+            parsed.usage.as_ref().map(|usage| usage.prompt_tokens),
+            parsed.usage.as_ref().map(|usage| usage.completion_tokens),
+            finish_reason_from_openai_finish_reason(choice.finish_reason.as_deref()),
+            GenerateRouteReport::with_execution_plan("llama_cpp.server_chat_completion"),
+        );
+
+        assert_eq!(response.status, GenerateStatus::Failed);
+        assert_eq!(response.finish_reason, Some(GenerateFinishReason::Error));
     }
 
     #[test]
