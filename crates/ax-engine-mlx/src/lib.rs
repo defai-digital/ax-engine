@@ -67,5 +67,6 @@ pub use whisper::{WhisperError, WhisperModel, WhisperTranscription};
 /// Clear process-global compiled graphs and MLX allocator caches.
 pub fn clear_process_caches() {
     per_layer_compile::clear_all_layer_decode_caches();
+    mtp::clear_fixed_draft_compile_cache();
     mlx_sys::clear_cache();
 }

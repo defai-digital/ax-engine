@@ -1019,9 +1019,26 @@ pub fn mtp_head_step(
 // Compiled MTP draft head
 // ---------------------------------------------------------------------------
 
-type FixedDraftCompileKey = (u64, usize, u32, i32, ThreadId);
+/// `(compile identity, max depth, temperature bits, KV capacity, thread,
+/// cfg address, weights address, head address)`. The compiled closure derefs
+/// the three raw addresses it was built from on every call, so a closure
+/// built for one weight set must never serve another set that shares the
+/// compile identity (a same-config reload) — the addresses pin it to the
+/// objects it was traced against, and `clear_fixed_draft_compile_cache`
+/// drops every entry when a model is torn down.
+type FixedDraftCompileKey = (u64, usize, u32, i32, ThreadId, usize, usize, usize);
 type FixedDraftCompileCache = Mutex<HashMap<FixedDraftCompileKey, Option<MlxClosure>>>;
 static FIXED_DRAFT_COMPILE_CACHE: OnceLock<FixedDraftCompileCache> = OnceLock::new();
+
+/// Drop every cached fixed-KV draft closure. Called before a replacement
+/// model is built so no closure can outlive the weights it points at.
+pub(crate) fn clear_fixed_draft_compile_cache() {
+    if let Some(store) = FIXED_DRAFT_COMPILE_CACHE.get()
+        && let Ok(mut guard) = store.lock()
+    {
+        guard.clear();
+    }
+}
 
 /// Build a compiled closure that runs the full multi-depth Qwen MTP draft
 /// chain in a single `mlx_compile`-fused dispatch.
@@ -1251,6 +1268,9 @@ fn run_compiled_mtp_draft(
             sample_temperature.to_bits(),
             capacity,
             std::thread::current().id(),
+            cfg as *const ModelConfig as usize,
+            weights as *const ModelWeights as usize,
+            head as *const MtpWeights as usize,
         );
         let store = FIXED_DRAFT_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = store.lock().ok()?;
