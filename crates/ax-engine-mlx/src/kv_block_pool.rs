@@ -73,9 +73,13 @@ pub fn fa_native_paged_attention_enabled() -> bool {
 /// runs, `KvManager.total_blocks`), so exhaustion always fails the request
 /// instead of demoting to unbounded contiguous growth (see
 /// `FaBlockPoolConfig::hard_cap`).
+/// Largest pool the eager free list / refcount vectors may be sized to
+/// (2^24 blocks = 256 MiB of bookkeeping at 16 bytes per block).
+pub(crate) const MAX_POOL_BLOCKS: u32 = 1 << 24;
+
 pub(crate) fn parse_fa_block_pool_max_blocks_override(raw: Option<&str>) -> Option<u32> {
     raw.and_then(|value| value.parse::<u32>().ok())
-        .filter(|&value| value > 0)
+        .filter(|&value| value > 0 && value <= MAX_POOL_BLOCKS)
 }
 
 pub(crate) fn fa_block_pool_max_blocks_override() -> Option<u32> {
@@ -171,6 +175,19 @@ impl FaBlockPool {
         }
         if config.max_blocks == 0 {
             return Err(FaBlockPoolError::InvalidConfig("max_blocks must be > 0"));
+        }
+        // The free list and refcounts are materialised eagerly and block
+        // extents become MLX i32 dims; refuse sizes that would turn a typo in
+        // the env override into an allocation abort or a negative dim.
+        if config.max_blocks > MAX_POOL_BLOCKS {
+            return Err(FaBlockPoolError::InvalidConfig(
+                "max_blocks exceeds the supported pool size",
+            ));
+        }
+        if config.block_size_tokens > i32::MAX as u32 {
+            return Err(FaBlockPoolError::InvalidConfig(
+                "block_size_tokens exceeds the supported block size",
+            ));
         }
         let free = (0..config.max_blocks)
             .rev()
@@ -771,12 +788,26 @@ impl SharedFaBlockPool {
         };
         let targets: Vec<PhysicalBlockId> = copies.iter().map(|(_, target)| *target).collect();
         storage.ensure_layer(layer_idx, block_size, n_kv_heads, head_dim, dtype, &targets)?;
-        for &(source, target) in copies {
-            let source_row = *storage
+        // Resolve every source before touching any slab so a batch is applied
+        // all-or-nothing (callers commit the block-table swap first). A source
+        // block without a slab row was allocated but never written: its
+        // logical content is zeros, which is exactly what a rowless target
+        // reads back, so there is nothing to copy.
+        let mut resolved = Vec::with_capacity(copies.len());
+        {
+            let arena = storage
                 .layers
                 .get(&layer_idx)
-                .and_then(|arena| arena.block_rows.get(&source))
-                .ok_or(FaBlockPoolError::UnallocatedBlock(source))?;
+                .ok_or(FaBlockPoolError::InvalidConfig(
+                    "FA layer slab is not initialized",
+                ))?;
+            for &(source, target) in copies {
+                if let Some(&source_row) = arena.block_rows.get(&source) {
+                    resolved.push((source_row, target));
+                }
+            }
+        }
+        for (source_row, target) in resolved {
             let target_row = storage.assign_row(layer_idx, target)?;
             let (source_slab, source_local) = (
                 source_row / FA_POOL_SLAB_BLOCKS,
@@ -1415,6 +1446,69 @@ mod tests {
             }),
             Err(FaBlockPoolError::InvalidConfig(_))
         ));
+    }
+
+    #[test]
+    fn copy_slab_blocks_skips_sources_that_were_never_written() {
+        let pool = SharedFaBlockPool::new_with_slab_storage(FaBlockPoolConfig {
+            block_size_tokens: 2,
+            max_blocks: 64,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let written = pool.allocate(1).expect("written block");
+        pool.write_slab_tokens(
+            0,
+            &written,
+            0,
+            &array_f32(&[1.0, 2.0], &[1, 1, 2, 1]),
+            &array_f32(&[3.0, 4.0], &[1, 1, 2, 1]),
+        )
+        .expect("write");
+        // Allocated but never written: logically zeros, no slab row.
+        let blank = pool.allocate(1).expect("blank block");
+        let targets = pool.allocate(2).expect("targets");
+        pool.copy_slab_blocks(0, &[(written[0], targets[0]), (blank[0], targets[1])])
+            .expect("a rowless source is nothing to copy, not an error");
+        let (k, _) = pool
+            .gather_slab_tokens(0, &[targets[0]], 0, 2)
+            .expect("gather copied block");
+        mlx_sys::eval(&[&k]);
+        assert_eq!(k.data_f32(), vec![1.0, 2.0]);
+        // The target mirrors its source exactly: still rowless, so it reads
+        // back the same way the never-written source does.
+        assert!(matches!(
+            pool.gather_slab_tokens(0, &[blank[0]], 0, 2),
+            Err(FaBlockPoolError::UnallocatedBlock(_))
+        ));
+        assert!(matches!(
+            pool.gather_slab_tokens(0, &[targets[1]], 0, 2),
+            Err(FaBlockPoolError::UnallocatedBlock(_))
+        ));
+    }
+
+    #[test]
+    fn pool_rejects_oversized_configs_instead_of_allocating_them() {
+        let oversized = FaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: 16,
+            max_blocks: u32::MAX,
+            hard_cap: true,
+        });
+        assert!(matches!(oversized, Err(FaBlockPoolError::InvalidConfig(_))));
+        let wide = FaBlockPool::new(FaBlockPoolConfig {
+            block_size_tokens: i32::MAX as u32 + 1,
+            max_blocks: 4,
+            hard_cap: true,
+        });
+        assert!(matches!(wide, Err(FaBlockPoolError::InvalidConfig(_))));
+        assert_eq!(
+            parse_fa_block_pool_max_blocks_override(Some("4294967295")),
+            None
+        );
+        assert_eq!(
+            parse_fa_block_pool_max_blocks_override(Some("8192")),
+            Some(8192)
+        );
     }
 
     #[test]
