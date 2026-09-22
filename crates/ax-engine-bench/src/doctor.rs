@@ -1136,8 +1136,10 @@ fn doctor_expert_stream_decision(
         _ if mode == StreamExpertsMode::Off => "forced_resident",
         _ if mode == StreamExpertsMode::On => "forced_paging",
         _ if manifest.required => "required_pack",
-        _ if enabled => "full_weights_plus_headroom_exceeds_capacity",
+        // Unknown capacity pages (it cannot prove the pack fits); name that
+        // reason rather than a capacity comparison that never happened.
         _ if unified_memory_bytes.is_none() => "unknown_host_capacity",
+        _ if enabled => "full_weights_plus_headroom_exceeds_capacity",
         _ => "full_weights_plus_headroom_fits_capacity",
     };
     DoctorExpertStreamReport {
@@ -2487,7 +2489,7 @@ mod expert_stream_tests {
     }
 
     #[test]
-    fn doctor_does_not_call_unknown_capacity_a_fit() {
+    fn doctor_pages_when_host_capacity_is_unknown() {
         use ax_engine_mlx::expert_stream::StreamExpertsMode;
         let mut issues = Vec::new();
         let report = doctor_expert_stream_decision(
@@ -2497,7 +2499,8 @@ mod expert_stream_tests {
             None,
             &mut issues,
         );
-        assert!(!report.enabled);
+        // Unknown capacity cannot prove the pack fits, so Auto pages.
+        assert!(report.enabled);
         assert_eq!(report.decision_reason, "unknown_host_capacity");
         assert_eq!(report.unified_memory_bytes, None);
         assert!(issues.is_empty());
