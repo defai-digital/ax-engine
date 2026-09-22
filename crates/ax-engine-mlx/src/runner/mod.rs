@@ -1446,7 +1446,7 @@ fn demote_native_prefix_snapshot(
         telemetry.record_demotion_skip();
         return;
     }
-    if !portable_cache.lock().enabled() {
+    if !portable_cache.lock().enabled() || snapshot.cache.has_unserializable_layers() {
         telemetry.record_demotion_skip();
         return;
     }
@@ -7885,6 +7885,12 @@ impl MlxRunner {
                 return telemetry;
             }
         }
+        if snapshot_cache.has_unserializable_layers() {
+            // DeepSeek V4 compressor state has no wire encoding: the
+            // snapshot would claim tokens and restore as empty.
+            Self::pfx_dbg("store-skip", "unserializable_layers");
+            return telemetry;
+        }
         let serialize_started = Instant::now();
         let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
         let serialize_us = u64::from(elapsed_us(serialize_started));
@@ -8220,6 +8226,10 @@ impl MlxRunner {
             // prefill. The largest snapshot is also the most useful for
             // future hits because shorter prefixes always derive from
             // it.
+            if snapshot_cache.has_unserializable_layers() {
+                Self::pfx_dbg("store-skip", "unserializable_layers");
+                continue;
+            }
             let serialize_started = Instant::now();
             let payload: Arc<[u8]> = snapshot_cache.serialize_to_bytes().into();
             let serialize_us = u64::from(elapsed_us(serialize_started));

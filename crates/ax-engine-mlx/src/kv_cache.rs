@@ -1478,6 +1478,10 @@ impl Drop for MlxKVCache {
     }
 }
 
+/// Largest per-layer count a snapshot header may declare (bounded before
+/// any allocation; real models sit far below this).
+const MAX_WIRE_LAYER_COUNT: usize = 4096;
+
 impl MlxKVCache {
     // ── Wire-format constants for `serialize_to_bytes` / `try_deserialize_from_bytes` ──
     // The format is private to this module; see the F3 disk-cache PRD
@@ -1973,6 +1977,10 @@ impl MlxKVCache {
         repaged.paged_attention_fallbacks = self.paged_attention_fallbacks;
         repaged.hard_cap_exhausted = self.hard_cap_exhausted;
         repaged.kv_quant = self.kv_quant.clone();
+        // Multimodal RoPE state travels with the tokens: a restored visual
+        // prefix decodes at `mrope_decode_position(offset)`, not the physical
+        // offset.
+        repaged.mrope_position_delta = self.mrope_position_delta;
         reservation.disarm();
         Ok(repaged)
     }
@@ -2384,6 +2392,13 @@ impl MlxKVCache {
     /// this module and versioned via `SERIALIZE_VERSION`; cross-version
     /// reads return an error rather than silently degrading.
     ///
+    /// Whether this cache holds state the wire format cannot carry (DeepSeek
+    /// V4 compressor layers): storing it would produce a snapshot that
+    /// claims tokens but restores as empty.
+    pub fn has_unserializable_layers(&self) -> bool {
+        self.deepseek_v4_layers.iter().any(Option::is_some)
+    }
+
     pub fn serialize_to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(Self::SERIALIZE_MAGIC);
@@ -2531,6 +2546,12 @@ impl MlxKVCache {
         let rope_offset = usize::try_from(read_u64_from(reader)?)
             .map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
         let layer_count = read_u32_from(reader)? as usize;
+        // The header is parsed before the payload hash is known; a corrupted
+        // count would otherwise size the per-layer vectors eagerly and abort
+        // the process on allocation instead of rejecting the entry.
+        if layer_count > MAX_WIRE_LAYER_COUNT {
+            return Err(MlxKVCacheSerializeError::BadShape(layer_count));
+        }
         let mrope_position_delta = read_u32_from(reader)? as i32;
 
         // Wire format is always dense contiguous; do not inherit env-flag
@@ -2562,6 +2583,13 @@ impl MlxKVCache {
                     let shape = k_arr.shape();
                     if shape.len() < 4 {
                         return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
+                    }
+                    // K and V are written from one layer with one geometry;
+                    // a V that disagrees can only come from a tampered or
+                    // corrupt payload and would fail deep inside the next
+                    // append instead of here.
+                    if v_arr.shape() != shape || v_arr.dtype() != k_arr.dtype() {
+                        return Err(MlxKVCacheSerializeError::BadShape(v_arr.shape().len()));
                     }
                     let capacity = shape[2] as usize;
                     let rotating_window = (ring_window != 0).then_some(ring_window);
@@ -2601,6 +2629,14 @@ impl MlxKVCache {
                     let pe_shape = k_pe.shape();
                     if kv_shape.len() < 4 || pe_shape.len() < 4 {
                         return Err(MlxKVCacheSerializeError::BadShape(kv_shape.len()));
+                    }
+                    // Latent and positional halves cover the same tokens, and
+                    // the buffers must hold every restored token.
+                    if pe_shape[2] != kv_shape[2]
+                        || kv_shape[2] < 0
+                        || seq_len > kv_shape[2] as usize
+                    {
+                        return Err(MlxKVCacheSerializeError::BadShape(pe_shape.len()));
                     }
                     cache.glm_mla_layers[idx] = Some(GlmMlaLayerCache {
                         latent_dim: kv_shape[3],
@@ -6546,6 +6582,20 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_rejects_an_absurd_layer_count_before_allocating() {
+        let mut payload = MlxKVCache::new(2).serialize_to_bytes();
+        let layer_count_at = MlxKVCache::SERIALIZE_MAGIC.len() + 4 + 8 + 8 + 8;
+        payload[layer_count_at..layer_count_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let err = MlxKVCache::try_deserialize_from_bytes(&payload)
+            .err()
+            .expect("a corrupted layer count must be rejected");
+        assert!(
+            matches!(err, MlxKVCacheSerializeError::BadShape(count) if count == u32::MAX as usize),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn deserialize_rejects_undersized_byte_count() {
         // Hand-craft a payload whose tensor header declares a shape
         // requiring more bytes than `byte_count` advertises. Without
@@ -7431,11 +7481,17 @@ mod tests {
             hard_cap: true,
         })
         .expect("exact pool");
+        let mut restored = restored;
+        restored.mrope_position_delta = -3;
         let repaged = restored
             .clone_repage_into_shared_fa_pool(pool.clone())
             .expect("repage");
         assert!(repaged.is_native_fa_shareable());
         assert_eq!(pool.snapshot().allocated_blocks, 4);
+        assert_eq!(
+            repaged.mrope_position_delta, -3,
+            "multimodal RoPE state must survive the repage"
+        );
         for layer in 0..2 {
             let (dense_k, dense_v) = restored.logical_layer_kv(layer).expect("dense layer");
             let (paged_k, paged_v) = repaged.logical_layer_kv(layer).expect("paged layer");
