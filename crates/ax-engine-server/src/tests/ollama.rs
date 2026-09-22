@@ -508,6 +508,20 @@ async fn ollama_generate_empty_prompt_returns_load_or_unload_noop() {
     assert_eq!(load_json["response"], json!(""));
     assert_eq!(load_json["done"], json!(true));
     assert!(load_json.get("done_reason").is_none());
+}
+
+#[tokio::test]
+async fn ollama_generate_keep_alive_zero_unloads_loaded_model() {
+    // `keep_alive: 0` must actually free the model through the same unload
+    // path `/v1/model/unload` uses, so a client that unloads before loading a
+    // second model gets its memory back. The target model must not be the last
+    // loaded model (the last-model guard refuses to leave the registry empty).
+    let state = llama_cpp_state();
+    let config = state.snapshot().session_config.as_ref().clone();
+    let second = crate::app_state::build_live_state("second".to_string(), config)
+        .expect("second model state should build");
+    state.publish_live(second, false);
+    let app = build_router(state);
 
     let (unload_status, unload_json) = json_response(
         &app,
@@ -527,6 +541,28 @@ async fn ollama_generate_empty_prompt_returns_load_or_unload_noop() {
     assert_eq!(unload_json["response"], json!(""));
     assert_eq!(unload_json["done"], json!(true));
     assert_eq!(unload_json["done_reason"], json!("unload"));
+
+    let (tags_status, tags_json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/api/tags")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(tags_status, StatusCode::OK);
+    let names = tags_json["models"]
+        .as_array()
+        .expect("tags should list models")
+        .iter()
+        .map(|model| model["name"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(
+        !names.contains(&"qwen3"),
+        "keep_alive: 0 must remove the model from /api/tags: {names:?}"
+    );
+    assert!(names.contains(&"second"));
 }
 
 #[tokio::test]
@@ -973,4 +1009,124 @@ async fn ollama_generate_maps_num_predict_sentinel_to_advertised_budget() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["response"], json!("unbounded reply"));
     assert_eq!(json["done"], json!(true));
+}
+
+#[tokio::test]
+async fn ollama_generate_keep_alive_duration_leaves_model_loaded() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "keep_alive": "5m"
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    // A positive keep_alive is not an unload: no done_reason is emitted.
+    assert!(json.get("done_reason").is_none());
+
+    let (tags_status, tags_json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/api/tags")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(tags_status, StatusCode::OK);
+    let names = tags_json["models"]
+        .as_array()
+        .expect("tags should list models")
+        .iter()
+        .map(|model| model["name"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"qwen3"));
+}
+
+#[tokio::test]
+async fn ollama_chat_missing_messages_returns_ollama_error_envelope() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({"model": "qwen3"}))))
+            .unwrap(),
+    )
+    .await;
+
+    // A missing required field must be a 400 with the Ollama `{"error": ...}`
+    // string envelope, not axum's plain-text 422.
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "messages");
+}
+
+#[tokio::test]
+async fn ollama_chat_missing_content_type_returns_ollama_error_envelope() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "messages": [{"role": "user", "content": "hello"}]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    // A missing Content-Type must be a 400 with the Ollama envelope, not
+    // axum's plain-text 415.
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "Content-Type");
+}
+
+#[tokio::test]
+async fn ollama_generate_accepts_negative_top_k_sentinel() {
+    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+        json!({
+            "content": "accepted",
+            "tokens": [10],
+            "stop": true,
+            "stop_type": "eos"
+        })
+        .to_string(),
+        |_payload| {},
+    );
+    let app = build_router(llama_cpp_server_state(llama_server_url));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "prompt": "hello",
+                "options": {"top_k": -1}
+            }))))
+            .unwrap(),
+    )
+    .await;
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+
+    // `top_k: -1` is the backend-default sentinel; it must deserialize (not
+    // fail the whole request as an unsigned overflow) and map to `None`.
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["response"], json!("accepted"));
 }

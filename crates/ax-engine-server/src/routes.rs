@@ -1,10 +1,14 @@
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use http_body::{Body as HttpBody, Frame, SizeHint};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use super::anthropic::anthropic_messages;
 use super::app_state::{AppState, ServerMetrics};
@@ -143,8 +147,17 @@ pub(crate) fn build_router_with_rate_limit(state: AppState, rate_limited: bool) 
         async move {
             let guard = InFlightRequestGuard::new(metrics);
             let response = next.run(request).await;
-            guard.finish(response.status());
-            response
+            let status = response.status();
+            // Status is bucketed at header time (the header status is what a
+            // client observes); the in-flight gauge stays held until the body
+            // ends so streaming bodies are not counted as finished early.
+            guard.record_status(status);
+            response.map(|body| {
+                Body::new(GuardedBody {
+                    inner: body,
+                    guard: Some(guard),
+                })
+            })
         }
     }));
 
@@ -162,9 +175,13 @@ pub(crate) fn build_router_with_rate_limit(state: AppState, rate_limited: bool) 
 /// code after it. `Drop` guarantees the gauge is always decremented exactly
 /// once, matching the cancel-safe `OwnedSemaphorePermit` pattern the
 /// concurrency-limiter layer above already relies on for the same reason.
+///
+/// Streaming bodies finish the guard in [`GuardedBody`]'s `Drop` rather than
+/// when the response headers return, so a generation that is still running is
+/// counted as in-flight until its body actually ends.
 struct InFlightRequestGuard {
     metrics: Arc<ServerMetrics>,
-    finished: bool,
+    released: bool,
 }
 
 impl InFlightRequestGuard {
@@ -172,20 +189,66 @@ impl InFlightRequestGuard {
         metrics.begin_http_request();
         Self {
             metrics,
-            finished: false,
+            released: false,
         }
     }
 
-    fn finish(mut self, status: StatusCode) {
-        self.finished = true;
-        self.metrics.finish_http_request(status);
+    /// Bucket the response status at header time. The in-flight gauge is held
+    /// until the response body ends (see [`GuardedBody`]).
+    fn record_status(&self, status: StatusCode) {
+        self.metrics.record_http_status(status);
+    }
+
+    /// Release the in-flight gauge once the response body has ended.
+    fn finish_body(mut self) {
+        self.released = true;
+        self.metrics.finish_http_request_body();
     }
 }
 
 impl Drop for InFlightRequestGuard {
     fn drop(&mut self) {
-        if !self.finished {
+        if !self.released {
             self.metrics.abandon_http_request();
+        }
+    }
+}
+
+/// Wraps a response body so the in-flight gauge is released when the body
+/// ends (or is dropped), not when the response headers are returned. This
+/// keeps `ax_engine_http_requests_in_flight` accurate for SSE / NDJSON streams
+/// that continue generating after the headers are sent; the header-time status
+/// bucket is recorded before the body is wrapped.
+struct GuardedBody {
+    inner: Body,
+    guard: Option<InFlightRequestGuard>,
+}
+
+impl HttpBody for GuardedBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_frame(cx)
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+}
+
+impl Drop for GuardedBody {
+    fn drop(&mut self) {
+        if let Some(guard) = self.guard.take() {
+            guard.finish_body();
         }
     }
 }
@@ -275,8 +338,9 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::{
-        InFlightRequestGuard, ServerMetrics, constant_time_str_eq, parse_max_concurrent_requests,
-        parse_max_request_body_bytes, parse_request_timeout_secs, request_has_valid_bearer_token,
+        GuardedBody, InFlightRequestGuard, ServerMetrics, constant_time_str_eq,
+        parse_max_concurrent_requests, parse_max_request_body_bytes, parse_request_timeout_secs,
+        request_has_valid_bearer_token,
     };
 
     #[test]
@@ -380,12 +444,13 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_guard_decrements_on_normal_finish() {
+    fn in_flight_guard_decrements_on_finish_body() {
         let metrics = Arc::new(ServerMetrics::default());
         let guard = InFlightRequestGuard::new(metrics.clone());
         assert_eq!(metrics.http_requests_in_flight.load(Ordering::Relaxed), 1);
 
-        guard.finish(StatusCode::OK);
+        guard.record_status(StatusCode::OK);
+        guard.finish_body();
         assert_eq!(metrics.http_requests_in_flight.load(Ordering::Relaxed), 0);
         assert_eq!(metrics.http_status_2xx_total.load(Ordering::Relaxed), 1);
     }
@@ -393,7 +458,7 @@ mod tests {
     #[test]
     fn in_flight_guard_decrements_on_drop_without_finish() {
         // Reproduces a client disconnect / reverse-proxy timeout: the
-        // request future is dropped mid-poll, so `finish()` is never
+        // request future is dropped mid-poll, so `finish_body()` is never
         // called. Before the fix, `http_requests_in_flight` leaked
         // permanently in this case.
         let metrics = Arc::new(ServerMetrics::default());
@@ -404,11 +469,37 @@ mod tests {
         assert_eq!(
             metrics.http_requests_in_flight.load(Ordering::Relaxed),
             0,
-            "dropping the guard without finish() must still release the in-flight gauge"
+            "dropping the guard without finish_body() must still release the in-flight gauge"
         );
         // No status bucket should be attributed to an abandoned request.
         assert_eq!(metrics.http_status_2xx_total.load(Ordering::Relaxed), 0);
         assert_eq!(metrics.http_status_4xx_total.load(Ordering::Relaxed), 0);
         assert_eq!(metrics.http_status_5xx_total.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn guarded_body_holds_in_flight_gauge_until_body_ends() {
+        let metrics = Arc::new(ServerMetrics::default());
+        let guard = InFlightRequestGuard::new(metrics.clone());
+        assert_eq!(metrics.http_requests_in_flight.load(Ordering::Relaxed), 1);
+
+        // The body wrapper owns the guard, so a streaming response stays
+        // counted as in-flight until the body is consumed or dropped.
+        let body = GuardedBody {
+            inner: Body::empty(),
+            guard: Some(guard),
+        };
+        assert_eq!(
+            metrics.http_requests_in_flight.load(Ordering::Relaxed),
+            1,
+            "the gauge must stay held while the response body is alive"
+        );
+
+        drop(body);
+        assert_eq!(
+            metrics.http_requests_in_flight.load(Ordering::Relaxed),
+            0,
+            "dropping the body must release the in-flight gauge"
+        );
     }
 }

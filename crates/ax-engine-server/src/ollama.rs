@@ -9,6 +9,7 @@ use ax_engine_sdk::{
 use axum::Json;
 use axum::body::Body;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
@@ -26,6 +27,7 @@ use crate::generation::streaming::{StreamStateSource, build_stream_state};
 use crate::metadata::{
     MODEL_OWNER, context_length, model_supports_image, model_supports_reasoning,
 };
+use crate::model_load::UnloadWaitPolicy;
 use crate::openai::chat_requests::MAX_INLINE_IMAGES_PER_REQUEST;
 use crate::openai::generation::{populate_native_mlx_output_text, validate_openai_response_format};
 use crate::openai::requests::{
@@ -110,20 +112,27 @@ pub(crate) struct OllamaOptions {
     /// output limit in [`resolve_ollama_num_predict`].
     #[serde(default)]
     num_predict: Option<i64>,
+    /// Signed so negative values (unset/default sentinel) deserialize
+    /// instead of failing the whole request; negative maps to `None` in
+    /// [`validate_ollama_num_ctx`]. Zero remains a rejection.
     #[serde(default)]
-    num_ctx: Option<u32>,
+    num_ctx: Option<i64>,
     #[serde(default)]
     temperature: Option<f32>,
     #[serde(default)]
     top_p: Option<f32>,
+    /// Signed to accept negative values real Ollama clients send
+    /// (`-1` = backend default); negatives map to `None` like `seed`.
     #[serde(default)]
-    top_k: Option<u32>,
+    top_k: Option<i64>,
     #[serde(default)]
     min_p: Option<f32>,
     #[serde(default)]
     repeat_penalty: Option<f32>,
+    /// Signed to accept negative values real Ollama clients send
+    /// (`-1` = backend default); negatives map to `None` like `seed`.
     #[serde(default)]
-    repeat_last_n: Option<u32>,
+    repeat_last_n: Option<i64>,
     /// Ollama accepts negative seeds (`-1` = unseeded); they map to `None`.
     #[serde(default)]
     seed: Option<i64>,
@@ -295,10 +304,32 @@ fn ollama_error_http_response(error: (StatusCode, Json<ErrorResponse>)) -> Respo
     (status, Json(json!({ "error": body.error.message }))).into_response()
 }
 
+/// Extract an Ollama request body, folding axum's JSON rejections (missing
+/// content type, malformed JSON, missing required fields) into the Ollama
+/// `{"error": "..."}` envelope with status 400. The default `Json<T>`
+/// extractor answers those with plain text and non-Ollama statuses (415/422),
+/// which Ollama clients cannot parse.
+fn ollama_json_request<T>(
+    request: Result<Json<T>, JsonRejection>,
+) -> Result<T, (StatusCode, Json<ErrorResponse>)> {
+    match request {
+        Ok(Json(request)) => Ok(request),
+        Err(rejection) => Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("invalid request body: {}", rejection.body_text()),
+        )),
+    }
+}
+
 pub(crate) async fn ollama_show(
     state: State<AppState>,
-    request: Json<OllamaShowRequest>,
+    request: Result<Json<OllamaShowRequest>, JsonRejection>,
 ) -> Response {
+    let request = match ollama_json_request(request) {
+        Ok(request) => request,
+        Err(error) => return ollama_error_http_response(error),
+    };
     match ollama_show_inner(state, request).await {
         Ok(response) => response.into_response(),
         Err(error) => ollama_error_http_response(error),
@@ -307,7 +338,7 @@ pub(crate) async fn ollama_show(
 
 async fn ollama_show_inner(
     State(state): State<AppState>,
-    Json(request): Json<OllamaShowRequest>,
+    request: OllamaShowRequest,
 ) -> Result<Json<OllamaShowResponse>, (StatusCode, Json<ErrorResponse>)> {
     reject_unsupported_fields(&request.unsupported, "request")?;
     if request.verbose == Some(true) {
@@ -358,8 +389,12 @@ pub(crate) async fn ollama_version() -> Json<OllamaVersionResponse> {
 
 pub(crate) async fn ollama_chat(
     state: State<AppState>,
-    request: Json<OllamaChatRequest>,
+    request: Result<Json<OllamaChatRequest>, JsonRejection>,
 ) -> Response {
+    let request = match ollama_json_request(request) {
+        Ok(request) => request,
+        Err(error) => return ollama_error_http_response(error),
+    };
     match ollama_chat_inner(state, request).await {
         Ok(response) => response,
         Err(error) => ollama_error_http_response(error),
@@ -380,12 +415,13 @@ fn ollama_model_status(
 
 async fn ollama_chat_inner(
     State(state): State<AppState>,
-    Json(request): Json<OllamaChatRequest>,
+    request: OllamaChatRequest,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let live =
         select_openai_model(&state, request.model.as_deref()).map_err(ollama_model_status)?;
     reject_ollama_tools_without_support(&live, request.tools.as_ref())?;
-    validate_ollama_num_ctx(&live, request.options.num_ctx)?;
+    let num_ctx = validate_ollama_num_ctx(&live, request.options.num_ctx)?;
+    let keep_alive_unload = keep_alive_requests_unload(request.keep_alive.as_ref());
     let thinking = resolve_ollama_thinking(request.think.as_ref())?;
     if thinking == Some(true) && !model_supports_reasoning(&live) {
         return Err(error_response(
@@ -421,23 +457,38 @@ async fn ollama_chat_inner(
             response_options,
             ..
         } = build_openai_chat_request_offloading_media(&live, &state.media, openai_request).await?;
-        return stream_ollama_native(
-            state,
-            live,
+        enforce_ollama_num_ctx_prompt_budget(num_ctx, &generate_request.input_tokens)?;
+        let response = stream_ollama_native(
+            state.clone(),
+            live.clone(),
             generate_request,
             OllamaNativeStreamKind::Chat,
             response_options.client_stop_sequences,
         )
-        .await;
+        .await?;
+        if keep_alive_unload {
+            // Generation is still running inside the body; the unload flow
+            // drains admission and waits for model idle, so parking happens
+            // only after the stream terminates. Run it detached.
+            spawn_keep_alive_unload(state, live.model_id.as_ref().clone());
+        }
+        return Ok(response);
     }
     let started = std::time::Instant::now();
-    let response = run_ollama_chat_completion(state, live, openai_request).await?;
+    let response =
+        run_ollama_chat_completion(state.clone(), live.clone(), openai_request, num_ctx).await?;
     let mut ollama = ollama_chat_response_from_openai(response)?;
     // Wall time of the completion: clients derive throughput as
     // `eval_count / eval_duration`, and a zero duration divides by zero.
     let elapsed_ns = duration_nanos(started.elapsed());
     ollama.total_duration = elapsed_ns;
     ollama.eval_duration = elapsed_ns;
+    if keep_alive_unload {
+        // The completion has been produced (the two-chunk stream emulation is
+        // fully buffered), so unloading now honors `keep_alive: 0` without
+        // cutting off an in-flight body.
+        unload_model_after_keep_alive(&state, live.model_id.as_ref()).await;
+    }
     if stream {
         return ollama_ndjson_response(vec![
             ollama_chat_stream_chunk(&ollama),
@@ -449,8 +500,12 @@ async fn ollama_chat_inner(
 
 pub(crate) async fn ollama_generate(
     state: State<AppState>,
-    request: Json<OllamaGenerateRequest>,
+    request: Result<Json<OllamaGenerateRequest>, JsonRejection>,
 ) -> Response {
+    let request = match ollama_json_request(request) {
+        Ok(request) => request,
+        Err(error) => return ollama_error_http_response(error),
+    };
     match ollama_generate_inner(state, request).await {
         Ok(response) => response,
         Err(error) => ollama_error_http_response(error),
@@ -459,12 +514,25 @@ pub(crate) async fn ollama_generate(
 
 async fn ollama_generate_inner(
     State(state): State<AppState>,
-    Json(request): Json<OllamaGenerateRequest>,
+    request: OllamaGenerateRequest,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let live =
         select_openai_model(&state, request.model.as_deref()).map_err(ollama_model_status)?;
-    validate_ollama_num_ctx(&live, request.options.num_ctx)?;
+    let num_ctx = validate_ollama_num_ctx(&live, request.options.num_ctx)?;
+    let keep_alive_unload = keep_alive_requests_unload(request.keep_alive.as_ref());
     if let Some(response) = ollama_generate_lifecycle_response(&live, &request) {
+        // Pure unload form: Ollama unloads the model before answering, so a
+        // failed unload must surface instead of claiming `done_reason:
+        // "unload"` while the model stays resident.
+        if keep_alive_unload {
+            crate::model_load::perform_unload(
+                &state,
+                live.model_id.as_ref().to_string(),
+                crate::model_load::UnloadWaitPolicy::WaitForIdle,
+            )
+            .await
+            .map_err(ollama_model_status)?;
+        }
         return Ok(Json(response).into_response());
     }
     let stream = request.stream;
@@ -479,16 +547,28 @@ async fn ollama_generate_inner(
             response_options,
             ..
         } = build_openai_completion_request(&live, openai_request)?;
-        return stream_ollama_native(
-            state,
-            live,
+        enforce_ollama_num_ctx_prompt_budget(num_ctx, &generate_request.input_tokens)?;
+        let response = stream_ollama_native(
+            state.clone(),
+            live.clone(),
             generate_request,
             OllamaNativeStreamKind::Generate,
             response_options.client_stop_sequences,
         )
-        .await;
+        .await?;
+        if keep_alive_unload {
+            // Generation is still running inside the body; the unload flow
+            // drains admission and waits for model idle, so parking happens
+            // only after the stream terminates. Run it detached.
+            spawn_keep_alive_unload(state, live.model_id.as_ref().clone());
+        }
+        return Ok(response);
     }
-    let ollama = run_ollama_completion(state, live, openai_request).await?;
+    let ollama =
+        run_ollama_completion(state.clone(), live.clone(), openai_request, num_ctx).await?;
+    if keep_alive_unload {
+        unload_model_after_keep_alive(&state, live.model_id.as_ref()).await;
+    }
     if stream {
         return ollama_ndjson_response(vec![
             ollama_generate_stream_chunk(&ollama),
@@ -828,10 +908,16 @@ fn ollama_chat_to_openai_request(
         max_completion_tokens: None,
         temperature: request.options.temperature,
         top_p: request.options.top_p,
-        top_k: request.options.top_k,
+        top_k: request
+            .options
+            .top_k
+            .and_then(|top_k| u32::try_from(top_k).ok()),
         min_p: request.options.min_p,
         repetition_penalty: request.options.repeat_penalty,
-        repetition_context_size: request.options.repeat_last_n,
+        repetition_context_size: request
+            .options
+            .repeat_last_n
+            .and_then(|repeat_last_n| u32::try_from(repeat_last_n).ok()),
         skip_special_tokens: None,
         vllm_xargs: None,
         stop: request.options.stop.map(OllamaStopInput::into_openai_stop),
@@ -863,6 +949,7 @@ fn ollama_chat_to_openai_request(
         response_format: ollama_format_to_openai(request.format)?,
         tools: request.tools,
         tool_choice: None,
+        parallel_tool_calls: None,
         fit_max_tokens_to_context: num_predict.fill_context,
     })
 }
@@ -889,10 +976,16 @@ fn ollama_generate_to_openai_request(
         max_completion_tokens: None,
         temperature: request.options.temperature,
         top_p: request.options.top_p,
-        top_k: request.options.top_k,
+        top_k: request
+            .options
+            .top_k
+            .and_then(|top_k| u32::try_from(top_k).ok()),
         min_p: request.options.min_p,
         repetition_penalty: request.options.repeat_penalty,
-        repetition_context_size: request.options.repeat_last_n,
+        repetition_context_size: request
+            .options
+            .repeat_last_n
+            .and_then(|repeat_last_n| u32::try_from(repeat_last_n).ok()),
         skip_special_tokens: None,
         vllm_xargs: None,
         stop: request.options.stop.map(OllamaStopInput::into_openai_stop),
@@ -960,6 +1053,28 @@ fn keep_alive_requests_unload(value: Option<&Value>) -> bool {
     }
 }
 
+/// Unload (soft-park) the model through the exact `/v1/model/unload` flow so
+/// Ollama `keep_alive: 0` actually frees the registry entry a later load
+/// depends on. Ollama clients send this before loading a different model and
+/// expect the memory to be released; answering `done_reason: "unload"`
+/// without running the unload would leave the model resident.
+async fn unload_model_after_keep_alive(state: &AppState, model_id: &str) {
+    let result = crate::model_load::perform_unload(
+        state,
+        model_id.to_string(),
+        UnloadWaitPolicy::WaitForIdle,
+    )
+    .await;
+    if let Err((status, Json(body))) = result {
+        tracing::warn!(
+            model_id,
+            status = %status,
+            "keep_alive unload after Ollama response failed: {}",
+            body.error.message
+        );
+    }
+}
+
 fn json_number_is_zero(value: &serde_json::Number) -> bool {
     value
         .as_i64()
@@ -984,12 +1099,17 @@ fn reject_ollama_tools_without_support(
     ))
 }
 
+/// Validate `options.num_ctx` against the session window and return the
+/// resolved positive value (negative means unset/default, mirroring Ollama's
+/// integer sentinels). The value is a client-side budget only: AX has no
+/// OpenAI-schema context-hint field to forward it into, so a fitting value is
+/// accepted and the session's configured window keeps governing generation.
 fn validate_ollama_num_ctx(
     live: &LiveState,
-    requested: Option<u32>,
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    let Some(requested) = requested else {
-        return Ok(());
+    requested: Option<i64>,
+) -> Result<Option<u32>, (StatusCode, Json<ErrorResponse>)> {
+    let Some(requested) = requested.and_then(|value| u32::try_from(value).ok()) else {
+        return Ok(None);
     };
     let available = context_length(live);
     if requested == 0 || requested > available {
@@ -1001,7 +1121,42 @@ fn validate_ollama_num_ctx(
             ),
         ));
     }
+    Ok(Some(requested))
+}
+
+/// Fail closed when a rendered prompt cannot fit the client's
+/// `options.num_ctx` budget: real Ollama truncates the prompt to fit, and AX
+/// never truncates silently, so the request is rejected with an actionable
+/// message instead. Checked wherever the token count first exists (after the
+/// OpenAI request is built and tokenized); delegated backends forward raw
+/// text and keep no server-side count, so the check is vacuous there.
+fn enforce_ollama_num_ctx_prompt_budget(
+    num_ctx: Option<u32>,
+    input_tokens: &[u32],
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let Some(num_ctx) = num_ctx else {
+        return Ok(());
+    };
+    let prompt_tokens = input_tokens.len();
+    if prompt_tokens > num_ctx as usize {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded",
+            format!(
+                "prompt has {prompt_tokens} tokens but options.num_ctx is {num_ctx}; AX does not truncate prompts, raise num_ctx or shorten the prompt"
+            ),
+        ));
+    }
     Ok(())
+}
+
+/// Detached `keep_alive: 0` unload for true-stream responses: the body still
+/// owns the generation, and `perform_unload` drains admission and waits for
+/// model idle, so parking lands after the stream terminates.
+fn spawn_keep_alive_unload(state: AppState, model_id: String) {
+    tokio::spawn(async move {
+        unload_model_after_keep_alive(&state, &model_id).await;
+    });
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1281,8 +1436,11 @@ async fn run_ollama_chat_completion(
     state: AppState,
     live: LiveState,
     request: OpenAiChatCompletionHttpRequest,
+    num_ctx: Option<u32>,
 ) -> Result<OpenAiChatCompletionResponse, (StatusCode, Json<ErrorResponse>)> {
     if mlx_lm::is_selected(&live) {
+        // Delegated backend: no server-side token count exists to check
+        // against options.num_ctx; the upstream server owns its window.
         let OpenAiBuiltMlxLmChatRequest {
             chat_request,
             response_options,
@@ -1307,6 +1465,8 @@ async fn run_ollama_chat_completion(
     }
 
     if llama_cpp::supports_server_chat(&live) {
+        // Delegated backend: no server-side token count exists to check
+        // against options.num_ctx; the upstream server owns its window.
         let OpenAiBuiltLlamaCppChatRequest {
             chat_request,
             response_options,
@@ -1335,6 +1495,7 @@ async fn run_ollama_chat_completion(
         response_options,
         ..
     } = build_openai_chat_request_offloading_media(&live, &state.media, request).await?;
+    enforce_ollama_num_ctx_prompt_budget(num_ctx, &generate_request.input_tokens)?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
     let native_reasoning = populate_native_mlx_output_text(
@@ -1356,6 +1517,7 @@ async fn run_ollama_completion(
     state: AppState,
     live: LiveState,
     request: OpenAiCompletionHttpRequest,
+    num_ctx: Option<u32>,
 ) -> Result<OllamaGenerateResponse, (StatusCode, Json<ErrorResponse>)> {
     let started = std::time::Instant::now();
     let OpenAiBuiltRequest {
@@ -1363,6 +1525,7 @@ async fn run_ollama_completion(
         response_options,
         ..
     } = build_openai_completion_request(&live, request)?;
+    enforce_ollama_num_ctx_prompt_budget(num_ctx, &generate_request.input_tokens)?;
     let (_request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
     let native_reasoning = populate_native_mlx_output_text(
@@ -2187,6 +2350,48 @@ mod tests {
         assert!(keep_alive_requests_unload(Some(&json!("0s"))));
         assert!(!keep_alive_requests_unload(Some(&json!(1))));
         assert!(!keep_alive_requests_unload(Some(&json!(0.5))));
+        // A positive duration keeps the model resident (no unload).
+        assert!(!keep_alive_requests_unload(Some(&json!("5m"))));
+    }
+
+    #[test]
+    fn num_ctx_budget_rejects_oversized_prompt_and_allows_fit() {
+        // No num_ctx: the budget check is vacuous.
+        assert!(enforce_ollama_num_ctx_prompt_budget(None, &[1, 2, 3]).is_ok());
+        // Prompt fits exactly within the budget.
+        assert!(enforce_ollama_num_ctx_prompt_budget(Some(3), &[1, 2, 3]).is_ok());
+        // Prompt longer than the budget must fail closed (AX never truncates).
+        let (status, Json(body)) =
+            enforce_ollama_num_ctx_prompt_budget(Some(2), &[1, 2, 3]).expect_err("oversized");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.error.message.contains("does not truncate prompts"),
+            "unexpected message: {}",
+            body.error.message
+        );
+    }
+
+    #[test]
+    fn negative_num_ctx_is_unset_sentinel() {
+        let request: OllamaGenerateRequest = serde_json::from_value(json!({
+            "model": "m", "prompt": "hi", "options": {"num_ctx": -1}
+        }))
+        .expect("negative num_ctx parses as the unset sentinel");
+        assert_eq!(request.options.num_ctx, Some(-1));
+        // Negative maps to `None` (unset) in validate_ollama_num_ctx, the same
+        // mapping used for the signed `seed` field.
+        assert_eq!(
+            request.options.num_ctx.and_then(|v| u32::try_from(v).ok()),
+            None
+        );
+        let request: OllamaGenerateRequest = serde_json::from_value(json!({
+            "model": "m", "prompt": "hi", "options": {"num_ctx": 2048}
+        }))
+        .expect("positive num_ctx parses");
+        assert_eq!(
+            request.options.num_ctx.and_then(|v| u32::try_from(v).ok()),
+            Some(2048)
+        );
     }
 
     #[test]

@@ -215,6 +215,7 @@ impl AnthropicMessagesRequest {
             response_format: None,
             tools: None,
             tool_choice: None,
+            parallel_tool_calls: None,
             fit_max_tokens_to_context: false,
         })
     }

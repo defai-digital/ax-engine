@@ -619,6 +619,13 @@ pub(crate) struct ServerMetrics {
     /// engine worker per model; a single set of gauges would interleave
     /// last-writer-wins values from unrelated models.
     engine_step_stats: Mutex<BTreeMap<String, EngineStepStats>>,
+    /// Process-scoped cumulative totals for the counter-type engine-step
+    /// series. Per-model entries in `engine_step_stats` reset to zero or
+    /// vanish when a model is unloaded and reloaded; these accumulators only
+    /// ever increase, so the unlabeled aggregate exported by `/metrics` does
+    /// not lose counts across a model generation boundary. Gauge and
+    /// rate/last-wins fields stay zero here (they are not summed over models).
+    process_step_counters: Mutex<EngineStepStats>,
     /// Worker-measured serving latency/throughput samples (process-wide).
     serving_stats: Mutex<ServingStats>,
 }
@@ -730,6 +737,63 @@ struct EngineStepStats {
     mlx_mtp_certified_default_on: u64,
     mlx_mtp_runtime_enabled_by_default: u64,
     memory: Option<ModelMemoryGauges>,
+}
+
+impl EngineStepStats {
+    /// Project these stats into the `/metrics` snapshot shape, dropping the
+    /// private runner-cumulative bookkeeping fields (`*_last`, `memory`) that
+    /// only `record_step_report` consumes.
+    fn as_gauges(&self) -> EngineStepGauges {
+        EngineStepGauges {
+            steps_total: self.steps_total,
+            scheduled_requests_total: self.scheduled_requests_total,
+            scheduled_tokens_total: self.scheduled_tokens_total,
+            scheduled_requests: self.scheduled_requests,
+            scheduled_tokens: self.scheduled_tokens,
+            kv_usage_blocks: self.kv_usage_blocks,
+            waiting_requests: self.waiting_requests,
+            prefix_hits_total: self.prefix_hits_total,
+            kv_allocated_blocks_total: self.kv_allocated_blocks_total,
+            kv_released_blocks_total: self.kv_released_blocks_total,
+            kv_cache_evictions_total: self.kv_cache_evictions_total,
+            kv_free_blocks: self.kv_free_blocks,
+            kv_block_tables: self.kv_block_tables,
+            kv_prompt_entries: self.kv_prompt_entries,
+            kv_block_ref_entries: self.kv_block_ref_entries,
+            kv_live_prefix_index_keys: self.kv_live_prefix_index_keys,
+            kv_live_prefix_request_refs: self.kv_live_prefix_request_refs,
+            kv_cached_blocks: self.kv_cached_blocks,
+            kv_cached_child_index_keys: self.kv_cached_child_index_keys,
+            kv_cached_child_edges: self.kv_cached_child_edges,
+            request_active_records: self.request_active_records,
+            request_terminal_snapshots: self.request_terminal_snapshots,
+            request_terminal_snapshot_order: self.request_terminal_snapshot_order,
+            request_terminal_snapshot_bytes: self.request_terminal_snapshot_bytes,
+            mtp_draft_tokens_total: self.mtp_draft_tokens_total,
+            mtp_accepted_tokens_total: self.mtp_accepted_tokens_total,
+            mtp_direct_fallback_steps_total: self.mtp_direct_fallback_steps_total,
+            mtp_accept_rate_ewma_x1000: self.mtp_accept_rate_ewma_x1000,
+            mlx_flash_next_selected_expert_gathers_total: self
+                .mlx_flash_next_selected_expert_gathers_total,
+            mlx_flash_next_selected_expert_payload_kib_total: self
+                .mlx_flash_next_selected_expert_payload_kib_total,
+            mlx_prefix_cache_hits_total: self.mlx_prefix_cache_hits_total,
+            mlx_prefix_cache_misses_total: self.mlx_prefix_cache_misses_total,
+            mlx_prefix_cache_reused_tokens_total: self.mlx_prefix_cache_reused_tokens_total,
+            mlx_prefix_cache_warmup_tokens_total: self.mlx_prefix_cache_warmup_tokens_total,
+            mlx_prefix_cache_blocked_entry_too_large_total: self
+                .mlx_prefix_cache_blocked_entry_too_large_total,
+            mlx_prefill_wall_us_total: self.mlx_prefill_wall_us_total,
+            mlx_prefill_forward_wall_us_total: self.mlx_prefill_forward_wall_us_total,
+            mlx_prefill_prefix_cache_wall_us_total: self.mlx_prefill_prefix_cache_wall_us_total,
+            mlx_prefill_generation_state_wall_us_total: self
+                .mlx_prefill_generation_state_wall_us_total,
+            mlx_mtp_model_policy_active: self.mlx_mtp_model_policy_active,
+            mlx_mtp_model_policy_route_safe: self.mlx_mtp_model_policy_route_safe,
+            mlx_mtp_certified_default_on: self.mlx_mtp_certified_default_on,
+            mlx_mtp_runtime_enabled_by_default: self.mlx_mtp_runtime_enabled_by_default,
+        }
+    }
 }
 
 /// Point-in-time copy of the engine-step gauges cached by
@@ -863,8 +927,11 @@ impl ServerMetrics {
         self.http_requests_in_flight.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn finish_http_request(&self, status: axum::http::StatusCode) {
-        self.http_requests_in_flight.fetch_sub(1, Ordering::Relaxed);
+    /// Bucket a response status at header time (before the body streams).
+    /// Streaming bodies (SSE / NDJSON) keep generating after headers return,
+    /// so the status is attributed here while the in-flight gauge is released
+    /// separately in [`Self::finish_http_request_body`] when the body ends.
+    pub(crate) fn record_http_status(&self, status: axum::http::StatusCode) {
         if status.is_success() {
             self.http_status_2xx_total.fetch_add(1, Ordering::Relaxed);
         } else if status.is_client_error() {
@@ -872,6 +939,11 @@ impl ServerMetrics {
         } else if status.is_server_error() {
             self.http_status_5xx_total.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Release the in-flight gauge once the response body has ended.
+    pub(crate) fn finish_http_request_body(&self) {
+        self.http_requests_in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// Decrement the in-flight gauge without recording a status bucket.
@@ -1105,10 +1177,95 @@ impl ServerMetrics {
     }
 
     pub(crate) fn remove_model_step_stats(&self, model_id: &str) {
-        self.engine_step_stats
+        let removed = self
+            .engine_step_stats
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(model_id);
+        // Fold the retired generation's counter totals into the process-scoped
+        // accumulators before the entry is dropped, so the unlabeled aggregate
+        // keeps counting across unload/reload.
+        if let Some(entry) = removed {
+            self.accumulate_process_step_counters(&entry);
+        }
+    }
+
+    /// Process-scoped cumulative snapshot of the counter-type engine-step
+    /// series. Counter fields only ever increase; gauge and rate fields read
+    /// zero because they are not summed across retired models.
+    pub(crate) fn process_step_counters(&self) -> EngineStepGauges {
+        self.process_step_counters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_gauges()
+    }
+
+    fn accumulate_process_step_counters(&self, entry: &EngineStepStats) {
+        let mut process = self
+            .process_step_counters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        process.steps_total = process.steps_total.saturating_add(entry.steps_total);
+        process.scheduled_requests_total = process
+            .scheduled_requests_total
+            .saturating_add(entry.scheduled_requests_total);
+        process.scheduled_tokens_total = process
+            .scheduled_tokens_total
+            .saturating_add(entry.scheduled_tokens_total);
+        process.prefix_hits_total = process
+            .prefix_hits_total
+            .saturating_add(entry.prefix_hits_total);
+        process.kv_allocated_blocks_total = process
+            .kv_allocated_blocks_total
+            .saturating_add(entry.kv_allocated_blocks_total);
+        process.kv_released_blocks_total = process
+            .kv_released_blocks_total
+            .saturating_add(entry.kv_released_blocks_total);
+        process.kv_cache_evictions_total = process
+            .kv_cache_evictions_total
+            .saturating_add(entry.kv_cache_evictions_total);
+        process.mtp_draft_tokens_total = process
+            .mtp_draft_tokens_total
+            .saturating_add(entry.mtp_draft_tokens_total);
+        process.mtp_accepted_tokens_total = process
+            .mtp_accepted_tokens_total
+            .saturating_add(entry.mtp_accepted_tokens_total);
+        process.mtp_direct_fallback_steps_total = process
+            .mtp_direct_fallback_steps_total
+            .saturating_add(entry.mtp_direct_fallback_steps_total);
+        process.mlx_flash_next_selected_expert_gathers_total = process
+            .mlx_flash_next_selected_expert_gathers_total
+            .saturating_add(entry.mlx_flash_next_selected_expert_gathers_total);
+        process.mlx_flash_next_selected_expert_payload_kib_total = process
+            .mlx_flash_next_selected_expert_payload_kib_total
+            .saturating_add(entry.mlx_flash_next_selected_expert_payload_kib_total);
+        process.mlx_prefix_cache_hits_total = process
+            .mlx_prefix_cache_hits_total
+            .saturating_add(entry.mlx_prefix_cache_hits_total);
+        process.mlx_prefix_cache_misses_total = process
+            .mlx_prefix_cache_misses_total
+            .saturating_add(entry.mlx_prefix_cache_misses_total);
+        process.mlx_prefix_cache_reused_tokens_total = process
+            .mlx_prefix_cache_reused_tokens_total
+            .saturating_add(entry.mlx_prefix_cache_reused_tokens_total);
+        process.mlx_prefix_cache_warmup_tokens_total = process
+            .mlx_prefix_cache_warmup_tokens_total
+            .saturating_add(entry.mlx_prefix_cache_warmup_tokens_total);
+        process.mlx_prefix_cache_blocked_entry_too_large_total = process
+            .mlx_prefix_cache_blocked_entry_too_large_total
+            .saturating_add(entry.mlx_prefix_cache_blocked_entry_too_large_total);
+        process.mlx_prefill_wall_us_total = process
+            .mlx_prefill_wall_us_total
+            .saturating_add(entry.mlx_prefill_wall_us_total);
+        process.mlx_prefill_forward_wall_us_total = process
+            .mlx_prefill_forward_wall_us_total
+            .saturating_add(entry.mlx_prefill_forward_wall_us_total);
+        process.mlx_prefill_prefix_cache_wall_us_total = process
+            .mlx_prefill_prefix_cache_wall_us_total
+            .saturating_add(entry.mlx_prefill_prefix_cache_wall_us_total);
+        process.mlx_prefill_generation_state_wall_us_total = process
+            .mlx_prefill_generation_state_wall_us_total
+            .saturating_add(entry.mlx_prefill_generation_state_wall_us_total);
     }
 
     /// Per-model engine-step snapshots for `/metrics`, sorted by model id.
@@ -1120,64 +1277,7 @@ impl ServerMetrics {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         stats
             .iter()
-            .map(|(model_id, entry)| {
-                (
-                    model_id.clone(),
-                    EngineStepGauges {
-                        steps_total: entry.steps_total,
-                        scheduled_requests_total: entry.scheduled_requests_total,
-                        scheduled_tokens_total: entry.scheduled_tokens_total,
-                        scheduled_requests: entry.scheduled_requests,
-                        scheduled_tokens: entry.scheduled_tokens,
-                        kv_usage_blocks: entry.kv_usage_blocks,
-                        waiting_requests: entry.waiting_requests,
-                        prefix_hits_total: entry.prefix_hits_total,
-                        kv_allocated_blocks_total: entry.kv_allocated_blocks_total,
-                        kv_released_blocks_total: entry.kv_released_blocks_total,
-                        kv_cache_evictions_total: entry.kv_cache_evictions_total,
-                        kv_free_blocks: entry.kv_free_blocks,
-                        kv_block_tables: entry.kv_block_tables,
-                        kv_prompt_entries: entry.kv_prompt_entries,
-                        kv_block_ref_entries: entry.kv_block_ref_entries,
-                        kv_live_prefix_index_keys: entry.kv_live_prefix_index_keys,
-                        kv_live_prefix_request_refs: entry.kv_live_prefix_request_refs,
-                        kv_cached_blocks: entry.kv_cached_blocks,
-                        kv_cached_child_index_keys: entry.kv_cached_child_index_keys,
-                        kv_cached_child_edges: entry.kv_cached_child_edges,
-                        request_active_records: entry.request_active_records,
-                        request_terminal_snapshots: entry.request_terminal_snapshots,
-                        request_terminal_snapshot_order: entry.request_terminal_snapshot_order,
-                        request_terminal_snapshot_bytes: entry.request_terminal_snapshot_bytes,
-                        mtp_draft_tokens_total: entry.mtp_draft_tokens_total,
-                        mtp_accepted_tokens_total: entry.mtp_accepted_tokens_total,
-                        mtp_direct_fallback_steps_total: entry.mtp_direct_fallback_steps_total,
-                        mtp_accept_rate_ewma_x1000: entry.mtp_accept_rate_ewma_x1000,
-                        mlx_flash_next_selected_expert_gathers_total: entry
-                            .mlx_flash_next_selected_expert_gathers_total,
-                        mlx_flash_next_selected_expert_payload_kib_total: entry
-                            .mlx_flash_next_selected_expert_payload_kib_total,
-                        mlx_prefix_cache_hits_total: entry.mlx_prefix_cache_hits_total,
-                        mlx_prefix_cache_misses_total: entry.mlx_prefix_cache_misses_total,
-                        mlx_prefix_cache_reused_tokens_total: entry
-                            .mlx_prefix_cache_reused_tokens_total,
-                        mlx_prefix_cache_warmup_tokens_total: entry
-                            .mlx_prefix_cache_warmup_tokens_total,
-                        mlx_prefix_cache_blocked_entry_too_large_total: entry
-                            .mlx_prefix_cache_blocked_entry_too_large_total,
-                        mlx_prefill_wall_us_total: entry.mlx_prefill_wall_us_total,
-                        mlx_prefill_forward_wall_us_total: entry.mlx_prefill_forward_wall_us_total,
-                        mlx_prefill_prefix_cache_wall_us_total: entry
-                            .mlx_prefill_prefix_cache_wall_us_total,
-                        mlx_prefill_generation_state_wall_us_total: entry
-                            .mlx_prefill_generation_state_wall_us_total,
-                        mlx_mtp_model_policy_active: entry.mlx_mtp_model_policy_active,
-                        mlx_mtp_model_policy_route_safe: entry.mlx_mtp_model_policy_route_safe,
-                        mlx_mtp_certified_default_on: entry.mlx_mtp_certified_default_on,
-                        mlx_mtp_runtime_enabled_by_default: entry
-                            .mlx_mtp_runtime_enabled_by_default,
-                    },
-                )
-            })
+            .map(|(model_id, entry)| (model_id.clone(), entry.as_gauges()))
             .collect()
     }
 

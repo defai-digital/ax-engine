@@ -565,7 +565,7 @@ async fn rollback_after_failed_memory_constrained_build(
 
 /// How an unload behaves when requests are in flight after admission closes.
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum UnloadWaitPolicy {
+pub(crate) enum UnloadWaitPolicy {
     /// Operator-initiated unload: drain admission and wait for in-flight
     /// work (bounded by `DRAIN_IDLE_TIMEOUT`).
     WaitForIdle,
@@ -578,7 +578,9 @@ enum UnloadWaitPolicy {
 /// Shared unload flow used by the HTTP handler and the idle evictor: takes
 /// the lifecycle-mutation flag, validates, drains only the target model, and
 /// retires it on a detached task so a caller disconnect cannot abort cleanup.
-async fn perform_unload(
+/// Also reused by the Ollama-compatible `keep_alive: 0` contract so both
+/// surfaces unload through the exact same registry/arbiter path.
+pub(crate) async fn perform_unload(
     state: &AppState,
     model_id: String,
     wait_policy: UnloadWaitPolicy,

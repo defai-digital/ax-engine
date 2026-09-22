@@ -371,7 +371,8 @@ async fn metrics_saturation_series_feed_fleet_dispatch_contract() {
         decode_tok_per_sec: Some(84.0),
     });
     metrics.begin_http_request();
-    metrics.finish_http_request(StatusCode::INTERNAL_SERVER_ERROR);
+    metrics.record_http_status(StatusCode::INTERNAL_SERVER_ERROR);
+    metrics.finish_http_request_body();
 
     let body = scrape(&app).await;
     assert!(body.contains("ax_engine_step_waiting_requests 2\n"));
@@ -394,4 +395,63 @@ async fn metrics_saturation_series_feed_fleet_dispatch_contract() {
     // One failed request out of all counted requests (including the scrapes
     // themselves): strictly positive ratio below 1.
     assert!(body.contains("ax_runtime_error_rate 0."));
+}
+
+/// The counter-type step series are process-scoped: unloading a model must not
+/// reset the unlabeled aggregate to zero on the next scrape.
+#[tokio::test]
+async fn metrics_step_counters_survive_model_unload() {
+    let state = llama_cpp_state();
+    let metrics = state.metrics.clone();
+    let app = build_router(state);
+
+    metrics.record_step_report(
+        "qwen3",
+        &EngineStepReport {
+            scheduled_requests: 2,
+            scheduled_tokens: 4,
+            ..Default::default()
+        },
+    );
+    metrics.record_step_report(
+        "qwen3",
+        &EngineStepReport {
+            scheduled_requests: 1,
+            scheduled_tokens: 2,
+            ..Default::default()
+        },
+    );
+
+    let (status, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("ax_engine_steps_total 2\n"), "{body}");
+
+    // The /v1/model/unload path prunes the retired generation's step stats via
+    // `remove_model_step_stats`, which folds the counts into the process scope.
+    metrics.remove_model_step_stats("qwen3");
+
+    let (status, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("ax_engine_steps_total 2\n"),
+        "the unlabeled steps counter must survive an unload, not reset to 0: {body}"
+    );
+    // The retired generation's per-model labeled series is gone.
+    assert!(!body.contains("ax_engine_steps_total{model=\"qwen3\"}"));
 }

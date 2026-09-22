@@ -203,13 +203,21 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         .collect::<std::collections::BTreeSet<_>>();
     let mut step_models = metrics.engine_step_gauges_per_model();
     step_models.retain(|(model_id, _)| loaded_model_ids.contains(model_id.as_str()));
-    if !step_models.is_empty() {
+    // Process-scoped cumulative counters: the unlabeled aggregate for a
+    // counter series adds these in so counts survive a model unload/reload.
+    let process = metrics.process_step_counters();
+    // Emit the step block when a loaded model has observed steps, or when the
+    // process-scoped counters are non-zero (a model was unloaded after steps):
+    // the counter aggregates must not vanish just because no live model has a
+    // cached step yet.
+    if !step_models.is_empty() || process.steps_total > 0 {
         append_step_metric(
             &mut body,
             "ax_engine_steps_total",
             "Successful engine steps observed by the current server process (unlabeled: summed across loaded models).",
             "counter",
             &step_models,
+            process.steps_total,
             |step| step.steps_total,
         );
         append_step_metric(
@@ -218,6 +226,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Requests scheduled across successful engine steps (unlabeled: summed across loaded models).",
             "counter",
             &step_models,
+            process.scheduled_requests_total,
             |step| step.scheduled_requests_total,
         );
         append_step_metric(
@@ -226,6 +235,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Tokens scheduled across successful engine steps (unlabeled: summed across loaded models).",
             "counter",
             &step_models,
+            process.scheduled_tokens_total,
             |step| step.scheduled_tokens_total,
         );
         append_step_metric(
@@ -234,6 +244,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Requests scheduled in the latest observed engine step (unlabeled: summed across loaded models).",
             "gauge",
             &step_models,
+            0,
             |step| step.scheduled_requests,
         );
         append_step_metric(
@@ -242,6 +253,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Tokens scheduled in the latest observed engine step (unlabeled: summed across loaded models).",
             "gauge",
             &step_models,
+            0,
             |step| step.scheduled_tokens,
         );
         append_step_metric(
@@ -250,6 +262,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "KV cache blocks used in the latest observed engine step (unlabeled: summed across loaded models).",
             "gauge",
             &step_models,
+            0,
             |step| step.kv_usage_blocks,
         );
         append_step_metric(
@@ -258,6 +271,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Requests waiting for scheduler admission in the latest observed engine step (unlabeled: summed across loaded models).",
             "gauge",
             &step_models,
+            0,
             |step| step.waiting_requests,
         );
         append_step_metric(
@@ -266,6 +280,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Prefix cache hits accumulated across observed engine steps (unlabeled: summed across loaded models).",
             "counter",
             &step_models,
+            process.prefix_hits_total,
             |step| step.prefix_hits_total,
         );
         append_step_metric(
@@ -274,6 +289,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Speculative draft tokens proposed across observed engine steps (unlabeled: summed across loaded models).",
             "counter",
             &step_models,
+            process.mtp_draft_tokens_total,
             |step| step.mtp_draft_tokens_total,
         );
         append_step_metric(
@@ -282,6 +298,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Speculative draft tokens accepted across observed engine steps (unlabeled: summed across loaded models).",
             "counter",
             &step_models,
+            process.mtp_accepted_tokens_total,
             |step| step.mtp_accepted_tokens_total,
         );
         append_step_metric(
@@ -290,6 +307,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             "Decode steps that fell back to direct (non-speculative) decode across observed engine steps (unlabeled: summed across loaded models).",
             "counter",
             &step_models,
+            process.mtp_direct_fallback_steps_total,
             |step| step.mtp_direct_fallback_steps_total,
         );
         append_step_metric_per_model(
@@ -300,21 +318,24 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             &step_models,
             |step| step.mtp_accept_rate_ewma_x1000,
         );
-        for (name, help, value) in [
+        for (name, help, baseline, value) in [
             (
                 "ax_engine_mlx_prefix_cache_hits_total",
                 "Physical MLX prefix-cache hits accumulated across observed engine steps.",
+                process.mlx_prefix_cache_hits_total,
                 (|step: &crate::app_state::EngineStepGauges| step.mlx_prefix_cache_hits_total)
                     as fn(&crate::app_state::EngineStepGauges) -> u64,
             ),
             (
                 "ax_engine_mlx_prefix_cache_misses_total",
                 "Physical MLX prefix-cache misses accumulated across observed engine steps.",
+                process.mlx_prefix_cache_misses_total,
                 |step: &crate::app_state::EngineStepGauges| step.mlx_prefix_cache_misses_total,
             ),
             (
                 "ax_engine_mlx_prefix_cache_reused_tokens_total",
                 "Prompt tokens physically restored from the MLX prefix cache.",
+                process.mlx_prefix_cache_reused_tokens_total,
                 |step: &crate::app_state::EngineStepGauges| {
                     step.mlx_prefix_cache_reused_tokens_total
                 },
@@ -322,6 +343,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             (
                 "ax_engine_mlx_prefix_cache_warmup_tokens_total",
                 "Prompt tokens recomputed after an MLX prefix-cache miss.",
+                process.mlx_prefix_cache_warmup_tokens_total,
                 |step: &crate::app_state::EngineStepGauges| {
                     step.mlx_prefix_cache_warmup_tokens_total
                 },
@@ -329,6 +351,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             (
                 "ax_engine_mlx_prefix_cache_blocked_entry_too_large_total",
                 "MLX prefix snapshots skipped before serialization because their lower-bound size exceeded the portable cache budget.",
+                process.mlx_prefix_cache_blocked_entry_too_large_total,
                 |step: &crate::app_state::EngineStepGauges| {
                     step.mlx_prefix_cache_blocked_entry_too_large_total
                 },
@@ -336,6 +359,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             (
                 "ax_engine_mlx_flash_next_selected_expert_gathers_total",
                 "Successful selected-expert stack gathers observed in engine steps.",
+                process.mlx_flash_next_selected_expert_gathers_total,
                 |step: &crate::app_state::EngineStepGauges| {
                     step.mlx_flash_next_selected_expert_gathers_total
                 },
@@ -343,6 +367,7 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             (
                 "ax_engine_mlx_flash_next_selected_expert_payload_kib_total",
                 "Selected-expert payload KiB from successful gathers; excludes headers, whole-layer reads and failed gathers.",
+                process.mlx_flash_next_selected_expert_payload_kib_total,
                 |step: &crate::app_state::EngineStepGauges| {
                     step.mlx_flash_next_selected_expert_payload_kib_total
                 },
@@ -350,16 +375,19 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             (
                 "ax_engine_mlx_prefill_wall_us_total",
                 "Total MLX prefill wall time observed in microseconds.",
+                process.mlx_prefill_wall_us_total,
                 |step: &crate::app_state::EngineStepGauges| step.mlx_prefill_wall_us_total,
             ),
             (
                 "ax_engine_mlx_prefill_forward_wall_us_total",
                 "Total MLX prefill forward-pass wall time observed in microseconds.",
+                process.mlx_prefill_forward_wall_us_total,
                 |step: &crate::app_state::EngineStepGauges| step.mlx_prefill_forward_wall_us_total,
             ),
             (
                 "ax_engine_mlx_prefill_prefix_cache_wall_us_total",
                 "Total MLX prefill prefix-cache work observed in microseconds.",
+                process.mlx_prefill_prefix_cache_wall_us_total,
                 |step: &crate::app_state::EngineStepGauges| {
                     step.mlx_prefill_prefix_cache_wall_us_total
                 },
@@ -367,12 +395,21 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             (
                 "ax_engine_mlx_prefill_generation_state_wall_us_total",
                 "Total MLX post-prefill generation-state initialization observed in microseconds.",
+                process.mlx_prefill_generation_state_wall_us_total,
                 |step: &crate::app_state::EngineStepGauges| {
                     step.mlx_prefill_generation_state_wall_us_total
                 },
             ),
         ] {
-            append_step_metric(&mut body, name, help, "counter", &step_models, value);
+            append_step_metric(
+                &mut body,
+                name,
+                help,
+                "counter",
+                &step_models,
+                baseline,
+                value,
+            );
         }
         for (name, help, value) in [
             (
@@ -401,11 +438,12 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             // not a flag, so only the labeled series is exported.
             append_step_metric_per_model(&mut body, name, help, "gauge", &step_models, value);
         }
-        for (name, help, kind, value) in [
+        for (name, help, kind, baseline, value) in [
             (
                 "ax_engine_kv_allocated_blocks_total",
                 "Logical KV blocks allocated over the current model generation lifetime.",
                 "counter",
+                process.kv_allocated_blocks_total,
                 (|step: &crate::app_state::EngineStepGauges| step.kv_allocated_blocks_total)
                     as fn(&crate::app_state::EngineStepGauges) -> u64,
             ),
@@ -413,94 +451,109 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
                 "ax_engine_kv_released_blocks_total",
                 "Logical KV blocks returned to the free list over the current model generation lifetime.",
                 "counter",
+                process.kv_released_blocks_total,
                 |step: &crate::app_state::EngineStepGauges| step.kv_released_blocks_total,
             ),
             (
                 "ax_engine_kv_cache_evictions_total",
                 "Retained KV cache entries evicted over the current model generation lifetime.",
                 "counter",
+                process.kv_cache_evictions_total,
                 |step: &crate::app_state::EngineStepGauges| step.kv_cache_evictions_total,
             ),
             (
                 "ax_engine_kv_free_blocks",
                 "Logical KV blocks currently on the free list.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_free_blocks,
             ),
             (
                 "ax_engine_kv_block_tables",
                 "Live request block tables retained by the KV manager.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_block_tables,
             ),
             (
                 "ax_engine_kv_prompt_entries",
                 "Live request prompt entries retained by the KV manager.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_prompt_entries,
             ),
             (
                 "ax_engine_kv_block_ref_entries",
                 "Logical KV block refcount entries currently retained.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_block_ref_entries,
             ),
             (
                 "ax_engine_kv_live_prefix_index_keys",
                 "Keys currently retained by the live-prefix request index.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_live_prefix_index_keys,
             ),
             (
                 "ax_engine_kv_live_prefix_request_refs",
                 "Request references currently retained by the live-prefix index.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_live_prefix_request_refs,
             ),
             (
                 "ax_engine_kv_cached_blocks",
                 "Retained prefix-cache block entries currently held by the KV manager.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_cached_blocks,
             ),
             (
                 "ax_engine_kv_cached_child_index_keys",
                 "Parent keys currently retained by the cached-child index.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_cached_child_index_keys,
             ),
             (
                 "ax_engine_kv_cached_child_edges",
                 "Parent-child edges currently retained by the cached-child index.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.kv_cached_child_edges,
             ),
             (
                 "ax_engine_request_active_records",
                 "Non-terminal request records currently held by the engine request manager.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.request_active_records,
             ),
             (
                 "ax_engine_request_terminal_snapshots",
                 "Terminal request snapshots currently retained by the bounded request manager store.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.request_terminal_snapshots,
             ),
             (
                 "ax_engine_request_terminal_snapshot_order",
                 "Request ids currently retained by the terminal-snapshot eviction order.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.request_terminal_snapshot_order,
             ),
             (
                 "ax_engine_request_terminal_snapshot_bytes",
                 "Prompt, output, and logprob payload bytes retained by terminal request snapshots.",
                 "gauge",
+                0,
                 |step: &crate::app_state::EngineStepGauges| step.request_terminal_snapshot_bytes,
             ),
         ] {
-            append_step_metric(&mut body, name, help, kind, &step_models, value);
+            append_step_metric(&mut body, name, help, kind, &step_models, baseline, value);
         }
     }
 
@@ -1025,12 +1078,19 @@ fn append_step_metric_per_model(
 
 /// One engine-step metric: HELP/TYPE once, then the unlabeled aggregate
 /// followed by one `model`-labeled series per loaded model.
+///
+/// `baseline` is the process-scoped cumulative counter for the series (see
+/// [`crate::app_state::ServerMetrics::process_step_counters`]); counter series
+/// pass their process total so the unlabeled aggregate does not drop when a
+/// model is unloaded, while gauge series pass zero (gauges are not summed over
+/// retired models).
 fn append_step_metric(
     body: &mut String,
     name: &str,
     help: &str,
     metric_type: &str,
     step_models: &[(String, crate::app_state::EngineStepGauges)],
+    baseline: u64,
     value: impl Fn(&crate::app_state::EngineStepGauges) -> u64,
 ) {
     body.push_str("# HELP ");
@@ -1043,7 +1103,7 @@ fn append_step_metric(
     body.push(' ');
     body.push_str(metric_type);
     body.push('\n');
-    let total: u64 = step_models.iter().map(|(_, step)| value(step)).sum();
+    let total: u64 = baseline.saturating_add(step_models.iter().map(|(_, step)| value(step)).sum());
     body.push_str(name);
     body.push(' ');
     body.push_str(&total.to_string());
