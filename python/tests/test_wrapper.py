@@ -2351,6 +2351,91 @@ class WrapperContractTests(unittest.TestCase):
 
             self.assertTrue(self.ax_engine._manifest_needs_media_rebuild(model_dir))
 
+    def test_staged_install_chmod_uses_cached_umask_without_toggling(self) -> None:
+        import stat
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "snapshot"
+            snapshot.mkdir()
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model.safetensors").write_bytes(b"new")
+            _write_valid_test_manifest(snapshot / "model-manifest.json")
+            dest = root / "dest"
+
+            def forbid_umask(mask: int) -> int:
+                raise AssertionError("library code must not toggle os.umask")
+
+            with (
+                patch.object(self.ax_engine, "_CACHED_UMASK", 0o027),
+                patch("os.umask", side_effect=forbid_umask),
+            ):
+                self.ax_engine._replace_with_staged_snapshot(
+                    snapshot,
+                    dest,
+                    repo_id="owner/repo",
+                    revision=None,
+                    force=False,
+                )
+
+            self.assertTrue(dest.is_dir())
+            self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o777 & ~0o027)
+
+    def test_weight_tensor_names_treats_non_object_index_as_invalid(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model.safetensors.index.json").write_text("[]")
+            (model_dir / "model.safetensors").write_bytes(b"placeholder")
+
+            self.assertEqual(self.ax_engine._weight_tensor_names(model_dir), set())
+
+    def test_manifest_media_rebuild_treats_non_object_payloads_as_missing(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model.safetensors").write_bytes(b"placeholder")
+            (model_dir / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {"weight_map": {"vision_tower.patch_embed.proj.weight": "model.safetensors"}}
+                )
+            )
+            valid_config = json.dumps({"model_type": "qwen3_5", "vision_config": {}})
+            valid_manifest = json.dumps({"tensors": [{"name": "language_model.weight"}]})
+
+            with self.subTest(payload_file="config.json"):
+                (model_dir / "config.json").write_text("[]")
+                (model_dir / "model-manifest.json").write_text(valid_manifest)
+                self.assertFalse(self.ax_engine._manifest_needs_media_rebuild(model_dir))
+
+            with self.subTest(payload_file="model-manifest.json"):
+                (model_dir / "config.json").write_text(valid_config)
+                (model_dir / "model-manifest.json").write_text("[]")
+                self.assertFalse(self.ax_engine._manifest_needs_media_rebuild(model_dir))
+
+    def test_download_model_non_object_config_yields_clean_result_not_traceback(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            (dest / "config.json").write_text("[]")
+            (dest / "model.safetensors").write_bytes(b"placeholder")
+            _write_valid_test_manifest(dest / "model-manifest.json")
+            self.ax_engine._write_download_provenance(dest, "owner/repo", None)
+
+            with (
+                patch("ax_engine._cli._find_repo_script", return_value=None),
+                patch.object(self.ax_engine, "_try_validate_manifest", return_value=False),
+                patch.object(self.ax_engine, "_try_generate_manifest", return_value=True),
+            ):
+                resolved = self.ax_engine.download_model("owner/repo", dest=dest)
+
+            self.assertEqual(resolved, dest)
+
     def test_try_generate_manifest_prefers_bundled_binary_over_path(self) -> None:
         import subprocess
         import tempfile

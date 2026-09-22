@@ -1445,6 +1445,14 @@ _MODEL_MANIFEST_FILE = "model-manifest.json"
 _DOWNLOAD_PROVENANCE_FILE = ".ax-engine-download.json"
 _DOWNLOAD_PROVENANCE_SCHEMA_VERSION = "ax.download_provenance.v1"
 _MAX_SAFETENSORS_HEADER_BYTES = 64 * 1024 * 1024
+# The umask can only be read by temporarily setting it, which mutates
+# process-wide state. Doing that inside library functions races with other
+# threads (a concurrent download can observe the transient value and end up
+# with a world-writable model directory), so read it once here at import
+# time -- single-threaded under the import lock -- using a restrictive
+# intermediate value, and never toggle the umask again.
+_CACHED_UMASK = os.umask(0o077)
+os.umask(_CACHED_UMASK)
 
 
 def _safetensors_files(model_dir: Path) -> list[Path]:
@@ -1467,10 +1475,14 @@ def _weight_tensor_names(model_dir: Path) -> set[str]:
     if index_path.is_file():
         try:
             payload = json.loads(index_path.read_bytes())
+            if not isinstance(payload, dict):
+                # A non-object weight index is invalid; treat it like an
+                # unreadable one rather than crashing on .get().
+                return set()
             weight_map = payload.get("weight_map", {})
             if isinstance(weight_map, dict):
                 return {name for name in weight_map if isinstance(name, str)}
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, AttributeError):
             return set()
 
     names: set[str] = set()
@@ -1500,7 +1512,11 @@ def _manifest_needs_media_rebuild(model_dir: Path) -> bool:
     try:
         config = json.loads((model_dir / "config.json").read_bytes())
         manifest = json.loads((model_dir / _MODEL_MANIFEST_FILE).read_bytes())
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    if not isinstance(config, dict) or not isinstance(manifest, dict):
+        # A non-object config or manifest is invalid; treat it like a
+        # missing file rather than crashing on .get().
         return False
     model_type = config.get("model_type")
     if not isinstance(model_type, str) or not isinstance(config.get("vision_config"), dict):
@@ -1904,10 +1920,9 @@ def _replace_with_staged_snapshot(
     stage = Path(tempfile.mkdtemp(prefix=f".{dest.name}.download-", dir=str(dest.parent)))
     # mkdtemp creates mode 0700; restore the umask-derived mode a plain mkdir
     # would have used so the activated destination stays readable by other
-    # users and services.
-    current_umask = os.umask(0)
-    os.umask(current_umask)
-    os.chmod(stage, 0o777 & ~current_umask)
+    # users and services. The umask was captured once at import; toggling it
+    # here would race with concurrent downloads in other threads.
+    os.chmod(stage, 0o777 & ~_CACHED_UMASK)
     backup_root: Path | None = None
     backup: Path | None = None
     try:
