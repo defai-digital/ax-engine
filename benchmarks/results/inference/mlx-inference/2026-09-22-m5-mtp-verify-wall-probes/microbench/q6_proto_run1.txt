@@ -1,0 +1,36 @@
+in_proj_qkv  K= 5120 N=10240 gs=32 M=1  mlx  0.091 ms ( 504 GB/s)  q6proto  0.092 ms ( 500 GB/s)  ratio mlx/q6 0.992  |err| q6=0.0096 mlx=0.0190
+in_proj_qkv  K= 5120 N=10240 gs=32 M=2  mlx  0.103 ms ( 444 GB/s)  q6proto  0.093 ms ( 496 GB/s)  ratio mlx/q6 1.116  |err| q6=0.0094 mlx=0.0094
+in_proj_qkv  K= 5120 N=10240 gs=32 M=3  mlx  0.091 ms ( 502 GB/s)  q6proto  0.093 ms ( 494 GB/s)  ratio mlx/q6 0.985  |err| q6=0.0091 mlx=0.0091
+in_proj_qkv  K= 5120 N=10240 gs=32 M=4  mlx  0.092 ms ( 497 GB/s)  q6proto  0.123 ms ( 373 GB/s)  ratio mlx/q6 0.752  |err| q6=0.0104 mlx=0.0104
+in_proj_qkv  K= 5120 N=10240 gs=32 M=5  mlx  0.097 ms ( 471 GB/s)  q6proto  0.303 ms ( 151 GB/s)  ratio mlx/q6 0.321  |err| q6=0.0091 mlx=0.0091
+in_proj_qkv  K= 5120 N=10240 gs=32 M=6  mlx  0.144 ms ( 318 GB/s)  q6proto  0.309 ms ( 149 GB/s)  ratio mlx/q6 0.467  |err| q6=0.0092 mlx=0.0092
+in_proj_z    K= 5120 N= 6144 gs=32 M=1  mlx  0.060 ms ( 462 GB/s)  q6proto  0.061 ms ( 450 GB/s)  ratio mlx/q6 0.975  |err| q6=0.0086 mlx=0.0197
+in_proj_z    K= 5120 N= 6144 gs=32 M=2  mlx  0.060 ms ( 463 GB/s)  q6proto  0.061 ms ( 450 GB/s)  ratio mlx/q6 0.972  |err| q6=0.0079 mlx=0.0079
+in_proj_z    K= 5120 N= 6144 gs=32 M=3  mlx  0.061 ms ( 452 GB/s)  q6proto  0.062 ms ( 447 GB/s)  ratio mlx/q6 0.989  |err| q6=0.0100 mlx=0.0100
+in_proj_z    K= 5120 N= 6144 gs=32 M=4  mlx  0.061 ms ( 449 GB/s)  q6proto  0.078 ms ( 352 GB/s)  ratio mlx/q6 0.786  |err| q6=0.0086 mlx=0.0086
+in_proj_z    K= 5120 N= 6144 gs=32 M=5  mlx  0.066 ms ( 420 GB/s)  q6proto  0.204 ms ( 135 GB/s)  ratio mlx/q6 0.322  |err| q6=0.0096 mlx=0.0096
+in_proj_z    K= 5120 N= 6144 gs=32 M=6  mlx  0.093 ms ( 297 GB/s)  q6proto  0.221 ms ( 125 GB/s)  ratio mlx/q6 0.420  |err| q6=0.0094 mlx=0.0094
+out_proj     K= 6144 N= 5120 gs=32 M=1  mlx  0.060 ms ( 458 GB/s)  q6proto  0.060 ms ( 455 GB/s)  ratio mlx/q6 0.995  |err| q6=0.0089 mlx=0.0251
+out_proj     K= 6144 N= 5120 gs=32 M=2  mlx  0.060 ms ( 459 GB/s)  q6proto  0.061 ms ( 449 GB/s)  ratio mlx/q6 0.979  |err| q6=0.0093 mlx=0.0093
+out_proj     K= 6144 N= 5120 gs=32 M=3  mlx  0.061 ms ( 454 GB/s)  q6proto  0.062 ms ( 442 GB/s)  ratio mlx/q6 0.974  |err| q6=0.0095 mlx=0.0095
+out_proj     K= 6144 N= 5120 gs=32 M=4  mlx  0.063 ms ( 440 GB/s)  q6proto  0.081 ms ( 341 GB/s)  ratio mlx/q6 0.775  |err| q6=0.0107 mlx=0.0107
+out_proj     K= 6144 N= 5120 gs=32 M=5  mlx  0.068 ms ( 403 GB/s)  q6proto  0.186 ms ( 148 GB/s)  ratio mlx/q6 0.368  |err| q6=0.0110 mlx=0.0110
+out_proj     K= 6144 N= 5120 gs=32 M=6  mlx  0.106 ms ( 259 GB/s)  q6proto  0.222 ms ( 124 GB/s)  ratio mlx/q6 0.479  |err| q6=0.0104 mlx=0.0104
+attn_o       K= 6144 N= 5120 gs=32 M=1  mlx  0.059 ms ( 466 GB/s)  q6proto  0.061 ms ( 451 GB/s)  ratio mlx/q6 0.968  |err| q6=0.0086 mlx=0.0193
+attn_o       K= 6144 N= 5120 gs=32 M=2  mlx  0.060 ms ( 457 GB/s)  q6proto  0.061 ms ( 454 GB/s)  ratio mlx/q6 0.995  |err| q6=0.0092 mlx=0.0092
+attn_o       K= 6144 N= 5120 gs=32 M=3  mlx  0.060 ms ( 459 GB/s)  q6proto  0.062 ms ( 445 GB/s)  ratio mlx/q6 0.970  |err| q6=0.0099 mlx=0.0099
+attn_o       K= 6144 N= 5120 gs=32 M=4  mlx  0.063 ms ( 439 GB/s)  q6proto  0.080 ms ( 342 GB/s)  ratio mlx/q6 0.780  |err| q6=0.0094 mlx=0.0094
+attn_o       K= 6144 N= 5120 gs=32 M=5  mlx  0.069 ms ( 402 GB/s)  q6proto  0.193 ms ( 143 GB/s)  ratio mlx/q6 0.356  |err| q6=0.0098 mlx=0.0098
+attn_o       K= 6144 N= 5120 gs=32 M=6  mlx  0.101 ms ( 271 GB/s)  q6proto  0.220 ms ( 125 GB/s)  ratio mlx/q6 0.461  |err| q6=0.0093 mlx=0.0093
+down_proj    K=17408 N= 5120 gs=64 M=1  mlx  0.136 ms ( 531 GB/s)  q6proto  0.142 ms ( 510 GB/s)  ratio mlx/q6 0.961  |err| q6=0.0150 mlx=0.0354
+down_proj    K=17408 N= 5120 gs=64 M=2  mlx  0.140 ms ( 516 GB/s)  q6proto  0.141 ms ( 515 GB/s)  ratio mlx/q6 0.997  |err| q6=0.0145 mlx=0.0145
+down_proj    K=17408 N= 5120 gs=64 M=3  mlx  0.146 ms ( 497 GB/s)  q6proto  0.148 ms ( 490 GB/s)  ratio mlx/q6 0.986  |err| q6=0.0195 mlx=0.0195
+down_proj    K=17408 N= 5120 gs=64 M=4  mlx  0.166 ms ( 437 GB/s)  q6proto  0.201 ms ( 361 GB/s)  ratio mlx/q6 0.826  |err| q6=0.0165 mlx=0.0165
+down_proj    K=17408 N= 5120 gs=64 M=5  mlx  0.178 ms ( 408 GB/s)  q6proto  0.328 ms ( 221 GB/s)  ratio mlx/q6 0.542  |err| q6=0.0160 mlx=0.0160
+down_proj    K=17408 N= 5120 gs=64 M=6  mlx  0.270 ms ( 268 GB/s)  q6proto  0.385 ms ( 188 GB/s)  ratio mlx/q6 0.700  |err| q6=0.0178 mlx=0.0178
+gate_proj    K= 5120 N=17408 gs=64 M=1  mlx  0.135 ms ( 537 GB/s)  q6proto  0.136 ms ( 531 GB/s)  ratio mlx/q6 0.988  |err| q6=0.0093 mlx=0.0237
+gate_proj    K= 5120 N=17408 gs=64 M=2  mlx  0.135 ms ( 538 GB/s)  q6proto  0.137 ms ( 528 GB/s)  ratio mlx/q6 0.982  |err| q6=0.0095 mlx=0.0095
+gate_proj    K= 5120 N=17408 gs=64 M=3  mlx  0.138 ms ( 525 GB/s)  q6proto  0.139 ms ( 520 GB/s)  ratio mlx/q6 0.990  |err| q6=0.0095 mlx=0.0095
+gate_proj    K= 5120 N=17408 gs=64 M=4  mlx  0.149 ms ( 486 GB/s)  q6proto  0.199 ms ( 364 GB/s)  ratio mlx/q6 0.750  |err| q6=0.0099 mlx=0.0099
+gate_proj    K= 5120 N=17408 gs=64 M=5  mlx  0.165 ms ( 439 GB/s)  q6proto  0.463 ms ( 157 GB/s)  ratio mlx/q6 0.356  |err| q6=0.0103 mlx=0.0103
+gate_proj    K= 5120 N=17408 gs=64 M=6  mlx  0.255 ms ( 284 GB/s)  q6proto  0.500 ms ( 145 GB/s)  ratio mlx/q6 0.510  |err| q6=0.0101 mlx=0.0101

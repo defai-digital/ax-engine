@@ -1,0 +1,36 @@
+in_proj_qkv  K= 5120 N=10240 M=1  mlx  0.085 ms ( 501 GB/s)  generic_q6  0.086 ms ( 494 GB/s) |diff|max=0.0000
+in_proj_qkv  K= 5120 N=10240 M=2  mlx  0.086 ms ( 496 GB/s)  generic_q6  0.087 ms ( 491 GB/s) |diff|max=0.0234
+in_proj_qkv  K= 5120 N=10240 M=3  mlx  0.085 ms ( 500 GB/s)  generic_q6  0.094 ms ( 453 GB/s) |diff|max=0.0234
+in_proj_qkv  K= 5120 N=10240 M=4  mlx  0.090 ms ( 475 GB/s)  generic_q6  0.133 ms ( 320 GB/s) |diff|max=0.0234
+in_proj_qkv  K= 5120 N=10240 M=5  mlx  0.097 ms ( 439 GB/s)
+in_proj_qkv  K= 5120 N=10240 M=6  mlx  0.147 ms ( 291 GB/s)
+in_proj_z    K= 5120 N= 6144 M=1  mlx  0.052 ms ( 490 GB/s)  generic_q6  0.054 ms ( 469 GB/s) |diff|max=0.0000
+in_proj_z    K= 5120 N= 6144 M=2  mlx  0.054 ms ( 477 GB/s)  generic_q6  0.056 ms ( 454 GB/s) |diff|max=0.0215
+in_proj_z    K= 5120 N= 6144 M=3  mlx  0.055 ms ( 464 GB/s)  generic_q6  0.068 ms ( 375 GB/s) |diff|max=0.0234
+in_proj_z    K= 5120 N= 6144 M=4  mlx  0.060 ms ( 430 GB/s)  generic_q6  0.086 ms ( 297 GB/s) |diff|max=0.0273
+in_proj_z    K= 5120 N= 6144 M=5  mlx  0.067 ms ( 382 GB/s)
+in_proj_z    K= 5120 N= 6144 M=6  mlx  0.098 ms ( 260 GB/s)
+out_proj     K= 6144 N= 5120 M=1  mlx  0.055 ms ( 463 GB/s)  generic_q6  0.057 ms ( 445 GB/s) |diff|max=0.0000
+out_proj     K= 6144 N= 5120 M=2  mlx  0.056 ms ( 457 GB/s)  generic_q6  0.060 ms ( 428 GB/s) |diff|max=0.0234
+out_proj     K= 6144 N= 5120 M=3  mlx  0.060 ms ( 426 GB/s)  generic_q6  0.065 ms ( 393 GB/s) |diff|max=0.0234
+out_proj     K= 6144 N= 5120 M=4  mlx  0.064 ms ( 399 GB/s)  generic_q6  0.085 ms ( 301 GB/s) |diff|max=0.0234
+out_proj     K= 6144 N= 5120 M=5  mlx  0.070 ms ( 367 GB/s)
+out_proj     K= 6144 N= 5120 M=6  mlx  0.106 ms ( 241 GB/s)
+attn_o       K= 6144 N= 5120 M=1  mlx  0.053 ms ( 484 GB/s)  generic_q6  0.058 ms ( 443 GB/s) |diff|max=0.0000
+attn_o       K= 6144 N= 5120 M=2  mlx  0.054 ms ( 474 GB/s)  generic_q6  0.058 ms ( 439 GB/s) |diff|max=0.0254
+attn_o       K= 6144 N= 5120 M=3  mlx  0.059 ms ( 431 GB/s)  generic_q6  0.067 ms ( 384 GB/s) |diff|max=0.0312
+attn_o       K= 6144 N= 5120 M=4  mlx  0.063 ms ( 404 GB/s)  generic_q6  0.085 ms ( 300 GB/s) |diff|max=0.0234
+attn_o       K= 6144 N= 5120 M=5  mlx  0.071 ms ( 360 GB/s)
+attn_o       K= 6144 N= 5120 M=6  mlx  0.108 ms ( 236 GB/s)
+down_proj    K=17408 N= 5120 M=1  mlx  0.136 ms ( 532 GB/s)  generic_q6  0.140 ms ( 518 GB/s) |diff|max=0.0000
+down_proj    K=17408 N= 5120 M=2  mlx  0.139 ms ( 519 GB/s)  generic_q6  0.143 ms ( 508 GB/s) |diff|max=0.0469
+down_proj    K=17408 N= 5120 M=3  mlx  0.146 ms ( 497 GB/s)  generic_q6  0.158 ms ( 458 GB/s) |diff|max=0.0391
+down_proj    K=17408 N= 5120 M=4  mlx  0.161 ms ( 450 GB/s)  generic_q6  0.212 ms ( 341 GB/s) |diff|max=0.0352
+down_proj    K=17408 N= 5120 M=5  mlx  0.182 ms ( 397 GB/s)
+down_proj    K=17408 N= 5120 M=6  mlx  0.257 ms ( 282 GB/s)
+gate_proj    K= 5120 N=17408 M=1  mlx  0.135 ms ( 538 GB/s)  generic_q6  0.137 ms ( 527 GB/s) |diff|max=0.0000
+gate_proj    K= 5120 N=17408 M=2  mlx  0.136 ms ( 533 GB/s)  generic_q6  0.139 ms ( 521 GB/s) |diff|max=0.0234
+gate_proj    K= 5120 N=17408 M=3  mlx  0.139 ms ( 523 GB/s)  generic_q6  0.153 ms ( 474 GB/s) |diff|max=0.0234
+gate_proj    K= 5120 N=17408 M=4  mlx  0.144 ms ( 504 GB/s)  generic_q6  0.208 ms ( 348 GB/s) |diff|max=0.0234
+gate_proj    K= 5120 N=17408 M=5  mlx  0.166 ms ( 437 GB/s)
+gate_proj    K= 5120 N=17408 M=6  mlx  0.256 ms ( 283 GB/s)
