@@ -1456,6 +1456,10 @@ fn demote_native_prefix_snapshot(
         snapshot.tokens.clone(),
         snapshot.token_count,
         snapshot.greedy_prefill_output_token,
+        // The native snapshot this is demoted from has no draft-cursor
+        // sidecar (it is a runner-local live snapshot), so the demoted
+        // portable entry is trunk-only.
+        None,
     );
     let demoted_bytes = demoted.bytes;
     let mut cache = portable_cache.lock();
@@ -7859,7 +7863,7 @@ impl MlxRunner {
         // reason (matches the pattern in `store_prompt_prefix_snapshots`).
         let l1_superseding = {
             let cache = self.prefix_cache.lock();
-            let superseding = cache.contains_superseding_snapshot(&key, tokens, None);
+            let superseding = cache.contains_superseding_snapshot(&key, tokens, None, false);
             if superseding {
                 telemetry.record_stats(cache.stats());
             }
@@ -7920,7 +7924,13 @@ impl MlxRunner {
             let mut cache = self.prefix_cache.lock();
             let outcome = cache.insert(
                 key,
-                MlxPrefixSnapshot::from_shared_payload(payload, tokens.to_vec(), prefix_len, None),
+                MlxPrefixSnapshot::from_shared_payload(
+                    payload,
+                    tokens.to_vec(),
+                    prefix_len,
+                    None,
+                    None,
+                ),
             );
             telemetry.record_stats(cache.stats());
             outcome
@@ -8106,6 +8116,13 @@ impl MlxRunner {
             let snapshot_prefill_output_token = (prefix_len == available_tokens)
                 .then_some(greedy_prefill_output_token)
                 .flatten();
+            // Optional Flash Next MTP draft-cursor sidecar. Every store path
+            // passes `None` today, so this is pure plumbing with zero behavior
+            // change; a follow-up builds the cursor payload and sets this
+            // local under its gate. Keeping it a named local (rather than a
+            // literal at each use) keeps the byte-budget pre-check and the
+            // supersede check correct the moment a real payload is supplied.
+            let mtp_cursor_payload: Option<Arc<[u8]>> = None;
 
             // Skip prefixes that are already resident: the clone + serialize
             // below costs O(prefix KV bytes) per iteration, so warm
@@ -8118,6 +8135,7 @@ impl MlxRunner {
                     &key,
                     tokens,
                     snapshot_prefill_output_token,
+                    mtp_cursor_payload.is_some(),
                 );
                 if superseding {
                     telemetry.record_stats(cache.stats());
@@ -8217,7 +8235,16 @@ impl MlxRunner {
                 let lower_bound = snapshot_cache
                     .usage_snapshot()
                     .logical_bytes
-                    .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64));
+                    .saturating_add((tokens.len() as u64).saturating_mul(size_of::<u32>() as u64))
+                    // Account for the optional MTP draft-cursor sidecar up
+                    // front: an entry that only fits without the cursor must
+                    // not pass the pre-check and then exceed the budget once
+                    // the cursor is included.
+                    .saturating_add(
+                        mtp_cursor_payload
+                            .as_ref()
+                            .map_or(0, |payload| payload.len() as u64),
+                    );
                 if !self
                     .prefix_cache
                     .lock()
@@ -8279,6 +8306,7 @@ impl MlxRunner {
                         tokens.to_vec(),
                         prefix_len,
                         snapshot_prefill_output_token,
+                        mtp_cursor_payload,
                     ),
                 );
                 Self::pfx_dbg(
@@ -17922,6 +17950,7 @@ mod tests {
             token_count,
             bytes,
             greedy_prefill_output_token: Some(7),
+            mtp_cursor_payload: None,
         }
     }
 

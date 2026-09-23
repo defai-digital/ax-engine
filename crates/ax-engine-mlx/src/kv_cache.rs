@@ -1492,6 +1492,20 @@ impl MlxKVCache {
     const SERIALIZE_MAGIC: &'static [u8; 4] = b"AXKB";
     const SERIALIZE_VERSION: u32 = 4;
 
+    /// Magic for the standalone Flash Next MTP draft-cursor payload
+    /// ("AX MTP Cursor"). Deliberately distinct from [`Self::SERIALIZE_MAGIC`]
+    /// (`AXKB`) so a cursor payload can never be misread as a trunk KV-cache
+    /// blob (or vice versa): a truncated or malformed cursor fails at the
+    /// header check instead of being parsed as a trunk snapshot.
+    ///
+    /// Consumed by the draft-cursor codec and its tests; the codec is wired
+    /// into the prefix-cache store path by a follow-up change, so it is dead
+    /// in non-test builds for now.
+    #[cfg_attr(not(test), allow(dead_code))]
+    const MTP_CURSOR_MAGIC: &'static [u8; 4] = b"AXMC";
+    #[cfg_attr(not(test), allow(dead_code))]
+    const MTP_CURSOR_VERSION: u32 = 1;
+
     /// Private KV wire-format version, exposed for the durable prefix
     /// cache's canonical key (schema v3 commits to the payload version so a
     /// format bump cleanly invalidates older disk entries).
@@ -2266,7 +2280,7 @@ impl MlxKVCache {
         }
     }
 
-    fn serialize_tensor(out: &mut Vec<u8>, arr: &MlxArray) {
+    pub(crate) fn serialize_tensor(out: &mut Vec<u8>, arr: &MlxArray) {
         // `eval` alone does not make a slice/transpose row-contiguous. Paged
         // materialization can return an exact-length view, bypassing the
         // trimming branch above, so normalize every tensor before `data_raw`.
@@ -2306,7 +2320,7 @@ impl MlxKVCache {
     /// Read one tensor from a streaming reader directly into its final
     /// owned buffer (spec §7.2 / DTPC-007). Peak transient cost beyond the
     /// completed tensors is one tensor buffer — not a second full-payload copy.
-    fn read_tensor_from_reader(
+    pub(crate) fn read_tensor_from_reader(
         reader: &mut dyn std::io::Read,
     ) -> Result<MlxArray, MlxKVCacheSerializeError> {
         let dtype_tag = read_u8_from(reader)?;
@@ -2693,6 +2707,86 @@ impl MlxKVCache {
         }
 
         Ok(cache)
+    }
+
+    /// Serialize a Flash Next MTP draft cursor as a standalone sidecar
+    /// payload: a `Qwen4ExpState` (one QSA layer today, but the codec does
+    /// not hardcode that beyond what `write_layer`/`read_layer` already
+    /// require) plus the cursor's `stream_hidden` row tensor.
+    ///
+    /// This is deliberately NOT part of the trunk KV-cache wire format
+    /// ([`Self::serialize_to_bytes`]). It rides alongside a portable prefix
+    /// snapshot as an optional field so a request resumed from a prefix-cache
+    /// hit can restore a working draft cursor instead of decoding directly
+    /// (Spec A plumbing only; the restore policy is a separate change).
+    ///
+    /// The header magic is `AXMC`, distinct from the trunk's `AXKB`, so a
+    /// trunk blob passed here (or a cursor blob passed to the trunk reader)
+    /// fails at the header check instead of being misparsed.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn serialize_qwen4_exp_draft_cursor(
+        state: &crate::model::qwen4_exp::Qwen4ExpState,
+        stream_hidden: &MlxArray,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(Self::MTP_CURSOR_MAGIC);
+        out.extend_from_slice(&Self::MTP_CURSOR_VERSION.to_le_bytes());
+        out.extend_from_slice(&(state.position() as u64).to_le_bytes());
+        let layer_count = state.layer_count() as u32;
+        out.extend_from_slice(&layer_count.to_le_bytes());
+        for index in 0..state.layer_count() {
+            state.write_layer(index, &mut out, Self::serialize_tensor);
+        }
+        Self::serialize_tensor(&mut out, stream_hidden);
+        out
+    }
+
+    /// Reconstruct a draft cursor written by
+    /// [`Self::serialize_qwen4_exp_draft_cursor`]. Returns the rebuilt
+    /// `Qwen4ExpState` and the `stream_hidden` row tensor. Rejects a payload
+    /// whose magic is not `AXMC` immediately (so a trunk `AXKB` blob is never
+    /// misread here) and never silently degrades on truncation: the layer
+    /// assembly step validates structural completeness and returns a
+    /// structured error instead.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn try_deserialize_qwen4_exp_draft_cursor(
+        bytes: &[u8],
+    ) -> Result<(crate::model::qwen4_exp::Qwen4ExpState, MlxArray), MlxKVCacheSerializeError> {
+        let mut cursor = std::io::Cursor::new(bytes);
+        let mut magic = [0u8; 4];
+        read_exact_from(&mut cursor, &mut magic)?;
+        if magic != *Self::MTP_CURSOR_MAGIC {
+            return Err(MlxKVCacheSerializeError::BadMagic);
+        }
+        let version = read_u32_from(&mut cursor)?;
+        if version != Self::MTP_CURSOR_VERSION {
+            return Err(MlxKVCacheSerializeError::UnsupportedVersion(version));
+        }
+        let position = usize::try_from(read_u64_from(&mut cursor)?)
+            .map_err(|_| MlxKVCacheSerializeError::BadShape(8))?;
+        let layer_count = read_u32_from(&mut cursor)? as usize;
+        // Bound the layer count before allocating, mirroring the trunk
+        // reader: a corrupted header must not size a vector eagerly.
+        if layer_count == 0 || layer_count > MAX_WIRE_LAYER_COUNT {
+            return Err(MlxKVCacheSerializeError::BadShape(layer_count));
+        }
+        let mut layers = Vec::new();
+        layers
+            .try_reserve_exact(layer_count)
+            .map_err(|_| MlxKVCacheSerializeError::UnexpectedEof)?;
+        for _ in 0..layer_count {
+            layers.push(crate::model::qwen4_exp::Qwen4ExpState::read_layer(
+                &mut cursor,
+                Self::read_tensor_from_reader,
+            )?);
+        }
+        // `from_serialized_layers` validates that every layer agrees on its
+        // owner and that the QSA K/V and indexer histories advance together,
+        // then that the decoded position/token count is self-consistent.
+        let state =
+            crate::model::qwen4_exp::Qwen4ExpState::from_serialized_layers(position, layers)?;
+        let stream_hidden = Self::read_tensor_from_reader(&mut cursor)?;
+        Ok((state, stream_hidden))
     }
 
     /// Structural completeness check for a snapshot restored from the
@@ -6364,6 +6458,114 @@ mod tests {
         let tight = contiguous(arr, None);
         eval(&[&tight]);
         tight.data_f32().to_vec()
+    }
+
+    /// Build a contiguous f32 tensor with an explicit shape, mirroring
+    /// `build_fa_array_f32` but for the arbitrary ranks the draft-cursor
+    /// codec round-trips (QSA K/V are rank 4, the index cache rank 3, the
+    /// `stream_hidden` row rank 3).
+    fn build_f32(shape: &[i32], scale: f32) -> MlxArray {
+        let total: usize = shape.iter().map(|&d| d.max(0) as usize).product();
+        let data: Vec<f32> = (0..total).map(|i| (i as f32) * scale).collect();
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    /// One QSA layer with `tokens` tokens: keys/values are
+    /// `[1, tokens, kv_heads, head_dim]` and the index cache is
+    /// `[1, tokens, index_head_dim]`. `position` must equal `tokens` for the
+    /// state to pass `from_serialized_layers`' self-consistency check.
+    fn draft_cursor_fixture(tokens: usize) -> (crate::model::qwen4_exp::Qwen4ExpState, MlxArray) {
+        let keys = build_f32(&[1, tokens as i32, 2, 4], 0.001);
+        let values = build_f32(&[1, tokens as i32, 2, 4], 0.002);
+        let index_keys = build_f32(&[1, tokens as i32, 4], 0.003);
+        let state = crate::model::qwen4_exp::Qwen4ExpState::synthetic_qsa_state(
+            1701, tokens, keys, values, index_keys,
+        )
+        .expect("synthetic QSA state");
+        let stream_hidden = build_f32(&[1, 1, 8], 0.004);
+        eval(&[&stream_hidden]);
+        (state, stream_hidden)
+    }
+
+    #[test]
+    fn serialize_qwen4_exp_draft_cursor_roundtrips_values() {
+        let (state, stream_hidden) = draft_cursor_fixture(3);
+
+        let bytes = MlxKVCache::serialize_qwen4_exp_draft_cursor(&state, &stream_hidden);
+        assert_eq!(&bytes[..4], b"AXMC", "cursor magic must be AXMC");
+        assert_ne!(&bytes[..4], b"AXKB", "cursor magic must differ from trunk");
+
+        let (restored, restored_hidden) =
+            MlxKVCache::try_deserialize_qwen4_exp_draft_cursor(&bytes).expect("round-trip");
+
+        // The whole payload must re-serialize byte-for-byte identically: this
+        // catches any shape/dtype/order drift the value checks might miss.
+        let reserialized =
+            MlxKVCache::serialize_qwen4_exp_draft_cursor(&restored, &restored_hidden);
+        assert_eq!(
+            bytes, reserialized,
+            "cursor payload must round-trip exactly"
+        );
+
+        // Field-level fidelity: tensors must survive byte-for-byte, not
+        // approximately. `arrays()` returns QSA keys, values, then index.
+        let original = state.arrays();
+        let recovered = restored.arrays();
+        assert_eq!(original.len(), 3);
+        assert_eq!(recovered.len(), original.len());
+        for (before, after) in original.iter().zip(recovered.iter()) {
+            assert_eq!(before.shape(), after.shape());
+            assert_eq!(before.dtype(), after.dtype());
+            assert_eq!(host_f32(before), host_f32(after));
+        }
+        assert_eq!(host_f32(&stream_hidden), host_f32(&restored_hidden));
+
+        // A cursor payload is not a trunk blob and vice versa: the distinct
+        // magics must make each reader reject the other's payload.
+        assert!(matches!(
+            MlxKVCache::try_deserialize_from_bytes(&bytes),
+            Err(MlxKVCacheSerializeError::BadMagic)
+        ));
+    }
+
+    #[test]
+    fn draft_cursor_codec_rejects_foreign_and_truncated_payloads() {
+        // A trunk payload (AXKB) must fail at the header check immediately
+        // rather than being misparsed as a cursor.
+        let trunk = MlxKVCache::new(2).serialize_to_bytes();
+        assert!(matches!(
+            MlxKVCache::try_deserialize_qwen4_exp_draft_cursor(&trunk),
+            Err(MlxKVCacheSerializeError::BadMagic)
+        ));
+
+        // Any non-AXMC magic is rejected before any structural parse.
+        let mut foreign = Vec::new();
+        foreign.extend_from_slice(b"ZZZZ");
+        foreign.extend_from_slice(&1u32.to_le_bytes());
+        foreign.extend_from_slice(&1u64.to_le_bytes());
+        foreign.extend_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(
+            MlxKVCache::try_deserialize_qwen4_exp_draft_cursor(&foreign),
+            Err(MlxKVCacheSerializeError::BadMagic)
+        ));
+
+        // Truncated header and truncated body both fail closed.
+        assert!(matches!(
+            MlxKVCache::try_deserialize_qwen4_exp_draft_cursor(b"AXM"),
+            Err(MlxKVCacheSerializeError::UnexpectedEof)
+        ));
+        let mut truncated = Vec::new();
+        truncated.extend_from_slice(b"AXMC");
+        truncated.extend_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(
+            MlxKVCache::try_deserialize_qwen4_exp_draft_cursor(&truncated),
+            Err(MlxKVCacheSerializeError::UnexpectedEof)
+        ));
     }
 
     #[test]

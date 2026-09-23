@@ -266,6 +266,36 @@ impl Qwen4ExpState {
         self.layers.len()
     }
 
+    /// Test-only: build a single-QSA-layer state from explicit tensors. The
+    /// draft-cursor codec round-trip test lives in `kv_cache.rs`, which cannot
+    /// reach the module-private `AttentionState`/`LayerState` types, so this
+    /// exposes the minimal synthetic constructor it needs. Returns `None`
+    /// when the supplied tensors cannot form a legal QSA cache (e.g. keys
+    /// without values); callers are test code and treat that as a bug.
+    #[cfg(test)]
+    pub(crate) fn synthetic_qsa_state(
+        owner: u64,
+        position: usize,
+        keys: MlxArray,
+        values: MlxArray,
+        index_keys: MlxArray,
+    ) -> Option<Self> {
+        let cache = Qwen4ExpAttentionCache::from_serialized(
+            Some(keys),
+            Some(values),
+            QsaIndexKeyCache::from_serialized(Some(index_keys)),
+        )
+        .ok()?;
+        Some(Self {
+            owner,
+            position,
+            layers: vec![LayerState {
+                attention: AttentionState::Qsa(cache),
+                ple: None,
+            }],
+        })
+    }
+
     /// Encode layer `index` into `out`. `write_tensor` is the caller's
     /// tensor codec (shared with the rest of `MlxKVCache`'s wire format);
     /// this method only decides which tensors exist and calls it.

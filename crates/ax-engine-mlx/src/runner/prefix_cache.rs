@@ -28,6 +28,13 @@ pub(crate) struct MlxPrefixSnapshot {
     pub(crate) token_count: usize,
     pub(crate) bytes: u64,
     pub(crate) greedy_prefill_output_token: Option<u32>,
+    /// Optional Flash Next MTP draft-cursor sidecar, serialized by
+    /// `MlxKVCache::serialize_qwen4_exp_draft_cursor`. `None` for every model
+    /// family without a draft cursor and for every store path today; a
+    /// resumed request that restores a live cursor from it is a separate
+    /// change. Its bytes are charged to the cache budget like the trunk
+    /// payload, so it is never a free addition to the accounted size.
+    pub(crate) mtp_cursor_payload: Option<Arc<[u8]>>,
 }
 
 impl MlxPrefixSnapshot {
@@ -39,17 +46,25 @@ impl MlxPrefixSnapshot {
         tokens: Vec<u32>,
         token_count: usize,
         greedy_prefill_output_token: Option<u32>,
+        mtp_cursor_payload: Option<Arc<[u8]>>,
     ) -> Self {
         // Charge the token vector against the byte budget too: a 32K-token
         // prefix carries 128 KiB of tokens per entry, which the payload-only
-        // accounting silently exempted from `max_bytes`.
-        let bytes = snapshot_charge_bytes(payload.len() as u64, tokens.len());
+        // accounting silently exempted from `max_bytes`. The optional MTP
+        // draft-cursor sidecar is charged the same way, so it cannot slip
+        // past the budget by riding along free.
+        let mtp_cursor_bytes = mtp_cursor_payload
+            .as_ref()
+            .map_or(0, |payload| payload.len() as u64);
+        let bytes = snapshot_charge_bytes(payload.len() as u64, tokens.len())
+            .saturating_add(mtp_cursor_bytes);
         Self {
             kv_cache_payload: payload,
             tokens,
             token_count,
             bytes,
             greedy_prefill_output_token,
+            mtp_cursor_payload,
         }
     }
 
@@ -153,7 +168,12 @@ impl MlxPrefixCache {
 
     /// True when an entry for `key` already holds exactly `tokens` and would
     /// lose nothing if a fresh store were skipped: either the new snapshot
-    /// carries no prefill-output token, or the stored one already has one.
+    /// carries no prefill-output token, or the stored one already has one;
+    /// and either the new snapshot carries no MTP draft-cursor payload, or
+    /// the stored one already has one. The cursor clause keeps a resident
+    /// trunk-only entry from permanently blocking the MTP-capable version of
+    /// the same prefix: the resident entry supersedes only when it is at
+    /// least as complete on this dimension too.
     /// Used by the snapshot store to avoid re-cloning and re-serializing the
     /// KV cache for prefixes that are already resident (warm same-prompt
     /// traffic would otherwise pay the full serialize cost every prefill).
@@ -162,12 +182,14 @@ impl MlxPrefixCache {
         key: &MlxPrefixCacheKey,
         tokens: &[u32],
         prefill_output_token: Option<u32>,
+        has_mtp_cursor_payload: bool,
     ) -> bool {
         self.policy.enabled()
             && self.entries.get(key).is_some_and(|entry| {
                 entry.snapshot.tokens == tokens
                     && (prefill_output_token.is_none()
                         || entry.snapshot.greedy_prefill_output_token.is_some())
+                    && (!has_mtp_cursor_payload || entry.snapshot.mtp_cursor_payload.is_some())
             })
     }
 
@@ -218,6 +240,7 @@ impl MlxPrefixCache {
             &key,
             &snapshot.tokens,
             snapshot.greedy_prefill_output_token,
+            snapshot.mtp_cursor_payload.is_some(),
         ) {
             return None;
         }
