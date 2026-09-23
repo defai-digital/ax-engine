@@ -555,20 +555,31 @@ struct RequestState {
     ngram_self_tune: NgramSelfTuneState,
     /// Remaining steps to keep n-gram gated after a utility hurt decision.
     mtp_ngram_utility_hysteresis_remaining: u32,
-    /// Request-local Flash Next MTP candidate state. Never shared with the
-    /// generic MTP head cache or serialized into prefix snapshots.
+    /// Request-local Flash Next MTP candidate state. The live cursor object
+    /// is never shared with the generic MTP head cache and never aliased
+    /// across requests; only the cursor's serialized form rides along in
+    /// portable prefix snapshots (via
+    /// `Qwen4ExpDraftCursor::prefix_snapshot_parts`).
     flash_next_mtp: FlashNextMtpRequestState,
 }
 
 /// Draft history for the Flash Next candidate plus its route counters.
 ///
-/// The cursor is created only by a cold prefill (empty cache) and advanced
-/// together with the authoritative trunk. Any trunk advance that bypasses the
-/// cursor (restored prefix, direct fallback step, sampled prefill) drops it,
-/// and the request decodes direct for the rest of its generation.
+/// The cursor is created by a cold prefill (empty cache) or reconstructed
+/// from a restored prefix snapshot's serialized sidecar payload, and then
+/// advanced together with the authoritative trunk. Any trunk advance that
+/// bypasses the cursor (a restore without a usable payload, a direct
+/// fallback step, sampled prefill) drops it, and the request decodes direct
+/// for the rest of its generation.
 #[derive(Default)]
 struct FlashNextMtpRequestState {
     cursor: Option<crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor>,
+    /// Draft cursor eagerly decoded from a restored prefix snapshot's
+    /// sidecar payload at L1-restore time, pending installation by
+    /// `prepare_flash_next_prefill_cursor` later in the same request. A
+    /// take-once slot: whichever decision arm runs consumes it, so a stale
+    /// pending cursor can never leak into a later prefill quantum.
+    pending_restored_cursor: Option<crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor>,
     /// Emitted tokens since the last MLX buffer-cache clear.
     emitted_since_clear: u32,
     telemetry: FlashNextMtpTelemetry,
@@ -589,8 +600,14 @@ impl FlashNextMtpRequestState {
 struct FlashNextMtpTelemetry {
     /// Cold prefills that created a draft cursor.
     cursor_initialized: u32,
-    /// Prefill quanta that resumed a cached prefix without a cursor.
+    /// Prefill quanta that resumed a cached prefix without a usable draft
+    /// cursor: no cursor existed, or a stashed payload failed to decode,
+    /// rebind, or verify aligned. A restored payload that decoded cleanly
+    /// counts as `cursor_restored` instead.
     resumed_without_cursor: u32,
+    /// Prefill quanta that restored a working draft cursor from a prefix
+    /// snapshot's sidecar payload.
+    cursor_restored: u32,
     /// Prefill quanta whose cursor was discarded by a draft absorb failure.
     prefill_absorb_failures: u32,
     /// Live cursors discarded by fallback, misalignment, or step errors.
@@ -621,6 +638,7 @@ impl Default for FlashNextMtpTelemetry {
         Self {
             cursor_initialized: 0,
             resumed_without_cursor: 0,
+            cursor_restored: 0,
             prefill_absorb_failures: 0,
             cursor_dropped: 0,
             verified_steps: 0,
@@ -644,6 +662,7 @@ impl FlashNextMtpTelemetry {
         self.resumed_without_cursor = self
             .resumed_without_cursor
             .saturating_add(other.resumed_without_cursor);
+        self.cursor_restored = self.cursor_restored.saturating_add(other.cursor_restored);
         self.prefill_absorb_failures = self
             .prefill_absorb_failures
             .saturating_add(other.prefill_absorb_failures);
@@ -676,6 +695,10 @@ impl FlashNextMtpTelemetry {
             (
                 "ax_mlx_flash_next_mtp_resumed_without_cursor",
                 self.resumed_without_cursor,
+            ),
+            (
+                "ax_mlx_flash_next_mtp_cursor_restored",
+                self.cursor_restored,
             ),
             (
                 "ax_mlx_flash_next_mtp_prefill_absorb_failures",
@@ -761,6 +784,10 @@ enum FlashNextPrefillCursorAction {
     Keep,
     /// Continuation whose cursor is stale for this cache.
     Drop,
+    /// Continuation of a restored prefix whose stashed cursor payload
+    /// decoded, rebound, and verified aligned against the just-restored
+    /// trunk.
+    ResumeWithRestoredCursor,
     /// Continuation of a restored prefix: no recapture, decode falls back.
     ResumeWithoutCursor,
 }
@@ -769,15 +796,18 @@ const fn flash_next_prefill_cursor_action(
     cache_seq_len: usize,
     has_cursor: bool,
     cursor_aligned: bool,
+    restored_cursor_aligned: bool,
 ) -> FlashNextPrefillCursorAction {
     if cache_seq_len == 0 {
         FlashNextPrefillCursorAction::Initialize
-    } else if !has_cursor {
-        FlashNextPrefillCursorAction::ResumeWithoutCursor
-    } else if cursor_aligned {
+    } else if has_cursor && cursor_aligned {
         FlashNextPrefillCursorAction::Keep
-    } else {
+    } else if has_cursor {
         FlashNextPrefillCursorAction::Drop
+    } else if restored_cursor_aligned {
+        FlashNextPrefillCursorAction::ResumeWithRestoredCursor
+    } else {
+        FlashNextPrefillCursorAction::ResumeWithoutCursor
     }
 }
 
@@ -1580,7 +1610,14 @@ impl MlxRunner {
     /// Reconcile the request cursor with the cache immediately before a
     /// Flash Next prefill helper advances the trunk.
     fn prepare_flash_next_prefill_cursor(&self, state: &mut RequestState) {
+        // Consume the stash unconditionally: a pending cursor is valid only
+        // for this one prefill quantum and must never leak forward. `Some`
+        // means the payload already decoded, rebound, and verified aligned at
+        // L1-restore time, so presence is the only check needed here.
+        let pending_restored_cursor = state.flash_next_mtp.pending_restored_cursor.take();
+        let restored_cursor_aligned = pending_restored_cursor.is_some();
         let Some(head) = self.weights.qwen4_exp_mtp.as_deref() else {
+            drop(pending_restored_cursor);
             state.flash_next_mtp.drop_cursor();
             return;
         };
@@ -1592,8 +1629,10 @@ impl MlxRunner {
             state.cache.seq_len(),
             state.flash_next_mtp.cursor.is_some(),
             cursor_aligned,
+            restored_cursor_aligned,
         ) {
             FlashNextPrefillCursorAction::Initialize => {
+                drop(pending_restored_cursor);
                 state.flash_next_mtp.cursor =
                     Some(crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor::new(
                         head,
@@ -1603,9 +1642,21 @@ impl MlxRunner {
                 let telemetry = &mut state.flash_next_mtp.telemetry;
                 telemetry.cursor_initialized = telemetry.cursor_initialized.saturating_add(1);
             }
-            FlashNextPrefillCursorAction::Keep => {}
-            FlashNextPrefillCursorAction::Drop => state.flash_next_mtp.drop_cursor(),
+            FlashNextPrefillCursorAction::Keep => drop(pending_restored_cursor),
+            FlashNextPrefillCursorAction::Drop => {
+                drop(pending_restored_cursor);
+                state.flash_next_mtp.drop_cursor();
+            }
+            FlashNextPrefillCursorAction::ResumeWithRestoredCursor => {
+                let cursor = pending_restored_cursor
+                    .expect("restored_cursor_aligned implies a pending cursor");
+                state.flash_next_mtp.cursor = Some(cursor);
+                state.flash_next_mtp.emitted_since_clear = 0;
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.cursor_restored = telemetry.cursor_restored.saturating_add(1);
+            }
             FlashNextPrefillCursorAction::ResumeWithoutCursor => {
+                drop(pending_restored_cursor);
                 let telemetry = &mut state.flash_next_mtp.telemetry;
                 telemetry.resumed_without_cursor =
                     telemetry.resumed_without_cursor.saturating_add(1);
@@ -7487,6 +7538,39 @@ impl MlxRunner {
                             self.prepare_portable_prefix_restore(restored_cache, &mut telemetry);
                         match prepared {
                             Ok(restored_cache) => {
+                                // Flash Next session with a stashed draft-cursor
+                                // sidecar: decode it now, not lazily, so a bad
+                                // payload surfaces here as a warning and simply
+                                // means "resume without a cursor". The trunk for
+                                // alignment is this snapshot's own qwen4_exp
+                                // state, taken before the cache moves into the
+                                // request.
+                                let pending_restored_cursor = if self.flash_next_mtp_session()
+                                    && let Some(head) = self.weights.qwen4_exp_mtp.as_deref()
+                                    && let Some(bytes) = snapshot.mtp_cursor_payload.as_deref()
+                                    && let Some(trunk) = restored_cache.qwen4_exp.as_ref()
+                                {
+                                    match crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor::from_prefix_snapshot(
+                                        head,
+                                        self.cfg.compile_cache_identity,
+                                        trunk,
+                                        bytes,
+                                    ) {
+                                        Ok(cursor) => Some(cursor),
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                target: "ax_engine_mlx::prefix_cache",
+                                                error = %error,
+                                                "Flash Next draft-cursor payload failed to decode; resuming without a cursor",
+                                            );
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                };
+                                state.flash_next_mtp.pending_restored_cursor =
+                                    pending_restored_cursor;
                                 state.cache = restored_cache;
                                 state.prompt_prefix_tokens = reused_tokens.to_vec();
                                 // Only inherit the producer's greedy token when this request
@@ -8116,13 +8200,35 @@ impl MlxRunner {
             let snapshot_prefill_output_token = (prefix_len == available_tokens)
                 .then_some(greedy_prefill_output_token)
                 .flatten();
-            // Optional Flash Next MTP draft-cursor sidecar. Every store path
-            // passes `None` today, so this is pure plumbing with zero behavior
-            // change; a follow-up builds the cursor payload and sets this
-            // local under its gate. Keeping it a named local (rather than a
-            // literal at each use) keeps the byte-budget pre-check and the
-            // supersede check correct the moment a real payload is supplied.
-            let mtp_cursor_payload: Option<Arc<[u8]>> = None;
+            // Optional Flash Next MTP draft-cursor sidecar. Keeping it a
+            // named local (rather than a literal at each use) keeps the
+            // byte-budget pre-check and the supersede check correct.
+            //
+            // A payload is attached only when this snapshot's trunk is the
+            // live cache untrimmed (`prefix_len == state.cache.seq_len()`,
+            // the no-op-trim case the exact-alignment trunk store already
+            // requires): the cursor's draft history was absorbed through the
+            // full live sequence, so a payload bound to a shorter trimmed
+            // snapshot could never satisfy `aligned()` on restore.
+            // `prefix_snapshot_parts` returns `None` for an unaligned cursor,
+            // and no live cursor simply stores a trunk-only snapshot; either
+            // way a sidecar problem never fails the store itself.
+            let mtp_cursor_payload: Option<Arc<[u8]>> = if prefix_len == state.cache.seq_len() {
+                let parts = state
+                    .flash_next_mtp
+                    .cursor
+                    .as_ref()
+                    .zip(state.cache.qwen4_exp.as_ref())
+                    .and_then(|(cursor, trunk)| cursor.prefix_snapshot_parts(trunk));
+                parts.map(|(draft_state, stream_hidden)| {
+                    Arc::from(MlxKVCache::serialize_qwen4_exp_draft_cursor(
+                        draft_state,
+                        stream_hidden,
+                    ))
+                })
+            } else {
+                None
+            };
 
             // Skip prefixes that are already resident: the clone + serialize
             // below costs O(prefix KV bytes) per iteration, so warm

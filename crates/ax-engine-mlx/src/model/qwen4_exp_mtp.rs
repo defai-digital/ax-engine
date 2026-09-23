@@ -610,6 +610,70 @@ impl Qwen4ExpDraftCursor {
         }
     }
 
+    /// Parts needed to persist this cursor alongside a prefix-cache snapshot,
+    /// or `None` if the cursor is not currently aligned with `trunk` (an
+    /// unaligned cursor has nothing valid to persist).
+    pub(crate) fn prefix_snapshot_parts(
+        &self,
+        trunk: &Qwen4ExpState,
+    ) -> Option<(&Qwen4ExpState, &MlxArray)> {
+        self.aligned(trunk).then(|| {
+            (
+                &self.draft_state,
+                self.stream_hidden
+                    .as_ref()
+                    .expect("aligned implies stream_hidden is Some"),
+            )
+        })
+    }
+
+    /// Reconstruct a cursor from a prefix-snapshot sidecar payload, rebinding
+    /// it onto `head`'s graph under the current request's trunk owner (the
+    /// payload's own `owner` field is discarded and replaced: the trunk owner
+    /// changes per load/session, so a raw stored owner would be stale).
+    /// Returns `Err` on any structural problem (bad payload, shape/dtype
+    /// mismatch against `head`, or a decoded state that ends up misaligned
+    /// with `trunk`); every failure path means "no cursor", never a partial
+    /// or best-effort cursor.
+    pub(crate) fn from_prefix_snapshot(
+        head: &Qwen4ExpMtpWeights,
+        trunk_owner: u64,
+        trunk: &Qwen4ExpState,
+        bytes: &[u8],
+    ) -> Result<Self, String> {
+        let (mut draft_state, stream_hidden) =
+            crate::kv_cache::MlxKVCache::try_deserialize_qwen4_exp_draft_cursor(bytes)
+                .map_err(|error| format!("MTP draft-cursor payload failed to decode: {error}"))?;
+        let owner = trunk_owner ^ 0x5146_4e4d_5450_0001;
+        // Match the trunk restore path's rigor: validate every layer against
+        // the head's graph (shapes, dtypes, branch kinds) and only then adopt
+        // the freshly derived owner; a payload decoded under a stale owner is
+        // never adopted as-is.
+        draft_state
+            .rebind_for_model(&head.graph, owner)
+            .map_err(|error| {
+                format!("MTP draft-cursor payload does not match the head graph: {error}")
+            })?;
+        // Per-cursor-lifetime telemetry does not survive a persistence
+        // round-trip; only correctness state does.
+        let cursor = Self {
+            draft_state,
+            stream_hidden: Some(stream_hidden),
+            owner,
+            proposed: 0,
+            accepted: 0,
+        };
+        if cursor.aligned(trunk) {
+            Ok(cursor)
+        } else {
+            Err(format!(
+                "MTP draft-cursor payload position {} is misaligned with trunk position {}",
+                cursor.draft_state.position(),
+                trunk.position()
+            ))
+        }
+    }
+
     pub(crate) fn aligned(&self, trunk: &Qwen4ExpState) -> bool {
         self.stream_hidden.is_some()
             && self.draft_state.position().checked_add(1) == Some(trunk.position())
@@ -2070,6 +2134,209 @@ mod cursor_tests {
                 "synthetic_fixture": true, "qualification": false, "controls": controls,
             })
         );
+    }
+
+    /// Bit values of an array widened to Float32, for bit-exact comparisons.
+    fn bits(array: &MlxArray) -> Vec<u32> {
+        let widened = mlx_sys::contiguous(&astype(array, MlxDtype::Float32, None), None);
+        try_eval(&[&widened]).unwrap();
+        assert!(widened.data_f32().iter().all(|value| value.is_finite()));
+        widened.data_f32().iter().map(|v| v.to_bits()).collect()
+    }
+
+    /// Load the synthetic Flash Next MTP fixture shared by the artifact-backed
+    /// tests in this module.
+    fn flash_next_mtp_fixture() -> (super::super::ModelConfig, crate::weights::ModelWeights) {
+        let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_MTP_ORACLE_DIR").unwrap());
+        let mut manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+        manifest.weight_sanitize = ax_engine_core::WeightSanitize::HfToMlx;
+        manifest.runtime_status = ax_engine_core::NativeRuntimeStatus::default();
+        let artifacts =
+            ax_engine_core::NativeModelArtifacts::from_manifest_and_root(root, manifest).unwrap();
+        let cfg = super::super::ModelConfig::from_manifest(artifacts.manifest());
+        let mut weights = crate::weights::load_weights(&artifacts).unwrap();
+        weights.qwen4_exp_mtp = Some(Box::new(
+            crate::weights::qwen4_exp_mtp::load(
+                artifacts.root_dir(),
+                artifacts.manifest(),
+                weights.qwen4_exp.as_ref().unwrap(),
+            )
+            .unwrap(),
+        ));
+        (cfg, weights)
+    }
+
+    /// Cold-prefill `tokens` through the Flash Next MTP helper, returning the
+    /// cache, the greedy first token, and the live aligned cursor.
+    fn flash_next_mtp_cold_prefill(
+        cfg: &super::super::ModelConfig,
+        weights: &crate::weights::ModelWeights,
+        tokens: &[u32],
+    ) -> (MlxKVCache, Option<u32>, Qwen4ExpDraftCursor) {
+        use crate::generate::chunked_prefill_flash_next_mtp;
+        let head = weights.qwen4_exp_mtp.as_deref().unwrap();
+        let mut cache = MlxKVCache::new_contiguous(cfg.layer_count);
+        let mut cursor = Some(Qwen4ExpDraftCursor::new(head, cfg.compile_cache_identity));
+        let first = chunked_prefill_flash_next_mtp(
+            cfg,
+            weights,
+            tokens,
+            &mut cache,
+            tokens.len(),
+            true,
+            &mut cursor,
+        );
+        (cache, first, cursor.unwrap())
+    }
+
+    #[test]
+    #[ignore = "requires synthetic Flash Next MTP artifacts and Metal"]
+    fn flash_next_prefix_snapshot_restored_cursor_matches_live_bit_for_bit() {
+        let (cfg, weights) = flash_next_mtp_fixture();
+        let head = weights.qwen4_exp_mtp.as_deref().unwrap();
+        let trunk = weights.qwen4_exp.as_deref().unwrap();
+        let owner = cfg.compile_cache_identity;
+
+        // 1-2. A cold prefill produces a live, aligned cursor A and the trunk
+        //      at the same position.
+        let prompt: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let (cache, first, mut cursor_a) = flash_next_mtp_cold_prefill(&cfg, &weights, &prompt);
+        let first = first.expect("completing prefill returns the greedy first token");
+        let trunk_state = cache.qwen4_exp.clone().expect("Flash Next trunk state");
+        assert!(cursor_a.aligned(&trunk_state));
+
+        // 3. Serialize cursor A as a prefix-snapshot sidecar payload and
+        //    restore it as cursor B under the SAME trunk owner (same-process
+        //    reuse, the simplest case).
+        let (draft_state, stream_hidden) = cursor_a
+            .prefix_snapshot_parts(&trunk_state)
+            .expect("an aligned cursor exposes snapshot parts");
+        let payload = MlxKVCache::serialize_qwen4_exp_draft_cursor(draft_state, stream_hidden);
+        let mut cursor_b =
+            Qwen4ExpDraftCursor::from_prefix_snapshot(head, owner, &trunk_state, &payload)
+                .expect("a payload from an aligned cursor must restore");
+        assert!(cursor_b.aligned(&trunk_state));
+        assert_eq!(
+            (cursor_b.proposed, cursor_b.accepted),
+            (0, 0),
+            "per-cursor telemetry must not survive the round-trip"
+        );
+
+        // 4. Drive one identical verify cycle on both cursors and require
+        //    bit-identical results: every tensor operation on this path is
+        //    bit-exact, so any divergence would be a restore bug, not noise.
+        let budget = 4;
+        let step_a = cursor_a
+            .step(trunk, head, &trunk_state, owner, first, budget, &[])
+            .unwrap();
+        let step_b = cursor_b
+            .step(trunk, head, &trunk_state, owner, first, budget, &[])
+            .unwrap();
+        assert_eq!(
+            step_a.emitted, step_b.emitted,
+            "proposals must be identical"
+        );
+        assert_eq!(step_a.accepted, step_b.accepted);
+        assert_eq!(step_a.committed_len, step_b.committed_len);
+        assert_eq!(
+            step_a.correction_margin, step_b.correction_margin,
+            "correction margins must be bit-identical"
+        );
+        assert_eq!(
+            step_a.bonus_margin, step_b.bonus_margin,
+            "bonus margins must be bit-identical"
+        );
+        assert_eq!(
+            state_bytes(&step_a.trunk_state, trunk.layers.len()),
+            state_bytes(&step_b.trunk_state, trunk.layers.len()),
+            "committed trunk state must be byte-identical"
+        );
+        assert_eq!(
+            bytes(&cursor_a.draft_state),
+            bytes(&cursor_b.draft_state),
+            "draft state must be byte-identical after the step"
+        );
+        assert_eq!(
+            bits(cursor_a.stream_hidden.as_ref().unwrap()),
+            bits(cursor_b.stream_hidden.as_ref().unwrap()),
+            "the stream row must be bit-identical after the step"
+        );
+        assert_eq!(
+            (cursor_a.proposed, cursor_a.accepted),
+            (cursor_b.proposed, cursor_b.accepted),
+            "post-step telemetry must agree"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires synthetic Flash Next MTP artifacts and Metal"]
+    fn flash_next_prefix_snapshot_restore_fails_closed() {
+        let (cfg, mut weights) = flash_next_mtp_fixture();
+        let owner = cfg.compile_cache_identity;
+
+        let prompt: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let (cache, _first, cursor_a) = flash_next_mtp_cold_prefill(&cfg, &weights, &prompt);
+        let trunk_state = cache.qwen4_exp.clone().expect("Flash Next trunk state");
+        let (draft_state, stream_hidden) = cursor_a
+            .prefix_snapshot_parts(&trunk_state)
+            .expect("an aligned cursor exposes snapshot parts");
+        let payload = MlxKVCache::serialize_qwen4_exp_draft_cursor(draft_state, stream_hidden);
+
+        // A payload whose draft position does not match the given trunk must
+        // return Err: never a panic, never a silently misaligned cursor.
+        let (mut short_cache, _short_first, _short_cursor) =
+            flash_next_mtp_cold_prefill(&cfg, &weights, &prompt[..4]);
+        let short_trunk = short_cache.qwen4_exp.take().expect("short trunk state");
+        assert_ne!(short_trunk.position(), trunk_state.position());
+        let trunk_payload = cache.serialize_to_bytes();
+
+        // The head is borrowed mutably from here on (dtype flip + restore),
+        // so every immutable use of the weights above had to come first.
+        let head = weights.qwen4_exp_mtp.as_mut().unwrap().as_mut();
+
+        // A payload from a DIFFERENT head graph must be rejected, not
+        // adopted. Flip the dtype the rebind validation derives from the head
+        // (the same mechanism a real dtype-mismatched pack would trip) and
+        // put it back.
+        let original_embedding = head.graph.token_embedding.weight.clone();
+        let foreign_dtype = match original_embedding.dtype() {
+            MlxDtype::Float32 => MlxDtype::Bfloat16,
+            _ => MlxDtype::Float32,
+        };
+        head.graph.token_embedding.weight =
+            mlx_sys::contiguous(&astype(&original_embedding, foreign_dtype, None), None);
+        let foreign =
+            Qwen4ExpDraftCursor::from_prefix_snapshot(head, owner, &trunk_state, &payload);
+        head.graph.token_embedding.weight = original_embedding;
+        let error = foreign
+            .err()
+            .expect("a foreign head graph must fail closed");
+        assert!(!error.is_empty());
+
+        let mismatched =
+            Qwen4ExpDraftCursor::from_prefix_snapshot(head, owner, &short_trunk, &payload);
+        assert!(
+            mismatched.is_err(),
+            "a position-mismatched payload must fail closed"
+        );
+
+        // A truncated payload must fail closed at decode, not best-effort.
+        let truncated = Qwen4ExpDraftCursor::from_prefix_snapshot(
+            head,
+            owner,
+            &trunk_state,
+            &payload[..payload.len() / 2],
+        );
+        assert!(truncated.is_err(), "a truncated payload must fail closed");
+
+        // A trunk blob (AXKB magic) must never decode as a cursor payload.
+        let as_trunk = Qwen4ExpDraftCursor::from_prefix_snapshot(
+            head,
+            owner,
+            &trunk_state,
+            trunk_payload.as_slice(),
+        );
+        assert!(as_trunk.is_err(), "a trunk blob is not a cursor payload");
     }
 }
 

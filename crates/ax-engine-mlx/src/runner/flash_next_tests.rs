@@ -406,6 +406,71 @@ fn direct_margin_uses_the_actual_candidate_not_an_unrelated_runner_up() {
     assert_eq!(direct_candidate_gap(&[1.0, 5.0], 0, 1), None);
 }
 
+#[test]
+fn flash_next_prefill_cursor_action_precedence_prefers_a_live_cursor_over_a_stash() {
+    use FlashNextPrefillCursorAction as Action;
+    // A cold cache always initializes, whatever cursor state exists.
+    assert_eq!(
+        flash_next_prefill_cursor_action(0, false, false, false),
+        Action::Initialize
+    );
+    assert_eq!(
+        flash_next_prefill_cursor_action(0, true, true, true),
+        Action::Initialize
+    );
+    // A live aligned cursor is kept even when a restored payload is stashed:
+    // the stash is only consulted when there is no live cursor to begin with.
+    assert_eq!(
+        flash_next_prefill_cursor_action(8, true, true, true),
+        Action::Keep
+    );
+    // A live unaligned cursor is dropped even when a restored payload is
+    // stashed.
+    assert_eq!(
+        flash_next_prefill_cursor_action(8, true, false, true),
+        Action::Drop
+    );
+    // No live cursor: a decoded-and-verified payload resumes the cursor.
+    assert_eq!(
+        flash_next_prefill_cursor_action(8, false, false, true),
+        Action::ResumeWithRestoredCursor
+    );
+    // No live cursor and no stash: resume without a cursor.
+    assert_eq!(
+        flash_next_prefill_cursor_action(8, false, false, false),
+        Action::ResumeWithoutCursor
+    );
+}
+
+#[test]
+fn flash_next_mtp_telemetry_merges_and_emits_cursor_restored() {
+    let mut telemetry = FlashNextMtpTelemetry {
+        cursor_restored: 2,
+        resumed_without_cursor: 3,
+        ..Default::default()
+    };
+    let other = FlashNextMtpTelemetry {
+        cursor_restored: 1,
+        resumed_without_cursor: 4,
+        ..Default::default()
+    };
+    telemetry.merge_from(other);
+    assert_eq!(telemetry.cursor_restored, 3);
+    assert_eq!(telemetry.resumed_without_cursor, 7);
+    let mut decisions: Vec<(String, u32)> = Vec::new();
+    telemetry.append_route_decisions(&mut decisions);
+    let restored = decisions
+        .iter()
+        .find(|(key, _)| key == "ax_mlx_flash_next_mtp_cursor_restored")
+        .map(|(_, value)| *value);
+    assert_eq!(restored, Some(3));
+    let resumed = decisions
+        .iter()
+        .find(|(key, _)| key == "ax_mlx_flash_next_mtp_resumed_without_cursor")
+        .map(|(_, value)| *value);
+    assert_eq!(resumed, Some(7));
+}
+
 fn direct_margin_at_divergence(
     runner: &MlxRunner,
     prefill: Option<&Qwen4ExpState>,
