@@ -315,6 +315,32 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             process.mtp_direct_fallback_steps_total,
             |step| step.mtp_direct_fallback_steps_total,
         );
+        // Attribute the Flash Next direct-fallback total by the block or error
+        // reason that forced it. The suffix is derived from the engine's route
+        // key so the two cannot drift.
+        for (index, route_key) in crate::app_state::FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS
+            .iter()
+            .enumerate()
+        {
+            let Some(reason) = route_key
+                .strip_prefix(crate::app_state::flash_next_fallback_keys::ROUTE_KEY_PREFIX)
+            else {
+                continue;
+            };
+            let name = crate::app_state::flash_next_fallback_keys::metric_name(reason);
+            let help = format!(
+                "Flash Next MTP decode steps served direct because of `{reason}` across observed engine steps (unlabeled: summed across loaded models)."
+            );
+            append_step_metric(
+                &mut body,
+                &name,
+                &help,
+                "counter",
+                &step_models,
+                process.flash_next_mtp_fallback_by_reason_total[index],
+                move |step| step.flash_next_mtp_fallback_by_reason_total[index],
+            );
+        }
         append_step_metric(
             &mut body,
             "ax_engine_flash_next_mtp_cursor_initialized_total",

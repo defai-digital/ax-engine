@@ -687,6 +687,19 @@ impl ServingStats {
     }
 }
 
+/// Flash Next MTP direct-fallback attribution keys and published names,
+/// shared with `metrics` and the `tests/metrics.rs` contract test.
+#[path = "flash_next_fallback_keys.rs"]
+pub(crate) mod flash_next_fallback_keys;
+
+/// Route keys emitted by the engine's Flash Next MTP direct-fallback
+/// attribution, in `FlashNextMtpFallbackReason` order. Kept in sync with
+/// `ax_engine_mlx::runner` (`crates/ax-engine-mlx/src/runner/mod.rs`).
+pub(crate) const FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS: [&str; 7] =
+    flash_next_fallback_keys::ROUTE_KEYS;
+
+const FLASH_NEXT_MTP_FALLBACK_REASON_COUNT: usize = FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS.len();
+
 #[derive(Clone, Copy, Debug, Default)]
 struct EngineStepStats {
     steps_total: u64,
@@ -740,6 +753,10 @@ struct EngineStepStats {
     flash_next_mtp_accepted_steps_last: u64,
     flash_next_mtp_step_errors_total: u64,
     flash_next_mtp_step_errors_last: u64,
+    /// `direct_fallback_steps` split by the block or error reason that forced
+    /// direct decode, in `FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS` order.
+    flash_next_mtp_fallback_by_reason_total: [u64; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
+    flash_next_mtp_fallback_by_reason_last: [u64; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
     /// Latest cascade-corrected MTP-only acceptance EWMA (x1000). This is the
     /// rate the low-acceptance bypass watches; expose it so operators can see
     /// speculation paying for itself (or not) without bench tooling.
@@ -809,6 +826,7 @@ impl EngineStepStats {
             flash_next_mtp_verified_steps_total: self.flash_next_mtp_verified_steps_total,
             flash_next_mtp_accepted_steps_total: self.flash_next_mtp_accepted_steps_total,
             flash_next_mtp_step_errors_total: self.flash_next_mtp_step_errors_total,
+            flash_next_mtp_fallback_by_reason_total: self.flash_next_mtp_fallback_by_reason_total,
             mtp_accept_rate_ewma_x1000: self.mtp_accept_rate_ewma_x1000,
             mlx_flash_next_selected_expert_gathers_total: self
                 .mlx_flash_next_selected_expert_gathers_total,
@@ -874,6 +892,7 @@ pub(crate) struct EngineStepGauges {
     pub(crate) flash_next_mtp_verified_steps_total: u64,
     pub(crate) flash_next_mtp_accepted_steps_total: u64,
     pub(crate) flash_next_mtp_step_errors_total: u64,
+    pub(crate) flash_next_mtp_fallback_by_reason_total: [u64; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
     pub(crate) mtp_accept_rate_ewma_x1000: u64,
     pub(crate) mlx_flash_next_selected_expert_gathers_total: u64,
     pub(crate) mlx_flash_next_selected_expert_payload_kib_total: u64,
@@ -1131,6 +1150,15 @@ impl ServerMetrics {
                     accumulate_cumulative_route_counter(total, last, u64::from(observed));
                 }
             }
+            for (index, key) in FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS.iter().enumerate() {
+                if let Some(observed) = route.decision(key) {
+                    accumulate_cumulative_route_counter(
+                        &mut entry.flash_next_mtp_fallback_by_reason_total[index],
+                        &mut entry.flash_next_mtp_fallback_by_reason_last[index],
+                        u64::from(observed),
+                    );
+                }
+            }
             // Gauge: only overwrite when the step actually reports an EWMA —
             // pure direct steps carry no MTP telemetry and must not zero it.
             if let Some(ewma) = route.decision("ax_mtp_mtp_only_accept_rate_ewma_x1000") {
@@ -1342,6 +1370,14 @@ impl ServerMetrics {
         process.flash_next_mtp_step_errors_total = process
             .flash_next_mtp_step_errors_total
             .saturating_add(entry.flash_next_mtp_step_errors_total);
+        for (index, value) in entry
+            .flash_next_mtp_fallback_by_reason_total
+            .iter()
+            .enumerate()
+        {
+            process.flash_next_mtp_fallback_by_reason_total[index] =
+                process.flash_next_mtp_fallback_by_reason_total[index].saturating_add(*value);
+        }
         process.mlx_flash_next_selected_expert_gathers_total = process
             .mlx_flash_next_selected_expert_gathers_total
             .saturating_add(entry.mlx_flash_next_selected_expert_gathers_total);

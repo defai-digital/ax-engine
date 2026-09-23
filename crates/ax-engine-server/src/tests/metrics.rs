@@ -102,6 +102,34 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
                     ("ax_mlx_flash_next_mtp_verified_steps".to_string(), 9),
                     ("ax_mlx_flash_next_mtp_accepted_steps".to_string(), 6),
                     ("ax_mlx_flash_next_mtp_step_errors".to_string(), 2),
+                    (
+                        "ax_mlx_flash_next_mtp_direct_fallback_not_strict_greedy".to_string(),
+                        4,
+                    ),
+                    (
+                        "ax_mlx_flash_next_mtp_direct_fallback_think_control".to_string(),
+                        0,
+                    ),
+                    (
+                        "ax_mlx_flash_next_mtp_direct_fallback_pending_direct".to_string(),
+                        0,
+                    ),
+                    (
+                        "ax_mlx_flash_next_mtp_direct_fallback_no_budget".to_string(),
+                        2,
+                    ),
+                    (
+                        "ax_mlx_flash_next_mtp_direct_fallback_cursor_unavailable".to_string(),
+                        3,
+                    ),
+                    (
+                        "ax_mlx_flash_next_mtp_direct_fallback_components_unavailable".to_string(),
+                        0,
+                    ),
+                    (
+                        "ax_mlx_flash_next_mtp_direct_fallback_step_error".to_string(),
+                        1,
+                    ),
                     ("ax_mtp_mtp_only_accept_rate_ewma_x1000".to_string(), 714),
                     ("ax_mlx_prefix_cache_hits".to_string(), 1),
                     ("ax_mlx_prefix_cache_misses".to_string(), 2),
@@ -155,6 +183,17 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_flash_next_mtp_verified_steps_total 9\n"));
     assert!(body.contains("ax_engine_flash_next_mtp_accepted_steps_total 6\n"));
     assert!(body.contains("ax_engine_flash_next_mtp_step_errors_total 2\n"));
+    // The direct-fallback total is attributed by block/error reason, one
+    // series per reason in `FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS` order.
+    assert!(body.contains("ax_engine_flash_next_mtp_direct_fallback_not_strict_greedy_total 4\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_direct_fallback_think_control_total 0\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_direct_fallback_pending_direct_total 0\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_direct_fallback_no_budget_total 2\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_direct_fallback_cursor_unavailable_total 3\n"));
+    assert!(
+        body.contains("ax_engine_flash_next_mtp_direct_fallback_components_unavailable_total 0\n")
+    );
+    assert!(body.contains("ax_engine_flash_next_mtp_direct_fallback_step_error_total 1\n"));
     // A rate has no meaningful cross-model sum: only the labeled series exists.
     assert!(body.contains("ax_engine_mtp_accept_rate_ewma_x1000{model=\"qwen3\"} 714\n"));
     assert!(!body.contains("ax_engine_mtp_accept_rate_ewma_x1000 714\n"));
