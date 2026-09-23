@@ -12,9 +12,10 @@ This checker is fail-closed:
   * default                  - the contract is well-formed, every declared
                                `/metrics` series really is published by the
                                server crate, and the precondition gate is
-                               proven to reject a host that has nothing. Exit 0.
-  * --dry-run                - the same validation plus an informational report
-                               of this host's real preconditions. Exit 0.
+                               proven to reject a host that has nothing. This host's real preconditions are
+                               reported but are not fatal unless --require-preconditions is passed. Exit 0.
+  * --dry-run                - identical to the default; accepted so a caller
+                               can state the intent explicitly. Exit 0.
   * --require-preconditions  - the same, but exit nonzero when a precondition is
                                absent. This is the path a real run takes.
 
@@ -62,7 +63,7 @@ class Probe:
                 check=False,
             )
             return int(out.stdout.strip()) // (1024**3)
-        except (OSError, ValueError):
+        except (OSError, ValueError, subprocess.SubprocessError):
             return 0
 
     def pack_dir(self) -> str | None:
@@ -222,8 +223,11 @@ def main() -> int:
         if args.require_preconditions:
             print(f"FAIL: preconditions absent: {detail}")
             return 1
+        mode = "--dry-run" if args.dry_run else "default"
         print(
-            f"OK (dry-run): contract valid, peers {peers}; {len(missing)} precondition(s) absent here: {detail}"
+            f"OK ({mode}): contract valid, peers {peers}; {len(missing)} "
+            f"precondition(s) absent here: {detail}. "
+            "Pass --require-preconditions to fail closed on these."
         )
         return 0
 

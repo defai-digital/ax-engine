@@ -113,25 +113,34 @@ build_prompt() {
     echo
     echo "Reviewed revision digest (sha256 over the reviewed source set): $digest"
     echo
-    echo "Objective: make Qwen 3.8 Flash Next MTP direct-fallback attributable"
-    echo "in /metrics by block/error reason, with product gates left OPEN:"
+    echo "Objective: harden Qwen 3.8 Flash Next MTP observability and get the"
+    echo "peer-comparison contract ready, with product gates left OPEN:"
     echo "MTP-S/MTP-P/MTP-D stay not_assessed, default admission stays"
     echo "fail-closed, MTP eligibility and model arithmetic are unchanged."
     echo "Deferred/out of scope: closing gates, promoting MXFP4 or 6-bit to"
     echo "default, any release, changing the pack or expert-paging policy."
     echo
-    echo "What landed:"
-    echo "- engine (crates/ax-engine-mlx/src/runner/mod.rs): a"
-    echo "  FlashNextMtpFallbackReason enum (not_strict_greedy, think_control,"
-    echo "  pending_direct, no_budget, cursor_unavailable,"
-    echo "  components_unavailable, step_error), a per-reason counter array on"
-    echo "  the request telemetry, and one route key per reason emitted through"
-    echo "  the existing route-decision sink."
-    echo "- server: app_state accumulates the seven route keys as delta series,"
-    echo "  metrics.rs publishes ax_engine_flash_next_mtp_direct_fallback_<reason>_total,"
-    echo "  and the key/name table is shared with a contract test."
-    echo "- tests: engine unit tests, a server /metrics wiring test, and a"
-    echo "  tests/metrics.rs contract test."
+    echo "What landed (this diff only):"
+    echo "- server: the engine already emitted"
+    echo "  ax_mlx_flash_next_mtp_attach_failed on every step and nothing consumed"
+    echo "  it; app_state now accumulates that key and metrics.rs publishes"
+    echo "  ax_engine_flash_next_mtp_attach_failed_total, so the draft head never"
+    echo "  attaching is distinguishable from attaching but blocking every step."
+    echo "- tooling: scripts/flash_next_peer_bench_plan.json declares the"
+    echo "  omlx/MTPLX/ds4 peer comparison (host, pack revision, fixed conditions,"
+    echo "  required series, open gates); scripts/check_flash_next_peer_bench_plan.py"
+    echo "  validates it, cross-checks each required series against the server"
+    echo "  crate, and fails closed under --require-preconditions."
+    echo "- docs/comments: the certification record gains the attach-failure and"
+    echo "  peer-contract paragraphs, and the prefix_cache.rs draft-cursor sidecar"
+    echo "  comment is corrected to describe the already-landed restore path."
+    echo
+    echo "PRE-EXISTING BASELINE, deliberately NOT in this diff: the"
+    echo "FlashNextMtpFallbackReason enum, the seven per-reason direct-fallback"
+    echo "route keys and their shared key/name table, and"
+    echo "Qwen4ExpDraftCursor::from_prefix_snapshot. crates/ax-engine-mlx/src/runner/mod.rs"
+    echo "is unchanged by this increment; do not treat its absence from the diff"
+    echo "as a defect."
     echo
     echo "Required output format (final two sections, exactly):"
     echo "FINDINGS:"
@@ -140,7 +149,14 @@ build_prompt() {
     echo
     echo "Diff of the reviewed paths versus the goal baseline commit:"
     echo '```diff'
-    git diff --no-color "$REVIEW_BASELINE" -- "${REVIEW_PATHS[@]}" 2>/dev/null | head -c 20000
+    local diff_text diff_bytes
+    diff_text="$(git diff --no-color "$REVIEW_BASELINE" -- "${REVIEW_PATHS[@]}" 2>/dev/null)"
+    diff_bytes="$(printf '%s' "$diff_text" | wc -c | tr -d ' ')"
+    printf '%s' "$diff_text" | head -c 60000
+    if [ "$diff_bytes" -gt 60000 ]; then
+      echo
+      echo "... [diff TRUNCATED at 60000 of ${diff_bytes} bytes: this packet is incomplete by construction, so an unreviewable tail must be reported as such rather than treated as absent]"
+    fi
     echo '```'
   } >"$prompt_file"
 }

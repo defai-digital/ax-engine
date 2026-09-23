@@ -32,8 +32,10 @@ attached" apart from "attached but every step blocked". A checked-in
 omlx/MTPLX/ds4 peer-benchmark contract
 (`scripts/flash_next_peer_bench_plan.json`, checked by
 `scripts/check_flash_next_peer_bench_plan.py`) fixes the comparison host, pack
-revision and required `/metrics` series, and fails closed when its
-preconditions are absent. **No gate closes from either change; the peer
+revision and required `/metrics` series, and fails closed under
+`--require-preconditions` when a precondition is absent (the default and
+`--dry-run` paths report the absent preconditions and exit 0).
+**No gate closes from either change; the peer
 numbers remain unverified because no Flash Next weights and no Ultra-class
 host exist on the authoring machine.**
 

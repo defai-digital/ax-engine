@@ -21,7 +21,8 @@
   "fixed_conditions": {
     "mtp_policy": "required",
     "sampling": "temperature 0, top_p 1, top_k 0, repetition_penalty 1, seed 0",
-    "stream_experts": "off",
+    "stream_experts": "auto",
+    "stream_experts_rationale": "ADR-034/ADR-037: Flash Next is stream-required on the 192 GiB Ultra-class host, so Auto may page it. Forcing off would fail closed on a required pack and would not measure the product path.",
     "output_tokens": 128,
     "disable_prefix_cache_confound": "cold and warm prompts must be reported as separate cells; a repeated prompt is a prefix-cache hit"
   },
@@ -49,7 +50,7 @@
     }
   ],
   "ax_arm": {
-    "command": "ax-engine-server --mlx --mlx-model-artifacts-dir {pack} --mlx-mtp-policy required --stream-experts off --disable-ngram-acceleration",
+    "command": "ax-engine-server --mlx --mlx-model-artifacts-dir {pack} --mlx-mtp-policy required --stream-experts auto --disable-ngram-acceleration",
     "records": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"],
     "required_metrics": [
       "ax_engine_flash_next_mtp_attach_failed_total",
