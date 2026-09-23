@@ -24,7 +24,7 @@ fn serve_app_with_two_installed() -> (App, usize) {
     app.server = Some(Job::running_with_log(vec![]));
     app.server_ready = true;
     app.server_url = Some("http://127.0.0.1:8080".into());
-    app.server_model = Some(app.families[fi].variants[0].profile.label.to_string());
+    app.server_model = Some(app.families[fi].variants[0].model.label.clone());
     app.screen = Screen::Serve;
     (app, fi)
 }

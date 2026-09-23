@@ -18,6 +18,7 @@ use crate::tui::{App, Screen, WizardStage};
 pub(crate) enum HomeAction {
     QuickStart,
     Browse,
+    Library,
     Serve,
     Chat,
     Help,
@@ -31,6 +32,26 @@ impl App {
     /// the guided download path.
     pub(crate) fn home_actions(&self) -> Vec<(String, HomeAction)> {
         let mut actions = Vec::new();
+        if !self.local_models.is_empty() {
+            actions.push((
+                "Manage downloaded models — serve or delete".into(),
+                HomeAction::Library,
+            ));
+            actions.push(("Browse AutomatosX models".into(), HomeAction::Browse));
+            if self.server_ready {
+                actions.push(("Open chat".into(), HomeAction::Chat));
+            }
+            actions.push(("Help".into(), HomeAction::Help));
+            return actions;
+        }
+        if self.catalog_loading && self.families.is_empty() {
+            actions.push((
+                "Loading models from Hugging Face…".into(),
+                HomeAction::Browse,
+            ));
+            actions.push(("Help".into(), HomeAction::Help));
+            return actions;
+        }
         let has_installed = !installed_variants(&self.families).is_empty();
         let quick = match self.quick_start_target() {
             Some((fi, vi)) => {
@@ -143,7 +164,7 @@ impl App {
                 ),
             ));
         }
-        if installed_variants(&self.families).is_empty() {
+        if installed_variants(&self.families).is_empty() && self.local_models.is_empty() {
             return Some((
                 ToastLevel::Info,
                 "Get started — press b or click for Quick start".into(),
@@ -179,6 +200,9 @@ impl App {
                         self.navigate_to(Screen::Models);
                     }
                     Some(HomeAction::Serve) => self.navigate_to(Screen::Serve),
+                    Some(HomeAction::Library) => {
+                        self.on_toolbar_action(crate::tui::ToolbarAction::Library)
+                    }
                     Some(HomeAction::Chat) => self.navigate_to(Screen::Chat),
                     Some(HomeAction::Help) => self.show_help = true,
                     None => {}
@@ -192,6 +216,7 @@ impl App {
 
     pub(crate) fn draw_home(&self, frame: &mut Frame, area: Rect) {
         let first_run = installed_variants(&self.families).is_empty()
+            && self.local_models.is_empty()
             && self.downloads.is_empty()
             && !self.server_running();
 
@@ -268,6 +293,11 @@ impl App {
                     fit.plain().to_string(),
                 )
             }
+            None if self.catalog_loading => (
+                "Loading models".into(),
+                "Fetching the AutomatosX list from Hugging Face…".into(),
+                String::new(),
+            ),
             None => (
                 "Quick start".into(),
                 "Browse the model catalog and pick a size that fits.".into(),

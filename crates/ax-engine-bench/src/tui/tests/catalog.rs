@@ -1,7 +1,8 @@
 //! Catalog and host-hardware parsing: family grouping, precision metadata,
 //! RAM-fit thresholds, snapshot-dir discovery, and `df` parsing.
 use super::super::catalog::{
-    self, RamFit, build_families_uninstalled, family_key, most_recent_subdir, quant_bits,
+    self, RamFit, build_families_from_repo_ids_uninstalled, build_families_uninstalled, family_key,
+    family_key_for_repo, most_recent_subdir, next_link, parse_hf_model_ids, quant_bits,
 };
 use super::super::hardware::parse_df_available_kib;
 use std::path::Path;
@@ -178,21 +179,24 @@ fn automatosx_packs_are_primary_families_with_recipe_precisions() {
             .unwrap_or_else(|| panic!("missing TUI family {key}"));
         assert!(family.is_primary(), "{key} must group as primary");
         assert!(
-            family.variants.iter().all(|v| v.profile.downloadable),
+            family
+                .variants
+                .iter()
+                .all(|v| v.model.repo_id.starts_with("AutomatosX/")),
             "{key} variants must be downloadable"
         );
         assert!(
             family
                 .variants
                 .iter()
-                .all(|v| v.profile.approx_size_bytes.is_some()),
+                .all(|v| v.model.approx_size_bytes.is_some()),
             "{key} variants must carry size estimates"
         );
         assert!(
             family
                 .variants
                 .iter()
-                .all(|v| v.profile.repo_id.starts_with("AutomatosX/")),
+                .all(|v| v.model.repo_id.starts_with("AutomatosX/")),
             "{key} variants must resolve to AutomatosX repos"
         );
     }
@@ -254,9 +258,10 @@ fn legacy_profiles_stay_serve_aliases_but_leave_the_download_catalog() {
         );
     }
     assert!(
-        families
+        families.iter().all(|f| f
+            .variants
             .iter()
-            .all(|f| f.variants.iter().all(|v| v.profile.is_downloadable())),
+            .all(|v| v.model.repo_id.starts_with("AutomatosX/"))),
         "every catalog variant must be an AutomatosX-managed download"
     );
 }
@@ -270,6 +275,68 @@ fn every_downloadable_profile_has_a_size_estimate() {
             profile.label
         );
     }
+}
+
+#[test]
+fn hub_page_parser_keeps_repo_ids_and_skips_blank_rows() {
+    let body = r#"[
+        {"id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"},
+        {"id": ""},
+        {"private": true},
+        {"id": "not-a-repo"}
+    ]"#;
+    let ids = parse_hf_model_ids(body).expect("page parses");
+    assert_eq!(ids, vec!["AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"]);
+    assert!(parse_hf_model_ids(r#"{"id":"nope"}"#).is_err());
+}
+
+#[test]
+fn next_link_reads_the_rel_next_url() {
+    let header = r#"<https://huggingface.co/api/models?cursor=abc>; rel="next""#;
+    assert_eq!(
+        next_link(Some(header)).as_deref(),
+        Some("https://huggingface.co/api/models?cursor=abc")
+    );
+    assert_eq!(
+        next_link(Some(r#"<https://example.test>; rel="prev""#)),
+        None
+    );
+    assert_eq!(next_link(None), None);
+}
+
+#[test]
+fn unknown_repo_bit_widths_share_a_family_and_known_repos_keep_profile_keys() {
+    assert_eq!(
+        family_key_for_repo("AutomatosX/AX-Not-A-Real-Pack-9B-MLX-4bit"),
+        family_key_for_repo("AutomatosX/AX-Not-A-Real-Pack-9B-MLX-6bit")
+    );
+    let ids = vec![
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP".to_string(),
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP".to_string(),
+        "AutomatosX/AX-Not-A-Real-Pack-9B-MLX-4bit".to_string(),
+        "AutomatosX/AX-Not-A-Real-Pack-9B-MLX-6bit".to_string(),
+    ];
+    let families = build_families_from_repo_ids_uninstalled(&ids);
+    let qwen = families
+        .iter()
+        .find(|family| family.key == "ax-qwen3.8-27b-axq")
+        .expect("known Qwen 3.8 AXQ repos stay on the profile family key");
+    assert_eq!(qwen.variants.len(), 2);
+    assert!(qwen.variants.iter().any(|variant| {
+        variant.model.download_target
+            == "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP@3e290738e96972307c6aeb9934ab170ca0eae1c1"
+            && variant.model.approx_size_bytes.is_some()
+    }));
+    let invented = families
+        .iter()
+        .find(|family| {
+            family.key == family_key_for_repo("AutomatosX/AX-Not-A-Real-Pack-9B-MLX-4bit")
+        })
+        .expect("unknown bit-widths group together");
+    assert_eq!(invented.variants.len(), 2);
+    assert!(invented.variants.iter().all(|variant| {
+        variant.model.download_target == variant.model.repo_id && variant.model.preset.is_none()
+    }));
 }
 
 #[test]

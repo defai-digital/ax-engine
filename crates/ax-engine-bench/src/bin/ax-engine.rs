@@ -4179,10 +4179,11 @@ fn parse_summary_json(stdout: &str) -> Option<Value> {
 fn profile_for_model(value: &str) -> Option<ModelProfile> {
     let normalized = normalize_alias(value);
     MODEL_PROFILES.iter().copied().find(|profile| {
-        profile
-            .aliases
-            .iter()
-            .any(|alias| normalize_alias(alias) == normalized)
+        normalize_alias(profile.label) == normalized
+            || profile
+                .aliases
+                .iter()
+                .any(|alias| normalize_alias(alias) == normalized)
     })
 }
 
@@ -4726,6 +4727,19 @@ mod tests {
                 .count(),
             35
         );
+    }
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn advertised_download_labels_resolve_to_their_exact_pinned_profiles() {
+        for target in download_options_payload()["targets"].as_array().unwrap() {
+            let label = target["alias"].as_str().unwrap();
+            let (repo, profile, revision) = download_repo_id(label, profile_for_model(label))
+                .unwrap_or_else(|error| panic!("advertised download target {label}: {error}"));
+            assert_eq!(repo, target["repo_id"].as_str().unwrap(), "{label}");
+            assert_eq!(profile.unwrap().label, label);
+            assert_eq!(revision.as_deref(), target["revision"].as_str(), "{label}");
+        }
     }
 
     #[test]

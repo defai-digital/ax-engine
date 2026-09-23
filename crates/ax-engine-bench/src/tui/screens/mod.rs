@@ -4,6 +4,7 @@
 pub(super) mod chat;
 pub(super) mod downloads;
 pub(super) mod home;
+pub(super) mod library;
 pub(super) mod metrics_panel;
 pub(super) mod models;
 pub(super) mod serve;

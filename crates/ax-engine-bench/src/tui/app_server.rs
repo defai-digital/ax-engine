@@ -22,6 +22,22 @@ use super::server_probe::{
 };
 
 impl App {
+    pub(super) fn serve_local_model(&mut self, model: &catalog::LocalModel) -> bool {
+        if let Some(error) = self.host_error().or_else(|| self.port_error()) {
+            self.toast_error(error);
+            return false;
+        }
+        if self.server_running() {
+            self.toast_warn("Stop the running server before serving another model");
+            return false;
+        }
+        if !model.ready || !crate::snapshot_has_complete_weights(&model.snapshot) {
+            self.toast_error("Snapshot is incomplete — refresh or finish downloading this model");
+            return false;
+        }
+        self.spawn_server(None, Some(model.snapshot.clone()), &model.repo_id)
+    }
+
     /// Base URL for the configured Serve host/port (defaults applied).
     pub(crate) fn configured_server_url(&self) -> Option<String> {
         if self.host_error().is_some() || self.port_error().is_some() {
@@ -64,7 +80,7 @@ impl App {
         );
         self.server_model
             .as_deref()
-            .is_some_and(|m| m == label || m == variant.profile.label)
+            .is_some_and(|m| m == label || m == variant.model.label)
     }
 
     /// Returns whether a server job was spawned. Callers that arm follow-up
@@ -91,9 +107,10 @@ impl App {
         else {
             return false;
         };
-        let profile = variant.profile;
-        let artifacts_dir = catalog::repo_snapshot_dir(profile.repo_id);
-        self.spawn_server(profile.preset, artifacts_dir, profile.label)
+        let artifacts_dir = catalog::repo_snapshot_dir(&variant.model.repo_id);
+        let preset = variant.model.preset.clone();
+        let label = variant.model.label.clone();
+        self.spawn_server(preset.as_deref(), artifacts_dir, &label)
     }
 
     /// See [`Self::serve_installed`] for the return contract.
@@ -122,7 +139,8 @@ impl App {
             .output_path()
             .or_else(|| catalog::repo_snapshot_dir(&task.repo_id));
         let label = task.label.clone();
-        self.spawn_server(task.preset, artifacts_dir, &label)
+        let preset = task.preset.clone();
+        self.spawn_server(preset.as_deref(), artifacts_dir, &label)
     }
 
     /// Returns whether a child was launched. Any previous job is cancelled
@@ -137,6 +155,7 @@ impl App {
             job.cancel();
         }
         self.server_ready = false;
+        self.server_artifacts_dir = None;
         self.server_ready_scan = 0;
         self.external_server = false;
         self.server_probe = None;
@@ -194,6 +213,7 @@ impl App {
                 self.server = Some(job);
                 self.server_url = Some(format_http_base_url(&host, &port));
                 self.server_model = Some(model_label.to_string());
+                self.server_artifacts_dir = artifacts_dir;
                 true
             }
             Err(err) => {
@@ -362,6 +382,7 @@ impl App {
     }
 
     pub(super) fn stop_server(&mut self) {
+        self.server_artifacts_dir = None;
         let had_managed = self.managed_server_alive();
         let had_external = self.external_server;
         if let Some(job) = &mut self.server {

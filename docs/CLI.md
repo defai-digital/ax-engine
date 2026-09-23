@@ -124,14 +124,30 @@ process strip, installed-model
 headroom vs RAM, top memory processes — only metrics macOS can provide without
 privileged GPU tooling), plus Quick start actions and installed models;
 Models is a three-step wizard — family → size (estimate and RAM-fit badge per
-variant) → a confirm summary before anything downloads; AutomatosX snapshots
+variant) → a confirm summary before anything downloads. The family list is
+loaded from the AutomatosX organization on Hugging Face when the TUI starts;
+click Refresh (or press `R`) to fetch it again. Errors remain visible and a
+failed refresh retains the previous list. Downloads use explicit repository
+IDs, retaining revision pins for known packs.
+AutomatosX snapshots
 bundle their MTP/assistant extras, so there is no separate speed-up step.
 Pressing `d` on Models opens a download-by-link prompt that accepts a
 Hugging Face URL or `owner/repo` (optionally with `@revision` or `/tree/<rev>`)
 and queues it like a catalog pick. The
 destination defaults to the shared Hugging Face Hub cache and can be changed
-on the confirm step with `--dest`. Downloads run in a
-background queue with a progress bar, speed, ETA, and phase labels (driven by
+on the confirm step with `--dest`.
+**Downloads** opens the local Hugging Face snapshot library, including all
+publishers and models no longer in the AutomatosX catalog. Its cache root
+honors `HF_HUB_CACHE`, `HF_HOME`, and `XDG_CACHE_HOME`. Select a row, then click
+**Serve**, **Delete**, or **Files**. Serve uses the displayed snapshot path;
+incomplete snapshots cannot be served. Delete requires confirmation and removes
+all cached revisions of that repository, including its weights. Other
+repositories are left intact. **Transfers** switches to the download queue;
+**Local models** switches back. **Back** and modal **Cancel** buttons provide
+mouse navigation without requiring Escape. Clicking model rows selects them;
+action buttons or Enter advance the wizard. The bottom-right footer shows the
+compiled engine version, and narrow terminals use a single-pane model wizard.
+Transfers show a progress bar, speed, ETA, and phase labels (driven by
 `--progress-json`); Serve launches `ax-engine-server` and shows the URL with a
 copyable curl example; Chat streams replies from the running server over
 `/v1/chat/completions` with markdown rendering (headings, lists, code blocks),

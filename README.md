@@ -182,9 +182,13 @@ Python wheel, source builds, and troubleshooting:
 
 ### Managed AutomatosX catalog (download / TUI)
 
-`ax-engine download --list` and the TUI expose the curated public
-[AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical)
-only — not every community MLX weight. Qwen 3.8 27B AXQ (6-bit MTP default),
+`ax-engine download --list` prints the curated public
+[AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical).
+The TUI loads that organization's live model list from Hugging Face when it
+starts. **Models** is the remote AutomatosX catalog; **Downloads** is the
+independent local snapshot library for every publisher, with clickable Serve
+and Delete actions. **Transfers** inside Downloads shows download jobs.
+Local models remain accessible when the Hub is unavailable. Qwen 3.8 27B AXQ (6-bit MTP default),
 Qwen 3.6, Qwen 3.5, and Gemma 4 variants published there (plain 4-bit/6-bit,
 QAT, OptiQ, AXQ where available) are first-class serve targets. Other native families (for example **GLM 4.7 Flash**, Nemotron
 Omni, Unlimited-OCR, Whisper, MiniCPM-V) use the repo-owned runtime via serve

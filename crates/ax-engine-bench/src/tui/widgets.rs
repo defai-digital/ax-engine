@@ -10,8 +10,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-    ScrollbarState, Wrap,
+    Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Wrap,
 };
 
 use super::theme;
@@ -120,7 +120,7 @@ pub(super) fn draw_modal_with(
     frame: &mut Frame,
     area: Rect,
     title: &str,
-    mut lines: Vec<Line>,
+    lines: Vec<Line>,
     hints: Vec<Span<'static>>,
     border_color: Color,
 ) -> ModalHits {
@@ -136,14 +136,12 @@ pub(super) fn draw_modal_with(
     let width = 64.min(area.width.saturating_sub(4)).max(20);
     let inner_width = width.saturating_sub(2).max(1);
     let chip_widths: Vec<u16> = hints.iter().map(|span| span.width() as u16).collect();
-    lines.push(Line::raw(""));
-    lines.push(Line::from(hints));
     // Size from the renderer's own post-wrap row count so long body lines
     // (pasted URLs, parser errors) cannot push the key-chip row out of the
     // popup.
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     let content_rows = wrapped_row_count(&paragraph, inner_width);
-    let height = (content_rows + 2).min(area.height.saturating_sub(2));
+    let height = (content_rows + 4).min(area.height.saturating_sub(2));
     let popup = centered_rect(width, height, area);
     // Chip hit-rects: the hint spans render on the last content row, laid out
     // consecutively from the left inner edge.
@@ -167,18 +165,29 @@ pub(super) fn draw_modal_with(
     };
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        paragraph.block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .title(Span::styled(
-                    format!(" {title} "),
-                    Style::default()
-                        .fg(border_color)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        ),
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .title(Span::styled(
+                format!(" {title} "),
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::BOLD),
+            )),
         popup,
+    );
+    frame.render_widget(
+        paragraph,
+        Rect::new(
+            popup.x + 1,
+            popup.y + 1,
+            popup.width.saturating_sub(2),
+            popup.height.saturating_sub(4),
+        ),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(hints)),
+        Rect::new(popup.x + 1, hints_y, popup.width.saturating_sub(2), 1),
     );
     ModalHits {
         popup,
@@ -291,12 +300,53 @@ pub(super) fn render_list(
     click_target: &std::cell::Cell<Rect>,
     click_offset: &std::cell::Cell<usize>,
 ) {
+    render_list_with_header(
+        frame,
+        area,
+        title,
+        None,
+        rows,
+        selected,
+        active,
+        click_target,
+        click_offset,
+    );
+}
+
+/// A list with an optional fixed column header above its scrolling rows.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_list_with_header(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    header: Option<Line<'_>>,
+    rows: Vec<ListItem>,
+    selected: usize,
+    active: bool,
+    click_target: &std::cell::Cell<Rect>,
+    click_offset: &std::cell::Cell<usize>,
+) {
+    let mut block = panel_block(title, active);
+    let header_height = u16::from(header.is_some()).min(block.inner(area).height);
+    if let Some(header) = header {
+        let inner = block.inner(area);
+        frame.render_widget(
+            Paragraph::new(header).style(theme::label().add_modifier(Modifier::BOLD)),
+            Rect::new(inner.x, inner.y, inner.width, header_height),
+        );
+        block = block.padding(Padding::new(0, 0, header_height, 0));
+    }
     // Only the focused list is clickable; inactive side panels must not steal
     // (or mis-map) hit-testing — they use thinner left-only chrome.
     if active {
-        click_target.set(area);
+        // Keep the bordered-list hit-test convention while excluding the header.
+        click_target.set(Rect::new(
+            area.x,
+            area.y + header_height,
+            area.width,
+            area.height.saturating_sub(header_height),
+        ));
     }
-    let block = panel_block(title, active);
     let highlight = if active {
         theme::highlight_active()
     } else {

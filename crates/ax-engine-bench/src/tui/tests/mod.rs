@@ -8,6 +8,7 @@ mod downloads_serve;
 mod jobs;
 mod misc;
 mod navigation;
+mod ux;
 mod wizard;
 
 use super::hardware::HardwareInfo;
@@ -80,7 +81,7 @@ fn test_task(job: Option<Job>) -> DownloadTask {
     DownloadTask {
         label: "gemma4-e2b 4-bit".into(),
         repo_id: "mlx-community/gemma-4-e2b-it-4bit".into(),
-        preset: Some("gemma4-e2b"),
+        preset: Some("gemma4-e2b".to_string()),
         target: "gemma4-e2b".into(),
         dest: Some(PathBuf::from("/tmp/gemma4-e2b")),
         watch_dir: PathBuf::from("/tmp/gemma4-e2b"),

@@ -295,7 +295,7 @@ pub(super) struct DownloadTask {
     pub label: String,
     /// Owned so free-form (download-by-link) repos can join the queue too.
     pub repo_id: String,
-    pub preset: Option<&'static str>,
+    pub preset: Option<String>,
     pub target: String,
     pub dest: Option<PathBuf>,
     pub watch_dir: PathBuf,
@@ -327,6 +327,40 @@ pub(super) fn parse_progress_event(line: &str) -> Option<(u64, u64, String)> {
 }
 
 impl DownloadTask {
+    /// Keep the operator-facing failure short; the complete child output
+    /// remains available in the log, including structured terminal records.
+    pub fn failure_summary(&self) -> Option<String> {
+        if !self.is_failed() {
+            return None;
+        }
+        let job = self.job.as_ref()?;
+        let structured = job.log.iter().rev().find_map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).ok()?;
+            value
+                .get("errors")?
+                .as_array()?
+                .iter()
+                .find_map(|error| error.as_str().map(str::to_string))
+        });
+        let message = structured
+            .or_else(|| {
+                job.log
+                    .iter()
+                    .find(|line| !line.trim().is_empty() && !line.starts_with('{'))
+                    .cloned()
+            })
+            .unwrap_or_else(|| format!("Download exited with code {}", job.done.unwrap_or(-1)));
+        Some(
+            message
+                .lines()
+                .next()
+                .unwrap_or("Download failed")
+                .chars()
+                .take(300)
+                .collect(),
+        )
+    }
+
     /// Lifecycle state derived from the cancel flag + child exit code.
     pub fn status(&self) -> DownloadStatus {
         if self.cancelled {

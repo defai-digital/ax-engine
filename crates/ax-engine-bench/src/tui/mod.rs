@@ -43,7 +43,7 @@ use ratatui::crossterm::event::{
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-use catalog::{Family, build_families, installed_variants};
+use catalog::{CatalogRefresh, Family, installed_variants};
 use hardware::HardwareInfo;
 use jobs::{DownloadOutcome, DownloadTask, Job};
 use metrics::LiveMetrics;
@@ -273,6 +273,8 @@ enum Modal {
         variant_idx: usize,
         typed: String,
     },
+    ServeLocal(catalog::LocalModel),
+    DeleteLocal(catalog::LocalModel),
     StopServer,
     /// From Serve with a running server: Enter on a different installed
     /// model — stop the current one and restart with the selection.
@@ -323,11 +325,41 @@ impl ServerStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolbarAction {
+    Back,
+    Models,
+    ChooseSize,
+    Download,
+    Serve,
+    Delete,
+    Refresh,
+    Retry,
+    Reveal,
+    CancelDownload,
+    ToggleLog,
+    StopServer,
+    Library,
+    Transfers,
+}
+
 struct App {
     pub quit: bool,
     pub screen: Screen,
     pub hardware: HardwareInfo,
     pub families: Vec<Family>,
+    pub local_models: Vec<catalog::LocalModel>,
+    pub local_model_idx: usize,
+    pub local_models_loading: bool,
+    pub local_models_error: Option<String>,
+    local_models_reload: Option<std::sync::mpsc::Receiver<catalog::LocalScan>>,
+    pub downloads_show_library: bool,
+    /// True while the startup Hugging Face listing has not landed yet.
+    pub catalog_loading: bool,
+    pub catalog_error: Option<String>,
+    /// Repo ids from the last successful Hub listing. Reloads rescan install
+    /// state for these ids instead of rebuilding the built-in table.
+    hub_repo_ids: Option<Vec<String>>,
     pub modal: Option<Modal>,
     pub toasts: Vec<Toast>,
     pub show_help: bool,
@@ -353,6 +385,7 @@ struct App {
     pub download_idx: usize,
     /// Log-pane scrollback for the selected download's job log.
     pub downloads_log_scroll: LogScroll,
+    pub downloads_show_error_log: bool,
 
     // Serve
     pub serve_focus: ServeFocus,
@@ -372,6 +405,7 @@ struct App {
     server_ready_scan: usize,
     /// Label of the model the running server was started with (chat request body).
     pub server_model: Option<String>,
+    pub server_artifacts_dir: Option<PathBuf>,
     /// True when readiness came from a `/health` probe against a process the
     /// TUI did not spawn (CLI `ax-engine-server`, another terminal, etc.).
     /// Stop detaches rather than killing; Serve will not start a second bind.
@@ -381,7 +415,7 @@ struct App {
     /// In-flight background catalog rescan (`build_families` walks the HF
     /// cache and sizes every installed snapshot; tens of seconds on a full
     /// cache, so it never runs on the UI thread).
-    families_reload: Option<Receiver<Vec<Family>>>,
+    families_reload: Option<Receiver<CatalogRefresh>>,
     /// A rescan was requested while one was in flight; run once more when
     /// it lands so a download that finished mid-scan is not missed.
     families_reload_again: bool,
@@ -406,6 +440,7 @@ struct App {
 
     // Click-target rects recorded during the last draw (immediate-mode hit-testing).
     tab_hits: Cell<Vec<(Rect, usize)>>,
+    toolbar_hits: Cell<Vec<(Rect, ToolbarAction)>>,
     pub content_list_rect: Cell<Rect>,
     /// Scroll offset (`ListState::offset` after render) of the content list
     /// during the last draw — a click's within-panel row must be added to
@@ -426,15 +461,16 @@ struct App {
 
 impl App {
     pub fn new() -> App {
-        App::with_hardware(HardwareInfo::probe())
+        let mut app = Self::with_hardware_and_families(HardwareInfo::probe(), Vec::new());
+        app.catalog_loading = true;
+        app.downloads_show_library = true;
+        app.reload_local_models();
+        app.start_hub_catalog();
+        app
     }
 
-    pub fn with_hardware(hardware: HardwareInfo) -> App {
-        Self::with_hardware_and_families(hardware, build_families())
-    }
-
-    /// Like [`Self::with_hardware`], but for tests: builds the catalog
-    /// shape without `build_families()`'s real HF-cache disk scan
+    /// Test constructor: builds the catalog shape without the production
+    /// real HF-cache disk scan
     /// (`repo_is_installed`/`dir_size` per downloadable profile), which is
     /// environment-dependent I/O unrelated to what TUI tests assert on and
     /// can take tens of seconds to minutes on a machine with many real
@@ -451,6 +487,15 @@ impl App {
             screen: Screen::Home,
             hardware,
             families,
+            local_models: Vec::new(),
+            local_model_idx: 0,
+            local_models_loading: false,
+            local_models_error: None,
+            local_models_reload: None,
+            downloads_show_library: false,
+            catalog_loading: false,
+            catalog_error: None,
+            hub_repo_ids: None,
             modal: None,
             toasts: Vec::new(),
             show_help: false,
@@ -468,6 +513,7 @@ impl App {
             downloads: Vec::new(),
             download_idx: 0,
             downloads_log_scroll: LogScroll::default(),
+            downloads_show_error_log: false,
             serve_focus: ServeFocus::List,
             serve_idx: 0,
             host: "127.0.0.1".into(),
@@ -480,6 +526,7 @@ impl App {
             server_ready: false,
             server_ready_scan: 0,
             server_model: None,
+            server_artifacts_dir: None,
             external_server: false,
             server_probe: None,
             families_reload: None,
@@ -492,6 +539,7 @@ impl App {
             auto_serve_after_download: false,
             auto_chat_after_serve: false,
             tab_hits: Cell::new(Vec::new()),
+            toolbar_hits: Cell::new(Vec::new()),
             content_list_rect: Cell::new(Rect::default()),
             content_list_offset: Cell::new(0),
             log_rect: Cell::new(Rect::default()),
@@ -502,42 +550,136 @@ impl App {
         }
     }
 
-    /// Rescan the catalog off the UI thread; the result lands in a later
-    /// `tick`. Until then the previous catalog stays on screen.
-    pub fn reload_families(&mut self) {
+    /// Fetch the AutomatosX model list off the UI thread. Until it lands the
+    /// Models screen shows a loading line. A failed request keeps local
+    /// installs available without inventing remote catalog membership.
+    fn start_hub_catalog(&mut self) {
         if self.families_reload.is_some() {
-            self.families_reload_again = true;
             return;
         }
+        self.catalog_loading = true;
+        self.catalog_error = None;
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(build_families());
+            let refresh = match catalog::fetch_automatosx_repo_ids() {
+                Ok(ids) => {
+                    let families = catalog::build_families_from_repo_ids(&ids);
+                    CatalogRefresh::Hub { ids, families }
+                }
+                Err(error) => CatalogRefresh::Fallback {
+                    error,
+                    families: Vec::new(),
+                },
+            };
+            let _ = tx.send(refresh);
         });
         self.families_reload = Some(rx);
     }
 
-    /// Apply a finished catalog rescan. Returns whether the catalog changed.
+    /// Rescan install state off the UI thread; the result lands in a later
+    /// `tick`. Until then the previous catalog stays on screen. After a live
+    /// Hub load, the rescan keeps that membership.
+    pub fn reload_families(&mut self) {
+        self.reload_local_models();
+        if self.families_reload.is_some() {
+            self.families_reload_again = true;
+            return;
+        }
+        let ids = self.hub_repo_ids.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let families = match ids {
+                Some(ids) => catalog::build_families_from_repo_ids(&ids),
+                None => Vec::new(),
+            };
+            let _ = tx.send(CatalogRefresh::Ready(families));
+        });
+        self.families_reload = Some(rx);
+    }
+
+    /// Apply a finished catalog refresh. Returns whether the catalog changed.
     fn tick_families_reload(&mut self) -> bool {
+        // Index-based dialogs and confirmation must keep the selection the
+        // user actually reviewed until they leave that flow.
+        if self.modal.is_some() || self.stage != WizardStage::Families {
+            return false;
+        }
         let Some(rx) = &self.families_reload else {
             return false;
         };
-        let families = match rx.try_recv() {
-            Ok(families) => Some(families),
+        let refresh = match rx.try_recv() {
+            Ok(refresh) => Some(refresh),
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
         };
         self.families_reload = None;
+        let selected_repo = self
+            .families
+            .get(self.family_idx)
+            .and_then(|family| family.variants.get(self.precision_idx))
+            .map(|variant| variant.model.repo_id.clone());
+        let changed = match refresh {
+            Some(CatalogRefresh::Hub { ids, families }) => {
+                let count: usize = families.iter().map(|family| family.variants.len()).sum();
+                self.hub_repo_ids = Some(ids);
+                self.catalog_loading = false;
+                self.catalog_error = None;
+                self.families = families;
+                self.toast(format!("Loaded {count} models from Hugging Face"));
+                true
+            }
+            Some(CatalogRefresh::Ready(families)) => {
+                self.catalog_loading = false;
+                self.families = families;
+                true
+            }
+            Some(CatalogRefresh::Fallback { error, families }) => {
+                self.catalog_loading = false;
+                self.catalog_error = Some(error);
+                if self.hub_repo_ids.is_none() {
+                    self.families = families;
+                }
+                self.toast_error("Hugging Face unavailable — press R in Models to retry");
+                true
+            }
+            None => {
+                if self.catalog_loading {
+                    self.catalog_loading = false;
+                    self.catalog_error = Some("The catalog request stopped unexpectedly".into());
+                    if self.families.is_empty() {
+                        self.families = Vec::new();
+                        self.toast_error(
+                            "Could not load the Hugging Face model list. Open Downloads for local models.",
+                        );
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if changed {
+            if let Some(repo_id) = selected_repo
+                && let Some((family_idx, precision_idx)) =
+                    self.families.iter().enumerate().find_map(|(fi, family)| {
+                        family
+                            .variants
+                            .iter()
+                            .position(|v| v.model.repo_id == repo_id)
+                            .map(|vi| (fi, vi))
+                    })
+            {
+                self.family_idx = family_idx;
+                self.precision_idx = precision_idx;
+            }
+            self.clamp_family_idx_to_filter();
+            self.clamp_list_indices();
+        }
         if self.families_reload_again {
             self.families_reload_again = false;
             self.reload_families();
         }
-        match families {
-            Some(families) => {
-                self.families = families;
-                true
-            }
-            None => false,
-        }
+        changed
     }
 
     /// Push a toast, coalescing consecutive duplicates: when the newest toast
@@ -622,6 +764,7 @@ impl App {
     /// Advance all background jobs and time-based UI state by one poll cycle.
     /// Returns true when anything on screen could have changed.
     fn tick(&mut self) -> bool {
+        let local_material = self.tick_local_models();
         let mut finished: Vec<(usize, String)> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
         // Material download changes (bytes/phase/log/exit). Spinner alone does
@@ -738,6 +881,7 @@ impl App {
             || !self.toasts.is_empty()
             || download_material
             || catalog_material
+            || local_material
             || spinner_visible
             || server_material
             || (self.server_ready != was_ready)
@@ -789,6 +933,7 @@ impl App {
     /// Select a download row; moving to a different row re-pins its log pane
     /// (each row shows a different job log, so scrollback would be nonsense).
     pub(crate) fn select_download(&mut self, idx: usize) {
+        self.downloads_show_library = false;
         if self.download_idx != idx {
             self.download_idx = idx;
             self.downloads_log_scroll.pin_to_bottom();

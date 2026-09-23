@@ -21,13 +21,21 @@ impl App {
     // -- wizard input -----------------------------------------------------------
 
     pub(crate) fn on_key_models(&mut self, code: KeyCode) {
+        if code == KeyCode::Char('R') && self.stage == WizardStage::Families && !self.filtering {
+            self.start_hub_catalog();
+            return;
+        }
         // `d` opens the download-by-link prompt from any wizard stage, unless
-        // the family filter box is consuming keys.
+        // the family filter box is consuming keys. It stays available while
+        // the Hub listing is still loading and the family list is empty.
         if code == KeyCode::Char('d') && !self.family_filter_active() {
             self.modal = Some(Modal::DownloadByLink {
                 input: String::new(),
                 error: None,
             });
+            return;
+        }
+        if self.families.is_empty() {
             return;
         }
         match self.stage {
@@ -137,12 +145,11 @@ impl App {
             WizardStage::Families => {
                 if let Some(&real) = self.filtered_family_indices().get(idx) {
                     self.family_idx = real;
-                    self.on_key_models(KeyCode::Enter);
+                    self.precision_idx = 0;
                 }
             }
             WizardStage::Precision if idx < self.families[self.family_idx].variants.len() => {
                 self.precision_idx = idx;
-                self.on_key_models(KeyCode::Enter);
             }
             _ => {}
         }
@@ -189,8 +196,8 @@ impl App {
                 }
                 // Match aliases / repo ids so "/gpt" and "/llama" find secondary stacks.
                 f.variants.iter().any(|v| {
-                    v.profile.repo_id.to_ascii_lowercase().contains(&needle)
-                        || v.profile
+                    v.model.repo_id.to_ascii_lowercase().contains(&needle)
+                        || v.model
                             .aliases
                             .iter()
                             .any(|alias| alias.to_ascii_lowercase().contains(&needle))
@@ -248,12 +255,12 @@ impl App {
     }
 
     /// (target alias, repo id, total size estimate) for a pending download.
-    fn pending_plan(&self, pending: PendingDownload) -> (&'static str, &'static str, Option<u64>) {
+    fn pending_plan(&self, pending: PendingDownload) -> (String, String, Option<u64>) {
         let variant = &self.families[pending.family_idx].variants[pending.precision_idx];
         (
-            variant.profile.label,
-            variant.profile.repo_id,
-            variant.profile.approx_size_bytes,
+            variant.model.download_target.clone(),
+            variant.model.repo_id.clone(),
+            variant.model.approx_size_bytes,
         )
     }
 
@@ -273,10 +280,10 @@ impl App {
         let dest = self
             .confirm_dest
             .as_ref()
-            .map(|parent| explicit_destination_path(parent, variant.profile.label));
+            .map(|parent| explicit_destination_path(parent, &variant.model.label));
         let watch_dir = dest
             .clone()
-            .unwrap_or_else(|| catalog::repo_cache_dir(repo_id));
+            .unwrap_or_else(|| catalog::repo_cache_dir(&repo_id));
         let label = format!(
             "{} {}",
             self.families[pending.family_idx].display_name(),
@@ -284,9 +291,9 @@ impl App {
         );
         let task = DownloadTask {
             label: label.clone(),
-            repo_id: repo_id.to_string(),
-            preset: variant.profile.preset,
-            target: target.to_string(),
+            repo_id: repo_id.clone(),
+            preset: variant.model.preset.clone(),
+            target,
             dest,
             watch_dir,
             resolved_path: None,
@@ -362,7 +369,7 @@ impl App {
             self.families[family_idx].display_name(),
             variant.precision()
         );
-        let dir = catalog::repo_cache_dir(variant.profile.repo_id);
+        let dir = catalog::repo_cache_dir(&variant.model.repo_id);
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => self.toast_success(format!("{label} deleted")),
             Err(err) => self.toast_error(format!("delete failed: {err}")),
@@ -384,6 +391,50 @@ impl App {
     /// Split-panel layout: left panel (40%) is the family list, right panel
     /// (60%) shows precision/options/confirm depending on the wizard stage.
     pub(crate) fn draw_models(&self, frame: &mut Frame, area: Rect) {
+        let layout = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        let status = if self.catalog_loading {
+            "Hugging Face: loading models…".to_string()
+        } else if self.catalog_error.is_some() {
+            let source = if self.hub_repo_ids.is_some() {
+                "previous list"
+            } else {
+                "local models in Downloads"
+            };
+            format!("Hub unavailable — {source} · R retry")
+        } else {
+            let count: usize = self
+                .families
+                .iter()
+                .map(|family| family.variants.len())
+                .sum();
+            format!("Hugging Face · {count} models · R refresh")
+        };
+        frame.render_widget(Paragraph::new(status).style(theme::label()), layout[0]);
+        let area = layout[1];
+        if self.families.is_empty() {
+            let message = if self.catalog_loading {
+                "Loading models from Hugging Face…"
+            } else {
+                "No models available. Press R to retry or d to download by link."
+            };
+            frame.render_widget(
+                Paragraph::new(message)
+                    .wrap(Wrap { trim: false })
+                    .block(widgets::soft_block(" Models ")),
+                area,
+            );
+            return;
+        }
+        if area.width < 100 {
+            let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+            self.draw_step_header(frame, rows[0]);
+            match self.stage {
+                WizardStage::Families => self.draw_families_panel(frame, rows[1], true),
+                WizardStage::Precision => self.draw_precision(frame, rows[1]),
+                WizardStage::Confirm => self.draw_confirm(frame, rows[1]),
+            }
+            return;
+        }
         let panels = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(area);
 
@@ -406,6 +457,10 @@ impl App {
 
     fn draw_right_hint(&self, frame: &mut Frame, area: Rect) {
         let family = &self.families[self.family_idx];
+        let known = family
+            .variants
+            .iter()
+            .all(|variant| variant.model.known_profile);
         let mut lines = vec![
             Line::raw(""),
             Line::from(vec![
@@ -424,17 +479,28 @@ impl App {
                 if family.is_primary() {
                     Span::styled(" · primary", theme::body_dim())
                 } else {
-                    Span::styled(" · preview direct", theme::label())
+                    Span::raw("")
                 },
                 Span::styled(
-                    format!(" · {}", family.support_tier().as_str()),
-                    match family.support_tier() {
-                        ax_engine_core::ModelSupportTier::Certified => theme::ok(),
-                        ax_engine_core::ModelSupportTier::Compatible => theme::body_dim(),
-                        ax_engine_core::ModelSupportTier::Experimental => theme::warn(),
+                    format!(
+                        " · {}",
+                        if known {
+                            family.support_tier().as_str()
+                        } else {
+                            "unverified"
+                        }
+                    ),
+                    if !known {
+                        theme::label()
+                    } else {
+                        match family.support_tier() {
+                            ax_engine_core::ModelSupportTier::Certified => theme::ok(),
+                            ax_engine_core::ModelSupportTier::Compatible => theme::body_dim(),
+                            ax_engine_core::ModelSupportTier::Experimental => theme::warn(),
+                        }
                     },
                 ),
-                if family.has_mtp() {
+                if known && family.has_mtp() {
                     Span::styled(
                         format!("  {} speed-up", theme::icon::speed()),
                         theme::feature(),
@@ -552,7 +618,7 @@ impl App {
             .map(|&i| {
                 let family = &self.families[i];
                 let installed = family.installed_count();
-                let status = if installed == family.variants.len() {
+                let mut status = if installed == family.variants.len() {
                     Span::styled(format!("{}all", theme::icon::ok()), theme::ok())
                 } else if installed > 0 {
                     Span::styled(
@@ -562,15 +628,11 @@ impl App {
                 } else {
                     Span::styled("--", theme::label())
                 };
+                status.content = widgets::ellipsis(&status.content, 6).into();
                 let mtp = if family.has_mtp() {
                     Span::styled(format!(" {}", theme::icon::speed()), theme::feature())
                 } else {
                     Span::raw("")
-                };
-                let tier = if family.is_primary() {
-                    Span::raw("")
-                } else {
-                    Span::styled(" preview", theme::label())
                 };
                 let name = family.display_name();
                 let name_cell = widgets::ellipsis(&name, name_width);
@@ -586,7 +648,6 @@ impl App {
                     Span::styled(format!(" {quant:<9}"), theme::body_dim()),
                     status,
                     mtp,
-                    tier,
                 ]))
             })
             .collect();
@@ -609,10 +670,17 @@ impl App {
         } else {
             " Models — / to filter ".to_string()
         };
-        widgets::render_list(
+        let header = Line::from(format!(
+            "  {} {:<9}{:<6} MTP",
+            widgets::ellipsis("Model", name_width),
+            "Bits",
+            "Local",
+        ));
+        widgets::render_list_with_header(
             frame,
             area,
             &title,
+            Some(header),
             rows,
             selected,
             active,
@@ -707,7 +775,7 @@ impl App {
             self.hardware.total_ram_bytes,
         );
         let dest_text = match &self.confirm_dest {
-            Some(parent) => explicit_destination_path(parent, variant.profile.label)
+            Some(parent) => explicit_destination_path(parent, &variant.model.label)
                 .display()
                 .to_string(),
             None => format!(
@@ -747,6 +815,7 @@ impl App {
                 },
             ),
             row("Download", catalog::format_approx_bytes(total)),
+            row("Repository", variant.model.download_target.clone()),
             row("Into", dest_text),
         ];
         if let (Some(free), Some(after)) = (free, free_after) {
@@ -888,16 +957,15 @@ impl App {
 }
 
 /// Columns reserved after the family name: the quant summary (` {:<9}`, so 10
-/// columns), the install badge (at most 5 columns, e.g. `✓all` or `10/12`),
-/// the MTP mark (` ⚡` = 3 columns), and the ` preview` tag (8). 26 total.
-const FAMILY_ROW_TRAILING_COLUMNS: u16 = 26;
+/// columns), the padded install badge (6), and the MTP column/header (4).
+const FAMILY_ROW_TRAILING_COLUMNS: u16 = 20;
 
 /// Compact quant range for dense family rows (`4–8b` / `6b`).
 fn compact_quant_summary(family: &crate::tui::catalog::Family) -> String {
     let all_mxfp4 = family
         .variants
         .iter()
-        .all(|v| v.profile.repo_id.to_ascii_lowercase().contains("mxfp4"));
+        .all(|v| v.model.repo_id.to_ascii_lowercase().contains("mxfp4"));
     if all_mxfp4 && !family.variants.is_empty() {
         return "MXFP4".into();
     }

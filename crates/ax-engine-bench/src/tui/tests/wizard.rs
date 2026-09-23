@@ -15,6 +15,23 @@ use ratatui::widgets::{Paragraph, Wrap};
 // ---------------------------------------------------------------------------
 
 #[test]
+fn empty_catalog_shows_huggingface_loading_line() {
+    let mut app = new_app();
+    app.families.clear();
+    app.catalog_loading = true;
+    app.screen = Screen::Models;
+    let text = render(&app);
+    assert!(
+        text.contains("Loading models from Hugging Face"),
+        "loading catalog must not draw an empty family index: {text}"
+    );
+    // Selection keys must not panic while the list has not arrived.
+    app.on_key(key(KeyCode::Enter));
+    app.on_key(key(KeyCode::Char('d')));
+    assert!(matches!(app.modal, Some(Modal::DownloadByLink { .. })));
+}
+
+#[test]
 fn family_list_renders_with_sizes_and_mtp_badge() {
     let mut app = new_app();
     app.screen = Screen::Models;
@@ -149,14 +166,14 @@ fn bundled_mtp_confirm_uses_pack_repo_and_size() {
 }
 
 #[test]
-fn click_on_family_row_drills_into_precision() {
+fn click_on_family_row_selects_without_drilling_into_precision() {
     let mut app = new_app();
     app.screen = Screen::Models;
     let _ = render(&app); // records content_list_rect for the families list
     let rect = app.content_list_rect.get();
     assert!(rect.height >= 2, "list rect should be recorded");
     app.on_click(rect.x + 2, rect.y + 2);
-    assert_eq!(app.stage, WizardStage::Precision);
+    assert_eq!(app.stage, WizardStage::Families);
     assert_eq!(app.family_idx, 1);
 }
 
@@ -433,7 +450,7 @@ fn download_by_link_paste_fills_input() {
 }
 
 #[test]
-fn click_on_precision_row_selects_and_advances() {
+fn click_on_precision_row_selects_without_advancing() {
     let mut app = new_app();
     app.screen = Screen::Models;
     app.family_idx = family_index(&app, "ax-qwen3.5-9b");
@@ -444,11 +461,8 @@ fn click_on_precision_row_selects_and_advances() {
     // Click the first precision row (4-bit).
     app.on_click(rect.x + 2, rect.y + 1);
     assert_eq!(app.precision_idx, 0);
-    // Should leave Precision: either Confirm (not installed) or a modal (installed).
-    assert!(
-        app.stage != WizardStage::Precision || app.modal.is_some(),
-        "clicking a precision row must advance or open a modal"
-    );
+    assert_eq!(app.stage, WizardStage::Precision);
+    assert!(app.modal.is_none());
 }
 
 #[test]
@@ -518,7 +532,7 @@ fn delete_modal_requires_typed_word() {
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(app.modal, Some(Modal::DeleteModel { .. })));
     let text = render(&app);
-    assert!(text.contains("Type 'delete' to confirm"));
+    assert!(text.contains("Delete files"));
     // Esc closes without deleting.
     app.on_key(key(KeyCode::Esc));
     assert!(app.modal.is_none());

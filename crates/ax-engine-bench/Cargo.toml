@@ -17,6 +17,7 @@ serde_json = { workspace = true, features = ["arbitrary_precision", "float_round
 thiserror.workspace = true
 tracing-subscriber.workspace = true
 tui-scrollview.workspace = true
+ureq = { version = "2", features = ["json"] }
 unicode-width.workspace = true
 
 [lints]

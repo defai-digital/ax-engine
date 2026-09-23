@@ -178,6 +178,7 @@ dependencies = [
  "tracing-subscriber",
  "tui-scrollview",
  "unicode-width",
+ "ureq",
 ]
 
 [[package]]

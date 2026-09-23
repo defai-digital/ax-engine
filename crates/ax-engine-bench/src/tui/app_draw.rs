@@ -14,9 +14,112 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use super::catalog;
 use super::theme;
 use super::widgets;
-use super::{App, Modal, Screen, ServeFocus, TABS, WizardStage, screen_index};
+use super::{App, Modal, Screen, ServeFocus, TABS, ToolbarAction, WizardStage, screen_index};
 
 impl App {
+    fn draw_toolbar(&self, frame: &mut Frame, area: Rect) {
+        use ToolbarAction::*;
+        let has_model = !self.families.is_empty();
+        let installed_selection = self.stage == WizardStage::Precision
+            && self
+                .families
+                .get(self.family_idx)
+                .and_then(|family| family.variants.get(self.precision_idx))
+                .is_some_and(|variant| variant.installed);
+        let local = self.local_models.get(self.local_model_idx);
+        let actions = match self.screen {
+            Screen::Home => vec![("Models", Models, true), ("Local models", Library, true)],
+            Screen::Models => vec![
+                ("Back", Back, true),
+                (
+                    "Sizes",
+                    ChooseSize,
+                    has_model && self.stage == WizardStage::Families,
+                ),
+                (
+                    if installed_selection {
+                        "Downloaded"
+                    } else {
+                        "Download"
+                    },
+                    Download,
+                    has_model && !installed_selection,
+                ),
+                ("Local models", Library, true),
+                (
+                    "Refresh",
+                    Refresh,
+                    self.stage == WizardStage::Families && !self.catalog_loading,
+                ),
+            ],
+            Screen::Downloads if self.downloads_show_library => vec![
+                ("Back", Back, true),
+                ("Serve", Serve, local.is_some_and(|model| model.ready)),
+                ("Delete", Delete, local.is_some()),
+                ("Files", Reveal, local.is_some()),
+                ("Transfers", Transfers, true),
+                ("Refresh", Refresh, !self.local_models_loading),
+            ],
+            Screen::Downloads => vec![
+                ("Back", Back, true),
+                ("Local models", Library, true),
+                (
+                    "Serve",
+                    Serve,
+                    self.downloads
+                        .get(self.download_idx)
+                        .is_some_and(|task| task.is_ready()),
+                ),
+                (
+                    "Retry",
+                    Retry,
+                    self.downloads
+                        .get(self.download_idx)
+                        .is_some_and(|task| task.is_failed() || task.cancelled),
+                ),
+                (
+                    "Cancel",
+                    CancelDownload,
+                    self.downloads
+                        .get(self.download_idx)
+                        .is_some_and(|task| task.is_running() || task.is_queued()),
+                ),
+                ("Log", ToggleLog, true),
+            ],
+            Screen::Serve => vec![
+                ("Back", Back, true),
+                ("Local models", Library, true),
+                ("Serve", Serve, !self.server_running()),
+                ("Stop", StopServer, self.server_running()),
+            ],
+            Screen::Chat => vec![("Back", Back, true), ("Local models", Library, true)],
+        };
+        let mut x = area.x;
+        let mut hits = Vec::new();
+        for (label, action, enabled) in actions {
+            let text = format!(" {label} ");
+            let width = text.len() as u16;
+            if x.saturating_add(width) > area.right() {
+                break;
+            }
+            let rect = Rect::new(x, area.y, width, 1);
+            let style = if enabled {
+                Style::default()
+                    .fg(theme::colors().text)
+                    .bg(theme::colors().code_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme::label().add_modifier(Modifier::DIM)
+            };
+            frame.render_widget(Paragraph::new(text).style(style), rect);
+            if enabled {
+                hits.push((rect, action));
+            }
+            x += width + 1;
+        }
+        self.toolbar_hits.set(hits);
+    }
+
     /// Smallest usable terminal; below this we show a resize hint instead of
     /// silently clamping every panel to zero height.
     const MIN_TERM_WIDTH: u16 = 60;
@@ -47,9 +150,11 @@ impl App {
         self.banner_rect.set(Rect::default());
         self.hero_rect.set(Rect::default());
         self.modal_hits.set(widgets::ModalHits::default());
+        self.toolbar_hits.set(Vec::new());
         let outer = Layout::vertical([
             Constraint::Length(2), // tab bar + separator
             Constraint::Min(0),    // content
+            Constraint::Length(1), // clickable actions
             Constraint::Length(1), // footer
         ])
         .split(frame.area());
@@ -76,10 +181,37 @@ impl App {
             Screen::Chat => self.draw_chat(frame, outer[1]),
         }
 
+        let version = Line::from(if term.width < 100 {
+            concat!("v", env!("CARGO_PKG_VERSION"))
+        } else {
+            concat!("AX Engine v", env!("CARGO_PKG_VERSION"))
+        });
+        let footer = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(version.width() as u16),
+        ])
+        .split(outer[3]);
+        let hints = if term.width < 100
+            && self.screen == Screen::Models
+            && self.stage == WizardStage::Families
+            && !self.filtering
+            && !self.focus_tabs
+            && self.modal.is_none()
+        {
+            Line::from("↑↓ · Enter next · / filter · R refresh · d link")
+        } else {
+            self.footer_line()
+        };
         frame.render_widget(
-            Paragraph::new(self.footer_line()).style(Style::default().fg(theme::colors().dim)),
-            outer[2],
+            Paragraph::new(hints).style(Style::default().fg(theme::colors().dim)),
+            footer[0],
         );
+        frame.render_widget(
+            Paragraph::new(version.right_aligned()).style(theme::label()),
+            footer[2],
+        );
+        self.draw_toolbar(frame, outer[2]);
         widgets::draw_toasts(frame, frame.area(), &self.toasts);
         if self.show_help {
             self.draw_help(frame, frame.area());
@@ -208,6 +340,9 @@ impl App {
                         key_hint("/"),
                         key_label(" filter"),
                         key_sep(),
+                        key_hint("R"),
+                        key_label(" refresh"),
+                        key_sep(),
                         key_hint("d"),
                         key_label(" by link"),
                         key_sep(),
@@ -241,9 +376,28 @@ impl App {
                         key_label(" back"),
                     ],
                 },
+                Screen::Downloads if self.downloads_show_library => vec![
+                    key_hint("↑↓"),
+                    key_label(" select"),
+                    key_sep(),
+                    key_hint("Enter"),
+                    key_label(" serve"),
+                    key_sep(),
+                    key_hint("x"),
+                    key_label(" delete"),
+                    key_sep(),
+                    key_hint("R"),
+                    key_label(" refresh"),
+                    key_sep(),
+                    key_hint("t"),
+                    key_label(" transfers"),
+                ],
                 Screen::Downloads => vec![
                     key_hint("↑↓"),
                     key_label(" move"),
+                    key_sep(),
+                    key_hint("v"),
+                    key_label(" log"),
                     key_sep(),
                     key_hint("Enter"),
                     key_label(" serve"),
@@ -462,6 +616,42 @@ impl App {
 
     fn draw_modal(&self, frame: &mut Frame, area: Rect, modal: &Modal) {
         let hits = match modal {
+            Modal::ServeLocal(model) => widgets::draw_modal_with(
+                frame,
+                area,
+                "Serve local model",
+                vec![
+                    Line::raw(format!("Start the server with {}?", model.repo_id)),
+                    Line::raw(model.snapshot.display().to_string()),
+                ],
+                vec![
+                    theme::key_chip("Serve"),
+                    theme::key_sep(),
+                    theme::key_chip_dim("Cancel"),
+                ],
+                theme::colors().accent,
+            ),
+            Modal::DeleteLocal(model) => widgets::draw_modal_with(
+                frame,
+                area,
+                "Delete local model",
+                vec![
+                    Line::raw(format!("Delete {}?", model.repo_id)),
+                    Line::raw(format!(
+                        "Removes all {} cached revision(s), including weights ({}).",
+                        model.revisions,
+                        catalog::format_bytes(model.size)
+                    )),
+                    Line::raw(model.cache_dir.display().to_string()),
+                    Line::raw("This removes local files only. You can download them again."),
+                ],
+                vec![
+                    theme::key_chip_danger("Delete files"),
+                    theme::key_sep(),
+                    theme::key_chip_dim("Cancel"),
+                ],
+                theme::colors().danger,
+            ),
             Modal::Quit { downloads, server } => {
                 let mut lines = Vec::new();
                 if *downloads > 0 {
@@ -579,11 +769,11 @@ impl App {
                                 self.families[*family_idx].display_name(),
                                 v.precision()
                             ),
-                            catalog::repo_cache_dir(v.profile.repo_id)
+                            catalog::repo_cache_dir(&v.model.repo_id)
                                 .display()
                                 .to_string(),
                             catalog::format_bytes(v.size),
-                            v.profile.label,
+                            v.model.label.clone(),
                         )
                     })
                     .unwrap_or_default();
@@ -627,7 +817,7 @@ impl App {
                 }
                 lines.push(Line::raw(""));
                 lines.push(Line::from(vec![
-                    Span::raw("Type 'delete' to confirm: "),
+                    Span::raw("Click Delete files, or type 'delete': "),
                     Span::styled(format!("{typed}_"), typed_style),
                 ]));
                 widgets::draw_modal_with(
@@ -635,15 +825,11 @@ impl App {
                     area,
                     "⚠ Delete model",
                     lines,
-                    if armed {
-                        vec![
-                            theme::key_chip_danger("Enter delete"),
-                            theme::key_sep(),
-                            theme::key_chip_dim("Esc keep"),
-                        ]
-                    } else {
-                        vec![theme::key_chip_dim("Esc keep")]
-                    },
+                    vec![
+                        theme::key_chip_danger("Delete files"),
+                        theme::key_sep(),
+                        theme::key_chip_dim("Cancel"),
+                    ],
                     theme::colors().danger,
                 )
             }

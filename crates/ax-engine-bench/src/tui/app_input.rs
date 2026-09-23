@@ -15,9 +15,38 @@ use ratatui::layout::Rect;
 use super::catalog::installed_variants;
 use super::jobs::Job;
 use super::widgets;
-use super::{App, Modal, SCREENS, Screen, ServeFocus, WizardStage, screen_index};
+use super::{App, Modal, SCREENS, Screen, ServeFocus, ToolbarAction, WizardStage, screen_index};
 
 impl App {
+    pub(crate) fn on_toolbar_action(&mut self, action: ToolbarAction) {
+        use ToolbarAction::*;
+        self.focus_tabs = false;
+        self.filtering = false;
+        match action {
+            Back if self.screen == Screen::Models => self.on_key_models(KeyCode::Esc),
+            Back => self.back_or_home(),
+            Models => self.navigate_to(Screen::Models),
+            Library => {
+                self.downloads_show_library = true;
+                self.reload_local_models();
+                self.navigate_to(Screen::Downloads);
+            }
+            Transfers => self.downloads_show_library = false,
+            ChooseSize | Download => self.on_key_models(KeyCode::Enter),
+            Refresh if self.screen == Screen::Models => self.start_hub_catalog(),
+            Refresh => self.reload_local_models(),
+            Serve if self.screen == Screen::Downloads => self.on_key_downloads(KeyCode::Enter),
+            Serve => self.on_key_serve(KeyCode::Enter),
+            Delete => self.on_key_library(KeyCode::Char('x')),
+            Reveal if self.downloads_show_library => self.on_key_library(KeyCode::Char('o')),
+            Reveal => self.on_key_downloads(KeyCode::Char('o')),
+            Retry => self.on_key_downloads(KeyCode::Char('r')),
+            CancelDownload => self.on_key_downloads(KeyCode::Char('x')),
+            ToggleLog => self.on_key_downloads(KeyCode::Char('v')),
+            StopServer => self.on_key_serve(KeyCode::Char('x')),
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.request_quit();
@@ -101,6 +130,10 @@ impl App {
 
     /// Switch screens (tab / digit jump), remembering the prior screen for Esc.
     fn goto_screen(&mut self, screen: Screen) {
+        if screen == Screen::Downloads {
+            self.downloads_show_library = true;
+            self.reload_local_models();
+        }
         self.navigate_to(screen);
     }
 
@@ -289,6 +322,19 @@ impl App {
             return;
         };
         match modal {
+            Modal::ServeLocal(model) => match code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.auto_chat_after_serve = self.serve_local_model(&model);
+                    self.navigate_to(Screen::Serve);
+                }
+                KeyCode::Esc | KeyCode::Char('n') => {}
+                _ => self.modal = Some(Modal::ServeLocal(model)),
+            },
+            Modal::DeleteLocal(model) => match code {
+                KeyCode::Char('y') => self.delete_local_model(&model),
+                KeyCode::Esc | KeyCode::Char('n') => {}
+                _ => self.modal = Some(Modal::DeleteLocal(model)),
+            },
             Modal::Quit { .. } => match code {
                 KeyCode::Enter | KeyCode::Char('y') => self.quit = true,
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Left | KeyCode::Char('h') => {}
@@ -489,7 +535,20 @@ impl App {
                         && mouse.row < rect.y + rect.height
                 };
                 if hits.confirm.is_some_and(inside) {
-                    self.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    match self.modal.take() {
+                        Some(Modal::DeleteLocal(model)) => self.delete_local_model(&model),
+                        Some(Modal::DeleteModel {
+                            family_idx,
+                            variant_idx,
+                            ..
+                        }) => {
+                            self.delete_installed_variant(family_idx, variant_idx);
+                        }
+                        modal => {
+                            self.modal = modal;
+                            self.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                        }
+                    }
                 } else if hits.cancel.is_some_and(inside) || !inside(hits.popup) {
                     self.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
                 }
@@ -595,6 +654,15 @@ impl App {
     }
 
     pub fn on_click(&mut self, col: u16, row: u16) {
+        let hits = self.toolbar_hits.take();
+        let action = hits
+            .iter()
+            .find_map(|(rect, action)| rect.contains((col, row).into()).then_some(*action));
+        self.toolbar_hits.set(hits);
+        if let Some(action) = action {
+            self.on_toolbar_action(action);
+            return;
+        }
         // Tab bar click switches screens.
         let tab_hits = self.tab_hits.take();
         let clicked_tab = tab_hits.iter().find_map(|(rect, idx)| {
@@ -658,6 +726,10 @@ impl App {
                 }
                 Screen::Models => self.on_click_models(idx),
                 Screen::Downloads => {
+                    if self.downloads_show_library {
+                        self.local_model_idx = idx.min(self.local_models.len().saturating_sub(1));
+                        return;
+                    }
                     if idx < self.downloads.len() {
                         self.select_download(idx);
                     }

@@ -9,7 +9,7 @@ use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Gauge, ListItem, Paragraph, Sparkline};
+use ratatui::widgets::{Gauge, ListItem, Paragraph, Sparkline, Wrap};
 
 use crate::tui::catalog;
 use crate::tui::jobs::{self, DownloadStatus, SPINNER};
@@ -19,6 +19,15 @@ use crate::tui::{App, Modal};
 
 impl App {
     pub(crate) fn on_key_downloads(&mut self, code: KeyCode) {
+        if self.downloads_show_library {
+            self.on_key_library(code);
+            return;
+        }
+        if code == KeyCode::Char('l') {
+            self.downloads_show_library = true;
+            self.reload_local_models();
+            return;
+        }
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.download_idx == 0 {
@@ -34,7 +43,7 @@ impl App {
             }
             KeyCode::PageUp => self.scroll_downloads_log(true, true),
             KeyCode::PageDown => self.scroll_downloads_log(false, true),
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Enter | KeyCode::Right => {
                 let Some(task) = self.downloads.get(self.download_idx) else {
                     return;
                 };
@@ -57,6 +66,7 @@ impl App {
                 }
             }
             KeyCode::Char('r') => self.retry_selected_download(),
+            KeyCode::Char('v') => self.downloads_show_error_log = !self.downloads_show_error_log,
             KeyCode::Char('o') => self.reveal_selected_download(),
             KeyCode::Backspace | KeyCode::Delete => self.remove_selected_if_done(),
             KeyCode::Char('d') => self.clear_finished_downloads(),
@@ -151,6 +161,10 @@ impl App {
     }
 
     pub(crate) fn draw_downloads(&self, frame: &mut Frame, area: Rect) {
+        if self.downloads_show_library {
+            self.draw_local_library(frame, area);
+            return;
+        }
         let selected_ready = self
             .downloads
             .get(self.download_idx)
@@ -199,17 +213,7 @@ impl App {
             let right =
                 Layout::vertical([Constraint::Length(7), Constraint::Min(3)]).split(panels[1]);
             self.draw_download_details(frame, right[0]);
-            widgets::draw_log(
-                frame,
-                right[1],
-                self.downloads
-                    .get(self.download_idx)
-                    .and_then(|task| task.job.as_ref())
-                    .map(|job| job.log.as_slice()),
-                " Log ",
-                self.downloads_log_scroll,
-                &self.log_rect,
-            );
+            self.draw_download_log_or_error(frame, right[1]);
         } else {
             let panels =
                 Layout::horizontal([Constraint::Percentage(48), Constraint::Percentage(52)])
@@ -218,21 +222,41 @@ impl App {
             let right =
                 Layout::vertical([Constraint::Length(7), Constraint::Min(3)]).split(panels[1]);
             self.draw_download_details(frame, right[0]);
-            widgets::draw_log(
-                frame,
-                right[1],
-                self.downloads
-                    .get(self.download_idx)
-                    .and_then(|task| task.job.as_ref())
-                    .map(|job| job.log.as_slice()),
-                " Log ",
-                self.downloads_log_scroll,
-                &self.log_rect,
-            );
+            self.draw_download_log_or_error(frame, right[1]);
         }
     }
 
+    fn draw_download_log_or_error(&self, frame: &mut Frame, area: Rect) {
+        let task = self.downloads.get(self.download_idx);
+        if !self.downloads_show_error_log
+            && let Some(error) = task.and_then(|task| task.failure_summary())
+        {
+            let lines = vec![
+                Line::from(Span::styled(error, theme::danger())),
+                Line::raw(""),
+                Line::from("r retry · v full log · d clear finished"),
+            ];
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .block(widgets::soft_block(" Download failed · v full log ")),
+                area,
+            );
+            return;
+        }
+        widgets::draw_log(
+            frame,
+            area,
+            task.and_then(|task| task.job.as_ref())
+                .map(|job| job.log.as_slice()),
+            " Log · v error summary ",
+            self.downloads_log_scroll,
+            &self.log_rect,
+        );
+    }
+
     fn draw_download_queue(&self, frame: &mut Frame, area: Rect) {
+        let name_width = area.width.saturating_sub(30).max(8) as usize;
         let rows: Vec<ListItem> = if self.downloads.is_empty() {
             vec![
                 ListItem::new(Line::raw("")),
@@ -294,13 +318,12 @@ impl App {
                         Span::styled(format!("{:<7}", task.status_label()), status_style),
                         Span::raw(format!("{spin}{pct} ")),
                         Span::styled(
-                            widgets::ellipsis(&task.label, 18),
+                            widgets::ellipsis(&task.label, name_width),
                             Style::default()
                                 .fg(theme::colors().text)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("{:<4}", "hub"), theme::body_dim()),
-                        Span::styled(dest_short, theme::label()),
+                        Span::styled(format!("  {dest_short}"), theme::label()),
                     ]))
                 })
                 .collect()
