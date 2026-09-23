@@ -618,6 +618,10 @@ struct FlashNextMtpTelemetry {
     accepted_steps: u32,
     /// Decode steps served direct while the candidate was requested.
     direct_fallback_steps: u32,
+    /// `direct_fallback_steps` split by the block or error reason that forced
+    /// direct decode, indexed by `FlashNextMtpFallbackReason::index`. Summing
+    /// the slots always equals `direct_fallback_steps`.
+    direct_fallback_by_reason: [u32; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
     /// Cursor steps that returned an error before publishing any state.
     step_errors: u32,
     /// Batched length-2 correction forward time across verified steps.
@@ -644,6 +648,7 @@ impl Default for FlashNextMtpTelemetry {
             verified_steps: 0,
             accepted_steps: 0,
             direct_fallback_steps: 0,
+            direct_fallback_by_reason: [0; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
             step_errors: 0,
             correction_wall_us: 0,
             bonus_wall_us: 0,
@@ -672,6 +677,13 @@ impl FlashNextMtpTelemetry {
         self.direct_fallback_steps = self
             .direct_fallback_steps
             .saturating_add(other.direct_fallback_steps);
+        for (slot, other_slot) in self
+            .direct_fallback_by_reason
+            .iter_mut()
+            .zip(other.direct_fallback_by_reason)
+        {
+            *slot = slot.saturating_add(other_slot);
+        }
         self.step_errors = self.step_errors.saturating_add(other.step_errors);
         self.correction_wall_us = self
             .correction_wall_us
@@ -728,6 +740,78 @@ impl FlashNextMtpTelemetry {
             ),
         ] {
             decisions.upsert_route_decision(key, value);
+        }
+        for reason in FlashNextMtpFallbackReason::ALL {
+            decisions.upsert_route_decision(
+                reason.route_key(),
+                self.direct_fallback_by_reason[reason.index()],
+            );
+        }
+    }
+}
+
+/// Which block or error condition forced a Flash Next decode step to run
+/// direct while the cursor candidate was requested. One counter per reason so
+/// `/metrics` attributes the fallback instead of reporting a single total.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FlashNextMtpFallbackReason {
+    /// Sampling, repetition processors, or a missing request context.
+    NotStrictGreedy,
+    /// Think soft-close probing or a due budget close.
+    ThinkControl,
+    /// A lazy direct-pipeline token already occupies the next position.
+    PendingDirect,
+    /// No output budget remains for this step.
+    NoBudget,
+    /// No cursor, or its history does not end at the trunk boundary.
+    CursorUnavailable,
+    /// Admission passed but a trunk, head or cursor component was absent.
+    ComponentsUnavailable,
+    /// The cursor step returned an error before publishing state.
+    StepError,
+}
+
+const FLASH_NEXT_MTP_FALLBACK_REASON_COUNT: usize = 7;
+
+impl FlashNextMtpFallbackReason {
+    const ALL: [Self; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT] = [
+        Self::NotStrictGreedy,
+        Self::ThinkControl,
+        Self::PendingDirect,
+        Self::NoBudget,
+        Self::CursorUnavailable,
+        Self::ComponentsUnavailable,
+        Self::StepError,
+    ];
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Route key consumed by the server's per-step route-decision accumulation.
+    const fn route_key(self) -> &'static str {
+        match self {
+            Self::NotStrictGreedy => "ax_mlx_flash_next_mtp_direct_fallback_not_strict_greedy",
+            Self::ThinkControl => "ax_mlx_flash_next_mtp_direct_fallback_think_control",
+            Self::PendingDirect => "ax_mlx_flash_next_mtp_direct_fallback_pending_direct",
+            Self::NoBudget => "ax_mlx_flash_next_mtp_direct_fallback_no_budget",
+            Self::CursorUnavailable => "ax_mlx_flash_next_mtp_direct_fallback_cursor_unavailable",
+            Self::ComponentsUnavailable => {
+                "ax_mlx_flash_next_mtp_direct_fallback_components_unavailable"
+            }
+            Self::StepError => "ax_mlx_flash_next_mtp_direct_fallback_step_error",
+        }
+    }
+}
+
+impl From<FlashNextMtpDecodeBlock> for FlashNextMtpFallbackReason {
+    fn from(block: FlashNextMtpDecodeBlock) -> Self {
+        match block {
+            FlashNextMtpDecodeBlock::NotStrictGreedy => Self::NotStrictGreedy,
+            FlashNextMtpDecodeBlock::ThinkControl => Self::ThinkControl,
+            FlashNextMtpDecodeBlock::PendingDirect => Self::PendingDirect,
+            FlashNextMtpDecodeBlock::NoBudget => Self::NoBudget,
+            FlashNextMtpDecodeBlock::CursorUnavailable => Self::CursorUnavailable,
         }
     }
 }
@@ -8823,7 +8907,12 @@ impl MlxRunner {
                 trunk_state_present = state.cache.qwen4_exp.is_some(),
                 "Flash Next MTP decode step blocked; falling back to direct decode"
             );
-            self.record_flash_next_mtp_direct_fallback(state);
+            self.record_flash_next_mtp_direct_fallback(
+                state,
+                block
+                    .map(FlashNextMtpFallbackReason::from)
+                    .unwrap_or(FlashNextMtpFallbackReason::ComponentsUnavailable),
+            );
             return None;
         };
 
@@ -8846,7 +8935,10 @@ impl MlxRunner {
                 );
                 let telemetry = &mut state.flash_next_mtp.telemetry;
                 telemetry.step_errors = telemetry.step_errors.saturating_add(1);
-                self.record_flash_next_mtp_direct_fallback(state);
+                self.record_flash_next_mtp_direct_fallback(
+                    state,
+                    FlashNextMtpFallbackReason::StepError,
+                );
                 return None;
             }
         };
@@ -8922,11 +9014,17 @@ impl MlxRunner {
         ))
     }
 
-    fn record_flash_next_mtp_direct_fallback(&self, state: &mut RequestState) {
+    fn record_flash_next_mtp_direct_fallback(
+        &self,
+        state: &mut RequestState,
+        reason: FlashNextMtpFallbackReason,
+    ) {
         state.mtp_telemetry.record_direct_fallback();
         state.flash_next_mtp.drop_cursor();
         let telemetry = &mut state.flash_next_mtp.telemetry;
         telemetry.direct_fallback_steps = telemetry.direct_fallback_steps.saturating_add(1);
+        let slot = &mut telemetry.direct_fallback_by_reason[reason.index()];
+        *slot = slot.saturating_add(1);
     }
 
     /// Decode one deterministic token on the direct double-buffer pipeline.
