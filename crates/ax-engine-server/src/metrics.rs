@@ -343,6 +343,15 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         }
         append_step_metric(
             &mut body,
+            "ax_engine_flash_next_mtp_attach_failed_total",
+            "Flash Next MTP steps observed while the candidate's draft head had failed to attach across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_attach_failed_total,
+            |step| step.flash_next_mtp_attach_failed_total,
+        );
+        append_step_metric(
+            &mut body,
             "ax_engine_flash_next_mtp_cursor_initialized_total",
             "Flash Next MTP cold prefills that created a draft cursor across observed engine steps (unlabeled: summed across loaded models).",
             "counter",

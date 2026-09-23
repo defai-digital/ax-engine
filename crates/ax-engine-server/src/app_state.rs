@@ -737,6 +737,11 @@ struct EngineStepStats {
     /// Flash-Next-specific MTP speculative-decoding counters accumulated from
     /// per-step route telemetry (ax_mlx_flash_next_mtp_* decisions). Zero for
     /// non-Flash-Next models.
+    /// Steps observed while the Flash Next candidate's MTP head had failed to
+    /// attach. Distinguishes "the head never attached" from "attached but every
+    /// step blocked" when MTP is requested and nothing verifies.
+    flash_next_mtp_attach_failed_total: u64,
+    flash_next_mtp_attach_failed_last: u64,
     flash_next_mtp_cursor_initialized_total: u64,
     flash_next_mtp_cursor_initialized_last: u64,
     flash_next_mtp_cursor_restored_total: u64,
@@ -816,6 +821,7 @@ impl EngineStepStats {
             mtp_draft_tokens_total: self.mtp_draft_tokens_total,
             mtp_accepted_tokens_total: self.mtp_accepted_tokens_total,
             mtp_direct_fallback_steps_total: self.mtp_direct_fallback_steps_total,
+            flash_next_mtp_attach_failed_total: self.flash_next_mtp_attach_failed_total,
             flash_next_mtp_cursor_initialized_total: self.flash_next_mtp_cursor_initialized_total,
             flash_next_mtp_cursor_restored_total: self.flash_next_mtp_cursor_restored_total,
             flash_next_mtp_resumed_without_cursor_total: self
@@ -884,6 +890,7 @@ pub(crate) struct EngineStepGauges {
     pub(crate) mtp_draft_tokens_total: u64,
     pub(crate) mtp_accepted_tokens_total: u64,
     pub(crate) mtp_direct_fallback_steps_total: u64,
+    pub(crate) flash_next_mtp_attach_failed_total: u64,
     pub(crate) flash_next_mtp_cursor_initialized_total: u64,
     pub(crate) flash_next_mtp_cursor_restored_total: u64,
     pub(crate) flash_next_mtp_resumed_without_cursor_total: u64,
@@ -1104,6 +1111,11 @@ impl ServerMetrics {
                     &mut entry.mtp_direct_fallback_steps_total,
                     &mut entry.mtp_direct_fallback_steps_last,
                     "ax_mtp_direct_fallback_steps",
+                ),
+                (
+                    &mut entry.flash_next_mtp_attach_failed_total,
+                    &mut entry.flash_next_mtp_attach_failed_last,
+                    "ax_mlx_flash_next_mtp_attach_failed",
                 ),
                 (
                     &mut entry.flash_next_mtp_cursor_initialized_total,
@@ -1346,6 +1358,9 @@ impl ServerMetrics {
         process.mtp_direct_fallback_steps_total = process
             .mtp_direct_fallback_steps_total
             .saturating_add(entry.mtp_direct_fallback_steps_total);
+        process.flash_next_mtp_attach_failed_total = process
+            .flash_next_mtp_attach_failed_total
+            .saturating_add(entry.flash_next_mtp_attach_failed_total);
         process.flash_next_mtp_cursor_initialized_total = process
             .flash_next_mtp_cursor_initialized_total
             .saturating_add(entry.flash_next_mtp_cursor_initialized_total);
