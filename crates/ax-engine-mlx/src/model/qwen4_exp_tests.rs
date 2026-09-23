@@ -7,7 +7,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crate::model::LinearAttentionConfig;
-use crate::model::shared::qwen4_exp_gdn::{Qwen4ExpGdn, Qwen4ExpGdnState, Qwen4ExpGdnWeights};
+use crate::model::shared::qwen4_exp_gdn::{
+    GdnGateActivation, Qwen4ExpGdn, Qwen4ExpGdnState, Qwen4ExpGdnWeights,
+};
 use crate::model::shared::qwen4_exp_moe::{
     Qwen4ExpExpertWeights, Qwen4ExpMoe, Qwen4ExpMoeWeights, Qwen4ExpResidentExperts,
 };
@@ -146,6 +148,7 @@ fn gdn() -> Qwen4ExpGdn {
         config,
         HIDDEN as usize,
         1e-6,
+        GdnGateActivation::Sigmoid,
         Qwen4ExpGdnWeights {
             qkv: pack(sparse(12, HIDDEN, 23, 0.5), None),
             gate: pack(sparse(4, HIDDEN, 29, 0.5), None),

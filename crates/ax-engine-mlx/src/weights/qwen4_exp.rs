@@ -31,7 +31,7 @@ use crate::model::LinearAttentionConfig;
 use crate::model::shared::qwen4_exp_attention::{
     Qwen4ExpAttention, Qwen4ExpAttentionConfig, Qwen4ExpAttentionWeights,
 };
-use crate::model::shared::qwen4_exp_gdn::{Qwen4ExpGdn, Qwen4ExpGdnWeights};
+use crate::model::shared::qwen4_exp_gdn::{GdnGateActivation, Qwen4ExpGdn, Qwen4ExpGdnWeights};
 use crate::model::shared::qwen4_exp_moe::{
     Qwen4ExpExpertWeights, Qwen4ExpMoe, Qwen4ExpMoeWeights, Qwen4ExpResidentExperts,
 };
@@ -231,6 +231,8 @@ fn load_with_schedule_admission(
     )?;
 
     let cfg = &manifest.qwen4_exp;
+    let gate_activation = GdnGateActivation::from_name(cfg.output_gate_type.as_deref())
+        .map_err(WeightLoadError::InvalidLayer)?;
     let hc_count = as_usize(require_u32(cfg.hc_count, "hc_count")?, "hc_count")?;
     let hc_lowrank = as_usize(require_u32(cfg.hc_lowrank, "hc_lowrank")?, "hc_lowrank")?;
     let layout = Qwen4ExpStreamLayout::new(hc_count, hidden)
@@ -426,6 +428,7 @@ fn load_with_schedule_admission(
                 hidden,
                 la_config.clone(),
                 rms_eps,
+                gate_activation,
             )?),
             Qwen4ExpLayerKind::Attention => Qwen4ExpAttentionBranch::Qsa(build_qsa_attention(
                 specs,
@@ -1314,6 +1317,7 @@ fn build_gdn(
     hidden: usize,
     config: LinearAttentionConfig,
     eps: f32,
+    activation: GdnGateActivation,
 ) -> Result<Qwen4ExpGdn, WeightLoadError> {
     let qkv = take_weight(
         specs,
@@ -1382,6 +1386,7 @@ fn build_gdn(
         config,
         hidden,
         eps,
+        activation,
         Qwen4ExpGdnWeights {
             qkv,
             gate,

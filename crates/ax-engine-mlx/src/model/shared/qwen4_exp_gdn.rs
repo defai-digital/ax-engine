@@ -36,10 +36,48 @@ pub(crate) struct Qwen4ExpGdnState {
     pub recurrent: MlxArray,
 }
 
+/// Gated-RMSNorm output activation, selected by the manifest `output_gate_type`.
+///
+/// The reference resolves this from `output_gate_type or hidden_act` and
+/// defaults to silu when neither is set. The manifest does not carry a general
+/// `hidden_act`, so an absent `output_gate_type` falls back to silu here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GdnGateActivation {
+    Sigmoid,
+    Silu,
+}
+
+impl GdnGateActivation {
+    /// Map a manifest `output_gate_type` string to an activation. Absent or
+    /// `"silu"` selects silu; `"sigmoid"` selects sigmoid; any other value
+    /// fails closed so a future variant cannot silently gate with the wrong
+    /// output.
+    pub(crate) fn from_name(name: Option<&str>) -> Result<Self, String> {
+        match name {
+            None | Some("silu") => Ok(Self::Silu),
+            Some("sigmoid") => Ok(Self::Sigmoid),
+            Some(other) => Err(format!(
+                "qwen4_exp output_gate_type must be \"sigmoid\" or \"silu\", got {other:?}"
+            )),
+        }
+    }
+
+    /// Apply the activation in the same FP32 accumulate-then-cast pattern the
+    /// gated-RMSNorm already uses, matching the reference `ACT2FN`.
+    fn apply(&self, gate: &MlxArray) -> MlxArray {
+        let gate = astype(gate, MlxDtype::Float32, None);
+        match self {
+            Self::Sigmoid => sigmoid(&gate, None),
+            Self::Silu => multiply(&gate, &sigmoid(&gate, None), None),
+        }
+    }
+}
+
 pub(crate) struct Qwen4ExpGdn {
     config: LinearAttentionConfig,
     hidden: i32,
     eps: f32,
+    activation: GdnGateActivation,
     weights: Qwen4ExpGdnWeights,
 }
 
@@ -97,6 +135,7 @@ impl Qwen4ExpGdn {
         config: LinearAttentionConfig,
         hidden: usize,
         eps: f32,
+        activation: GdnGateActivation,
         weights: Qwen4ExpGdnWeights,
     ) -> Result<Self, String> {
         let dimensions = [
@@ -158,6 +197,7 @@ impl Qwen4ExpGdn {
             config,
             hidden,
             eps,
+            activation,
             weights,
         })
     }
@@ -356,7 +396,7 @@ impl Qwen4ExpGdn {
         );
         let gated = multiply(
             &astype(&normed, MlxDtype::Float32, None),
-            &sigmoid(&astype(&gate, MlxDtype::Float32, None), None),
+            &self.activation.apply(&gate),
             None,
         );
         let gated = astype(
@@ -415,7 +455,7 @@ mod tests {
         )
     }
 
-    fn oracle() -> (Value, Qwen4ExpGdn) {
+    fn oracle(activation: GdnGateActivation) -> (Value, Qwen4ExpGdn) {
         let fixture: Value =
             serde_json::from_str(include_str!("../../../tests/fixtures/flash_next/gdn.json"))
                 .unwrap();
@@ -446,7 +486,7 @@ mod tests {
         };
         (
             fixture,
-            Qwen4ExpGdn::new(config, 16, 1e-6, weights).unwrap(),
+            Qwen4ExpGdn::new(config, 16, 1e-6, activation, weights).unwrap(),
         )
     }
 
@@ -594,7 +634,7 @@ mod tests {
 
     #[test]
     fn verifier_projection_preserves_dense_and_affine_policy() {
-        let (_, module) = oracle();
+        let (_, module) = oracle(GdnGateActivation::Sigmoid);
         let dense = QuantizedWeight::new(
             concatenate(
                 &[&module.weights.qkv.weight, &module.weights.qkv.weight],
@@ -719,7 +759,7 @@ mod tests {
 
     #[test]
     fn gdn_output_and_state_match_pinned_transformers() {
-        let (f, module) = oracle();
+        let (f, module) = oracle(GdnGateActivation::Sigmoid);
         let input = array(&f["input"], &[1, 7, 16]);
         let (output, state) = module
             .forward(
@@ -753,8 +793,69 @@ mod tests {
     }
 
     #[test]
+    fn gate_activation_matches_reference_math() {
+        let gate = array(&serde_json::json!([2.0]), &[1]);
+        let sig = contiguous(&GdnGateActivation::Sigmoid.apply(&gate), None);
+        let silu = contiguous(&GdnGateActivation::Silu.apply(&gate), None);
+        eval(&[&sig, &silu]);
+        assert!((sig.data_f32()[0] - 0.880_797).abs() < 1e-6);
+        assert!((silu.data_f32()[0] - 1.761_594).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gate_activation_from_name_resolves_and_rejects() {
+        assert_eq!(
+            GdnGateActivation::from_name(None),
+            Ok(GdnGateActivation::Silu)
+        );
+        assert_eq!(
+            GdnGateActivation::from_name(Some("silu")),
+            Ok(GdnGateActivation::Silu)
+        );
+        assert_eq!(
+            GdnGateActivation::from_name(Some("sigmoid")),
+            Ok(GdnGateActivation::Sigmoid)
+        );
+        assert!(GdnGateActivation::from_name(Some("gelu")).is_err());
+        assert!(GdnGateActivation::from_name(Some("")).is_err());
+    }
+
+    #[test]
+    fn gdn_silu_gate_differs_from_sigmoid_gate() {
+        let (f, sigmoid_module) = oracle(GdnGateActivation::Sigmoid);
+        let (_, silu_module) = oracle(GdnGateActivation::Silu);
+        let input = array(&f["input"], &[1, 7, 16]);
+        let forward = |module: &Qwen4ExpGdn| {
+            module
+                .forward(
+                    &input,
+                    None,
+                    ProjectionBatchPolicy::Shared,
+                    ProjectionBatchPolicy::Shared,
+                )
+                .unwrap()
+                .0
+        };
+        let sigmoid_output = contiguous(
+            &astype(&forward(&sigmoid_module), MlxDtype::Float32, None),
+            None,
+        );
+        let silu_output = contiguous(
+            &astype(&forward(&silu_module), MlxDtype::Float32, None),
+            None,
+        );
+        eval(&[&sigmoid_output, &silu_output]);
+        let differs = sigmoid_output
+            .data_f32()
+            .iter()
+            .zip(silu_output.data_f32())
+            .any(|(a, b)| (a - b).abs() > 2e-6);
+        assert!(differs, "silu gate must differ from sigmoid gate");
+    }
+
+    #[test]
     fn gdn_chunk_boundaries_forks_and_rejected_calls_preserve_state() {
-        let (f, module) = oracle();
+        let (f, module) = oracle(GdnGateActivation::Sigmoid);
         let input = array(&f["input"], &[1, 7, 16]);
         let (whole, final_state) = module
             .forward(
