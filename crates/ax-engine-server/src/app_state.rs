@@ -721,6 +721,23 @@ struct EngineStepStats {
     mtp_accepted_tokens_last: u64,
     mtp_direct_fallback_steps_total: u64,
     mtp_direct_fallback_steps_last: u64,
+    /// Flash-Next-specific MTP speculative-decoding counters accumulated from
+    /// per-step route telemetry (ax_mlx_flash_next_mtp_* decisions). Zero for
+    /// non-Flash-Next models.
+    flash_next_mtp_cursor_initialized_total: u64,
+    flash_next_mtp_cursor_initialized_last: u64,
+    flash_next_mtp_resumed_without_cursor_total: u64,
+    flash_next_mtp_resumed_without_cursor_last: u64,
+    flash_next_mtp_prefill_absorb_failures_total: u64,
+    flash_next_mtp_prefill_absorb_failures_last: u64,
+    flash_next_mtp_cursor_dropped_total: u64,
+    flash_next_mtp_cursor_dropped_last: u64,
+    flash_next_mtp_verified_steps_total: u64,
+    flash_next_mtp_verified_steps_last: u64,
+    flash_next_mtp_accepted_steps_total: u64,
+    flash_next_mtp_accepted_steps_last: u64,
+    flash_next_mtp_step_errors_total: u64,
+    flash_next_mtp_step_errors_last: u64,
     /// Latest cascade-corrected MTP-only acceptance EWMA (x1000). This is the
     /// rate the low-acceptance bypass watches; expose it so operators can see
     /// speculation paying for itself (or not) without bench tooling.
@@ -780,6 +797,15 @@ impl EngineStepStats {
             mtp_draft_tokens_total: self.mtp_draft_tokens_total,
             mtp_accepted_tokens_total: self.mtp_accepted_tokens_total,
             mtp_direct_fallback_steps_total: self.mtp_direct_fallback_steps_total,
+            flash_next_mtp_cursor_initialized_total: self.flash_next_mtp_cursor_initialized_total,
+            flash_next_mtp_resumed_without_cursor_total: self
+                .flash_next_mtp_resumed_without_cursor_total,
+            flash_next_mtp_prefill_absorb_failures_total: self
+                .flash_next_mtp_prefill_absorb_failures_total,
+            flash_next_mtp_cursor_dropped_total: self.flash_next_mtp_cursor_dropped_total,
+            flash_next_mtp_verified_steps_total: self.flash_next_mtp_verified_steps_total,
+            flash_next_mtp_accepted_steps_total: self.flash_next_mtp_accepted_steps_total,
+            flash_next_mtp_step_errors_total: self.flash_next_mtp_step_errors_total,
             mtp_accept_rate_ewma_x1000: self.mtp_accept_rate_ewma_x1000,
             mlx_flash_next_selected_expert_gathers_total: self
                 .mlx_flash_next_selected_expert_gathers_total,
@@ -837,6 +863,13 @@ pub(crate) struct EngineStepGauges {
     pub(crate) mtp_draft_tokens_total: u64,
     pub(crate) mtp_accepted_tokens_total: u64,
     pub(crate) mtp_direct_fallback_steps_total: u64,
+    pub(crate) flash_next_mtp_cursor_initialized_total: u64,
+    pub(crate) flash_next_mtp_resumed_without_cursor_total: u64,
+    pub(crate) flash_next_mtp_prefill_absorb_failures_total: u64,
+    pub(crate) flash_next_mtp_cursor_dropped_total: u64,
+    pub(crate) flash_next_mtp_verified_steps_total: u64,
+    pub(crate) flash_next_mtp_accepted_steps_total: u64,
+    pub(crate) flash_next_mtp_step_errors_total: u64,
     pub(crate) mtp_accept_rate_ewma_x1000: u64,
     pub(crate) mlx_flash_next_selected_expert_gathers_total: u64,
     pub(crate) mlx_flash_next_selected_expert_payload_kib_total: u64,
@@ -1049,6 +1082,41 @@ impl ServerMetrics {
                     &mut entry.mtp_direct_fallback_steps_last,
                     "ax_mtp_direct_fallback_steps",
                 ),
+                (
+                    &mut entry.flash_next_mtp_cursor_initialized_total,
+                    &mut entry.flash_next_mtp_cursor_initialized_last,
+                    "ax_mlx_flash_next_mtp_cursor_initialized",
+                ),
+                (
+                    &mut entry.flash_next_mtp_resumed_without_cursor_total,
+                    &mut entry.flash_next_mtp_resumed_without_cursor_last,
+                    "ax_mlx_flash_next_mtp_resumed_without_cursor",
+                ),
+                (
+                    &mut entry.flash_next_mtp_prefill_absorb_failures_total,
+                    &mut entry.flash_next_mtp_prefill_absorb_failures_last,
+                    "ax_mlx_flash_next_mtp_prefill_absorb_failures",
+                ),
+                (
+                    &mut entry.flash_next_mtp_cursor_dropped_total,
+                    &mut entry.flash_next_mtp_cursor_dropped_last,
+                    "ax_mlx_flash_next_mtp_cursor_dropped",
+                ),
+                (
+                    &mut entry.flash_next_mtp_verified_steps_total,
+                    &mut entry.flash_next_mtp_verified_steps_last,
+                    "ax_mlx_flash_next_mtp_verified_steps",
+                ),
+                (
+                    &mut entry.flash_next_mtp_accepted_steps_total,
+                    &mut entry.flash_next_mtp_accepted_steps_last,
+                    "ax_mlx_flash_next_mtp_accepted_steps",
+                ),
+                (
+                    &mut entry.flash_next_mtp_step_errors_total,
+                    &mut entry.flash_next_mtp_step_errors_last,
+                    "ax_mlx_flash_next_mtp_step_errors",
+                ),
             ] {
                 if let Some(observed) = route.decision(key) {
                     accumulate_cumulative_route_counter(total, last, u64::from(observed));
@@ -1241,6 +1309,27 @@ impl ServerMetrics {
         process.mtp_direct_fallback_steps_total = process
             .mtp_direct_fallback_steps_total
             .saturating_add(entry.mtp_direct_fallback_steps_total);
+        process.flash_next_mtp_cursor_initialized_total = process
+            .flash_next_mtp_cursor_initialized_total
+            .saturating_add(entry.flash_next_mtp_cursor_initialized_total);
+        process.flash_next_mtp_resumed_without_cursor_total = process
+            .flash_next_mtp_resumed_without_cursor_total
+            .saturating_add(entry.flash_next_mtp_resumed_without_cursor_total);
+        process.flash_next_mtp_prefill_absorb_failures_total = process
+            .flash_next_mtp_prefill_absorb_failures_total
+            .saturating_add(entry.flash_next_mtp_prefill_absorb_failures_total);
+        process.flash_next_mtp_cursor_dropped_total = process
+            .flash_next_mtp_cursor_dropped_total
+            .saturating_add(entry.flash_next_mtp_cursor_dropped_total);
+        process.flash_next_mtp_verified_steps_total = process
+            .flash_next_mtp_verified_steps_total
+            .saturating_add(entry.flash_next_mtp_verified_steps_total);
+        process.flash_next_mtp_accepted_steps_total = process
+            .flash_next_mtp_accepted_steps_total
+            .saturating_add(entry.flash_next_mtp_accepted_steps_total);
+        process.flash_next_mtp_step_errors_total = process
+            .flash_next_mtp_step_errors_total
+            .saturating_add(entry.flash_next_mtp_step_errors_total);
         process.mlx_flash_next_selected_expert_gathers_total = process
             .mlx_flash_next_selected_expert_gathers_total
             .saturating_add(entry.mlx_flash_next_selected_expert_gathers_total);

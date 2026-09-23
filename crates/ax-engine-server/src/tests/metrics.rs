@@ -88,6 +88,19 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
                     ("ax_mtp_draft_tokens".to_string(), 7),
                     ("ax_mtp_accepted_tokens".to_string(), 5),
                     ("ax_mtp_direct_fallback_steps".to_string(), 1),
+                    ("ax_mlx_flash_next_mtp_cursor_initialized".to_string(), 2),
+                    (
+                        "ax_mlx_flash_next_mtp_resumed_without_cursor".to_string(),
+                        1,
+                    ),
+                    (
+                        "ax_mlx_flash_next_mtp_prefill_absorb_failures".to_string(),
+                        3,
+                    ),
+                    ("ax_mlx_flash_next_mtp_cursor_dropped".to_string(), 1),
+                    ("ax_mlx_flash_next_mtp_verified_steps".to_string(), 9),
+                    ("ax_mlx_flash_next_mtp_accepted_steps".to_string(), 6),
+                    ("ax_mlx_flash_next_mtp_step_errors".to_string(), 2),
                     ("ax_mtp_mtp_only_accept_rate_ewma_x1000".to_string(), 714),
                     ("ax_mlx_prefix_cache_hits".to_string(), 1),
                     ("ax_mlx_prefix_cache_misses".to_string(), 2),
@@ -132,6 +145,14 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_mtp_draft_tokens_total 7\n"));
     assert!(body.contains("ax_engine_mtp_accepted_tokens_total 5\n"));
     assert!(body.contains("ax_engine_mtp_direct_fallback_steps_total 1\n"));
+    // Flash-Next-specific MTP route counters accumulate the same way.
+    assert!(body.contains("ax_engine_flash_next_mtp_cursor_initialized_total 2\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_resumed_without_cursor_total 1\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_prefill_absorb_failures_total 3\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_cursor_dropped_total 1\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_verified_steps_total 9\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_accepted_steps_total 6\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_step_errors_total 2\n"));
     // A rate has no meaningful cross-model sum: only the labeled series exists.
     assert!(body.contains("ax_engine_mtp_accept_rate_ewma_x1000{model=\"qwen3\"} 714\n"));
     assert!(!body.contains("ax_engine_mtp_accept_rate_ewma_x1000 714\n"));
@@ -255,6 +276,9 @@ async fn metrics_mtp_counters_do_not_sum_cumulative_snapshots() {
                 ("ax_mtp_draft_tokens".to_string(), drafted),
                 ("ax_mtp_accepted_tokens".to_string(), accepted),
                 ("ax_mtp_direct_fallback_steps".to_string(), fallback),
+                ("ax_mlx_flash_next_mtp_verified_steps".to_string(), 12),
+                ("ax_mlx_flash_next_mtp_accepted_steps".to_string(), 8),
+                ("ax_mlx_flash_next_mtp_cursor_dropped".to_string(), 2),
             ]),
             ..Default::default()
         }),
@@ -291,6 +315,14 @@ async fn metrics_mtp_counters_do_not_sum_cumulative_snapshots() {
         body.contains("ax_engine_mtp_direct_fallback_steps_total 1\n"),
         "a re-emitted fallback snapshot of 1 must not grow the counter: {body}"
     );
+    // Flash-Next MTP counters are cumulative per-request snapshots too: the
+    // same running values re-emitted on every step must not be re-summed.
+    assert!(body.contains("ax_engine_flash_next_mtp_verified_steps_total 12\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_accepted_steps_total 8\n"));
+    assert!(
+        body.contains("ax_engine_flash_next_mtp_cursor_dropped_total 2\n"),
+        "a re-emitted flash-next cursor-drop snapshot must not grow the counter: {body}"
+    );
 
     metrics.record_step_report("qwen3", &report(200, 150, 1));
     let (_, _, body) = text_response(
@@ -308,6 +340,9 @@ async fn metrics_mtp_counters_do_not_sum_cumulative_snapshots() {
     );
     assert!(body.contains("ax_engine_mtp_accepted_tokens_total 150\n"));
     assert!(body.contains("ax_engine_mtp_direct_fallback_steps_total 1\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_verified_steps_total 12\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_accepted_steps_total 8\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_cursor_dropped_total 2\n"));
 }
 
 /// Node-saturation series follow the AX Serving fleet-dispatch contract:

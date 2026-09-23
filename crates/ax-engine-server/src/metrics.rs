@@ -315,6 +315,69 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             process.mtp_direct_fallback_steps_total,
             |step| step.mtp_direct_fallback_steps_total,
         );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_cursor_initialized_total",
+            "Flash Next MTP cold prefills that created a draft cursor across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_cursor_initialized_total,
+            |step| step.flash_next_mtp_cursor_initialized_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_resumed_without_cursor_total",
+            "Flash Next MTP prefill quanta that resumed a cached prefix without a draft cursor across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_resumed_without_cursor_total,
+            |step| step.flash_next_mtp_resumed_without_cursor_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_prefill_absorb_failures_total",
+            "Flash Next MTP prefill quanta whose draft cursor was discarded by an absorb failure across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_prefill_absorb_failures_total,
+            |step| step.flash_next_mtp_prefill_absorb_failures_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_cursor_dropped_total",
+            "Flash Next MTP draft cursors dropped by fallback, misalignment, or step errors across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_cursor_dropped_total,
+            |step| step.flash_next_mtp_cursor_dropped_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_verified_steps_total",
+            "Flash Next MTP draft steps that completed verification across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_verified_steps_total,
+            |step| step.flash_next_mtp_verified_steps_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_accepted_steps_total",
+            "Flash Next MTP verified steps whose draft token was accepted across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_accepted_steps_total,
+            |step| step.flash_next_mtp_accepted_steps_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_step_errors_total",
+            "Flash Next MTP cursor steps that failed with an error before publishing state across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_step_errors_total,
+            |step| step.flash_next_mtp_step_errors_total,
+        );
         if emit_gauges {
             append_step_metric_per_model(
                 &mut body,
