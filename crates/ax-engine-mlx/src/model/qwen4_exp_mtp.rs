@@ -295,6 +295,16 @@ pub(crate) struct VerifiedStep {
     pub verification_logits: Option<MlxArray>,
     pub committed: Vec<u32>,
     pub accepted: bool,
+    /// Row-0 (post-`primary`) logits and hidden, always. On the canonical
+    /// schedule and on both rejection paths, `.state` is genuinely the
+    /// checkpoint after committing only `primary`, matching the row-0 view.
+    /// On the **legacy-accepted** path (`output_row(&batched, 0)`, below)
+    /// `.state` is the batched `[primary, draft]` state instead, one token
+    /// ahead of what this field's logits/hidden represent -- callers must
+    /// resume from `.stream_hidden`/`.hidden` (as `advance` already does),
+    /// never from `.state`, when a legacy-accepted step is involved, or the
+    /// cache advances one token too far. See `after_draft.state` for the
+    /// correct post-draft checkpoint on that path.
     pub after_primary: Qwen4ExpOutput,
     pub after_draft: Option<Qwen4ExpOutput>,
     pub next_primary: u32,
@@ -500,6 +510,10 @@ pub(crate) fn verify_one(
             verification_logits: Some(batched.logits.clone()),
             committed: vec![primary, draft],
             accepted: true,
+            // Row-0 view of the batched output: correct logits/hidden, but
+            // `.state` carries the batched [primary, draft] state (one
+            // token ahead of "post-primary") -- see the field doc on
+            // VerifiedStep::after_primary. Never resume from this `.state`.
             after_primary: output_row(&batched, 0)?,
             after_draft: Some(output_row(&batched, 1)?),
             next_primary: bonus,
