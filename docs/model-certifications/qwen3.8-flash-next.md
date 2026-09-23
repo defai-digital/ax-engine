@@ -11,7 +11,18 @@ Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+
 Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. The
 M5 Max 128 GB evidence recorded below remains historical evidence for the
 Auto expert-paging code path; it does not by itself qualify the corrected
-target. Last reviewed: **2026-09-22**.
+target. Last reviewed: **2026-09-23**.
+
+On 2026-09-23 the MXFP4 MTP direct-fallback behaviour was root-caused and
+instrumented. The draft cursor is created only on a genuine cold-start prefill,
+so a request whose prefill reuses a cached prefix decodes direct for its whole
+duration — deterministically, not with the per-step probability an earlier
+throughput note implied; that note is corrected in place. A cursor-restore path
+(Spec A/B) and per-reason MTP `/metrics` telemetry landed as engine
+observability. **No gate closes from any of this.** MTP-S/P-D remain
+`not_assessed`, default admission stays fail-closed, no default-MTP promotion
+happens, and no throughput or acceleration claim is made. Local (non-public)
+detail: `.internal/reports/flash-next-mtp-fallback-review-20260923/`.
 
 "MTP Tier 2 pending" here uses the same three-gate vocabulary as the
 [Qwen 3.8 27B record](qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means):
