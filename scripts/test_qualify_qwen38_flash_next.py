@@ -16,9 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = Path(__file__).with_name("qualify_qwen38_flash_next.py")
-MODULE_SPEC = importlib.util.spec_from_file_location(
-    "qualify_qwen38_flash_next", MODULE_PATH
-)
+MODULE_SPEC = importlib.util.spec_from_file_location("qualify_qwen38_flash_next", MODULE_PATH)
 assert MODULE_SPEC and MODULE_SPEC.loader
 mod = importlib.util.module_from_spec(MODULE_SPEC)
 sys.modules[MODULE_SPEC.name] = mod
@@ -53,13 +51,14 @@ class QualifyFlashNextTest(unittest.TestCase):
             payload["repo_id"],
             "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
         )
-        self.assertEqual(payload["host_class"], "MacBook Pro M5 Max, 128 GB")
+        self.assertEqual(
+            payload["host_class"],
+            "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+",
+        )
         self.assertTrue(payload["fail_closed"])
         self.assertFalse(payload["ready"])
         self.assertIn("MXFP4", payload["load_blocker"])
-        self.assertEqual(
-            payload["experimental_opt_in"], "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1"
-        )
+        self.assertEqual(payload["experimental_opt_in"], "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
         self.assertEqual(payload["experimental_2bit_opt_in"], "AX_ENGINE_2BIT_EXPERIMENTAL=1")
         self.assertEqual(
             payload["existing_affine_expert_layouts"],
@@ -118,9 +117,7 @@ class QualifyFlashNextTest(unittest.TestCase):
                 "ready": False,
                 "blockers": ["qwen4_exp_weight_layout_unknown"],
             }
-            (model_dir / "model-manifest.json").write_text(
-                json.dumps(blocked), encoding="utf-8"
-            )
+            (model_dir / "model-manifest.json").write_text(json.dumps(blocked), encoding="utf-8")
             with self.assertRaises(SystemExit) as raised:
                 mod._live_preflight(model_dir)
             self.assertIn("qwen4_exp_weight_layout_unknown", str(raised.exception))
@@ -131,9 +128,7 @@ class QualifyFlashNextTest(unittest.TestCase):
                 "bits": 4,
                 "group_size": 32,
             }
-            (model_dir / "model-manifest.json").write_text(
-                json.dumps(mxfp4), encoding="utf-8"
-            )
+            (model_dir / "model-manifest.json").write_text(json.dumps(mxfp4), encoding="utf-8")
             with self.assertRaises(SystemExit) as raised:
                 mod._live_preflight(model_dir)
             self.assertIn("MXFP4", str(raised.exception))
@@ -173,9 +168,10 @@ class QualifyFlashNextTest(unittest.TestCase):
                 mod._print_contract(as_json)
             text = out.getvalue()
             if as_json:
-                self.assertEqual(json.loads(text)["mtp_certification"], {
-                    gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")
-                })
+                self.assertEqual(
+                    json.loads(text)["mtp_certification"],
+                    {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")},
+                )
             else:
                 for gate in ("MTP-S", "MTP-P", "MTP-D"):
                     self.assertIn(f"{gate} [not_assessed]", text)
@@ -209,7 +205,9 @@ class QualifyFlashNextTest(unittest.TestCase):
             (root / "config.json").write_text("{}")
             manifest = _product_manifest()
             manifest["tensors"][0]["quantization"] = {
-                "mode": "affine", "bits": 2, "group_size": 32,
+                "mode": "affine",
+                "bits": 2,
+                "group_size": 32,
             }
             (root / "model-manifest.json").write_text(json.dumps(manifest))
             with self.assertRaisesRegex(SystemExit, "both experimental"):

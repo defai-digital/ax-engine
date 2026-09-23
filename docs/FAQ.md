@@ -65,7 +65,7 @@ configurations:
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
 | Mac mini M4 Pro | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| MacBook Pro M5 Max | 128 GB RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. |
+| Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. |
 
 ## What model stack should I run on high-memory Apple Silicon?
 

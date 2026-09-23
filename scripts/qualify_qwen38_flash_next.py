@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 FAMILY = "qwen4_exp"
-HOST_CLASS = "MacBook Pro M5 Max, 128 GB"
+HOST_CLASS = "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+"
 PRIMARY_ALIAS = None
 AFFINE_ALIAS = "qwen3.8-flash-next:axq"
 AFFINE_REPO = "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP"
@@ -114,9 +114,7 @@ def contract() -> dict[str, Any]:
                 "and long-context decode-at-depth; diagnostic arithmetic profiles do not qualify"
             ),
         },
-        "mtp_certification": {
-            gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")
-        },
+        "mtp_certification": {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")},
         "diagnostic_only": [
             "Independent direct/MTP token differences must be disclosed; they alone neither "
             "fail nor establish MTP-S. A near-tie explanation requires measured logits.",
@@ -174,7 +172,9 @@ def _expert_layouts(manifest: dict[str, Any]) -> list[tuple[str, int, int]]:
         bits = quant.get("bits")
         group = quant.get("group_size")
         if type(bits) is not int or type(group) is not int:
-            raise SystemExit(f"expert tensor {tensor.get('name')} has invalid quantization metadata")
+            raise SystemExit(
+                f"expert tensor {tensor.get('name')} has invalid quantization metadata"
+            )
         layout = (quant["mode"], bits, group)
         if layout not in layouts:
             layouts.append(layout)
@@ -197,9 +197,7 @@ def _live_preflight(model_dir: Path) -> None:
     if not isinstance(manifest, dict):
         raise SystemExit("model-manifest.json must be an object")
     if manifest.get("model_family") != FAMILY:
-        raise SystemExit(
-            f"model_family must be {FAMILY}, got {manifest.get('model_family')!r}"
-        )
+        raise SystemExit(f"model_family must be {FAMILY}, got {manifest.get('model_family')!r}")
     status = manifest.get("runtime_status") or {}
     if not isinstance(status, dict):
         raise SystemExit("runtime_status must be an object")
@@ -225,7 +223,9 @@ def _live_preflight(model_dir: Path) -> None:
     layouts = _expert_layouts(manifest)
     if len(layouts) > 1:
         raise SystemExit(f"mixed expert layouts are rejected: {layouts}")
-    allowed = {("affine", item["bits"], item["group_size"]) for item in EXISTING_AFFINE_EXPERT_LAYOUTS}
+    allowed = {
+        ("affine", item["bits"], item["group_size"]) for item in EXISTING_AFFINE_EXPERT_LAYOUTS
+    }
     allowed.update(
         (item["mode"], item["bits"], item["group_size"]) for item in EXPERIMENTAL_EXPERT_LAYOUTS
     )
