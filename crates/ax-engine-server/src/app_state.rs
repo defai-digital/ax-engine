@@ -726,6 +726,8 @@ struct EngineStepStats {
     /// non-Flash-Next models.
     flash_next_mtp_cursor_initialized_total: u64,
     flash_next_mtp_cursor_initialized_last: u64,
+    flash_next_mtp_cursor_restored_total: u64,
+    flash_next_mtp_cursor_restored_last: u64,
     flash_next_mtp_resumed_without_cursor_total: u64,
     flash_next_mtp_resumed_without_cursor_last: u64,
     flash_next_mtp_prefill_absorb_failures_total: u64,
@@ -798,6 +800,7 @@ impl EngineStepStats {
             mtp_accepted_tokens_total: self.mtp_accepted_tokens_total,
             mtp_direct_fallback_steps_total: self.mtp_direct_fallback_steps_total,
             flash_next_mtp_cursor_initialized_total: self.flash_next_mtp_cursor_initialized_total,
+            flash_next_mtp_cursor_restored_total: self.flash_next_mtp_cursor_restored_total,
             flash_next_mtp_resumed_without_cursor_total: self
                 .flash_next_mtp_resumed_without_cursor_total,
             flash_next_mtp_prefill_absorb_failures_total: self
@@ -864,6 +867,7 @@ pub(crate) struct EngineStepGauges {
     pub(crate) mtp_accepted_tokens_total: u64,
     pub(crate) mtp_direct_fallback_steps_total: u64,
     pub(crate) flash_next_mtp_cursor_initialized_total: u64,
+    pub(crate) flash_next_mtp_cursor_restored_total: u64,
     pub(crate) flash_next_mtp_resumed_without_cursor_total: u64,
     pub(crate) flash_next_mtp_prefill_absorb_failures_total: u64,
     pub(crate) flash_next_mtp_cursor_dropped_total: u64,
@@ -1086,6 +1090,11 @@ impl ServerMetrics {
                     &mut entry.flash_next_mtp_cursor_initialized_total,
                     &mut entry.flash_next_mtp_cursor_initialized_last,
                     "ax_mlx_flash_next_mtp_cursor_initialized",
+                ),
+                (
+                    &mut entry.flash_next_mtp_cursor_restored_total,
+                    &mut entry.flash_next_mtp_cursor_restored_last,
+                    "ax_mlx_flash_next_mtp_cursor_restored",
                 ),
                 (
                     &mut entry.flash_next_mtp_resumed_without_cursor_total,
@@ -1312,6 +1321,9 @@ impl ServerMetrics {
         process.flash_next_mtp_cursor_initialized_total = process
             .flash_next_mtp_cursor_initialized_total
             .saturating_add(entry.flash_next_mtp_cursor_initialized_total);
+        process.flash_next_mtp_cursor_restored_total = process
+            .flash_next_mtp_cursor_restored_total
+            .saturating_add(entry.flash_next_mtp_cursor_restored_total);
         process.flash_next_mtp_resumed_without_cursor_total = process
             .flash_next_mtp_resumed_without_cursor_total
             .saturating_add(entry.flash_next_mtp_resumed_without_cursor_total);

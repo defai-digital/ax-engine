@@ -326,6 +326,15 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         );
         append_step_metric(
             &mut body,
+            "ax_engine_flash_next_mtp_cursor_restored_total",
+            "Flash Next MTP draft cursors restored from a prefix-cache snapshot sidecar across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_cursor_restored_total,
+            |step| step.flash_next_mtp_cursor_restored_total,
+        );
+        append_step_metric(
+            &mut body,
             "ax_engine_flash_next_mtp_resumed_without_cursor_total",
             "Flash Next MTP prefill quanta that resumed a cached prefix without a draft cursor across observed engine steps (unlabeled: summed across loaded models).",
             "counter",

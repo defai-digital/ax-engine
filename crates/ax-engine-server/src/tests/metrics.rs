@@ -89,6 +89,7 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
                     ("ax_mtp_accepted_tokens".to_string(), 5),
                     ("ax_mtp_direct_fallback_steps".to_string(), 1),
                     ("ax_mlx_flash_next_mtp_cursor_initialized".to_string(), 2),
+                    ("ax_mlx_flash_next_mtp_cursor_restored".to_string(), 5),
                     (
                         "ax_mlx_flash_next_mtp_resumed_without_cursor".to_string(),
                         1,
@@ -147,6 +148,7 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_mtp_direct_fallback_steps_total 1\n"));
     // Flash-Next-specific MTP route counters accumulate the same way.
     assert!(body.contains("ax_engine_flash_next_mtp_cursor_initialized_total 2\n"));
+    assert!(body.contains("ax_engine_flash_next_mtp_cursor_restored_total 5\n"));
     assert!(body.contains("ax_engine_flash_next_mtp_resumed_without_cursor_total 1\n"));
     assert!(body.contains("ax_engine_flash_next_mtp_prefill_absorb_failures_total 3\n"));
     assert!(body.contains("ax_engine_flash_next_mtp_cursor_dropped_total 1\n"));
