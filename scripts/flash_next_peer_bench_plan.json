@@ -1,0 +1,67 @@
+{
+  "contract": "ax-engine flash next peer benchmark",
+  "version": 1,
+  "goal": "Compare AX Engine Qwen 3.8 Flash Next against the omlx, MTPLX and ds4 peers on the ADR-037 target host. Declares identity and preconditions only; it records no numbers, because no Flash Next weights and no Ultra-class host exist on the authoring machine.",
+  "comparison_only": true,
+  "note": "Peer numbers produced by this contract are unverified until run on the declared target host with the declared pack revision. Nothing here closes MTP-S, MTP-P, MTP-D, default admission or release.",
+  "target_host": {
+    "description": "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GiB or more",
+    "requires_apple_silicon": true,
+    "min_memory_gib": 192,
+    "env_override": "AX_ENGINE_FLASH_NEXT_PEER_HOST"
+  },
+  "pack": {
+    "repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+    "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+    "published_bytes": 132261853669,
+    "format": "MXFP4/group32 with per-tensor affine overrides and a BF16 MTP sidecar",
+    "env_override": "AX_ENGINE_FLASH_NEXT_PACK_DIR",
+    "admission_env": "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL"
+  },
+  "fixed_conditions": {
+    "mtp_policy": "required",
+    "sampling": "temperature 0, top_p 1, top_k 0, repetition_penalty 1, seed 0",
+    "stream_experts": "off",
+    "output_tokens": 128,
+    "disable_prefix_cache_confound": "cold and warm prompts must be reported as separate cells; a repeated prompt is a prefix-cache hit"
+  },
+  "peers": [
+    {
+      "id": "omlx",
+      "tool": "omlx",
+      "role": "mlx-vlm qwen4_exp support behind a loader/patch layer",
+      "command": "omlx serve --model {pack}",
+      "records": ["decode_tok_s", "prefill_tok_s", "ttft_ms"]
+    },
+    {
+      "id": "MTPLX",
+      "tool": "mtplx",
+      "role": "own qwen4_exp graph plus custom Metal kernels",
+      "command": "mtplx generate --model {pack} --mtp required",
+      "records": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"]
+    },
+    {
+      "id": "ds4",
+      "tool": "ds4",
+      "role": "qwen4exp GGUF MTP with a per-cycle draft retry the AX cursor policy does not have",
+      "command": "ds4 -m {pack} --speculative",
+      "records": ["decode_tok_s", "accept_rate"]
+    }
+  ],
+  "ax_arm": {
+    "command": "ax-engine-server --mlx --mlx-model-artifacts-dir {pack} --mlx-mtp-policy required --stream-experts off --disable-ngram-acceleration",
+    "records": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"],
+    "required_metrics": [
+      "ax_engine_flash_next_mtp_attach_failed_total",
+      "ax_engine_flash_next_mtp_verified_steps_total",
+      "ax_engine_flash_next_mtp_accepted_steps_total",
+      "ax_engine_flash_next_mtp_step_errors_total",
+      "ax_engine_flash_next_mtp_cursor_initialized_total",
+      "ax_engine_flash_next_mtp_cursor_restored_total",
+      "ax_engine_flash_next_mtp_resumed_without_cursor_total",
+      "ax_engine_flash_next_mtp_direct_fallback_step_error_total"
+    ]
+  },
+  "reported_numbers_policy": "unverified unless produced on the declared host and pack revision; never publish a peer speedup from this contract alone",
+  "open_gates_untouched": ["MTP-S", "MTP-P", "MTP-D", "default admission", "release"]
+}
