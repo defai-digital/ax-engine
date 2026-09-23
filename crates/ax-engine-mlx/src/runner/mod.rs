@@ -8747,6 +8747,30 @@ impl MlxRunner {
         is_greedy: bool,
         options: &DecodeOneOptions<'_>,
     ) -> Option<Vec<u32>> {
+        // A full-prompt prefix hit restores the whole trunk and schedules the
+        // request straight to Decode, so `prepare_flash_next_prefill_cursor`
+        // never runs and the cursor stashed at restore time would otherwise
+        // sit unused while every step fell back to direct decode. Install it
+        // here on the first decode step instead. The stash was already
+        // decoded, rebound and verified aligned at restore time; re-check
+        // alignment against the live trunk anyway, because a prefill quantum
+        // may have advanced it since (in which case `prepare_` already
+        // consumed the stash and this take() yields `None`).
+        if let Some(restored) = state.flash_next_mtp.pending_restored_cursor.take()
+            && state.flash_next_mtp.cursor.is_none()
+        {
+            let aligned = state
+                .cache
+                .qwen4_exp
+                .as_ref()
+                .is_some_and(|trunk| restored.aligned(trunk));
+            if aligned {
+                state.flash_next_mtp.cursor = Some(restored);
+                state.flash_next_mtp.emitted_since_clear = 0;
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.cursor_restored = telemetry.cursor_restored.saturating_add(1);
+            }
+        }
         let ctx = options.request_context;
         let remaining_budget = ctx.map_or(0, |ctx| {
             ctx.max_output_tokens.saturating_sub(ctx.generated_len)
