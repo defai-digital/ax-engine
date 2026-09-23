@@ -52,6 +52,11 @@ enum NgramTableError {
         expected: usize,
         found: usize,
     },
+    DtypeMismatch {
+        name: String,
+        expected: MlxDtype,
+        found: MlxDtype,
+    },
     PackedMismatch(String),
     Sidecar(String),
     Index(String),
@@ -126,6 +131,14 @@ impl std::fmt::Display for NgramTableError {
             } => write!(
                 f,
                 "ngram table: tensor {name:?} width {found} != expected {expected}"
+            ),
+            Self::DtypeMismatch {
+                name,
+                expected,
+                found,
+            } => write!(
+                f,
+                "ngram table: tensor {name:?} dtype {found:?} != expected {expected:?}"
             ),
             Self::PackedMismatch(detail) => {
                 write!(f, "ngram table: packed width mismatch: {detail}")
@@ -637,10 +650,10 @@ impl NgramTable {
             ) {
                 (Some(quant), None) => {
                     if weight_meta.dtype != MlxDtype::Uint32 {
-                        return Err(NgramTableError::WidthMismatch {
+                        return Err(NgramTableError::DtypeMismatch {
                             name: name.clone(),
-                            expected: embedding_width,
-                            found: weight_meta.cols,
+                            expected: MlxDtype::Uint32,
+                            found: weight_meta.dtype,
                         });
                     }
                     let width_u64 = embedding_width as u64;
@@ -750,10 +763,10 @@ impl NgramTable {
                 }
                 (None, Some(want)) => {
                     if weight_meta.dtype != want {
-                        return Err(NgramTableError::WidthMismatch {
+                        return Err(NgramTableError::DtypeMismatch {
                             name: name.clone(),
-                            expected: embedding_width,
-                            found: weight_meta.cols,
+                            expected: want,
+                            found: weight_meta.dtype,
                         });
                     }
                     if weight_meta.cols != embedding_width {

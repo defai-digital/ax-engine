@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use crate::app_state::{AppState, LiveState};
 use crate::errors::{ErrorResponse, admission_error_response, map_generation_service_error};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
+use crate::generation::service::GenerationServiceError;
 use crate::openai::validation::select_model;
 use crate::tasks::run_blocking_session_task;
 
@@ -49,11 +50,26 @@ pub(crate) async fn run_stateless_generate_request(
     }
 
     let context = Arc::clone(&live.stateless_generate_context);
-    let response = run_blocking_session_task(move || {
+    let generate = run_blocking_session_task(move || {
         let _permit = permit;
         context.generate_with_request_id(request_id, request)
-    })
-    .await?;
+    });
+    // The same hang backstop as the MLX service path: a stalled delegated
+    // adapter must not leave the HTTP request hanging forever.
+    let response = match state.limits.generate_max_duration {
+        Some(deadline) => match tokio::time::timeout(deadline, generate).await {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                return Err(map_generation_service_error(
+                    GenerationServiceError::DeadlineExceeded {
+                        request_id,
+                        observed_event_count: 0,
+                    },
+                ));
+            }
+        },
+        None => generate.await?,
+    };
 
     Ok((request_id, response))
 }

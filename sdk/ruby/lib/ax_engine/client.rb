@@ -104,15 +104,25 @@ module AxEngine
 
     # Stream POST /v1/completions (stream: true) — yields SSE event hashes.
     def stream_completion(request = nil, **kwargs, &block)
-      stream("/v1/completions", request_body(request, kwargs).merge(stream: true), requires_done: true, &block)
+      stream("/v1/completions", streaming_body(request, kwargs), requires_done: true, &block)
     end
 
     # Stream POST /v1/chat/completions (stream: true) — yields SSE event hashes.
     def stream_chat_completion(request = nil, **kwargs, &block)
-      stream("/v1/chat/completions", request_body(request, kwargs).merge(stream: true), requires_done: true, &block)
+      stream("/v1/chat/completions", streaming_body(request, kwargs), requires_done: true, &block)
     end
 
     private
+
+    # Force `stream: true` regardless of the caller's key style: merging a
+    # symbol key does not override a string "stream" key in the request hash,
+    # which would serialize duplicate JSON keys with an unpredictable winner.
+    def streaming_body(request, kwargs)
+      body = request_body(request, kwargs)
+      body.delete("stream")
+      body.delete(:stream)
+      body.merge(stream: true)
+    end
 
     # Accept both a positional Hash (Ruby 2.7 style) and true kwargs (Ruby 3+).
     def request_body(request, kwargs)

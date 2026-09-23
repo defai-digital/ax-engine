@@ -194,7 +194,9 @@ public struct StepReport: Decodable, Sendable {
 public struct OpenAiChatMessage: Codable, Sendable {
     public var role: String
     /// Nil is valid for assistant messages that only carry `toolCalls`.
-    public var content: String?
+    /// The server accepts a plain string or an array of content parts
+    /// (text / image_url), mirroring the OpenAI chat contract.
+    public var content: OpenAiChatContent?
     /// Assistant tool calls echoed back into the conversation after a tool turn.
     public var toolCalls: [OpenAiToolCall]?
     /// Required on `role: "tool"` result messages.
@@ -206,9 +208,75 @@ public struct OpenAiChatMessage: Codable, Sendable {
         toolCalls: [OpenAiToolCall]? = nil,
         toolCallId: String? = nil, name: String? = nil
     ) {
-        self.role = role; self.content = content
+        self.role = role; self.content = content.map { .text($0) }
         self.toolCalls = toolCalls
         self.toolCallId = toolCallId; self.name = name
+    }
+
+    /// Multipart content, e.g. text plus an `image_url` part.
+    public init(
+        role: String, parts: [OpenAiChatContentPart],
+        toolCalls: [OpenAiToolCall]? = nil,
+        toolCallId: String? = nil, name: String? = nil
+    ) {
+        self.role = role; self.content = .parts(parts)
+        self.toolCalls = toolCalls
+        self.toolCallId = toolCallId; self.name = name
+    }
+}
+
+/// Chat message content: a plain string or an array of typed parts, exactly
+/// the `string | array | null` union the wire format allows.
+public enum OpenAiChatContent: Codable, Sendable, Equatable {
+    case text(String)
+    case parts([OpenAiChatContentPart])
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let text = try? container.decode(String.self) {
+            self = .text(text)
+        } else if let parts = try? container.decode([OpenAiChatContentPart].self) {
+            self = .parts(parts)
+        } else {
+            throw DecodingError.typeMismatch(
+                OpenAiChatContent.self,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "expected a string or an array of content parts"
+                )
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .text(let text):
+            try container.encode(text)
+        case .parts(let parts):
+            try container.encode(parts)
+        }
+    }
+}
+
+/// One typed block of multipart chat content.
+public struct OpenAiChatContentPart: Codable, Sendable, Equatable {
+    public var type: String
+    public var text: String?
+    public var imageUrl: OpenAiImageUrl?
+
+    public init(type: String, text: String? = nil, imageUrl: OpenAiImageUrl? = nil) {
+        self.type = type; self.text = text; self.imageUrl = imageUrl
+    }
+}
+
+/// Typed `image_url` reference inside a multipart content part.
+public struct OpenAiImageUrl: Codable, Sendable, Equatable {
+    public var url: String
+    public var detail: String?
+
+    public init(url: String, detail: String? = nil) {
+        self.url = url; self.detail = detail
     }
 }
 

@@ -503,7 +503,13 @@ func TestContextCancellation(t *testing.T) {
 		// drain channels — should not block
 		for range ch {
 		}
-		<-errCh
+		err := <-errCh
+		if err == nil {
+			t.Fatal("cancellation must surface an error, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation error: got %v want context.Canceled", err)
+		}
 	})
 }
 

@@ -573,6 +573,11 @@ impl Scheduler {
             };
 
             let Some(item) = self.build_execution_item(&snapshot, candidate_budget) else {
+                // Same accounting as the zero-budget and admission-cap defer
+                // paths above: a request that could not be built at all (the
+                // indivisible multimodal guard, or a degenerate decode) had
+                // its requested tokens skipped this step.
+                token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
                 continue;
             };

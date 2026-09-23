@@ -628,16 +628,17 @@ impl NgramTable {
                     if policy.adaptive_match_len {
                         // Tighten the ceiling at every step, not just the first.
                         // A sparse match mid-chain (support=1) stops the chain
-                        // early without discarding the already-confident prefix.
+                        // early without discarding the already-confident prefix:
+                        // the loop exits once the draft reaches the tightened
+                        // ceiling. `step_budget` exceeds the current draft
+                        // length by at least `support + 1 >= 2`, so the
+                        // tightened ceiling can never strand the step being
+                        // considered.
                         let step_budget = draft
                             .len()
                             .saturating_add(step.support as usize)
                             .saturating_add(1);
                         allowed_len = allowed_len.min(step_budget);
-                        if allowed_len <= draft.len() {
-                            rejection = Some(NgramDraftRejection::ConfidenceFiltered);
-                            break;
-                        }
                     }
                     draft.push(step.token);
                     confidence.push(step.confidence);
@@ -847,14 +848,14 @@ fn draft_step_from_prediction(
     // disable check (`linear_ngram_initial_prompt_should_disable_request`) so
     // that non-repeating random-token prompts are still classified correctly and
     // do not trigger unwanted speculation on their random prompt bigrams.
-    let effective_min_support =
-        if policy.bypass_prompt_min_support && prediction.selected_prompt_count >= 1 {
-            1
-        } else {
-            policy.min_support
-        };
     match policy.variant {
         NgramPolicyVariant::MajorityRecency | NgramPolicyVariant::SharedPoolMajority => {
+            let effective_min_support =
+                if policy.bypass_prompt_min_support && prediction.selected_prompt_count >= 1 {
+                    1
+                } else {
+                    policy.min_support
+                };
             let conf = prediction.effective_confidence();
             prediction_passes(
                 prediction.support,
@@ -870,6 +871,15 @@ fn draft_step_from_prediction(
         }
         NgramPolicyVariant::LlamaMapLatest => {
             let latest = prediction.latest_continuation()?;
+            // The draft uses the latest continuation, so the prompt-evidence
+            // bypass must be judged on that continuation's prompt_count, not
+            // the champion's.
+            let effective_min_support =
+                if policy.bypass_prompt_min_support && latest.prompt_count >= 1 {
+                    1
+                } else {
+                    policy.min_support
+                };
             let confidence = latest.count as f32 / prediction.total as f32;
             prediction_passes(
                 latest.count,
@@ -2225,12 +2235,12 @@ mod tests {
         t.tail = [1, 2].into_iter().collect();
         let draft = t.predict_with_policy(policy);
         // Step 0: (1,2)→3, support=2, step_budget=3, allowed_len=3.
-        // Step 1: (2,3)→X, support=1, step_budget=3, allowed_len stays 3.
-        // Step 2: draft.len=2 < 3, one more token allowed. draft.len hits 3, loop exits.
-        assert!(
-            draft.draft.len() <= 3,
-            "sparse mid-chain step must cap draft at 3, got {:?}",
-            draft.draft
+        // Step 1: (2,3)→7, support=1, step_budget=4, allowed_len stays 3.
+        // Step 2: (3,7)→8, draft reaches the ceiling of 3 and the loop exits.
+        assert_eq!(
+            draft.draft,
+            vec![3, 7, 8],
+            "sparse mid-chain step must cap the draft at the tightened ceiling"
         );
     }
 

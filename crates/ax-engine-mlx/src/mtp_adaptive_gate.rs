@@ -263,12 +263,38 @@ pub fn observe_step(
     }
     state.steps_since_residual = 0;
 
-    // Residual around prior (not free-walk): loosen when accept high & recompute low.
+    // Residual around prior (not free-walk), per the ratified design
+    // (docs/designs/mtp-embed-perf-sprint-2026-07-16.md): discrete terms with
+    // a 0.90–0.97 dead zone and draft-length ratio conditions. The previous
+    // continuous form produced a negative residual for every accept < 0.97,
+    // loosening the gate exactly when acceptance was low — backwards from the
+    // design, which loosens only on sustained high acceptance with short
+    // drafts.
     let accept = sig.mtp_only_accept_rate_ewma.clamp(0.0, 1.0);
-    let residual = cfg.k_accept * (accept - 0.97) - cfg.k_recomp * state.recompute_ewma;
-    let residual = residual.clamp(-cfg.residual_max, cfg.residual_max);
-    state.gate = (prior + residual).clamp(prior - cfg.residual_max, prior + cfg.residual_max);
-    state.gate = state.gate.clamp(lo, hi);
+    let len_ratio = if sig.adaptive_depth == 0 {
+        0.0
+    } else {
+        (state.gated_draft_len_ewma / sig.adaptive_depth as f32).clamp(0.0, 1.0)
+    };
+    let accept_term = if accept >= 0.97 && len_ratio < 0.5 {
+        -1.0 // loosen: high acceptance, short drafts
+    } else if accept < 0.90 && state.recompute_ewma > 0.15 {
+        1.0 // tighten: low acceptance with recompute evidence
+    } else {
+        0.0
+    };
+    let recomp_term = if state.recompute_ewma > 0.20 {
+        1.0
+    } else if state.recompute_ewma < 0.05 && len_ratio < 0.4 && accept >= 0.95 {
+        -1.0
+    } else {
+        0.0
+    };
+    let residual = (cfg.k_accept * accept_term + cfg.k_recomp * recomp_term)
+        .clamp(-cfg.residual_max, cfg.residual_max);
+    state.gate = (prior + residual)
+        .clamp(prior - cfg.residual_max, prior + cfg.residual_max)
+        .clamp(lo, hi);
     state.gate
 }
 
@@ -376,8 +402,8 @@ pub fn next_gate_config_from_env() -> NextGateConfig {
         residual_window: residual_window_from_env(),
         residual_enabled: residual_enabled_from_env(),
         residual_max: DEFAULT_RESIDUAL_MAX,
-        k_accept: 0.05,
-        k_recomp: 0.05,
+        k_accept: 0.02,
+        k_recomp: 0.02,
         snap_min_samples: DEFAULT_SNAP_MIN_SAMPLES,
         bins: bins_from_env(),
     }
@@ -574,6 +600,66 @@ mod tests {
         );
         assert_eq!(src, ResolutionSource::Model);
         assert_eq!(g, 0.0);
+    }
+
+    #[test]
+    fn residual_uses_design_discrete_terms() {
+        // The ratified design loosens only on sustained high acceptance with
+        // short drafts, tightens on low acceptance with recompute evidence,
+        // and holds a 0.90–0.97 dead zone. The old continuous form loosened
+        // for every accept < 0.97 — backwards.
+        let cfg = NextGateConfig {
+            residual_enabled: true,
+            residual_window: 1,
+            k_accept: 0.02,
+            k_recomp: 0.02,
+            bins: default_provisional_bins().to_vec(),
+            ..NextGateConfig::default()
+        };
+        let sig = |accept: f32, recomputed: bool| AdaptiveStepSignals {
+            pre_gate_mean_conf: 0.96,
+            gated_draft_len: 1,
+            recomputed,
+            mtp_only_accept_rate_ewma: accept,
+            mtp_only_accept_rate_ewma_samples: 10,
+            mtp_bypassed: false,
+            adaptive_depth: 4,
+            auto_optimistic_active: false,
+        };
+
+        // Dead zone: accept 0.93 holds the prior exactly.
+        let mut st = MtpAdaptiveGateState::new(0.90);
+        let _ = observe_step(&mut st, sig(0.93, false), &cfg);
+        let dead = observe_step(&mut st, sig(0.93, false), &cfg);
+        let prior = st.gate;
+        assert!(
+            (dead - prior).abs() < 1e-6,
+            "the 0.90–0.97 dead zone must hold the prior unchanged"
+        );
+
+        // High acceptance + short drafts: one loosen step (-k_accept).
+        let loosen = observe_step(&mut st, sig(0.98, false), &cfg);
+        assert!(
+            (loosen - (prior - 0.02)).abs() < 1e-6,
+            "high accept must loosen by k_accept: prior={prior} loosen={loosen}"
+        );
+
+        // Rebuild and tighten: low acceptance with recompute evidence.
+        let mut st = MtpAdaptiveGateState::new(0.90);
+        let _ = observe_step(&mut st, sig(0.85, false), &cfg);
+        // Three recompute observations bring recompute_ewma to ~0.143, still
+        // below the 0.15 tighten threshold; the fourth crosses it (and stays
+        // under 0.20, so only the accept term fires).
+        for _ in 0..3 {
+            let _ = observe_step(&mut st, sig(0.85, true), &cfg);
+        }
+        let before = st.gate;
+        let tighten = observe_step(&mut st, sig(0.85, true), &cfg);
+        assert!(
+            (tighten - (before + 0.02)).abs() < 1e-6,
+            "low accept with recompute evidence must tighten by k_accept: \
+             before={before} tighten={tighten}"
+        );
     }
 
     #[test]

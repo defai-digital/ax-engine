@@ -1831,10 +1831,10 @@ fn advance_shared_engine(
                 && engine_burst > 1
                 && !(sibling_active_for_burst && step_is_prefill_quantum(service_state))
             {
-                // `request_ids.len() == 1` holds above; route through
-                // `first()` so an engine invariant violation still surfaces
-                // as the standard detach-with-error path instead of a
-                // panicking direct index on the worker thread.
+                // `request_ids.len() == 1` holds by the guard above, so
+                // `first()` is always `Some`; it is used instead of a direct
+                // index so a future guard change cannot introduce a panic on
+                // the worker thread.
                 if let Some(&request_id) = request_ids.first() {
                     for _ in 1..engine_burst {
                         if !should_continue_single_stream_burst(
@@ -1870,28 +1870,6 @@ fn advance_shared_engine(
                                 break;
                             }
                         }
-                    }
-                } else {
-                    tracing::error!(
-                        "engine step reported no request ids while exactly one stream is active"
-                    );
-                    for (request_id, stream) in active_streams.iter_mut() {
-                        detach_stream_with_error(
-                            session,
-                            *request_id,
-                            stream,
-                            EngineSessionError::RequestReportInvariantViolation {
-                                request_id: *request_id,
-                                message: "single-stream burst found no request id after a \
-                                          one-request engine step",
-                            },
-                            service_state,
-                        );
-                    }
-                    let detached_streams = active_streams.len();
-                    active_streams.clear();
-                    for _ in 0..detached_streams {
-                        complete_job(service_state);
                     }
                 }
             }

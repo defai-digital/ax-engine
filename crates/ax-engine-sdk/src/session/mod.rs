@@ -514,6 +514,12 @@ impl EngineSession {
         Ok(request_id)
     }
 
+    /// Build a caller-driven llama.cpp stream for `request_id`.
+    ///
+    /// The returned state owns the HTTP stream handle and must be driven to
+    /// completion with `next_stream_event`; it is not registered in
+    /// `llama_requests`, so `cancel_request` / `request_report` do not see
+    /// it — abandonment must drop the state to release the handle.
     fn llama_cpp_stream_state_with_request_id(
         &mut self,
         request_id: u64,
@@ -525,6 +531,11 @@ impl EngineSession {
             request_id,
             &request,
         )?;
+        // Same guard as the submit path: a second stream with a live or
+        // terminal id must not silently drop the first stream handle.
+        if self.llama_requests.contains_key(&request_id) {
+            return Err(EngineSessionError::DuplicateRequestId { request_id });
+        }
         self.advance_request_id(request_id);
 
         let (runtime, stream, _route_backend) =
@@ -697,6 +708,12 @@ impl EngineSession {
     }
 
     pub fn cancel(&mut self, request_id: RequestId) -> Result<(), EngineSessionError> {
+        // On delegated backends the live request lives in the llama.cpp
+        // lifecycle slots, not the (empty) core; cancelling only the core
+        // would leave the HTTP stream running.
+        if !self.uses_mlx_runtime() {
+            return self.cancel_request(request_id.0);
+        }
         self.core
             .cancel(request_id)
             .map_err(EngineSessionError::from)
@@ -1327,23 +1344,28 @@ impl EngineSession {
         state: &mut NativeGenerateStreamState,
         step: EngineStepReport,
     ) -> Result<GenerateStreamEvent, EngineSessionError> {
-        state.step_count += 1;
-        if state.step_count >= state.max_steps {
-            return Err(EngineSessionError::RequestDidNotTerminate {
-                request_id: state.request_id,
-                max_steps: state.max_steps,
-            });
-        }
-
         // Fast path: borrow the live record and copy only the new token slice.
         // Full `request_report()` clones prompt + full output history + route
         // map on every token; that alone was multi-ms/token on M5 Max for
         // OpenAI SSE vs the same worker's non-stream consumer.
-        let progress = self
-            .stream_step_progress(state.request_id, state.emitted_output_len)
-            .ok_or(EngineSessionError::MissingRequestSnapshot {
-                request_id: state.request_id,
-            })?;
+        let progress = self.stream_step_progress(state.request_id, state.emitted_output_len)?;
+
+        // Count only steps that advanced this request: a session-level engine
+        // step may serve other requests or leave this one untouched, and
+        // counting those against this request's termination budget
+        // spuriously fails long generations in multi-request sessions.
+        let advanced = !progress.delta_tokens.is_empty()
+            || progress.processed_prompt_tokens != state.current_report.processed_prompt_tokens
+            || progress.terminal;
+        if advanced {
+            state.step_count += 1;
+            if state.step_count >= state.max_steps {
+                return Err(EngineSessionError::RequestDidNotTerminate {
+                    request_id: state.request_id,
+                    max_steps: state.max_steps,
+                });
+            }
+        }
 
         if state.ttft_step.is_none()
             && state.emitted_output_len == 0
@@ -1421,18 +1443,20 @@ impl EngineSession {
         &self,
         request_id: u64,
         emitted_output_len: usize,
-    ) -> Option<StreamStepProgress> {
+    ) -> Result<StreamStepProgress, EngineSessionError> {
+        let missing_snapshot = || EngineSessionError::MissingRequestSnapshot { request_id };
         if !self.uses_mlx_runtime() {
-            let report = self.request_report(request_id)?;
-            if emitted_output_len > report.output_tokens.len() {
-                return None;
-            }
+            let report = self
+                .request_report(request_id)
+                .ok_or_else(missing_snapshot)?;
+            // Output may shrink underneath the stream (e.g. KV rollback);
+            // re-sync the baseline instead of failing the step.
+            let emitted_output_len = emitted_output_len.min(report.output_tokens.len());
             let delta_tokens = report.output_tokens[emitted_output_len..].to_vec();
             let delta_token_logprobs =
-                slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len())
-                    .ok()?;
+                slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len())?;
             let terminal = is_terminal_request_state(report.state);
-            return Some(StreamStepProgress {
+            return Ok(StreamStepProgress {
                 delta_tokens,
                 delta_token_logprobs,
                 state: report.state,
@@ -1453,43 +1477,38 @@ impl EngineSession {
         // `terminal_snapshots`, so fall back to `request_report()` there.
         if let Some(record) = self.core.request_manager().record(RequestId(request_id)) {
             let generated = &record.generated_tokens;
-            if emitted_output_len > generated.len() {
-                return None;
-            }
+            // Re-sync the baseline on output shrink (e.g. KV rollback).
+            let emitted_output_len = emitted_output_len.min(generated.len());
             let delta_tokens = generated[emitted_output_len..].to_vec();
             let delta_token_logprobs = if record.generated_token_logprobs.is_empty() {
                 vec![None; delta_tokens.len()]
             } else if record.generated_token_logprobs.len() == generated.len() {
                 record.generated_token_logprobs[emitted_output_len..].to_vec()
             } else {
-                let report = self.request_report(request_id)?;
-                return slice_output_token_logprobs(
-                    &report,
-                    emitted_output_len,
-                    delta_tokens.len(),
-                )
-                .ok()
-                .map(|delta_token_logprobs| {
-                    let terminal = is_terminal_request_state(report.state);
-                    StreamStepProgress {
-                        delta_tokens,
-                        delta_token_logprobs,
-                        state: report.state,
-                        processed_prompt_tokens: report.processed_prompt_tokens,
-                        prompt_len: report.prompt_len,
-                        output_len: report.output_len,
-                        max_output_tokens: report.max_output_tokens,
-                        cancel_requested: report.cancel_requested,
-                        finish_reason: report.finish_reason,
-                        terminal_stop_reason: report.terminal_stop_reason,
-                        last_error: report.last_error,
-                        terminal,
-                    }
+                let report = self
+                    .request_report(request_id)
+                    .ok_or_else(missing_snapshot)?;
+                let delta_token_logprobs =
+                    slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len())?;
+                let terminal = is_terminal_request_state(report.state);
+                return Ok(StreamStepProgress {
+                    delta_tokens,
+                    delta_token_logprobs,
+                    state: report.state,
+                    processed_prompt_tokens: report.processed_prompt_tokens,
+                    prompt_len: report.prompt_len,
+                    output_len: report.output_len,
+                    max_output_tokens: report.max_output_tokens,
+                    cancel_requested: report.cancel_requested,
+                    finish_reason: report.finish_reason,
+                    terminal_stop_reason: report.terminal_stop_reason,
+                    last_error: report.last_error,
+                    terminal,
                 });
             };
             let state = SessionRequestState::from(record.state);
             let terminal = is_terminal_request_state(state);
-            return Some(StreamStepProgress {
+            return Ok(StreamStepProgress {
                 delta_tokens,
                 delta_token_logprobs,
                 state,
@@ -1508,15 +1527,16 @@ impl EngineSession {
             });
         }
 
-        let report = self.request_report(request_id)?;
-        if emitted_output_len > report.output_tokens.len() {
-            return None;
-        }
+        let report = self
+            .request_report(request_id)
+            .ok_or_else(missing_snapshot)?;
+        // Re-sync the baseline on output shrink (e.g. KV rollback).
+        let emitted_output_len = emitted_output_len.min(report.output_tokens.len());
         let delta_tokens = report.output_tokens[emitted_output_len..].to_vec();
         let delta_token_logprobs =
-            slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len()).ok()?;
+            slice_output_token_logprobs(&report, emitted_output_len, delta_tokens.len())?;
         let terminal = is_terminal_request_state(report.state);
-        Some(StreamStepProgress {
+        Ok(StreamStepProgress {
             delta_tokens,
             delta_token_logprobs,
             state: report.state,
