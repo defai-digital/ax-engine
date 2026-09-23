@@ -1,6 +1,7 @@
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { LLM } from "@langchain/core/language_models/llms";
 import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
+import { ChatGenerationChunk } from "@langchain/core/outputs";
 import { RunnableBinding } from "@langchain/core/runnables";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import AxEngineClient from "./index.js";
@@ -211,7 +212,7 @@ export class ChatAXEngine extends BaseChatModel {
       const choice = event.data?.choices?.[0];
       if (!choice) continue;
       const text = choice.delta?.content ?? "";
-      yield {
+      yield new ChatGenerationChunk({
         text,
         message: new AIMessageChunk({
           content: text,
@@ -219,7 +220,7 @@ export class ChatAXEngine extends BaseChatModel {
           tool_call_chunks: toolCallChunks(choice.delta),
         }),
         generationInfo: { finishReason: choice.finish_reason },
-      };
+      });
       await runManager?.handleLLMNewToken(text);
     }
   }
