@@ -30,10 +30,13 @@ pub(crate) struct MlxPrefixSnapshot {
     pub(crate) greedy_prefill_output_token: Option<u32>,
     /// Optional Flash Next MTP draft-cursor sidecar, serialized by
     /// `MlxKVCache::serialize_qwen4_exp_draft_cursor`. `None` for every model
-    /// family without a draft cursor and for every store path today; a
-    /// resumed request that restores a live cursor from it is a separate
-    /// change. Its bytes are charged to the cache budget like the trunk
-    /// payload, so it is never a free addition to the accounted size.
+    /// family without a draft cursor, and for an unaligned cursor at store
+    /// time (`prefix_snapshot_parts` refuses a cursor whose draft history does
+    /// not span the stored trunk). A prefix-cache hit whose request still
+    /// needs MTP restores it through `Qwen4ExpDraftCursor::from_prefix_snapshot`
+    /// under the `ResumeWithRestoredCursor` prefill outcome. Its bytes are
+    /// charged to the cache budget like the trunk payload, so it is never a
+    /// free addition to the accounted size.
     pub(crate) mtp_cursor_payload: Option<Arc<[u8]>>,
 }
 
