@@ -12,10 +12,19 @@
 #   scripts/review_flash_next_multimodel.sh --all --require-verdicts --verify-diff
 #
 # Flags:
-#   --all              run every reviewer and (re)write receipts
+#   --all              ensure every reviewer has a valid receipt
 #   --require-verdicts fail if any receipt lacks exit 0 + a terminal verdict
-#   --verify-diff      fail if any receipt digest != the digest recomputed now
+#   --verify-diff      fail if any receipt digest != the digest recomputed now;
+#                      also enables receipt reuse (see below)
+#   --force            always re-invoke the CLIs, even when a receipt is fresh
 #   --only <name>      run just one reviewer (repeatable)
+#
+# Receipt reuse: a full five-reviewer run costs ~13 minutes, which exceeds a
+# 300 s CI/agent per-command budget. With --verify-diff, a reviewer whose
+# receipt already records exit 0, a non-MISSING terminal verdict and a
+# reviewed_digest equal to the digest recomputed now is reused instead of
+# re-invoked; a missing, failed or stale receipt is always re-run. Pass
+# --force to disable reuse and re-invoke every CLI.
 #
 # Exit 0 only when every requested gate holds. A timeout, empty output, a
 # missing terminal verdict or a digest mismatch is a failure, never a skip.
@@ -40,12 +49,14 @@ REVIEW_TIMEOUT_SECS="${REVIEW_TIMEOUT_SECS:-420}"
 RUN_ALL=0
 REQUIRE_VERDICTS=0
 VERIFY_DIFF=0
+FORCE=0
 ONLY=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --all) RUN_ALL=1 ;;
     --require-verdicts) REQUIRE_VERDICTS=1 ;;
     --verify-diff) VERIFY_DIFF=1 ;;
+    --force) FORCE=1 ;;
     --only) ONLY+=("$2"); shift ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -175,6 +186,19 @@ write_receipt() {
   } >"$receipt"
 }
 
+# A receipt is reusable only when it records a real, successful run of this
+# exact reviewed digest.
+receipt_is_fresh() {
+  local receipt
+  receipt="$(receipt_path "$1")"
+  [ -f "$receipt" ] || return 1
+  local rc vd dg
+  rc="$(awk -F': ' '/^process_exit: /{print $2}' "$receipt")"
+  vd="$(awk -F': ' '/^verdict: /{print $2}' "$receipt")"
+  dg="$(awk -F': ' '/^reviewed_digest: /{print $2}' "$receipt")"
+  [ "$rc" = "0" ] && [ -n "$vd" ] && [ "$vd" != "MISSING" ] && [ "$dg" = "$DIGEST" ]
+}
+
 extract_verdict() {
   grep -oE 'VERDICT:[[:space:]]*(APPROVE_WITH_CONCERNS|APPROVE|REQUEST_CHANGES)' "$1" 2>/dev/null \
     | tail -n 1 | sed 's/^VERDICT:[[:space:]]*//'
@@ -186,6 +210,10 @@ if [ "$RUN_ALL" -eq 1 ] || [ "${#ONLY[@]}" -gt 0 ]; then
   targets=("${REVIEWERS[@]}")
   if [ "${#ONLY[@]}" -gt 0 ]; then targets=("${ONLY[@]}"); fi
   for name in "${targets[@]}"; do
+    if [ "$FORCE" -eq 0 ] && [ "$VERIFY_DIFF" -eq 1 ] && receipt_is_fresh "$name"; then
+      echo "==> reviewer: $name (fresh receipt reused; digest $DIGEST)"
+      continue
+    fi
     prompt_file="$REVIEW_DIR/$name.prompt.md"
     out_file="$REVIEW_DIR/$name.stdout"
     err_file="$REVIEW_DIR/$name.stderr"
