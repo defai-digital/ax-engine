@@ -56,7 +56,9 @@ REVIEW_PATHS=(
   "scripts/check_flash_next_peer_bench_plan.py"
 )
 REVIEWERS=(glm qwen kimi muse grok claude)
-REVIEW_TIMEOUT_SECS="${REVIEW_TIMEOUT_SECS:-420}"
+# qwen3.8-max is consistently the slowest reviewer (~3 min uncontended, more
+# under load) and a single 124 costs a full re-run, so it gets extra headroom.
+REVIEW_TIMEOUT_SECS="${REVIEW_TIMEOUT_SECS:-600}"
 # Reviewed baseline for the prompt diff. Parameterized (environment or
 # --baseline) so a later goal can point the harness at its own baseline
 # instead of a hardcoded commit; the default is this goal's baseline, so the
@@ -201,10 +203,21 @@ run_reviewer() {
         "$(cat "$prompt_file")" >"$out_file" 2>"$err_file"
       ;;
     kimi)
-      # No --tools flag and no --plan with --prompt: constrained by the prompt
-      # alone. The tracked-tree assertion below is the enforceable guard.
-      timeout "$REVIEW_TIMEOUT_SECS" kimi -p "$(cat "$prompt_file")" \
-        --output-format text -m kimi-code/k3 >"$out_file" 2>"$err_file"
+      # No --tools flag and no --plan with --prompt, so nothing structurally
+      # stops kimi from touching the tree. It therefore runs from a throwaway
+      # working directory: it cannot see AGENTS.md or the repo, and a write it
+      # attempts lands outside. The prompt is self-contained (the diff is
+      # inlined), so no repo access is needed. Paths are resolved to absolute
+      # form first because the subshell changes directory. The tracked-tree
+      # assertion below remains the backstop for every reviewer.
+      local kimi_dir prompt_abs out_abs err_abs
+      kimi_dir="$(mktemp -d /tmp/flash-next-kimi.XXXXXX)"
+      prompt_abs="$(cd "$(dirname "$prompt_file")" && pwd)/$(basename "$prompt_file")"
+      out_abs="$(cd "$(dirname "$out_file")" && pwd)/$(basename "$out_file")"
+      err_abs="$(cd "$(dirname "$err_file")" && pwd)/$(basename "$err_file")"
+      ( cd "$kimi_dir" && timeout "$REVIEW_TIMEOUT_SECS" kimi -p "$(cat "$prompt_abs")" \
+          --output-format text -m kimi-code/k3 >"$out_abs" 2>"$err_abs" )
+      rm -rf "$kimi_dir"
       ;;
     muse)
       local ws
