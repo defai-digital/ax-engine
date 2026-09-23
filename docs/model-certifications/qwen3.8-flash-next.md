@@ -4,8 +4,14 @@ Status: **Candidate; release qualification open**
 
 Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
-Target SKU: **MacBook Pro M5 Max, 128 GB**. Target pack: **MXFP4 MTP**.
-Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. Last reviewed: **2026-09-19**.
+Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+**
+(corrected from the original MacBook Pro M5 Max 128 GB target by
+[ADR-037](../../.internal/adr/ADR-037-FLASH-NEXT-ULTRA-192GB-TARGET-CORRECTION.md),
+2026-09-22; campaign host `um-macstudio-m2`). Target pack: **MXFP4 MTP**.
+Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. The
+M5 Max 128 GB evidence recorded below remains historical evidence for the
+Auto expert-paging code path; it does not by itself qualify the corrected
+target. Last reviewed: **2026-09-22**.
 
 "MTP Tier 2 pending" here uses the same three-gate vocabulary as the
 [Qwen 3.8 27B record](qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means):
@@ -269,9 +275,11 @@ SSE, client and terminal records agree, and the frozen helper completes both
 68-file integrity checks. This is bounded diagnostic evidence, not a throughput,
 quality or later-candidate qualification result.
 
-Six-bit is excluded from this target campaign. The former Studio target and
-all affine results below are historical; they do not qualify MXFP4 on M5 Max.
-Existing download aliases retain their original pack identity.
+Six-bit is excluded from this target campaign. The former Studio M5 Ultra
+256 GB target, the intermediate MacBook Pro M5 Max 128 GB target, and all
+affine results below are historical; they do not qualify MXFP4 on the
+current Ultra-class 192 GB+ target. Existing download aliases retain their
+original pack identity.
 
 | Gate | Current target state |
 | --- | --- |
@@ -314,7 +322,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | MTP integration | All 12 HC state/runner controls and 105-item native QA parity pass; four installed direct/required pairs have text and usage identity | Full installed/default-route QA and target qualification before promotion |
 | HTTP / SSE | HC candidate: six modes and 12 requests pass. Installed wheel: eight HTTP completions with 32-token budgets, correct ready health and clean shutdown pass | Extend installed streaming/lifecycle coverage and target qualification |
 | Throughput | Historical fixed-output matrix: 11/18 complete; two failed cells and five without results; 128 tokens in every measured sample | Collect a complete current-candidate matrix; retain historical budget/reference GPU failures and qualify target-SKU memory |
-| Former target hardware | No Studio M5 Ultra 256 GB result | Superseded by the MXFP4 M5 Max target above |
+| Former target hardware | No Studio M5 Ultra 256 GB result; intermediate MacBook Pro M5 Max 128 GB target evidence retained for the Auto expert-paging code path | Superseded by the Ultra-class 192 GB+ target above (ADR-037) |
 | Release | Not release-ready | Close the numerical, QA, MTP, throughput, delivery and target-hardware gates above; merged validation alone is insufficient |
 
 The statistical threshold was adjusted on the collected sample: the earlier

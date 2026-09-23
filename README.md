@@ -39,7 +39,8 @@ MiniCPM-V, and others) are documented under
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** Product SKUs:
 
 - **Mac mini M4 Pro 64 GB** — best experience and qualification SKU for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); **31.05 tok/s** product-path MTP decode
-- **MacBook Pro M5 Max 128 GB** — 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill) and qualification target for Qwen 3.8 Flash Next MXFP4 MTP
+- **MacBook Pro M5 Max 128 GB** — 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill)
+- **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer) with 192 GB+ RAM** — qualification target for Qwen 3.8 Flash Next MXFP4 MTP
   (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). The existing `qwen3.8-flash-next:axq` alias selects affine 4-bit, not MXFP4.
 
 Compact single models (Qwen 3.5 9B 4-bit preferred) still fit **16 GB**. Prefer
