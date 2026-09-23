@@ -8658,6 +8658,13 @@ impl MlxRunner {
             state.flash_next_mtp.cursor.as_mut(),
             state.cache.qwen4_exp.as_ref(),
         ) else {
+            tracing::debug!(
+                target: "ax_engine_mlx::runner",
+                ?block,
+                cursor_present = state.flash_next_mtp.cursor.is_some(),
+                trunk_state_present = state.cache.qwen4_exp.is_some(),
+                "Flash Next MTP decode step blocked; falling back to direct decode"
+            );
             self.record_flash_next_mtp_direct_fallback(state);
             return None;
         };
