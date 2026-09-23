@@ -69,5 +69,58 @@ official reference's answer to the same prompt (not done here).
 Three repeats, greedy, 128 max_tokens, a short prompt, same warm process
 (no separate warmup excluded): 10.70s / 6.92s / 6.91s wall time including
 prefill, settling at approximately 18.5 tok/s end-to-end by the third
-repeat. No comparison baseline collected in this run; the nine-cell
-512/2048/8192-token matrix from the completion plan's WI-7 was not run.
+repeat.
+
+## Direct-vs-MTP throughput matrix (2026-09-23)
+
+A follow-up session ran the AX-only subset of WI-7's matrix: two fresh
+server loads on the same host/pack (direct-decode with
+`--mlx-mtp-policy disabled`, then MTP with `--mlx-mtp-policy required`),
+each queried at 512/2048/8192-token prompts, 3 trials per length
+(`max_tokens=128`, `temperature=0.0`), first trial excluded from the
+steady-state figure as warmup. The mlx_lm/MLX-VLM reference-baseline arm
+of WI-7 (separate setup, not available on this host in this session) was
+not run; this is AX direct-decode vs. AX MTP only.
+
+Steady-state decode tok/s (mean of the two non-warmup trials):
+
+| prompt length | direct (`--mlx-mtp-policy disabled`) | MTP (`--mlx-mtp-policy required`) |
+| --- | --- | --- |
+| 512 | 18.65 | 18.62 |
+| 2048 | 17.70 | 17.24 |
+| 8192 | 17.13 | 16.87 |
+
+MTP delivered no net speedup over direct decode at any tested length, and
+was marginally slower at 2048/8192. This was not a "MTP failed to engage"
+result: querying the MTP server's `/metrics` endpoint immediately after the
+matrix (an explicit `--mlx-mtp-policy required` session errors outright if
+no MTP drafter is available, per
+`crates/ax-engine-mlx/src/runner/mod.rs:2099`, so every one of the 9
+successful completions in the MTP arm did use the MTP path) showed:
+
+- `ax_engine_mtp_draft_tokens_total` = 163, `ax_engine_mtp_accepted_tokens_total`
+  = 145 (89% raw per-draft acceptance on the steps that did draft)
+- `ax_engine_mtp_accept_rate_ewma_x1000` = 764 (76.4% cascade-corrected EWMA)
+- `ax_engine_mtp_direct_fallback_steps_total` = 413 against
+  `ax_engine_steps_total` = 592 for the same process lifetime, i.e.
+  **roughly 70% of all decode steps fell back to direct single-token
+  decode even under an explicit `required` policy**, with only the
+  remaining ~30% attempting a speculative draft at all
+- `ax_engine_mlx_mtp_model_policy_active` = 1, `..._route_safe` = 1 (MTP
+  route was active and considered safe for the whole run)
+- `ax_engine_mlx_mtp_certified_default_on` = 0, `..._runtime_enabled_by_default`
+  = 1 (pack metadata enables MTP by default; the pack is not yet certified
+  for default-on MTP -- consistent with `--mlx-mtp-policy auto` not
+  engaging MTP by default, documented separately)
+
+This is the actual explanation for the flat-to-slightly-worse throughput:
+acceptance quality is not the bottleneck (89% raw / 76% EWMA is a healthy
+rate), but the decode-step scheduler is only choosing to attempt a
+speculative draft on roughly 3 steps out of 10 even when the policy is
+`required`, so most of the run pays direct-decode's per-token cost anyway
+plus draft/verify overhead on the minority of steps that do speculate,
+netting out at parity or a small loss. Root-causing *why* the fallback
+rate is this high under `required` (a scheduling/eligibility heuristic
+inside the decode-step loop, not the MTP model or the acceptance model
+itself) is out of scope for this benchmarking pass and is queued as
+follow-up work, not attempted here.
