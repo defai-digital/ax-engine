@@ -28,9 +28,12 @@ pub(super) fn validate(manifest: &NativeModelManifest) -> Result<(), NativeModel
             manifest.model_family
         )));
     }
-    if manifest.qwen4_exp.output_gate_type.as_deref() != Some("sigmoid") {
+    if !matches!(
+        manifest.qwen4_exp.output_gate_type.as_deref(),
+        None | Some("sigmoid") | Some("silu")
+    ) {
         return Err(invalid(format!(
-            "qwen4_exp output_gate_type must be Some(\"sigmoid\"), got {:?}",
+            "qwen4_exp output_gate_type must be None, Some(\"sigmoid\"), or Some(\"silu\"), got {:?}",
             manifest.qwen4_exp.output_gate_type
         )));
     }
@@ -1603,6 +1606,16 @@ mod tests {
         manifest = valid_manifest();
         manifest.model_family = "qwen3_5".to_string();
         expect_err_contains(&manifest, "qwen4_exp");
+    }
+
+    #[test]
+    fn accepts_silu_and_missing_gate_type() {
+        let mut manifest = valid_manifest();
+        manifest.qwen4_exp.output_gate_type = Some("silu".to_string());
+        validate(&manifest).expect("silu output_gate_type should pass");
+        manifest = valid_manifest();
+        manifest.qwen4_exp.output_gate_type = None;
+        validate(&manifest).expect("absent output_gate_type falls back to silu");
     }
 
     #[test]
