@@ -1672,6 +1672,7 @@ fn openai_chat_stop_sequences_merge_family_defaults_with_user_stop() {
     fn merge(model_id: &str, stop: Option<OpenAiStopInput>) -> Vec<String> {
         chat::stop_sequences(
             model_id,
+            None,
             stop.map(OpenAiStopInput::into_vec).unwrap_or_default(),
         )
     }

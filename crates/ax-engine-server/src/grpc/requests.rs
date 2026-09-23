@@ -25,7 +25,7 @@ fn render_grpc_chat_prompt(
 
 /// Chat stop sequences for the gRPC service.
 fn grpc_chat_stop_sequences(model_id: &str, stop: Vec<String>) -> Vec<String> {
-    chat::stop_sequences(model_id, stop)
+    chat::stop_sequences(model_id, None, stop)
 }
 
 /// Map OpenAI HTTP error responses onto gRPC status codes for shared helpers.

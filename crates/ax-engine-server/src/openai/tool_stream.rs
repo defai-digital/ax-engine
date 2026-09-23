@@ -91,6 +91,14 @@ impl ToolCallStreamScanner {
         self.drain_events(false)
     }
 
+    /// True while text is withheld (an open span or a partial opener), i.e.
+    /// a later push may still turn the buffered text into a call. The stream
+    /// stop scanner uses this to avoid terminating on a stop match that
+    /// would strand the withheld call.
+    pub(crate) fn has_withheld_text(&self) -> bool {
+        !self.buffer.is_empty()
+    }
+
     /// End of stream: parse an unterminated span if the family grammar allows
     /// it (the XML extractor tolerates a missing closer), otherwise flush the
     /// withheld text as content. Never drops text, never leaves a call half

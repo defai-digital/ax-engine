@@ -179,7 +179,9 @@ export class ChatAXEngine extends BaseChatModel {
 
   async _generate(messages, options, _runManager) {
     const request = this._buildChatRequest(messages, options);
-    const response = await this.client.chatCompletion(request);
+    const response = await this.client.chatCompletion(request, {
+      signal: options?.signal,
+    });
     const choice = firstChoice(response, "chat completions");
     const text = choice?.message?.content ?? "";
     const rawToolCalls = choice?.message?.tool_calls;
@@ -203,7 +205,9 @@ export class ChatAXEngine extends BaseChatModel {
 
   async *_streamResponseChunks(messages, options, runManager) {
     const request = { ...this._buildChatRequest(messages, options), stream: true };
-    for await (const event of this.client.streamChatCompletion(request)) {
+    for await (const event of this.client.streamChatCompletion(request, {
+      signal: options?.signal,
+    })) {
       const choice = event.data?.choices?.[0];
       if (!choice) continue;
       const text = choice.delta?.content ?? "";
@@ -278,13 +282,17 @@ export class AXEngineLLM extends LLM {
 
   async _call(prompt, options, _runManager) {
     const request = this._buildCompletionRequest(prompt, options);
-    const response = await this.client.completion(request);
+    const response = await this.client.completion(request, {
+      signal: options?.signal,
+    });
     return firstChoice(response, "completions")?.text ?? "";
   }
 
   async *_streamResponseChunks(prompt, options, runManager) {
     const request = { ...this._buildCompletionRequest(prompt, options), stream: true };
-    for await (const event of this.client.streamCompletion(request)) {
+    for await (const event of this.client.streamCompletion(request, {
+      signal: options?.signal,
+    })) {
       const choice = event.data?.choices?.[0];
       if (!choice) continue;
       const text = choice.text ?? "";

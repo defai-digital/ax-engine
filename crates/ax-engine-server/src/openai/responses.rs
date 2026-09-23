@@ -200,7 +200,10 @@ fn openai_completion_logprobs(
     let mut decoded_prefix = String::new();
     for (i, logprob) in token_logprobs.into_iter().enumerate() {
         text_offset.push(u32::try_from(decoded_prefix.len()).unwrap_or(u32::MAX));
-        match tokenizer.decode(&response.output_tokens[..=i], false) {
+        // Skip special tokens exactly as the completion text decode does
+        // (generation.rs): a special token counted in `tokens`/`text_offset`
+        // but absent from `text` would misalign the byte offsets.
+        match tokenizer.decode(&response.output_tokens[..=i], true) {
             Ok(prefix) => {
                 // The delta is the token's in-context rendering; `strip_prefix`
                 // degrades to an empty token if the decode is non-monotonic

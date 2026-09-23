@@ -664,8 +664,15 @@ pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
         || (normalized.contains("qwen3-vl") && normalized.contains("thinking"))
 }
 
-pub(crate) fn stop_sequences(model_id: &str, mut user_stops: Vec<String>) -> Vec<String> {
-    for native_stop in default_stop_sequences(ChatPromptTemplate::for_model_id(model_id)) {
+pub(crate) fn stop_sequences(
+    model_id: &str,
+    family_hint: Option<&str>,
+    mut user_stops: Vec<String>,
+) -> Vec<String> {
+    // Resolve through the same ADR-025 family contract as prompt rendering:
+    // a community model id registered to a family must inherit the family's
+    // template-native stops, not the id-heuristic fallback.
+    for native_stop in default_stop_sequences(resolve_chat_template(model_id, family_hint)) {
         if !user_stops.iter().any(|existing| existing == &native_stop) {
             user_stops.push(native_stop);
         }
@@ -1945,11 +1952,15 @@ mod tests {
     #[test]
     fn stop_sequences_merge_user_and_native_stops() {
         assert_eq!(
-            stop_sequences("qwen3", vec!["custom".to_string()]),
+            stop_sequences("qwen3", None, vec!["custom".to_string()]),
             vec!["custom".to_string(), "<|im_end|>".to_string()]
         );
         assert_eq!(
-            stop_sequences("Meta-Llama-3.1-8B-Instruct", vec!["<|eot_id|>".to_string()]),
+            stop_sequences(
+                "Meta-Llama-3.1-8B-Instruct",
+                None,
+                vec!["<|eot_id|>".to_string()]
+            ),
             vec!["<|eot_id|>".to_string()]
         );
     }
@@ -2311,7 +2322,7 @@ mod tests {
             prompt.ends_with("<|start|>assistant<|channel|>final<|message|>"),
             "must prefill final channel for generation: {prompt}"
         );
-        let stops = stop_sequences("gpt-oss-20b", vec![]);
+        let stops = stop_sequences("gpt-oss-20b", None, vec![]);
         assert!(
             stops.iter().any(|s| s == "<|return|>"),
             "must stop on <|return|>: {stops:?}"
@@ -2482,7 +2493,7 @@ mod tests {
         }
 
         // Stop sequences must include the Gemma4 turn terminator.
-        let stops = stop_sequences("diffusiongemma-26B-A4B-it-4bit", vec![]);
+        let stops = stop_sequences("diffusiongemma-26B-A4B-it-4bit", None, vec![]);
         assert!(
             stops.contains(&"<turn|>".to_string()),
             "DiffusionGemma stop sequences must include <turn|>: {stops:?}"

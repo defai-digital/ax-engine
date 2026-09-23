@@ -471,22 +471,43 @@ impl RequestManager {
             }
 
             if let Some(error) = &update.error {
-                record.fail(error.clone()).map_err(|source| {
-                    RequestManagerError::InvalidStateTransition {
-                        request_id: update.request_id,
-                        source,
-                    }
-                })?;
+                // A user cancel that raced the runner wins over the error: the
+                // request must end Cancelled, not Failed, and the failed-state
+                // transition would also drop the cancellation.
+                if record.cancel_requested {
+                    record.resolve_running_step(true).map_err(|source| {
+                        RequestManagerError::InvalidStateTransition {
+                            request_id: update.request_id,
+                            source,
+                        }
+                    })?;
+                } else {
+                    record.fail(error.clone()).map_err(|source| {
+                        RequestManagerError::InvalidStateTransition {
+                            request_id: update.request_id,
+                            source,
+                        }
+                    })?;
+                }
                 continue;
             }
 
             if matches!(update.stop_reason, Some(StopReason::Error)) {
-                record
-                    .fail("runner reported stop_reason=Error")
-                    .map_err(|source| RequestManagerError::InvalidStateTransition {
-                        request_id: update.request_id,
-                        source,
+                if record.cancel_requested {
+                    record.resolve_running_step(true).map_err(|source| {
+                        RequestManagerError::InvalidStateTransition {
+                            request_id: update.request_id,
+                            source,
+                        }
                     })?;
+                } else {
+                    record
+                        .fail("runner reported stop_reason=Error")
+                        .map_err(|source| RequestManagerError::InvalidStateTransition {
+                            request_id: update.request_id,
+                            source,
+                        })?;
+                }
                 continue;
             }
 
@@ -501,12 +522,21 @@ impl RequestManager {
                     .iter()
                     .any(|token| matches!(token.stop_reason, Some(StopReason::Error)))
                 {
-                    record
-                        .fail("sampler reported stop_reason=Error")
-                        .map_err(|source| RequestManagerError::InvalidStateTransition {
-                            request_id: update.request_id,
-                            source,
+                    if record.cancel_requested {
+                        record.resolve_running_step(true).map_err(|source| {
+                            RequestManagerError::InvalidStateTransition {
+                                request_id: update.request_id,
+                                source,
+                            }
                         })?;
+                    } else {
+                        record
+                            .fail("sampler reported stop_reason=Error")
+                            .map_err(|source| RequestManagerError::InvalidStateTransition {
+                                request_id: update.request_id,
+                                source,
+                            })?;
+                    }
                     continue;
                 }
 
@@ -599,6 +629,19 @@ impl RequestManager {
                 );
             }
 
+            if !record.cancel_requested && matches!(stop_reason, Some(StopReason::Cancelled)) {
+                // The runner cancelled the generation itself (a downstream
+                // abort surfacing as a stop reason): take the normal cancel
+                // path so the request ends Cancelled with the reason
+                // recorded, instead of returning to Runnable with the stop
+                // reason silently dropped.
+                record.request_cancel().map_err(|source| {
+                    RequestManagerError::InvalidStateTransition {
+                        request_id: update.request_id,
+                        source,
+                    }
+                })?;
+            }
             if record.cancel_requested {
                 record.resolve_running_step(true).map_err(|source| {
                     RequestManagerError::InvalidStateTransition {
@@ -955,6 +998,97 @@ mod tests {
             RequestState::Cancelled
         );
         assert!(manager.snapshot(RequestId(1)).is_none());
+    }
+
+    #[test]
+    fn cancel_requested_wins_over_runner_error() {
+        // A user cancel racing a runner error must end the request Cancelled,
+        // not Failed: the error is moot once the user asked to stop.
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        {
+            let record = manager.records.get_mut(&RequestId(1)).unwrap();
+            record.processed_prompt_tokens = 3;
+            record.mark_runnable().unwrap();
+            record.start_running().unwrap();
+        }
+        manager.cancel(RequestId(1)).unwrap();
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(2),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 1,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: Some("worker exploded".to_string()),
+                        diffusion_schedule: None,
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 1,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: crate::scheduler::RouteMetadata::empty(),
+                    execution_status: ExecutionStatus::Success,
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Cancelled);
+        assert_eq!(snapshot.terminal_stop_reason, Some(StopReason::Cancelled));
+        assert_eq!(snapshot.last_error, None);
+    }
+
+    #[test]
+    fn runner_cancelled_stop_reason_terminates_as_cancelled() {
+        // A runner that cancels generation itself (a downstream abort surfacing
+        // as a stop reason) must end Cancelled with the reason recorded, not
+        // return to Runnable with the stop reason silently dropped.
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        {
+            let record = manager.records.get_mut(&RequestId(1)).unwrap();
+            record.processed_prompt_tokens = 3;
+            record.mark_runnable().unwrap();
+            record.start_running().unwrap();
+        }
+        manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(2),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 0,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: Some(StopReason::Cancelled),
+                        error: None,
+                        diffusion_schedule: None,
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 1,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: crate::scheduler::RouteMetadata::empty(),
+                    execution_status: ExecutionStatus::Success,
+                },
+                &[],
+                &[],
+            )
+            .unwrap();
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Cancelled);
+        assert_eq!(snapshot.terminal_stop_reason, Some(StopReason::Cancelled));
     }
 
     #[test]

@@ -98,6 +98,10 @@ def _setup_bundled_metal() -> None:
 
 _setup_bundled_metal()
 
+# Keeps preload handles alive for the life of the process; without a live
+# reference ctypes dlclose()s the library at the end of the statement.
+_PRELOADED_DYLIBS: list[object] = []
+
 
 def _import_native_module() -> None:
     """Import the native extension, recovering from a stale MLX rpath.
@@ -139,10 +143,12 @@ def _import_native_module() -> None:
         lib_dir = Path(base) / "lib"
         libjaccl = lib_dir / "libjaccl.dylib"
         if libjaccl.is_file():
-            ctypes.CDLL(str(libjaccl))
+            # Keep the handle alive: a temporary CDLL is dlclose'd as soon as
+            # the statement ends, defeating the preload before the retry below.
+            _PRELOADED_DYLIBS.append(ctypes.CDLL(str(libjaccl)))
         libmlx = lib_dir / "libmlx.dylib"
         if libmlx.is_file():
-            ctypes.CDLL(str(libmlx))
+            _PRELOADED_DYLIBS.append(ctypes.CDLL(str(libmlx)))
             break
     importlib.import_module("._ax_engine", __package__)
 

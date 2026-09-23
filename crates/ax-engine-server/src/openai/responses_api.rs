@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use axum::Json;
 use axum::body::to_bytes;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
@@ -79,11 +80,18 @@ pub(crate) struct OpenAiResponsesRequest {
 
 pub(crate) async fn openai_responses(
     State(state): State<AppState>,
-    Json(request): Json<OpenAiResponsesRequest>,
+    payload: Result<Json<OpenAiResponsesRequest>, JsonRejection>,
 ) -> Result<axum::response::Response, HttpErrorResponse> {
+    let Json(request) = payload.map_err(|rejection| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("invalid request body: {}", rejection.body_text()),
+        )
+    })?;
     validate_stateless_contract(&request)?;
     let chat_request = build_chat_request(&request)?;
-    let chat_response = openai_chat_completions(State(state), Json(chat_request)).await?;
+    let chat_response = openai_chat_completions(State(state), Ok(Json(chat_request))).await?;
     let status = chat_response.status();
     if !status.is_success() {
         return Ok(chat_response);

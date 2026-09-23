@@ -522,7 +522,7 @@ impl OpenAiStreamDriver {
             self.pipeline.tool_scanner = Some(tool_scanner);
             self.emit_tool_events(tx, request_id, model_id, events)
         } else {
-            self.emit_content(tx, request_id, model_id, text)
+            self.emit_content(tx, request_id, model_id, text, false)
         }
     }
 
@@ -533,10 +533,16 @@ impl OpenAiStreamDriver {
         model_id: &str,
         events: Vec<ToolScanEvent>,
     ) -> bool {
+        // Content released in the same batch as a Call precedes that call in
+        // the model output; a stop match there would strand the call (the
+        // non-stream surface ignores stops whenever calls exist).
+        let batch_has_call = events
+            .iter()
+            .any(|event| matches!(event, ToolScanEvent::Call(_)));
         for event in events {
             match event {
                 ToolScanEvent::Content(content) => {
-                    if !self.emit_content(tx, request_id, model_id, content) {
+                    if !self.emit_content(tx, request_id, model_id, content, batch_has_call) {
                         return false;
                     }
                 }
@@ -579,19 +585,30 @@ impl OpenAiStreamDriver {
     /// Emit visible content, running it through the stop scanner. On a stop
     /// match: emit the surviving prefix, the `finish_reason:"stop"` final
     /// chunk and `[DONE]`, then return false to end the stream.
+    ///
+    /// `suspend_stop_match` defers stop matching while a tool call is at
+    /// stake: content released in the same batch as a Call, or while the
+    /// scanner still holds an open span or partial opener.
     fn emit_content(
         &mut self,
         tx: &StreamEventSender,
         request_id: u64,
         model_id: &str,
         text: String,
+        suspend_stop_match: bool,
     ) -> bool {
+        let tool_scanner_busy = suspend_stop_match
+            || self
+                .pipeline
+                .tool_scanner
+                .as_ref()
+                .is_some_and(ToolCallStreamScanner::has_withheld_text);
         let (emit, matched) = match self.pipeline.stop_scanner.as_mut() {
-            Some(stop_scanner) => {
+            Some(stop_scanner) if !tool_scanner_busy => {
                 let step = stop_scanner.push(&text);
                 (step.emit, step.matched)
             }
-            None => (text, false),
+            _ => (text, false),
         };
         if !emit.is_empty() && !self.send_content_chunk(tx, request_id, model_id, emit) {
             return false;
@@ -2081,6 +2098,65 @@ mod stop_tool_scanner_tests {
         )
         .expect("arguments parse");
         assert_eq!(arguments, json!({}));
+        assert_eq!(
+            finish_reasons,
+            vec!["tool_calls".to_string()],
+            "the stream must finish tool_calls, never stop"
+        );
+    }
+
+    #[test]
+    fn stop_match_while_tool_span_is_withheld_does_not_strand_the_call() {
+        // A stop string in pre-call text must not terminate the stream while
+        // the tool scanner holds an open span: the non-stream surface ignores
+        // stops whenever tool calls exist, so the stream must deliver the
+        // call and finish `tool_calls`, never `stop`. (A stop that completes
+        // before any opener byte is visible still terminates: it is
+        // indistinguishable from a plain-text stop and needs unbounded
+        // lookahead to defer.)
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut driver = chat_driver(&["STOP"]);
+        let text = "AA STOP BB <tool_call>{\"name\":\"f\",\"arguments\":{}}</tool_call>";
+        assert!(
+            driver.process_text(&tx, 1, "qwen3", text.to_string()),
+            "a stop matched while a span is withheld must not end the stream"
+        );
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                response: sample_response(),
+            })
+        ));
+        drop(tx);
+
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+        let mut finish_reasons = Vec::new();
+        for choice in collect_chunk_payloads(&mut rx)
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+        {
+            if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                finish_reasons.push(reason.to_string());
+            }
+            let Some(delta) = choice.get("delta") else {
+                continue;
+            };
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                content.push_str(text);
+            }
+            if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                tool_calls.extend(calls.iter().cloned());
+            }
+        }
+
+        assert_eq!(
+            content, "AA STOP BB ",
+            "pre-call text survives; the non-stream surface keeps it too"
+        );
+        assert_eq!(tool_calls.len(), 1, "the withheld call must be delivered");
         assert_eq!(
             finish_reasons,
             vec!["tool_calls".to_string()],

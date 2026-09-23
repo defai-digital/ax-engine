@@ -152,10 +152,9 @@ def _load_image_token_id(model_dir: Path) -> int:
         )
     configured = config.get("image_token_id")
     if isinstance(configured, int) and not isinstance(configured, bool):
-        if configured > _MAX_TOKEN_ID:
+        if configured < 0 or configured > _MAX_TOKEN_ID:
             raise ValueError("Unlimited-OCR image_token_id must be an unsigned 32-bit integer")
-        if configured >= 0:
-            return configured
+        return configured
 
     tokenizer = _load_json_object(model_dir / "tokenizer.json", "tokenizer")
     added_tokens = tokenizer.get("added_tokens", [])

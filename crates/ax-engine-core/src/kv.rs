@@ -440,6 +440,11 @@ impl KvManager {
         request_id: RequestId,
         lookup: &PrefixLookupResult,
     ) -> Result<(), KvManagerError> {
+        if !lookup.hit {
+            return Err(KvManagerError::InvariantViolation(
+                "prefix share requires a hit lookup",
+            ));
+        }
         let matched_block_count = lookup.matched_blocks.len() as u32;
         let expected_token_count = matched_block_count * self.config.block_size_tokens;
         if lookup.matched_token_count != expected_token_count {

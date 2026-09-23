@@ -1108,6 +1108,23 @@ impl ExpertStackPager {
             let scales = loaded.remove(&format!("{base}.scales"));
             let biases = loaded.remove(&format!("{base}.biases"));
             let linear_bias = loaded.remove(&format!("{base}.bias"));
+            let mode = quantization::mode_for(self.quantization_modes.as_ref(), &tensor.name)
+                .map_err(ExpertStreamError::Paging)?;
+            // Fail closed on the generic pager path (no bound quantization
+            // modes, so every tensor above binds Affine): MXFP4 scales are
+            // u8 (e4m3) while affine scales are float, so u8 scales here mean
+            // an MXFP4 pack reached a pager that would silently dequantize
+            // it as affine.
+            if mode == ExpertQuantizationMode::Affine
+                && let Some(scales) = scales.as_ref()
+                && scales.dtype() == mlx_sys::MlxDtype::Uint8
+            {
+                return Err(ExpertStreamError::Paging(format!(
+                    "tensor {}: u8 scales on an affine-bound pager look like MXFP4; \
+                     bind quantization modes explicitly for this pack",
+                    tensor.name
+                )));
+            }
             let quantized = QuantizedWeight {
                 weight,
                 scales,
@@ -1124,10 +1141,7 @@ impl ExpertStackPager {
                         tensor.name, tensor.bits
                     ))
                 })?,
-                mode: quantization::mode_for(self.quantization_modes.as_ref(), &tensor.name)
-                    .map_err(ExpertStreamError::Paging)?
-                    .as_str()
-                    .to_string(),
+                mode: mode.as_str().to_string(),
                 linear_bias,
                 decode_weight_t: None,
                 decode_q2_weight: None,
@@ -1660,20 +1674,17 @@ mod tests {
     }
 
     #[test]
-    fn admission_flag_without_manifest_defers_to_inference() {
+    fn admission_on_without_manifest_fails_closed() {
+        // requested=true is the On admission path through admit_expert_stream;
+        // with no manifest it must fail closed instead of streaming nothing
+        // or guessing roles.
         let dir = std::env::temp_dir().join("ax_expert_stream_admission_missing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(
-            resolve_expert_stream(
-                StreamExpertsMode::Auto,
-                None,
-                || Err(ExpertStreamError::ManifestMissing),
-                Some(512 * 1024 * 1024 * 1024),
-            )
-            .unwrap()
-            .is_none()
-        );
+        assert!(matches!(
+            admit_expert_stream(&dir, true),
+            Err(ExpertStreamError::ManifestMissing)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

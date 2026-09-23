@@ -1,6 +1,7 @@
 use ax_engine_sdk::{GenerateFinishReason, GenerateResponse};
 use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -98,8 +99,15 @@ struct AnthropicUsage {
 
 pub(crate) async fn anthropic_messages(
     State(state): State<AppState>,
-    Json(request): Json<AnthropicMessagesRequest>,
+    payload: Result<Json<AnthropicMessagesRequest>, JsonRejection>,
 ) -> Result<Json<AnthropicMessageResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let Json(request) = payload.map_err(|rejection| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("invalid request body: {}", rejection.body_text()),
+        )
+    })?;
     let live = select_openai_model(&state, request.model.as_deref())?;
     let openai_request = request.into_openai_chat_request()?;
     let (request_id, response, stop_sequence) =

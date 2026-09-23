@@ -14,6 +14,8 @@ CHAT_COMPLETION_REQUEST_ERROR = "invalid chat completion request"
 # The native bindings take u32 for max_output_tokens/top_k and u64 for seed;
 # values outside those ranges must fail validation instead of overflowing.
 MAX_OUTPUT_TOKENS_LIMIT = 4294967295
+TOP_K_LIMIT = 4294967295
+SEED_LIMIT = 18446744073709551615
 SAMPLING_PARAM_KEYS = ("temperature", "top_p", "top_k", "repetition_penalty", "seed", "min_p")
 
 
@@ -1056,12 +1058,14 @@ def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
         value = payload.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
             return 400, f"OpenAI-compatible MLX shim requires {key} to be numeric"
-    for key in ("top_k", "seed"):
+    for key, limit in (("top_k", TOP_K_LIMIT), ("seed", SEED_LIMIT)):
         value = payload.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             return 400, f"OpenAI-compatible MLX shim requires {key} to be an integer"
         if value is not None and value < 0:
             return 400, f"OpenAI-compatible MLX shim requires {key} to be non-negative"
+        if value is not None and value > limit:
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be <= {limit}"
     min_p = payload.get("min_p")
     if min_p is not None and not 0.0 <= float(min_p) <= 1.0:
         return 400, "OpenAI-compatible MLX shim requires min_p to be within [0, 1]"

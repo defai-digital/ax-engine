@@ -674,7 +674,11 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(live, sampling_params),
         multimodal_inputs,
-        stop_sequences: chat::stop_sequences(live.model_id.as_ref(), user_stop),
+        stop_sequences: chat::stop_sequences(
+            live.model_id.as_ref(),
+            crate::metadata::model_family_from_artifacts(live).as_deref(),
+            user_stop,
+        ),
         stream: request.stream,
         metadata,
     };
@@ -730,7 +734,11 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         .map(OpenAiStopInput::into_vec)
         .unwrap_or_default();
     validate_client_stop_sequences(&user_stop)?;
-    let stop_sequences = chat::stop_sequences(live.model_id.as_ref(), user_stop);
+    let stop_sequences = chat::stop_sequences(
+        live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
+        user_stop,
+    );
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
@@ -789,7 +797,11 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
         .map(OpenAiStopInput::into_vec)
         .unwrap_or_default();
     validate_client_stop_sequences(&user_stop)?;
-    let stop_sequences = chat::stop_sequences(live.model_id.as_ref(), user_stop);
+    let stop_sequences = chat::stop_sequences(
+        live.model_id.as_ref(),
+        crate::metadata::model_family_from_artifacts(live).as_deref(),
+        user_stop,
+    );
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);

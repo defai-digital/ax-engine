@@ -253,7 +253,16 @@ export class AxEngineClient {
 
   async #requestJson(path, init) {
     const response = await this.#request(path, init);
-    return response.json();
+    const payload = await readJsonSafely(response);
+    if (typeof payload === "string") {
+      // 2xx with a non-JSON body: surface a structured error that keeps the
+      // HTTP status instead of leaking a bare SyntaxError from response.json().
+      throw new AxEngineHttpError(
+        `HTTP ${response.status} returned a non-JSON response body`,
+        { status: response.status, payload },
+      );
+    }
+    return payload;
   }
 
   async #request(path, init = {}) {

@@ -1231,7 +1231,11 @@ def _native_bin() -> str | None:
     resolves to this very Python console script, which would recurse.
     """
     override = os.environ.get("AX_ENGINE_NATIVE_BIN")
-    if override and pathlib.Path(override).is_file():
+    if override:
+        if not pathlib.Path(override).is_file():
+            raise SystemExit(
+                f"AX_ENGINE_NATIVE_BIN is set but is not a file: {override}"
+            )
         return override
     bundled = _bundled_binary("ax-engine")
     if bundled is not None:
@@ -2275,7 +2279,9 @@ def _run_streaming_capture_stdout(
             command,
             process.wait(),
             "".join(stdout_lines),
-            "",
+            # stderr was inherited (live), not captured; report None like
+            # _run_capture_stdout instead of a fabricated empty string.
+            None,
         )
 
 

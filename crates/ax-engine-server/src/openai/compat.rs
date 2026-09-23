@@ -98,6 +98,16 @@ pub(crate) async fn apply_template(
     State(state): State<AppState>,
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<Json<ApplyTemplateResponse>, HttpErrorResponse> {
+    // Same migration contract as /v1/chat/completions: these fields exist on
+    // the schema only to fail closed with an explicit migration error.
+    if request.skip_special_tokens.is_some() || request.vllm_xargs.is_some() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            "CUDA runtime extensions moved to AX Serving and are not accepted by AX Engine"
+                .to_string(),
+        ));
+    }
     let live = select_model(&state, request.model.as_deref())?;
     // Match /v1/chat/completions: tools/tool_choice plus native
     // reasoning/chat-template controls, so this preview shows the exact
