@@ -24,6 +24,19 @@ observability. **No gate closes from any of this.** MTP-S/P-D remain
 happens, and no throughput or acceleration claim is made. Local (non-public)
 detail: `.internal/reports/flash-next-mtp-fallback-review-20260923/`.
 
+Later the same day the MTP attach-failure signal became observable:
+`ax_engine_flash_next_mtp_attach_failed_total` now publishes the engine's
+`ax_mlx_flash_next_mtp_attach_failed` step counter, so an operator who
+requests MTP and sees no verification can tell "the draft head never
+attached" apart from "attached but every step blocked". A checked-in
+omlx/MTPLX/ds4 peer-benchmark contract
+(`scripts/flash_next_peer_bench_plan.json`, checked by
+`scripts/check_flash_next_peer_bench_plan.py`) fixes the comparison host, pack
+revision and required `/metrics` series, and fails closed when its
+preconditions are absent. **No gate closes from either change; the peer
+numbers remain unverified because no Flash Next weights and no Ultra-class
+host exist on the authoring machine.**
+
 "MTP Tier 2 pending" here uses the same three-gate vocabulary as the
 [Qwen 3.8 27B record](qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means):
 MTP-S (in-path safety), MTP-P (performance claim license) and MTP-D (default

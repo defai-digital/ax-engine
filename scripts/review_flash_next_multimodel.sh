@@ -49,15 +49,17 @@ REVIEW_PATHS=(
   "crates/ax-engine-server/src/flash_next_fallback_keys.rs"
   "crates/ax-engine-server/tests/metrics.rs"
   "crates/ax-engine-server/src/app_state.rs"
+  "docs/model-certifications/qwen3.8-flash-next.md"
+  "scripts/flash_next_peer_bench_plan.json"
+  "scripts/check_flash_next_peer_bench_plan.py"
 )
 REVIEWERS=(glm qwen kimi muse grok claude)
 REVIEW_TIMEOUT_SECS="${REVIEW_TIMEOUT_SECS:-420}"
 # Reviewed baseline for the prompt diff. Parameterized (environment or
 # --baseline) so a later goal can point the harness at its own baseline
-# instead of a hardcoded commit; the default is the commit immediately before
-# the Flash Next fallback work, which is the range that contains the change
-# under review.
-REVIEW_BASELINE="${REVIEW_BASELINE:-c5bcf09eb62971cfe9c5ddd4457108d90cb0e6ff}"
+# instead of a hardcoded commit; the default is this goal's baseline, so the
+# diff sent to reviewers is exactly this goal's change.
+REVIEW_BASELINE="${REVIEW_BASELINE:-374a056989e7ea9f309aaff152549dad222ca2be}"
 
 RUN_ALL=0
 REQUIRE_VERDICTS=0
