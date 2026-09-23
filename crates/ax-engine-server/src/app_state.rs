@@ -741,7 +741,6 @@ struct EngineStepStats {
     /// attach. Distinguishes "the head never attached" from "attached but every
     /// step blocked" when MTP is requested and nothing verifies.
     flash_next_mtp_attach_failed_total: u64,
-    flash_next_mtp_attach_failed_last: u64,
     flash_next_mtp_cursor_initialized_total: u64,
     flash_next_mtp_cursor_initialized_last: u64,
     flash_next_mtp_cursor_restored_total: u64,
@@ -1113,11 +1112,6 @@ impl ServerMetrics {
                     "ax_mtp_direct_fallback_steps",
                 ),
                 (
-                    &mut entry.flash_next_mtp_attach_failed_total,
-                    &mut entry.flash_next_mtp_attach_failed_last,
-                    "ax_mlx_flash_next_mtp_attach_failed",
-                ),
-                (
                     &mut entry.flash_next_mtp_cursor_initialized_total,
                     &mut entry.flash_next_mtp_cursor_initialized_last,
                     "ax_mlx_flash_next_mtp_cursor_initialized",
@@ -1162,6 +1156,19 @@ impl ServerMetrics {
                     accumulate_cumulative_route_counter(total, last, u64::from(observed));
                 }
             }
+            // `ax_mlx_flash_next_mtp_attach_failed` is a load-time latch the
+            // policy re-broadcasts as 0/1 on every step, not a request-cumulative
+            // running total. Snapshot-diffing it would count an attach failure
+            // at most once per model lifetime; accumulating the per-step value
+            // counts every step observed while the head has failed to attach,
+            // matching the published `_total` HELP.
+            entry.flash_next_mtp_attach_failed_total = entry
+                .flash_next_mtp_attach_failed_total
+                .saturating_add(u64::from(
+                    route
+                        .decision("ax_mlx_flash_next_mtp_attach_failed")
+                        .unwrap_or(0),
+                ));
             for (index, key) in FLASH_NEXT_MTP_FALLBACK_ROUTE_KEYS.iter().enumerate() {
                 if let Some(observed) = route.decision(key) {
                     accumulate_cumulative_route_counter(

@@ -14,6 +14,7 @@ Exits nonzero with a reason list when any of that is missing.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -24,10 +25,11 @@ REPORT_CANDIDATES = ("REPORT.md", "report.md", "README.md")
 REVIEWERS = ("glm", "qwen", "kimi", "muse", "grok", "claude")
 
 # Each entry is (label, tuple of case-insensitive tokens that must all appear).
+# Section checks anchor on the header line so prose mentions cannot satisfy them.
 REQUIRED_SECTIONS = (
-    ("progress", ("## progress", "progress")),
+    ("progress", ("## progress",)),
     ("best practices", ("best practice",)),
-    ("plan", ("## plan", "plan")),
+    ("plan", ("## plan",)),
 )
 
 OPEN_GATE_TOKENS = (
@@ -72,7 +74,9 @@ def main() -> int:
         if not receipt.is_file():
             problems.append(f"missing {reviewer} receipt")
             continue
-        if reviewer not in lowered:
+        # Word-boundary match: a bare substring would let "muse" satisfy the
+        # citation via "amusement" and never cite the receipt.
+        if not re.search(rf"\b{re.escape(reviewer)}\b", lowered):
             problems.append(f"report does not cite the {reviewer} receipt")
 
     for token in OPEN_GATE_TOKENS:

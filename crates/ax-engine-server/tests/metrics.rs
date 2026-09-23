@@ -28,10 +28,6 @@ fn flash_next_fallback_reason_metrics_published() {
             name,
             format!("ax_engine_flash_next_mtp_direct_fallback_{suffix}_total"),
         );
-        assert!(
-            name.ends_with("_total"),
-            "counter {name} must be a _total series"
-        );
     }
     assert!(ROUTE_KEYS.contains(&"ax_mlx_flash_next_mtp_direct_fallback_step_error"));
     assert!(ROUTE_KEYS.contains(&"ax_mlx_flash_next_mtp_direct_fallback_cursor_unavailable"));

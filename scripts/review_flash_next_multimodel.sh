@@ -35,7 +35,9 @@
 #
 # Exit 0 only when every requested gate holds. A timeout, empty output, a
 # missing terminal verdict or a digest mismatch is a failure, never a skip.
-set -uo pipefail
+# -e is load-bearing: helper failures (digest, mkdir, tree snapshots) must
+# abort instead of recording a bogus-but-consistent receipt.
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -66,18 +68,33 @@ REQUIRE_VERDICTS=0
 VERIFY_DIFF=0
 FORCE=0
 ONLY=()
+usage_error() {
+  echo "usage: $0 --all [--require-verdicts] [--verify-diff] [--force] [--only <name>] [--baseline <sha>]" >&2
+  exit 2
+}
 while [ $# -gt 0 ]; do
   case "$1" in
     --all) RUN_ALL=1 ;;
     --require-verdicts) REQUIRE_VERDICTS=1 ;;
     --verify-diff) VERIFY_DIFF=1 ;;
     --force) FORCE=1 ;;
-    --only) ONLY+=("$2"); shift ;;
-    --baseline) REVIEW_BASELINE="$2"; shift ;;
-    *) echo "unknown flag: $1" >&2; exit 2 ;;
+    --only)
+      [ $# -ge 2 ] || { echo "--only requires a value" >&2; usage_error; }
+      ONLY+=("$2"); shift ;;
+    --baseline)
+      [ $# -ge 2 ] || { echo "--baseline requires a value" >&2; usage_error; }
+      REVIEW_BASELINE="$2"; shift ;;
+    *) echo "unknown flag: $1" >&2; usage_error ;;
   esac
   shift
 done
+
+# A bare invocation checks nothing and would print OK; require at least one
+# gate so a CI job that forgets its flags fails loudly instead of passing green.
+if [ "$RUN_ALL" -eq 0 ] && [ "${#ONLY[@]}" -eq 0 ] && [ "$REQUIRE_VERDICTS" -eq 0 ] && [ "$VERIFY_DIFF" -eq 0 ]; then
+  echo "no gates requested: pass --all, --only, --require-verdicts and/or --verify-diff" >&2
+  usage_error
+fi
 
 if ! git rev-parse --verify --quiet "${REVIEW_BASELINE}^{commit}" >/dev/null; then
   echo "review baseline does not resolve to a commit: $REVIEW_BASELINE" >&2
@@ -94,6 +111,11 @@ reviewed_digest() {
         find "$p" -type f -name '*.rs' -print0
       elif [ -f "$p" ]; then
         printf '%s\0' "$p"
+      else
+        # A reviewed path that vanished silently shrinks the digest and lets
+        # --verify-diff pass bogus-vs-bogus; fail closed instead.
+        printf 'reviewed path is missing: %s\n' "$p" >&2
+        return 1
       fi
     done | sort -z | xargs -0 shasum -a 256 | awk '{print $2":"$1}'
   )"
@@ -101,6 +123,7 @@ reviewed_digest() {
 }
 
 DIGEST="$(reviewed_digest)"
+[ -n "$DIGEST" ] || { echo "reviewed digest is empty" >&2; exit 1; }
 
 mkdir -p "$REVIEW_DIR"
 
@@ -223,9 +246,11 @@ write_receipt() {
     echo "stdout_sha256: $(shasum -a 256 "$out_file" | awk '{print $1}')"
     echo "stderr_sha256: $(shasum -a 256 "$err_file" | awk '{print $1}')"
     echo "--- findings (tail) ---"
-    grep -E '^(FINDINGS:|VERDICT:|- )' "$out_file" 2>/dev/null | tail -n 20
+    # grep exits 1 on no match (empty reviewer output); the receipt must still
+    # be written so the failure is visible to --require-verdicts.
+    { grep -E '^(FINDINGS:|VERDICT:|- )' "$out_file" 2>/dev/null || true; } | tail -n 20
     echo "--- stderr (tail) ---"
-    tail -n 5 "$err_file" 2>/dev/null
+    tail -n 5 "$err_file" 2>/dev/null || true
   } >"$receipt"
 }
 
@@ -266,9 +291,11 @@ if [ "$RUN_ALL" -eq 1 ] || [ "${#ONLY[@]}" -gt 0 ]; then
     err_file="$REVIEW_DIR/$name.stderr"
     build_prompt "$DIGEST" "$prompt_file"
     echo "==> reviewer: $name"
-    run_reviewer "$name" "$prompt_file" "$out_file" "$err_file"
-    status=$?
-    verdict="$(extract_verdict "$out_file")"
+    # A failing reviewer is recorded, not fatal: capture its status and keep
+    # the receipt so --require-verdicts reports the real exit and verdict.
+    status=0
+    run_reviewer "$name" "$prompt_file" "$out_file" "$err_file" || status=$?
+    verdict="$(extract_verdict "$out_file" || true)"
     write_receipt "$name" "$status" "$verdict" "$out_file" "$err_file" "$prompt_file"
     echo "    exit=$status verdict=${verdict:-MISSING}"
     if [ "$status" -ne 0 ] || [ -z "$verdict" ]; then fail=1; fi

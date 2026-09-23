@@ -8853,6 +8853,20 @@ impl MlxRunner {
                 state.flash_next_mtp.emitted_since_clear = 0;
                 let telemetry = &mut state.flash_next_mtp.telemetry;
                 telemetry.cursor_restored = telemetry.cursor_restored.saturating_add(1);
+            } else {
+                // The trunk moved between restore and install (for example a
+                // lazy direct prime consumed the first position), so the
+                // stash can never install. The telemetry contract counts a
+                // stashed payload that fails to verify aligned here; dropping
+                // it silently would under-report resumed-without-cursor
+                // resumes and hide the misattributed PendingDirect fallback.
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.resumed_without_cursor =
+                    telemetry.resumed_without_cursor.saturating_add(1);
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    "Flash Next restored draft cursor lost alignment before install; resuming without a cursor"
+                );
             }
         }
         let ctx = options.request_context;
@@ -8909,6 +8923,13 @@ impl MlxRunner {
             );
             self.record_flash_next_mtp_direct_fallback(
                 state,
+                // `ComponentsUnavailable` is defensive: reaching the else with
+                // `block == None` requires the tuple destructure above to fail
+                // while `cursor_aligned` (which implies primary, cursor and
+                // trunk state are all present) held, and
+                // `flash_next_mtp_session()` already guarantees both weight
+                // sets. The bucket is currently unreachable; keep it so a
+                // future session-gate change fails closed into a named reason.
                 block
                     .map(FlashNextMtpFallbackReason::from)
                     .unwrap_or(FlashNextMtpFallbackReason::ComponentsUnavailable),
@@ -12788,12 +12809,14 @@ impl MlxRunner {
             && is_greedy
             && state.cache.seq_len() >= 512
             && gemma4_moe_long_mt_enabled();
-        // A live Flash Next cursor must see the first decode step: a primed
-        // lazy direct token would occupy that position and strand the cursor.
-        // Direct greedy prefill therefore snapshots at prompt_len+1;
+        // A live Flash Next cursor — or a cursor restored from a prefix-cache
+        // sidecar and still pending install — must see the first decode step:
+        // a primed lazy direct token would occupy that position and strand the
+        // cursor. Direct greedy prefill therefore snapshots at prompt_len+1;
         // MTP-with-cursor stays at prompt_len.
         let flash_next_cursor_owns_decode = self.flash_next_mtp_session()
-            && state.flash_next_mtp.cursor.is_some()
+            && (state.flash_next_mtp.cursor.is_some()
+                || state.flash_next_mtp.pending_restored_cursor.is_some())
             && is_greedy
             && !sampling.uses_logits_processors();
         if (should_bootstrap_direct_pipeline(
