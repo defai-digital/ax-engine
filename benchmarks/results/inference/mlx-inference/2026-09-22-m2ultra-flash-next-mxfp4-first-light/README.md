@@ -124,3 +124,33 @@ rate is this high under `required` (a scheduling/eligibility heuristic
 inside the decode-step loop, not the MTP model or the acceptance model
 itself) is out of scope for this benchmarking pass and is queued as
 follow-up work, not attempted here.
+
+## Correction (2026-09-23, later the same session): root cause found
+
+The paragraph above described the fallback as the decode-step scheduler
+"only choosing to attempt a speculative draft on roughly 3 steps out of
+10" -- implying a per-step, roughly-probabilistic decision. Three
+independent code-level investigations (ax-code DeepSeek, muse CLI, grok
+CLI), dispatched to trace the exact mechanism, converged on a different,
+deterministic explanation instead: the Flash Next draft cursor is only
+created when a request's prefill starts from an empty cache (a genuine
+cold start). A request whose prefill instead reuses a cached prefix
+(full or partial prefix-cache hit) never gets a cursor at all, and
+nothing in the decode loop creates one mid-request -- so that whole
+request runs 100% direct decode, deterministically, not "3 steps out of
+10." This nine-trial matrix ran the *identical* prompt three times per
+length (one warmup plus two measurement trials); each length's first
+trial was the only one likely to be a genuine cold start, and the
+repeats were increasingly likely to hit the now-warm prefix cache and
+run entirely direct -- which is consistent with, and a better
+explanation of, the observed ~70% aggregate figure than a smooth
+per-step degradation would be. Full analysis with file:line citations
+from all three investigators:
+`.internal/reports/flash-next-mtp-fallback-review-20260923/ds4-mtp-scheduling-comparison.md`
+(local-only, gitignored). The per-reason telemetry needed to see this
+distinction is now exposed via `/metrics`
+(`ax_engine_flash_next_mtp_cursor_initialized_total`,
+`..._resumed_without_cursor_total`, and related counters, commit
+`cfaab8b5`), so a future benchmarking pass can distinguish cold-start
+from prefix-hit requests directly instead of needing a manual debug-log
+reload.
