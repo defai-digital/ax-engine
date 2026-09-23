@@ -5,8 +5,12 @@
 # real process exit status, a terminal verdict line and the reviewed-source
 # digest in a per-reviewer receipt, and can re-verify those digests.
 #
-# Reviewers: glm, qwen (ax-code single-shot), muse (isolated throwaway
-# workspace), grok (tools disabled), claude (tools disabled, stdin prompt).
+# Reviewers: glm, qwen (ax-code single-shot), kimi (native CLI), muse
+# (isolated throwaway workspace), grok (tools disabled), claude (tools
+# disabled, stdin prompt). kimi-code exposes no --tools flag and rejects
+# --plan together with --prompt, so it is constrained by the prompt alone
+# ("answer from this prompt alone"); the harness asserts afterwards that no
+# reviewer changed the tracked working tree.
 #
 # Usage:
 #   scripts/review_flash_next_multimodel.sh --all --require-verdicts --verify-diff
@@ -18,8 +22,11 @@
 #                      also enables receipt reuse (see below)
 #   --force            always re-invoke the CLIs, even when a receipt is fresh
 #   --only <name>      run just one reviewer (repeatable)
+#   --baseline <sha>   reviewed baseline commit for the prompt diff
+#                      (default: the commit immediately before the Flash Next
+#                      fallback work, i.e. the range holding the change)
 #
-# Receipt reuse: a full five-reviewer run costs ~13 minutes, which exceeds a
+# Receipt reuse: a full six-reviewer run costs ~13 minutes, which exceeds a
 # 300 s CI/agent per-command budget. With --verify-diff, a reviewer whose
 # receipt already records exit 0, a non-MISSING terminal verdict and a
 # reviewed_digest equal to the digest recomputed now is reused instead of
@@ -43,8 +50,14 @@ REVIEW_PATHS=(
   "crates/ax-engine-server/tests/metrics.rs"
   "crates/ax-engine-server/src/app_state.rs"
 )
-REVIEWERS=(glm qwen muse grok claude)
+REVIEWERS=(glm qwen kimi muse grok claude)
 REVIEW_TIMEOUT_SECS="${REVIEW_TIMEOUT_SECS:-420}"
+# Reviewed baseline for the prompt diff. Parameterized (environment or
+# --baseline) so a later goal can point the harness at its own baseline
+# instead of a hardcoded commit; the default is the commit immediately before
+# the Flash Next fallback work, which is the range that contains the change
+# under review.
+REVIEW_BASELINE="${REVIEW_BASELINE:-c5bcf09eb62971cfe9c5ddd4457108d90cb0e6ff}"
 
 RUN_ALL=0
 REQUIRE_VERDICTS=0
@@ -58,10 +71,16 @@ while [ $# -gt 0 ]; do
     --verify-diff) VERIFY_DIFF=1 ;;
     --force) FORCE=1 ;;
     --only) ONLY+=("$2"); shift ;;
+    --baseline) REVIEW_BASELINE="$2"; shift ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+if ! git rev-parse --verify --quiet "${REVIEW_BASELINE}^{commit}" >/dev/null; then
+  echo "review baseline does not resolve to a commit: $REVIEW_BASELINE" >&2
+  exit 2
+fi
 
 # ---------------------------------------------------------------- digest ----
 # sha256 over sorted "<path>:<file-sha256>" lines for every reviewed file.
@@ -119,7 +138,7 @@ build_prompt() {
     echo
     echo "Diff of the reviewed paths versus the goal baseline commit:"
     echo '```diff'
-    git diff --no-color c5bcf09eb62971cfe9c5ddd4457108d90cb0e6ff -- "${REVIEW_PATHS[@]}" 2>/dev/null | head -c 20000
+    git diff --no-color "$REVIEW_BASELINE" -- "${REVIEW_PATHS[@]}" 2>/dev/null | head -c 20000
     echo '```'
   } >"$prompt_file"
 }
@@ -139,6 +158,12 @@ run_reviewer() {
         --model defai-01-ax-trust-com/qwen3.8-max --sandbox read-only \
         --title "flash-next multimodel review" \
         "$(cat "$prompt_file")" >"$out_file" 2>"$err_file"
+      ;;
+    kimi)
+      # No --tools flag and no --plan with --prompt: constrained by the prompt
+      # alone. The tracked-tree assertion below is the enforceable guard.
+      timeout "$REVIEW_TIMEOUT_SECS" kimi -p "$(cat "$prompt_file")" \
+        --output-format text -m kimi-code/k3 >"$out_file" 2>"$err_file"
       ;;
     muse)
       local ws
@@ -206,6 +231,10 @@ extract_verdict() {
 
 fail=0
 
+# Reviewers must not mutate the tracked tree; snapshot it and compare after the
+# loop. (.internal/ receipts are git-ignored and do not appear here.)
+TREE_BEFORE="$(git status --porcelain --untracked-files=no)"
+
 if [ "$RUN_ALL" -eq 1 ] || [ "${#ONLY[@]}" -gt 0 ]; then
   targets=("${REVIEWERS[@]}")
   if [ "${#ONLY[@]}" -gt 0 ]; then targets=("${ONLY[@]}"); fi
@@ -226,6 +255,15 @@ if [ "$RUN_ALL" -eq 1 ] || [ "${#ONLY[@]}" -gt 0 ]; then
     echo "    exit=$status verdict=${verdict:-MISSING}"
     if [ "$status" -ne 0 ] || [ -z "$verdict" ]; then fail=1; fi
   done
+fi
+
+if [ "$RUN_ALL" -eq 1 ] || [ "${#ONLY[@]}" -gt 0 ]; then
+  TREE_AFTER="$(git status --porcelain --untracked-files=no)"
+  if [ "$TREE_BEFORE" != "$TREE_AFTER" ]; then
+    echo "FAIL: a reviewer changed the tracked working tree" >&2
+    printf 'before:\n%s\nafter:\n%s\n' "$TREE_BEFORE" "$TREE_AFTER" >&2
+    fail=1
+  fi
 fi
 
 # ------------------------------------------------------------- assertions ----

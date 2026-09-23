@@ -4,8 +4,8 @@
 Checks that the consolidated report under the multimodel review directory:
   * exists and is non-trivial;
   * carries a progress, a best-practice and a plan section;
-  * cites every one of the five reviewer receipts (glm, qwen, muse, grok,
-    claude);
+  * cites every one of the six reviewer receipts (glm, qwen, kimi, muse,
+    grok, claude);
   * keeps the product-level gates explicitly open (MTP-S/P/D tokens,
     not_assessed, fail-closed default admission, no release).
 
@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REVIEW_DIR = REPO_ROOT / ".internal/reports/flash-next-multimodel-review-20260923"
 REPORT_CANDIDATES = ("REPORT.md", "report.md", "README.md")
 
-REVIEWERS = ("glm", "qwen", "muse", "grok", "claude")
+REVIEWERS = ("glm", "qwen", "kimi", "muse", "grok", "claude")
 
 # Each entry is (label, tuple of case-insensitive tokens that must all appear).
 REQUIRED_SECTIONS = (
@@ -90,7 +90,7 @@ def main() -> int:
         return 1
 
     print(
-        f"OK: {report.relative_to(REPO_ROOT)} cites all five receipts, "
+        f"OK: {report.relative_to(REPO_ROOT)} cites all six receipts, "
         "has progress/best-practice/plan sections, and keeps the gates open"
     )
     return 0
