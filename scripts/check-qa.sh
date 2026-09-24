@@ -19,6 +19,8 @@ echo "==> QA: py_compile harness modules"
 "$PYTHON_BIN" -m py_compile \
   scripts/audit_qa_retest.py \
   scripts/test_audit_qa_retest.py \
+  scripts/adjudicate_flash_next_qa.py \
+  scripts/test_adjudicate_flash_next_qa.py \
   qa/__init__.py \
   qa/prompt_def.py \
   qa/prompts.py \
@@ -44,6 +46,9 @@ echo "==> QA: py_compile harness modules"
 echo "==> QA: validate question bank"
 "$PYTHON_BIN" qa/run_qa.py --validate-bank
 
+echo "==> QA: Flash Next retained-failure record consistency (not qualification)"
+"$PYTHON_BIN" scripts/adjudicate_flash_next_qa.py
+
 echo "==> QA: unit tests (sampling, checkers, matrix, surface, embedding, multimodal)"
 "$PYTHON_BIN" -m unittest \
   scripts/test_audit_qa_retest.py \
@@ -54,6 +59,7 @@ echo "==> QA: unit tests (sampling, checkers, matrix, surface, embedding, multim
   scripts/test_qa_surface_probes.py \
   scripts/test_qa_embedding_probes.py \
   scripts/test_qa_multimodal_probes.py \
+  scripts/test_adjudicate_flash_next_qa.py \
   -v
 
 echo "==> QA: offline gate OK"

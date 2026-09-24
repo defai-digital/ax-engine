@@ -1,0 +1,31 @@
+{
+  "schema": "ax-engine.flash-next.full-qa-adjudication.v1",
+  "threshold_changed": false,
+  "qualification": false,
+  "release_ready": false,
+  "source_items": {
+    "file": "qualification/2026-09-19-flash-next-mxfp4-installed-qa/full-qa-items.json",
+    "sha256": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad"
+  },
+  "source_qa": {
+    "file": "flash-next-installed-full-qa-4bit-c101-m2-20260917.json",
+    "sha256": "26b3d9abeba0b9758f42c37480e3be71deb25013177f5bb1171d31d747bd400d"
+  },
+  "cases": [
+    {
+      "id": "science_gravity_earth",
+      "disposition": "Genuine model-output failure under the frozen prompt: the pack answers 9 where the pinned aliases are 9.8/9.81/10. Identical in both modes (text identity holds), so no runtime cause is established. Retained.",
+      "runtime_cause_established": false
+    },
+    {
+      "id": "knowledge_water_formula",
+      "disposition": "Representation mismatch under the frozen checker: the pack answers H2O with a unicode subscript (U+2082), chemically conventional and semantically identical to the pinned H2O. The frozen cohort's original verdict stands. Retained.",
+      "runtime_cause_established": false
+    },
+    {
+      "id": "format_csv_pair",
+      "disposition": "Genuine instruction-following failure under the frozen prompt: the pack echoes the meta word (pair,1) instead of the literal string the prompt instructs (name,1). Identical in both modes; no runtime cause. Retained.",
+      "runtime_cause_established": false
+    }
+  ]
+}
