@@ -377,3 +377,6 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/run_disk_prefix_cache_promotion.py --help >/dev/null
 "$PYTHON_BIN" scripts/test_smoke_compatible_models.py
 "$PYTHON_BIN" scripts/smoke_compatible_models.py --dry-run >/dev/null
+
+"$PYTHON_BIN" -m unittest scripts/test_check_flash_next_peer_bench_plan.py
+"$PYTHON_BIN" scripts/check_flash_next_peer_bench_plan.py --dry-run

@@ -1,14 +1,13 @@
 {
   "contract": "ax-engine flash next peer benchmark",
-  "version": 1,
-  "goal": "Compare AX Engine Qwen 3.8 Flash Next against the omlx, MTPLX and ds4 peers on the ADR-037 target host. Declares identity and preconditions only; it records no numbers, because no Flash Next weights and no Ultra-class host exist on the authoring machine.",
+  "version": 2,
+  "goal": "Prepare a source-reviewed comparison of AX Engine Flash Next with oMLX, MTPLX and ds4 on the Ultra-class 192 GiB+ target. This is not an executable benchmark harness.",
   "comparison_only": true,
-  "note": "Peer numbers produced by this contract are unverified until run on the declared target host with the declared pack revision. Nothing here closes MTP-S, MTP-P, MTP-D, default admission or release.",
+  "note": "Source review establishes CLI and format differences only. Commands and exact-pack peer compatibility remain unvalidated; host resources and tools on PATH cannot establish readiness. No qualification or performance result is recorded.",
   "target_host": {
     "description": "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GiB or more",
     "requires_apple_silicon": true,
-    "min_memory_gib": 192,
-    "env_override": "AX_ENGINE_FLASH_NEXT_PEER_HOST"
+    "min_memory_gib": 192
   },
   "pack": {
     "repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
@@ -22,36 +21,81 @@
     "mtp_policy": "required",
     "sampling": "temperature 0, top_p 1, top_k 0, repetition_penalty 1, seed 0",
     "stream_experts": "auto",
-    "stream_experts_rationale": "ADR-034/ADR-037: Flash Next is stream-required on the 192 GiB Ultra-class host, so Auto may page it. Forcing off would fail closed on a required pack and would not measure the product path.",
+    "stream_experts_rationale": "Auto pages when the pack requires it or full_resident + 48 GiB exceeds host memory. Do not infer required paging from the family name or target RAM alone; record the actual manifest and decision.",
     "output_tokens": 128,
-    "disable_prefix_cache_confound": "cold and warm prompts must be reported as separate cells; a repeated prompt is a prefix-cache hit"
+    "disable_prefix_cache_confound": "Disable logical and native prefix reuse for the uncached matrix, verify reuse counters, and record cold start separately. An OS-warm repeat is not proof of KV reuse; any cache experiments need separately labeled cells."
   },
   "peers": [
     {
       "id": "omlx",
       "tool": "omlx",
-      "role": "mlx-vlm qwen4_exp support behind a loader/patch layer",
-      "command": "omlx serve --model {pack}",
-      "records": ["decode_tok_s", "prefill_tok_s", "ttft_ms"]
+      "role": "Model-directory server; same-pack execution remains unvalidated",
+      "command": null,
+      "records": [
+        "decode_tok_s",
+        "prefill_tok_s",
+        "ttft_ms"
+      ],
+      "readiness": "unvalidated",
+      "blocker": "The reviewed CLI uses serve --model-dir for a model directory. The pinned AX MXFP4 pack has not been qualified through this loader.",
+      "source_review": {
+        "repository": "https://github.com/jundot/omlx",
+        "revision": "7a4ec44e1a8e46c15e6536d30c6bdba52a67245b",
+        "paths": [
+          "omlx/cli.py"
+        ]
+      }
     },
     {
       "id": "MTPLX",
       "tool": "mtplx",
-      "role": "own qwen4_exp graph plus custom Metal kernels",
-      "command": "mtplx generate --model {pack} --mtp required",
-      "records": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"]
+      "role": "Independent qwen4_exp graph with pack-specific loading conventions",
+      "command": null,
+      "records": [
+        "decode_tok_s",
+        "prefill_tok_s",
+        "ttft_ms",
+        "accept_rate"
+      ],
+      "readiness": "unvalidated",
+      "blocker": "The reviewed public CLI uses run and serve; --mtp is a flag. The graph has its own ngram-sidecar and weight-sanitization conventions. Exact AX MXFP4 pack compatibility is unvalidated.",
+      "source_review": {
+        "repository": "https://github.com/youssofal/MTPLX",
+        "revision": "7c2205ae4f3b91d7d3852b6ac7510174b4b5d0ae",
+        "paths": [
+          "mtplx/cli.py",
+          "mtplx/models/qwen4_exp.py"
+        ]
+      }
     },
     {
       "id": "ds4",
       "tool": "ds4",
-      "role": "qwen4exp GGUF MTP with a per-cycle draft retry the AX cursor policy does not have",
-      "command": "ds4 -m {pack} --speculative",
-      "records": ["decode_tok_s", "accept_rate"]
+      "role": "Separate GGUF runtime; not a same-artifact AX safetensors baseline",
+      "command": null,
+      "records": [
+        "decode_tok_s",
+        "accept_rate"
+      ],
+      "readiness": "incompatible_format",
+      "blocker": "The reviewed Qwen path consumes a GGUF file and uses --mtp. The AX safetensors directory cannot be passed as that GGUF. A different pack needs separate checkpoint and quantization provenance.",
+      "source_review": {
+        "repository": "https://github.com/antirez/ds4",
+        "revision": "0aaea5a238fb41a35106a551e73c8409dfb751ac",
+        "paths": [
+          "README.md"
+        ]
+      }
     }
   ],
   "ax_arm": {
     "command": "ax-engine-server --mlx --mlx-model-artifacts-dir {pack} --mlx-mtp-policy required --stream-experts auto --disable-ngram-acceleration",
-    "records": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"],
+    "records": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
     "required_metrics": [
       "ax_engine_flash_next_mtp_attach_failed_total",
       "ax_engine_flash_next_mtp_verified_steps_total",
@@ -61,8 +105,16 @@
       "ax_engine_flash_next_mtp_cursor_restored_total",
       "ax_engine_flash_next_mtp_resumed_without_cursor_total",
       "ax_engine_flash_next_mtp_direct_fallback_step_error_total"
-    ]
+    ],
+    "command_scope": "Server startup illustration only; requires a measured request harness, identity checks and explicit token inputs"
   },
-  "reported_numbers_policy": "unverified unless produced on the declared host and pack revision; never publish a peer speedup from this contract alone",
-  "open_gates_untouched": ["MTP-S", "MTP-P", "MTP-D", "default admission", "release"]
+  "reported_numbers_policy": "No numbers or speedup may be inferred from this preparation audit. Exact-pack execution and timing protocols must be validated before a runnable comparison contract can replace it.",
+  "open_gates_untouched": [
+    "MTP-S",
+    "MTP-P",
+    "MTP-D",
+    "default admission",
+    "release"
+  ],
+  "execution_ready": false
 }

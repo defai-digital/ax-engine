@@ -1,27 +1,16 @@
 #!/usr/bin/env python3
-"""Validate the omlx / MTPLX / ds4 peer-benchmark contract for Qwen 3.8 Flash Next.
+"""Audit the source-reviewed Flash Next peer-comparison preparation record.
 
-The contract (`scripts/flash_next_peer_bench_plan.json`) declares, without
-recording any numbers, what a real peer comparison needs: the ADR-037
-Ultra-class target host, the MXFP4 pack revision, the three peers, and the
-`/metrics` series the AX arm must expose. It is checked in, so the comparison
-is reproducible instead of being a paragraph in a report.
+This is not an executable benchmark. Version 2 records unresolved exact-pack
+compatibility and removes guessed peer commands. Default and --dry-run validate
+that preparation record and report missing host/tool/runtime prerequisites.
+--require-preconditions fails while any declared peer blocker remains, even
+on a large Apple Silicon host with an existing directory and tools on PATH.
 
-This checker is fail-closed:
-
-  * default                  - the contract is well-formed, every declared
-                               `/metrics` series really is published by the
-                               server crate, and the precondition gate is
-                               proven to reject a host that has nothing. This host's real preconditions are
-                               reported but are not fatal unless --require-preconditions is passed. Exit 0.
-  * --dry-run                - identical to the default; accepted so a caller
-                               can state the intent explicitly. Exit 0.
-  * --require-preconditions  - the same, but exit nonzero when a precondition is
-                               absent. This is the path a real run takes.
-
-No weights, no target host and no network are required, so the default and
---dry-run paths pass on the authoring machine. Nothing here closes MTP-S,
-MTP-P, MTP-D, default admission or release.
+This check neither hashes a model payload nor validates an installed peer
+runtime. It cannot authorize a comparison, qualify MTP-S/P/D, promote defaults
+or release a product. Replacing it with a runnable contract requires actual
+command, artifact and timing evidence, not editing a readiness boolean.
 """
 
 from __future__ import annotations
@@ -102,52 +91,87 @@ def server_publishes(metric: str, metrics_text: str, keys_text: str) -> bool:
 def contract_problems(contract: dict, metrics_text: str, keys_text: str) -> list[str]:
     problems: list[str] = []
 
+    if not isinstance(contract, dict):
+        return ["contract must be a JSON object"]
+    if type(contract.get("version")) is not int or contract["version"] != 2:
+        problems.append("contract must use preparation schema version 2")
+    if contract.get("comparison_only") is not True or contract.get("execution_ready") is not False:
+        problems.append("preparation contract must explicitly remain comparison-only and not executable")
+
     peers = contract.get("peers")
-    if not isinstance(peers, list) or not peers:
-        return ["contract declares no peers"]
+    if not isinstance(peers, list) or not peers or any(not isinstance(p, dict) for p in peers):
+        return problems + ["contract must declare peer objects"]
     peer_ids = {str(peer.get("id", "")).lower() for peer in peers}
+    if len(peers) != len(REQUIRED_PEERS) or peer_ids != set(REQUIRED_PEERS):
+        problems.append("contract must name exactly the three distinct required peers")
     for required in REQUIRED_PEERS:
         if required.lower() not in peer_ids:
             problems.append(f"contract does not name the {required} peer")
     for peer in peers:
-        for field in ("id", "tool", "role", "command", "records"):
-            if not peer.get(field):
+        for field in ("id", "tool", "role", "blocker"):
+            if not isinstance(peer.get(field), str) or not peer[field].strip():
                 problems.append(f"peer {peer.get('id', '?')!r} is missing {field}")
+        records = peer.get("records")
+        if (not isinstance(records, list) or not records
+                or any(not isinstance(item, str) or not item for item in records)):
+            problems.append("peer must name its intended recorded measurements")
+        if "command" not in peer or peer["command"] is not None:
+            problems.append("unvalidated peer commands must be null")
+        if peer.get("readiness") not in ("unvalidated", "incompatible_format"):
+            problems.append("peer readiness must retain its unresolved compatibility status")
+        review = peer.get("source_review")
+        if not isinstance(review, dict):
+            problems.append("peer must identify its reviewed source")
+        elif (not REVISION_RE.fullmatch(str(review.get("revision", "")))
+              or not isinstance(review.get("paths"), list) or not review["paths"]
+              or any(not isinstance(path, str) or not path for path in review["paths"])
+              or not isinstance(review.get("repository"), str)
+              or not review["repository"].startswith("https://github.com/")):
+            problems.append("peer source review must bind repository, revision and paths")
 
-    host = contract.get("target_host") or {}
+    host = contract.get("target_host")
+    if not isinstance(host, dict):
+        problems.append("target_host must be an object")
+        host = {}
     if "Ultra-class" not in str(host.get("description", "")):
         problems.append("target_host does not declare the Ultra-class Apple Silicon host")
-    if not host.get("requires_apple_silicon"):
+    if host.get("requires_apple_silicon") is not True:
         problems.append("target_host does not require Apple Silicon")
-    if int(host.get("min_memory_gib", 0)) < 192:
+    if type(host.get("min_memory_gib")) is not int or host["min_memory_gib"] < 192:
         problems.append("target_host min_memory_gib is below 192")
 
-    pack = contract.get("pack") or {}
+    pack = contract.get("pack")
+    if not isinstance(pack, dict):
+        problems.append("pack must be an object")
+        pack = {}
     if not str(pack.get("repo", "")).strip():
         problems.append("pack does not declare a repo")
-    if not REVISION_RE.match(str(pack.get("revision", ""))):
+    if not REVISION_RE.fullmatch(str(pack.get("revision", ""))):
         problems.append("pack revision is not a 40-hex revision")
-    if int(pack.get("published_bytes", 0)) <= 0:
+    if type(pack.get("published_bytes")) is not int or pack["published_bytes"] <= 0:
         problems.append("pack does not declare published_bytes")
 
-    ax_arm = contract.get("ax_arm") or {}
+    ax_arm = contract.get("ax_arm")
+    if not isinstance(ax_arm, dict):
+        problems.append("ax_arm must be an object")
+        ax_arm = {}
     if not ax_arm.get("records"):
         problems.append("ax_arm declares no recorded metrics")
-    required_metrics = ax_arm.get("required_metrics") or []
+    required_metrics = ax_arm.get("required_metrics")
+    if not isinstance(required_metrics, list) or not required_metrics:
+        required_metrics = []
     if not required_metrics:
         problems.append("ax_arm declares no required /metrics series")
     for metric in required_metrics:
-        if not server_publishes(metric, metrics_text, keys_text):
+        if not isinstance(metric, str) or not server_publishes(metric, metrics_text, keys_text):
             problems.append(f"ax_arm requires {metric}, which the server does not publish")
 
-    gates = " ".join(str(gate) for gate in contract.get("open_gates_untouched", []))
-    for gate in REQUIRED_GATES:
+    raw_gates = contract.get("open_gates_untouched")
+    gates = set(raw_gates) if (isinstance(raw_gates, list)
+                             and all(isinstance(gate, str) for gate in raw_gates)) else set()
+    for gate in (*REQUIRED_GATES, "default admission", "release"):
         if gate not in gates:
             problems.append(f"open_gates_untouched omits {gate}")
-    if "admission" not in gates.lower():
-        problems.append("open_gates_untouched omits default admission")
-    if "release" not in gates.lower():
-        problems.append("open_gates_untouched omits release")
 
     return problems
 
@@ -170,6 +194,8 @@ def missing_preconditions(contract: dict, probe: Probe) -> list[str]:
         missing.append(f"{override}={pack_dir} is not a directory")
 
     for peer in contract["peers"]:
+        if peer["readiness"] in ("unvalidated", "incompatible_format"):
+            missing.append(f"peer {peer['id']} is not execution-ready: {peer['blocker']}")
         if not probe.tool(str(peer["tool"])):
             missing.append(f"peer tool not on PATH: {peer['tool']}")
     return missing
@@ -225,13 +251,13 @@ def main() -> int:
             return 1
         mode = "--dry-run" if args.dry_run else "default"
         print(
-            f"OK ({mode}): contract valid, peers {peers}; {len(missing)} "
+            f"OK ({mode}): preparation record valid, peers {peers}; {len(missing)} "
             f"precondition(s) absent here: {detail}. "
             "Pass --require-preconditions to fail closed on these."
         )
         return 0
 
-    print(f"OK: contract valid, all preconditions present, peers {peers}")
+    print(f"OK: preparation record valid, peers {peers}; runtime execution is not validated")
     return 0
 
 
