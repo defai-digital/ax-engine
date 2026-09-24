@@ -5851,6 +5851,8 @@ impl MlxRunner {
                     model_id,
                     block_size_tokens,
                     sampling,
+                    !has_native_multimodal_prefill
+                        && self.flash_next_mtp_prefill_eligible(is_greedy, sampling),
                     media_key.as_deref(),
                 )
             };
@@ -7364,6 +7366,7 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         sampling: MlxSamplingParams,
+        needs_flash_next_cursor: bool,
         media_identity: Option<&str>,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
@@ -7393,6 +7396,7 @@ impl MlxRunner {
                         reused_tokens,
                         sampling,
                         capture_prefill_output,
+                        needs_flash_next_cursor,
                     );
                 }
                 telemetry.warmup_tokens = telemetry
@@ -7491,6 +7495,7 @@ impl MlxRunner {
                     reused_tokens,
                     sampling,
                     capture_prefill_output,
+                    needs_flash_next_cursor,
                 );
             }
             telemetry.warmup_tokens = telemetry
@@ -7508,6 +7513,7 @@ impl MlxRunner {
                     reused_tokens,
                     sampling,
                     capture_prefill_output,
+                    needs_flash_next_cursor,
                 );
             }
             telemetry.warmup_tokens = telemetry
@@ -7623,9 +7629,9 @@ impl MlxRunner {
                         match prepared {
                             Ok(restored_cache) => {
                                 // Flash Next session with a stashed draft-cursor
-                                // sidecar: decode it now, not lazily, so a bad
-                                // payload surfaces here as a warning and simply
-                                // means "resume without a cursor". The trunk for
+                                // sidecar: decode it before adopting the trunk.
+                                // Eligible MTP requests replay a prefix whose
+                                // draft history is absent or corrupt. The trunk for
                                 // alignment is this snapshot's own qwen4_exp
                                 // state, taken before the cache moves into the
                                 // request.
@@ -7645,7 +7651,7 @@ impl MlxRunner {
                                             tracing::warn!(
                                                 target: "ax_engine_mlx::prefix_cache",
                                                 error = %error,
-                                                "Flash Next draft-cursor payload failed to decode; resuming without a cursor",
+                                                "Flash Next draft-cursor payload failed to decode",
                                             );
                                             None
                                         }
@@ -7653,22 +7659,26 @@ impl MlxRunner {
                                 } else {
                                     None
                                 };
-                                state.flash_next_mtp.pending_restored_cursor =
-                                    pending_restored_cursor;
-                                state.cache = restored_cache;
-                                state.prompt_prefix_tokens = reused_tokens.to_vec();
-                                // Only inherit the producer's greedy token when this request
-                                // would compute it too; otherwise leave it unset so the
-                                // consume site resamples with the request's own sampling.
-                                state.cached_prefill_output_token = snapshot
-                                    .greedy_prefill_output_token
-                                    .filter(|_| prefill_output_token_cacheable(ctx, sampling));
-                                telemetry.hits = telemetry.hits.saturating_add(1);
-                                telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
-                                telemetry.reused_tokens = telemetry
-                                    .reused_tokens
-                                    .saturating_add(saturating_u32(snapshot.token_count));
-                                return telemetry;
+                                if needs_flash_next_cursor && pending_restored_cursor.is_none() {
+                                    telemetry.record_blocked_snapshot_incomplete();
+                                } else {
+                                    state.flash_next_mtp.pending_restored_cursor =
+                                        pending_restored_cursor;
+                                    state.cache = restored_cache;
+                                    state.prompt_prefix_tokens = reused_tokens.to_vec();
+                                    // Only inherit the producer's greedy token when this request
+                                    // would compute it too; otherwise leave it unset so the
+                                    // consume site resamples with the request's own sampling.
+                                    state.cached_prefill_output_token = snapshot
+                                        .greedy_prefill_output_token
+                                        .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                                    telemetry.hits = telemetry.hits.saturating_add(1);
+                                    telemetry.record_restore_source(RESTORE_SOURCE_MEMORY_L1);
+                                    telemetry.reused_tokens = telemetry
+                                        .reused_tokens
+                                        .saturating_add(saturating_u32(snapshot.token_count));
+                                    return telemetry;
+                                }
                             }
                             Err(e) => {
                                 telemetry.record_blocked_restore_error();
@@ -7705,22 +7715,25 @@ impl MlxRunner {
         // per F3 PRD §3 (fail-closed): the cache miss path still runs,
         // the request still completes, telemetry records the disk
         // miss for observability.
-        if mla_extend_unsafe && self.disk_prefix_cache.is_some() {
-            // D9: the MLA-extend safety gate suppresses the entire L2
-            // tier for this request; name the suppression instead of
-            // skipping silently.
+        // Durable entries currently contain trunk state only. Replaying an
+        // eligible Flash Next prefix rebuilds both histories at the same
+        // token boundary; inventing an empty draft cache here is incorrect.
+        let disk_restore_unsupported = mla_extend_unsafe || needs_flash_next_cursor;
+        if disk_restore_unsupported && self.disk_prefix_cache.is_some() {
+            // Name the incompatible restore layout instead of silently
+            // skipping the durable tier for this request.
             telemetry.record_blocked_unsupported_layout();
             telemetry.record_disk_admission(
                 crate::disk_prefix_cache::DiskAdmissionReason::UnsupportedLayout,
             );
         }
-        if !mla_extend_unsafe && self.disk_prefix_cache.is_some() {
+        if !disk_restore_unsupported && self.disk_prefix_cache.is_some() {
             self.record_disk_artifact_identity_if_unavailable(&mut telemetry);
             if let Some(writer) = self.disk_prefix_writer.as_ref() {
                 telemetry.absorb_writer_commits(writer.drain_commits());
             }
         }
-        if !mla_extend_unsafe
+        if !disk_restore_unsupported
             && let Some(disk) = self.disk_prefix_cache.as_ref()
             && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, reused_tokens)
         {
@@ -7819,6 +7832,7 @@ impl MlxRunner {
                 reused_tokens,
                 sampling,
                 capture_prefill_output,
+                needs_flash_next_cursor,
             );
         }
         telemetry.warmup_tokens = telemetry
@@ -7834,6 +7848,7 @@ impl MlxRunner {
         tokens: &[u32],
         sampling: MlxSamplingParams,
         capture_prefill_output: bool,
+        needs_flash_next_cursor: bool,
     ) {
         let mut warmup_rng = if capture_prefill_output {
             state.rng
@@ -7867,6 +7882,16 @@ impl MlxRunner {
                 crate::fastpath::PrefillChunkMode::WarmExtend
             ),
         );
+        if needs_flash_next_cursor {
+            state.cached_prefill_output_token = self.run_flash_next_mtp_prefill(
+                state,
+                tokens,
+                prefill_chunk_for_request,
+                capture_prefill_output,
+            );
+            state.prompt_prefix_tokens = tokens.to_vec();
+            return;
+        }
         let prefill_output_token = chunked_prefill_with_sampling_buffers(
             &self.cfg,
             &self.weights,

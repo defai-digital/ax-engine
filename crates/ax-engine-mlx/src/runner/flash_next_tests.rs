@@ -943,7 +943,7 @@ fn flash_next_real_runner_mtp_matches_recorded_resident_control() {
 
 #[test]
 #[ignore = "requires synthetic Flash Next MTP artifacts and explicit candidate attachment"]
-fn flash_next_runner_mtp_acceptance_budget_and_prefix_fallback() {
+fn flash_next_runner_mtp_acceptance_budget_and_prefix_replay() {
     let artifacts = artifacts();
     let mut weights = crate::weights::load_weights(&artifacts).unwrap();
     let shape = [
@@ -983,14 +983,105 @@ fn flash_next_runner_mtp_acceptance_budget_and_prefix_fallback() {
     assert_eq!(first.maximum("ax_mlx_flash_next_mtp_verified_steps"), 3);
     let repeated = generate(&runner, &prompt, 100, context(802, prompt.len(), 6));
     assert_eq!(repeated.tokens, first.tokens);
-    assert_eq!(repeated.maximum("ax_mlx_flash_next_mtp_verified_steps"), 0);
-    assert!(repeated.maximum("ax_mlx_flash_next_mtp_resumed_without_cursor") > 0);
-    assert!(repeated.maximum("ax_mlx_flash_next_mtp_direct_fallback_steps") > 0);
-    assert!(repeated.maximum("ax_mtp_direct_fallback_steps") > 0);
+    assert!(repeated.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
     assert_eq!(
-        repeated.maximum("ax_mlx_flash_next_mtp_cursor_initialized"),
+        repeated.maximum("ax_mlx_flash_next_mtp_resumed_without_cursor"),
         0
     );
+    assert!(
+        repeated.maximum("ax_mlx_flash_next_mtp_cursor_initialized") > 0
+            || repeated.maximum("ax_mlx_flash_next_mtp_cursor_restored") > 0
+    );
+}
+
+#[test]
+#[ignore = "requires synthetic Flash Next MTP artifacts and explicit candidate attachment"]
+fn flash_next_prefix_restore_replays_missing_or_corrupt_draft_history() {
+    let artifacts = artifacts();
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2, true).unwrap();
+    runner.set_mtp_requested(true);
+    let tokens = [1, 2, 3, 4];
+    let mut producer = RequestState::new(runner.cfg.layer_count, 42, None);
+    let expected = runner.run_flash_next_mtp_prefill(&mut producer, &tokens, 2, true);
+    let trunk = producer.cache.qwen4_exp.as_ref().unwrap();
+    let (draft, hidden) = producer
+        .flash_next_mtp
+        .cursor
+        .as_ref()
+        .unwrap()
+        .prefix_snapshot_parts(trunk)
+        .unwrap();
+    let cursor_payload: Arc<[u8]> =
+        Arc::from(MlxKVCache::serialize_qwen4_exp_draft_cursor(draft, hidden));
+    let payload: Arc<[u8]> = Arc::from(producer.cache.serialize_to_bytes());
+    let key = runner.prefix_cache_key_with_media("flash-prefix-test", 4, &tokens, "");
+    let ctx = context(850, tokens.len(), 6);
+    let item = ExecutionItem {
+        request_id: ctx.request_id,
+        mode: ExecutionMode::Decode,
+        planned_work_unit: WorkUnitKind::TokenDecode,
+        input_token_slice: vec![4],
+        reused_prefix_token_slice: tokens.to_vec(),
+        position_range: PositionRange {
+            start: 3,
+            end_exclusive: 4,
+        },
+        scheduled_token_count: 1,
+        block_table_ref: ctx.request_id,
+        prefix_tokens_reused: 4,
+        prefix_blocks_reused: 1,
+    };
+    for (sidecar, needs_cursor, expect_hit) in [
+        (Some(cursor_payload), true, true),
+        (None, true, false),
+        (Some(Arc::<[u8]>::from(&b"invalid cursor"[..])), true, false),
+        (None, false, true),
+    ] {
+        *runner.prefix_cache.lock() = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 64 * 1024 * 1024,
+            max_entries: 128,
+        });
+        runner.prefix_cache.lock().insert(
+            key.clone(),
+            MlxPrefixSnapshot::from_shared_payload(
+                payload.clone(),
+                tokens.to_vec(),
+                tokens.len(),
+                expected,
+                sidecar,
+            ),
+        );
+        let mut consumer = RequestState::new(runner.cfg.layer_count, 42, None);
+        let telemetry = runner.restore_reused_prefix_state(
+            &mut consumer,
+            &item,
+            Some(&ctx),
+            "flash-prefix-test",
+            4,
+            MlxSamplingParams::greedy(),
+            needs_cursor,
+            Some(""),
+        );
+        assert_eq!(telemetry.hits > 0, expect_hit);
+        assert_eq!(telemetry.misses > 0, !expect_hit);
+        assert_eq!(consumer.cache.seq_len(), tokens.len());
+        assert_eq!(consumer.cached_prefill_output_token, expected);
+        assert_eq!(consumer.prompt_prefix_tokens, tokens);
+        if needs_cursor {
+            runner.prepare_flash_next_prefill_cursor(&mut consumer);
+            assert!(
+                consumer
+                    .flash_next_mtp
+                    .cursor
+                    .as_ref()
+                    .unwrap()
+                    .aligned(consumer.cache.qwen4_exp.as_ref().unwrap())
+            );
+            assert_eq!(consumer.flash_next_mtp.telemetry.resumed_without_cursor, 0);
+        } else {
+            assert!(consumer.flash_next_mtp.cursor.is_none());
+        }
+    }
 }
 
 #[test]
