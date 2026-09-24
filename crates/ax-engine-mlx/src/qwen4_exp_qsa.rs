@@ -35,6 +35,12 @@ type Result<T> = std::result::Result<T, QsaError>;
 pub enum QsaError {
     #[error("qwen4_exp QSA evaluation failed: {0}")]
     Evaluation(String),
+    #[error("qwen4_exp QSA nonfinite score at batch {batch}, query {query}, block {block}")]
+    NonFiniteScore {
+        batch: usize,
+        query: usize,
+        block: usize,
+    },
     #[error(
         "qwen4_exp QSA geometry is invalid: query_heads={query_heads}, key_heads={key_heads}, head_dim={head_dim}, rotary_dim={rotary_dim}, ratio={compress_ratio}, budget={token_budget}, hidden={hidden_size}"
     )]
@@ -624,16 +630,13 @@ fn select_tokens(
             let complete = visible / cfg.compress_ratio();
             let mut chosen = Vec::new();
             if complete > 0 {
-                let mut order: Vec<usize> = (0..complete).collect();
-                order.sort_by(|lhs, rhs| {
-                    let left = score_at(&score_data, seq_u, n_blocks, b, q, *lhs);
-                    let right = score_at(&score_data, seq_u, n_blocks, b, q, *rhs);
-                    right
-                        .partial_cmp(&left)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then(lhs.cmp(rhs))
-                });
-                order.truncate(complete.min(cfg.block_topk()));
+                let row_start = (b * seq_u + q) * n_blocks;
+                let order = select_blocks(
+                    &score_data[row_start..row_start + complete],
+                    cfg.block_topk(),
+                    b,
+                    q,
+                )?;
                 for block in order {
                     let start = (block * cfg.compress_ratio()) as i32;
                     for token in 0..cfg.compress_ratio() {
@@ -652,15 +655,49 @@ fn select_tokens(
     Ok(tokens)
 }
 
-fn score_at(
-    scores: &[f32],
-    seq: usize,
-    n_blocks: usize,
-    batch: usize,
-    query: usize,
-    block: usize,
-) -> f32 {
-    scores[(batch * seq + query) * n_blocks + block]
+/// Preserve the attention traversal order: score descending, lower block index
+/// first on ties (including signed zero). Only the retained prefix is sorted.
+fn select_blocks(scores: &[f32], limit: usize, batch: usize, query: usize) -> Result<Vec<usize>> {
+    let mut ascending = true;
+    let mut descending = true;
+    for (block, &score) in scores.iter().enumerate() {
+        if !score.is_finite() {
+            return Err(QsaError::NonFiniteScore {
+                batch,
+                query,
+                block,
+            });
+        }
+        if block > 0 {
+            ascending &= scores[block - 1] <= score;
+            descending &= scores[block - 1] >= score;
+        }
+    }
+    let keep = limit.min(scores.len());
+    if descending {
+        return Ok((0..keep).collect());
+    }
+    let mut order: Vec<usize> = (0..scores.len()).collect();
+    let compare = |lhs: &usize, rhs: &usize| {
+        // Finiteness was checked before entering either comparison algorithm.
+        scores[*rhs]
+            .partial_cmp(&scores[*lhs])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(lhs.cmp(rhs))
+    };
+    // Stable full sort detects monotone runs cheaply. Partitioning those
+    // rows first would destroy that advantage, especially for equal scores.
+    if ascending {
+        order.sort_by(compare);
+        order.truncate(keep);
+        return Ok(order);
+    }
+    if keep < order.len() {
+        order.select_nth_unstable_by(keep, compare);
+        order.truncate(keep);
+    }
+    order.sort_unstable_by(compare);
+    Ok(order)
 }
 
 fn pack_gather_indices(
@@ -806,6 +843,97 @@ fn validate_projection(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_selection_matches_full_sort_including_boundary_ties() {
+        // Exhaust all short rows over ties, signed zero and finite extremes.
+        let alphabet = [f32::MIN, -0.0, 0.0, 1.0, f32::MAX];
+        for length in 0..=6 {
+            for mut code in 0..alphabet.len().pow(length as u32) {
+                let scores: Vec<f32> = (0..length)
+                    .map(|_| {
+                        let score = alphabet[code % alphabet.len()];
+                        code /= alphabet.len();
+                        score
+                    })
+                    .collect();
+                let mut expected: Vec<usize> = (0..length).collect();
+                expected.sort_by(|lhs, rhs| {
+                    scores[*rhs]
+                        .partial_cmp(&scores[*lhs])
+                        .unwrap()
+                        .then(lhs.cmp(rhs))
+                });
+                for keep in 0..=length + 1 {
+                    assert_eq!(
+                        select_blocks(&scores, keep, 0, 0).unwrap(),
+                        expected[..keep.min(length)],
+                        "scores={scores:?}, keep={keep}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_selection_matches_full_sort_at_long_context_sizes() {
+        let mut seed = 0x1234_5678_u32;
+        for length in [511, 512, 513, 4096, 32768] {
+            let scores: Vec<f32> = (0..length)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (seed % 1024) as f32
+                })
+                .collect();
+            let mut expected: Vec<usize> = (0..length).collect();
+            expected.sort_by(|lhs, rhs| {
+                scores[*rhs]
+                    .partial_cmp(&scores[*lhs])
+                    .unwrap()
+                    .then(lhs.cmp(rhs))
+            });
+            for keep in [1, 128, 512, length] {
+                assert_eq!(
+                    select_blocks(&scores, keep, 0, 0).unwrap(),
+                    expected[..keep.min(length)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn partial_selection_reports_nonfinite_location() {
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(matches!(
+                select_blocks(&[0.0, invalid, 2.0], 1, 3, 7),
+                Err(QsaError::NonFiniteScore {
+                    batch: 3,
+                    query: 7,
+                    block: 1
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn selection_rejects_nonfinite_visible_scores() {
+        let cfg = QsaConfig::new(2, 1, 4, 4, 2, 4, 16, EPS, BASE).unwrap();
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let scores = array_f32(&[1.0, invalid, 3.0], &[1, 1, 3]);
+            assert!(
+                select_tokens(cfg, 1, 1, 5, 3, Some(&scores)).is_err(),
+                "nonfinite visible score must fail selection: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn selection_ignores_nonfinite_future_blocks() {
+        let cfg = QsaConfig::new(2, 1, 4, 4, 2, 4, 16, EPS, BASE).unwrap();
+        let scores = array_f32(&[1.0, f32::NAN, f32::INFINITY], &[1, 1, 3]);
+        let selected = select_tokens(cfg, 1, 1, 2, 3, Some(&scores)).unwrap();
+        assert_eq!(selected, vec![vec![vec![0, 1, 2]]]);
+    }
 
     #[test]
     fn selection_matches_pinned_transformers_for_all_chunk_boundaries() {
