@@ -747,7 +747,11 @@ fn index_array(tokens: &[i32]) -> Result<MlxArray> {
         &[n],
         MlxDtype::Int32,
     );
-    mlx_sys::try_eval(&[&indices]).map_err(QsaError::Evaluation)?;
+    mlx_sys::try_eval(&[&indices]).map_err(|detail| QsaError::Evaluation {
+        stage: "attention gather-index materialization",
+        context: format!("indices={:?}", indices.shape()),
+        detail,
+    })?;
     Ok(indices)
 }
 
