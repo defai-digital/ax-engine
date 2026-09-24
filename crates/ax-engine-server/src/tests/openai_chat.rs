@@ -3175,35 +3175,51 @@ async fn flash_next_chat_rejects_inline_media_before_gemma_preprocessing() {
     fs::write(artifact_dir.join("preprocessor_config.json"), "{}").unwrap();
     // An operator-selected alias must not decide the native model's modality.
     let state = native_mlx_openai_builder_state("flash-next-candidate", &artifact_dir);
-    for part in [
-        json!({"type":"image_url","image_url":{"url":"https://example.com/image.png"}}),
-        json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}),
-        json!({"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}),
-    ] {
-        let request = serde_json::from_value(json!({
-            "model":"flash-next-candidate",
-            "messages":[{"role":"user","content":[{"type":"text","text":"hello"},part]}],
-            "max_tokens":8,
-        }))
-        .unwrap();
-        let error = build_openai_chat_request(&state.snapshot(), request)
-            .err()
+    for runtime_identity in [false, true] {
+        if runtime_identity {
+            // Auto-converted snapshots need not persist a manifest on disk.
+            fs::remove_file(artifact_dir.join("model-manifest.json")).unwrap();
+            let mut live = state.snapshot();
+            live.runtime_report.mlx_model = Some(
+                serde_json::from_value(json!({
+                    "artifacts_source":"explicit_config", "model_family":"qwen4_exp",
+                    "tensor_format":"safetensors", "layer_count":1, "tensor_count":1,
+                    "tie_word_embeddings":false,
+                }))
+                .unwrap(),
+            );
+            state.swap_live(live);
+        }
+        for part in [
+            json!({"type":"image_url","image_url":{"url":"https://example.com/image.png"}}),
+            json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}),
+            json!({"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}),
+        ] {
+            let request = serde_json::from_value(json!({
+                "model":"flash-next-candidate",
+                "messages":[{"role":"user","content":[{"type":"text","text":"hello"},part]}],
+                "max_tokens":8,
+            }))
             .unwrap();
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            error.1.0.error.code.as_deref(),
-            Some("unsupported_modality")
-        );
-        assert!(error.1.0.error.message.contains("text-only"));
-        assert!(!error.1.0.error.message.contains("Gemma4"));
-        assert!(
-            !error
-                .1
-                .0
-                .error
-                .message
-                .contains(&artifact_dir.display().to_string())
-        );
+            let error = build_openai_chat_request(&state.snapshot(), request)
+                .err()
+                .unwrap();
+            assert_eq!(error.0, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                error.1.0.error.code.as_deref(),
+                Some("unsupported_modality")
+            );
+            assert!(error.1.0.error.message.contains("text-only"));
+            assert!(!error.1.0.error.message.contains("Gemma4"));
+            assert!(
+                !error
+                    .1
+                    .0
+                    .error
+                    .message
+                    .contains(&artifact_dir.display().to_string())
+            );
+        }
     }
     fs::remove_dir_all(artifact_dir).unwrap();
 }
