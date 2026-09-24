@@ -603,6 +603,10 @@ pub(crate) struct NativeEventReceiver {
     receiver: mpsc::Receiver<NativeEvent>,
     terminal_events: Arc<parking_lot::Mutex<VecDeque<NativeEvent>>>,
     consumer_disconnected: Arc<AtomicBool>,
+    request_id: u64,
+    observed_event_count: u64,
+    terminal_observed: bool,
+    worker_failure_reported: bool,
 }
 
 impl NativeEventReceiver {
@@ -611,17 +615,38 @@ impl NativeEventReceiver {
     }
 
     pub(crate) async fn recv(&mut self) -> Option<NativeEvent> {
-        match self.receiver.recv().await {
+        let event = match self.receiver.recv().await {
             Some(event) => Some(event),
             None => self.terminal_events.lock().pop_front(),
-        }
+        };
+        self.observe_or_report_worker_exit(event)
     }
 
     pub(crate) fn blocking_recv(&mut self) -> Option<NativeEvent> {
-        match self.receiver.blocking_recv() {
+        let event = match self.receiver.blocking_recv() {
             Some(event) => Some(event),
             None => self.terminal_events.lock().pop_front(),
+        };
+        self.observe_or_report_worker_exit(event)
+    }
+
+    fn observe_or_report_worker_exit(&mut self, event: Option<NativeEvent>) -> Option<NativeEvent> {
+        if let Some(event) = event {
+            self.observed_event_count = self.observed_event_count.saturating_add(1);
+            if event.is_err() || matches!(&event, Ok(GenerateStreamEvent::Response(_))) {
+                self.terminal_observed = true;
+            }
+            return Some(event);
         }
+
+        if !self.terminal_observed && !self.worker_failure_reported {
+            self.worker_failure_reported = true;
+            return Some(Err(EngineSessionError::StreamEndedWithoutResponse {
+                request_id: self.request_id,
+                observed_event_count: self.observed_event_count,
+            }));
+        }
+        None
     }
 }
 
@@ -844,6 +869,10 @@ impl NativeGenerationService {
             receiver: events_rx,
             terminal_events,
             consumer_disconnected,
+            request_id,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
         })
     }
 
@@ -2516,8 +2545,8 @@ mod tests {
         // Poisoned-request case for the injected-panic containment contract:
         // a panic raised while a stream request is mid-flight (here: the
         // engine's first step, via the step observer) must detach that
-        // request with a terminal channel close -- never a hang and never a
-        // Response event -- release its admission permit, and retire the
+        // request with a structured terminal error -- never a hang and never
+        // a Response event -- release its admission permit, and retire the
         // worker while the process keeps running.
         let (service, _) = NativeGenerationService::spawn_with_factory(
             || Ok(EngineSession::new_deterministic_native_for_tests()),
@@ -2549,23 +2578,34 @@ mod tests {
             .await
             .expect("poisoned stream should start");
 
-        // The panicked unwind drops the worker's event sender, so the
-        // consumer's recv loop must terminate (bounded, no hang) and must
-        // never observe a terminal Response for the poisoned request.
-        let saw_response = tokio::time::timeout(Duration::from_secs(5), async {
+        // The panicked unwind drops the worker's event sender. The receiver
+        // must convert that retired-worker closure into a terminal error,
+        // rather than treating it as a normal stream end.
+        let (saw_response, saw_error) = tokio::time::timeout(Duration::from_secs(5), async {
             let mut saw_response = false;
+            let mut saw_error = false;
             while let Some(event) = events.recv().await {
-                if matches!(event, Ok(GenerateStreamEvent::Response(_))) {
+                if matches!(&event, Ok(GenerateStreamEvent::Response(_))) {
                     saw_response = true;
                 }
+                if matches!(
+                    &event,
+                    Err(EngineSessionError::StreamEndedWithoutResponse { .. })
+                ) {
+                    saw_error = true;
+                }
             }
-            saw_response
+            (saw_response, saw_error)
         })
         .await
         .expect("the poisoned request must terminate, not hang");
         assert!(
             !saw_response,
             "a poisoned request must detach without a Response event"
+        );
+        assert!(
+            saw_error,
+            "a retired worker must emit a terminal stream error"
         );
 
         // The unwound worker drops the ActiveStream (and with it the
@@ -2821,6 +2861,10 @@ mod tests {
             receiver,
             terminal_events,
             consumer_disconnected: Arc::clone(&consumer_disconnected),
+            request_id: 7,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
         };
 
         let queued = events
@@ -2842,6 +2886,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retired_worker_closure_becomes_a_terminal_stream_error() {
+        let (sender, receiver) = mpsc::channel(1);
+        let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
+        drop(sender);
+        let mut events = NativeEventReceiver {
+            receiver,
+            terminal_events,
+            consumer_disconnected: Arc::new(AtomicBool::new(false)),
+            request_id: 42,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
+        };
+
+        assert!(matches!(
+            events.recv().await,
+            Some(Err(EngineSessionError::StreamEndedWithoutResponse {
+                request_id: 42,
+                observed_event_count: 0,
+            }))
+        ));
+        assert!(events.recv().await.is_none());
+    }
+
+    #[tokio::test]
     async fn non_streaming_collect_reports_deadline_when_engine_stalls() {
         let (sender, receiver) = mpsc::channel(1);
         let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
@@ -2852,6 +2921,10 @@ mod tests {
             receiver,
             terminal_events,
             consumer_disconnected: Arc::clone(&consumer_disconnected),
+            request_id: 42,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
         };
 
         let error = collect_generate_response(events, 42, Some(Duration::from_millis(50)))
