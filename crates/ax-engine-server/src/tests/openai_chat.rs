@@ -3160,6 +3160,55 @@ async fn openai_chat_image_against_text_only_checkpoint_reports_missing_vision_s
 }
 
 #[tokio::test]
+async fn flash_next_chat_rejects_inline_media_before_gemma_preprocessing() {
+    let artifact_dir = minimal_tokenizer_artifact("flash-next-media-boundary");
+    fs::write(
+        artifact_dir.join("model-manifest.json"),
+        r#"{"model_family":"qwen4_exp"}"#,
+    )
+    .unwrap();
+    fs::write(
+        artifact_dir.join("config.json"),
+        r#"{"model_type":"qwen4_exp","eos_token_id":2}"#,
+    )
+    .unwrap();
+    fs::write(artifact_dir.join("preprocessor_config.json"), "{}").unwrap();
+    // An operator-selected alias must not decide the native model's modality.
+    let state = native_mlx_openai_builder_state("flash-next-candidate", &artifact_dir);
+    for part in [
+        json!({"type":"image_url","image_url":{"url":"https://example.com/image.png"}}),
+        json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}),
+        json!({"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}),
+    ] {
+        let request = serde_json::from_value(json!({
+            "model":"flash-next-candidate",
+            "messages":[{"role":"user","content":[{"type":"text","text":"hello"},part]}],
+            "max_tokens":8,
+        }))
+        .unwrap();
+        let error = build_openai_chat_request(&state.snapshot(), request)
+            .err()
+            .unwrap();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_modality")
+        );
+        assert!(error.1.0.error.message.contains("text-only"));
+        assert!(!error.1.0.error.message.contains("Gemma4"));
+        assert!(
+            !error
+                .1
+                .0
+                .error
+                .message
+                .contains(&artifact_dir.display().to_string())
+        );
+    }
+    fs::remove_dir_all(artifact_dir).unwrap();
+}
+
+#[tokio::test]
 async fn openai_chat_rejects_enable_thinking_on_non_reasoning_model() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-thinking-gate");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);

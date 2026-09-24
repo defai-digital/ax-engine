@@ -517,6 +517,18 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
     // Manifest family hint for registry-driven chat resolution (ADR-025 D2);
     // cached per artifacts dir, so consulting it per request is cheap.
     let artifact_family = crate::metadata::model_family_from_artifacts(live);
+    // Flash Next has a dedicated text trunk, not a Gemma4 media adapter.
+    // Decide from the loaded artifact identity before selecting a processor;
+    // a publisher processor config does not establish native media support.
+    if artifact_family.as_deref() == Some("qwen4_exp")
+        && messages_contain_inline_media(&request.messages)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_modality",
+            "Flash Next currently supports text-only chat in AX Engine; inline image and audio media are not supported".to_string(),
+        ));
+    }
     let streaming_reasoning_supported = live.runtime_report.selected_backend
         == SelectedBackend::Mlx
         && matches!(
