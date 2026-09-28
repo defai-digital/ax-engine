@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1262" width="960" height="1262" role="img">
+  <title>AX Engine components and workflow</title>
+  <desc>Callers enter the HTTP server or an in-process SDK. ax-engine-sdk owns one session per loaded model. ax-engine-core plans a decode-first batch and the paged KV ledger. ax-engine-mlx runs the graph. A native step admits, plans, executes, updates KV, and streams tokens.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 1.4 L 8.2 5 L 0 8.6 Z" fill="#8aa0b8"/>
+    </marker>
+  </defs>
+  <rect width="960" height="1262" fill="#ffffff"/>
+
+  <text x="32" y="42" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="26" font-weight="700">AX Engine</text>
+  <text x="32" y="68" fill="#5c6b7a" font-family="Helvetica, Arial, sans-serif" font-size="15">Components of the local runtime, and one native generation step</text>
+
+  <text x="32" y="108" fill="#1b3a4b" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4">COMPONENTS</text>
+
+  <rect x="32" y="122" width="896" height="76" rx="12" fill="#f8f4ef" stroke="#e4d5c4"/>
+  <text x="48" y="150" fill="#6b4f3a" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="700">Callers</text>
+  <text x="48" y="174" fill="#5e5146" font-family="Helvetica, Arial, sans-serif" font-size="14">CLI and TUI, OpenAI-compatible HTTP, language SDKs, and first-party apps on sidecar HTTP.</text>
+
+  <line x1="480" y1="198" x2="480" y2="228" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="32" y="236" width="896" height="548" rx="14" fill="#f4f7fb" stroke="#d3deea"/>
+  <text x="48" y="262" fill="#1b3a4b" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="700">AX Engine</text>
+
+  <rect x="48" y="276" width="424" height="104" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <text x="64" y="300" fill="#1d4e89" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.1">HTTP AND SSE</text>
+  <text x="64" y="324" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="700">ax-engine-server</text>
+  <text x="64" y="348" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">OpenAI, Ollama, embeddings, and audio.</text>
+  <text x="64" y="368" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Default listen is 127.0.0.1:31418.</text>
+
+  <rect x="488" y="276" width="424" height="104" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <text x="504" y="300" fill="#1d4e89" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.1">IN-PROCESS</text>
+  <text x="504" y="324" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="700">ax-engine-py and language SDKs</text>
+  <text x="504" y="348" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Python, Go, JavaScript, Ruby, Swift,</text>
+  <text x="504" y="368" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">and Mojo share the session contract.</text>
+
+  <rect x="48" y="396" width="424" height="104" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <text x="64" y="420" fill="#1d4e89" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.1">OPERATOR TOOLS</text>
+  <text x="64" y="444" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="700">ax-engine-bench</text>
+  <text x="64" y="468" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">CLI, TUI, doctor, and the</text>
+  <text x="64" y="488" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">workload-contract benchmark.</text>
+
+  <rect x="488" y="396" width="424" height="104" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <text x="504" y="420" fill="#1d4e89" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="700" letter-spacing="1.1">COMPATIBILITY ADAPTERS</text>
+  <text x="504" y="444" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="700">mlx_lm.server and llama.cpp</text>
+  <text x="504" y="468" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Optional text routes for mlx-lm</text>
+  <text x="504" y="488" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">and GGUF packs.</text>
+
+  <line x1="480" y1="500" x2="480" y2="528" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="148" y="536" width="664" height="68" rx="12" fill="#1b3a4b"/>
+  <text x="480" y="564" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="700" text-anchor="middle">ax-engine-sdk</text>
+  <text x="480" y="586" fill="#d5e4ef" font-family="Helvetica, Arial, sans-serif" font-size="13" text-anchor="middle">One EngineSession per loaded model, on that model's worker thread.</text>
+
+  <line x1="480" y1="604" x2="480" y2="628" stroke="#8aa0b8" stroke-width="1.5"/>
+  <line x1="186" y1="628" x2="774" y2="628" stroke="#8aa0b8" stroke-width="1.5"/>
+  <line x1="186" y1="628" x2="186" y2="646" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="480" y1="628" x2="480" y2="646" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="774" y1="628" x2="774" y2="646" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="48" y="652" width="276" height="116" rx="10" fill="#e8f1fb" stroke="#c5d4ea"/>
+  <text x="64" y="678" fill="#1d4e89" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">ax-engine-core</text>
+  <text x="64" y="702" fill="#243e66" font-family="Helvetica, Arial, sans-serif" font-size="13">Request state and scheduler.</text>
+  <text x="64" y="722" fill="#243e66" font-family="Helvetica, Arial, sans-serif" font-size="13">Decode-first batches and a</text>
+  <text x="64" y="742" fill="#243e66" font-family="Helvetica, Arial, sans-serif" font-size="13">paged KV ledger.</text>
+
+  <rect x="342" y="652" width="276" height="116" rx="10" fill="#e8f6ee" stroke="#b7e0c8"/>
+  <text x="358" y="678" fill="#1f6b45" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">ax-engine-mlx</text>
+  <text x="358" y="702" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">Model graphs on MLX.</text>
+  <text x="358" y="722" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">MTP, n-gram, and</text>
+  <text x="358" y="742" fill="#24543a" font-family="Helvetica, Arial, sans-serif" font-size="13">expert paging.</text>
+
+  <rect x="636" y="652" width="276" height="116" rx="10" fill="#fbf6ee" stroke="#ead9b5"/>
+  <text x="652" y="678" fill="#8a5a12" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">mlx-sys</text>
+  <text x="652" y="702" fill="#6a4a1c" font-family="Helvetica, Arial, sans-serif" font-size="13">Safe FFI over MLX 0.32.2.</text>
+  <text x="652" y="722" fill="#6a4a1c" font-family="Helvetica, Arial, sans-serif" font-size="13">Metal kernels stay on the</text>
+  <text x="652" y="742" fill="#6a4a1c" font-family="Helvetica, Arial, sans-serif" font-size="13">owned execution path.</text>
+
+  <text x="32" y="816" fill="#5c6b7a" font-family="Helvetica, Arial, sans-serif" font-size="13">Each loaded model keeps its own scheduler. A process arbiter rotates Metal turns.</text>
+  <text x="32" y="836" fill="#5c6b7a" font-family="Helvetica, Arial, sans-serif" font-size="13">AXQuant converts packs. AX Serving owns fleet routing and NVIDIA workers.</text>
+
+  <text x="32" y="878" fill="#1b3a4b" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="1.4">NATIVE GENERATION WORKFLOW</text>
+
+  <rect x="32" y="894" width="282" height="148" rx="10" fill="#f8f4ef" stroke="#e4d5c4"/>
+  <circle cx="54" cy="918" r="12" fill="#6b4f3a"/>
+  <text x="54" y="923" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" text-anchor="middle">1</text>
+  <text x="74" y="923" fill="#6b4f3a" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Request</text>
+  <text x="48" y="954" fill="#5e5146" font-family="Helvetica, Arial, sans-serif" font-size="13">POST /v1/chat/completions,</text>
+  <text x="48" y="974" fill="#5e5146" font-family="Helvetica, Arial, sans-serif" font-size="13">or an in-process SDK call.</text>
+  <text x="48" y="994" fill="#5e5146" font-family="Helvetica, Arial, sans-serif" font-size="13">Omit model for the default.</text>
+
+  <line x1="316" y1="968" x2="334" y2="968" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="339" y="894" width="282" height="148" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <circle cx="361" cy="918" r="12" fill="#1b3a4b"/>
+  <text x="361" y="923" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" text-anchor="middle">2</text>
+  <text x="381" y="923" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Admit</text>
+  <text x="355" y="954" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">The model worker admits it.</text>
+  <text x="355" y="974" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Waiting becomes Runnable.</text>
+  <text x="355" y="994" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Planning sees Runnable only.</text>
+
+  <line x1="623" y1="968" x2="641" y2="968" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="646" y="894" width="282" height="148" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <circle cx="668" cy="918" r="12" fill="#1b3a4b"/>
+  <text x="668" y="923" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" text-anchor="middle">3</text>
+  <text x="688" y="923" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Plan</text>
+  <text x="662" y="954" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Decode is ordered first.</text>
+  <text x="662" y="974" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">One route-compatible batch.</text>
+  <text x="662" y="994" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Extra prompt waits a step.</text>
+
+  <text x="480" y="1068" fill="#8a8178" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="1.2">THEN</text>
+
+  <rect x="32" y="1082" width="282" height="148" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <circle cx="54" cy="1106" r="12" fill="#1b3a4b"/>
+  <text x="54" y="1111" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" text-anchor="middle">4</text>
+  <text x="74" y="1111" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Execute</text>
+  <text x="48" y="1142" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">ax-engine-mlx runs the step.</text>
+  <text x="48" y="1162" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">A prefill chunk, or a decode.</text>
+  <text x="48" y="1182" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">The default route stays sequential.</text>
+
+  <line x1="316" y1="1156" x2="334" y2="1156" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="339" y="1082" width="282" height="148" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <circle cx="361" cy="1106" r="12" fill="#1b3a4b"/>
+  <text x="361" y="1111" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" text-anchor="middle">5</text>
+  <text x="381" y="1111" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">KV</text>
+  <text x="355" y="1142" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Paged blocks, prefix reuse.</text>
+  <text x="355" y="1162" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">A newer prefill may be preempted.</text>
+  <text x="355" y="1182" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Failure blocks that request.</text>
+
+  <line x1="623" y1="1156" x2="641" y2="1156" stroke="#8aa0b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <rect x="646" y="1082" width="282" height="148" rx="10" fill="#ffffff" stroke="#d5deea"/>
+  <circle cx="668" cy="1106" r="12" fill="#1b3a4b"/>
+  <text x="668" y="1111" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="12" font-weight="700" text-anchor="middle">6</text>
+  <text x="688" y="1111" fill="#142033" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Stream</text>
+  <text x="662" y="1142" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Sample when the prompt ends.</text>
+  <text x="662" y="1162" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">SSE carries each token.</text>
+  <text x="662" y="1182" fill="#3d4c5c" font-family="Helvetica, Arial, sans-serif" font-size="13">Ends Finished, Cancelled, or Failed.</text>
+</svg>
