@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -280,11 +281,17 @@ def _last_nonempty_line(text: str) -> str:
 
 
 def _normalize_spaces(text: str) -> str:
-    """Collapse Unicode/NBSP whitespace so exact answers match model variants.
+    """Collapse Unicode/NBSP whitespace and compatibility forms so exact
+    answers match model variants.
 
     Models sometimes emit U+00A0 (NBSP) or other separators instead of ASCII
-    space (observed: gpt-oss-20b ``red green\\xa0blue``).
+    space (observed: gpt-oss-20b ``red green\\xa0blue``), and compatibility
+    characters instead of ASCII (observed: flash-next ``H\\u2082O`` for
+    ``H2O``). NFKC folds subscript/superscript/full-width variants to their
+    ASCII compatibles before whitespace collapsing; it never case-folds and
+    never equates distinct digits or punctuation.
     """
+    text = unicodedata.normalize("NFKC", text)
     return re.sub(r"\s+", " ", text.replace("\u00a0", " ").replace("\u2007", " ").replace("\u202f", " ")).strip()
 
 

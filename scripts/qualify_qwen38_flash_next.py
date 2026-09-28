@@ -20,7 +20,7 @@ from typing import Any, Sequence
 
 FAMILY = "qwen4_exp"
 HOST_CLASS = "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+"
-PRIMARY_ALIAS = None
+PRIMARY_ALIAS = "qwen3.8-flash-next:mxfp4"
 AFFINE_ALIAS = "qwen3.8-flash-next:axq"
 AFFINE_REPO = "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP"
 PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP"
@@ -58,6 +58,7 @@ def contract() -> dict[str, Any]:
             "qwen38_flash_next",
             AFFINE_ALIAS,
             SIXBIT_ALIAS,
+            PRIMARY_ALIAS,
         ],
         "repo_id": PRIMARY_REPO,
         "pack_revision": PACK_REVISION,
@@ -83,13 +84,13 @@ def contract() -> dict[str, Any]:
         "qualification": False,
         "validation_scope": "manifest metadata only; native loader validation required",
         "convert": "metadata mapping; existing audited affine readiness is not MXFP4 readiness",
-        "load_blocker": "MXFP4 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1; target qualification pending",
+        "load_blocker": "none: MXFP4/group32 loads without an env var; target qualification pending",
         "unknown_layout_blocker": "qwen4_exp_weight_layout_unknown",
         "existing_affine_expert_layouts": list(EXISTING_AFFINE_EXPERT_LAYOUTS),
-        "experimental_opt_in": "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1",
+        "experimental_opt_in": "none for MXFP4 (certification record tracks its Candidate status); AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 only for 2-bit/group32",
         "experimental_scope": (
-            "MXFP4/group32 diagnostic paging; audited affine 2-bit/group32 also needs "
-            "AX_ENGINE_2BIT_EXPERIMENTAL=1. Neither has target qualification."
+            "audited affine 2-bit/group32 needs AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 and "
+            "AX_ENGINE_2BIT_EXPERIMENTAL=1. Neither 2-bit nor the MXFP4 target has qualification."
         ),
         "experimental_expert_layouts": list(EXPERIMENTAL_EXPERT_LAYOUTS),
         "experimental_2bit_opt_in": "AX_ENGINE_2BIT_EXPERIMENTAL=1",
@@ -146,7 +147,7 @@ def _print_contract(as_json: bool) -> None:
     print(f"alias:  {payload['alias'] or 'not registered for the MXFP4 target'}")
     print(f"repo:   {payload['repo_id']}")
     print(f"host:   {payload['host_class']}")
-    print("target admission: MXFP4/group32 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
+    print("target admission: MXFP4/group32 loads without an env var; certification stays Candidate (gates open)")
     print("existing affine admission: 4-bit/group64 and 6-bit/group64; not target qualification")
     print("fail-closed: convert must not remap onto qwen3_5")
     print("MTP gates (metadata preflight assesses none):")
@@ -236,8 +237,8 @@ def _live_preflight(model_dir: Path) -> None:
         for name in ("AX_ENGINE_FLASH_NEXT_EXPERIMENTAL", "AX_ENGINE_2BIT_EXPERIMENTAL")
     ):
         raise SystemExit("2-bit requires both experimental opt-ins")
-    if layouts[0][0] == "mxfp4" and os.environ.get("AX_ENGINE_FLASH_NEXT_EXPERIMENTAL") != "1":
-        raise SystemExit("MXFP4 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
+    if layouts[0][0] == "mxfp4":
+        print("MXFP4/group32 preflight: no experimental opt-in required")
     if layouts[0] not in allowed:
         raise SystemExit(f"unsupported expert layout {layouts[0]}")
     print(f"live preflight ok: {model_dir}")

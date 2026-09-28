@@ -141,6 +141,13 @@ fn load_safetensors_mmap_filtered(
     filter: Option<SafetensorsNameFilter<'_>>,
 ) -> Result<HashMap<String, MlxArray>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
+    // NAS/SMB-backed caches can replace or truncate a shard while it is
+    // mapped; reading a faulted page is an uncatchable SIGBUS. Stat before
+    // and after the copies and fail closed on any drift, so a mutating file
+    // becomes a typed error instead of torn tensors (or a dead process).
+    let stat_before = file
+        .metadata()
+        .map_err(|e| format!("stat {}: {}", path.display(), e))?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("mmap {}: {}", path.display(), e))? };
     let mmap = Arc::new(mmap);
 
@@ -289,6 +296,21 @@ fn load_safetensors_mmap_filtered(
     // Drop the mmap explicitly at function end so the mapping outlives
     // every `from_raw_data` copy above; MLX owns its own buffer by then.
     drop(mmap);
+    let stat_after = std::fs::metadata(path)
+        .map_err(|e| format!("stat after load {}: {}", path.display(), e))?;
+    if stat_after.len() != stat_before.len()
+        || stat_after.modified().ok() != stat_before.modified().ok()
+    {
+        return Err(format!(
+            "safetensors file {} changed while mapped (size {} -> {}, mtime {:?} -> {:?}); \
+             refusing to load possibly-torn tensors",
+            path.display(),
+            stat_before.len(),
+            stat_after.len(),
+            stat_before.modified().ok(),
+            stat_after.modified().ok()
+        ));
+    }
     Ok(result)
 }
 

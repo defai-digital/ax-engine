@@ -65,7 +65,7 @@ configurations:
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
 | Mac mini M4 Pro | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. |
+| Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; `qwen3.8-flash-next:mxfp4` selects the revision-pinned MXFP4 MTP pack. |
 
 ## What model stack should I run on high-memory Apple Silicon?
 
@@ -263,8 +263,8 @@ on that pack is **31.05 tok/s** decode on Mac mini M4 Pro 64 GB and
 direct AR, which already saturates DRAM. Do not mix those dense-27B decode
 numbers with Tiel completion tok/s.
 
-Qwen 3.8 Flash Next MXFP4 MTP is a second SKU for MacBook Pro
-M5 Max 128 GB. Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
+Qwen 3.8 Flash Next MXFP4 MTP is a second SKU for Mac Studio, Ultra-class
+Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; `qwen3.8-flash-next:mxfp4` selects the revision-pinned MXFP4 MTP pack.
 See [Supported Models](SUPPORTED-MODELS.md).
 
 ## Which runtime path should I choose first?

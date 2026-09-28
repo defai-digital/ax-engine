@@ -227,6 +227,14 @@ impl DiagnosticModel<'_> {
             qwen4_exp::Qwen4ExpState::new(self.trunk, self.owner)
         };
         let mut direct = self.singleton(*tokens.last().unwrap(), &prefix);
+        // Parallel control for legacy-batched steps: replay accepted pairs as
+        // one 2-token batched forward so the state comparison matches the
+        // verifier's batch arithmetic. Serial-singleton replay of a 2-row
+        // batch inherently rounds differently in GDN/QSA/PLE recurrent
+        // arrays, which a batch-vs-singleton comparison cannot distinguish
+        // from a real defect.
+        let mut direct_batched: Option<qwen4_exp::Qwen4ExpState> = Some(direct.state.clone());
+        let mut full_state_batched_identity = true;
         let mut full_state_identity =
             flash_mtp_state_bytes(&session.trunk_state, self.trunk.layers.len())
                 == flash_mtp_state_bytes(&direct.state, self.trunk.layers.len());
@@ -271,6 +279,23 @@ impl DiagnosticModel<'_> {
                 .step_observed(self.trunk, self.head, remaining, self.terminal_ids)
                 .unwrap();
             assert!(!consumed.is_empty() && consumed.len() <= remaining);
+            // Only a clean pair advance keeps the batched control aligned
+            // with the serial direct trajectory.
+            if observation.target_schedule == "legacy_batched" && consumed.len() == 2 {
+                direct_batched = direct_batched.take().map(|state| {
+                    qwen4_exp::forward(
+                        self.trunk,
+                        &consumed,
+                        &state,
+                        self.owner,
+                        ProjectionBatchPolicy::Shared,
+                    )
+                    .unwrap()
+                    .state
+                });
+            } else {
+                direct_batched = None;
+            }
             let mut rows = Vec::new();
             let mut primary_exact = None;
             for (index, &token) in consumed.iter().enumerate() {
@@ -357,6 +382,16 @@ impl DiagnosticModel<'_> {
                     == flash_mtp_state_bytes(&direct.state, self.trunk.layers.len())
             });
             full_state_identity &= full_state_exact.unwrap_or(true);
+            let batched_state_exact = (compare_state
+                && observation.target_schedule == "legacy_batched")
+                .then(|| {
+                    direct_batched.as_ref().map(|batched| {
+                        flash_mtp_state_bytes(&session.trunk_state, self.trunk.layers.len())
+                            == flash_mtp_state_bytes(batched, self.trunk.layers.len())
+                    })
+                })
+                .flatten();
+            full_state_batched_identity &= batched_state_exact.unwrap_or(true);
             let stream_hidden_exact = compare_state
                 .then(|| floating_array_exact(&session.stream_hidden, &direct.stream_hidden));
             stream_hidden_identity &= stream_hidden_exact.unwrap_or(true);
@@ -372,6 +407,7 @@ impl DiagnosticModel<'_> {
                 "common_prefix_stream_hidden_exact": stream_hidden_exact,
                 "canonical_primary_exact": primary_exact,
                 "actual_next_logits_exact": actual_next_logits_exact,
+                "common_prefix_batched_serialized_state_exact": batched_state_exact,
                 "proposed": session.proposed, "accepted": session.accepted}));
             if difference.is_some() {
                 save(&json!({"prompt_ids": tokens, "max_new_tokens": max_new,
@@ -397,11 +433,12 @@ impl DiagnosticModel<'_> {
             "prefill": prefill, "steps": steps, "stopped_at_terminal": stopped_at_terminal,
             "first_state_difference": first_state_difference,
             "compared_full_state_identity": full_state_identity,
+            "compared_full_state_batched_identity": full_state_batched_identity,
             "compared_stream_hidden_identity": stream_hidden_identity,
             "compared_canonical_logits_identity": canonical_logits_identity,
             "proposed": session.proposed, "accepted": session.accepted,
             "qualification": false, "release_ready": false,
-            "scope": "Stops at first actual token difference; no tolerance or near-tie acceptance. No HTTP trajectory identity is inferred."})
+            "scope": "Stops at first actual token difference; no tolerance or near-tie acceptance. No HTTP trajectory identity is inferred. compared_full_state_batched_identity replays legacy-batched accepted pairs as one 2-token batch against the verifier's batch arithmetic; a false there is a real batch-vs-batch defect, while a false compared_full_state_identity with a true batched control is inherent batch-vs-singleton rounding."})
     }
 }
 

@@ -133,7 +133,7 @@ multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
 Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next MXFP4 MTP is a
 second SKU on MacBook Pro M5 Max 128 GB
 (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
-Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
+Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; `qwen3.8-flash-next:mxfp4` selects the revision-pinned MXFP4 MTP pack.
 Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
 variable. The Flash Next development comparison uses a pinned MLX-VLM
 reference because `mlx_lm` has no `qwen4_exp` model. Passing `--skip-mlx-lm`
@@ -164,7 +164,8 @@ For a resident control set `AX_STREAM_EXPERTS=off` and
 `AX_FLASH_NEXT_EXPECT_STREAMING=0`, using a different output filename. Auto uses
 the existing full-resident estimate plus 48 GiB admission rule; set the expected
 streaming value for the pack and host being tested. Audited 4-bit/group64 and
-6-bit/group64 packs need no family opt-in. The 2-bit export still needs
+6-bit/group64 packs and the MXFP4/group32 target pack need no family opt-in.
+The 2-bit export still needs
 `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and `AX_ENGINE_2BIT_EXPERIMENTAL=1` in
 every process.
 

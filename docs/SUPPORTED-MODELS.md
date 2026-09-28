@@ -61,7 +61,7 @@ resolved session*, not how well a family is supported.
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
 | **64 GB (Mac mini M4 Pro)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); **31.05 tok/s** product-path MTP decode |
 | **128 GB (MacBook Pro M5 Max)** | 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill) |
-| **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M2 Ultra or newer)** | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. Super-class Qwen 3.8 (2.4T) stays experimental. |
+| **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M2 Ultra or newer)** | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; `qwen3.8-flash-next:mxfp4` selects the revision-pinned MXFP4 MTP pack. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
@@ -114,13 +114,14 @@ Qwen 3.8 caveat:
   the unique general-purpose default and primary optimization target.
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
-  for Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
-  CLI aliases are `qwen3.8-flash-next:axq` (4-bit) and
-  `qwen3.8-flash-next:axq-6bit`. Public pack availability and immutable alias revisions are verified; full
+  for Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; `qwen3.8-flash-next:mxfp4` selects the revision-pinned MXFP4 MTP pack.
+  CLI aliases are `qwen3.8-flash-next:axq` (4-bit),
+  `qwen3.8-flash-next:axq-6bit`, and `qwen3.8-flash-next:mxfp4` (MXFP4 MTP).
+  Public pack availability and immutable alias revisions are verified; full
   payload, fresh-download and installed-runtime qualification remain open.
   Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
   variable. 2-bit still needs `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
-  `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4/group32 also requires the family opt-in; target qualification remains open. Do not treat it as 27B
+  `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4/group32 also loads with no environment variable; target qualification remains open. Do not treat it as 27B
   or as Super-class 2.4T. Record:
   [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).
 

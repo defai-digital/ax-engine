@@ -644,6 +644,14 @@ AUTOMATOSX_MODEL_PROFILES = (
         ),
     ),
     _automatosx_profile(
+        "ax-qwen3.8-flash-next-axq-mxfp4",
+        "AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+        (
+            "qwen3.8-flash-next:mxfp4",
+            "ax-qwen3.8-flash-next-mxfp4",
+        ),
+    ),
+    _automatosx_profile(
         "ax-qwen3.6-35b-4bit",
         "AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
         ("ax-qwen36-35b-4bit",),
@@ -1049,6 +1057,9 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP": (
         "d514dcebf3086068ed7968caf395083c95ebcfca"
     ),
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP": (
+        "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35"
+    ),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": ("6182ccbc41c7397ff90670f740c6d9eacfa4b09f"),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP": ("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"),
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit": (
@@ -1167,6 +1178,7 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
 }
 
 
