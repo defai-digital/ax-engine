@@ -101,6 +101,17 @@ still depend on memory capacity and workload; see the
 - **Claims you can audit** — public rows ship with checked-in artifacts (route,
   model snapshot, sampler, accept rate, provenance)
 
+## Components and workflow
+
+![AX Engine components and workflow](docs/images/ax-engine-components.svg)
+
+Clients enter through the HTTP server, the Python binding, or a language SDK.
+`ax-engine-sdk` keeps one session per loaded model on that model's worker
+thread. `ax-engine-core` admits the request, plans a decode-first batch, and
+owns the paged KV ledger. `ax-engine-mlx` runs the graph. Optional
+`mlx_lm.server` and llama.cpp adapters stay on the compatibility route.
+Normative detail is in [Architecture](docs/ARCHITECTURE.md).
+
 ## Quick Start
 
 ### Homebrew (primary)
