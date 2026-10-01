@@ -603,6 +603,10 @@ pub(crate) struct NativeEventReceiver {
     receiver: mpsc::Receiver<NativeEvent>,
     terminal_events: Arc<parking_lot::Mutex<VecDeque<NativeEvent>>>,
     consumer_disconnected: Arc<AtomicBool>,
+    request_id: u64,
+    observed_event_count: u64,
+    terminal_observed: bool,
+    worker_failure_reported: bool,
 }
 
 impl NativeEventReceiver {
@@ -611,17 +615,38 @@ impl NativeEventReceiver {
     }
 
     pub(crate) async fn recv(&mut self) -> Option<NativeEvent> {
-        match self.receiver.recv().await {
+        let event = match self.receiver.recv().await {
             Some(event) => Some(event),
             None => self.terminal_events.lock().pop_front(),
-        }
+        };
+        self.observe_or_report_worker_exit(event)
     }
 
     pub(crate) fn blocking_recv(&mut self) -> Option<NativeEvent> {
-        match self.receiver.blocking_recv() {
+        let event = match self.receiver.blocking_recv() {
             Some(event) => Some(event),
             None => self.terminal_events.lock().pop_front(),
+        };
+        self.observe_or_report_worker_exit(event)
+    }
+
+    fn observe_or_report_worker_exit(&mut self, event: Option<NativeEvent>) -> Option<NativeEvent> {
+        if let Some(event) = event {
+            self.observed_event_count = self.observed_event_count.saturating_add(1);
+            if event.is_err() || matches!(&event, Ok(GenerateStreamEvent::Response(_))) {
+                self.terminal_observed = true;
+            }
+            return Some(event);
         }
+
+        if !self.terminal_observed && !self.worker_failure_reported {
+            self.worker_failure_reported = true;
+            return Some(Err(EngineSessionError::StreamEndedWithoutResponse {
+                request_id: self.request_id,
+                observed_event_count: self.observed_event_count,
+            }));
+        }
+        None
     }
 }
 
@@ -844,6 +869,10 @@ impl NativeGenerationService {
             receiver: events_rx,
             terminal_events,
             consumer_disconnected,
+            request_id,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
         })
     }
 
@@ -2380,7 +2409,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use ax_engine_sdk::{
-        EngineSessionConfig, PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier,
+        CapabilityReport, EngineSessionConfig, GenerateFinishReason, GenerateRouteReport,
+        GenerateStatus, GenerateStreamResponseEvent, PreviewBackendRequest,
+        PreviewSessionConfigRequest, ResolutionPolicy, SelectedBackend, SupportTier,
     };
 
     use super::*;
@@ -2516,8 +2547,8 @@ mod tests {
         // Poisoned-request case for the injected-panic containment contract:
         // a panic raised while a stream request is mid-flight (here: the
         // engine's first step, via the step observer) must detach that
-        // request with a terminal channel close -- never a hang and never a
-        // Response event -- release its admission permit, and retire the
+        // request with a structured terminal error -- never a hang and never
+        // a Response event -- release its admission permit, and retire the
         // worker while the process keeps running.
         let (service, _) = NativeGenerationService::spawn_with_factory(
             || Ok(EngineSession::new_deterministic_native_for_tests()),
@@ -2549,23 +2580,34 @@ mod tests {
             .await
             .expect("poisoned stream should start");
 
-        // The panicked unwind drops the worker's event sender, so the
-        // consumer's recv loop must terminate (bounded, no hang) and must
-        // never observe a terminal Response for the poisoned request.
-        let saw_response = tokio::time::timeout(Duration::from_secs(5), async {
+        // The panicked unwind drops the worker's event sender. The receiver
+        // must convert that retired-worker closure into a terminal error,
+        // rather than treating it as a normal stream end.
+        let (saw_response, saw_error) = tokio::time::timeout(Duration::from_secs(5), async {
             let mut saw_response = false;
+            let mut saw_error = false;
             while let Some(event) = events.recv().await {
-                if matches!(event, Ok(GenerateStreamEvent::Response(_))) {
+                if matches!(&event, Ok(GenerateStreamEvent::Response(_))) {
                     saw_response = true;
                 }
+                if matches!(
+                    &event,
+                    Err(EngineSessionError::StreamEndedWithoutResponse { .. })
+                ) {
+                    saw_error = true;
+                }
             }
-            saw_response
+            (saw_response, saw_error)
         })
         .await
         .expect("the poisoned request must terminate, not hang");
         assert!(
             !saw_response,
             "a poisoned request must detach without a Response event"
+        );
+        assert!(
+            saw_error,
+            "a retired worker must emit a terminal stream error"
         );
 
         // The unwound worker drops the ActiveStream (and with it the
@@ -2821,6 +2863,10 @@ mod tests {
             receiver,
             terminal_events,
             consumer_disconnected: Arc::clone(&consumer_disconnected),
+            request_id: 7,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
         };
 
         let queued = events
@@ -2842,6 +2888,270 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retired_worker_closure_becomes_a_terminal_stream_error() {
+        let (sender, receiver) = mpsc::channel(1);
+        let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
+        drop(sender);
+        let mut events = NativeEventReceiver {
+            receiver,
+            terminal_events,
+            consumer_disconnected: Arc::new(AtomicBool::new(false)),
+            request_id: 42,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
+        };
+
+        assert!(matches!(
+            events.recv().await,
+            Some(Err(EngineSessionError::StreamEndedWithoutResponse {
+                request_id: 42,
+                observed_event_count: 0,
+            }))
+        ));
+        assert!(events.recv().await.is_none());
+    }
+
+    fn native_step_event(request_id: u64, delta_tokens: &[u32]) -> NativeEvent {
+        Ok(GenerateStreamEvent::Step(GenerateStreamStepEvent {
+            request: SessionRequestReport {
+                request_id,
+                model_id: "qwen3".to_string(),
+                state: SessionRequestState::Running,
+                prompt_tokens: vec![1, 2, 3],
+                processed_prompt_tokens: 3,
+                output_tokens: delta_tokens.to_vec(),
+                output_token_logprobs: Vec::new(),
+                prompt_len: 3,
+                output_len: delta_tokens.len() as u32,
+                max_output_tokens: 8,
+                cancel_requested: false,
+                execution_plan_ref: None,
+                route: GenerateRouteReport::default(),
+                finish_reason: None,
+                terminal_stop_reason: None,
+                last_error: None,
+            },
+            step: EngineStepReport::default(),
+            delta_tokens: delta_tokens.to_vec(),
+            delta_token_logprobs: Vec::new(),
+            delta_text: None,
+        }))
+    }
+
+    fn native_response_event(request_id: u64) -> NativeEvent {
+        Ok(GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+            response: GenerateResponse {
+                request_id,
+                model_id: "qwen3".to_string(),
+                prompt_tokens: vec![1, 2, 3],
+                prompt_text: None,
+                output_tokens: vec![4, 5],
+                output_token_logprobs: Vec::new(),
+                output_text: Some(String::new()),
+                prompt_token_count: None,
+                output_token_count: None,
+                status: GenerateStatus::Finished,
+                finish_reason: Some(GenerateFinishReason::Stop),
+                step_count: 2,
+                ttft_step: None,
+                route: GenerateRouteReport::default(),
+                runtime: RuntimeReport {
+                    selected_backend: SelectedBackend::Mlx,
+                    support_tier: SupportTier::MlxPreview,
+                    resolution_policy: ResolutionPolicy::MlxOnly,
+                    capabilities: CapabilityReport::mlx_preview(),
+                    fallback_reason: None,
+                    host: Default::default(),
+                    metal_toolchain: Default::default(),
+                    mlx_runtime: None,
+                    mlx_model: None,
+                    delegated_runtime: None,
+                },
+                performance: Default::default(),
+            },
+        }))
+    }
+
+    #[test]
+    fn retired_worker_closure_becomes_a_terminal_stream_error_on_blocking_recv() {
+        // Blocking twin of `retired_worker_closure_becomes_a_terminal_stream_error`:
+        // blocking_recv is the receiver path the OpenAI SSE, Ollama, and gRPC
+        // stream drivers actually run (generation/streaming.rs, ollama.rs,
+        // grpc/streams.rs), so dropping the terminal-error synthesis from
+        // blocking_recv alone — leaving the async path intact — must fail here.
+        let (sender, receiver) = mpsc::channel(1);
+        let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
+        drop(sender);
+        let mut events = NativeEventReceiver {
+            receiver,
+            terminal_events,
+            consumer_disconnected: Arc::new(AtomicBool::new(false)),
+            request_id: 43,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
+        };
+
+        assert!(matches!(
+            events.blocking_recv(),
+            Some(Err(EngineSessionError::StreamEndedWithoutResponse {
+                request_id: 43,
+                observed_event_count: 0,
+            }))
+        ));
+        // The synthesis is one-shot: the stream ends cleanly afterwards
+        // instead of repeating the synthetic error.
+        assert!(events.blocking_recv().is_none());
+    }
+
+    #[test]
+    fn blocking_recv_synthesis_reports_partial_event_count() {
+        // Non-terminal events the consumer already received must be counted
+        // into the synthesized StreamEndedWithoutResponse, so operators can
+        // tell a mid-stream worker retirement (events observed) from a
+        // start-up one (zero events) in the failure diagnostics.
+        let (sender, receiver) = mpsc::channel(4);
+        let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
+        sender
+            .try_send(native_step_event(44, &[7]))
+            .expect("channel should accept the first step");
+        sender
+            .try_send(native_step_event(44, &[8]))
+            .expect("channel should accept the second step");
+        drop(sender);
+        let mut events = NativeEventReceiver {
+            receiver,
+            terminal_events,
+            consumer_disconnected: Arc::new(AtomicBool::new(false)),
+            request_id: 44,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
+        };
+
+        assert!(matches!(
+            events.blocking_recv(),
+            Some(Ok(GenerateStreamEvent::Step(_)))
+        ));
+        assert!(matches!(
+            events.blocking_recv(),
+            Some(Ok(GenerateStreamEvent::Step(_)))
+        ));
+        assert!(matches!(
+            events.blocking_recv(),
+            Some(Err(EngineSessionError::StreamEndedWithoutResponse {
+                request_id: 44,
+                observed_event_count: 2,
+            }))
+        ));
+        assert!(events.blocking_recv().is_none());
+    }
+
+    #[tokio::test]
+    async fn delivered_response_suppresses_the_synthesized_terminal_error() {
+        // A Response the consumer actually received marks the stream
+        // successfully terminal. Abrupt channel closure afterwards must end
+        // the stream with None — never a synthetic StreamEndedWithoutResponse
+        // appended after a successful completion.
+        let (sender, receiver) = mpsc::channel(4);
+        let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
+        sender
+            .try_send(native_step_event(45, &[7]))
+            .expect("channel should accept the step");
+        sender
+            .try_send(native_response_event(45))
+            .expect("channel should accept the response");
+        drop(sender);
+        let mut events = NativeEventReceiver {
+            receiver,
+            terminal_events,
+            consumer_disconnected: Arc::new(AtomicBool::new(false)),
+            request_id: 45,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
+        };
+
+        assert!(matches!(
+            events.recv().await,
+            Some(Ok(GenerateStreamEvent::Step(_)))
+        ));
+        assert!(matches!(
+            events.recv().await,
+            Some(Ok(GenerateStreamEvent::Response(_)))
+        ));
+        assert!(events.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn blocking_stream_completion_terminates_without_a_synthetic_error() {
+        // End-to-end companion to the synthetic-error tests: the worker always
+        // parks a completed stream's terminal Response in the detached
+        // terminal_events queue (apply_step_to_streams → detach_terminal_events)
+        // before dropping the channel sender. Draining that queue must deliver
+        // the Response and then end with None — if the receiver mistook the
+        // detached-queue handoff for a retired worker, every successful stream
+        // would finish with a spurious terminal error.
+        let (service, _) = NativeGenerationService::spawn_with_factory(
+            || Ok(EngineSession::new_deterministic_native_for_tests()),
+            &crate::args::ServerEnvConfig::default(),
+        )
+        .expect("service should start");
+        let admission = Arc::new(crate::admission::AdmissionController::new(Some(1)));
+        let mut events = service
+            .start_stream(
+                4242,
+                GenerateRequest {
+                    model_id: "qwen3".to_string(),
+                    input_tokens: vec![1, 2, 3],
+                    input_text: None,
+                    multimodal_inputs: Default::default(),
+                    max_output_tokens: 8,
+                    sampling: Default::default(),
+                    stop_sequences: Vec::new(),
+                    metadata: None,
+                },
+                admission.try_admit().unwrap(),
+            )
+            .await
+            .expect("deterministic stream should start");
+
+        let consumer = tokio::task::spawn_blocking(move || {
+            let mut responses = 0_usize;
+            let mut errors = 0_usize;
+            while let Some(event) = events.blocking_recv() {
+                match event {
+                    Ok(GenerateStreamEvent::Response(_)) => responses += 1,
+                    Err(_) => errors += 1,
+                    Ok(_) => {}
+                }
+            }
+            (responses, errors)
+        });
+        let received = tokio::time::timeout(Duration::from_secs(5), consumer).await;
+        service
+            .shutdown()
+            .await
+            .expect("worker should shut down after a completed stream");
+        let (responses, errors) = received
+            .expect("the completed stream must terminate, not hang")
+            .expect("the stream consumer must not panic");
+
+        assert_eq!(
+            responses, 1,
+            "the deterministic stream must deliver its Response"
+        );
+        assert_eq!(
+            errors, 0,
+            "a successful stream must carry no error events, synthetic or real"
+        );
+        // The permit is released by detach_terminal_events before the sender
+        // drops, so it is already gone by the time the Response was observed.
+        assert_eq!(admission.active_jobs(), 0);
+    }
+
+    #[tokio::test]
     async fn non_streaming_collect_reports_deadline_when_engine_stalls() {
         let (sender, receiver) = mpsc::channel(1);
         let terminal_events = Arc::new(parking_lot::Mutex::new(VecDeque::new()));
@@ -2852,6 +3162,10 @@ mod tests {
             receiver,
             terminal_events,
             consumer_disconnected: Arc::clone(&consumer_disconnected),
+            request_id: 42,
+            observed_event_count: 0,
+            terminal_observed: false,
+            worker_failure_reported: false,
         };
 
         let error = collect_generate_response(events, 42, Some(Duration::from_millis(50)))

@@ -14,7 +14,7 @@
 #![allow(dead_code)]
 
 use mlx_sys::{
-    MlxArray, MlxDtype, astype, concatenate, contiguous, multiply, repeat_axis, reshape, rms_norm,
+    MlxArray, MlxDtype, astype, concatenate, contiguous, multiply, reshape, rms_norm,
     scaled_dot_product_attention, slice, split, take, transpose,
 };
 use thiserror::Error;
@@ -678,8 +678,6 @@ fn attend_selected(
             let idx = index_array(chosen)?;
             let k_sel = transpose(&take(&k_b, &idx, 1, None), &[0, 2, 1, 3], None);
             let v_sel = transpose(&take(&v_b, &idx, 1, None), &[0, 2, 1, 3], None);
-            let k_sel = map_kv_heads(&k_sel, cfg.groups);
-            let v_sel = map_kv_heads(&v_sel, cfg.groups);
             let q_s = slice(
                 &q_b,
                 &[0, 0, s, 0],
@@ -687,6 +685,13 @@ fn attend_selected(
                 &[1, 1, 1, 1],
                 None,
             );
+            // Native GQA: the fused kernel broadcasts the `kv_heads`-wide K/V
+            // across each contiguous query-head group (query head `h` reads KV
+            // head `h / groups`), so the selected K/V stay at their true
+            // `kv_heads` width instead of being materialized to `q_heads` for
+            // every query. That mapping is identical to the removed
+            // `repeat_axis(.., 1)` expansion; see
+            // `native_gqa_attention_matches_explicit_head_expansion_across_kv_groups`.
             seq_out.push(scaled_dot_product_attention(
                 &contiguous(&q_s, None),
                 &contiguous(&k_sel, None),
@@ -699,14 +704,6 @@ fn attend_selected(
         batch_out.push(concat_owned(&seq_out, 2));
     }
     Ok(concat_owned(&batch_out, 0))
-}
-
-fn map_kv_heads(cache_bhsd: &MlxArray, groups: i32) -> MlxArray {
-    if groups > 1 {
-        repeat_axis(cache_bhsd, groups, 1, None)
-    } else {
-        cache_bhsd.clone()
-    }
 }
 
 fn append_cache(past: Option<&MlxArray>, new: &MlxArray) -> Result<MlxArray> {
@@ -747,7 +744,11 @@ fn index_array(tokens: &[i32]) -> Result<MlxArray> {
         &[n],
         MlxDtype::Int32,
     );
-    mlx_sys::try_eval(&[&indices]).map_err(QsaError::Evaluation)?;
+    mlx_sys::try_eval(&[&indices]).map_err(|detail| QsaError::Evaluation {
+        stage: "attention gather-index materialization",
+        context: format!("indices={:?}", indices.shape()),
+        detail,
+    })?;
     Ok(indices)
 }
 
@@ -832,7 +833,7 @@ fn validate_gain(tensor: &'static str, gain: &MlxArray, dim: i32) -> Result<()> 
 mod tests {
     use super::*;
     use crate::qwen4_exp_qsa::{QsaConfig, QsaIndexerWeights};
-    use mlx_sys::{contiguous, eval, slice, zeros};
+    use mlx_sys::{contiguous, eval, repeat_axis, slice, zeros};
     use serde_json::Value;
 
     const EPS: f32 = 1e-6;
@@ -1191,6 +1192,251 @@ mod tests {
             published.next_state(),
             "recovery state",
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Native GQA equivalence (Flash Next production geometry)
+    // ------------------------------------------------------------------
+
+    const GQA_Q_HEADS: i32 = 24;
+    const GQA_KV_HEADS: i32 = 2;
+    const GQA_HEAD_DIM: i32 = 256;
+    const GQA_SEQ: i32 = 6;
+
+    /// A deterministic bounded selection: with `compress_ratio` larger than
+    /// `seq` no complete block exists, so query `q` keeps exactly the current
+    /// partial block `0..=q`.
+    fn gqa_selection() -> QsaSelection {
+        const INDEX_HIDDEN: usize = 16;
+        let indexer = QsaIndexer::new(
+            QsaConfig::new(2, 1, 4, 4, 8, 8, INDEX_HIDDEN, EPS, BASE).unwrap(),
+            QsaIndexerWeights {
+                qk_proj: QuantizedWeight::new(
+                    array_f32(
+                        &(0..(12 * INDEX_HIDDEN))
+                            .map(|i| (i as f32 * 0.017).sin())
+                            .collect::<Vec<_>>(),
+                        &[12, INDEX_HIDDEN as i32],
+                    ),
+                    None,
+                    None,
+                ),
+                q_norm: array_f32(&[1.0; 4], &[4]),
+                k_norm: array_f32(&[1.0; 4], &[4]),
+            },
+        )
+        .unwrap();
+        let hidden = array_f32(
+            &(0..(GQA_SEQ as usize * INDEX_HIDDEN))
+                .map(|i| (i as f32 * 0.031).cos())
+                .collect::<Vec<_>>(),
+            &[1, GQA_SEQ, INDEX_HIDDEN as i32],
+        );
+        indexer
+            .select(&hidden, &QsaIndexKeyCache::empty(), 0)
+            .unwrap()
+    }
+
+    /// Deterministic Q/K/V with a per-KV-head offset, so a wrong head
+    /// assignment changes every output row and is impossible to miss.
+    fn gqa_tensors(dtype: MlxDtype) -> (MlxArray, MlxArray, MlxArray) {
+        let tensor = |data: &[f32], shape: &[i32]| astype(&array_f32(data, shape), dtype, None);
+        let q_data: Vec<f32> = (0..(GQA_Q_HEADS * GQA_SEQ * GQA_HEAD_DIM) as usize)
+            .map(|i| {
+                let i = i as i32;
+                let d = i % GQA_HEAD_DIM;
+                let s = (i / GQA_HEAD_DIM) % GQA_SEQ;
+                let h = i / (GQA_HEAD_DIM * GQA_SEQ);
+                (d as f32 * 0.02 + h as f32 * 0.13 + s as f32 * 0.07).sin()
+            })
+            .collect();
+        let kv = |seed: f32, offset: f32| -> Vec<f32> {
+            (0..(GQA_SEQ * GQA_KV_HEADS * GQA_HEAD_DIM) as usize)
+                .map(|i| {
+                    let i = i as i32;
+                    let d = i % GQA_HEAD_DIM;
+                    let g = (i / GQA_HEAD_DIM) % GQA_KV_HEADS;
+                    let t = i / (GQA_HEAD_DIM * GQA_KV_HEADS);
+                    (d as f32 * 0.05 + t as f32 * 0.11 + g as f32 * 0.29 + seed).sin()
+                        + g as f32 * offset
+                })
+                .collect()
+        };
+        (
+            tensor(&q_data, &[1, GQA_Q_HEADS, GQA_SEQ, GQA_HEAD_DIM]),
+            tensor(&kv(0.0, 0.5), &[1, GQA_SEQ, GQA_KV_HEADS, GQA_HEAD_DIM]),
+            tensor(&kv(0.25, 1.0), &[1, GQA_SEQ, GQA_KV_HEADS, GQA_HEAD_DIM]),
+        )
+    }
+
+    /// The pre-fix per-query schedule: gather the selected K/V, expand them to
+    /// `q_heads` with the caller's head mapping, then run one SDPA per query.
+    fn explicitly_expanded_attention(
+        queries: &MlxArray,
+        keys: &MlxArray,
+        values: &MlxArray,
+        selection: &QsaSelection,
+        cfg: Qwen4ExpAttentionConfig,
+        expand: &dyn Fn(&MlxArray, i32) -> MlxArray,
+    ) -> MlxArray {
+        let q_shape = queries.shape();
+        let k_shape = keys.shape();
+        let (batch, q_heads, seq, dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
+        let tokens = k_shape[1];
+        let mut batch_out = Vec::new();
+        for b in 0..batch {
+            let q_b = slice(
+                queries,
+                &[b, 0, 0, 0],
+                &[b + 1, q_heads, seq, dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let k_b = slice(
+                keys,
+                &[b, 0, 0, 0],
+                &[b + 1, tokens, cfg.kv_heads() as i32, dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let v_b = slice(
+                values,
+                &[b, 0, 0, 0],
+                &[b + 1, tokens, cfg.kv_heads() as i32, dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let mut seq_out = Vec::new();
+            for s in 0..seq {
+                let idx = index_array(selection.tokens_for_query(b as usize, s as usize)).unwrap();
+                let k_sel = transpose(&take(&k_b, &idx, 1, None), &[0, 2, 1, 3], None);
+                let v_sel = transpose(&take(&v_b, &idx, 1, None), &[0, 2, 1, 3], None);
+                let k_sel = expand(&k_sel, cfg.groups);
+                let v_sel = expand(&v_sel, cfg.groups);
+                let q_s = slice(
+                    &q_b,
+                    &[0, 0, s, 0],
+                    &[1, q_heads, s + 1, dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                seq_out.push(scaled_dot_product_attention(
+                    &contiguous(&q_s, None),
+                    &contiguous(&k_sel, None),
+                    &contiguous(&v_sel, None),
+                    cfg.scale,
+                    false,
+                    None,
+                ));
+            }
+            batch_out.push(concat_owned(&seq_out, 2));
+        }
+        concat_owned(&batch_out, 0)
+    }
+
+    /// Standard GQA expansion: contiguous groups, query head `h` -> KV head
+    /// `h / groups` (what `repeat_axis(.., 1)` produces).
+    fn contiguous_group_expansion(kv: &MlxArray, groups: i32) -> MlxArray {
+        repeat_axis(kv, groups, 1, None)
+    }
+
+    /// Interleaved expansion, query head `h` -> KV head `h % kv_heads`. A
+    /// deliberately different, still valid head count; it must not match.
+    fn interleaved_expansion(kv: &MlxArray, groups: i32) -> MlxArray {
+        let shape = kv.shape();
+        let (batch, kv_heads, chosen, dim) = (shape[0], shape[1], shape[2], shape[3]);
+        let tiled = mlx_sys::broadcast_to(
+            &reshape(kv, &[batch, kv_heads, 1, chosen, dim], None),
+            &[batch, kv_heads, groups, chosen, dim],
+            None,
+        );
+        reshape(
+            &transpose(&tiled, &[0, 2, 1, 3, 4], None),
+            &[batch, kv_heads * groups, chosen, dim],
+            None,
+        )
+    }
+
+    fn max_abs_diff(actual: &MlxArray, expected: &MlxArray) -> f32 {
+        let actual = contiguous(&astype(actual, MlxDtype::Float32, None), None);
+        let expected = contiguous(&astype(expected, MlxDtype::Float32, None), None);
+        eval(&[&actual, &expected]);
+        assert_eq!(actual.shape(), expected.shape());
+        actual
+            .data_f32()
+            .iter()
+            .zip(expected.data_f32())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    #[test]
+    fn native_gqa_attention_matches_explicit_head_expansion_across_kv_groups() {
+        let cfg = Qwen4ExpAttentionConfig::new(
+            (GQA_Q_HEADS * GQA_HEAD_DIM) as usize,
+            GQA_Q_HEADS as usize,
+            GQA_KV_HEADS as usize,
+            GQA_HEAD_DIM as usize,
+            128,
+            BASE,
+            EPS,
+        )
+        .unwrap();
+        assert_eq!(cfg.groups, 12);
+
+        let selection = gqa_selection();
+        for query in 0..GQA_SEQ as usize {
+            let tokens = selection.tokens_for_query(0, query);
+            assert_eq!(
+                tokens,
+                &(0..=query as i32).collect::<Vec<_>>()[..],
+                "bounded partial-block selection"
+            );
+        }
+        for (dtype, tolerance) in [
+            (MlxDtype::Float32, TOL),
+            (MlxDtype::Float16, 2e-3),
+            (MlxDtype::Bfloat16, 2e-2),
+        ] {
+            let (queries, keys, values) = gqa_tensors(dtype);
+
+            // Fixed path: no explicit KV-head replication; the fused kernel
+            // broadcasts 2 KV heads across 24 query heads.
+            let native = attend_selected(&queries, &keys, &values, &selection, cfg).unwrap();
+            // Oracle: the pre-fix explicitly expanded schedule.
+            let expanded = explicitly_expanded_attention(
+                &queries,
+                &keys,
+                &values,
+                &selection,
+                cfg,
+                &contiguous_group_expansion,
+            );
+            let interleaved = explicitly_expanded_attention(
+                &queries,
+                &keys,
+                &values,
+                &selection,
+                cfg,
+                &interleaved_expansion,
+            );
+
+            assert_eq!(native.shape(), [1, GQA_Q_HEADS, GQA_SEQ, GQA_HEAD_DIM]);
+            assert_eq!(native.shape(), expanded.shape());
+            assert_eq!(native.shape(), interleaved.shape());
+
+            let native_vs_contiguous = max_abs_diff(&native, &expanded);
+            let native_vs_interleaved = max_abs_diff(&native, &interleaved);
+            assert!(
+                native_vs_contiguous <= tolerance,
+                "{dtype:?} native GQA diverged from the explicit contiguous-group expansion: {native_vs_contiguous}"
+            );
+            assert!(
+                native_vs_interleaved > 5e-2,
+                "native GQA matched an interleaved head assignment, so the test does not \
+             distinguish head mappings: {native_vs_interleaved}"
+            );
+        }
     }
 
     fn eval_len(array: &MlxArray) -> usize {

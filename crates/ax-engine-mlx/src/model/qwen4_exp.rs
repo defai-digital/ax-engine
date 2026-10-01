@@ -860,7 +860,17 @@ fn forward_prepared_with_verifier_policy(
                         policy,
                         verifier_policy,
                     )
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| {
+                        format!(
+                            "qwen4_exp layer {index} at position {} with {} tokens: {e}; \
+                             MLX memory bytes at failure: active={:?}, cache={:?}, peak={:?}",
+                            state.position,
+                            tokens.len(),
+                            mlx_sys::device_active_bytes(),
+                            mlx_sys::device_cache_bytes(),
+                            mlx_sys::device_peak_bytes(),
+                        )
+                    })?;
                 let delta = result.delta().clone();
                 *cache = result.into_next_state();
                 #[cfg(test)]

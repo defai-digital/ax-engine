@@ -33,8 +33,12 @@ type Result<T> = std::result::Result<T, QsaError>;
 
 #[derive(Debug, Error)]
 pub enum QsaError {
-    #[error("qwen4_exp QSA evaluation failed: {0}")]
-    Evaluation(String),
+    #[error("qwen4_exp QSA evaluation failed during {stage} ({context}): {detail}")]
+    Evaluation {
+        stage: &'static str,
+        context: String,
+        detail: String,
+    },
     #[error("qwen4_exp QSA nonfinite score at batch {batch}, query {query}, block {block}")]
     NonFiniteScore {
         batch: usize,
@@ -405,7 +409,16 @@ impl QsaIndexer {
         if let Some(scores) = &scores {
             owned.push(scores);
         }
-        mlx_sys::try_eval(&owned).map_err(QsaError::Evaluation)?;
+        mlx_sys::try_eval(&owned).map_err(|detail| QsaError::Evaluation {
+            stage: "selected-key cache and gather-index materialization",
+            context: format!(
+                "keys={:?} gather={:?} scores={:?}",
+                staged_keys.shape(),
+                gather_indices.shape(),
+                scores.as_ref().map(MlxArray::shape),
+            ),
+            detail,
+        })?;
 
         Ok(QsaSelection {
             gather_indices,
@@ -610,7 +623,11 @@ fn select_tokens(
     let seq_u = seq as usize;
     let n_blocks = n_complete as usize;
     let score_data = if let Some(scores) = scores {
-        mlx_sys::try_eval(&[scores]).map_err(QsaError::Evaluation)?;
+        mlx_sys::try_eval(&[scores]).map_err(|detail| QsaError::Evaluation {
+            stage: "block-score materialization",
+            context: format!("scores={:?}", scores.shape()),
+            detail,
+        })?;
         scores.data_f32().to_vec()
     } else {
         Vec::new()
@@ -727,7 +744,11 @@ fn pack_gather_indices(
         &[batch, seq, max_keep as i32],
         MlxDtype::Int32,
     );
-    mlx_sys::try_eval(&[&indices]).map_err(QsaError::Evaluation)?;
+    mlx_sys::try_eval(&[&indices]).map_err(|detail| QsaError::Evaluation {
+        stage: "selected-token index materialization",
+        context: format!("indices={:?}", indices.shape()),
+        detail,
+    })?;
     Ok(indices)
 }
 
