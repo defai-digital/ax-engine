@@ -259,3 +259,31 @@ test("empty per-call stop overrides the constructor default", skipIfNoLangChain,
   const request = chat._buildChatRequest([new HumanMessage("hi")], { stop: [] });
   assert.deepEqual(request.stop, []);
 });
+
+for (const kind of ["chat", "completion"]) {
+  test(`${kind} public LangChain stream aggregates multiple chunks`, skipIfNoLangChain, async () => {
+    const model = kind === "chat" ? new ChatAXEngine() : new AXEngineLLM();
+    const method = kind === "chat" ? "streamChatCompletion" : "streamCompletion";
+    model.client = {
+      async *[method]() {
+        for (const text of ["Hello", " world"]) {
+          yield { data: { choices: [kind === "chat"
+            ? { delta: { content: text } }
+            : { text }] } };
+        }
+        yield { data: { choices: [kind === "chat"
+          ? { delta: {}, finish_reason: "stop" }
+          : { text: "", finish_reason: "stop" }] } };
+      },
+    };
+    let result;
+    const stream = await model.stream("hello", {
+      callbacks: [{ handleLLMEnd(output) { result = output; } }],
+    });
+    const parts = [];
+    for await (const chunk of stream) parts.push(kind === "chat" ? chunk.content : chunk);
+    assert.equal(parts.join(""), "Hello world");
+    assert.equal(result.generations[0][0].text, "Hello world");
+    assert.equal(result.generations[0][0].generationInfo.finishReason, "stop");
+  });
+}
