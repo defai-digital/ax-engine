@@ -10,7 +10,7 @@ decide which result table, method, or investigation note applies to a claim.
 | Headline dense 27B peer: Qwen 3.8 27B AXQ vs MTPLX and OMLX | [Root README: Qwen performance](../../README.md#qwen-performance) |
 | Tiel / Cyber-Tiel vs MTPLX on M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Four-machine results, latency and memory](tiel-vs-mtplx-2026-09-20.md) · [README Tiel section](../../README.md#tiel-performance) |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
-| Current MLX runtime admission | [MLX 0.32.2 admission](mlx-0.32.2-admission-2026-08-29.md) |
+| Current MLX runtime admission | [MLX 0.32.3 admission](mlx-0.32.3-admission-2026-10-03.md) |
 | Why Mac mini M4 Pro and M5 Max decode differ (bandwidth utilization, MTP status) | [Decode bandwidth utilization](decode-bandwidth-utilization.md) |
 | Root README headline numbers | [README Performance](../../README.md#performance) |
 | AX vs peer MLX single-client serving (2026-08-06) | [AX vs peer MLX serving (Qwen 3.6)](ax-vs-peer-mlx-serving-qwen36-2026-08-06.md) |

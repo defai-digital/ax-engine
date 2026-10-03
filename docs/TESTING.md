@@ -147,7 +147,7 @@ Do not treat a campaign host as either SKU.
 The ignored real-pack test writes four tokens, full F32 logit fingerprints,
 serialized cache fingerprints, and memory/table-read counters. Use a private
 copy of an audited pack; ordinary auto-conversion may create its manifest.
-Run on an adequately sized Apple Silicon development host with MLX 0.32.2:
+Run on an adequately sized Apple Silicon development host with MLX 0.32.3:
 
 ```bash
 AX_STREAM_EXPERTS=on AX_STREAM_EXPERT_LAYERS=1 \

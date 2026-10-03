@@ -6158,19 +6158,6 @@ mod gather_qmm_mxfp4_tests {
             MlxDtype::Uint32,
         );
 
-        let y_q = gather_qmm_with_mode(
-            &x,
-            packed,
-            scales,
-            None,
-            &indices,
-            true,
-            Some(32),
-            Some(4),
-            MlxQuantizationMode::Mxfp4,
-            false,
-            None,
-        );
         let dequant = dequantize_with_mode(
             packed,
             scales,
@@ -6189,23 +6176,40 @@ mod gather_qmm_mxfp4_tests {
         axes.swap(last - 1, last);
         let wt = transpose(&dequant, &axes, None);
         let y_d = gather_mm(&x, &wt, &indices, false, None);
-        eval(&[&y_q, &y_d]);
-        assert_eq!(y_q.shape(), y_d.shape());
-        let qf = astype(&y_q, MlxDtype::Float32, None);
         let df = astype(&y_d, MlxDtype::Float32, None);
-        eval(&[&qf, &df]);
-        let qv = qf.data_f32();
+        eval(&[&df]);
         let dv = df.data_f32();
-        assert_eq!(qv.len(), dv.len());
-        let max_abs = qv
-            .iter()
-            .zip(dv.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        assert!(
-            max_abs == 0.0,
-            "mxfp4 gather_qmm must match dequant+gather_mm bit-exactly for BF16 path, max_abs={max_abs}"
-        );
+        // MLX 0.32.3 inserts global_scale before sorted_indices. Exercise
+        // both dispatch modes with no global scale through the same C ABI.
+        for sorted_indices in [false, true] {
+            let y_q = gather_qmm_with_mode(
+                &x,
+                packed,
+                scales,
+                None,
+                &indices,
+                true,
+                Some(32),
+                Some(4),
+                MlxQuantizationMode::Mxfp4,
+                sorted_indices,
+                None,
+            );
+            assert_eq!(y_q.shape(), y_d.shape());
+            let qf = astype(&y_q, MlxDtype::Float32, None);
+            eval(&[&qf]);
+            let qv = qf.data_f32();
+            assert_eq!(qv.len(), dv.len());
+            let max_abs = qv
+                .iter()
+                .zip(dv.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                max_abs == 0.0,
+                "mxfp4 gather_qmm must match dequant+gather_mm bit-exactly for BF16 path, sorted_indices={sorted_indices}, max_abs={max_abs}"
+            );
+        }
     }
 }
 

@@ -1,0 +1,165 @@
+{
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "bash",
+        "scripts/cargo-pinned.sh",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 2.32
+    },
+    {
+      "name": "mlx-sys",
+      "command": [
+        "bash",
+        "scripts/cargo-pinned.sh",
+        "test",
+        "--locked",
+        "-p",
+        "mlx-sys",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 1.53
+    },
+    {
+      "name": "workspace-tests",
+      "command": [
+        "bash",
+        "scripts/cargo-pinned.sh",
+        "test",
+        "--locked",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 75.53
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "bash",
+        "scripts/cargo-pinned.sh",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 7.68
+    },
+    {
+      "name": "maturin",
+      "command": [
+        "python",
+        "-m",
+        "maturin",
+        "develop",
+        "--profile",
+        "release-pyext"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 76.88
+    },
+    {
+      "name": "python-tests",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 7.88
+    },
+    {
+      "name": "script-tests",
+      "command": [
+        "bash",
+        "scripts/check-scripts.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 17.18,
+      "final_log": "script-tests-final.log",
+      "rerun_reason": "Script source changed while the previous shell process was reading it. The unchanged final script was rerun successfully."
+    },
+    {
+      "name": "mlx-version",
+      "command": [
+        "bash",
+        "scripts/check-mlx-version.sh"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.48
+    },
+    {
+      "name": "qualify-27b-dry-run",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.03
+    },
+    {
+      "name": "qualify-flash-next-dry-run",
+      "command": [
+        "python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.03
+    },
+    {
+      "name": "primary-claims",
+      "command": [
+        "python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.1
+    }
+  ],
+  "rust_workspace": {
+    "passed": 4044,
+    "failed": 0,
+    "ignored": 61
+  },
+  "python": {
+    "passed": 252,
+    "skipped": 54,
+    "subtests_passed": 164,
+    "warnings": 1
+  },
+  "script_suites": {
+    "command": "bash scripts/check-scripts.sh",
+    "exit_code": 0,
+    "suite_sizes": [
+      110,
+      1049,
+      424,
+      5,
+      20,
+      9
+    ]
+  },
+  "runtime_staging": {
+    "command": "bash scripts/prepare-mlx-release-runtime.sh <candidate-wheel-lib-dir> <temporary-output-dir>",
+    "exit_code": 0
+  },
+  "hardware_checks": {
+    "m4-pro": "7 upstream synthetic checks and 3 AX regression tests passed",
+    "m2-ultra": "7 upstream synthetic checks and 3 AX regression tests passed"
+  },
+  "limitations": "Hardware-gated real model tests and certification campaigns remain unrun; ignores and skips are retained."
+}

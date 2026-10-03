@@ -204,6 +204,7 @@ bash scripts/check-qa.sh
   scripts/check_mlx_eval_sites.py \
   scripts/test_check_mlx_eval_sites.py \
   scripts/test_check_mlx_version.py \
+  scripts/probe_mlx_runtime_upgrade.py \
   scripts/repair_mlx_metallib_wheel.py \
   scripts/test_repair_mlx_metallib_wheel.py \
   scripts/test_build_pypi_wheel_minos.py \

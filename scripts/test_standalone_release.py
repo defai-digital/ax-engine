@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STAGE_RUNTIME = ROOT / "scripts" / "prepare-mlx-release-runtime.sh"
 PREPARE_STANDALONE = ROOT / "scripts" / "prepare-standalone-release.sh"
 VALIDATE_STANDALONE = ROOT / "scripts" / "validate-standalone.sh"
+MLX_PIN = (ROOT / "mlx.version").read_text().strip()
 MACHO_NAMES = (
     "libmlx.dylib",
     "libjaccl.dylib",
@@ -55,9 +56,9 @@ class StandaloneReleaseTests(unittest.TestCase):
         site_packages = root / "site-packages"
         mlx_lib = site_packages / "mlx" / "lib"
         mlx_include = site_packages / "mlx" / "include" / "mlx"
-        mlx_dist_info = site_packages / "mlx-0.32.2.dist-info"
+        mlx_dist_info = site_packages / f"mlx-{MLX_PIN}.dist-info"
         mlx_license = mlx_dist_info / "licenses"
-        metal_dist_info = site_packages / "mlx_metal-0.32.2.dist-info"
+        metal_dist_info = site_packages / f"mlx_metal-{MLX_PIN}.dist-info"
         source.mkdir()
         binaries.mkdir()
         mlx_lib.mkdir(parents=True)
@@ -106,10 +107,11 @@ class StandaloneReleaseTests(unittest.TestCase):
                 binaries / name,
             )
         (mlx_lib / "mlx.metallib").write_bytes(b"test metallib")
+        major, minor, patch = MLX_PIN.split(".")
         (mlx_include / "version.h").write_text(
-            "#define MLX_VERSION_MAJOR 0\n"
-            "#define MLX_VERSION_MINOR 32\n"
-            "#define MLX_VERSION_PATCH 2\n"
+            f"#define MLX_VERSION_MAJOR {major}\n"
+            f"#define MLX_VERSION_MINOR {minor}\n"
+            f"#define MLX_VERSION_PATCH {patch}\n"
         )
         (mlx_dist_info / "WHEEL").write_text("Tag: cp312-cp312-macosx_15_0_arm64\n")
         (metal_dist_info / "WHEEL").write_text("Tag: py3-none-macosx_15_0_arm64\n")
@@ -215,7 +217,7 @@ class StandaloneReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _, mlx_lib, site_packages = self.build_fixture(root)
-            for distribution in ("mlx-0.32.2", "mlx_metal-0.32.2"):
+            for distribution in (f"mlx-{MLX_PIN}", f"mlx_metal-{MLX_PIN}"):
                 wheel = site_packages / f"{distribution}.dist-info" / "WHEEL"
                 wheel.write_text(wheel.read_text().replace("macosx_15_0", "macosx_14_0"))
 
@@ -233,7 +235,7 @@ class StandaloneReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _, mlx_lib, site_packages = self.build_fixture(root)
-            for distribution in ("mlx-0.32.2", "mlx_metal-0.32.2"):
+            for distribution in (f"mlx-{MLX_PIN}", f"mlx_metal-{MLX_PIN}"):
                 wheel = site_packages / f"{distribution}.dist-info" / "WHEEL"
                 wheel.write_text(wheel.read_text().replace("macosx_15_0", "macosx_16_0"))
 

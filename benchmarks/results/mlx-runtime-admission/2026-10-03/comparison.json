@@ -1,0 +1,74 @@
+{
+  "m4-pro": {
+    "input_hashes_match": true,
+    "outputs": {
+      "affine_qmm_4bit": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "affine_qmm_6bit": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "affine_qmm_8bit": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "mxfp4_gather_sorted_False": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "mxfp4_gather_sorted_True": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "compiled_sigmoid": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "gqa_sdpa": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      }
+    },
+    "old_qmm_median_ms": 40.45270843198523,
+    "new_qmm_median_ms": 40.44462495949119,
+    "latency_change_percent": -0.019982524798378698
+  },
+  "m2-ultra": {
+    "input_hashes_match": true,
+    "outputs": {
+      "affine_qmm_4bit": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "affine_qmm_6bit": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "affine_qmm_8bit": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "mxfp4_gather_sorted_False": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "mxfp4_gather_sorted_True": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "compiled_sigmoid": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      },
+      "gqa_sdpa": {
+        "bit_identical": true,
+        "max_abs_difference": 0.0
+      }
+    },
+    "old_qmm_median_ms": 16.90195850096643,
+    "new_qmm_median_ms": 16.928666984313168,
+    "latency_change_percent": 0.1580200504291307
+  }
+}

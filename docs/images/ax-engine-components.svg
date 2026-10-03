@@ -73,7 +73,7 @@
 
   <rect x="636" y="652" width="276" height="116" rx="10" fill="#fbf6ee" stroke="#ead9b5"/>
   <text x="652" y="678" fill="#8a5a12" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="700">mlx-sys</text>
-  <text x="652" y="702" fill="#6a4a1c" font-family="Helvetica, Arial, sans-serif" font-size="13">Safe FFI over MLX 0.32.2.</text>
+  <text x="652" y="702" fill="#6a4a1c" font-family="Helvetica, Arial, sans-serif" font-size="13">Safe FFI over MLX 0.32.3.</text>
   <text x="652" y="722" fill="#6a4a1c" font-family="Helvetica, Arial, sans-serif" font-size="13">Metal kernels stay on the</text>
   <text x="652" y="742" fill="#6a4a1c" font-family="Helvetica, Arial, sans-serif" font-size="13">owned execution path.</text>
 
