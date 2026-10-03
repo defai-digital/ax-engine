@@ -130,9 +130,9 @@ impl MiniCpmV46RuntimeInputs {
                 MAX_IMAGES_PER_REQUEST,
             ));
         }
-        // Bounded by the guard above; the explicit clamp keeps the capacity
-        // provably constant-sized.
-        let mut spans = Vec::with_capacity(self.images.len().min(MAX_IMAGES_PER_REQUEST));
+        // The guard above bounds the loop. No capacity hint is derived from the
+        // request, so the allocation size stays independent of caller input.
+        let mut spans = Vec::new();
         for image in &self.images {
             image.validate(prompt_len)?;
             spans.push((image.placeholder_index, image.soft_token_count as usize));

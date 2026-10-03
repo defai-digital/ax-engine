@@ -170,11 +170,9 @@ impl NemotronOmniRuntimeInputs {
                 MAX_MEDIA_ITEMS_PER_MODALITY,
             ));
         }
-        // Bounded by the guards above; the explicit clamp keeps the capacity
-        // provably constant-sized.
-        let capacity =
-            (self.images.len() + self.audios.len()).min(MAX_MEDIA_ITEMS_PER_MODALITY * 2);
-        let mut spans = Vec::with_capacity(capacity);
+        // The guards above bound the loop. No capacity hint is derived from the
+        // request, so the allocation size stays independent of caller input.
+        let mut spans = Vec::new();
         for image in &self.images {
             image.validate(prompt_len)?;
             spans.push((image.placeholder_index, image.soft_token_count as usize));
