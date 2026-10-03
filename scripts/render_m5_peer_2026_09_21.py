@@ -151,13 +151,13 @@ def render_svg() -> str:
     legend_y = 66
     lines = [
         '<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="640" '
-        'viewBox="0 0 1180 640" font-family="Helvetica, Arial, sans-serif">',
+        + 'viewBox="0 0 1180 640" font-family="Helvetica, Arial, sans-serif">',
         '<rect width="1180" height="640" fill="#ffffff"/>',
         '<text x="24" y="34" font-size="18" font-weight="700" fill="#12211a">'
-        "M5 Max 128 GB peer campaign 2026-09-21 — decode tok/s (median of 20)</text>",
+        + "M5 Max 128 GB peer campaign 2026-09-21 — decode tok/s (median of 20)</text>",
         '<text x="24" y="54" font-size="12" fill="#4a5a52">'
-        "AX Engine 7.5.3 vs MTPLX 2.11.2 vs OMLX 0.6.4 vs mlx-lm 0.31.3 — flappy suite "
-        "unless noted; single-host snapshot, not a standing ranking</text>",
+        + "AX Engine 7.5.3 vs MTPLX 2.11.2 vs OMLX 0.6.4 vs mlx-lm 0.31.3 — flappy suite "
+        + "unless noted; single-host snapshot, not a standing ranking</text>",
     ]
     lx = 24
     for lane_key in LANE_ORDER:

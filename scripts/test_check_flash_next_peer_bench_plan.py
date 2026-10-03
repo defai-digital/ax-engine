@@ -9,8 +9,8 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_flash_next_peer_bench_plan as mod
@@ -59,9 +59,11 @@ class PeerPreparationTest(unittest.TestCase):
     def test_cli_resource_presence_still_fails_required_preconditions(self):
         with tempfile.TemporaryDirectory(prefix='ax-peer-cli-') as directory:
             probe = PresentProbe(directory)
-            with mock.patch.object(mod, 'Probe', return_value=probe):
+            with unittest.mock.patch.object(mod, 'Probe', return_value=probe):
                 for arguments, expected in ((['--require-preconditions'], 1), (['--dry-run'], 0)):
-                    with self.subTest(arguments=arguments), mock.patch.object(sys, 'argv', ['check', *arguments]):
+                    with self.subTest(arguments=arguments), unittest.mock.patch.object(
+                        sys, 'argv', ['check', *arguments]
+                    ):
                         output = io.StringIO()
                         with contextlib.redirect_stdout(output):
                             code = mod.main()
