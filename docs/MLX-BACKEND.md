@@ -22,9 +22,9 @@ inference needs direct MLX tensor execution, explicit GPU queue control, and an
 AX-owned scheduler layer for batching and prefix reuse rather than a delegated
 subprocess wrapper.
 
-The admitted runtime is the exact PyPI MLX 0.32.2 wheel pinned by `mlx.version`.
+The admitted runtime is the exact PyPI MLX 0.32.3 wheel pinned by `mlx.version`.
 The build rejects a different header or dylib version. Admission evidence is in
-[the MLX 0.32.2 record](performance/mlx-0.32.2-admission-2026-08-29.md).
+[the MLX 0.32.3 record](performance/mlx-0.32.3-admission-2026-10-03.md).
 
 ## Architecture
 

@@ -2538,6 +2538,17 @@ const POST_INPUT_ROUNDING_HEADER: &str = r#"
       return static_cast<float>(static_cast<T>(x * gate));
     }
 
+    // MLX 0.32.3 computes the FP16 sigmoid's precise exponential and
+    // reciprocal in FP32, then stores the sigmoid before the multiply.
+    template <>
+    inline float ax_post_input_silu<half>(float accumulator) {
+      const half x = static_cast<half>(accumulator);
+      const float exponential = metal::precise::exp(metal::abs(static_cast<float>(x)));
+      const float low = metal::precise::divide(1.0f, 1.0f + exponential);
+      const half gate = static_cast<half>(x >= static_cast<half>(0) ? 1.0f - low : low);
+      return static_cast<float>(static_cast<half>(x * gate));
+    }
+
     template <typename T>
     inline T ax_post_input_scaled_norm(float value, float inverse_rms, float scale) {
       const T normalized = static_cast<T>(value * inverse_rms);

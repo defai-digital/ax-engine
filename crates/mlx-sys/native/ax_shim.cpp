@@ -629,7 +629,7 @@ extern "C" int mlx_gather_mm(mlx_array* r, const mlx_array a, const mlx_array b,
 extern "C" int mlx_gather_qmm(mlx_array* r, const mlx_array x, const mlx_array w, const mlx_array scales,
     const mlx_array biases, const mlx_array li, const mlx_array ri, bool tr,
     mlx_optional_int gs, mlx_optional_int bits, const char* mode, bool sorted, const mlx_stream s) {
-  AX_TRY { aset(r, mx::gather_qmm(aref(x), aref(w), aref(scales), opt_arr(biases), opt_arr(li), opt_arr(ri), tr, opt_int(gs), opt_int(bits), safe_str(mode), sorted, sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::gather_qmm(aref(x), aref(w), aref(scales), opt_arr(biases), opt_arr(li), opt_arr(ri), tr, opt_int(gs), opt_int(bits), safe_str(mode), std::nullopt, sorted, sd(s))); return 0; } AX_CATCH }
 
 extern "C" int mlx_to_fp8(mlx_array* r, const mlx_array x, const mlx_stream s) {
   AX_TRY { aset(r, mx::to_fp8(aref(x), sd(s))); return 0; } AX_CATCH }

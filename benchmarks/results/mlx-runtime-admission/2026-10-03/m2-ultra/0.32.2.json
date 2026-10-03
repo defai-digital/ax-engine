@@ -1,0 +1,121 @@
+{
+  "schema": "ax.mlx.runtime_upgrade_probe.v1",
+  "scope": "Synthetic upstream operations and qmm only; no model or MTP certification",
+  "host": {
+    "chip": "Apple M2 Ultra",
+    "memory_bytes": 206158430208,
+    "macos": "27.0.1"
+  },
+  "runtime": {
+    "mlx": "0.32.2",
+    "mlx_metal": "0.32.2",
+    "python": "3.12.13",
+    "libmlx_sha256": "d24c7a9b9d55a76bfd3bbcd1d042251a185cbadcb6340c3244a6ffa3dcb7c7e8"
+  },
+  "input_sha256": {
+    "small_x": "dbb991b4907438976d79d1e03714ccad6ec62bd5b06b4f6dc87d8b24136f8c29",
+    "small_w": "ad87ef59e1d1200796f1ab02823488b5ec1666ee54cd735bf5da850a7da04374",
+    "experts": "b0d26db7a072f90043c95613817d7726b7978106bbb6225e2bb279df8daa48da",
+    "q": "dd08c5d18963d1287922a401e87a8ffbde6a5e293c56a8014ae375f0c5762e51",
+    "k": "9f45db7410907c29b19f5d5e4fb83682c62d9b8fbef8618914265b4aaf06075e",
+    "v": "6ef9f263906906c7fe2836d62db1b538d53ee695836a43b0d6b3530f010e8e3d",
+    "bench_w": "ddcf0fb3db94dece410eb489a8137d21ca6735e9affd4bd90ab6a1fb8da4eba2",
+    "bench_x": "af50889feb224a086dcf2790a1ff2362da7eb5e06132a5f173b689b8e5f46056"
+  },
+  "checks": [
+    {
+      "name": "affine_qmm_4bit",
+      "max_abs_error": 0.000255584716796875,
+      "tolerance": 0.002
+    },
+    {
+      "name": "affine_qmm_6bit",
+      "max_abs_error": 0.000244140625,
+      "tolerance": 0.002
+    },
+    {
+      "name": "affine_qmm_8bit",
+      "max_abs_error": 0.000244140625,
+      "tolerance": 0.002
+    },
+    {
+      "name": "mxfp4_gather_sorted_False",
+      "max_abs_error": 0.0,
+      "tolerance": 0.008
+    },
+    {
+      "name": "mxfp4_gather_sorted_True",
+      "max_abs_error": 0.0,
+      "tolerance": 0.008
+    },
+    {
+      "name": "compiled_sigmoid",
+      "max_abs_error": 0.0,
+      "tolerance": 2e-07
+    },
+    {
+      "name": "gqa_sdpa",
+      "max_abs_error": 1.1175870895385742e-08,
+      "tolerance": 2e-06
+    }
+  ],
+  "qmm": {
+    "m": 2048,
+    "k": 4096,
+    "n": 16384,
+    "bits": 4,
+    "group_size": 64,
+    "warmups": 5,
+    "trials": [
+      {
+        "latencies_ms": [
+          16.889207996428013,
+          16.938624990871176,
+          16.814416012493894,
+          16.82350001647137,
+          16.90391602460295,
+          16.843834018800408,
+          16.81966701289639,
+          16.977166989818215,
+          16.969165997579694,
+          16.845583013491705
+        ],
+        "median_ms": 16.86739550495986,
+        "tflops": 16.29640491107072
+      },
+      {
+        "latencies_ms": [
+          16.895084001589566,
+          16.856833011843264,
+          16.908833000343293,
+          16.816999996080995,
+          16.951083001913503,
+          16.823957994347438,
+          16.95687501342036,
+          16.889417020138353,
+          16.91787500749342,
+          16.996582999126986
+        ],
+        "median_ms": 16.90195850096643,
+        "tflops": 16.26308021808732
+      },
+      {
+        "latencies_ms": [
+          16.8822500272654,
+          16.938499989919364,
+          17.004374996758997,
+          17.057875025784597,
+          16.986417002044618,
+          16.947415977483615,
+          16.98016599402763,
+          16.956291015958413,
+          16.938667016802356,
+          16.983207984594628
+        ],
+        "median_ms": 16.96822850499302,
+        "tflops": 16.199564195114135
+      }
+    ],
+    "median_ms": 16.90195850096643
+  }
+}

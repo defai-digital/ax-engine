@@ -1,0 +1,28 @@
+{
+  "base_engine_commit": "6e2e9fa3691cf21ce0bf183443557746758073ff",
+  "source_sha256": {
+    "mlx.version": "6975da3e43976f0808b12b51829034cc7d4b1525ef79f44bb89136c6541240b2",
+    "crates/mlx-sys/native/ax_shim.cpp": "455bdcc8f95eb0a24e0e65742c7bbddb4457838b769c30ec8a603f6c47861a11",
+    "crates/mlx-sys/src/ops.rs": "6a3adf5f5b1ea0aa526c35f071a7fd11f3539abc5dce82107194dd5e7eadf327",
+    "crates/ax-engine-mlx/src/linear_attention_ops.rs": "14a3dcbd3dc4a529252257855e0f5fb26bda9b111309f2eeee1e23afd0119ae8",
+    "scripts/probe_mlx_runtime_upgrade.py": "6faf247d403639056ab6a1b4bf51f661b783de5c4893133c8b10cb8a2dc089f1"
+  },
+  "evidence_scope": "Synthetic dependency admission on the two target hardware classes; AX post-input and gather-qmm tests run from copied, newly rebuilt test executables. No real model weights were loaded.",
+  "build_toolchain": "Rust 1.97.1, Python 3.12.13, published MLX/Metal 0.32.3 wheels; test executables built on Apple M2 Ultra, 192 GiB, macOS 27.0.1",
+  "commands": {
+    "probe": "python scripts/probe_mlx_runtime_upgrade.py --output <runtime-version>.json",
+    "rounding": "ax-engine-mlx-tests decode_post_input_metal_preserves --nocapture",
+    "gather": "mlx-sys-tests gather_qmm_mxfp4_matches --nocapture"
+  },
+  "target_runtime_selection": "DYLD_LIBRARY_PATH selects the isolated 0.32.3 wheel library directory and MLX_METAL_PATH selects its mlx.metallib; RUST_TEST_THREADS=1",
+  "limitations": [
+    "No real-weight generation, in-path MTP-S evaluation, long-context or endurance campaign was run.",
+    "Microbench latency is not model throughput; host load was not an idle-gated certification condition.",
+    "Tests used a clean-base worktree plus the listed source changes; file and executable hashes bind the tested candidate."
+  ],
+  "local_validation_host": {
+    "chip": "Apple M2 Ultra",
+    "memory_bytes": 206158430208,
+    "macos": "27.0.1"
+  }
+}
