@@ -56,6 +56,7 @@ pub use error::{
 pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
+    try_gated_delta_update,
 };
 pub use io::{
     SafetensorsNameFilter, load_safetensors, load_safetensors_filtered, load_safetensors_mmap,

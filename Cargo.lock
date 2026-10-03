@@ -203,6 +203,7 @@ dependencies = [
  "ax-engine-mlx",
  "mlx-sys",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

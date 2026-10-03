@@ -664,6 +664,23 @@ extern "C" int mlx_fast_scaled_dot_product_attention(mlx_array* r,
 extern "C" int mlx_fast_layer_norm(mlx_array* r, const mlx_array x, const mlx_array w, const mlx_array b, float eps, const mlx_stream s) {
   AX_TRY { aset(r, mx::fast::layer_norm(aref(x), opt_arr(w), opt_arr(b), eps, sd(s))); return 0; } AX_CATCH }
 
+extern "C" int ax_mlx_gated_delta_update(mlx_array* output, mlx_array* final_state,
+    const mlx_array q, const mlx_array k, const mlx_array v,
+    const mlx_array gamma, const mlx_array beta, const mlx_array initial_state,
+    const mlx_stream s) {
+  AX_TRY {
+    auto result = mx::fast::gated_delta_update(
+        aref(q), aref(k), aref(v), aref(gamma), aref(beta),
+        aref(initial_state), std::nullopt, sd(s));
+    if (result.size() != 2) {
+      throw std::runtime_error("gated_delta_update must return output and state");
+    }
+    aset(output, result[0]);
+    aset(final_state, result[1]);
+    return 0;
+  } AX_CATCH
+}
+
 /* ================================================================
  * Metal kernel dispatch
  * ================================================================ */

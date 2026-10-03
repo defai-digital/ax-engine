@@ -10,6 +10,7 @@ ax-engine-core = { path = "../ax-engine-core" }
 ax-engine-mlx = { path = "../ax-engine-mlx" }
 mlx-sys = { path = "../mlx-sys" }
 serde_json.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true
@@ -61,3 +62,7 @@ path = "src/bin/batched_decode_ceiling_probe.rs"
 [[bin]]
 name = "axquant-kernel-latency-probe"
 path = "src/bin/axquant_kernel_latency_probe.rs"
+
+[[bin]]
+name = "mlx-gated-delta-prefill-probe"
+path = "src/bin/mlx_gated_delta_prefill_probe.rs"

@@ -1,0 +1,120 @@
+{
+  "schema": "ax.mlx.gdn_prefill_validation.v1",
+  "date": "2026-10-03",
+  "scope": "Software and synthetic kernel evidence; no model qualification or default promotion",
+  "local_host": {
+    "chip": "Apple M2 Ultra",
+    "memory_gib": 192,
+    "macos": "27.0.1"
+  },
+  "rust_version": "1.97.1",
+  "mlx_version": "0.32.3",
+  "rust_tests": {
+    "passed": 4050,
+    "ignored": 61,
+    "failed": 0,
+    "includes_doctests": true
+  },
+  "python_tests": {
+    "passed": 279,
+    "skipped": 27,
+    "subtests_passed": 160,
+    "warnings": 1,
+    "warning": "Existing FastAPI/Starlette TestClient deprecation"
+  },
+  "synthetic_cells": {
+    "mini_m4_pro": 60,
+    "m2_ultra": 60,
+    "all_numerical_checks_pass": true
+  },
+  "m4_adapter_test_binary_sha256": "aea5de515378e0a4da4c568bbbd5bcc4bb72bc7c4726e9653fa07ecd06a3b620",
+  "checks": [
+    {
+      "command": "bash scripts/cargo-pinned.sh fmt --check",
+      "context": "worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "bash scripts/cargo-pinned.sh clippy --all-targets --all-features -- -D warnings",
+      "context": "worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "2988e078e328178549a546388c45f36bc534f0b63ac2b5c1e2e8a7a21a6dcbd1"
+    },
+    {
+      "command": "CARGO_BUILD_JOBS=4 bash scripts/cargo-pinned.sh test --quiet --no-fail-fast",
+      "context": "worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "2c0d679a1e3100131d20125327a434a62be2dee4a32ba4bcf0a611825e309bbb"
+    },
+    {
+      "command": "maturin develop",
+      "context": "worktree; Python venv active; pinned sysroot PATH; release-pyext profile",
+      "exit_code": 0,
+      "raw_log_sha256": "89f185314dd60b25e6db6c4ebaac531ecf32e106881a21d25bab9717535a2a9a"
+    },
+    {
+      "command": ".venv/bin/pytest python/tests",
+      "context": "worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "e40f334965e7b646987324623cca3e9750aa969826fccfb9e46fbae0cdf4bc79"
+    },
+    {
+      "command": "bash scripts/check-scripts.sh",
+      "context": "clean candidate worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "cb7cde07ce7993553e234288063a10cbad1efabaa76ade6df8a29a6796595ca7"
+    },
+    {
+      "command": ".venv/bin/python scripts/qualify_qwen38_27b.py --dry-run",
+      "context": "clean candidate worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "cfd4888fcf252f49eba33e148391dfa0243709771eac6d818a8ed3685ca4cbf1"
+    },
+    {
+      "command": ".venv/bin/python scripts/qualify_qwen38_flash_next.py --dry-run",
+      "context": "clean candidate worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "b8cf8586760fc409479b6b38fbb155b319291764de9e68223543d6cf68d6a762"
+    },
+    {
+      "command": ".venv/bin/python scripts/check_qwen38_primary_claims.py",
+      "context": "clean candidate worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1 bash scripts/cargo-pinned.sh test -p ax-engine-mlx mlx_gated_delta::tests::process_flag_selects_prefill_and_preserves_short_window_fallback -- --exact --nocapture",
+      "context": "M2 Ultra",
+      "exit_code": 0,
+      "raw_log_sha256": "af86e026302ce8659b24afbf431b3c999da323108c6335c5fccb716cc583c1f8"
+    },
+    {
+      "command": "./adapter-tests-final mlx_gated_delta::tests --nocapture",
+      "context": "mini M4 Pro; flag=0; RUST_TEST_THREADS=1; published runtime",
+      "exit_code": 0,
+      "raw_log_sha256": "af3f9d96671e29151c64eb907fb1f4b65ad19fc31f5852cb6d228a7ac9275887"
+    },
+    {
+      "command": "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1 ./adapter-tests-final mlx_gated_delta::tests::process_flag_selects_prefill_and_preserves_short_window_fallback --exact --nocapture",
+      "context": "mini M4 Pro; RUST_TEST_THREADS=1; published runtime",
+      "exit_code": 0,
+      "raw_log_sha256": "80ae729ca0b73371e97ad043bb8db298a256144bc2013845b4b41d81b3a2e007"
+    }
+  ],
+  "script_gate_context": "The original worktree contains pre-existing untracked wiki references rejected by the retired-reference gate. The unmodified gate passed in a clean worktree containing only this candidate over the recorded base revision. Unrelated worktree and staged patches were preserved byte-for-byte.",
+  "source_hash_paths": {
+    "probe": "crates/ax-engine-microbench/src/bin/mlx_gated_delta_prefill_probe.rs",
+    "adapter": "crates/ax-engine-mlx/src/mlx_gated_delta.rs",
+    "ax_baseline": "crates/ax-engine-mlx/src/linear_attention_ops.rs",
+    "flags": "crates/ax-engine-mlx/src/fastpath.rs",
+    "binding": "crates/mlx-sys/src/fast.rs",
+    "shim": "crates/mlx-sys/native/ax_shim.cpp"
+  },
+  "limits": [
+    "No real-weight 27B or Flash Next throughput, token-identity or quality evidence in this experiment.",
+    "Hardware/model-gated skipped tests remain separate qualification work.",
+    "FP32 promotion increases allocator memory; benefits vary with shape and host.",
+    "Runtime selection remains default-off; T=128..2048; dedicated Flash Next execution unchanged."
+  ]
+}

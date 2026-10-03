@@ -268,6 +268,10 @@ int mlx_fast_rope(mlx_array* res, const mlx_array x, int dims, bool traditional,
 int mlx_fast_rope_dynamic(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, const mlx_array offset, const mlx_array freqs, const mlx_stream s);
 int mlx_fast_scaled_dot_product_attention(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, const mlx_stream s);
 int mlx_fast_layer_norm(mlx_array* res, const mlx_array x, const mlx_array weight, const mlx_array bias, float eps, const mlx_stream s);
+int ax_mlx_gated_delta_update(mlx_array* output, mlx_array* final_state,
+    const mlx_array q, const mlx_array k, const mlx_array v,
+    const mlx_array gamma, const mlx_array beta, const mlx_array initial_state,
+    const mlx_stream s);
 
 /* ================================================================
  * Metal kernel dispatch

@@ -1,0 +1,17 @@
+{
+  "schema": "ax.mlx.gdn_prefill_provenance.v1",
+  "base_revision": "41834260022185493da4998ac70fd43715e5b0d5",
+  "scope": "Uncommitted source-bound GDN experiment; no model qualification",
+  "rust": "1.97.1",
+  "build_profile": "release-pyext",
+  "same_probe_binary_on_both_hosts": true,
+  "probe_binary_sha256": "8f2ad654a8e63180fb1324ddeb909ef44629e609a3f2c8993de93a787f548aa0",
+  "published_runtime_assets_sha256": {
+    "libmlx.dylib": "ebc8a5f5465afb79d3d9c8f5b0929de1a9b277b7179db8672f92da77ae110a1e",
+    "mlx.metallib": "95974b7de464ec2be7833a914ca5a53d283a70789470fd84218738fc8fcea3e1"
+  },
+  "reports_sha256": {
+    "m4-pro.json": "ef334322bd6dfbdaafc3a1dbbb98d5fc3026a8f79e7ed03ee4a753e90a92a025",
+    "m2-ultra.json": "bd749e8ad22eba59c2d2a6ed752358a79cc7b5727f5d7b0e0ae8fe692750b34b"
+  }
+}

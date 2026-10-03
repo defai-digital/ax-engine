@@ -902,6 +902,14 @@ pub fn gated_delta_kernel(
     b_raw: &MlxArray,
     state: &MlxArray,
 ) -> (MlxArray, MlxArray) {
+    if fastpath::qwen_gated_delta_prefill_mlx_enabled()
+        && fastpath::qwen_gated_delta_prefill_mlx_seq_eligible(q.shape()[1])
+        && let Some(result) = crate::mlx_gated_delta::try_mlx_gated_delta_prefill(
+            q, k, v, a_log, a_raw, dt_bias, b_raw, state,
+        )
+    {
+        return result;
+    }
     gated_delta_kernel_impl(q, k, v, a_log, a_raw, dt_bias, b_raw, state)
 }
 
@@ -1330,7 +1338,7 @@ fn gated_delta_prefill_chunkwise(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn gated_delta_kernel_impl(
+pub(crate) fn gated_delta_kernel_impl(
     q: &MlxArray,
     k: &MlxArray,
     v: &MlxArray,

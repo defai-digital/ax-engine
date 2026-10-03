@@ -26,6 +26,23 @@ The admitted runtime is the exact PyPI MLX 0.32.3 wheel pinned by `mlx.version`.
 The build rejects a different header or dylib version. Admission evidence is in
 [the MLX 0.32.3 record](performance/mlx-0.32.3-admission-2026-10-03.md).
 
+### Experimental MLX GDN prefill
+
+`AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1` opts shared Qwen hybrid prefill into
+the published MLX gated-delta operation. It is **default-off** and applies to
+128–2048-token calls with 128-dimensional key/value heads and supported head
+pairs. Other shapes, single-token decode, and short MTP verifier windows use
+the existing AX path. The dedicated Flash Next GDN path is separate.
+
+The adapter preserves FP32 decay and recurrent state and returns the original
+activation dtype. Chunked MLX arithmetic can differ numerically from AX's
+sequential recurrence, so this option does not promise identical generated
+tokens or promote any MTP/default/certification gate. Compare real workloads
+on the target SKU before enabling it for routine serving.
+
+See the [GDN prefill experiment](performance/mlx-gdn-prefill-2026-10-03.md)
+for reproducible kernel measurements and their limits.
+
 ## Architecture
 
 ```text

@@ -5215,6 +5215,19 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX` — experimental MLX 0.32.3 GDN
+    /// prefill on supported 128-dimensional heads, T=128..2048. Default OFF.
+    /// Decode, short verifier windows, and dedicated Flash Next GDN are unchanged.
+    qwen_gated_delta_prefill_mlx_enabled,
+    "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX"
+);
+
+/// Keep short calls on AX: the M2 Ultra T=32 probe regressed with MLX.
+pub fn qwen_gated_delta_prefill_mlx_seq_eligible(seq: i32) -> bool {
+    (128..=2048).contains(&seq)
+}
+
+env_flag!(
     /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING` — route long multi-token
     /// GatedDelta prefill (seq > 512) through a streaming Metal kernel that
     /// fuses g/beta each step without a CacheCapacity-sized TG array.
