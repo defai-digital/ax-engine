@@ -1,7 +1,9 @@
-use std::io::{BufRead, BufReader, Read};
-use std::path::PathBuf;
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -301,6 +303,12 @@ pub enum LlamaCppBackendError {
         #[source]
         source: std::string::FromUtf8Error,
     },
+    #[error("failed to stage llama.cpp backend prompt file {path}: {source}")]
+    PromptFileWrite {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("llama.cpp backend HTTP request to {endpoint} failed: {source}")]
     HttpRequest {
         endpoint: String,
@@ -436,6 +444,89 @@ fn start_llama_cpp_streaming_generate(
     }
 }
 
+/// Temporary prompt file handed to llama-cli through `--file`.
+///
+/// The prompt is user data. Staging it on disk keeps it off the child's argv,
+/// so a wrapper installed as `cli_path` cannot re-interpret it as flags.
+struct TempPromptFile {
+    path: PathBuf,
+}
+
+impl TempPromptFile {
+    fn create(prompt: &str) -> Result<Self, LlamaCppBackendError> {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let unique = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        // Timestamp plus pid plus counter makes collision with a stale file
+        // left by a crashed process effectively impossible, while `create_new`
+        // still refuses to follow a planted symlink.
+        let path = std::env::temp_dir().join(format!(
+            "ax-engine-llama-prompt-{}-{nanos}-{unique}.txt",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file =
+            options
+                .open(&path)
+                .map_err(|source| LlamaCppBackendError::PromptFileWrite {
+                    path: path.display().to_string(),
+                    source,
+                })?;
+        if let Err(source) = file.write_all(prompt.as_bytes()) {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(LlamaCppBackendError::PromptFileWrite {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempPromptFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn build_llama_cli_command(
+    config: &LlamaCppCliConfig,
+    request: &GenerateRequest,
+    prompt_path: &Path,
+) -> Command {
+    let mut command = Command::new(&config.cli_path);
+    command
+        .arg("--simple-io")
+        .arg("--no-display-prompt")
+        .arg("--single-turn")
+        .arg("--log-disable")
+        .arg("--model")
+        .arg(&config.model_path)
+        .arg("--file")
+        .arg(prompt_path)
+        .arg("--n-predict")
+        .arg(request.max_output_tokens.to_string());
+
+    append_sampling_args(&mut command, &request.sampling);
+    append_stop_sequence_args(&mut command, &request.stop_sequences);
+    command.args(&config.extra_args);
+    command
+}
+
 fn run_llama_cpp_cli_generate(
     request_id: u64,
     runtime: &RuntimeReport,
@@ -456,22 +547,8 @@ fn run_llama_cpp_cli_generate(
         })?;
 
     let command_display = config.cli_path.display().to_string();
-    let mut command = Command::new(&config.cli_path);
-    command
-        .arg("--simple-io")
-        .arg("--no-display-prompt")
-        .arg("--single-turn")
-        .arg("--log-disable")
-        .arg("--model")
-        .arg(&config.model_path)
-        .arg("--prompt")
-        .arg(&prompt_text)
-        .arg("--n-predict")
-        .arg(request.max_output_tokens.to_string());
-
-    append_sampling_args(&mut command, &request.sampling);
-    append_stop_sequence_args(&mut command, &request.stop_sequences);
-    command.args(&config.extra_args);
+    let prompt_file = TempPromptFile::create(&prompt_text)?;
+    let command = build_llama_cli_command(config, request, prompt_file.path());
 
     let output = run_command_with_timeout(command, command_display.clone(), LLAMA_CPP_CLI_TIMEOUT)?;
 
@@ -816,6 +893,8 @@ fn append_sampling_args(command: &mut Command, sampling: &GenerateSampling) {
 }
 
 fn append_stop_sequence_args(command: &mut Command, stop_sequences: &[String]) {
+    // llama-cli consumes the value after `--stopping-string` verbatim and has
+    // no file form for it, so stop strings stay on argv (unlike the prompt).
     for seq in stop_sequences {
         command.arg("--stopping-string").arg(seq);
     }
@@ -872,6 +951,7 @@ fn run_command_with_timeout(
     // any child that writes more than a pipe buffer (~64 KiB on macOS) blocks
     // forever and we only surface a spurious timeout after `timeout` elapses.
     let mut child = command
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1103,6 +1183,57 @@ mod tests {
             &BackendPolicy::allow_llama_cpp(),
             &ResolvedBackend::llama_cpp(SelectedBackend::LlamaCpp, "test delegated route"),
         )
+    }
+
+    #[test]
+    fn cli_command_stages_the_prompt_in_a_file_instead_of_argv() {
+        let prompt = "--model /etc/passwd\n--tokenizer /tmp/evil";
+        let config = LlamaCppCliConfig::new("llama-cli", "/tmp/model.gguf");
+        let request = GenerateRequest {
+            model_id: "qwen3".to_string(),
+            input_tokens: Vec::new(),
+            input_text: Some(prompt.to_string()),
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 8,
+            sampling: GenerateSampling::default(),
+            stop_sequences: vec!["Observed".to_string()],
+            metadata: None,
+        };
+
+        let prompt_file = TempPromptFile::create(prompt).expect("prompt file should be staged");
+        let command = build_llama_cli_command(&config, &request, prompt_file.path());
+
+        assert_eq!(command.get_program().to_string_lossy(), "llama-cli");
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.iter().any(|arg| arg == "--file"));
+        assert!(!args.iter().any(|arg| arg == "--prompt"));
+        // A wrapper installed as `cli_path` must not see the prompt on argv,
+        // where it could re-parse it as flags.
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("/etc/passwd") || arg.contains("/tmp/evil")),
+            "prompt text leaked onto argv: {args:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(prompt_file.path()).expect("prompt file should be readable"),
+            prompt
+        );
+    }
+
+    #[test]
+    fn temp_prompt_file_is_removed_on_drop() {
+        let path = {
+            let prompt_file =
+                TempPromptFile::create("hello").expect("prompt file should be staged");
+            let path = prompt_file.path().to_path_buf();
+            assert!(path.exists(), "prompt file should exist while staged");
+            path
+        };
+        assert!(!path.exists(), "prompt file should be removed when dropped");
     }
 
     #[test]

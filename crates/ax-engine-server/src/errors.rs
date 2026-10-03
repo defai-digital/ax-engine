@@ -122,6 +122,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::PromptFileWrite { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandTimedOut { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::NonUtf8Output { .. })

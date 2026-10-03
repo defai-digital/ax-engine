@@ -16,9 +16,16 @@ pub enum MiniCpmV46RuntimeInputError {
     EmptyPixels,
     #[error("MiniCPM-V 4.6 soft_token_count must be > 0")]
     ZeroSoftTokens,
+    #[error("MiniCPM-V 4.6 request carries {0} images, exceeding the {1} image limit")]
+    TooManyImages(usize, usize),
     #[error("MiniCPM-V 4.6 geometry invalid: {0}")]
     InvalidGeometry(String),
 }
+
+/// Upper bound on images accepted in one request. Mirrors the serving edge's
+/// `MAX_INLINE_IMAGES_PER_REQUEST` so SDK-direct callers get the same bound,
+/// and keeps the span bookkeeping bounded.
+pub const MAX_IMAGES_PER_REQUEST: usize = 40;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct MiniCpmV46ImageRuntimeInput {
@@ -117,7 +124,15 @@ impl MiniCpmV46RuntimeInputs {
         &self,
         prompt_len: usize,
     ) -> Result<(), MiniCpmV46RuntimeInputError> {
-        let mut spans = Vec::with_capacity(self.images.len());
+        if self.images.len() > MAX_IMAGES_PER_REQUEST {
+            return Err(MiniCpmV46RuntimeInputError::TooManyImages(
+                self.images.len(),
+                MAX_IMAGES_PER_REQUEST,
+            ));
+        }
+        // Bounded by the guard above; the explicit clamp keeps the capacity
+        // provably constant-sized.
+        let mut spans = Vec::with_capacity(self.images.len().min(MAX_IMAGES_PER_REQUEST));
         for image in &self.images {
             image.validate(prompt_len)?;
             spans.push((image.placeholder_index, image.soft_token_count as usize));
@@ -158,8 +173,21 @@ impl MiniCpmV46RuntimeInputs {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn unit_image(placeholder_index: usize) -> MiniCpmV46ImageRuntimeInput {
+        MiniCpmV46ImageRuntimeInput {
+            placeholder_index,
+            soft_token_count: 1,
+            pixel_values: vec![0.0; 56 * 56 * 3],
+            height: 56,
+            width: 56,
+            patch_size: 14,
+            spatial_downsample_factor: 4,
+        }
+    }
 
     #[test]
     fn validates_dynamic_image_grid() {
@@ -190,5 +218,31 @@ mod tests {
             images: vec![image, adjacent],
         };
         assert!(inputs.validate_for_prompt_len(10).is_ok());
+    }
+
+    #[test]
+    fn rejects_more_images_than_the_per_request_limit() {
+        let over_limit = MiniCpmV46RuntimeInputs {
+            images: (0..=MAX_IMAGES_PER_REQUEST).map(unit_image).collect(),
+        };
+        let error = over_limit
+            .validate_for_prompt_len(MAX_IMAGES_PER_REQUEST + 1)
+            .expect_err("image count over the limit must be rejected before per-image checks");
+        assert_eq!(
+            error,
+            MiniCpmV46RuntimeInputError::TooManyImages(
+                MAX_IMAGES_PER_REQUEST + 1,
+                MAX_IMAGES_PER_REQUEST
+            )
+        );
+
+        let at_limit = MiniCpmV46RuntimeInputs {
+            images: (0..MAX_IMAGES_PER_REQUEST).map(unit_image).collect(),
+        };
+        assert!(
+            at_limit
+                .validate_for_prompt_len(MAX_IMAGES_PER_REQUEST)
+                .is_ok()
+        );
     }
 }

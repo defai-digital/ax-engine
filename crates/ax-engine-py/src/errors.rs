@@ -71,6 +71,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MissingMlxLmConfig
         | EngineSessionError::MissingDelegatedRuntime { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::PromptFileWrite { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandTimedOut { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::NonUtf8Output { .. })

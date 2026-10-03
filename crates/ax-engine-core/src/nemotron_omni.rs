@@ -17,9 +17,18 @@ pub enum NemotronOmniRuntimeInputError {
     EmptyMedia,
     #[error("Nemotron Omni soft_token_count must be > 0")]
     ZeroSoftTokens,
+    #[error("Nemotron Omni request carries {0} images, exceeding the {1} item limit")]
+    TooManyImages(usize, usize),
+    #[error("Nemotron Omni request carries {0} audios, exceeding the {1} item limit")]
+    TooManyAudios(usize, usize),
     #[error("Nemotron Omni media geometry invalid: {0}")]
     InvalidGeometry(String),
 }
+
+/// Per-modality upper bound on media items accepted in one request. Mirrors the
+/// serving edge's `MAX_INLINE_IMAGES_PER_REQUEST` so SDK-direct callers get the
+/// same bound, and keeps the span bookkeeping bounded.
+pub const MAX_MEDIA_ITEMS_PER_MODALITY: usize = 40;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct NemotronOmniImageRuntimeInput {
@@ -149,7 +158,23 @@ impl NemotronOmniRuntimeInputs {
         &self,
         prompt_len: usize,
     ) -> Result<(), NemotronOmniRuntimeInputError> {
-        let mut spans = Vec::with_capacity(self.images.len() + self.audios.len());
+        if self.images.len() > MAX_MEDIA_ITEMS_PER_MODALITY {
+            return Err(NemotronOmniRuntimeInputError::TooManyImages(
+                self.images.len(),
+                MAX_MEDIA_ITEMS_PER_MODALITY,
+            ));
+        }
+        if self.audios.len() > MAX_MEDIA_ITEMS_PER_MODALITY {
+            return Err(NemotronOmniRuntimeInputError::TooManyAudios(
+                self.audios.len(),
+                MAX_MEDIA_ITEMS_PER_MODALITY,
+            ));
+        }
+        // Bounded by the guards above; the explicit clamp keeps the capacity
+        // provably constant-sized.
+        let capacity =
+            (self.images.len() + self.audios.len()).min(MAX_MEDIA_ITEMS_PER_MODALITY * 2);
+        let mut spans = Vec::with_capacity(capacity);
         for image in &self.images {
             image.validate(prompt_len)?;
             spans.push((image.placeholder_index, image.soft_token_count as usize));
@@ -197,6 +222,27 @@ impl NemotronOmniRuntimeInputs {
 mod tests {
     use super::*;
 
+    fn unit_image(placeholder_index: usize) -> NemotronOmniImageRuntimeInput {
+        NemotronOmniImageRuntimeInput {
+            placeholder_index,
+            soft_token_count: 1,
+            pixel_values: vec![0.0; 3 * 32 * 32],
+            height: 32,
+            width: 32,
+            patch_size: 16,
+            spatial_downsample_factor: 2,
+        }
+    }
+
+    fn unit_audio(placeholder_index: usize) -> NemotronOmniAudioRuntimeInput {
+        NemotronOmniAudioRuntimeInput {
+            placeholder_index,
+            soft_token_count: 1,
+            samples: vec![0.0; 1600],
+            sample_rate: 16_000,
+        }
+    }
+
     #[test]
     fn validates_image_and_audio_spans() {
         let inputs = NemotronOmniRuntimeInputs {
@@ -230,5 +276,51 @@ mod tests {
         let mut duplicate = inputs.clone();
         duplicate.images.push(duplicate.images[0].clone());
         assert!(duplicate.validate_for_prompt_len(8).is_err());
+    }
+
+    #[test]
+    fn rejects_media_over_the_per_modality_limit() {
+        let images_over = NemotronOmniRuntimeInputs {
+            images: (0..=MAX_MEDIA_ITEMS_PER_MODALITY).map(unit_image).collect(),
+            audios: Vec::new(),
+        };
+        let error = images_over
+            .validate_for_prompt_len(MAX_MEDIA_ITEMS_PER_MODALITY + 1)
+            .expect_err("image count over the limit must be rejected");
+        assert_eq!(
+            error,
+            NemotronOmniRuntimeInputError::TooManyImages(
+                MAX_MEDIA_ITEMS_PER_MODALITY + 1,
+                MAX_MEDIA_ITEMS_PER_MODALITY
+            )
+        );
+
+        let audios_over = NemotronOmniRuntimeInputs {
+            images: Vec::new(),
+            audios: (0..=MAX_MEDIA_ITEMS_PER_MODALITY).map(unit_audio).collect(),
+        };
+        let error = audios_over
+            .validate_for_prompt_len(MAX_MEDIA_ITEMS_PER_MODALITY + 1)
+            .expect_err("audio count over the limit must be rejected");
+        assert_eq!(
+            error,
+            NemotronOmniRuntimeInputError::TooManyAudios(
+                MAX_MEDIA_ITEMS_PER_MODALITY + 1,
+                MAX_MEDIA_ITEMS_PER_MODALITY
+            )
+        );
+
+        // The cap is per modality: a full batch of each still passes.
+        let at_limit = NemotronOmniRuntimeInputs {
+            images: (0..MAX_MEDIA_ITEMS_PER_MODALITY).map(unit_image).collect(),
+            audios: (0..MAX_MEDIA_ITEMS_PER_MODALITY)
+                .map(|index| unit_audio(index + MAX_MEDIA_ITEMS_PER_MODALITY))
+                .collect(),
+        };
+        assert!(
+            at_limit
+                .validate_for_prompt_len(MAX_MEDIA_ITEMS_PER_MODALITY * 2)
+                .is_ok()
+        );
     }
 }

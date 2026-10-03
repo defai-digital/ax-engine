@@ -1073,7 +1073,9 @@ from __future__ import annotations
 import sys
 
 args = sys.argv[1:]
-prompt = args[args.index("--prompt") + 1]
+assert "--prompt" not in args, "prompt must not travel on argv"
+with open(args[args.index("--file") + 1], encoding="utf-8") as handle:
+    prompt = handle.read()
 sys.stdout.write(f"python::{prompt}")
 "#;
 
