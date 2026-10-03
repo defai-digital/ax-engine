@@ -80,6 +80,17 @@ The probe explicitly calls the candidate adapter while keeping the AX
 baseline independent of the opt-in flag. It writes raw results before
 returning a nonzero exit code on a numerical failure.
 
+The subsequent [probe bug-fix rerun](../../benchmarks/results/mlx-gdn-prefill/2026-10-03-review/)
+retains the original measurements above as a dated source-bound snapshot.
+The corrected reader materializes row-contiguous FP32 data before host reads,
+checks tensor shapes, and computes absolute errors in FP64 to avoid overflow
+from finite FP32 operands. NaN/Infinity and shape failures now retain explicit
+`comparison_errors` in the failed JSON cell, skip its latency trials, and
+return a nonzero status after saving the report. Failed cells have empty
+`trials` and omit latency aggregates; `output_max_abs` or `state_max_abs` is
+null when it cannot be computed. These changes affect diagnostics only; the runtime adapter and
+its default-off selection are unchanged.
+
 ## Validation and remaining model gates
 
 Binding tests check an independent host recurrence and reject malformed

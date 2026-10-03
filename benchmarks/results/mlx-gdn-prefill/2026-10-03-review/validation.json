@@ -1,0 +1,150 @@
+{
+  "schema": "ax.mlx.gdn_prefill_bugfix_validation.v1",
+  "date": "2026-10-03",
+  "scope": "GDN diagnostic fixes; runtime kernels and model/default gates unchanged",
+  "rust_tests": {
+    "passed": 4054,
+    "ignored": 61,
+    "failed": 0,
+    "includes_doctests": true
+  },
+  "python_tests": {
+    "passed": 279,
+    "skipped": 27,
+    "warnings": 1,
+    "warning": "Existing FastAPI/Starlette TestClient deprecation"
+  },
+  "diagnostic_regressions": [
+    "Read strided Float32 tensors in logical row order without raw-reader panic.",
+    "Retain finite absolute errors for opposite maximum finite Float32 operands.",
+    "Reject equal-size mismatched tensor shapes.",
+    "Persist failed JSON with explicit diagnostics for NaN and both infinities."
+  ],
+  "before_fix_reproduction": {
+    "failed_tests": 2,
+    "raw_log_sha256": "8bb3ece1a5152f7c42ee2965cc6e155ca95a64c762dd42d13b72ac99e0e3bbaa",
+    "failures": [
+      "finite_error_does_not_overflow",
+      "values_reads_strided_float32_in_logical_order"
+    ]
+  },
+  "diagnostic_regression_tests": {
+    "m2_ultra_passed": 4,
+    "mini_m4_pro_passed": 4,
+    "same_test_binary_on_both_hosts": true,
+    "test_binary_sha256": "00bbb112fce339528592df2085aff8a85300ddcfefc57a76e6fb56e655b49537"
+  },
+  "expected_failure_fixture": {
+    "correctness_pass": false,
+    "rows": [
+      {
+        "comparison_errors": {
+          "output": "non-finite or mismatched GDN outputs"
+        },
+        "correctness_pass": false,
+        "output_max_abs": null,
+        "trials": []
+      }
+    ]
+  },
+  "cli_guard_checks": [
+    {
+      "case": "zero repetitions",
+      "exit_code": 1,
+      "stderr": "repetitions must be positive; unexpected arguments",
+      "output_created": false
+    },
+    {
+      "case": "baseline independence",
+      "exit_code": 1,
+      "stderr": "set AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=0 so the AX baseline is independent",
+      "output_created": false
+    }
+  ],
+  "synthetic_cells": {
+    "m2_ultra_passed": 60,
+    "mini_m4_pro_passed": 60,
+    "unchanged_input_hashes_from_original_measurements": true,
+    "unchanged_runtime_kernel_source_hashes": true
+  },
+  "checks": [
+    {
+      "command": "bash scripts/cargo-pinned.sh fmt --check",
+      "context": "worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "CARGO_BUILD_JOBS=4 bash scripts/cargo-pinned.sh clippy --all-targets --all-features -- -D warnings",
+      "context": "worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "76c8c050a7e753984a4415ce9e79733ceeeddc18c9afa9be7f5544b0235362e3"
+    },
+    {
+      "command": "CARGO_BUILD_JOBS=4 bash scripts/cargo-pinned.sh test --quiet --no-fail-fast",
+      "context": "worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "d7d4822c65bef7777feb0733c44906bcfbb9b13a2effdc3a3306c019550e49be"
+    },
+    {
+      "command": "maturin develop",
+      "context": "active Python venv; pinned sysroot PATH; release-pyext profile",
+      "exit_code": 0,
+      "raw_log_sha256": "57362fced3e212ebe72697dfdd89e63e8b00ec7e79e643e2c99e6b055fb59c03"
+    },
+    {
+      "command": ".venv/bin/pytest python/tests",
+      "context": "worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "4424181635e30bdd2fb4f7693d8ef439a39430436e46f4cfab1126ea4ea8489a"
+    },
+    {
+      "command": "bash scripts/check-scripts.sh",
+      "context": "clean candidate worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "c4c801c76f89774303c3f1dc11d07f96921a9b95395610be69df37d1c0687835"
+    },
+    {
+      "command": ".venv/bin/python scripts/qualify_qwen38_27b.py --dry-run",
+      "context": "clean candidate worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "cfd4888fcf252f49eba33e148391dfa0243709771eac6d818a8ed3685ca4cbf1"
+    },
+    {
+      "command": ".venv/bin/python scripts/qualify_qwen38_flash_next.py --dry-run",
+      "context": "clean candidate worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "b8cf8586760fc409479b6b38fbb155b319291764de9e68223543d6cf68d6a762"
+    },
+    {
+      "command": ".venv/bin/python scripts/check_qwen38_primary_claims.py",
+      "context": "clean candidate worktree",
+      "exit_code": 0,
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "bash scripts/cargo-pinned.sh test -p ax-engine-microbench --bin mlx-gated-delta-prefill-probe -- --nocapture",
+      "context": "M2 Ultra; 4 diagnostic regressions",
+      "exit_code": 0,
+      "raw_log_sha256": "c229cdf96655bc0e681de1003112faffc03289563973841c5011d6e79719a152"
+    },
+    {
+      "command": "./probe-review-tests --nocapture",
+      "context": "mini M4 Pro; same diagnostic test executable; 4 diagnostic regressions",
+      "exit_code": 0,
+      "raw_log_sha256": "4e67cf7022957c5b76d997215115afaa40f1484e5241b2503cf897a5a2d0c803"
+    },
+    {
+      "command": "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX=1 bash scripts/cargo-pinned.sh test -p ax-engine-mlx --lib mlx_gated_delta::tests::process_flag_selects_prefill_and_preserves_short_window_fallback -- --exact --nocapture",
+      "context": "M2 Ultra; 1 runtime dispatch test",
+      "exit_code": 0,
+      "raw_log_sha256": "6fccb17820d8cdb41a914892d50f0e6a1b63e31e17893f1156a6a6ae0be2d5d4"
+    }
+  ],
+  "script_gate_context": "The unmodified script gate passed in a clean worktree with this candidate over 13859476. The original worktree retains unrelated untracked wiki references that previously failed the retired-reference check. Original staged and unrelated unstaged patches were preserved.",
+  "limits": [
+    "No new model, MTP, certification or default promotion.",
+    "Synthetic rerun includes concurrent software gates on M2 Ultra; no new performance claim.",
+    "Hardware/model-gated ignored and skipped tests remain separate qualification work."
+  ]
+}

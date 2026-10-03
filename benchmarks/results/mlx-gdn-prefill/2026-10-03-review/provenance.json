@@ -1,0 +1,27 @@
+{
+  "schema": "ax.mlx.gdn_prefill_provenance.v1",
+  "base_revision": "1385947674bdcc68d9198878c2a4cedf0d3d9b79",
+  "scope": "Diagnostic bug-fix rerun; unchanged runtime kernels; no new model performance or qualification claim",
+  "rust": "1.97.1",
+  "build_profile": "release-pyext",
+  "same_probe_binary_on_both_hosts": true,
+  "probe_binary_sha256": "81ddd7035ed4c30a031c89aa22d7f39256e62a3a1a75bf36b526e773e857ee7c",
+  "published_runtime_assets_sha256": {
+    "libmlx.dylib": "ebc8a5f5465afb79d3d9c8f5b0929de1a9b277b7179db8672f92da77ae110a1e",
+    "mlx.metallib": "95974b7de464ec2be7833a914ca5a53d283a70789470fd84218738fc8fcea3e1"
+  },
+  "reports_sha256": {
+    "m4-pro.json": "9619b47727a624813d9c5c11a6301498bf3d6571e9e91925ce2c34080b4d9ea1",
+    "m2-ultra.json": "1b019b396d459fa7cf16ec8507dfcfa5adec5c947cddd97f0b73753d1462e024"
+  },
+  "measurement_context": "Numerical diagnostic rerun with concurrent local software gates on M2 Ultra; latency samples are not a new performance claim.",
+  "original_measurement_directory": "../2026-10-03",
+  "source_hash_paths": {
+    "probe": "crates/ax-engine-microbench/src/bin/mlx_gated_delta_prefill_probe.rs",
+    "adapter": "crates/ax-engine-mlx/src/mlx_gated_delta.rs",
+    "ax_baseline": "crates/ax-engine-mlx/src/linear_attention_ops.rs",
+    "flags": "crates/ax-engine-mlx/src/fastpath.rs",
+    "binding": "crates/mlx-sys/src/fast.rs",
+    "shim": "crates/mlx-sys/native/ax_shim.cpp"
+  }
+}

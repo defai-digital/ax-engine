@@ -7,7 +7,7 @@ use ax_engine_mlx::fastpath::qwen_gated_delta_prefill_mlx_enabled;
 use ax_engine_mlx::linear_attention_ops::gated_delta_kernel;
 use ax_engine_mlx::mlx_gated_delta::try_mlx_gated_delta_prefill;
 use mlx_sys::{
-    MlxArray, MlxDtype, astype, clear_cache, device_active_bytes, get_peak_memory,
+    MlxArray, MlxDtype, astype, clear_cache, contiguous, device_active_bytes, get_peak_memory,
     gpu_device_architecture, reset_peak_memory, runtime_version, try_eval,
 };
 use serde_json::{Value, json};
@@ -116,19 +116,63 @@ fn host(command: &str, args: &[&str]) -> Result<String, String> {
 }
 
 fn values(a: &MlxArray) -> Result<Vec<f32>, String> {
-    let a = astype(a, MlxDtype::Float32, None);
+    // A same-dtype cast can retain a strided view; raw reads require row order.
+    let a = contiguous(&astype(a, MlxDtype::Float32, None), None);
     try_eval(&[&a])?;
     Ok(a.data_f32().to_vec())
 }
 
-fn error(a: &[f32], b: &[f32]) -> Result<f32, String> {
+fn error(a: &[f32], b: &[f32]) -> Result<f64, String> {
     if a.len() != b.len() || a.iter().chain(b).any(|v| !v.is_finite()) {
         return Err("non-finite or mismatched GDN outputs".into());
     }
     Ok(a.iter()
         .zip(b)
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0_f32, f32::max))
+        .map(|(a, b)| (*a as f64 - *b as f64).abs())
+        .fold(0.0_f64, f64::max))
+}
+
+struct Comparison {
+    max_abs: Option<f64>,
+    problem: Option<String>,
+}
+
+impl Comparison {
+    fn passes(&self, tolerance: f64) -> bool {
+        self.problem.is_none() && self.max_abs.is_some_and(|error| error <= tolerance)
+    }
+}
+
+fn compare_arrays(actual: &MlxArray, expected: &MlxArray) -> Comparison {
+    let result = if actual.shape() != expected.shape() {
+        Err(format!(
+            "mismatched GDN shapes: {:?} versus {:?}",
+            actual.shape(),
+            expected.shape()
+        ))
+    } else {
+        values(actual).and_then(|a| values(expected).and_then(|b| error(&a, &b)))
+    };
+    match result {
+        Ok(max_abs) => Comparison {
+            max_abs: Some(max_abs),
+            problem: None,
+        },
+        Err(problem) => Comparison {
+            max_abs: None,
+            problem: Some(problem),
+        },
+    }
+}
+
+fn write_report(output: &str, report: &Value) -> Result<(), String> {
+    let encoded = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
+    std::fs::write(output, format!("{encoded}\n")).map_err(|e| e.to_string())?;
+    println!("{encoded}");
+    if report["correctness_pass"] != true {
+        return Err("GDN numerical comparison failed; raw report retained".into());
+    }
+    Ok(())
 }
 
 fn median(values: &[f64]) -> f64 {
@@ -195,16 +239,29 @@ fn run() -> Result<(), String> {
                     let input_bytes = device_active_bytes();
                     let (ax_y, ax_s) = inputs.run(false)?;
                     let (mlx_y, mlx_s) = inputs.run(true)?;
-                    let output_error = error(&values(&ax_y)?, &values(&mlx_y)?)?;
-                    let state_error = error(&values(&ax_s)?, &values(&mlx_s)?)?;
+                    let output_comparison = compare_arrays(&ax_y, &mlx_y);
+                    let state_comparison = compare_arrays(&ax_s, &mlx_s);
                     let output_tolerance = if dtype == MlxDtype::Bfloat16 {
                         0.0005
                     } else {
                         0.00005
                     };
-                    let ok = output_error <= output_tolerance && state_error <= 0.00005;
+                    let ok = output_comparison.passes(output_tolerance)
+                        && state_comparison.passes(0.00005);
                     passed &= ok;
+                    let mut row = json!({"batch":batch,"seq":seq,"key_heads":hk,"value_heads":hv,
+                        "head_dim":128,"dtype":format!("{dtype:?}"),"input_sha256":inputs.hashes,
+                        "input_hash_order":["q","k","v","a_log","a","bias","b","initial_state"],
+                        "active_input_mlx_bytes":input_bytes,"output_max_abs":output_comparison.max_abs,
+                        "state_max_abs":state_comparison.max_abs,"output_tolerance":output_tolerance,"state_tolerance":0.00005,
+                        "comparison_errors":{"output":output_comparison.problem,"state":state_comparison.problem},
+                        "correctness_pass":ok,"trials":[]});
                     drop((ax_y, ax_s, mlx_y, mlx_s));
+                    // Preserve failed comparisons without evaluating them again for timing.
+                    if !ok {
+                        rows.push(row);
+                        continue;
+                    }
                     let mut trials = Vec::new();
                     let mut ax_medians = Vec::new();
                     let mut mlx_medians = Vec::new();
@@ -224,13 +281,12 @@ fn run() -> Result<(), String> {
                             json!({"first":if first_mlx {"mlx"} else {"ax"},"ax":ax,"mlx":mlx}),
                         );
                     }
-                    rows.push(json!({"batch":batch,"seq":seq,"key_heads":hk,"value_heads":hv,
-                        "head_dim":128,"dtype":format!("{dtype:?}"),"input_sha256":inputs.hashes,
-                        "input_hash_order":["q","k","v","a_log","a","bias","b","initial_state"],
-                        "active_input_mlx_bytes":input_bytes,"output_max_abs":output_error,
-                        "state_max_abs":state_error,"output_tolerance":output_tolerance,"state_tolerance":0.00005,
-                        "correctness_pass":ok,"trials":trials,"ax_median_ms":median(&ax_medians),
-                        "mlx_median_ms":median(&mlx_medians),"kernel_ratio_ax_over_mlx":median(&ax_medians)/median(&mlx_medians)}));
+                    row["trials"] = json!(trials);
+                    row["ax_median_ms"] = json!(median(&ax_medians));
+                    row["mlx_median_ms"] = json!(median(&mlx_medians));
+                    row["kernel_ratio_ax_over_mlx"] =
+                        json!(median(&ax_medians) / median(&mlx_medians));
+                    rows.push(row);
                 }
             }
         }
@@ -253,13 +309,7 @@ fn run() -> Result<(), String> {
         "optimization_env":std::env::vars().filter(|(k,_)| k.starts_with("AX_MLX_") || k.starts_with("GATED_DELTA_")).collect::<std::collections::BTreeMap<_,_>>(),
         "seed":31418,"input_hash_scope":"Little-endian float32 source values before activation cast",
         "warmups_per_backend_trial":3,"repetitions":repetitions,"correctness_pass":passed,"rows":rows});
-    let encoded = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
-    std::fs::write(output, format!("{encoded}\n")).map_err(|e| e.to_string())?;
-    println!("{encoded}");
-    if !passed {
-        return Err("GDN numerical comparison failed; raw report retained".into());
-    }
-    Ok(())
+    write_report(&output, &report)
 }
 
 fn main() -> ExitCode {
@@ -268,6 +318,85 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("{message}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn values_reads_strided_float32_in_logical_order() {
+        let data = [1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let array = MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(&data),
+            &[2, 3],
+            MlxDtype::Float32,
+        );
+        let view = mlx_sys::transpose(&array, &[1, 0], None);
+        assert_eq!(
+            values(&view).expect("read strided tensor"),
+            [1., 4., 2., 5., 3., 6.]
+        );
+    }
+
+    #[test]
+    fn finite_error_does_not_overflow() {
+        let observed = error(&[f32::MAX], &[-f32::MAX]).expect("finite operands");
+        assert!(
+            observed.is_finite(),
+            "finite operands must retain a finite error"
+        );
+        assert_eq!(observed, 2.0 * f32::MAX as f64);
+    }
+
+    #[test]
+    fn shape_mismatch_with_equal_size_fails_comparison() {
+        let a = mlx_sys::zeros(&[2, 3], MlxDtype::Float32, None);
+        let b = mlx_sys::zeros(&[3, 2], MlxDtype::Float32, None);
+        let comparison = compare_arrays(&a, &b);
+        assert!(!comparison.passes(0.00005));
+        assert!(comparison.problem.expect("shape error").contains("shapes"));
+    }
+
+    #[test]
+    fn nonfinite_comparisons_retain_failed_json() {
+        for (index, invalid) in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY]
+            .into_iter()
+            .enumerate()
+        {
+            let a = MlxArray::from_raw_data(
+                std::ptr::from_ref(&invalid).cast(),
+                4,
+                &[1],
+                MlxDtype::Float32,
+            );
+            let b = mlx_sys::zeros(&[1], MlxDtype::Float32, None);
+            let comparison = compare_arrays(&a, &b);
+            assert!(!comparison.passes(0.00005));
+            let report = json!({"correctness_pass":false,"rows":[{
+                "output_max_abs":comparison.max_abs,"comparison_errors":{"output":comparison.problem},
+                "correctness_pass":false,"trials":[]}]});
+            let path = std::env::temp_dir().join(format!(
+                "ax-gdn-nonfinite-{}-{index}.json",
+                std::process::id()
+            ));
+            assert!(write_report(path.to_str().expect("temporary path"), &report).is_err());
+            let retained: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("retained JSON"))
+                    .expect("valid JSON");
+            std::fs::remove_file(path).expect("remove fixture");
+            assert_eq!(retained, report);
+            assert!(
+                retained["rows"][0]["comparison_errors"]["output"]
+                    .as_str()
+                    .expect("numerical error")
+                    .contains("non-finite")
+            );
         }
     }
 }
