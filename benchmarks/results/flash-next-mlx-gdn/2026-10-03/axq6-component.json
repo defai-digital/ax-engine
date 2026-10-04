@@ -1,0 +1,77 @@
+{
+  "bounds": {
+    "conv_and_same_state_decode_max_abs": 0.0,
+    "output_max_abs": 0.0625,
+    "relative_l2": 0.002,
+    "state_max_abs": 0.002
+  },
+  "config_sha256": "19231536f0f8ce129eb8cab985a68c0ddced2af90e12f5c65f01a35a686efe02",
+  "conv_error": {
+    "finite": true,
+    "max_abs": 0.0,
+    "relative_l2": 0.0
+  },
+  "correctness_pass": true,
+  "dispatches": {
+    "ax": 0,
+    "decode": 0,
+    "mlx": 1
+  },
+  "index_sha256": "ab0e442ef09c9198718f10dba967ff90e0cf1c0a9005c928bb8b72c3d76bf5a2",
+  "input_sha256": "c3dbdcb3e20b6e4e962e20b7c7fdae7e47dd04b7ae4a1ba32b7e3805de67c9a6",
+  "layer": 0,
+  "loaded_gdn_sha256": {
+    "a_log": "88c53a2a04bda1d96ee1ade6fa7dfa9c49d3245b1cc1e83673f02b7a36e07a85",
+    "beta.biases": "9eba2fa8555777bb6f9ca21ea2a2d518ab9f1ace8621dfe153f265f555c1360f",
+    "beta.scales": "2e1a231f2a5fec56de162b6af2709d23abe92372e8295158aded2d9249473484",
+    "beta.weight": "7b0ce2d9602de6a017b49249a5f8b55e2078218a82256270f6da92395c69ddb1",
+    "conv": "f56e046007a85065186c71dfadb2c4370409b6b25b9b1c292673d79c656ff6ea",
+    "decay.biases": "fdff6deb5874e946988427c7c00b091d7a4e50a2aa189adcd8530db1473729fb",
+    "decay.scales": "a804ceb8d09a9b105d89f037e05ec9f9b4c8df2887aa49bb692ffce9c40209df",
+    "decay.weight": "c98c5eb291fc68641b0e443124f5119e95bafe632fd6126b2f6d70b52ce7e254",
+    "dt_bias": "cfc5d9f0c2eccff4c1969fbfb31cca17a1b50007e9cc06490b4e141be6b825a0",
+    "gate.biases": "f0c60b3aa27da603818c73eca67d1a44789afbd898a912c6ebf91e2523e39013",
+    "gate.scales": "f02222a704f4c4c782edf8c9140169911621d562045fa75588d6825884d4eb4a",
+    "gate.weight": "b01e7091aad59047d1f50ad15b6e61cc18bd861c2480ccc69a0f7b9ca3642939",
+    "norm_gain": "d27dd7b8d5dae1f3cc9880dd0367825008d8d7873ea0030aa92175634ae08e17",
+    "output.biases": "5587bab4564e76e2b6c85552b35a00a08084847a4c0a356b09578389059b0e0b",
+    "output.scales": "84b1aefa2eef9a7be8b5527d0f90cdf553e2dbb97d87be5468d0e0bef61b54b6",
+    "output.weight": "696fe74afa8167115583e755d5b009718aefb247a849a1a8050a295bca1f948b",
+    "qkv.biases": "d6eb2582ea5cc15180e57358927ca33ff6c3fbf9db4a4c439b6181a18f455b54",
+    "qkv.scales": "224322194807d836bf0536bc7925b4434a12d95cfdfc8e1711077e78c91a6111",
+    "qkv.weight": "2aca96bf5cdb60f9c03a9aa19b3899187505b822ab878d18c3fb6c7e74d88071"
+  },
+  "mlx_version": "0.32.3",
+  "output_error": {
+    "finite": true,
+    "max_abs": 0.0001220703125,
+    "relative_l2": 0.0001591400424622479
+  },
+  "pack": "AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+  "projection_dtype": "Bfloat16",
+  "qualification": false,
+  "release_ready": false,
+  "same_state_decode_error": {
+    "finite": true,
+    "max_abs": 0.0,
+    "relative_l2": 0.0
+  },
+  "same_state_decode_state_error": {
+    "finite": true,
+    "max_abs": 0.0,
+    "relative_l2": 0.0
+  },
+  "schema": "ax.flash_next.gdn_component.v1",
+  "scope": "Layer-zero real GDN weights with synthetic hidden activations; no whole-model quality or performance claim",
+  "seq": 131,
+  "sources_sha256": {
+    "recurrence": "cf56c1b17b658073acf5d6568eb900a0cb38014a02234600dc97730835a4a6f3",
+    "trunk": "d8de29dcf450d4080cd2a24fcbc94b9838217c953b6e3354c1c0e8a47547f64b"
+  },
+  "state_error": {
+    "finite": true,
+    "max_abs": 6.05359673500061e-9,
+    "relative_l2": 4.112233322369612e-7
+  },
+  "tensor_hash_scope": "Loaded uint32 payloads or exact floating values cast to float32, row-contiguous little-endian"
+}

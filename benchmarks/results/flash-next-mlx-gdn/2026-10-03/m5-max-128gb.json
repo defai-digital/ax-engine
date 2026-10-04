@@ -1,0 +1,3579 @@
+{
+  "correctness_pass": true,
+  "host": {
+    "chip": "Apple M5 Max",
+    "gpu_architecture": "applegpu_g17s",
+    "macos": "27.0",
+    "memory_bytes": 137438953472
+  },
+  "host_load_average": {
+    "end": "{ 1.23 0.77 0.67 }",
+    "start": "{ 0.08 0.53 0.58 }"
+  },
+  "input_hash_scope": "Little-endian float32 source values before activation cast",
+  "measurement": "synthetic_kernel_timing",
+  "mlx_version": "0.32.3",
+  "optimization_env": {
+    "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX": "0",
+    "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX": "0"
+  },
+  "recurrence": "dedicated_flash_next_fp32",
+  "repetitions": 5,
+  "repository_head": null,
+  "rows": [
+    {
+      "active_input_mlx_bytes": 12730772,
+      "ax_median_ms": 7.140375,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "f8dec9376f55201f767c3842f232cbe85a36ae1ab6249d2f4941912f40968615",
+        "6439fd6de19bd5d6dca7fc03b05ea01a5034959cc6251726f642f95d55564b56",
+        "ef7c0112d484a9ab8b69583fd59a0d5845005d68b79cfee9ccd1f1297465ca4f",
+        "98b659c998ba6e53b0b06089d78a94bcd7795dc7a2d6259b81acfb6b2c9cda4e",
+        "d2060fdea7787709d2e5a4788ab996627a0dee458c2f4b084f2177b316d8a316",
+        "4de90d549cc8ed015edbaac1fe231e28f20bb15814448ed02b8a37250815ac55",
+        "8b1f08bbcb1b9a5855630fbaf7701dafe4dd1ae03182e2ae988740c7f671ccbb",
+        "d3d31d34324aaf061d17c0a33dcfdd858f24de976c80d90b369d9743d98d9854"
+      ],
+      "kernel_ratio_ax_over_mlx": 28.17182728499396,
+      "key_heads": 16,
+      "mlx_median_ms": 0.253458,
+      "output_max_abs": 5.7104043662548065e-6,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 0.000035064294934272766,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              7.206792,
+              7.168875,
+              7.1359580000000005,
+              7.1503749999999995,
+              7.140959
+            ],
+            "median_ms": 7.1503749999999995,
+            "peak_mlx_bytes": 1012695616
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.259667,
+              0.44499999999999995,
+              0.271584,
+              0.2175,
+              0.226416
+            ],
+            "median_ms": 0.259667,
+            "peak_mlx_bytes": 85066113
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.145290999999999,
+              7.1630840000000005,
+              7.122334,
+              7.140375,
+              7.126583
+            ],
+            "median_ms": 7.140375,
+            "peak_mlx_bytes": 1012695616
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.214875,
+              0.229,
+              0.2665,
+              0.254542,
+              0.253458
+            ],
+            "median_ms": 0.253458,
+            "peak_mlx_bytes": 21102976
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.127542,
+              7.115833,
+              7.12625,
+              7.131125,
+              7.121916
+            ],
+            "median_ms": 7.12625,
+            "peak_mlx_bytes": 1012695616
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.225834,
+              0.21962500000000001,
+              0.252333,
+              0.27045800000000003,
+              0.40083399999999997
+            ],
+            "median_ms": 0.252333,
+            "peak_mlx_bytes": 85066113
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 20558228,
+      "ax_median_ms": 7.129417,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "f8dec9376f55201f767c3842f232cbe85a36ae1ab6249d2f4941912f40968615",
+        "6439fd6de19bd5d6dca7fc03b05ea01a5034959cc6251726f642f95d55564b56",
+        "ef7c0112d484a9ab8b69583fd59a0d5845005d68b79cfee9ccd1f1297465ca4f",
+        "98b659c998ba6e53b0b06089d78a94bcd7795dc7a2d6259b81acfb6b2c9cda4e",
+        "d2060fdea7787709d2e5a4788ab996627a0dee458c2f4b084f2177b316d8a316",
+        "4de90d549cc8ed015edbaac1fe231e28f20bb15814448ed02b8a37250815ac55",
+        "8b1f08bbcb1b9a5855630fbaf7701dafe4dd1ae03182e2ae988740c7f671ccbb",
+        "d3d31d34324aaf061d17c0a33dcfdd858f24de976c80d90b369d9743d98d9854"
+      ],
+      "kernel_ratio_ax_over_mlx": 31.338096703296703,
+      "key_heads": 16,
+      "mlx_median_ms": 0.2275,
+      "output_max_abs": 5.45009970664978e-6,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 0.00003479793667793274,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              7.1263749999999995,
+              7.107667,
+              7.135334,
+              7.127208,
+              7.133209
+            ],
+            "median_ms": 7.127208,
+            "peak_mlx_bytes": 1012654656
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.205209,
+              0.22245800000000002,
+              0.260666,
+              0.265916,
+              0.266625
+            ],
+            "median_ms": 0.260666,
+            "peak_mlx_bytes": 85025153
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.137709,
+              7.171417,
+              7.119917,
+              7.129417,
+              7.110334
+            ],
+            "median_ms": 7.129417,
+            "peak_mlx_bytes": 1012654656
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.223458,
+              0.22045800000000002,
+              0.21375,
+              0.21825,
+              0.21804199999999999
+            ],
+            "median_ms": 0.21825,
+            "peak_mlx_bytes": 21062016
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.134833,
+              7.137208,
+              7.1255,
+              7.1381250000000005,
+              7.116875
+            ],
+            "median_ms": 7.134833,
+            "peak_mlx_bytes": 1012654656
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.208,
+              0.2275,
+              0.216917,
+              0.23033299999999998,
+              0.252583
+            ],
+            "median_ms": 0.2275,
+            "peak_mlx_bytes": 85025153
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 20558228,
+      "ax_median_ms": 7.124125,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "f8dec9376f55201f767c3842f232cbe85a36ae1ab6249d2f4941912f40968615",
+        "6439fd6de19bd5d6dca7fc03b05ea01a5034959cc6251726f642f95d55564b56",
+        "ef7c0112d484a9ab8b69583fd59a0d5845005d68b79cfee9ccd1f1297465ca4f",
+        "98b659c998ba6e53b0b06089d78a94bcd7795dc7a2d6259b81acfb6b2c9cda4e",
+        "d2060fdea7787709d2e5a4788ab996627a0dee458c2f4b084f2177b316d8a316",
+        "4de90d549cc8ed015edbaac1fe231e28f20bb15814448ed02b8a37250815ac55",
+        "8b1f08bbcb1b9a5855630fbaf7701dafe4dd1ae03182e2ae988740c7f671ccbb",
+        "d3d31d34324aaf061d17c0a33dcfdd858f24de976c80d90b369d9743d98d9854"
+      ],
+      "kernel_ratio_ax_over_mlx": 28.57754592022977,
+      "key_heads": 16,
+      "mlx_median_ms": 0.249291,
+      "output_max_abs": 5.571870133280754e-6,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 0.00003191269934177399,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              7.1143339999999995,
+              7.136375,
+              7.1374580000000005,
+              7.117708,
+              7.124125
+            ],
+            "median_ms": 7.124125,
+            "peak_mlx_bytes": 1012654656
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.22079200000000002,
+              0.20166699999999999,
+              0.27149999999999996,
+              0.25837499999999997,
+              0.249291
+            ],
+            "median_ms": 0.249291,
+            "peak_mlx_bytes": 85025153
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.143209000000001,
+              7.127375,
+              7.134083,
+              7.127083,
+              7.11775
+            ],
+            "median_ms": 7.127375,
+            "peak_mlx_bytes": 1012654656
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.21558300000000002,
+              0.21645799999999998,
+              0.21962500000000001,
+              0.22579100000000002,
+              0.22216599999999997
+            ],
+            "median_ms": 0.21962500000000001,
+            "peak_mlx_bytes": 21062016
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.1396250000000006,
+              7.111167,
+              7.123958,
+              7.134417,
+              7.124125
+            ],
+            "median_ms": 7.124125,
+            "peak_mlx_bytes": 1012654656
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.25333300000000003,
+              0.262625,
+              0.253417,
+              0.2745,
+              0.260417
+            ],
+            "median_ms": 0.260417,
+            "peak_mlx_bytes": 85025153
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 13009684,
+      "ax_median_ms": 7.306,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "867ccab8644ce4707753c2871346be3389469c8127124b58a08809d3b041f98f",
+        "2e33f19f2e985da047a41c050fc3de24be691521c5c630f74750b88bcaf777a2",
+        "42cbc9dcafb6f6f9bef1ca8612924bcf1646b1bff9982974c8b7e4a9b1257980",
+        "9c9da4605d166b9ce95c16b638ec6c230cde01e3c14730f9a790b23be65226a3",
+        "7fcf4348460026ce9f1314131c876ddf781655e946f425aa866ec4ad381f2b6d",
+        "bf50e42964a69f245ff487d7c84616fdeb49eb9382108bfc6bd465bb7c43a5b4",
+        "bc6071b46807f8bf66e65a522f30a7b5740945753fa2c0e39e9b631772efd984",
+        "ad6453321f00467ed25a7088d24ea906272a70c9ebdc994a09fdbba0f72aa860"
+      ],
+      "kernel_ratio_ax_over_mlx": 28.31333005220101,
+      "key_heads": 16,
+      "mlx_median_ms": 0.25804099999999996,
+      "output_max_abs": 6.604474037885666e-6,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 0.00003566034138202667,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              7.311332999999999,
+              7.2989999999999995,
+              7.30625,
+              7.3060410000000005,
+              7.3219579999999995
+            ],
+            "median_ms": 7.30625,
+            "peak_mlx_bytes": 1003536960
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.25854099999999997,
+              0.26516700000000004,
+              0.259917,
+              0.266084,
+              0.251125
+            ],
+            "median_ms": 0.259917,
+            "peak_mlx_bytes": 85475713
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.2907090000000006,
+              7.291042,
+              7.309833,
+              7.317125,
+              7.306
+            ],
+            "median_ms": 7.306,
+            "peak_mlx_bytes": 1003536960
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.207417,
+              0.225167,
+              0.23299999999999998,
+              0.22975,
+              0.239667
+            ],
+            "median_ms": 0.22975,
+            "peak_mlx_bytes": 21414272
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.31025,
+              7.26875,
+              7.294875,
+              7.30075,
+              7.316458
+            ],
+            "median_ms": 7.30075,
+            "peak_mlx_bytes": 1003536960
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.254334,
+              0.25804099999999996,
+              0.25604099999999996,
+              0.275083,
+              0.32741699999999996
+            ],
+            "median_ms": 0.25804099999999996,
+            "peak_mlx_bytes": 44499329
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 21067188,
+      "ax_median_ms": 7.303208000000001,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "867ccab8644ce4707753c2871346be3389469c8127124b58a08809d3b041f98f",
+        "2e33f19f2e985da047a41c050fc3de24be691521c5c630f74750b88bcaf777a2",
+        "42cbc9dcafb6f6f9bef1ca8612924bcf1646b1bff9982974c8b7e4a9b1257980",
+        "9c9da4605d166b9ce95c16b638ec6c230cde01e3c14730f9a790b23be65226a3",
+        "7fcf4348460026ce9f1314131c876ddf781655e946f425aa866ec4ad381f2b6d",
+        "bf50e42964a69f245ff487d7c84616fdeb49eb9382108bfc6bd465bb7c43a5b4",
+        "bc6071b46807f8bf66e65a522f30a7b5740945753fa2c0e39e9b631772efd984",
+        "ad6453321f00467ed25a7088d24ea906272a70c9ebdc994a09fdbba0f72aa860"
+      ],
+      "kernel_ratio_ax_over_mlx": 31.77034475258293,
+      "key_heads": 16,
+      "mlx_median_ms": 0.229875,
+      "output_max_abs": 6.160233169794083e-6,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 0.000031664036214351654,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              7.303208000000001,
+              7.2875,
+              7.317749999999999,
+              7.299084,
+              7.325583
+            ],
+            "median_ms": 7.303208000000001,
+            "peak_mlx_bytes": 1003496576
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.230375,
+              0.229875,
+              0.229375,
+              0.227416,
+              0.262
+            ],
+            "median_ms": 0.229875,
+            "peak_mlx_bytes": 47604673
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.281417,
+              7.292542,
+              7.32775,
+              7.3244169999999995,
+              7.30225
+            ],
+            "median_ms": 7.30225,
+            "peak_mlx_bytes": 1003496576
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.266208,
+              0.267375,
+              0.260042,
+              0.266459,
+              0.25416700000000003
+            ],
+            "median_ms": 0.266208,
+            "peak_mlx_bytes": 21373888
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.318,
+              7.3291249999999994,
+              7.28925,
+              7.27775,
+              7.313709
+            ],
+            "median_ms": 7.313709,
+            "peak_mlx_bytes": 1003496576
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.231125,
+              0.227584,
+              0.221208,
+              0.215,
+              0.256417
+            ],
+            "median_ms": 0.227584,
+            "peak_mlx_bytes": 44458945
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 21067188,
+      "ax_median_ms": 7.3093330000000005,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "867ccab8644ce4707753c2871346be3389469c8127124b58a08809d3b041f98f",
+        "2e33f19f2e985da047a41c050fc3de24be691521c5c630f74750b88bcaf777a2",
+        "42cbc9dcafb6f6f9bef1ca8612924bcf1646b1bff9982974c8b7e4a9b1257980",
+        "9c9da4605d166b9ce95c16b638ec6c230cde01e3c14730f9a790b23be65226a3",
+        "7fcf4348460026ce9f1314131c876ddf781655e946f425aa866ec4ad381f2b6d",
+        "bf50e42964a69f245ff487d7c84616fdeb49eb9382108bfc6bd465bb7c43a5b4",
+        "bc6071b46807f8bf66e65a522f30a7b5740945753fa2c0e39e9b631772efd984",
+        "ad6453321f00467ed25a7088d24ea906272a70c9ebdc994a09fdbba0f72aa860"
+      ],
+      "kernel_ratio_ax_over_mlx": 31.230860272942465,
+      "key_heads": 16,
+      "mlx_median_ms": 0.234042,
+      "output_max_abs": 6.346963346004486e-6,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 0.00003487430512905121,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              7.326875,
+              7.2834579999999995,
+              7.265167,
+              7.3093330000000005,
+              7.3096250000000005
+            ],
+            "median_ms": 7.3093330000000005,
+            "peak_mlx_bytes": 1003496576
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.23208399999999998,
+              0.234042,
+              0.213167,
+              0.258834,
+              0.2605
+            ],
+            "median_ms": 0.234042,
+            "peak_mlx_bytes": 44458945
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.297792,
+              7.304083,
+              7.291542,
+              7.322125,
+              7.292292
+            ],
+            "median_ms": 7.297792,
+            "peak_mlx_bytes": 1003496576
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.325459,
+              0.222542,
+              0.223833,
+              0.22075,
+              0.252708
+            ],
+            "median_ms": 0.223833,
+            "peak_mlx_bytes": 21373888
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              7.313584,
+              7.342042,
+              7.300417,
+              7.32575,
+              7.294042
+            ],
+            "median_ms": 7.313584,
+            "peak_mlx_bytes": 1003496576
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.227166,
+              0.230792,
+              0.240125,
+              0.26241699999999996,
+              0.388458
+            ],
+            "median_ms": 0.240125,
+            "peak_mlx_bytes": 44458945
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41353620,
+      "ax_median_ms": 28.387958,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "6367840bb0522946c376c74cdfa184052b511e8a4eac60bfaa46ce3732684101",
+        "28d35c32fc801afd99ef47894adc08ce0a5d9dd547eecbe01a2213b295674837",
+        "ece87bda767b8fd716a9a5bfabe31fdeff6e58e1443f6fa71788fcff041c5dde",
+        "0a56fd0b674f0227c25750dc23bda991eda3ee06a78034ecf63bf2494390e0c9",
+        "f68375236dc1e5a2f46cc37020b446af4f004200f5fad62000adcaf091a556a6",
+        "7c9c127b1624268345a1d33011755994dc53b2ac63b284f5b321a8b92ebcf4b5",
+        "53a1ede3cb4b0d482f0d429e6e806a59b3d2390c649d7b540b571461ce113fbc",
+        "6eb4b94304dce880f1a9ef7074495ed8a527dbed665325fdf8c8970760d44837"
+      ],
+      "kernel_ratio_ax_over_mlx": 64.57312027295991,
+      "key_heads": 16,
+      "mlx_median_ms": 0.43962500000000004,
+      "output_max_abs": 6.079208105802536e-6,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 0.00003253854811191559,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              28.384292,
+              28.407667,
+              28.416041999999997,
+              28.409708,
+              28.421208
+            ],
+            "median_ms": 28.409708,
+            "peak_mlx_bytes": 2248671808
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.48879200000000006,
+              0.40133399999999997,
+              0.401959,
+              0.40049999999999997,
+              0.417458
+            ],
+            "median_ms": 0.401959,
+            "peak_mlx_bytes": 132514177
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              28.3695,
+              28.388707999999998,
+              28.3685,
+              28.395667,
+              28.387958
+            ],
+            "median_ms": 28.387958,
+            "peak_mlx_bytes": 2248671808
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.40841700000000003,
+              0.496,
+              0.408125,
+              0.43962500000000004,
+              0.479709
+            ],
+            "median_ms": 0.43962500000000004,
+            "peak_mlx_bytes": 55968128
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              28.359667,
+              28.269709,
+              28.361209,
+              28.373874999999998,
+              28.351666
+            ],
+            "median_ms": 28.359667,
+            "peak_mlx_bytes": 2248671808
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.412292,
+              0.487583,
+              0.42591599999999996,
+              0.477084,
+              0.476083
+            ],
+            "median_ms": 0.476083,
+            "peak_mlx_bytes": 57016705
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 72728980,
+      "ax_median_ms": 28.351667,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "6367840bb0522946c376c74cdfa184052b511e8a4eac60bfaa46ce3732684101",
+        "28d35c32fc801afd99ef47894adc08ce0a5d9dd547eecbe01a2213b295674837",
+        "ece87bda767b8fd716a9a5bfabe31fdeff6e58e1443f6fa71788fcff041c5dde",
+        "0a56fd0b674f0227c25750dc23bda991eda3ee06a78034ecf63bf2494390e0c9",
+        "f68375236dc1e5a2f46cc37020b446af4f004200f5fad62000adcaf091a556a6",
+        "7c9c127b1624268345a1d33011755994dc53b2ac63b284f5b321a8b92ebcf4b5",
+        "53a1ede3cb4b0d482f0d429e6e806a59b3d2390c649d7b540b571461ce113fbc",
+        "6eb4b94304dce880f1a9ef7074495ed8a527dbed665325fdf8c8970760d44837"
+      ],
+      "kernel_ratio_ax_over_mlx": 66.68375881420434,
+      "key_heads": 16,
+      "mlx_median_ms": 0.425166,
+      "output_max_abs": 6.1588361859321594e-6,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 0.00003404542803764343,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              28.360834,
+              28.3795,
+              28.408709,
+              28.444,
+              28.352417000000003
+            ],
+            "median_ms": 28.3795,
+            "peak_mlx_bytes": 2248573504
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.425166,
+              0.404833,
+              0.490917,
+              0.40125,
+              0.49525
+            ],
+            "median_ms": 0.425166,
+            "peak_mlx_bytes": 132415873
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              28.286875,
+              28.262916999999998,
+              28.4035,
+              28.34125,
+              28.353125
+            ],
+            "median_ms": 28.34125,
+            "peak_mlx_bytes": 2248573504
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.415125,
+              0.475417,
+              0.4525,
+              0.40091699999999997,
+              0.491625
+            ],
+            "median_ms": 0.4525,
+            "peak_mlx_bytes": 55869824
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              28.378,
+              28.298833,
+              28.351667,
+              28.39425,
+              28.273917
+            ],
+            "median_ms": 28.351667,
+            "peak_mlx_bytes": 2248573504
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.397708,
+              0.421625,
+              0.484125,
+              0.40891700000000003,
+              0.491625
+            ],
+            "median_ms": 0.421625,
+            "peak_mlx_bytes": 132415873
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 72728980,
+      "ax_median_ms": 28.351584,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "6367840bb0522946c376c74cdfa184052b511e8a4eac60bfaa46ce3732684101",
+        "28d35c32fc801afd99ef47894adc08ce0a5d9dd547eecbe01a2213b295674837",
+        "ece87bda767b8fd716a9a5bfabe31fdeff6e58e1443f6fa71788fcff041c5dde",
+        "0a56fd0b674f0227c25750dc23bda991eda3ee06a78034ecf63bf2494390e0c9",
+        "f68375236dc1e5a2f46cc37020b446af4f004200f5fad62000adcaf091a556a6",
+        "7c9c127b1624268345a1d33011755994dc53b2ac63b284f5b321a8b92ebcf4b5",
+        "53a1ede3cb4b0d482f0d429e6e806a59b3d2390c649d7b540b571461ce113fbc",
+        "6eb4b94304dce880f1a9ef7074495ed8a527dbed665325fdf8c8970760d44837"
+      ],
+      "kernel_ratio_ax_over_mlx": 61.42237165932961,
+      "key_heads": 16,
+      "mlx_median_ms": 0.461584,
+      "output_max_abs": 5.523674190044403e-6,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 0.00003291945904493332,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              28.34,
+              28.240083,
+              28.363958,
+              28.314709,
+              28.355667
+            ],
+            "median_ms": 28.34,
+            "peak_mlx_bytes": 2248573504
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.431625,
+              0.4205,
+              0.486083,
+              0.48700000000000004,
+              0.461584
+            ],
+            "median_ms": 0.461584,
+            "peak_mlx_bytes": 132415873
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              28.244374999999998,
+              28.333625,
+              28.437875000000002,
+              28.416375000000002,
+              28.351584
+            ],
+            "median_ms": 28.351584,
+            "peak_mlx_bytes": 2248573504
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.407541,
+              0.5245420000000001,
+              0.48895799999999995,
+              0.429458,
+              0.49808399999999997
+            ],
+            "median_ms": 0.48895799999999995,
+            "peak_mlx_bytes": 55869824
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              28.379875,
+              28.382666,
+              28.360709,
+              28.415042,
+              28.396792
+            ],
+            "median_ms": 28.382666,
+            "peak_mlx_bytes": 2248573504
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.40891700000000003,
+              0.43074999999999997,
+              0.461708,
+              0.490209,
+              0.43
+            ],
+            "median_ms": 0.43074999999999997,
+            "peak_mlx_bytes": 132415873
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 79561108,
+      "ax_median_ms": 56.041083,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "aff1cc538b5dcd59b7c0977ffa4ed9fae29d890dadbe80b166779bcb6d2cb456"
+      ],
+      "kernel_ratio_ax_over_mlx": 72.19853827839961,
+      "key_heads": 16,
+      "mlx_median_ms": 0.776208,
+      "output_max_abs": 7.7136792242527e-6,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 0.000035082921385765076,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              56.015042,
+              55.906333000000004,
+              55.912292,
+              56.035084,
+              55.864791
+            ],
+            "median_ms": 55.912292,
+            "peak_mlx_bytes": 3912335936
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.7224170000000001,
+              0.753041,
+              0.7867500000000001,
+              0.79375,
+              0.776208
+            ],
+            "median_ms": 0.776208,
+            "peak_mlx_bytes": 567017857
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              56.0905,
+              56.099292000000005,
+              56.086208,
+              56.242708,
+              56.114417
+            ],
+            "median_ms": 56.099292000000005,
+            "peak_mlx_bytes": 3912335936
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              1.3741249999999998,
+              0.754833,
+              0.781875,
+              0.806125,
+              0.774042
+            ],
+            "median_ms": 0.781875,
+            "peak_mlx_bytes": 102498688
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              56.002916,
+              56.125875,
+              56.012958000000005,
+              56.192,
+              56.041083
+            ],
+            "median_ms": 56.041083,
+            "peak_mlx_bytes": 3912335936
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.752583,
+              0.7062919999999999,
+              0.7264170000000001,
+              0.8203750000000001,
+              0.8180000000000001
+            ],
+            "median_ms": 0.752583,
+            "peak_mlx_bytes": 510394753
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 142279060,
+      "ax_median_ms": 56.1065,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "aff1cc538b5dcd59b7c0977ffa4ed9fae29d890dadbe80b166779bcb6d2cb456"
+      ],
+      "kernel_ratio_ax_over_mlx": 69.9618932662309,
+      "key_heads": 16,
+      "mlx_median_ms": 0.801958,
+      "output_max_abs": 7.832888513803482e-6,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 0.00003489293158054352,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              56.159708,
+              56.031166,
+              56.123167,
+              56.036333,
+              56.143209
+            ],
+            "median_ms": 56.123167,
+            "peak_mlx_bytes": 3912139328
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.711958,
+              0.799084,
+              0.7567919999999999,
+              0.782042,
+              0.853542
+            ],
+            "median_ms": 0.782042,
+            "peak_mlx_bytes": 130908544
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              56.0905,
+              56.04875,
+              55.965417,
+              56.207417,
+              56.049959
+            ],
+            "median_ms": 56.049959,
+            "peak_mlx_bytes": 3912139328
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.739708,
+              1.1639160000000002,
+              0.812666,
+              0.812833,
+              0.859166
+            ],
+            "median_ms": 0.812833,
+            "peak_mlx_bytes": 73990529
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              56.163375,
+              56.098583,
+              56.1065,
+              56.112375,
+              56.077957999999995
+            ],
+            "median_ms": 56.1065,
+            "peak_mlx_bytes": 3912139328
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.7565000000000001,
+              0.802917,
+              0.734334,
+              0.801958,
+              0.8622909999999999
+            ],
+            "median_ms": 0.801958,
+            "peak_mlx_bytes": 513343873
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 142279060,
+      "ax_median_ms": 56.055791,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "aff1cc538b5dcd59b7c0977ffa4ed9fae29d890dadbe80b166779bcb6d2cb456"
+      ],
+      "kernel_ratio_ax_over_mlx": 68.84693119334226,
+      "key_heads": 16,
+      "mlx_median_ms": 0.814209,
+      "output_max_abs": 6.9194938987493515e-6,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 0.0000334177166223526,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              56.046417,
+              56.079083000000004,
+              56.033167,
+              56.055791,
+              56.071374999999996
+            ],
+            "median_ms": 56.055791,
+            "peak_mlx_bytes": 3912139328
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.7144999999999999,
+              0.876292,
+              0.7993330000000001,
+              0.8285840000000001,
+              0.757833
+            ],
+            "median_ms": 0.7993330000000001,
+            "peak_mlx_bytes": 126517632
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              56.143959,
+              56.197292000000004,
+              56.105250000000005,
+              56.094667,
+              56.088917
+            ],
+            "median_ms": 56.105250000000005,
+            "peak_mlx_bytes": 3912139328
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.7655420000000001,
+              0.845584,
+              0.814209,
+              0.815291,
+              0.809709
+            ],
+            "median_ms": 0.814209,
+            "peak_mlx_bytes": 102302080
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              55.990167,
+              56.047916,
+              55.993042,
+              56.104167000000004,
+              56.052791
+            ],
+            "median_ms": 56.047916,
+            "peak_mlx_bytes": 3912139328
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.866792,
+              0.819958,
+              0.819667,
+              0.749375,
+              0.7150420000000001
+            ],
+            "median_ms": 0.819667,
+            "peak_mlx_bytes": 126845312
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 155976084,
+      "ax_median_ms": 119.92025000000001,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "6fd01705f41fc4857e4a72a18b6d5fe9d79bee48bffa8c867e5807a483bae163"
+      ],
+      "kernel_ratio_ax_over_mlx": 92.71885570696821,
+      "key_heads": 16,
+      "mlx_median_ms": 1.293375,
+      "output_max_abs": 6.895978003740311e-6,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 0.00003465823829174042,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              119.552917,
+              119.474792,
+              119.4555,
+              119.82712500000001,
+              119.823459
+            ],
+            "median_ms": 119.552917,
+            "peak_mlx_bytes": 7198310976
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.293375,
+              1.315,
+              1.288333,
+              1.359542,
+              1.2853750000000002
+            ],
+            "median_ms": 1.293375,
+            "peak_mlx_bytes": 246841728
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              120.223208,
+              119.801,
+              119.550625,
+              119.935458,
+              119.97545799999999
+            ],
+            "median_ms": 119.935458,
+            "peak_mlx_bytes": 7198310976
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              1.252167,
+              1.280208,
+              1.301958,
+              1.295541,
+              1.286459
+            ],
+            "median_ms": 1.286459,
+            "peak_mlx_bytes": 142082433
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              119.891083,
+              119.99145899999999,
+              119.589542,
+              119.987667,
+              119.92025000000001
+            ],
+            "median_ms": 119.92025000000001,
+            "peak_mlx_bytes": 7198310976
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.313333,
+              1.359833,
+              1.396333,
+              1.292458,
+              1.2965419999999999
+            ],
+            "median_ms": 1.313333,
+            "peak_mlx_bytes": 247988608
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 147194244,
+      "ax_median_ms": 120.07125,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "6fd01705f41fc4857e4a72a18b6d5fe9d79bee48bffa8c867e5807a483bae163"
+      ],
+      "kernel_ratio_ax_over_mlx": 92.08800690250217,
+      "key_heads": 16,
+      "mlx_median_ms": 1.303875,
+      "output_max_abs": 6.993766874074936e-6,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 0.00003712065517902374,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              120.28741699999999,
+              119.935834,
+              119.851708,
+              120.494125,
+              120.09775
+            ],
+            "median_ms": 120.09775,
+            "peak_mlx_bytes": 7197917760
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.3,
+              1.33825,
+              1.362041,
+              1.303875,
+              1.288
+            ],
+            "median_ms": 1.303875,
+            "peak_mlx_bytes": 250315136
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              119.691667,
+              119.87075,
+              119.677583,
+              120.33304100000001,
+              120.46133400000001
+            ],
+            "median_ms": 119.87075,
+            "peak_mlx_bytes": 7197917760
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              1.2743749999999998,
+              1.426125,
+              1.2685000000000002,
+              1.2612079999999999,
+              1.2544170000000001
+            ],
+            "median_ms": 1.2685000000000002,
+            "peak_mlx_bytes": 141689217
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              120.374208,
+              119.712375,
+              119.991458,
+              120.07125,
+              120.32625
+            ],
+            "median_ms": 120.07125,
+            "peak_mlx_bytes": 7197917760
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.3318329999999998,
+              1.314958,
+              1.256708,
+              1.362125,
+              1.387292
+            ],
+            "median_ms": 1.3318329999999998,
+            "peak_mlx_bytes": 247824768
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 147194244,
+      "ax_median_ms": 120.004583,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "6fd01705f41fc4857e4a72a18b6d5fe9d79bee48bffa8c867e5807a483bae163"
+      ],
+      "kernel_ratio_ax_over_mlx": 93.14414126321917,
+      "key_heads": 16,
+      "mlx_median_ms": 1.288375,
+      "output_max_abs": 6.970949470996857e-6,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 0.00003109779208898544,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              120.114042,
+              119.49858400000001,
+              119.772583,
+              120.15175,
+              119.538375
+            ],
+            "median_ms": 119.772583,
+            "peak_mlx_bytes": 7197917760
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.3682919999999998,
+              1.309167,
+              1.2937079999999999,
+              1.378917,
+              1.346
+            ],
+            "median_ms": 1.346,
+            "peak_mlx_bytes": 247562624
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              120.08225,
+              120.047584,
+              119.254334,
+              119.97912500000001,
+              120.004583
+            ],
+            "median_ms": 120.004583,
+            "peak_mlx_bytes": 7197917760
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              1.2550409999999999,
+              1.2780420000000001,
+              1.295083,
+              1.347334,
+              1.238041
+            ],
+            "median_ms": 1.2780420000000001,
+            "peak_mlx_bytes": 144834944
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              120.020541,
+              120.038833,
+              119.524583,
+              119.865042,
+              120.258375
+            ],
+            "median_ms": 120.020541,
+            "peak_mlx_bytes": 7197917760
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.288375,
+              1.249333,
+              1.2598340000000001,
+              1.359542,
+              1.303083
+            ],
+            "median_ms": 1.288375,
+            "peak_mlx_bytes": 250675584
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 16974208,
+      "ax_median_ms": 15.693959,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "054fe71d76a530d171b2228f495c4dd9865cd95dac57efa3e51061d8b57eb4a9",
+        "18391e76175d50f688f4da807042943d9ace15051997e912b52921f8ca9f9b9e",
+        "3e4ebe495e228a6744fc25e31c6109ed85a8baf7cf225ea93f7e968819bf41fe",
+        "b21c66b1a01de63caebd6dab628c94c84c39e860d21c2e197338110b17592baa",
+        "b9ad52b09d4913956243b3ab4bd427a722f42fb1a9b6158b0e04d68684c9ace2",
+        "d29aadb559c403f47a88d0bac8038cb2fd3ee6ec65c3bcc8d67d28552496adc0",
+        "14f879cc84f09f6610f28dfec44ddd9b24207c20435a5770734226c752d735b1",
+        "4ba7460000bd300e10c069db85011883c1576db2d60d624b1c03434484a64fe1"
+      ],
+      "kernel_ratio_ax_over_mlx": 52.26232800074594,
+      "key_heads": 16,
+      "mlx_median_ms": 0.300292,
+      "output_max_abs": 5.845446139574051e-6,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 0.00003267638385295868,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              15.679625,
+              15.673083,
+              15.691916,
+              15.68075,
+              15.7055
+            ],
+            "median_ms": 15.68075,
+            "peak_mlx_bytes": 1895760448
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.339417,
+              0.29258300000000004,
+              0.285167,
+              0.300292,
+              0.305125
+            ],
+            "median_ms": 0.300292,
+            "peak_mlx_bytes": 167969153
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              15.693959,
+              15.693584,
+              15.700665999999998,
+              15.718,
+              15.687875
+            ],
+            "median_ms": 15.693959,
+            "peak_mlx_bytes": 1895760448
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.290709,
+              0.334375,
+              0.291041,
+              0.29062499999999997,
+              0.287125
+            ],
+            "median_ms": 0.290709,
+            "peak_mlx_bytes": 42140032
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              15.702125,
+              15.714042000000001,
+              15.750083000000002,
+              15.687875,
+              15.690875
+            ],
+            "median_ms": 15.702125,
+            "peak_mlx_bytes": 1895760448
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.294875,
+              0.307417,
+              0.314917,
+              0.291375,
+              0.301083
+            ],
+            "median_ms": 0.301083,
+            "peak_mlx_bytes": 167969153
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41091476,
+      "ax_median_ms": 15.689166,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "054fe71d76a530d171b2228f495c4dd9865cd95dac57efa3e51061d8b57eb4a9",
+        "18391e76175d50f688f4da807042943d9ace15051997e912b52921f8ca9f9b9e",
+        "3e4ebe495e228a6744fc25e31c6109ed85a8baf7cf225ea93f7e968819bf41fe",
+        "b21c66b1a01de63caebd6dab628c94c84c39e860d21c2e197338110b17592baa",
+        "b9ad52b09d4913956243b3ab4bd427a722f42fb1a9b6158b0e04d68684c9ace2",
+        "d29aadb559c403f47a88d0bac8038cb2fd3ee6ec65c3bcc8d67d28552496adc0",
+        "14f879cc84f09f6610f28dfec44ddd9b24207c20435a5770734226c752d735b1",
+        "4ba7460000bd300e10c069db85011883c1576db2d60d624b1c03434484a64fe1"
+      ],
+      "kernel_ratio_ax_over_mlx": 52.239234449760765,
+      "key_heads": 16,
+      "mlx_median_ms": 0.300333,
+      "output_max_abs": 6.362795829772949e-6,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 0.000035256147384643555,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              15.711791999999999,
+              15.689166,
+              15.677416999999998,
+              15.689249999999998,
+              15.678709
+            ],
+            "median_ms": 15.689166,
+            "peak_mlx_bytes": 1895727680
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.29354199999999997,
+              0.29954200000000003,
+              0.334208,
+              0.29125,
+              0.29104199999999997
+            ],
+            "median_ms": 0.29354199999999997,
+            "peak_mlx_bytes": 167936385
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              15.68675,
+              15.682833,
+              15.691832999999999,
+              15.672875,
+              15.718124999999999
+            ],
+            "median_ms": 15.68675,
+            "peak_mlx_bytes": 1895727680
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.288167,
+              0.308209,
+              0.28654199999999996,
+              0.313083,
+              0.464334
+            ],
+            "median_ms": 0.308209,
+            "peak_mlx_bytes": 42107264
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              15.6875,
+              15.707208,
+              15.692125,
+              15.702084000000001,
+              15.678666000000002
+            ],
+            "median_ms": 15.692125,
+            "peak_mlx_bytes": 1895727680
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.341167,
+              0.296167,
+              0.29958300000000004,
+              0.300333,
+              0.30554200000000004
+            ],
+            "median_ms": 0.300333,
+            "peak_mlx_bytes": 167936385
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41091476,
+      "ax_median_ms": 15.693917000000003,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "054fe71d76a530d171b2228f495c4dd9865cd95dac57efa3e51061d8b57eb4a9",
+        "18391e76175d50f688f4da807042943d9ace15051997e912b52921f8ca9f9b9e",
+        "3e4ebe495e228a6744fc25e31c6109ed85a8baf7cf225ea93f7e968819bf41fe",
+        "b21c66b1a01de63caebd6dab628c94c84c39e860d21c2e197338110b17592baa",
+        "b9ad52b09d4913956243b3ab4bd427a722f42fb1a9b6158b0e04d68684c9ace2",
+        "d29aadb559c403f47a88d0bac8038cb2fd3ee6ec65c3bcc8d67d28552496adc0",
+        "14f879cc84f09f6610f28dfec44ddd9b24207c20435a5770734226c752d735b1",
+        "4ba7460000bd300e10c069db85011883c1576db2d60d624b1c03434484a64fe1"
+      ],
+      "kernel_ratio_ax_over_mlx": 53.06480811496197,
+      "key_heads": 16,
+      "mlx_median_ms": 0.29575,
+      "output_max_abs": 5.689449608325958e-6,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 0.000034127384424209595,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              15.691875000000001,
+              15.693917000000003,
+              15.667667,
+              15.706874999999998,
+              15.698625000000002
+            ],
+            "median_ms": 15.693917000000003,
+            "peak_mlx_bytes": 1895727680
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.313791,
+              0.291209,
+              0.313167,
+              0.29300000000000004,
+              0.34179099999999996
+            ],
+            "median_ms": 0.313167,
+            "peak_mlx_bytes": 167936385
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              15.681707999999999,
+              15.698707999999998,
+              15.692417,
+              15.738417000000002,
+              15.693292000000001
+            ],
+            "median_ms": 15.693292000000001,
+            "peak_mlx_bytes": 1895727680
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.29575,
+              0.36325,
+              0.294833,
+              0.294917,
+              0.302917
+            ],
+            "median_ms": 0.29575,
+            "peak_mlx_bytes": 42107264
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              15.733209000000002,
+              15.739416999999998,
+              15.700917000000002,
+              15.684375000000001,
+              15.700875
+            ],
+            "median_ms": 15.700917000000002,
+            "peak_mlx_bytes": 1895727680
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.289875,
+              0.289125,
+              0.343792,
+              0.311625,
+              0.28870799999999996
+            ],
+            "median_ms": 0.289875,
+            "peak_mlx_bytes": 167936385
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 25936276,
+      "ax_median_ms": 16.064208,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "93aed0db82c36be0ee2f71874a209edd6a053c7a324f3b21b17f3e342a28f751",
+        "1c819353e85d94a34c1119c136f47fdc2222da3a8798379afe7673d629f40180",
+        "126c1feceab7edcc8772988d5287972cd35eaaba5784ae5bb7594413a4de5db3",
+        "f73792d3122e4d778c02d66e4f5bcade94a030e69d09f993f69230ae5f249321",
+        "73be478b1a0535cec729a9d0cf9d141cd96ac04b457b18ef005be2894bcfe68c",
+        "336cba2bc8348dc2756d0afcd8fbce372e211803f6dd46921a93b42a5c98c026",
+        "ae6eaa579f158b05d5670a5850b8b6e5a5a97603b18dfc9b4f7d06ac53d3cd42",
+        "86315a9459fb3b89623d7906159f0d10471abe1d0de6061af059643666e25014"
+      ],
+      "kernel_ratio_ax_over_mlx": 51.337125618376824,
+      "key_heads": 16,
+      "mlx_median_ms": 0.31291599999999997,
+      "output_max_abs": 6.386777386069298e-6,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 0.000037804245948791504,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              16.0615,
+              16.062165999999998,
+              16.06325,
+              16.082167000000002,
+              16.041625
+            ],
+            "median_ms": 16.062165999999998,
+            "peak_mlx_bytes": 1877688896
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.315291,
+              0.312041,
+              0.31291599999999997,
+              0.35275,
+              0.311792
+            ],
+            "median_ms": 0.31291599999999997,
+            "peak_mlx_bytes": 168722817
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              16.063542,
+              16.088749999999997,
+              16.098792,
+              16.071375,
+              16.047584
+            ],
+            "median_ms": 16.071375,
+            "peak_mlx_bytes": 1877688896
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.306875,
+              0.310291,
+              0.30925,
+              0.338459,
+              0.30320899999999995
+            ],
+            "median_ms": 0.30925,
+            "peak_mlx_bytes": 42746240
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              16.0835,
+              16.053207999999998,
+              16.064999999999998,
+              16.042832999999998,
+              16.064208
+            ],
+            "median_ms": 16.064208,
+            "peak_mlx_bytes": 1877688896
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.31404099999999996,
+              0.35312499999999997,
+              0.31125,
+              0.33841699999999997,
+              0.313084
+            ],
+            "median_ms": 0.31404099999999996,
+            "peak_mlx_bytes": 168722817
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41992596,
+      "ax_median_ms": 16.063750000000002,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "93aed0db82c36be0ee2f71874a209edd6a053c7a324f3b21b17f3e342a28f751",
+        "1c819353e85d94a34c1119c136f47fdc2222da3a8798379afe7673d629f40180",
+        "126c1feceab7edcc8772988d5287972cd35eaaba5784ae5bb7594413a4de5db3",
+        "f73792d3122e4d778c02d66e4f5bcade94a030e69d09f993f69230ae5f249321",
+        "73be478b1a0535cec729a9d0cf9d141cd96ac04b457b18ef005be2894bcfe68c",
+        "336cba2bc8348dc2756d0afcd8fbce372e211803f6dd46921a93b42a5c98c026",
+        "ae6eaa579f158b05d5670a5850b8b6e5a5a97603b18dfc9b4f7d06ac53d3cd42",
+        "86315a9459fb3b89623d7906159f0d10471abe1d0de6061af059643666e25014"
+      ],
+      "kernel_ratio_ax_over_mlx": 49.67529957479707,
+      "key_heads": 16,
+      "mlx_median_ms": 0.32337499999999997,
+      "output_max_abs": 7.261056452989578e-6,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 0.00003429874777793884,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              16.063750000000002,
+              16.062458000000003,
+              16.069208000000003,
+              16.066542,
+              16.050333
+            ],
+            "median_ms": 16.063750000000002,
+            "peak_mlx_bytes": 1877623360
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.32337499999999997,
+              0.30770800000000004,
+              0.31675,
+              0.369542,
+              0.402334
+            ],
+            "median_ms": 0.32337499999999997,
+            "peak_mlx_bytes": 168657281
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              16.066542,
+              16.067375,
+              16.037375,
+              16.0445,
+              16.067709
+            ],
+            "median_ms": 16.066542,
+            "peak_mlx_bytes": 1877623360
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.31333300000000003,
+              0.318708,
+              0.313292,
+              0.315375,
+              0.311667
+            ],
+            "median_ms": 0.31333300000000003,
+            "peak_mlx_bytes": 42680704
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              16.053542,
+              16.063125,
+              16.053584,
+              16.065708,
+              16.091082999999998
+            ],
+            "median_ms": 16.063125,
+            "peak_mlx_bytes": 1877623360
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.354292,
+              0.312417,
+              0.336958,
+              0.311583,
+              0.33829200000000004
+            ],
+            "median_ms": 0.336958,
+            "peak_mlx_bytes": 168657281
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41992596,
+      "ax_median_ms": 16.063791000000002,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "93aed0db82c36be0ee2f71874a209edd6a053c7a324f3b21b17f3e342a28f751",
+        "1c819353e85d94a34c1119c136f47fdc2222da3a8798379afe7673d629f40180",
+        "126c1feceab7edcc8772988d5287972cd35eaaba5784ae5bb7594413a4de5db3",
+        "f73792d3122e4d778c02d66e4f5bcade94a030e69d09f993f69230ae5f249321",
+        "73be478b1a0535cec729a9d0cf9d141cd96ac04b457b18ef005be2894bcfe68c",
+        "336cba2bc8348dc2756d0afcd8fbce372e211803f6dd46921a93b42a5c98c026",
+        "ae6eaa579f158b05d5670a5850b8b6e5a5a97603b18dfc9b4f7d06ac53d3cd42",
+        "86315a9459fb3b89623d7906159f0d10471abe1d0de6061af059643666e25014"
+      ],
+      "kernel_ratio_ax_over_mlx": 51.253732248091204,
+      "key_heads": 16,
+      "mlx_median_ms": 0.313417,
+      "output_max_abs": 6.90855085849762e-6,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 0.000037087127566337585,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              16.060709,
+              16.065292,
+              16.053083,
+              16.063791000000002,
+              16.07125
+            ],
+            "median_ms": 16.063791000000002,
+            "peak_mlx_bytes": 1877623360
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.306625,
+              0.331042,
+              0.33125,
+              0.311125,
+              0.313167
+            ],
+            "median_ms": 0.313167,
+            "peak_mlx_bytes": 168657281
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              16.056917000000002,
+              16.057208,
+              16.067458,
+              16.076792,
+              16.048541999999998
+            ],
+            "median_ms": 16.057208,
+            "peak_mlx_bytes": 1877623360
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.31224999999999997,
+              0.345958,
+              0.399792,
+              0.403375,
+              0.312125
+            ],
+            "median_ms": 0.345958,
+            "peak_mlx_bytes": 42680704
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              16.088291,
+              16.108500000000003,
+              16.065209,
+              16.080375,
+              16.079708
+            ],
+            "median_ms": 16.080375,
+            "peak_mlx_bytes": 1877623360
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.35175,
+              0.311542,
+              0.313417,
+              0.310334,
+              0.336542
+            ],
+            "median_ms": 0.313417,
+            "peak_mlx_bytes": 168657281
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 82706836,
+      "ax_median_ms": 62.64124999999999,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "5bf535284d45b287441cab03eed566f22dce5b3a820905a86a0570561d6df84d"
+      ],
+      "kernel_ratio_ax_over_mlx": 72.85984297760976,
+      "key_heads": 16,
+      "mlx_median_ms": 0.85975,
+      "output_max_abs": 7.7136792242527e-6,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 0.00003513135015964508,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              62.6655,
+              62.521375000000006,
+              62.62179199999999,
+              62.44929200000001,
+              62.614583
+            ],
+            "median_ms": 62.614583,
+            "peak_mlx_bytes": 4324606528
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.8795,
+              0.803542,
+              0.7804580000000001,
+              0.85975,
+              0.870708
+            ],
+            "median_ms": 0.85975,
+            "peak_mlx_bytes": 231473537
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              63.182708000000005,
+              62.52079200000001,
+              62.64124999999999,
+              62.731083000000005,
+              62.513875
+            ],
+            "median_ms": 62.64124999999999,
+            "peak_mlx_bytes": 4324606528
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.8138340000000001,
+              0.9405830000000001,
+              0.8652500000000001,
+              0.8099580000000001,
+              0.864166
+            ],
+            "median_ms": 0.864166,
+            "peak_mlx_bytes": 105644416
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              62.494915999999996,
+              62.658249999999995,
+              62.678708,
+              62.49975,
+              62.65820800000001
+            ],
+            "median_ms": 62.65820800000001,
+            "peak_mlx_bytes": 4324606528
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.781042,
+              0.876917,
+              0.8099160000000001,
+              0.851333,
+              0.800875
+            ],
+            "median_ms": 0.8099160000000001,
+            "peak_mlx_bytes": 225182081
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 145424788,
+      "ax_median_ms": 62.6535,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "5bf535284d45b287441cab03eed566f22dce5b3a820905a86a0570561d6df84d"
+      ],
+      "kernel_ratio_ax_over_mlx": 76.6794805423684,
+      "key_heads": 16,
+      "mlx_median_ms": 0.817083,
+      "output_max_abs": 7.832888513803482e-6,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 0.00003489293158054352,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              63.202375,
+              62.653875,
+              62.488167,
+              62.718125,
+              62.615083
+            ],
+            "median_ms": 62.653875,
+            "peak_mlx_bytes": 4324409920
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.8749170000000001,
+              0.8036249999999999,
+              0.800917,
+              0.880541,
+              0.8158329999999999
+            ],
+            "median_ms": 0.8158329999999999,
+            "peak_mlx_bytes": 256442753
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              62.481459,
+              62.6535,
+              62.752832999999995,
+              62.61383299999999,
+              62.667125000000006
+            ],
+            "median_ms": 62.6535,
+            "peak_mlx_bytes": 4324409920
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.869208,
+              0.874,
+              0.808,
+              0.8890410000000001,
+              0.8729589999999999
+            ],
+            "median_ms": 0.8729589999999999,
+            "peak_mlx_bytes": 105447808
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              62.612500000000004,
+              62.614958,
+              62.481584,
+              62.655375,
+              62.762457999999995
+            ],
+            "median_ms": 62.614958,
+            "peak_mlx_bytes": 4324409920
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.773042,
+              0.913416,
+              0.875833,
+              0.817083,
+              0.806459
+            ],
+            "median_ms": 0.817083,
+            "peak_mlx_bytes": 256442753
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 145424788,
+      "ax_median_ms": 62.679874999999996,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "5bf535284d45b287441cab03eed566f22dce5b3a820905a86a0570561d6df84d"
+      ],
+      "kernel_ratio_ax_over_mlx": 76.71955324357404,
+      "key_heads": 16,
+      "mlx_median_ms": 0.8170000000000001,
+      "output_max_abs": 6.9194938987493515e-6,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 0.0000334177166223526,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              63.07525,
+              62.679874999999996,
+              62.4335,
+              62.605333,
+              62.682500000000005
+            ],
+            "median_ms": 62.679874999999996,
+            "peak_mlx_bytes": 4324409920
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.7495419999999999,
+              0.8344999999999999,
+              0.8170000000000001,
+              0.8084589999999999,
+              0.839041
+            ],
+            "median_ms": 0.8170000000000001,
+            "peak_mlx_bytes": 224985473
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              63.45675000000001,
+              62.700708999999996,
+              62.615,
+              62.68875,
+              62.561583000000006
+            ],
+            "median_ms": 62.68875,
+            "peak_mlx_bytes": 4324409920
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              0.863625,
+              0.7975420000000001,
+              1.508167,
+              0.866833,
+              0.865
+            ],
+            "median_ms": 0.865,
+            "peak_mlx_bytes": 80281985
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              62.464999999999996,
+              62.665791,
+              62.460458,
+              62.69812499999999,
+              62.51245800000001
+            ],
+            "median_ms": 62.51245800000001,
+            "peak_mlx_bytes": 4324409920
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              0.871916,
+              0.8737499999999999,
+              0.8036249999999999,
+              0.775667,
+              0.8092079999999999
+            ],
+            "median_ms": 0.8092079999999999,
+            "peak_mlx_bytes": 256442753
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 159121812,
+      "ax_median_ms": 125.13112500000001,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "e170670bcde964d68bc166bce1e0b1619643fc40e1ef49fe381f25770b0b7878"
+      ],
+      "kernel_ratio_ax_over_mlx": 88.16962476985421,
+      "key_heads": 16,
+      "mlx_median_ms": 1.419209,
+      "output_max_abs": 6.895978003740311e-6,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 0.00003465823829174042,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              125.073042,
+              125.351083,
+              125.1555,
+              125.11879200000001,
+              125.209042
+            ],
+            "median_ms": 125.1555,
+            "peak_mlx_bytes": 7575880256
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.419209,
+              1.4151669999999998,
+              1.434291,
+              1.4736669999999998,
+              1.414417
+            ],
+            "median_ms": 1.419209,
+            "peak_mlx_bytes": 374866305
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              125.060166,
+              125.080542,
+              125.0685,
+              125.00129099999998,
+              125.214834
+            ],
+            "median_ms": 125.0685,
+            "peak_mlx_bytes": 7575880256
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              1.365416,
+              1.386334,
+              1.3603750000000001,
+              1.401375,
+              1.3427499999999999
+            ],
+            "median_ms": 1.365416,
+            "peak_mlx_bytes": 148373889
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              125.056125,
+              125.20100000000001,
+              125.15866700000001,
+              125.13112500000001,
+              124.976375
+            ],
+            "median_ms": 125.13112500000001,
+            "peak_mlx_bytes": 7575880256
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.421292,
+              1.405792,
+              1.452958,
+              1.483875,
+              1.400792
+            ],
+            "median_ms": 1.421292,
+            "peak_mlx_bytes": 311951745
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 150339972,
+      "ax_median_ms": 125.18058400000001,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "e170670bcde964d68bc166bce1e0b1619643fc40e1ef49fe381f25770b0b7878"
+      ],
+      "kernel_ratio_ax_over_mlx": 87.40641559259501,
+      "key_heads": 16,
+      "mlx_median_ms": 1.432167,
+      "output_max_abs": 6.993766874074936e-6,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 0.00003712065517902374,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              125.07916599999999,
+              125.09700000000001,
+              125.07933399999999,
+              125.210625,
+              125.092458
+            ],
+            "median_ms": 125.092458,
+            "peak_mlx_bytes": 7575487040
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.432167,
+              1.419083,
+              1.4681250000000001,
+              1.428917,
+              1.4604590000000002
+            ],
+            "median_ms": 1.432167,
+            "peak_mlx_bytes": 219693440
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              125.66229200000001,
+              125.18058400000001,
+              125.066542,
+              125.51433300000001,
+              124.986375
+            ],
+            "median_ms": 125.18058400000001,
+            "peak_mlx_bytes": 7575487040
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              1.3782919999999999,
+              1.397417,
+              1.364333,
+              1.385167,
+              1.408292
+            ],
+            "median_ms": 1.385167,
+            "peak_mlx_bytes": 147980673
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              125.20304199999998,
+              125.14016699999999,
+              125.26724999999999,
+              125.685916,
+              125.47233299999999
+            ],
+            "median_ms": 125.26724999999999,
+            "peak_mlx_bytes": 7575487040
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.4382080000000002,
+              1.47525,
+              1.4176250000000001,
+              1.468375,
+              1.419875
+            ],
+            "median_ms": 1.4382080000000002,
+            "peak_mlx_bytes": 374473089
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 150339972,
+      "ax_median_ms": 125.34520800000001,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "e170670bcde964d68bc166bce1e0b1619643fc40e1ef49fe381f25770b0b7878"
+      ],
+      "kernel_ratio_ax_over_mlx": 88.61186730404613,
+      "key_heads": 16,
+      "mlx_median_ms": 1.414542,
+      "output_max_abs": 6.970949470996857e-6,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 0.00003159232437610626,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              125.36554199999999,
+              125.2605,
+              125.388792,
+              125.138167,
+              125.12841699999998
+            ],
+            "median_ms": 125.2605,
+            "peak_mlx_bytes": 7575487040
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.443666,
+              1.429292,
+              1.400042,
+              1.375,
+              1.414542
+            ],
+            "median_ms": 1.414542,
+            "peak_mlx_bytes": 374473089
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              125.3255,
+              125.34520800000001,
+              125.25154099999999,
+              125.49674999999999,
+              125.678834
+            ],
+            "median_ms": 125.34520800000001,
+            "peak_mlx_bytes": 7575487040
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              1.3701670000000001,
+              1.3747500000000001,
+              1.390166,
+              1.345833,
+              1.3676249999999999
+            ],
+            "median_ms": 1.3701670000000001,
+            "peak_mlx_bytes": 147980673
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              125.31662499999999,
+              125.843333,
+              125.819708,
+              125.96791700000001,
+              125.965083
+            ],
+            "median_ms": 125.843333,
+            "peak_mlx_bytes": 7575487040
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              1.479417,
+              1.418375,
+              1.389833,
+              1.402542,
+              1.4194579999999999
+            ],
+            "median_ms": 1.418375,
+            "peak_mlx_bytes": 374473089
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 311951764,
+      "ax_median_ms": 254.43316700000003,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "dfea3f988656fb4a5f6a0dd2904f51fd5d06a2dcbec3a251407a0de2e2c1f4a2",
+        "460a9788dee910a3c4a130eb4aeb733c56261353268c403778f6671d6020f92d",
+        "29af074edf59f488073c56af6a5fcd1c6437575ae285458d276a582d1014a314",
+        "d15e46f83bd980c492af854bacb2ff93fd232ad1c400ea31a289724db3c6d6d3",
+        "4c53545cf3988cc57cbb6280017d5c3e0d7c5eb19d49933a8935ce255e34a8c6",
+        "f1bceea6fc573e625f0ef89092941392f8ac7fe8474ded98aa77ce136406b6d5",
+        "5f60d1d2632ced097d23d95498c9868b82fdaf54f777c972505485bf1ada0102",
+        "2240c4ba9d4356307f742d6252e682cd5bc2bf173a9f1d3e003efe714e371e86"
+      ],
+      "kernel_ratio_ax_over_mlx": 97.85266286844764,
+      "key_heads": 16,
+      "mlx_median_ms": 2.600166,
+      "output_max_abs": 8.098315447568893e-6,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 0.00003591179847717285,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              254.27129100000002,
+              254.34400000000002,
+              254.50129199999998,
+              254.477375,
+              254.211625
+            ],
+            "median_ms": 254.34400000000002,
+            "peak_mlx_bytes": 13705462336
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              2.6120840000000003,
+              2.609875,
+              2.57125,
+              2.6125,
+              2.5873749999999998
+            ],
+            "median_ms": 2.609875,
+            "peak_mlx_bytes": 504365441
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              254.43316700000003,
+              254.196209,
+              254.348083,
+              254.570458,
+              254.725458
+            ],
+            "median_ms": 254.43316700000003,
+            "peak_mlx_bytes": 13705462336
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              2.588791,
+              2.580875,
+              2.605,
+              2.5938329999999996,
+              2.594583
+            ],
+            "median_ms": 2.5938329999999996,
+            "peak_mlx_bytes": 284164481
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              254.726208,
+              254.444458,
+              254.75570800000003,
+              254.4215,
+              254.451
+            ],
+            "median_ms": 254.451,
+            "peak_mlx_bytes": 13705462336
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              2.600166,
+              2.618417,
+              2.587792,
+              2.606125,
+              2.5812500000000003
+            ],
+            "median_ms": 2.600166,
+            "peak_mlx_bytes": 469614976
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 210239876,
+      "ax_median_ms": 254.54025000000001,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "dfea3f988656fb4a5f6a0dd2904f51fd5d06a2dcbec3a251407a0de2e2c1f4a2",
+        "460a9788dee910a3c4a130eb4aeb733c56261353268c403778f6671d6020f92d",
+        "29af074edf59f488073c56af6a5fcd1c6437575ae285458d276a582d1014a314",
+        "d15e46f83bd980c492af854bacb2ff93fd232ad1c400ea31a289724db3c6d6d3",
+        "4c53545cf3988cc57cbb6280017d5c3e0d7c5eb19d49933a8935ce255e34a8c6",
+        "f1bceea6fc573e625f0ef89092941392f8ac7fe8474ded98aa77ce136406b6d5",
+        "5f60d1d2632ced097d23d95498c9868b82fdaf54f777c972505485bf1ada0102",
+        "2240c4ba9d4356307f742d6252e682cd5bc2bf173a9f1d3e003efe714e371e86"
+      ],
+      "kernel_ratio_ax_over_mlx": 97.6996990403914,
+      "key_heads": 16,
+      "mlx_median_ms": 2.605333,
+      "output_max_abs": 7.990282028913498e-6,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 0.00003164634108543396,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              254.513708,
+              254.789125,
+              254.277416,
+              254.54025000000001,
+              254.60616600000003
+            ],
+            "median_ms": 254.54025000000001,
+            "peak_mlx_bytes": 13704675904
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              2.672291,
+              2.614416,
+              2.6003749999999997,
+              2.611875,
+              2.6024580000000004
+            ],
+            "median_ms": 2.611875,
+            "peak_mlx_bytes": 478413185
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              254.490375,
+              254.392291,
+              254.73070799999996,
+              254.542834,
+              254.531583
+            ],
+            "median_ms": 254.531583,
+            "peak_mlx_bytes": 13704675904
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              2.55825,
+              2.6069999999999998,
+              2.5951250000000003,
+              2.604709,
+              2.580625
+            ],
+            "median_ms": 2.5951250000000003,
+            "peak_mlx_bytes": 283378049
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              254.916916,
+              254.748458,
+              254.495792,
+              254.96775,
+              254.2785
+            ],
+            "median_ms": 254.748458,
+            "peak_mlx_bytes": 13704675904
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              2.673625,
+              2.614541,
+              2.589584,
+              2.605333,
+              2.5829999999999997
+            ],
+            "median_ms": 2.605333,
+            "peak_mlx_bytes": 463520128
+          }
+        }
+      ],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 210239876,
+      "ax_median_ms": 254.61774999999997,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "dfea3f988656fb4a5f6a0dd2904f51fd5d06a2dcbec3a251407a0de2e2c1f4a2",
+        "460a9788dee910a3c4a130eb4aeb733c56261353268c403778f6671d6020f92d",
+        "29af074edf59f488073c56af6a5fcd1c6437575ae285458d276a582d1014a314",
+        "d15e46f83bd980c492af854bacb2ff93fd232ad1c400ea31a289724db3c6d6d3",
+        "4c53545cf3988cc57cbb6280017d5c3e0d7c5eb19d49933a8935ce255e34a8c6",
+        "f1bceea6fc573e625f0ef89092941392f8ac7fe8474ded98aa77ce136406b6d5",
+        "5f60d1d2632ced097d23d95498c9868b82fdaf54f777c972505485bf1ada0102",
+        "2240c4ba9d4356307f742d6252e682cd5bc2bf173a9f1d3e003efe714e371e86"
+      ],
+      "kernel_ratio_ax_over_mlx": 97.97700817700817,
+      "key_heads": 16,
+      "mlx_median_ms": 2.59875,
+      "output_max_abs": 7.348600775003433e-6,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 0.00003173761069774628,
+      "state_tolerance": 0.00005,
+      "trials": [
+        {
+          "ax": {
+            "latencies_ms": [
+              254.61774999999997,
+              254.81975,
+              254.62325,
+              254.396833,
+              254.48399999999998
+            ],
+            "median_ms": 254.61774999999997,
+            "peak_mlx_bytes": 13704675904
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              2.591125,
+              2.6184160000000003,
+              2.583458,
+              2.6189590000000003,
+              2.59875
+            ],
+            "median_ms": 2.59875,
+            "peak_mlx_bytes": 469762432
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              254.64729200000002,
+              254.28145899999998,
+              254.60541599999996,
+              254.59316700000002,
+              254.245375
+            ],
+            "median_ms": 254.59316700000002,
+            "peak_mlx_bytes": 13704675904
+          },
+          "first": "mlx",
+          "mlx": {
+            "latencies_ms": [
+              2.595334,
+              2.603625,
+              2.611833,
+              2.591792,
+              2.573125
+            ],
+            "median_ms": 2.595334,
+            "peak_mlx_bytes": 283378049
+          }
+        },
+        {
+          "ax": {
+            "latencies_ms": [
+              254.77875,
+              254.66291600000002,
+              254.83387499999998,
+              254.886,
+              254.55349999999999
+            ],
+            "median_ms": 254.77875,
+            "peak_mlx_bytes": 13704675904
+          },
+          "first": "ax",
+          "mlx": {
+            "latencies_ms": [
+              2.613292,
+              2.600625,
+              2.613541,
+              2.601041,
+              2.600083
+            ],
+            "median_ms": 2.601041,
+            "peak_mlx_bytes": 490996097
+          }
+        }
+      ],
+      "value_heads": 48
+    }
+  ],
+  "schema": "ax.mlx.gdn_prefill_probe.v1",
+  "scope": "Synthetic kernel comparison; no model, MTP, or default promotion",
+  "seed": 31418,
+  "sources_sha256": {
+    "adapter": "fb2db1e36c62e381d9790016e37260e4686bf0c5b19cfdcedb5036e642f1e1bf",
+    "ax_baseline": "501063cd8edd85d6686ca9a359e0c86fbe5057c5cf0c020fbbb3685bf955650c",
+    "binding": "4c9301ea0555d3dc65e61d649325b48999970aab4dd6aec4030411a99350316f",
+    "flags": "bf289d6fc900bdd1a55c4f73d09c74759a826d57df7ce53b310de10863106db1",
+    "flash_next_recurrence": "cf56c1b17b658073acf5d6568eb900a0cb38014a02234600dc97730835a4a6f3",
+    "flash_next_trunk": "d8de29dcf450d4080cd2a24fcbc94b9838217c953b6e3354c1c0e8a47547f64b",
+    "probe": "000796b22062355219e0659d699271e157b3509d46ddeec5c562a25c9ce25dd0",
+    "shim": "b208f21a728ef0189aa4c9f252aa78ebad5acf6ae6f833486e978b65142f3590"
+  },
+  "warmups_per_backend_trial": 3
+}

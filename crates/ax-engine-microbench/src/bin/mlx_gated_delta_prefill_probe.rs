@@ -23,10 +23,11 @@ struct Inputs {
     b: MlxArray,
     state: MlxArray,
     hashes: Vec<String>,
+    flash_next_gates: Option<(MlxArray, MlxArray)>,
 }
 
 impl Inputs {
-    fn new(batch: i32, seq: i32, hk: i32, hv: i32, dtype: MlxDtype) -> Self {
+    fn new(batch: i32, seq: i32, hk: i32, hv: i32, dtype: MlxDtype, flash_next: bool) -> Self {
         let mut hashes = Vec::new();
         let mut seed = 31418_u64;
         let mut array = |shape: &[i32], scale: f32, dtype| {
@@ -50,7 +51,7 @@ impl Inputs {
                 None,
             )
         };
-        Self {
+        let mut inputs = Self {
             q: array(&[batch, seq, hk, 128], 0.16, dtype),
             k: array(&[batch, seq, hk, 128], 0.16, dtype),
             v: array(&[batch, seq, hv, 128], 0.30, dtype),
@@ -60,10 +61,68 @@ impl Inputs {
             b: array(&[batch, seq, hv], 0.7, dtype),
             state: array(&[batch, hv, 128, 128], 0.04, MlxDtype::Float32),
             hashes,
+            flash_next_gates: None,
+        };
+        if flash_next {
+            // Match the dedicated trunk: normalize in FP32 after projection dtype
+            // rounding, then apply query scaling. Gates are prepared before timing.
+            let l2 = |x: &MlxArray| {
+                let x = astype(x, MlxDtype::Float32, None);
+                let squared = mlx_sys::sum_axis(&mlx_sys::multiply(&x, &x, None), -1, true, None);
+                mlx_sys::multiply(
+                    &x,
+                    &mlx_sys::power(
+                        &mlx_sys::add(&squared, &MlxArray::from_f32(1e-6), None),
+                        &MlxArray::from_f32(-0.5),
+                        None,
+                    ),
+                    None,
+                )
+            };
+            inputs.q = mlx_sys::divide(&l2(&inputs.q), &MlxArray::from_f32(128.0_f32.sqrt()), None);
+            inputs.k = l2(&inputs.k);
+            inputs.v = astype(&inputs.v, MlxDtype::Float32, None);
+            let a = mlx_sys::add(
+                &astype(&inputs.a, MlxDtype::Float32, None),
+                &inputs.bias,
+                None,
+            );
+            let sp = mlx_sys::add(
+                &mlx_sys::maximum(&a, &MlxArray::from_f32(0.0), None),
+                &mlx_sys::log1p(
+                    &mlx_sys::exp(
+                        &mlx_sys::minimum(&a, &mlx_sys::negative(&a, None), None),
+                        None,
+                    ),
+                    None,
+                ),
+                None,
+            );
+            let decay = mlx_sys::exp(
+                &mlx_sys::negative(
+                    &mlx_sys::multiply(&mlx_sys::exp(&inputs.a_log, None), &sp, None),
+                    None,
+                ),
+                None,
+            );
+            let beta = astype(
+                &astype(
+                    &mlx_sys::sigmoid(&astype(&inputs.b, MlxDtype::Float32, None), None),
+                    dtype,
+                    None,
+                ),
+                MlxDtype::Float32,
+                None,
+            );
+            inputs.flash_next_gates = Some((decay, beta));
         }
+        inputs
     }
 
     fn eval(&self) -> Result<(), String> {
+        if let Some((decay, beta)) = &self.flash_next_gates {
+            try_eval(&[decay, beta])?;
+        }
         try_eval(&[
             &self.q,
             &self.k,
@@ -77,6 +136,28 @@ impl Inputs {
     }
 
     fn run(&self, upstream: bool) -> Result<(MlxArray, MlxArray), String> {
+        if let Some((decay, beta)) = &self.flash_next_gates {
+            return if upstream {
+                ax_engine_mlx::flash_next_gdn::try_mlx_prefill(
+                    &self.q,
+                    &self.k,
+                    &self.v,
+                    decay,
+                    beta,
+                    &self.state,
+                )
+                .ok_or_else(|| "MLX Flash Next prefill rejected the probe shape".into())
+            } else {
+                ax_engine_mlx::flash_next_gdn::portable_recurrence(
+                    &self.q,
+                    &self.k,
+                    &self.v,
+                    decay,
+                    beta,
+                    &self.state,
+                )
+            };
+        }
         if upstream {
             try_mlx_gated_delta_prefill(
                 &self.q,
@@ -209,16 +290,27 @@ fn timed(inputs: &Inputs, upstream: bool, reps: usize) -> Result<Value, String> 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let output = args.next().ok_or_else(|| {
-        "usage: mlx-gated-delta-prefill-probe <output.json> [repetitions]".to_owned()
+        "usage: mlx-gated-delta-prefill-probe <output.json> [repetitions] [--flash-next] [--correctness-only]".to_owned()
     })?;
-    let repetitions = args
-        .next()
-        .map(|v| v.parse::<usize>())
-        .transpose()
-        .map_err(|e| e.to_string())?
-        .unwrap_or(5);
-    if repetitions == 0 || args.next().is_some() {
-        return Err("repetitions must be positive; unexpected arguments".into());
+    let mut repetitions = None;
+    let mut flash_next = false;
+    let mut correctness_only = false;
+    for argument in args {
+        match argument.as_str() {
+            "--flash-next" if !flash_next => flash_next = true,
+            "--correctness-only" if !correctness_only => correctness_only = true,
+            value if !value.starts_with('-') && repetitions.is_none() => {
+                repetitions = Some(value.parse::<usize>().map_err(|e| e.to_string())?);
+            }
+            _ => return Err(format!("unexpected argument: {argument}")),
+        }
+    }
+    let repetitions = repetitions.unwrap_or(5);
+    if repetitions == 0 {
+        return Err("repetitions must be positive".into());
+    }
+    if ax_engine_mlx::fastpath::flash_next_gdn_prefill_mlx_enabled() {
+        return Err("set AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX=0 for independent A/B dispatch".into());
     }
     if qwen_gated_delta_prefill_mlx_enabled() {
         return Err(
@@ -228,20 +320,30 @@ fn run() -> Result<(), String> {
     let start_load = host("sysctl", &["-n", "vm.loadavg"])?;
     let mut rows = Vec::new();
     let mut passed = true;
-    for (hk, hv) in [(16, 32), (16, 48)] {
+    let head_pairs: &[(i32, i32)] = if flash_next {
+        &[(16, 48)]
+    } else {
+        &[(16, 32), (16, 48)]
+    };
+    let sequences: &[i32] = if flash_next {
+        &[128, 131, 512, 1024, 2048]
+    } else {
+        &[32, 128, 512, 1024, 2048]
+    };
+    for &(hk, hv) in head_pairs {
         for batch in [1, 2] {
-            for seq in [32, 128, 512, 1024, 2048] {
+            for &seq in sequences {
                 for dtype in [MlxDtype::Float32, MlxDtype::Float16, MlxDtype::Bfloat16] {
                     eprintln!("GDN B={batch} T={seq} Hk={hk} Hv={hv} {dtype:?}");
                     clear_cache();
-                    let inputs = Inputs::new(batch, seq, hk, hv, dtype);
+                    let inputs = Inputs::new(batch, seq, hk, hv, dtype, flash_next);
                     inputs.eval()?;
                     let input_bytes = device_active_bytes();
                     let (ax_y, ax_s) = inputs.run(false)?;
                     let (mlx_y, mlx_s) = inputs.run(true)?;
                     let output_comparison = compare_arrays(&ax_y, &mlx_y);
                     let state_comparison = compare_arrays(&ax_s, &mlx_s);
-                    let output_tolerance = if dtype == MlxDtype::Bfloat16 {
+                    let output_tolerance = if !flash_next && dtype == MlxDtype::Bfloat16 {
                         0.0005
                     } else {
                         0.00005
@@ -258,7 +360,7 @@ fn run() -> Result<(), String> {
                         "correctness_pass":ok,"trials":[]});
                     drop((ax_y, ax_s, mlx_y, mlx_s));
                     // Preserve failed comparisons without evaluating them again for timing.
-                    if !ok {
+                    if !ok || correctness_only {
                         rows.push(row);
                         continue;
                     }
@@ -293,7 +395,10 @@ fn run() -> Result<(), String> {
     }
     let source_hash = |source: &str| format!("{:x}", Sha256::digest(source.as_bytes()));
     let report = json!({
-        "schema":"ax.mlx.gdn_prefill_probe.v1", "scope":"Synthetic kernel comparison; no model, MTP, or default promotion",
+        "schema":"ax.mlx.gdn_prefill_probe.v1",
+        "recurrence":if flash_next {"dedicated_flash_next_fp32"} else {"shared_qwen"},
+        "measurement":if correctness_only {"correctness_only"} else {"synthetic_kernel_timing"},
+        "scope":"Synthetic kernel comparison; no model, MTP, or default promotion",
         "host":{"chip":host("sysctl",&["-n","machdep.cpu.brand_string"])? ,
             "memory_bytes":host("sysctl",&["-n","hw.memsize"])?.parse::<u64>().map_err(|e| e.to_string())?,
             "macos":host("sw_vers",&["-productVersion"])? ,"gpu_architecture":gpu_device_architecture()?},
@@ -302,13 +407,15 @@ fn run() -> Result<(), String> {
         "sources_sha256":{
             "probe":source_hash(include_str!("mlx_gated_delta_prefill_probe.rs")),
             "adapter":source_hash(include_str!("../../../ax-engine-mlx/src/mlx_gated_delta.rs")),
+            "flash_next_recurrence":source_hash(include_str!("../../../ax-engine-mlx/src/flash_next_gdn.rs")),
+            "flash_next_trunk":source_hash(include_str!("../../../ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs")),
             "ax_baseline":source_hash(include_str!("../../../ax-engine-mlx/src/linear_attention_ops.rs")),
             "flags":source_hash(include_str!("../../../ax-engine-mlx/src/fastpath.rs")),
             "binding":source_hash(include_str!("../../../mlx-sys/src/fast.rs")),
             "shim":source_hash(include_str!("../../../mlx-sys/native/ax_shim.cpp"))},
         "optimization_env":std::env::vars().filter(|(k,_)| k.starts_with("AX_MLX_") || k.starts_with("GATED_DELTA_")).collect::<std::collections::BTreeMap<_,_>>(),
         "seed":31418,"input_hash_scope":"Little-endian float32 source values before activation cast",
-        "warmups_per_backend_trial":3,"repetitions":repetitions,"correctness_pass":passed,"rows":rows});
+        "warmups_per_backend_trial":if correctness_only {0} else {3},"repetitions":if correctness_only {0} else {repetitions},"correctness_pass":passed,"rows":rows});
     write_report(&output, &report)
 }
 

@@ -1,0 +1,1209 @@
+{
+  "correctness_pass": true,
+  "host": {
+    "chip": "Apple M2 Ultra",
+    "gpu_architecture": "applegpu_g14d",
+    "macos": "27.0.1",
+    "memory_bytes": 206158430208
+  },
+  "host_load_average": {
+    "end": "{ 6.26 7.70 6.81 }",
+    "start": "{ 6.17 7.73 6.81 }"
+  },
+  "input_hash_scope": "Little-endian float32 source values before activation cast",
+  "measurement": "correctness_only",
+  "mlx_version": "0.32.3",
+  "optimization_env": {
+    "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX": "0",
+    "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX": "0"
+  },
+  "recurrence": "dedicated_flash_next_fp32",
+  "repetitions": 0,
+  "repository_head": null,
+  "rows": [
+    {
+      "active_input_mlx_bytes": 12730772,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "f8dec9376f55201f767c3842f232cbe85a36ae1ab6249d2f4941912f40968615",
+        "6439fd6de19bd5d6dca7fc03b05ea01a5034959cc6251726f642f95d55564b56",
+        "ef7c0112d484a9ab8b69583fd59a0d5845005d68b79cfee9ccd1f1297465ca4f",
+        "98b659c998ba6e53b0b06089d78a94bcd7795dc7a2d6259b81acfb6b2c9cda4e",
+        "d2060fdea7787709d2e5a4788ab996627a0dee458c2f4b084f2177b316d8a316",
+        "4de90d549cc8ed015edbaac1fe231e28f20bb15814448ed02b8a37250815ac55",
+        "8b1f08bbcb1b9a5855630fbaf7701dafe4dd1ae03182e2ae988740c7f671ccbb",
+        "d3d31d34324aaf061d17c0a33dcfdd858f24de976c80d90b369d9743d98d9854"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 7.450580596923828e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 20558228,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "f8dec9376f55201f767c3842f232cbe85a36ae1ab6249d2f4941912f40968615",
+        "6439fd6de19bd5d6dca7fc03b05ea01a5034959cc6251726f642f95d55564b56",
+        "ef7c0112d484a9ab8b69583fd59a0d5845005d68b79cfee9ccd1f1297465ca4f",
+        "98b659c998ba6e53b0b06089d78a94bcd7795dc7a2d6259b81acfb6b2c9cda4e",
+        "d2060fdea7787709d2e5a4788ab996627a0dee458c2f4b084f2177b316d8a316",
+        "4de90d549cc8ed015edbaac1fe231e28f20bb15814448ed02b8a37250815ac55",
+        "8b1f08bbcb1b9a5855630fbaf7701dafe4dd1ae03182e2ae988740c7f671ccbb",
+        "d3d31d34324aaf061d17c0a33dcfdd858f24de976c80d90b369d9743d98d9854"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.1641532182693481e-9,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 5.587935447692871e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 20558228,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "f8dec9376f55201f767c3842f232cbe85a36ae1ab6249d2f4941912f40968615",
+        "6439fd6de19bd5d6dca7fc03b05ea01a5034959cc6251726f642f95d55564b56",
+        "ef7c0112d484a9ab8b69583fd59a0d5845005d68b79cfee9ccd1f1297465ca4f",
+        "98b659c998ba6e53b0b06089d78a94bcd7795dc7a2d6259b81acfb6b2c9cda4e",
+        "d2060fdea7787709d2e5a4788ab996627a0dee458c2f4b084f2177b316d8a316",
+        "4de90d549cc8ed015edbaac1fe231e28f20bb15814448ed02b8a37250815ac55",
+        "8b1f08bbcb1b9a5855630fbaf7701dafe4dd1ae03182e2ae988740c7f671ccbb",
+        "d3d31d34324aaf061d17c0a33dcfdd858f24de976c80d90b369d9743d98d9854"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.0477378964424133e-9,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 5.587935447692871e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 13009684,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "867ccab8644ce4707753c2871346be3389469c8127124b58a08809d3b041f98f",
+        "2e33f19f2e985da047a41c050fc3de24be691521c5c630f74750b88bcaf777a2",
+        "42cbc9dcafb6f6f9bef1ca8612924bcf1646b1bff9982974c8b7e4a9b1257980",
+        "9c9da4605d166b9ce95c16b638ec6c230cde01e3c14730f9a790b23be65226a3",
+        "7fcf4348460026ce9f1314131c876ddf781655e946f425aa866ec4ad381f2b6d",
+        "bf50e42964a69f245ff487d7c84616fdeb49eb9382108bfc6bd465bb7c43a5b4",
+        "bc6071b46807f8bf66e65a522f30a7b5740945753fa2c0e39e9b631772efd984",
+        "ad6453321f00467ed25a7088d24ea906272a70c9ebdc994a09fdbba0f72aa860"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.1932570487260818e-9,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 3.725290298461914e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 21067188,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "867ccab8644ce4707753c2871346be3389469c8127124b58a08809d3b041f98f",
+        "2e33f19f2e985da047a41c050fc3de24be691521c5c630f74750b88bcaf777a2",
+        "42cbc9dcafb6f6f9bef1ca8612924bcf1646b1bff9982974c8b7e4a9b1257980",
+        "9c9da4605d166b9ce95c16b638ec6c230cde01e3c14730f9a790b23be65226a3",
+        "7fcf4348460026ce9f1314131c876ddf781655e946f425aa866ec4ad381f2b6d",
+        "bf50e42964a69f245ff487d7c84616fdeb49eb9382108bfc6bd465bb7c43a5b4",
+        "bc6071b46807f8bf66e65a522f30a7b5740945753fa2c0e39e9b631772efd984",
+        "ad6453321f00467ed25a7088d24ea906272a70c9ebdc994a09fdbba0f72aa860"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.1641532182693481e-9,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 4.6566128730773926e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 21067188,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "867ccab8644ce4707753c2871346be3389469c8127124b58a08809d3b041f98f",
+        "2e33f19f2e985da047a41c050fc3de24be691521c5c630f74750b88bcaf777a2",
+        "42cbc9dcafb6f6f9bef1ca8612924bcf1646b1bff9982974c8b7e4a9b1257980",
+        "9c9da4605d166b9ce95c16b638ec6c230cde01e3c14730f9a790b23be65226a3",
+        "7fcf4348460026ce9f1314131c876ddf781655e946f425aa866ec4ad381f2b6d",
+        "bf50e42964a69f245ff487d7c84616fdeb49eb9382108bfc6bd465bb7c43a5b4",
+        "bc6071b46807f8bf66e65a522f30a7b5740945753fa2c0e39e9b631772efd984",
+        "ad6453321f00467ed25a7088d24ea906272a70c9ebdc994a09fdbba0f72aa860"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 9.604264050722122e-10,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 3.725290298461914e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41353620,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "6367840bb0522946c376c74cdfa184052b511e8a4eac60bfaa46ce3732684101",
+        "28d35c32fc801afd99ef47894adc08ce0a5d9dd547eecbe01a2213b295674837",
+        "ece87bda767b8fd716a9a5bfabe31fdeff6e58e1443f6fa71788fcff041c5dde",
+        "0a56fd0b674f0227c25750dc23bda991eda3ee06a78034ecf63bf2494390e0c9",
+        "f68375236dc1e5a2f46cc37020b446af4f004200f5fad62000adcaf091a556a6",
+        "7c9c127b1624268345a1d33011755994dc53b2ac63b284f5b321a8b92ebcf4b5",
+        "53a1ede3cb4b0d482f0d429e6e806a59b3d2390c649d7b540b571461ce113fbc",
+        "6eb4b94304dce880f1a9ef7074495ed8a527dbed665325fdf8c8970760d44837"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.280568540096283e-9,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 6.51925802230835e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 72728980,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "6367840bb0522946c376c74cdfa184052b511e8a4eac60bfaa46ce3732684101",
+        "28d35c32fc801afd99ef47894adc08ce0a5d9dd547eecbe01a2213b295674837",
+        "ece87bda767b8fd716a9a5bfabe31fdeff6e58e1443f6fa71788fcff041c5dde",
+        "0a56fd0b674f0227c25750dc23bda991eda3ee06a78034ecf63bf2494390e0c9",
+        "f68375236dc1e5a2f46cc37020b446af4f004200f5fad62000adcaf091a556a6",
+        "7c9c127b1624268345a1d33011755994dc53b2ac63b284f5b321a8b92ebcf4b5",
+        "53a1ede3cb4b0d482f0d429e6e806a59b3d2390c649d7b540b571461ce113fbc",
+        "6eb4b94304dce880f1a9ef7074495ed8a527dbed665325fdf8c8970760d44837"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.1641532182693481e-9,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 6.51925802230835e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 72728980,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "6367840bb0522946c376c74cdfa184052b511e8a4eac60bfaa46ce3732684101",
+        "28d35c32fc801afd99ef47894adc08ce0a5d9dd547eecbe01a2213b295674837",
+        "ece87bda767b8fd716a9a5bfabe31fdeff6e58e1443f6fa71788fcff041c5dde",
+        "0a56fd0b674f0227c25750dc23bda991eda3ee06a78034ecf63bf2494390e0c9",
+        "f68375236dc1e5a2f46cc37020b446af4f004200f5fad62000adcaf091a556a6",
+        "7c9c127b1624268345a1d33011755994dc53b2ac63b284f5b321a8b92ebcf4b5",
+        "53a1ede3cb4b0d482f0d429e6e806a59b3d2390c649d7b540b571461ce113fbc",
+        "6eb4b94304dce880f1a9ef7074495ed8a527dbed665325fdf8c8970760d44837"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 7.450580596923828e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 79561108,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "aff1cc538b5dcd59b7c0977ffa4ed9fae29d890dadbe80b166779bcb6d2cb456"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.6298145055770874e-9,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 5.587935447692871e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 142279060,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "aff1cc538b5dcd59b7c0977ffa4ed9fae29d890dadbe80b166779bcb6d2cb456"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.1641532182693481e-9,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 5.587935447692871e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 142279060,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "aff1cc538b5dcd59b7c0977ffa4ed9fae29d890dadbe80b166779bcb6d2cb456"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 6.51925802230835e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 155976084,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "6fd01705f41fc4857e4a72a18b6d5fe9d79bee48bffa8c867e5807a483bae163"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.6298145055770874e-9,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 8.381903171539307e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 147194244,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "6fd01705f41fc4857e4a72a18b6d5fe9d79bee48bffa8c867e5807a483bae163"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 7.450580596923828e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 147194244,
+      "batch": 1,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "6fd01705f41fc4857e4a72a18b6d5fe9d79bee48bffa8c867e5807a483bae163"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.6298145055770874e-9,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 5.587935447692871e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 25395604,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "054fe71d76a530d171b2228f495c4dd9865cd95dac57efa3e51061d8b57eb4a9",
+        "18391e76175d50f688f4da807042943d9ace15051997e912b52921f8ca9f9b9e",
+        "3e4ebe495e228a6744fc25e31c6109ed85a8baf7cf225ea93f7e968819bf41fe",
+        "b21c66b1a01de63caebd6dab628c94c84c39e860d21c2e197338110b17592baa",
+        "b9ad52b09d4913956243b3ab4bd427a722f42fb1a9b6158b0e04d68684c9ace2",
+        "d29aadb559c403f47a88d0bac8038cb2fd3ee6ec65c3bcc8d67d28552496adc0",
+        "14f879cc84f09f6610f28dfec44ddd9b24207c20435a5770734226c752d735b1",
+        "4ba7460000bd300e10c069db85011883c1576db2d60d624b1c03434484a64fe1"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 6.51925802230835e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41091476,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "054fe71d76a530d171b2228f495c4dd9865cd95dac57efa3e51061d8b57eb4a9",
+        "18391e76175d50f688f4da807042943d9ace15051997e912b52921f8ca9f9b9e",
+        "3e4ebe495e228a6744fc25e31c6109ed85a8baf7cf225ea93f7e968819bf41fe",
+        "b21c66b1a01de63caebd6dab628c94c84c39e860d21c2e197338110b17592baa",
+        "b9ad52b09d4913956243b3ab4bd427a722f42fb1a9b6158b0e04d68684c9ace2",
+        "d29aadb559c403f47a88d0bac8038cb2fd3ee6ec65c3bcc8d67d28552496adc0",
+        "14f879cc84f09f6610f28dfec44ddd9b24207c20435a5770734226c752d735b1",
+        "4ba7460000bd300e10c069db85011883c1576db2d60d624b1c03434484a64fe1"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 8.381903171539307e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41091476,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "054fe71d76a530d171b2228f495c4dd9865cd95dac57efa3e51061d8b57eb4a9",
+        "18391e76175d50f688f4da807042943d9ace15051997e912b52921f8ca9f9b9e",
+        "3e4ebe495e228a6744fc25e31c6109ed85a8baf7cf225ea93f7e968819bf41fe",
+        "b21c66b1a01de63caebd6dab628c94c84c39e860d21c2e197338110b17592baa",
+        "b9ad52b09d4913956243b3ab4bd427a722f42fb1a9b6158b0e04d68684c9ace2",
+        "d29aadb559c403f47a88d0bac8038cb2fd3ee6ec65c3bcc8d67d28552496adc0",
+        "14f879cc84f09f6610f28dfec44ddd9b24207c20435a5770734226c752d735b1",
+        "4ba7460000bd300e10c069db85011883c1576db2d60d624b1c03434484a64fe1"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.1641532182693481e-9,
+      "output_tolerance": 0.00005,
+      "seq": 128,
+      "state_max_abs": 7.450580596923828e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 25936276,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "93aed0db82c36be0ee2f71874a209edd6a053c7a324f3b21b17f3e342a28f751",
+        "1c819353e85d94a34c1119c136f47fdc2222da3a8798379afe7673d629f40180",
+        "126c1feceab7edcc8772988d5287972cd35eaaba5784ae5bb7594413a4de5db3",
+        "f73792d3122e4d778c02d66e4f5bcade94a030e69d09f993f69230ae5f249321",
+        "73be478b1a0535cec729a9d0cf9d141cd96ac04b457b18ef005be2894bcfe68c",
+        "336cba2bc8348dc2756d0afcd8fbce372e211803f6dd46921a93b42a5c98c026",
+        "ae6eaa579f158b05d5670a5850b8b6e5a5a97603b18dfc9b4f7d06ac53d3cd42",
+        "86315a9459fb3b89623d7906159f0d10471abe1d0de6061af059643666e25014"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.280568540096283e-9,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 3.725290298461914e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41992596,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "93aed0db82c36be0ee2f71874a209edd6a053c7a324f3b21b17f3e342a28f751",
+        "1c819353e85d94a34c1119c136f47fdc2222da3a8798379afe7673d629f40180",
+        "126c1feceab7edcc8772988d5287972cd35eaaba5784ae5bb7594413a4de5db3",
+        "f73792d3122e4d778c02d66e4f5bcade94a030e69d09f993f69230ae5f249321",
+        "73be478b1a0535cec729a9d0cf9d141cd96ac04b457b18ef005be2894bcfe68c",
+        "336cba2bc8348dc2756d0afcd8fbce372e211803f6dd46921a93b42a5c98c026",
+        "ae6eaa579f158b05d5670a5850b8b6e5a5a97603b18dfc9b4f7d06ac53d3cd42",
+        "86315a9459fb3b89623d7906159f0d10471abe1d0de6061af059643666e25014"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.0477378964424133e-9,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 3.725290298461914e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 41992596,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "93aed0db82c36be0ee2f71874a209edd6a053c7a324f3b21b17f3e342a28f751",
+        "1c819353e85d94a34c1119c136f47fdc2222da3a8798379afe7673d629f40180",
+        "126c1feceab7edcc8772988d5287972cd35eaaba5784ae5bb7594413a4de5db3",
+        "f73792d3122e4d778c02d66e4f5bcade94a030e69d09f993f69230ae5f249321",
+        "73be478b1a0535cec729a9d0cf9d141cd96ac04b457b18ef005be2894bcfe68c",
+        "336cba2bc8348dc2756d0afcd8fbce372e211803f6dd46921a93b42a5c98c026",
+        "ae6eaa579f158b05d5670a5850b8b6e5a5a97603b18dfc9b4f7d06ac53d3cd42",
+        "86315a9459fb3b89623d7906159f0d10471abe1d0de6061af059643666e25014"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.1350493878126144e-9,
+      "output_tolerance": 0.00005,
+      "seq": 131,
+      "state_max_abs": 3.725290298461914e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 82706836,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "5bf535284d45b287441cab03eed566f22dce5b3a820905a86a0570561d6df84d"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.6298145055770874e-9,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 6.51925802230835e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 145424788,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "5bf535284d45b287441cab03eed566f22dce5b3a820905a86a0570561d6df84d"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.1641532182693481e-9,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 7.450580596923828e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 145424788,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "b1efa68e6a4afec0d90a354c83fe8f7db93d20c8e574dadbc2453257ae36aeab",
+        "34b84aae5b7c90a2d65825e1fdf20862b159120cd1ea99c52ad9f6a3d36c99bd",
+        "1697b9a64dac05a9eff09aaa84f62b66afd2b9079d956e69aaa774975c83c531",
+        "edf50a1688fd489603aa16ed8d95f696525341baf2b3c4a1ee284a77c437f259",
+        "eb409c7d921698d0300c639e9918fb835c70265622059412126f60059e54cfcf",
+        "383a3f5b61b6ed2f6a4bb7e6b076612f4d07cd462f0026c31ad3416e4eb6f895",
+        "43ef5ee1ffdea0a6553026ffaa02df5eca5fdbdd27e3b3fa56316246021c70d2",
+        "5bf535284d45b287441cab03eed566f22dce5b3a820905a86a0570561d6df84d"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 512,
+      "state_max_abs": 6.51925802230835e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 159121812,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "e170670bcde964d68bc166bce1e0b1619643fc40e1ef49fe381f25770b0b7878"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.6298145055770874e-9,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 8.381903171539307e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 150339972,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "e170670bcde964d68bc166bce1e0b1619643fc40e1ef49fe381f25770b0b7878"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 7.450580596923828e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 150339972,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "bf003b79e82cfc685d35369b69e6ac6453da9a2ce79a69fa63ee282da23f1deb",
+        "463bb470c450fc44dae09e91f38923439fb95acd706a813c36ed7dba3f28b10d",
+        "1b7914017824bdf6ccb81b2c1b234b57c04529302cc3e9e631b967496ba69b26",
+        "abea9b06a5e0c6bba66c9421cecd4096a28038b125f44c2dfefc2aceb495d8e4",
+        "a4cc8e9dc135ba560fb73e063d4c2b625683be196b7c8c5a2803754e0f43a427",
+        "310815b8395eea87008c4ea30302f9f207c07306c99f0c11a3d8e2fbb1bf7658",
+        "ec1626f4431d5a5058f9568da10d7e6b366bdcad68a32747bad8e6d06c58c489",
+        "e170670bcde964d68bc166bce1e0b1619643fc40e1ef49fe381f25770b0b7878"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.6298145055770874e-9,
+      "output_tolerance": 0.00005,
+      "seq": 1024,
+      "state_max_abs": 5.9371814131736755e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 311951764,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float32",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "dfea3f988656fb4a5f6a0dd2904f51fd5d06a2dcbec3a251407a0de2e2c1f4a2",
+        "460a9788dee910a3c4a130eb4aeb733c56261353268c403778f6671d6020f92d",
+        "29af074edf59f488073c56af6a5fcd1c6437575ae285458d276a582d1014a314",
+        "d15e46f83bd980c492af854bacb2ff93fd232ad1c400ea31a289724db3c6d6d3",
+        "4c53545cf3988cc57cbb6280017d5c3e0d7c5eb19d49933a8935ce255e34a8c6",
+        "f1bceea6fc573e625f0ef89092941392f8ac7fe8474ded98aa77ce136406b6d5",
+        "5f60d1d2632ced097d23d95498c9868b82fdaf54f777c972505485bf1ada0102",
+        "2240c4ba9d4356307f742d6252e682cd5bc2bf173a9f1d3e003efe714e371e86"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.5133991837501526e-9,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 6.51925802230835e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 210239876,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Float16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "dfea3f988656fb4a5f6a0dd2904f51fd5d06a2dcbec3a251407a0de2e2c1f4a2",
+        "460a9788dee910a3c4a130eb4aeb733c56261353268c403778f6671d6020f92d",
+        "29af074edf59f488073c56af6a5fcd1c6437575ae285458d276a582d1014a314",
+        "d15e46f83bd980c492af854bacb2ff93fd232ad1c400ea31a289724db3c6d6d3",
+        "4c53545cf3988cc57cbb6280017d5c3e0d7c5eb19d49933a8935ce255e34a8c6",
+        "f1bceea6fc573e625f0ef89092941392f8ac7fe8474ded98aa77ce136406b6d5",
+        "5f60d1d2632ced097d23d95498c9868b82fdaf54f777c972505485bf1ada0102",
+        "2240c4ba9d4356307f742d6252e682cd5bc2bf173a9f1d3e003efe714e371e86"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.3969838619232178e-9,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 8.381903171539307e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    },
+    {
+      "active_input_mlx_bytes": 210239876,
+      "batch": 2,
+      "comparison_errors": {
+        "output": null,
+        "state": null
+      },
+      "correctness_pass": true,
+      "dtype": "Bfloat16",
+      "head_dim": 128,
+      "input_hash_order": [
+        "q",
+        "k",
+        "v",
+        "a_log",
+        "a",
+        "bias",
+        "b",
+        "initial_state"
+      ],
+      "input_sha256": [
+        "dfea3f988656fb4a5f6a0dd2904f51fd5d06a2dcbec3a251407a0de2e2c1f4a2",
+        "460a9788dee910a3c4a130eb4aeb733c56261353268c403778f6671d6020f92d",
+        "29af074edf59f488073c56af6a5fcd1c6437575ae285458d276a582d1014a314",
+        "d15e46f83bd980c492af854bacb2ff93fd232ad1c400ea31a289724db3c6d6d3",
+        "4c53545cf3988cc57cbb6280017d5c3e0d7c5eb19d49933a8935ce255e34a8c6",
+        "f1bceea6fc573e625f0ef89092941392f8ac7fe8474ded98aa77ce136406b6d5",
+        "5f60d1d2632ced097d23d95498c9868b82fdaf54f777c972505485bf1ada0102",
+        "2240c4ba9d4356307f742d6252e682cd5bc2bf173a9f1d3e003efe714e371e86"
+      ],
+      "key_heads": 16,
+      "output_max_abs": 1.6298145055770874e-9,
+      "output_tolerance": 0.00005,
+      "seq": 2048,
+      "state_max_abs": 5.587935447692871e-9,
+      "state_tolerance": 0.00005,
+      "trials": [],
+      "value_heads": 48
+    }
+  ],
+  "schema": "ax.mlx.gdn_prefill_probe.v1",
+  "scope": "Synthetic kernel comparison; no model, MTP, or default promotion",
+  "seed": 31418,
+  "sources_sha256": {
+    "adapter": "fb2db1e36c62e381d9790016e37260e4686bf0c5b19cfdcedb5036e642f1e1bf",
+    "ax_baseline": "501063cd8edd85d6686ca9a359e0c86fbe5057c5cf0c020fbbb3685bf955650c",
+    "binding": "4c9301ea0555d3dc65e61d649325b48999970aab4dd6aec4030411a99350316f",
+    "flags": "bf289d6fc900bdd1a55c4f73d09c74759a826d57df7ce53b310de10863106db1",
+    "flash_next_recurrence": "cf56c1b17b658073acf5d6568eb900a0cb38014a02234600dc97730835a4a6f3",
+    "flash_next_trunk": "d8de29dcf450d4080cd2a24fcbc94b9838217c953b6e3354c1c0e8a47547f64b",
+    "probe": "000796b22062355219e0659d699271e157b3509d46ddeec5c562a25c9ce25dd0",
+    "shim": "b208f21a728ef0189aa4c9f252aa78ebad5acf6ae6f833486e978b65142f3590"
+  },
+  "warmups_per_backend_trial": 0
+}

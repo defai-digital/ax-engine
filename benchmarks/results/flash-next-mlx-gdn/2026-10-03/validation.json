@@ -1,0 +1,83 @@
+{
+  "schema": "ax.flash_next.mlx_gdn_validation.v1",
+  "qualification": false,
+  "release_ready": false,
+  "host": "Mac Studio, Apple M2 Ultra, 192 GiB unified memory, macOS 27.0.1",
+  "toolchain": "Rust 1.97.1; Python 3.12; published MLX 0.32.3",
+  "gates": {
+    "fmt": "passed",
+    "clippy_all_targets_all_features": "passed",
+    "rust_full_workspace": {
+      "status": "passed",
+      "passed": 4062,
+      "ignored": 62
+    },
+    "maturin_develop": "passed in isolated virtual environment",
+    "python_tests": {
+      "status": "passed",
+      "passed": 279,
+      "skipped": 27,
+      "subtests": 158,
+      "warnings": 1,
+      "warning": "Existing FastAPI/Starlette testclient deprecation"
+    },
+    "check_scripts": "passed in isolated clean worktree",
+    "qualify_27b_dry_run": "passed",
+    "qualify_flash_next_dry_run": "passed",
+    "primary_claims": "passed",
+    "final_smoke_harness_clippy": "passed",
+    "final_extreme_gate_clippy": "passed",
+    "final_fmt": "passed",
+    "additional_extreme_gate_integration": {
+      "status": "passed",
+      "passed": 1,
+      "control": "FP32 positive beta=1 with zero, tiny, unity and mixed decay on partial 131-token chunks"
+    },
+    "synthetic_timing_correctness": {
+      "status": "passed",
+      "cells": 30,
+      "host": "MacBook Pro M5 Max 128 GiB"
+    },
+    "synthetic_functional_correctness": {
+      "status": "passed",
+      "cells": 30,
+      "host": "Mac Studio M2 Ultra 192 GiB"
+    },
+    "real_component_weights": {
+      "status": "passed",
+      "packs": [
+        "MXFP4",
+        "6-bit"
+      ],
+      "scope": "layer-zero GDN with synthetic hidden activations"
+    },
+    "native_mxfp4_smoke": {
+      "status": "passed",
+      "prompt_tokens": 131,
+      "generated_tokens": 8,
+      "scope": "native development trunk; no quality/performance certification"
+    },
+    "native_6bit_smoke": {
+      "status": "passed",
+      "prompt_tokens": 131,
+      "generated_tokens": 1,
+      "prefill_mlx_dispatches": 36,
+      "scope": "native development trunk; no quality/performance certification"
+    },
+    "probe_arguments": {
+      "status": "passed",
+      "rejected": [
+        "zero repetitions",
+        "duplicate repetitions",
+        "duplicate scope flag"
+      ]
+    }
+  },
+  "validation_sequence": "Full repository gates preceded diagnostic-only bounded smoke controls and the additional integration test. Final diagnostic changes received strict scoped clippy/fmt, the added integration test, and a real-weight native smoke; runtime source hashes remain identical to measured artifacts.",
+  "remaining_gates": [
+    "real-prompt default-runner logits/state/reference quality",
+    "long-context and serving lifecycle/endurance",
+    "SKU-bound matched model-runtime performance and memory",
+    "MTP-S/P/D and certification/default promotion"
+  ]
+}

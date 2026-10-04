@@ -1,0 +1,72 @@
+{
+  "bounds": {
+    "conv_and_same_state_decode_max_abs": 0.0,
+    "output_max_abs": 0.0625,
+    "relative_l2": 0.002,
+    "state_max_abs": 0.002
+  },
+  "config_sha256": "fb3c637ce4a240453c454fbc1211fa1e893d0af12df54a9df19c9c017fa59237",
+  "conv_error": {
+    "finite": true,
+    "max_abs": 0.0,
+    "relative_l2": 0.0
+  },
+  "correctness_pass": true,
+  "dispatches": {
+    "ax": 0,
+    "decode": 0,
+    "mlx": 1
+  },
+  "index_sha256": "37344288777e7e78b35901cb1d572dad0dc640cb9cedb90024860b932a657696",
+  "input_sha256": "c3dbdcb3e20b6e4e962e20b7c7fdae7e47dd04b7ae4a1ba32b7e3805de67c9a6",
+  "layer": 0,
+  "loaded_gdn_sha256": {
+    "a_log": "88c53a2a04bda1d96ee1ade6fa7dfa9c49d3245b1cc1e83673f02b7a36e07a85",
+    "beta.scales": "b6ee4d0d0a24b65c75a0957f86f4ac8515f287a55da3f8b89bdbc79836925636",
+    "beta.weight": "6c7bb5d707f396ad463e9550e6f6d4845f6f3e38d678430de84cbfebcdc618ae",
+    "conv": "f56e046007a85065186c71dfadb2c4370409b6b25b9b1c292673d79c656ff6ea",
+    "decay.scales": "316aaa7ec23412b6a32d7dc9e9ba7042587c637d71b13f84ff941cc8aabcb250",
+    "decay.weight": "99672da8bd56fd7f574621c3f9e0f66016e20ea9a26c6cc7349f78c9f32f138f",
+    "dt_bias": "cfc5d9f0c2eccff4c1969fbfb31cca17a1b50007e9cc06490b4e141be6b825a0",
+    "gate.scales": "ea7bc64a9e0d62049b82900a9d7074fe85ba31d86a4cb109af75d403899dd9ef",
+    "gate.weight": "3d66ea9e7518c3fc3b4e1d3d54f15a645156fa4fefd23c77ac1e6f0f5140853b",
+    "norm_gain": "d27dd7b8d5dae1f3cc9880dd0367825008d8d7873ea0030aa92175634ae08e17",
+    "output.scales": "d95486350bcd5935550c649b528be362d6a707ec32ff8dcb84e15a6e03b148f0",
+    "output.weight": "05d8dbc8e2f29f7c988a2922bffaf2205e8c81f5671db8c58513619855f8644e",
+    "qkv.scales": "476acbb8cb8a2dd58783fcaf9ba1eff16fc69eedc0ed7b2d473140392147a42e",
+    "qkv.weight": "26363b10930f13a07ea9e4f762bfe9620d46e740670d4f28af04116bdc5cdca6"
+  },
+  "mlx_version": "0.32.3",
+  "output_error": {
+    "finite": true,
+    "max_abs": 0.0001220703125,
+    "relative_l2": 0.00018750760672668339
+  },
+  "pack": "AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "projection_dtype": "Bfloat16",
+  "qualification": false,
+  "release_ready": false,
+  "same_state_decode_error": {
+    "finite": true,
+    "max_abs": 0.0,
+    "relative_l2": 0.0
+  },
+  "same_state_decode_state_error": {
+    "finite": true,
+    "max_abs": 0.0,
+    "relative_l2": 0.0
+  },
+  "schema": "ax.flash_next.gdn_component.v1",
+  "scope": "Layer-zero real GDN weights with synthetic hidden activations; no whole-model quality or performance claim",
+  "seq": 131,
+  "sources_sha256": {
+    "recurrence": "cf56c1b17b658073acf5d6568eb900a0cb38014a02234600dc97730835a4a6f3",
+    "trunk": "d8de29dcf450d4080cd2a24fcbc94b9838217c953b6e3354c1c0e8a47547f64b"
+  },
+  "state_error": {
+    "finite": true,
+    "max_abs": 5.587935447692871e-9,
+    "relative_l2": 3.921007209363519e-7
+  },
+  "tensor_hash_scope": "Loaded uint32 payloads or exact floating values cast to float32, row-contiguous little-endian"
+}

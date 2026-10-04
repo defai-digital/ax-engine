@@ -36,6 +36,7 @@ mod whisper_tokenizer;
 mod vl_fixture_tests;
 // Public for the kernel-dispatch probe binaries (`src/bin/`), like the
 // sibling modules; not a stable external API.
+pub mod flash_next_gdn;
 pub mod linear_attention_ops;
 pub mod mlx_gated_delta;
 pub mod model;

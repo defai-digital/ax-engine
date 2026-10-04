@@ -1,0 +1,60 @@
+{
+  "schema": "ax.flash_next.mlx_gdn_provenance.v1",
+  "qualification": false,
+  "release_ready": false,
+  "base_revision": "debd8789de9aff036772a55e019295d063136956",
+  "build": {
+    "rust": "1.97.1",
+    "probe_profile": "release-pyext",
+    "component_profile": "test",
+    "published_mlx": "0.32.3",
+    "runtime_sha256": {
+      "libjaccl.dylib": "949e901df832d600a71ff2bc5f3738d55b010668102f36e071e1890807a965cd",
+      "libmlx.dylib": "ebc8a5f5465afb79d3d9c8f5b0929de1a9b277b7179db8672f92da77ae110a1e",
+      "mlx.metallib": "95974b7de464ec2be7833a914ca5a53d283a70789470fd84218738fc8fcea3e1"
+    },
+    "probe_sha256": "d202538ebb109e6240bce5d4e7f0511065c338b528a693d3cd05554656565e8f",
+    "component_test_binary_sha256": "9658d13839ca4cc4da7a39b74cacd3a36633c85a108806c6396bb50d6f987680",
+    "native_smoke_test_binary_sha256": "c8377877683323580afad1e8c983d8cd8b715c43c136c901669bc737cdaa4c73"
+  },
+  "execution": {
+    "synthetic_timing": "MacBook Pro, Apple M5 Max, 128 GiB unified memory, internal NVMe SSD, macOS 27.0",
+    "functional": "Mac Studio, Apple M2 Ultra, 192 GiB unified memory, macOS 27.0.1; model packs on external USB solid-state volume",
+    "component_environment": {
+      "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL": "1",
+      "AX_STREAM_EXPERTS": "on",
+      "selection": "thread-local test override per A/B call"
+    },
+    "probe_environment": {
+      "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX": "0",
+      "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX": "0"
+    }
+  },
+  "scope": "Synthetic recurrence timing and layer-zero real component weights with synthetic activations; no model throughput, quality, RAM minimum, MTP or default promotion",
+  "artifacts_sha256": {
+    "m5-max-128gb.json": "d61c23ed2ef402f35c3d56979d87f8a1bcf8724a399531d92b44d019fbca4288",
+    "m2-ultra-192gb-correctness.json": "e30fa005f380e94256cd6711c84cf9ca0dc563184626f47e94b82bfce2388ede",
+    "mxfp4-component.json": "25ff6b244f1bb19f4605a3dda20d6184ea4468fec63e91ca38d944b8b652d84e",
+    "axq6-component.json": "437d920a8f0d9453a7f1e27d638ba781ed548b6e4f8291c481387bb199ff1cad",
+    "mxfp4-native-long-smoke.json": "6087f0ef0dabf8b32581cf03abfb7ed79e29293d346c934b7a791930c4f1c4af",
+    "axq6-native-long-smoke.json": "710a2b638f116c986efc2341c92ab24de3ae9547dac97fd3a7cd7b83040cdc93",
+    "validation.json": "7a97568daa1d20cf3b7b11890436553cdcb3c2b8334a294ca0cdd5120b264ed2"
+  },
+  "incomplete_runs": [
+    {
+      "run": "forced-paging short native smoke",
+      "status": "terminated before a completed native-smoke receipt; prefill completion not established",
+      "reason": "Replaced with a 131-token prompt smoke under the unchanged Auto policy; no pass or performance claim from the incomplete run"
+    }
+  ],
+  "modified_sources_sha256": {
+    "crates/ax-engine-mlx/src/flash_next_gdn.rs": "cf56c1b17b658073acf5d6568eb900a0cb38014a02234600dc97730835a4a6f3",
+    "crates/ax-engine-mlx/src/model/shared/qwen4_exp_gdn.rs": "d8de29dcf450d4080cd2a24fcbc94b9838217c953b6e3354c1c0e8a47547f64b",
+    "crates/ax-engine-mlx/src/model/qwen4_exp.rs": "a41140a7732a43bb1f53d51e57609354b486f4655f61ea147105d81235bdfc1c",
+    "crates/ax-engine-mlx/src/fastpath.rs": "bf289d6fc900bdd1a55c4f73d09c74759a826d57df7ce53b310de10863106db1",
+    "crates/ax-engine-mlx/src/lib.rs": "f006779e37e8f72e6b7de266010ff696ace0189c1455f55fab7e0da93002f61b",
+    "crates/ax-engine-mlx/tests/flash_next_gdn_extreme.rs": "6f39748dd9fad09ec226c2f2f10a7672e63797f77a4583dad7b9a0a6fd4a1e65",
+    "crates/ax-engine-microbench/src/bin/mlx_gated_delta_prefill_probe.rs": "000796b22062355219e0659d699271e157b3509d46ddeec5c562a25c9ce25dd0"
+  },
+  "test_binary_sequence": "Component and MXFP4 smoke binary predates diagnostic-only bounded decode controls; final 6-bit smoke binary includes those controls. GDN runtime sources are identical and match all synthetic/component source fingerprints."
+}

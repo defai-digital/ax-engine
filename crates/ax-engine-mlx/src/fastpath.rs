@@ -5228,6 +5228,15 @@ pub fn qwen_gated_delta_prefill_mlx_seq_eligible(seq: i32) -> bool {
 }
 
 env_flag!(
+    /// `AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX` — dedicated Flash Next prefill
+    /// through MLX 0.32.3 with existing FP32 normalization and gates.
+    /// Default OFF; T=128..2048 and supported 128-dimensional heads only.
+    /// Singleton decode, short MTP verification and expert paging are unchanged.
+    flash_next_gdn_prefill_mlx_enabled,
+    "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX"
+);
+
+env_flag!(
     /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_STREAMING` — route long multi-token
     /// GatedDelta prefill (seq > 512) through a streaming Metal kernel that
     /// fuses g/beta each step without a CacheCapacity-sized TG array.

@@ -5,8 +5,8 @@
 
 use mlx_sys::ops::cached_scalar;
 use mlx_sys::{
-    MlxArray, MlxDtype, add, astype, concatenate, divide, exp, log1p, maximum, minimum, multiply,
-    negative, power, reshape, rms_norm, sigmoid, slice, subtract, sum_axis, take, zeros,
+    MlxArray, MlxDtype, add, astype, divide, exp, log1p, maximum, minimum, multiply, negative,
+    power, reshape, rms_norm, sigmoid, sum_axis, zeros,
 };
 
 use super::qwen4_exp_residual::validate_projection;
@@ -297,17 +297,7 @@ impl Qwen4ExpGdn {
         );
         let decay = exp(&log_decay, None);
         let beta = qwen4_beta(&qw_with_policy(input, &self.weights.beta, policy));
-        let repeat = hv / cfg.num_key_heads as i32;
-        let head_ids: Vec<i32> = (0..hv).map(|h| h / repeat).collect();
-        let ids = MlxArray::from_raw_data(
-            head_ids.as_ptr().cast(),
-            std::mem::size_of_val(head_ids.as_slice()),
-            &[hv],
-            MlxDtype::Int32,
-        );
-        let q = take(&q, &ids, 2, None);
-        let k = take(&k, &ids, 2, None);
-        let mut recurrent = state.map_or_else(
+        let recurrent = state.map_or_else(
             || zeros(&recurrent_shape, MlxDtype::Float32, None),
             |s| s.recurrent.clone(),
         );
@@ -317,58 +307,26 @@ impl Qwen4ExpGdn {
             crate::model::qwen4_exp::profiling::dump("gdn_beta", &[&beta]);
             crate::model::qwen4_exp::profiling::dump("gdn_initial_state", &[&recurrent]);
         }
-        let native = if seq == 1 && super::qwen4_exp_gdn_metal::enabled() {
-            super::qwen4_exp_gdn_metal::singleton(&q, &k, &v, &decay, &beta, &recurrent)?
+        let prefill = if crate::flash_next_gdn::enabled() {
+            crate::flash_next_gdn::try_mlx_prefill(&q, &k, &v, &decay, &beta, &recurrent)
         } else {
             None
         };
-        let (output, recurrent) = if let Some(output) = native {
-            output
+        let (output, recurrent) = if let Some(prefill) = prefill {
+            prefill
         } else {
-            let mut outputs = Vec::with_capacity(seq as usize);
-            for token in 0..seq {
-                let row = |array: &MlxArray, width: i32| {
-                    reshape(
-                        &slice(
-                            array,
-                            &[0, token, 0, 0],
-                            &[batch, token + 1, hv, width],
-                            &[1, 1, 1, 1],
-                            None,
-                        ),
-                        &[batch, hv, width],
-                        None,
-                    )
-                };
-                let scalar_row = |array: &MlxArray| {
-                    reshape(
-                        &slice(
-                            array,
-                            &[0, token, 0],
-                            &[batch, token + 1, hv],
-                            &[1, 1, 1],
-                            None,
-                        ),
-                        &[batch, hv, 1, 1],
-                        None,
-                    )
-                };
-                let qr = reshape(&row(&q, dk), &[batch, hv, 1, dk], None);
-                let kr = reshape(&row(&k, dk), &[batch, hv, 1, dk], None);
-                let vr = reshape(&row(&v, dv), &[batch, hv, dv, 1], None);
-                let decayed = multiply(&recurrent, &scalar_row(&decay), None);
-                let prediction = sum_axis(&multiply(&decayed, &kr, None), -1, true, None);
-                let correction =
-                    multiply(&subtract(&vr, &prediction, None), &scalar_row(&beta), None);
-                recurrent = add(&decayed, &multiply(&correction, &kr, None), None);
-                outputs.push(reshape(
-                    &sum_axis(&multiply(&recurrent, &qr, None), -1, false, None),
-                    &[batch, 1, hv, dv],
-                    None,
-                ));
+            let native = if seq == 1 && super::qwen4_exp_gdn_metal::enabled() {
+                let (q, k) = crate::flash_next_gdn::expand_heads(&q, &k, hv);
+                super::qwen4_exp_gdn_metal::singleton(&q, &k, &v, &decay, &beta, &recurrent)?
+            } else {
+                None
+            };
+            match native {
+                Some(output) => output,
+                None => crate::flash_next_gdn::portable_recurrence(
+                    &q, &k, &v, &decay, &beta, &recurrent,
+                )?,
             }
-            let refs: Vec<&MlxArray> = outputs.iter().collect();
-            (concatenate(&refs, 1, None), recurrent)
         };
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("gdn_chunked", &[&output, &recurrent]);
@@ -435,8 +393,306 @@ fn qwen4_l2(input: &MlxArray) -> MlxArray {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use mlx_sys::{contiguous, eval, transpose};
+    use mlx_sys::{concatenate, contiguous, eval, slice, transpose};
     use serde_json::Value;
+
+    fn synthetic_pack_geometry(dtype: MlxDtype) -> Qwen4ExpGdn {
+        let tensor = |shape: &[i32], phase: usize, scale: f32| {
+            let n: usize = shape.iter().map(|&d| d as usize).product();
+            let data: Vec<f32> = (0..n)
+                .map(|i| (((i + phase) * 37 % 997) as f32 / 997.0 - 0.5) * scale)
+                .collect();
+            astype(
+                &MlxArray::from_raw_data(data.as_ptr().cast(), n * 4, shape, MlxDtype::Float32),
+                dtype,
+                None,
+            )
+        };
+        let dense = |output, input, phase| {
+            QuantizedWeight::new(tensor(&[output, input], phase, 0.04), None, None)
+        };
+        Qwen4ExpGdn::new(
+            LinearAttentionConfig {
+                full_attention_interval: 4,
+                num_key_heads: 16,
+                num_value_heads: 48,
+                key_head_dim: 128,
+                value_head_dim: 128,
+                conv_kernel_dim: 4,
+                q_scale: 1.0,
+                k_scale: 1.0,
+            },
+            32,
+            1e-6,
+            GdnGateActivation::Silu,
+            Qwen4ExpGdnWeights {
+                qkv: dense(10240, 32, 1),
+                gate: dense(6144, 32, 7),
+                decay: dense(48, 32, 13),
+                beta: dense(48, 32, 19),
+                output: dense(32, 6144, 23),
+                conv: tensor(&[10240, 4, 1], 29, 0.5),
+                a_log: astype(&tensor(&[48], 31, 0.4), MlxDtype::Float32, None),
+                dt_bias: astype(&tensor(&[48], 37, 0.5), MlxDtype::Float32, None),
+                norm_gain: mlx_sys::broadcast_to(
+                    &astype(&MlxArray::from_f32(1.0), dtype, None),
+                    &[128],
+                    None,
+                ),
+            },
+        )
+        .unwrap()
+    }
+
+    fn bounded(actual: &MlxArray, expected: &MlxArray, tolerance: f64) {
+        let actual = contiguous(&astype(actual, MlxDtype::Float32, None), None);
+        let expected = contiguous(&astype(expected, MlxDtype::Float32, None), None);
+        eval(&[&actual, &expected]);
+        assert_eq!(actual.shape(), expected.shape());
+        let max_abs =
+            actual
+                .data_f32()
+                .iter()
+                .zip(expected.data_f32())
+                .fold(0.0_f64, |m, (&a, &b)| {
+                    assert!(a.is_finite() && b.is_finite());
+                    m.max((f64::from(a) - f64::from(b)).abs())
+                });
+        assert!(
+            max_abs <= tolerance,
+            "max_abs={max_abs}, tolerance={tolerance}"
+        );
+    }
+
+    #[test]
+    fn mlx_prefill_full_gdn_preserves_conv_and_singleton_routes() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Float16, MlxDtype::Bfloat16] {
+            let module = synthetic_pack_geometry(dtype);
+            let data: Vec<f32> = (0..2 * 131 * 32)
+                .map(|i| ((i * 19 % 991) as f32 / 991.0 - 0.5) * 0.2)
+                .collect();
+            let input = astype(
+                &MlxArray::from_raw_data(
+                    data.as_ptr().cast(),
+                    data.len() * 4,
+                    &[2, 131, 32],
+                    MlxDtype::Float32,
+                ),
+                dtype,
+                None,
+            );
+            let run = |enabled, input: &MlxArray, state| {
+                crate::flash_next_gdn::with_mode(enabled, || {
+                    module.forward(
+                        input,
+                        state,
+                        ProjectionBatchPolicy::Shared,
+                        ProjectionBatchPolicy::RowExact,
+                    )
+                })
+            };
+            let (ax, count) = run(false, &input, None);
+            assert_eq!(count, 0);
+            let (ax_y, ax_state) = ax.unwrap();
+            let (mlx, count) = run(true, &input, None);
+            assert_eq!(count, 1, "dedicated Flash Next adapter selected");
+            let (mlx_y, mlx_state) = mlx.unwrap();
+            assert_eq!(mlx_y.dtype(), dtype);
+            assert_eq!(mlx_state.recurrent.dtype(), MlxDtype::Float32);
+            exact_values(&mlx_state.conv, &ax_state.conv);
+            bounded(&mlx_y, &ax_y, 5e-4);
+            bounded(&mlx_state.recurrent, &ax_state.recurrent, 5e-5);
+            let decode = mlx_sys::slice(&input, &[0, 0, 0], &[2, 1, 32], &[1, 1, 1], None);
+            let (off, _) = run(false, &decode, Some(&mlx_state));
+            let (on, count) = run(true, &decode, Some(&mlx_state));
+            assert_eq!(count, 0, "singleton never selects prefill");
+            let (off, off_state) = off.unwrap();
+            let (on, on_state) = on.unwrap();
+            exact_values(&on, &off);
+            exact_values(&on_state.conv, &off_state.conv);
+            exact_values(&on_state.recurrent, &off_state.recurrent);
+            let short = mlx_sys::slice(&input, &[0, 0, 0], &[2, 4, 32], &[1, 1, 1], None);
+            let (off, _) = run(false, &short, Some(&mlx_state));
+            let (on, count) = run(true, &short, Some(&mlx_state));
+            assert_eq!(count, 0, "short MTP verification never selects prefill");
+            let (off, off_state) = off.unwrap();
+            let (on, on_state) = on.unwrap();
+            exact_values(&on, &off);
+            exact_values(&on_state.recurrent, &off_state.recurrent);
+        }
+    }
+
+    /// Run explicitly on the functional test host. Real component weights with
+    /// synthetic hidden activations do not qualify whole-model quality or speed.
+    #[test]
+    #[ignore = "requires an explicit real Flash Next pack on the target test host"]
+    fn campaign_mlx_prefill_real_gdn_component() {
+        use sha2::{Digest, Sha256};
+        let root = std::path::PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PACK_DIR").unwrap());
+        let output =
+            std::path::PathBuf::from(std::env::var_os("AX_FLASH_NEXT_GDN_REPORT").unwrap());
+        let manifest = ax_engine_core::convert::convert_hf_model_dir(&root).unwrap();
+        let weights = crate::weights::qwen4_exp::load(&root, &manifest).unwrap();
+        let crate::weights::qwen4_exp::Qwen4ExpAttentionBranch::Gdn(module) =
+            &weights.layers[0].attention
+        else {
+            panic!("the campaign requires layer-zero GDN");
+        };
+        let hidden = module.hidden;
+        let dtype = module.weights.conv.dtype();
+        let data: Vec<f32> = (0..131 * hidden)
+            .map(|i| ((i * 19 % 991) as f32 / 991.0 - 0.5) * 0.2)
+            .collect();
+        let input = astype(
+            &MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                data.len() * 4,
+                &[1, 131, hidden],
+                MlxDtype::Float32,
+            ),
+            dtype,
+            None,
+        );
+        let run = |enabled, input: &MlxArray, state| {
+            crate::flash_next_gdn::with_mode(enabled, || {
+                module.forward(
+                    input,
+                    state,
+                    ProjectionBatchPolicy::Shared,
+                    ProjectionBatchPolicy::RowExact,
+                )
+            })
+        };
+        let (ax, ax_dispatches) = run(false, &input, None);
+        let (mlx, mlx_dispatches) = run(true, &input, None);
+        let (ax_y, ax_state) = ax.unwrap();
+        let (mlx_y, mlx_state) = mlx.unwrap();
+        let metrics = |a: &MlxArray, b: &MlxArray| {
+            assert_eq!(a.shape(), b.shape());
+            let a = contiguous(&astype(a, MlxDtype::Float32, None), None);
+            let b = contiguous(&astype(b, MlxDtype::Float32, None), None);
+            eval(&[&a, &b]);
+            let finite = a
+                .data_f32()
+                .iter()
+                .chain(b.data_f32())
+                .all(|v| v.is_finite());
+            let max_abs = a
+                .data_f32()
+                .iter()
+                .zip(b.data_f32())
+                .map(|(&a, &b)| (f64::from(a) - f64::from(b)).abs())
+                .fold(0.0_f64, f64::max);
+            let squared_error: f64 = a
+                .data_f32()
+                .iter()
+                .zip(b.data_f32())
+                .map(|(&a, &b)| (f64::from(a) - f64::from(b)).powi(2))
+                .sum();
+            let squared_reference: f64 = b.data_f32().iter().map(|&b| f64::from(b).powi(2)).sum();
+            serde_json::json!({"finite":finite,"max_abs":max_abs,"relative_l2":(squared_error / squared_reference.max(1e-30)).sqrt()})
+        };
+        let output_error = metrics(&mlx_y, &ax_y);
+        let state_error = metrics(&mlx_state.recurrent, &ax_state.recurrent);
+        let conv_error = metrics(&mlx_state.conv, &ax_state.conv);
+        let decode = slice(&input, &[0, 0, 0], &[1, 1, hidden], &[1, 1, 1], None);
+        let (off, _) = run(false, &decode, Some(&mlx_state));
+        let (on, decode_dispatches) = run(true, &decode, Some(&mlx_state));
+        let (off, off_state) = off.unwrap();
+        let (on, on_state) = on.unwrap();
+        let decode_error = metrics(&on, &off);
+        let decode_state_error = metrics(&on_state.recurrent, &off_state.recurrent);
+        let tensor_hash = |array: &MlxArray| {
+            let array = contiguous(array, None);
+            eval(&[&array]);
+            let mut digest = Sha256::new();
+            if array.dtype() == MlxDtype::Uint32 {
+                for value in array.data_u32() {
+                    digest.update(value.to_le_bytes());
+                }
+            } else {
+                let array = contiguous(&astype(&array, MlxDtype::Float32, None), None);
+                eval(&[&array]);
+                for value in array.data_f32() {
+                    digest.update(value.to_le_bytes());
+                }
+            }
+            format!("{:x}", digest.finalize())
+        };
+        let mut tensors = serde_json::Map::new();
+        for (name, projection) in [
+            ("qkv", &module.weights.qkv),
+            ("gate", &module.weights.gate),
+            ("decay", &module.weights.decay),
+            ("beta", &module.weights.beta),
+            ("output", &module.weights.output),
+        ] {
+            tensors.insert(
+                format!("{name}.weight"),
+                serde_json::json!(tensor_hash(&projection.weight)),
+            );
+            if let Some(scales) = &projection.scales {
+                tensors.insert(
+                    format!("{name}.scales"),
+                    serde_json::json!(tensor_hash(scales)),
+                );
+            }
+            if let Some(biases) = &projection.biases {
+                tensors.insert(
+                    format!("{name}.biases"),
+                    serde_json::json!(tensor_hash(biases)),
+                );
+            }
+        }
+        for (name, tensor) in [
+            ("conv", &module.weights.conv),
+            ("a_log", &module.weights.a_log),
+            ("dt_bias", &module.weights.dt_bias),
+            ("norm_gain", &module.weights.norm_gain),
+        ] {
+            tensors.insert(name.into(), serde_json::json!(tensor_hash(tensor)));
+        }
+        // Fixed development bounds, not model-quality or certification thresholds.
+        let pass = ax_dispatches == 0
+            && mlx_dispatches == 1
+            && decode_dispatches == 0
+            && output_error["finite"] == true
+            && state_error["finite"] == true
+            && output_error["max_abs"].as_f64().unwrap() <= 0.0625
+            && output_error["relative_l2"].as_f64().unwrap() <= 0.002
+            && state_error["max_abs"].as_f64().unwrap() <= 0.002
+            && state_error["relative_l2"].as_f64().unwrap() <= 0.002
+            && conv_error["max_abs"] == 0.0
+            && decode_error["max_abs"] == 0.0
+            && decode_state_error["max_abs"] == 0.0;
+        let report = serde_json::json!({
+            "schema":"ax.flash_next.gdn_component.v1", "qualification":false, "release_ready":false,
+            "scope":"Layer-zero real GDN weights with synthetic hidden activations; no whole-model quality or performance claim",
+            "pack":root.file_name().unwrap().to_string_lossy(), "layer":0, "seq":131,
+            "projection_dtype":format!("{dtype:?}"), "mlx_version":mlx_sys::runtime_version().unwrap(),
+            "config_sha256":format!("{:x}", Sha256::digest(std::fs::read(root.join("config.json")).unwrap())),
+            "index_sha256":format!("{:x}", Sha256::digest(std::fs::read(root.join("model.safetensors.index.json")).unwrap())),
+            "tensor_hash_scope":"Loaded uint32 payloads or exact floating values cast to float32, row-contiguous little-endian",
+            "loaded_gdn_sha256":tensors, "input_sha256":tensor_hash(&input),
+            "sources_sha256":{
+                "trunk":format!("{:x}", Sha256::digest(include_str!("qwen4_exp_gdn.rs"))),
+                "recurrence":format!("{:x}", Sha256::digest(include_str!("../../flash_next_gdn.rs"))),
+            },
+            "dispatches":{"ax":ax_dispatches,"mlx":mlx_dispatches,"decode":decode_dispatches},
+            "bounds":{"output_max_abs":0.0625,"state_max_abs":0.002,"relative_l2":0.002,"conv_and_same_state_decode_max_abs":0.0},
+            "output_error":output_error,"state_error":state_error,"conv_error":conv_error,
+            "same_state_decode_error":decode_error,"same_state_decode_state_error":decode_state_error,"correctness_pass":pass,
+        });
+        std::fs::write(
+            output,
+            format!("{}\n", serde_json::to_string_pretty(&report).unwrap()),
+        )
+        .unwrap();
+        assert!(
+            pass,
+            "real GDN comparison failed; evidence retained: {report}"
+        );
+    }
 
     fn values(value: &Value) -> Vec<f32> {
         match value {

@@ -1303,19 +1303,32 @@ mod tests {
         }
         eprintln!("Flash Next components loaded in {load_seconds:.3}s; table payload reads=0");
         let initial = Qwen4ExpState::new(&weights, 81);
+        let decode_tokens = std::env::var("AX_FLASH_NEXT_SMOKE_DECODE_TOKENS")
+            .ok()
+            .map(|v| v.parse::<usize>().expect("positive smoke decode count"))
+            .unwrap_or(8);
+        assert!(
+            (1..=8).contains(&decode_tokens),
+            "smoke decode count must be 1..=8"
+        );
         let start = std::time::Instant::now();
-        let mut output = forward(
-            &weights,
-            &tokens,
-            &initial,
-            81,
-            ProjectionBatchPolicy::Shared,
-        )
-        .unwrap();
+        let (result, prefill_mlx_dispatches) = crate::flash_next_gdn::with_mode(
+            crate::fastpath::flash_next_gdn_prefill_mlx_enabled(),
+            || {
+                forward(
+                    &weights,
+                    &tokens,
+                    &initial,
+                    81,
+                    ProjectionBatchPolicy::Shared,
+                )
+            },
+        );
+        let mut output = result.unwrap();
         let prefill_seconds = start.elapsed().as_secs_f64();
         let mut generated = Vec::new();
         let mut decode_seconds = Vec::new();
-        for _ in 0..8 {
+        for _ in 0..decode_tokens {
             let shape = output.logits.shape();
             let row = mlx_sys::slice(
                 &output.logits,
@@ -1352,6 +1365,7 @@ mod tests {
             .sum();
         let result = serde_json::json!({
             "qualification":false,"route":"dedicated_qwen4_exp_development_trunk",
+            "prompt_tokens":tokens.len(),"decode_tokens":decode_tokens,"prefill_mlx_dispatches":prefill_mlx_dispatches,
             "weight_sanitize":manifest.weight_sanitize,"load_seconds":load_seconds,"prefill_seconds":prefill_seconds,
             "decode_seconds":decode_seconds,"generated_ids":generated,
             "table_payload_bytes":table_bytes,"peak_mlx_bytes":mlx_sys::get_peak_memory(),
