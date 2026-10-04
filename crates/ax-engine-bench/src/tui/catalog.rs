@@ -123,6 +123,9 @@ pub(super) fn scan_local_models(cache_root: &Path) -> LocalScan {
 impl Variant {
     pub fn precision(&self) -> String {
         let lower = self.model.repo_id.to_ascii_lowercase();
+        if lower.contains("mxfp8") {
+            return "MXFP8".into();
+        }
         if lower.contains("mxfp4") {
             if lower.contains("q4") || lower.contains("-q4") {
                 return "MXFP4-Q4".into();
@@ -337,6 +340,9 @@ pub(super) fn family_display_name(key: &str) -> String {
 /// wizard can sort and badge those variants.
 pub(super) fn quant_bits(repo_id: &str) -> Option<u32> {
     let lower = repo_id.to_ascii_lowercase();
+    if lower.contains("mxfp8") {
+        return Some(8);
+    }
     if lower.contains("mxfp4") {
         if let Some(idx) = lower.rfind('q') {
             let digits: String = lower[idx + 1..]
@@ -366,6 +372,11 @@ pub(super) fn quant_bits(repo_id: &str) -> Option<u32> {
 /// Family key: the label with any trailing `-Nbit` precision suffix removed.
 pub(super) fn family_key(label: &str) -> String {
     let lower = label.to_ascii_lowercase();
+    for suffix in ["-mxfp4", "-mxfp8"] {
+        if lower.ends_with(suffix) {
+            return label[..label.len() - suffix.len()].to_string();
+        }
+    }
     if let Some(idx) = lower.rfind("-")
         && lower[idx + 1..].ends_with("bit")
         && lower[idx + 1..idx + 2].chars().all(|c| c.is_ascii_digit())
@@ -479,6 +490,7 @@ pub(super) fn dir_size(dir: &Path) -> u64 {
 pub(super) fn build_families_from_repo_ids(repo_ids: &[String]) -> Vec<Family> {
     let models = repo_ids
         .iter()
+        .filter(|repo_id| super::super::qwen38_target_error(repo_id).is_none())
         .map(|repo_id| model_for_repo(repo_id))
         .collect();
     build_families_from_models(models, true, true)
@@ -491,6 +503,7 @@ pub(super) fn build_families_from_repo_ids(repo_ids: &[String]) -> Vec<Family> {
 pub(super) fn build_families_from_repo_ids_uninstalled(repo_ids: &[String]) -> Vec<Family> {
     let models = repo_ids
         .iter()
+        .filter(|repo_id| super::super::qwen38_target_error(repo_id).is_none())
         .map(|repo_id| model_for_repo(repo_id))
         .collect();
     build_families_from_models(models, false, true)

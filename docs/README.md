@@ -1,5 +1,10 @@
 # AX Engine Docs
 
+Qwen 3.8 27B and Flash Next now target **MLX AXQ MXFP4 / MXFP8 with MTP**.
+Standalone affine variants are retired; MXFP8 pack admission is pending.
+Historical 6-bit qualification and speed receipts do not apply to MX packs.
+See [format policy](QWEN38-FORMAT-POLICY.md).
+
 Task-first documentation for AX Engine: install, serve, integrate, measure, and
 extend the Mac-first Apple Silicon inference runtime.
 
@@ -29,7 +34,7 @@ Fleet orchestration and NVIDIA/CUDA worker integration belong to the separate
 | Need | Start here | Then read |
 | --- | --- | --- |
 | Install and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) — default pack is `qwen3.8-27b:axq` |
-| Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [Qwen 3.8 27B AXQ](model-certifications/qwen3.8-27b-axq.md), [Flash Next (`qwen3.8-flash-next:axq`)](model-certifications/qwen3.8-flash-next.md), [Testing](TESTING.md). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. |
+| Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [Qwen 3.8 27B AXQ](model-certifications/qwen3.8-27b-axq.md), [Flash Next (`qwen3.8-flash-next:axq`)](model-certifications/qwen3.8-flash-next.md), [Testing](TESTING.md). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. |
 | Decide whether a family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
 | Use MTP or compare 4-bit vs 6-bit rows | [MTP Docs](mtp/README.md) | [Performance Results: MTP](PERFORMANCE-RESULTS.md#session-mode-mtp-generation), [Benchmarks: MTP](BENCHMARKS.md#mtp-matrix) |
 | Write or backfill GitHub release notes | [Release notes policy](releases/README.md) | [Releasing](RELEASING.md), [template](releases/TEMPLATE.md) |

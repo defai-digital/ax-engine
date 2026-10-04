@@ -260,11 +260,11 @@ class QualifyQwen38Test(unittest.TestCase):
         self.assertEqual(payload["alias"], "qwen3.8-27b:axq")
         self.assertEqual(
             payload["repo_id"],
-            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
         )
         self.assertEqual(
             payload["revision"],
-            "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+            "b2c5354f779e430d0c1733143db848a72b71c16e",
         )
         self.assertIn("27B weights", payload["ci"])
         self.assertEqual(payload["host_class"], "Mac mini M4 Pro, 64 GB")

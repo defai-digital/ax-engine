@@ -1,5 +1,10 @@
 # FAQ
 
+Qwen 3.8 27B and Flash Next now target **MLX AXQ MXFP4 / MXFP8 with MTP**.
+Standalone affine variants are retired; MXFP8 pack admission is pending.
+Historical 6-bit qualification and speed receipts do not apply to MX packs.
+See [format policy](QWEN38-FORMAT-POLICY.md).
+
 Common questions about hardware, model choice, runtime paths, and performance
 boundaries.
 
@@ -65,7 +70,7 @@ configurations:
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
 | Mac mini M4 Pro | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. |
+| Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. |
 
 ## What model stack should I run on high-memory Apple Silicon?
 
@@ -74,7 +79,7 @@ but the better local setup is to match the model to the workflow.
 
 | Role | Recommended model | Setup | App | Why |
 | --- | --- | --- | --- | --- |
-| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | 6-bit MTP, 16K-32K, Mac mini M4 Pro 64 GB | [ax-studio](https://github.com/defai-digital/ax-studio) | Primary optimization target; **31.05 tok/s** decode on that SKU, **76.90 / 795.3** on M5 Max |
+| Default chatbot | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) | MXFP4 MTP pack, 16K-32K, Mac mini M4 Pro 64 GB | [ax-studio](https://github.com/defai-digital/ax-studio) | Primary optimization target; MXFP4 SKU qualification pending; historical 6-bit speeds do not transfer |
 | Secondary dense / MoE | Qwen 3.6 27B or 35B-A3B | 27B 4/6-bit; 35B A3B 4-bit, 16K-32K | AX server / SDK | Certified secondary families; 3.6 holds the published 8h soak |
 | Coding specialist | Tiel Coder 35B A3B MXFP4 MTP | AX Code managed default; Cyber-Tiel alternate | [ax-code](https://github.com/defai-digital/ax-code) | MoE coding packs; **194.88** completion tok/s on M5 Max. Not the Engine 27B table. |
 | Embedding / RAG ingest | Qwen3-Embedding or EmbeddingGemma | 0.6B / 4B / 8B (Qwen3); 300M (EmbeddingGemma) | AX server `/v1/embeddings` | Sustained ingest-scale throughput; AX last-token pooling (Qwen3) or mean pooling + Dense head (EmbeddingGemma) |
@@ -83,7 +88,7 @@ Suggested default stack (primary productivity):
 
 ```text
 Chatbot / general agent:
-qwen3.8-27b:axq (6-bit MTP) + 16K
+qwen3.8-27b:axq (MXFP4 MTP pack) + 16K
 
 Coding agent (via AX Code):
 Tiel Coder 35B A3B MXFP4 MTP (managed default)
@@ -256,15 +261,15 @@ production support. Those packs can convert and serve through
 local decode is still too slow to recommend or certify.
 
 AX Engine v7.0.0 adds the production-size Qwen 3.8 27B catalog and serve path.
-Start with the pinned `qwen3.8-27b:axq` 6-bit MTP pack. Its checkpoint path is
+Start with the pinned `qwen3.8-27b:axq` MXFP4 MTP pack. Its checkpoint path is
 Tier 1; MTP Tier 2 performance certification remains pending. Public throughput
 on that pack is **31.05 tok/s** decode on Mac mini M4 Pro 64 GB and
 **76.90 tok/s** decode / **795.3 tok/s** prefill on M5 Max 128 GB — 2.4–2.8×
 direct AR, which already saturates DRAM. Do not mix those dense-27B decode
 numbers with Tiel completion tok/s.
 
-Qwen 3.8 Flash Next MXFP4 MTP is a second SKU for MacBook Pro
-M5 Max 128 GB. Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
+Qwen 3.8 Flash Next MXFP4 MTP is a second SKU for Mac Studio, Ultra-class
+Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
 See [Supported Models](SUPPORTED-MODELS.md).
 
 ## Which runtime path should I choose first?

@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 PRIMARY_ALIAS = "qwen3.8-27b:axq"
-PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"
-PRIMARY_REVISION = "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"
+PRIMARY_REVISION = "b2c5354f779e430d0c1733143db848a72b71c16e"
 HOST_CLASS = "Mac mini M4 Pro, 64 GB"
 STATUS_SENTENCE = (
     "Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. "
@@ -29,7 +29,13 @@ def contract() -> dict[str, Any]:
         "alias": PRIMARY_ALIAS,
         "repo_id": PRIMARY_REPO,
         "revision": PRIMARY_REVISION,
-        "model_manifest_sha256": "621470389598a8042634f1b65c71f0dd5f02ae47b44ed9e8080083e28725cc26",
+        "model_manifest_sha256": None,
+        "format_scope": ["mxfp4", "mxfp8"],
+        "target_quantization": {"mode": "mxfp4", "bits": 4, "group_size": 32},
+        "mtp_sidecar_required": True,
+        "mtp_certification": {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")},
+        "inventory_status": "MXFP4 release inventory binding pending; retired 6-bit inventory must not be reused",
+        "mxfp8_status": "in scope; pack pin and SKU qualification pending",
         "host_class": HOST_CLASS,
         "status": STATUS_SENTENCE,
         "ci": "dry-run only; do not mount 27B weights on CI",

@@ -61,7 +61,7 @@ def test_wave1_excludes_deepseek_and_covers_certified_text_families() -> None:
         "41015da430ae62802d9357b0ef31bf46c2b13b58"
     )
     assert mod.WAVE1["qwen3.8-27b-axq"]["revision"] == (
-        "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+        "b2c5354f779e430d0c1733143db848a72b71c16e"
     )
     assert mod.WAVE1["qwen3-coder-next-axq"]["revision"] == (
         "29e7bcf5e6ef2471cc3587783713e3631e98b50c"

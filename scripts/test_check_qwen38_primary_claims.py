@@ -25,8 +25,8 @@ BODY = (
     f"{FLASH_NEXT_STATUS}\n"
     "ax-engine serve qwen3.8-27b:axq\n"
     "qwen3.8-flash-next:axq\n"
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP "
-    "3e290738e96972307c6aeb9934ab170ca0eae1c1\n"
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP "
+    "b2c5354f779e430d0c1733143db848a72b71c16e\n"
 )
 
 

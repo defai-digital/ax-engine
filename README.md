@@ -1,23 +1,18 @@
 # AX Engine
 
 AX Engine is a **Mac-first** Apple Silicon inference runtime **optimized first
-for Qwen 3.8 27B AXQ**. Dense 27B decode is already at the DRAM ceiling in
-direct AR (mlx-lm **12.78 tok/s** on the recommended Mac mini M4 Pro 64 GB,
-**27.90** on M5 Max 128 GB). Product-path MTP is **31.05 tok/s** on that mini
-(**2.43×**) and **76.90 tok/s** decode / **795.3 tok/s** prefill on M5 Max
-(**2.76×**). That is the Engine speed story: speculation past the memory wall
-on the default pack. It is benchmarked head-to-head in MTP mode against the two
-other MLX runtimes that load the same AXQ 6-bit MTP pack and run MTP —
-**MTPLX** (draft depth 3) and **OMLX** (Lightning depth 1). We publish those
-comparisons across Apple Silicon SKUs, wins and losses both, with checked-in
-artifacts. Install with Homebrew, download the pinned 27B pack, and serve
-OpenAI-compatible endpoints locally.
+for Qwen 3.8 27B AXQ**. The Qwen 3.8 27B and Flash Next product scope is
+**MLX + AXQ MXFP4 / MXFP8 with MTP sidecars**. The available pinned product
+selectors load MXFP4 MTP packs; MXFP8 pack admission and qualification are
+pending. Standalone affine 4/6/8-bit and non-MTP variants for these two
+models are retired. MTP execution remains explicit opt-in until its gates pass.
+Install with Homebrew or pip and serve OpenAI-compatible endpoints locally.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 The default pack is `qwen3.8-27b:axq`
-([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
-@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`). Additional Qwen, Gemma, GLM, and
+([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP)
+@ `b2c5354f779e430d0c1733143db848a72b71c16e`). Additional Qwen, Gemma, GLM, and
 other certified families stay supported; they are not the first-run or
 qualification center. Super-class Qwen 3.8 (2.4T) is experimental only.
 
@@ -38,10 +33,10 @@ MiniCPM-V, and others) are documented under
 
 **Requires macOS 26 (Tahoe)+ on Apple Silicon (M2 or newer).** Product SKUs:
 
-- **Mac mini M4 Pro 64 GB** — best experience and qualification SKU for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); **31.05 tok/s** product-path MTP decode
-- **MacBook Pro M5 Max 128 GB** — 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill)
+- **Mac mini M4 Pro 64 GB** — best experience and qualification SKU for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); MXFP4 SKU qualification pending
+- **MacBook Pro M5 Max 128 GB** — benchmark host; historical 6-bit numbers do not qualify MXFP4
 - **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer) with 192 GB+ RAM** — qualification target for Qwen 3.8 Flash Next MXFP4 MTP
-  (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). The existing `qwen3.8-flash-next:axq` alias selects affine 4-bit, not MXFP4.
+  (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the pinned MXFP4 MTP pack.
 
 Compact single models (Qwen 3.5 9B 4-bit preferred) still fit **16 GB**. Prefer
 4-bit for headroom on that class.
@@ -55,25 +50,13 @@ still depend on memory capacity and workload; see the
 
 ## Why AX Engine
 
-- **Dense 27B past the DRAM ceiling** — MTPLX and OMLX are the public peers
-  that load the same `qwen3.8-27b:axq` AXQ 6-bit MTP pack and run MTP
-  (MTPLX at draft depth 3, OMLX at Lightning depth 1). Direct AR already uses
-  95–98% of published bandwidth. Product-path MTP is **31.05 vs 28.16 vs 15.02
-  tok/s** on the Mac mini M4 Pro 64 GB SKU (2.43× mlx-lm 12.78) and
-  **76.90 tok/s** decode / **795.3 tok/s** prefill on M5 Max 128 GB (2.76×
-  mlx-lm 27.90). The Tiel MXFP4 four-SKU peer run is a separate MoE lane
-  against MTPLX. We publish version-pinned wins **and** losses with checked-in
-  artifacts ([Performance](#qwen-performance)); it is a measured snapshot, not a
-  permanent ranking, and MTP Tier 2 is still pending. A dated 2026-09-21 7.5.3
-  follow-up on the same M5 Max host records dense-27B parity with MTPLX on the
-  short suite (76.04 vs 73.07 tok/s), a 1.87× lead on Qwen 3.6 35B-A3B
-  (239.5 vs 127.9), and the first Gemma 4 native-path peer numbers —
-  [Qwen / Gemma M5 Max peer campaign](docs/mtp/qwen-gemma-peer-m5-2026-09-21.md)
-- **Optimized first for Qwen 3.8 27B AXQ** — one download of
-  `qwen3.8-27b:axq` is the default serve path. Product-path MTP on this pack is
-  the number in [Performance](#qwen-performance). Peers that cannot load this AXQ
-  snapshot are recorded as unable to run the pack rather than substituted with
-  another checkpoint
+- **MLX-backed AXQ MX packs** — `qwen3.8-27b:axq` selects the pinned
+  MXFP4 MTP pack. Flash Next has its own `qwen4_exp` route and MXFP4 MTP
+  selector. MXFP8 is in scope with pack admission pending. See the
+  [format and migration policy](docs/QWEN38-FORMAT-POLICY.md).
+- **Evidence tied to the pack** — historical 6-bit benchmark results remain
+  published below and do not describe the replacement default. MXFP4 and
+  MXFP8 need their own runtime, quality, memory and MTP evidence.
 - **Multi-model on one process** — keep a scoped set of Qwen 3.5/3.6,
   Qwen3-Coder-Next, Gemma 4, and embedding models resident (`load_mode=add`),
   route by request `model` (chat + embeddings together), with fair Metal turn
@@ -167,8 +150,8 @@ ax-engine tui
   >
 </p>
 
-**Option B — serve Qwen 3.8 27B AXQ 6-bit MTP**, then request from another
-terminal. `qwen3.8-27b:axq` is the pinned AutomatosX 6-bit MTP pack (same
+**Option B — serve Qwen 3.8 27B AXQ MXFP4 MTP**, then request from another
+terminal. `qwen3.8-27b:axq` is the pinned AutomatosX MXFP4 MTP pack (same
 checkpoint as `ax-qwen3.8-27b`). The command reuses the cached snapshot when
 present and downloads it otherwise. Listen defaults to `127.0.0.1:31418`:
 
@@ -199,7 +182,7 @@ The TUI loads that organization's live model list from Hugging Face when it
 starts. **Models** is the remote AutomatosX catalog; **Downloads** is the
 independent local snapshot library for every publisher, with clickable Serve
 and Delete actions. **Transfers** inside Downloads shows download jobs.
-Local models remain accessible when the Hub is unavailable. Qwen 3.8 27B AXQ (6-bit MTP default),
+Local models remain accessible when the Hub is unavailable. Qwen 3.8 27B AXQ (MXFP4 MTP pack),
 Qwen 3.6, Qwen 3.5, and Gemma 4 variants published there (plain 4-bit/6-bit,
 QAT, OptiQ, AXQ where available) are first-class serve targets. Other native families (for example **GLM 4.7 Flash**, Nemotron
 Omni, Unlimited-OCR, Whisper, MiniCPM-V) use the repo-owned runtime via serve
@@ -211,13 +194,13 @@ packages. Full matrix:
 Those packs can technically load through the SSD expert-stream path
 (`--stream-experts`, default `auto`), but local inference is too slow even at
 2-bit to recommend or certify. **Start local serving on Qwen 3.8 27B AXQ
-6-bit MTP** (`qwen3.8-27b:axq`).
+MXFP4 MTP** (`qwen3.8-27b:axq`).
 
 **Recommended starting packages** (serve-ready, match published benches):
 
 | Goal | Alias / family | Why |
 | --- | --- | --- |
-| Default dense chat + MTP | `qwen3.8-27b:axq` (pinned AXQ 6-bit MTP) | Production-size Qwen 3.8 27B; AutomatosX AXQ 6-bit with MTP sidecar |
+| Default dense chat + MTP | `qwen3.8-27b:axq` (pinned AXQ MXFP4 MTP) | Qwen 3.8 27B; MXFP4 with MTP sidecar, qualification pending |
 | Fastest MoE chat + MTP | `ax-qwen3.6-35b-a3b` (4-bit or 6-bit MTP) | Strongest serving and MTP peer decode rows |
 | Dense chat + MTP (3.6) | `ax-qwen3.6-27b` (6-bit MTP preferred) | High same-package MTP speedup; solid serving |
 | AXQ evaluation candidate | `qwen3.6-27b:axq` (pinned 6-bit) | Qwen 3.6 27B AXQ candidate; explicit until its checkpoint certification gates pass |
@@ -241,7 +224,7 @@ the standard flow; do **not** run `download-mtp` afterward.
 | --- | --- | --- |
 | Qwen 3.5 9B | Chat / agent | [`AX-Qwen3.5-9B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-4bit-MTP)<br>[`AX-Qwen3.5-9B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-6bit-MTP)<br>[`AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.5-9B-MLX-OptiQ-4bit-MTP) |
 | Qwen 3.6 27B | Chat / agent / multimodal | [`AX-Qwen3.6-27B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-4bit-MTP)<br>[`AX-Qwen3.6-27B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP)<br>[`AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-OptiQ-4bit-MTP)<br>AXQ candidates: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP) |
-| Qwen 3.8 27B | Chat / agent / multimodal | Default serve: [`AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP) via `qwen3.8-27b:axq`. Also [`AXQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP), 8-bit, and MXFP4 |
+| Qwen 3.8 27B | Chat / agent / multimodal | Default selector: [`AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP) via `qwen3.8-27b:axq`; MXFP8 MTP admission pending |
 | Qwen 3.6 35B-A3B | Chat / agent / multimodal | [`AX-Qwen3.6-35B-A3B-MLX-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-4bit-MTP)<br>[`AX-Qwen3.6-35B-A3B-MLX-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-6bit-MTP)<br>[`AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP) |
 | Qwen3-VL 30B-A3B Instruct | Vision chat (image/video) | AXQ candidates: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit) (no MTP) |
 | Holo3 35B-A3B | GUI agent (text path) | Certified AXQ: [`AXQ-6bit`](https://huggingface.co/AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-6bit) / [`AXQ-4bit`](https://huggingface.co/AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit) (no MTP) |
@@ -286,7 +269,7 @@ The default Hugging Face cache layout is
 
 ```bash
 ax-engine serve qwen3.8-27b:axq
-ax-engine serve qwen3.8-27b:axq --offline  # require the pinned 6-bit MTP cache
+ax-engine serve qwen3.8-27b:axq --offline  # require the pinned MXFP4 MTP cache
 ```
 
 Aliases, hardware sizing, and legacy MTP packaging targets:
@@ -382,14 +365,19 @@ interchangeable with the 27B table.
 
 | Lane | Pack | Host | AX Engine | Direct AR (mlx-lm) | MTPLX |
 | --- | --- | --- | ---: | ---: | ---: |
-| Engine default (dense) | `qwen3.8-27b:axq` | Mac mini M4 Pro 64 GB | **31.05** decode / **120.3** prefill | 12.78 decode (**2.43×**) | 28.16 / 114.0 |
-| Engine default (dense) | `qwen3.8-27b:axq` | M5 Max 128 GB | **76.90** decode / **795.3** prefill | 27.90 decode (**2.76×**) | 70.62 / 686.6 |
+| Historical retired 6-bit (dense) | `qwen3.8-27b:axq` | Mac mini M4 Pro 64 GB | **31.05** decode / **120.3** prefill | 12.78 decode (**2.43×**) | 28.16 / 114.0 |
+| Historical retired 6-bit (dense) | `qwen3.8-27b:axq` | M5 Max 128 GB | **76.90** decode / **795.3** prefill | 27.90 decode (**2.76×**) | 70.62 / 686.6 |
 | AX Code default (MoE) | Tiel 35B MXFP4 MTP | M5 Max 128 GB | **194.88** completion (incl. TTFT) | — | 177.44 |
 
 Decode and prefill for Qwen 27B are 20-run medians. Tiel completion includes TTFT
 (six-sample median). Details below; do not quote 76.90 next to 194.88 as one number.
 
 <a id="qwen-performance"></a>
+
+Qwen 3.8 6-bit rows below are **historical retired-pack evidence**. The
+old AXQ selector binding selected 6-bit; it now selects MXFP4 MTP. These
+numbers and MTP findings do not qualify MXFP4 or MXFP8.
+
 
 ### Qualification SKU: Mac mini M4 Pro 64 GB (2026-09-17)
 

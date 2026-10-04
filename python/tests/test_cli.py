@@ -90,16 +90,8 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
-    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
-    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
     "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
@@ -143,7 +135,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 92)
+        self.assertEqual(len(targets), 83)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -213,19 +205,14 @@ class AxEngineCliTests(unittest.TestCase):
                 "candidate",
             ),
             "qwen3.8-27b:axq": (
-                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-                "3e290738e96972307c6aeb9934ab170ca0eae1c1",
-                None,
-            ),
-            "qwen3.8-27b:axq-8bit": (
-                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
-                "4037b7242a4de8deaf71247a685538591cad160a",
-                None,
+                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+                "b2c5354f779e430d0c1733143db848a72b71c16e",
+                "candidate",
             ),
             "qwen3.8-27b:axq-mxfp4": (
                 "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
                 "b2c5354f779e430d0c1733143db848a72b71c16e",
-                None,
+                "candidate",
             ),
             "gpt-oss-20b:axq": (
                 "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit",
@@ -262,19 +249,14 @@ class AxEngineCliTests(unittest.TestCase):
                 "04be51a3173b94e0a0d859be871cfb7a749405d2",
                 "candidate",
             ),
-            "qwen3.8-27b:axq-4bit": (
-                "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
-                "7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e",
-                "candidate",
-            ),
             "qwen3.8-flash-next:axq": (
-                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
-                "680573112360bfd3f71556082f875c907c21a6e7",
+                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+                "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
                 "candidate",
             ),
-            "qwen3.8-flash-next:axq-6bit": (
-                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
-                "d514dcebf3086068ed7968caf395083c95ebcfca",
+            "qwen3.8-flash-next:mxfp4": (
+                "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+                "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
                 "candidate",
             ),
             "ax-qwen3-vl-30b": (
@@ -473,12 +455,26 @@ class AxEngineCliTests(unittest.TestCase):
 
     def test_qwen38_27b_axq_is_primary_pinned_pack(self) -> None:
         repo, profile, revision = _cli._download_repo_id("qwen3.8-27b:axq")
-        self.assertEqual(repo, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP")
-        self.assertEqual(revision, "3e290738e96972307c6aeb9934ab170ca0eae1c1")
+        self.assertEqual(repo, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP")
+        self.assertEqual(revision, "b2c5354f779e430d0c1733143db848a72b71c16e")
         self.assertIsNotNone(profile)
         assert profile is not None
         self.assertEqual(profile.preset, "qwen3.8-27b")
-        self.assertIsNone(_cli._profile_certification(profile))
+        self.assertEqual(_cli._profile_certification(profile), "candidate")
+
+    def test_qwen38_retired_formats_fail_before_download(self) -> None:
+        for model in ("qwen3.8-27b:axq-6bit", "ax-qwen3.8-27b-8bit",
+                      "qwen3.8-flash-next:axq-4bit", "qwen3.8-27b:axq-mxfp4-base",
+                      "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
+                      "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP/tree/main"):
+            with self.subTest(model=model), self.assertRaisesRegex(SystemExit, "retired"):
+                _cli._download_repo_id(model)
+        for model in ("qwen3.8-27b:axq-mxfp8",
+                      "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP",
+                      "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP8-MTP/tree/main"):
+            with self.subTest(model=model), self.assertRaisesRegex(SystemExit, "admission is pending"):
+                _cli._download_repo_id(model)
+        self.assertIsNotNone(_cli._profile_for_model("qwen3.6-27b:axq-6bit"))
 
     def test_mxfp4_repo_quant_bits(self) -> None:
         profile = _cli._profile_for_model("gpt-oss-20b")
@@ -830,8 +826,8 @@ class AxEngineCliTests(unittest.TestCase):
             stderr = ""
 
         cases = (
-            ("qwen3.8-flash-next:axq", "680573112360bfd3f71556082f875c907c21a6e7"),
-            ("qwen3.8-flash-next:axq-6bit", "d514dcebf3086068ed7968caf395083c95ebcfca"),
+            ("qwen3.8-flash-next:axq", "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35"),
+            ("qwen3.8-flash-next:mxfp4", "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35"),
         )
         for alias, revision in cases:
             with (
@@ -2124,7 +2120,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 38)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 33)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

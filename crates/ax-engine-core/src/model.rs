@@ -22,9 +22,10 @@ pub const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
 /// natively; production validation still rejects it by default.
 pub const AX_ENGINE_2BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_2BIT_EXPERIMENTAL";
 pub const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
-/// Opt-in for Flash Next formats that are not product (currently 2-bit/group32).
-/// Audited affine 4-bit/group64 and 6-bit/group64 packs load without this gate.
-/// 2-bit still also requires [`AX_ENGINE_2BIT_EXPERIMENTAL_ENV`]. MXFP4 stays rejected.
+/// Legacy Flash Next experimental control retained for diagnostic contracts.
+/// Product admission accepts audited MXFP4 MTP; standalone affine formats
+/// are retired and cannot be re-enabled by this or the 2-bit opt-in.
+/// MXFP8 pack admission and dedicated-path validation remain pending.
 pub const AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1544,6 +1545,8 @@ pub(crate) fn validate_native_model_manifest(
             ),
         });
     }
+    crate::qwen38_quantization::validate(root_dir, manifest)
+        .map_err(|message| NativeModelError::InvalidManifest { message })?;
     if manifest.layer_count == 0
         || manifest.hidden_size == 0
         || manifest.attention_head_count == 0

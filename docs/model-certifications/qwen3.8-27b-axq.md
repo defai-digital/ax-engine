@@ -1,5 +1,32 @@
 # Qwen 3.8 27B AXQ Certification
 
+Last reviewed: **2026-10-04**. Status: **Candidate**.
+
+Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+
+Current primary selector: `qwen3.8-27b:axq` (also `qwen3.8-27b:axq-mxfp4`)
+loads `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` at
+`b2c5354f779e430d0c1733143db848a72b71c16e`.
+
+The product scope is MLX AXQ MXFP4 / MXFP8 with MTP sidecars. Standalone
+6-bit, affine4/8 and non-MTP variants are retired. MXFP8 pack pin and
+qualification are pending. The MXFP4 pack's protected affine8 embeddings
+and output head remain intact. See [format policy](../QWEN38-FORMAT-POLICY.md).
+
+The Mac mini M4 Pro 64 GB SKU is retained. New-pack runtime, quality,
+memory and release inventory gates are open. Prior 6-bit qualification,
+MTP-S and performance results do not transfer. MTP-S/P/D are not assessed
+for this replacement pack; MTP execution remains explicit opt-in with
+`--mlx-mtp-policy required`. Direct/default controls remain necessary.
+
+## Historical retired affine-pack record
+
+The following record is preserved for evidence interpretation. Its selector
+bindings, defaults and findings describe the retired 6-bit pack, not the
+current MXFP4 selector or future MXFP8 support.
+
+# Qwen 3.8 27B AXQ Certification
+
 Status: **Candidate**
 
 Primary optimization target: **AXQ 6-bit MTP** (`qwen3.8-27b:axq`)

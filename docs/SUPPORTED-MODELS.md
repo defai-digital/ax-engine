@@ -1,5 +1,10 @@
 # Supported Models
 
+Qwen 3.8 27B and Flash Next now target **MLX AXQ MXFP4 / MXFP8 with MTP**.
+Standalone affine variants are retired; MXFP8 pack admission is pending.
+Historical 6-bit qualification and speed receipts do not apply to MX packs.
+See [format policy](QWEN38-FORMAT-POLICY.md).
+
 AX Engine supports LLMs through a direct-first runtime contract. Direct support
 is the default deployment path; delegated adapters are explicit compatibility
 paths for migration, validation, or external reference rows. The path matters
@@ -7,8 +12,8 @@ because it defines who runs the model graph, which API features are available,
 and what benchmark claims are allowed.
 
 **Primary model:** `qwen3.8-27b:axq`
-([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP)
-@ `3e290738e96972307c6aeb9934ab170ca0eae1c1`). Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+([`AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP)
+@ `b2c5354f779e430d0c1733143db848a72b71c16e`). Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 Record: [Qwen 3.8 27B AXQ certification](model-certifications/qwen3.8-27b-axq.md).
 Super-class Qwen 3.8 (2.4T) is experimental and is not this pack.
@@ -59,9 +64,9 @@ resolved session*, not how well a family is supported.
 | --- | --- |
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
-| **64 GB (Mac mini M4 Pro)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); **31.05 tok/s** product-path MTP decode |
+| **64 GB (Mac mini M4 Pro)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); MXFP4 SKU qualification pending |
 | **128 GB (MacBook Pro M5 Max)** | 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill) |
-| **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M2 Ultra or newer)** | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet. Super-class Qwen 3.8 (2.4T) stays experimental. |
+| **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M2 Ultra or newer)** | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
@@ -110,18 +115,16 @@ Qwen 3.8 caveat:
   published throughput claim. Do not present Super-class Qwen 3.8 as a
   Qwen 3.5 / 3.6 substitute.
 - AX Engine v7.0.0 adds the production-size Qwen 3.8 27B catalog and serve
-  path. Start with `qwen3.8-27b:axq` (the pinned AXQ 6-bit MTP pack). This is
+  path. Start with `qwen3.8-27b:axq` (the pinned AXQ MXFP4 MTP pack). This is
   the unique general-purpose default and primary optimization target.
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
-  for Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
-  CLI aliases are `qwen3.8-flash-next:axq` (4-bit) and
-  `qwen3.8-flash-next:axq-6bit`. Public pack availability and immutable alias revisions are verified; full
-  payload, fresh-download and installed-runtime qualification remain open.
-  Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
-  variable. 2-bit still needs `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and
-  `AX_ENGINE_2BIT_EXPERIMENTAL=1`. MXFP4/group32 also requires the family opt-in; target qualification remains open. Do not treat it as 27B
-  or as Super-class 2.4T. Record:
+  for Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
+  CLI aliases `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4`
+  select MXFP4 MTP. Standalone affine packs are retired, including 6-bit;
+  experimental flags cannot bypass this policy. MXFP8 MTP remains in scope
+  pending a verified pack and native-path audit. MXFP4 admission alone does
+  not qualify the SKU or promote MTP defaults. Record:
   [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).
 
 A model moves between tiers by landing evidence, not by renaming:
@@ -322,7 +325,7 @@ serve them through the idempotent resolution flow:
 | --- | --- |
 | `ax-qwen3.5-9b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.5-9B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
 | `ax-qwen3.6-27b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-27B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` |
-| `ax-qwen3.8-27b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-{4,6}bit-MTP` (primary 27B pack; 6-bit is the default serve target) |
+
 | `ax-qwen3.6-35b`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-{OptiQ-4bit,4bit,6bit}-MTP` (OptiQ flagship; AXQ is `:axq`) |
 | `ax-qwen3-vl-30b` / `ax-qwen3-vl-30b-a3b-axq`[`-4bit`,`-6bit`] | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-{4,6}bit` (**Tier 1 certified**, no MTP) |
 | `ax-qwen3-vl-8b`[`-4bit`] | `AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-{4,6}bit` (development AXQ, no MTP) |
@@ -346,7 +349,7 @@ serve them through the idempotent resolution flow:
 
 | Alias | Repo | Pinned revision | Status |
 | --- | --- | --- | --- |
-| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-6bit`, `ax-qwen3.8-27b` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP` | `3e290738e96972307c6aeb9934ab170ca0eae1c1` | Primary optimization target; Hub checkpoint Tier 1; MTP Tier 2 pending; AX record Candidate |
+| `qwen3.8-27b:axq`, `qwen3.8-27b:axq-mxfp4`, `ax-qwen3.8-27b` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` | `b2c5354f779e430d0c1733143db848a72b71c16e` | Primary optimization target; MXFP4 qualification pending; MTP Tier 2 pending; AX record Candidate |
 
 **Other AXQ selectors — revision-pinned**
 
@@ -354,7 +357,7 @@ serve them through the idempotent resolution flow:
 | --- | --- | --- | --- |
 | `qwen3.6-27b:axq`, `qwen3.6-27b:axq-6bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP` | `8c37715c7b5f5ebca00eda6f73be47116a3e4ebc` | Secondary; Candidate; evidence-richest AXQ soak (8h, not 72h) |
 | `qwen3.6-27b:axq-4bit` | `AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP` | `6182ccbc41c7397ff90670f740c6d9eacfa4b09f` | Candidate; compact fallback |
-| `qwen3.8-27b:axq-4bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP` | `7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e` | Candidate; compact 4-bit MTP sibling |
+
 | `qwen3.6-35b:axq`, `qwen3.6-35b:axq-6bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP` | `6a4c220734f81112555ee8783d91e0065c54301c` | Candidate; 35B-A3B AXQ 6-bit MTP |
 | `qwen3.6-35b:axq-4bit` | `AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP` | `952031cbfbb9cf31414a57eeb681c34dc08ec1e9` | Candidate; compact 4-bit MTP sibling |
 | `gemma4-12b:axq`, `gemma4-12b:axq-6bit` | `AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP` | `7ad79df2b0c272431f3e927b133b7dc3d70872f4` | Candidate; checkpoint Tier 1; MTP Tier 2 not certified |
@@ -366,7 +369,7 @@ serve them through the idempotent resolution flow:
 | `ax-qwen3-vl-30b`, `qwen3-vl-30b-a3b:axq`, `qwen3-vl-30b-a3b:axq-6bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit` | `b48b626d9b00e45d6200aa3c15e40cc47d83b7e7` | Tier 1 certified; vision MoE Instruct; preferred quality |
 | `ax-qwen3-vl-30b-4bit`, `qwen3-vl-30b-a3b:axq-4bit` | `AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit` | `e932be1b8ab79f5410f607de7eb7312756325fce` | Tier 1 certified; compact 4-bit sibling |
 | `qwen3-vl-8b:axq`, `ax-qwen3-vl-8b` | `AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit` | `e52d06296bf133b248a6572561c4f2e150dc3429` | Candidate; dense VL Instruct |
-| `qwen3.8-27b:axq-8bit` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP` | `4037b7242a4de8deaf71247a685538591cad160a` | Tier 1 checkpoint; MTP Tier 2 not certified |
+
 | `qwen3.8-27b:axq-mxfp4` | `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` | `b2c5354f779e430d0c1733143db848a72b71c16e` | Tier 1 checkpoint; MTP Tier 2 not certified |
 | `qwen3-coder-next:axq` | `AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit` | `29e7bcf5e6ef2471cc3587783713e3631e98b50c` | Tier 1 certified |
 | `gpt-oss-20b:axq` | `AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit` | `14aee3b601240c5075fc4c84fb6f088400aeeba5` | Tier 1 certified; bare `gpt-oss-20b` stays mlx-community MXFP4-Q4 |

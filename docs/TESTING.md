@@ -1,7 +1,12 @@
 # Testing Design
 
+Qwen 3.8 27B and Flash Next now target **MLX AXQ MXFP4 / MXFP8 with MTP**.
+Standalone affine variants are retired; MXFP8 pack admission is pending.
+Historical 6-bit qualification and speed receipts do not apply to MX packs.
+See [format policy](QWEN38-FORMAT-POLICY.md).
+
 AX Engine tests in four layers. The **primary optimization target** is Qwen 3.8
-27B AXQ 6-bit MTP (`qwen3.8-27b:axq`). That pack does not belong in CI.
+27B AXQ MXFP4 MTP (`qwen3.8-27b:axq`). That pack does not belong in CI.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -63,7 +68,7 @@ Preflight against the pinned snapshot (does not qualify the product):
 
 ```bash
 python3 scripts/qualify_qwen38_27b.py \
-  --model-dir /path/to/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/snapshots/3e290738e96972307c6aeb9934ab170ca0eae1c1
+  --model-dir /path/to/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP/snapshots/b2c5354f779e430d0c1733143db848a72b71c16e
 ```
 
 Execute the gates with an isolated installed release wheel:
@@ -129,11 +134,11 @@ Silent direct-fallback on the MTP path is a fail.
 Campaign-only (does not block unrelated patches): MTP-P performance certification,
 MTP-D default promotion, 8h/72h
 endurance, long-context decode-at-depth, peer ranking, multi-model residency,
-multimodal quality, 4/8-bit/MXFP4 A/B. 27B campaign runs belong on the
+multimodal quality, MXFP4/MXFP8 format-specific qualification. 27B campaign runs belong on the
 Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next MXFP4 MTP is a
 second SKU on MacBook Pro M5 Max 128 GB
 (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
-Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). Existing `qwen3.8-flash-next:axq` selects affine 4-bit; MXFP4 has no CLI alias yet.
+Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
 Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
 variable. The Flash Next development comparison uses a pinned MLX-VLM
 reference because `mlx_lm` has no `qwen4_exp` model. Passing `--skip-mlx-lm`
@@ -163,10 +168,11 @@ cargo test -p ax-engine-mlx --profile release-server \
 For a resident control set `AX_STREAM_EXPERTS=off` and
 `AX_FLASH_NEXT_EXPECT_STREAMING=0`, using a different output filename. Auto uses
 the existing full-resident estimate plus 48 GiB admission rule; set the expected
-streaming value for the pack and host being tested. Audited 4-bit/group64 and
-6-bit/group64 packs need no family opt-in. The 2-bit export still needs
-`AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` and `AX_ENGINE_2BIT_EXPERIMENTAL=1` in
-every process.
+streaming value for the pack and host being tested. The audited MXFP4/group32
+MTP pack needs no family opt-in. Standalone affine formats are retired;
+experimental flags cannot re-enable them. MXFP8 pack audit and admission
+remain pending.
+
 
 For selected-expert controls, keep `AX_STREAM_EXPERTS=on` and add
 `AX_MLX_FLASH_NEXT_SELECTED_EXPERTS=1`, writing a separate result file. The

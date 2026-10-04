@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Sequence
 
 PRIMARY_ALIAS = "qwen3.8-27b:axq"
-PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"
-PRIMARY_REVISION = "3e290738e96972307c6aeb9934ab170ca0eae1c1"
+PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"
+PRIMARY_REVISION = "b2c5354f779e430d0c1733143db848a72b71c16e"
 STATUS_SENTENCE = (
     "Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."

@@ -1,0 +1,114 @@
+{
+  "schema_version": "ax.qwen38.mx_scope_validation.v1",
+  "date": "2026-10-04",
+  "source_base_commit": "c044bdccf539ff5d46448eed1f5d718630ea070b",
+  "environment": {
+    "rust": "1.97.1",
+    "python": "3.12.13",
+    "mlx": "0.32.3",
+    "architecture": "Apple Silicon"
+  },
+  "scope": "software gates only; no full-model inference, performance claim or SKU qualification",
+  "isolation": "candidate checkout excluding unrelated pending changes and untracked wiki content",
+  "checks": {
+    "cargo_fmt": {
+      "command": "bash scripts/cargo-pinned.sh fmt --check",
+      "status": "passed"
+    },
+    "cargo_clippy": {
+      "command": "bash scripts/cargo-pinned.sh clippy --all-targets --all-features -- -D warnings",
+      "status": "passed"
+    },
+    "cargo_test": {
+      "command": "bash scripts/cargo-pinned.sh test --quiet --no-fail-fast",
+      "status": "passed",
+      "passed": 4067,
+      "failed": 0,
+      "ignored": 62,
+      "test_groups": 63
+    },
+    "native_cli_final": {
+      "command": "bash scripts/cargo-pinned.sh test -p ax-engine-bench --bin ax-engine --quiet",
+      "status": "passed",
+      "passed": 233,
+      "failed": 0
+    },
+    "maturin": {
+      "command": "maturin develop --profile release-pyext",
+      "status": "passed"
+    },
+    "pytest": {
+      "command": "python -m pytest python/tests -q",
+      "status": "passed",
+      "passed": 285,
+      "subtests_passed": 165,
+      "skipped": 22,
+      "failed": 0,
+      "warnings": 1
+    },
+    "ruff": {
+      "command": "ruff check python/ax_engine",
+      "status": "passed"
+    },
+    "mypy": {
+      "command": "mypy python/ax_engine",
+      "status": "passed",
+      "files": 8
+    },
+    "check_scripts": {
+      "command": "bash scripts/check-scripts.sh",
+      "status": "passed"
+    },
+    "qwen38_27b_dry_run": {
+      "command": "python scripts/qualify_qwen38_27b.py --dry-run",
+      "status": "passed",
+      "qualifies_model": false
+    },
+    "flash_next_dry_run": {
+      "command": "python scripts/qualify_qwen38_flash_next.py --dry-run",
+      "status": "passed",
+      "qualifies_model": false
+    },
+    "primary_claims": {
+      "command": "python scripts/check_qwen38_primary_claims.py",
+      "status": "passed"
+    }
+  },
+  "candidate_source_sha256": {
+    "crates/ax-engine-bench/src/bin/ax-engine.rs": "bd7c3f09951516639d3c352960dea2b361796b5e7cc519cc881f1061f72f116a",
+    "crates/ax-engine-bench/src/tui/catalog.rs": "7afac81907e25b443388b3b561bd938092ff208b54055a6f1398d322b32c4ce7",
+    "crates/ax-engine-bench/src/tui/tests/catalog.rs": "8ee9b7678dafdcff3ca1845c90a219c7a6f3214656cfc4d7b5bbbfcbbbfe2af4",
+    "crates/ax-engine-bench/src/tui/tests/wizard.rs": "977ecae55e9cc82830310022a8ee2f73a3c64fc12e8f38ca3515d3fb60c21a46",
+    "crates/ax-engine-core/src/convert/qwen4_exp_layout.rs": "7896145ba11d535a4d416fea5d859961182befb58e49361cef7f7403acb09cdb",
+    "crates/ax-engine-core/src/convert/tests.rs": "24e7c9ee0adc8f75043e9fa8a9b02778b3a83f86246cd04c7849b5332b80e53b",
+    "crates/ax-engine-core/src/lib.rs": "6148eef4674e9ea12b50077e75ef2709704b61df432f8e1516def2e59494b84f",
+    "crates/ax-engine-core/src/model.rs": "820e1bfbb1900af708055a5c1f72eb77c5f60e385acc6248b671b3d4e446a292",
+    "python/ax_engine/_cli.py": "8bd8b43c11010e3762b93a01ca81f7d2c38d0ee06094e5b25a955c6910c2053f",
+    "python/tests/test_cli.py": "0156f4d729405bdeda9c8bd90a7a1239ce7a80051852b1bea6be6db5e207ec4e",
+    "scripts/bench_ax_vs_mlxcel_fleet.py": "440c9d4439d483f6ce281d2912500af4959d543195fb80b4a6bbdb16266a1f01",
+    "scripts/bench_mtp_6bit_ax_refresh.py": "334d19dda45d379ffd046a74a865ca7399f6ae287df7025278a490cbff15593e",
+    "scripts/check_qwen38_primary_claims.py": "bbd64394f46bc36dbd335f2e13ea1f5275730ac4bfca1c1d7138b951ec1cba61",
+    "scripts/qualify_qwen38_27b.py": "5f9714eeb4db632f41c658a9e78ee0b31b92b4280519ad8392a29d85ef7b08da",
+    "scripts/qualify_qwen38_flash_next.py": "80573360e3b6bd1e030e956f5fa1d10d203c2936b1ea0165f8e514c73ffcd4b5",
+    "scripts/qwen38_live_gate.py": "085bdfd43d3ea524d1eeee1a359801ab9269eebdb6ff25502a525fc6bdfa08ec",
+    "scripts/run_qwen38_27b_axq_benches.sh": "0065b1849020bf6af82441a3894331b63bff5fda0a8f072b714553db0e025686",
+    "scripts/test_check_qwen38_primary_claims.py": "3ccd7ea01812c7443c005e6d451cba657d748d59dba471b1a0dffe94426018c0",
+    "scripts/test_qualify_qwen38_27b.py": "4937aa85d594c7961348b91d88865ed3a08906b410ad68c8b48efb34c5e589c2",
+    "scripts/test_qualify_qwen38_flash_next.py": "e57e99e67946beea8b25d3ec3cfa6997bc150cd726c964c4ba075dc9e6e1faa0",
+    "scripts/test_qwen38_primary_alias.py": "778024bb3666f7d2eaba0411f7f6d6b56ca953735fa840691f900668c813e938",
+    "crates/ax-engine-core/src/qwen38_quantization.rs": "62c987c41a7f2b6a9a2b59d01ced786d4a0173581beb2d85ad5fa6350876f8a6",
+    "python/tests/test_bench_ax_vs_mlxcel_fleet.py": "48705b77fbb4f51e1e20fce51c57d6dd6f569c2abb24b2f5127a3cc6e5643c66"
+  },
+  "model_execution": false,
+  "mtp_gates": {
+    "MTP-S": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-D": "not_assessed"
+  },
+  "remaining_pack_work": [
+    "Verified MXFP8 MTP pack metadata and immutable pins",
+    "Flash Next MXFP8 native admission audit",
+    "MXFP4 27B release inventory binding",
+    "SKU-specific model qualification"
+  ]
+}

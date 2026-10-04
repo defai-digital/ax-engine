@@ -122,8 +122,8 @@ WAVE1 = {
         "mtp": False,
     },
     "qwen3.8-27b-axq": {
-        "repo": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-        "revision": "3e290738e96972307c6aeb9934ab170ca0eae1c1",
+        "repo": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+        "revision": "b2c5354f779e430d0c1733143db848a72b71c16e",
         "family": "qwen3_5",
         "mtp": True,
     },

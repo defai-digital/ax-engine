@@ -1,5 +1,13 @@
 # Qwen 3.8 Flash Next
 
+Scope updated **2026-10-04**: MLX AXQ MXFP4 / MXFP8 with MTP sidecars only.
+`qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select
+`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP` at
+`0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35`. Standalone affine packs are
+retired; MXFP8 pack audit and native admission are pending. Older affine
+receipts below are historical and do not qualify MX packs.
+See [format policy](../QWEN38-FORMAT-POLICY.md).
+
 Status: **Candidate; release qualification open**
 
 Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
@@ -7,7 +15,7 @@ Second SKU. MXFP4 MTP target; native support and checkpoint qualification pendin
 Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+**
 (corrected from the original MacBook Pro M5 Max 128 GB target by
 [ADR-037](../../.internal/adr/ADR-037-FLASH-NEXT-ULTRA-192GB-TARGET-CORRECTION.md),
-2026-09-22; campaign host `um-macstudio-m2`). Target pack: **MXFP4 MTP**.
+2026-09-22; campaign host: Apple M2 Ultra 192 GiB). Target pack: **MXFP4 MTP**.
 Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. The
 M5 Max 128 GB evidence recorded below remains historical evidence for the
 Auto expert-paging code path; it does not by itself qualify the corrected
@@ -54,9 +62,11 @@ at revision `0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35`. Published file
 metadata totals 132,261,853,669 bytes. Default MXFP4/group32 coexists with
 per-tensor affine8/group32 overrides and an affine8/group64 output head;
 the protected MTP sidecar is BF16.
-The current campaign uses a NAS-backed Hugging Face cache over SMB; storage
-conditions are part of qualification. MXFP4 paging requires the explicit
-`AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` opt-in. Small generated-tensor controls
+Storage medium and connection must be recorded for each campaign; older
+NAS/SMB receipts do not qualify external USB or internal NVMe runs.
+MXFP4/group32 loads without an environment opt-in — the certification record (Candidate, gates open) tracks
+its experimental status. Standalone affine formats, including 2/6-bit,
+are retired regardless of experimental flags. Small generated-tensor controls
 cover bounded U8 scale reads, full-layer/selected-row equivalence, malformed
 layouts and I/O recovery; target whole-model qualification is still open.
 

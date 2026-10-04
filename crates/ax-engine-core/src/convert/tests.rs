@@ -4898,7 +4898,8 @@ fn qwen4_exp_official_oracle_metadata_maps_and_validates() {
     manifest.runtime_status.ready = true;
     manifest.runtime_status.blockers.clear();
     manifest.weight_sanitize = WeightSanitize::HfToMlx;
-    crate::model::validate_native_model_manifest(&dir, &manifest).unwrap();
+    let error = crate::model::validate_native_model_manifest(&dir, &manifest).unwrap_err();
+    assert!(error.to_string().contains("requires MXFP4/MXFP8"));
     fs::remove_dir_all(dir).unwrap();
 }
 

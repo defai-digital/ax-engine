@@ -145,9 +145,11 @@ fn layout_apply_matches(model_dir: &Path, manifest: &NativeModelManifest) -> boo
         && checked.weight_sanitize == manifest.weight_sanitize
 }
 
-/// Product 4-bit/group64 and 6-bit/group64 packs admit without an environment
-/// variable. 2-bit/group32 still requires `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL`.
-/// MXFP4/group32 also requires the family opt-in; unknown exporters stay rejected.
+/// Legacy layout classification helper; the native manifest validator first
+/// enforces the current MX-only product policy. MXFP4 experimental status is
+/// tracked by the certification record (Candidate, gates open), not by a load
+/// gate. Historical affine classification is not current product admission;
+/// unknown exporters stay rejected.
 pub(crate) fn experimental_runtime_admission(
     model_dir: &Path,
     manifest: &NativeModelManifest,
@@ -174,8 +176,8 @@ pub(crate) fn experimental_runtime_admission(
         return false;
     }
     match expert_layout {
-        ExpertLayout::Affine(4 | 6, 64) => true,
-        ExpertLayout::Affine(2, 32) | ExpertLayout::Mxfp4 => enabled,
+        ExpertLayout::Affine(4 | 6, 64) | ExpertLayout::Mxfp4 => true,
+        ExpertLayout::Affine(2, 32) => enabled,
         _ => false,
     }
 }
@@ -194,8 +196,9 @@ pub(crate) fn audited_mxfp4_runtime_format(
         && experimental_runtime_admission(model_dir, manifest, true)
 }
 
-/// Hard-error format gate for Flash Next. Product 4/6-bit packs pass without
-/// env. 2-bit and MXFP4 still need the family opt-in. Mixed layouts and
+/// Historical layout integrity checks for Flash Next. The native validator
+/// separately enforces the current MX-only policy; affine classification here
+/// cannot bypass retirement. MXFP4 remains Candidate. Mixed layouts and
 /// protected-projection mismatches are errors, not silent admission failures.
 pub(crate) fn validate_qwen4_exp_runtime_formats(
     model_dir: &Path,
@@ -223,9 +226,6 @@ pub(crate) fn validate_qwen4_exp_runtime_formats(
 AX_ENGINE_2BIT_EXPERIMENTAL=1 is also required)"
                 .to_string(),
         );
-    }
-    if expert_layout == ExpertLayout::Mxfp4 && !experimental {
-        return Err("qwen4_exp MXFP4/group32 requires AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1 until native target qualification completes".into());
     }
     if !layout_apply_matches(model_dir, manifest) {
         return Err(
@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn mxfp4_admission_preserves_mode_overrides_and_requires_opt_in() {
+    fn mxfp4_admission_preserves_mode_overrides_without_opt_in() {
         let dir = temp_model_dir("mxfp4-formats");
         write_axquant_manifest(&dir, &audited_legacy_json());
         let mut manifest = base_manifest();
@@ -923,12 +923,11 @@ mod tests {
             quant.bits = 8;
             manifest.tensors.push(protected);
         }
-        assert!(!experimental_runtime_admission(&dir, &manifest, false));
-        assert!(
-            validate_qwen4_exp_runtime_formats(&dir, &manifest, false)
-                .unwrap_err()
-                .contains("AX_ENGINE_FLASH_NEXT_EXPERIMENTAL")
-        );
+        // MXFP4/group32 admits without the experimental env var: its
+        // experimental status is tracked by the certification record (gates
+        // open), not by a load-time opt-in.
+        assert!(experimental_runtime_admission(&dir, &manifest, false));
+        validate_qwen4_exp_runtime_formats(&dir, &manifest, false).unwrap();
         assert!(experimental_runtime_admission(&dir, &manifest, true));
         validate_qwen4_exp_runtime_formats(&dir, &manifest, true).unwrap();
         for index in manifest.tensors.len() - 4..manifest.tensors.len() {
@@ -950,7 +949,10 @@ mod tests {
         manifest.tensors.push(head);
         assert!(experimental_runtime_admission(&dir, &manifest, true));
         validate_qwen4_exp_runtime_formats(&dir, &manifest, true).unwrap();
-        assert!(!experimental_runtime_admission(&dir, &manifest, false));
+        assert!(
+            experimental_runtime_admission(&dir, &manifest, false),
+            "the valid MXFP4 pack admits without the env var as well"
+        );
         for role in [NativeTensorRole::AttentionQ, NativeTensorRole::FfnGateInp] {
             let mut bad = manifest.clone();
             bad.tensors.last_mut().unwrap().role = role;

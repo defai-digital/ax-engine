@@ -1,5 +1,9 @@
 # Model Support Policy
 
+Qwen 3.8 27B and Flash Next support work now covers MLX AXQ MXFP4 / MXFP8
+with MTP only. Standalone affine variants are retired; MXFP8 pack admission
+and qualification are pending. See [format policy](QWEN38-FORMAT-POLICY.md).
+
 AX Engine is a focused Apple Silicon inference runtime for repo-owned model
 families. The default product contract is direct MLX execution: AX owns the
 model graph, token/KV runtime, scheduling, acceleration policy, server behavior,
@@ -19,7 +23,7 @@ Support tier is not the same as product focus. Keep the axes separate:
 | Product focus | Primary / Secondary | What README, first-run, and qualification center on |
 | Capability certification | Checkpoint Tier 1 / MTP Tier 2 / AX record | Evidence for one pack |
 
-The unique **primary optimization target** is Qwen 3.8 27B AXQ 6-bit MTP
+The unique **primary optimization target** is Qwen 3.8 27B AXQ MXFP4 MTP
 (`qwen3.8-27b:axq`). Other Certified families stay supported and secondary.
 Do not put `Primary` on the runtime `support_tier` enum.
 

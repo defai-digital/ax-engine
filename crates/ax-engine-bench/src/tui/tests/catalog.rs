@@ -77,6 +77,10 @@ fn grouping_collapses_variants_into_families() {
 fn quant_and_family_parsing() {
     assert_eq!(quant_bits("mlx-community/gemma-4-12B-it-4bit"), Some(4));
     assert_eq!(quant_bits("mlx-community/Qwen3.6-27B-8bit"), Some(8));
+    assert_eq!(
+        quant_bits("AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8"),
+        Some(8)
+    );
     assert_eq!(quant_bits("mlx-community/gpt-oss-20b-MXFP4-Q4"), Some(4));
     assert_eq!(quant_bits("mlx-community/gpt-oss-120b-MXFP4-Q4"), Some(4));
     assert_eq!(
@@ -280,13 +284,13 @@ fn every_downloadable_profile_has_a_size_estimate() {
 #[test]
 fn hub_page_parser_keeps_repo_ids_and_skips_blank_rows() {
     let body = r#"[
-        {"id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"},
+        {"id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"},
         {"id": ""},
         {"private": true},
         {"id": "not-a-repo"}
     ]"#;
     let ids = parse_hf_model_ids(body).expect("page parses");
-    assert_eq!(ids, vec!["AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP"]);
+    assert_eq!(ids, vec!["AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"]);
     assert!(parse_hf_model_ids(r#"{"id":"nope"}"#).is_err());
 }
 
@@ -311,7 +315,7 @@ fn unknown_repo_bit_widths_share_a_family_and_known_repos_keep_profile_keys() {
         family_key_for_repo("AutomatosX/AX-Not-A-Real-Pack-9B-MLX-6bit")
     );
     let ids = vec![
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP".to_string(),
+        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP".to_string(),
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP".to_string(),
         "AutomatosX/AX-Not-A-Real-Pack-9B-MLX-4bit".to_string(),
         "AutomatosX/AX-Not-A-Real-Pack-9B-MLX-6bit".to_string(),
@@ -321,10 +325,10 @@ fn unknown_repo_bit_widths_share_a_family_and_known_repos_keep_profile_keys() {
         .iter()
         .find(|family| family.key == "ax-qwen3.8-27b-axq")
         .expect("known Qwen 3.8 AXQ repos stay on the profile family key");
-    assert_eq!(qwen.variants.len(), 2);
+    assert_eq!(qwen.variants.len(), 1);
     assert!(qwen.variants.iter().any(|variant| {
         variant.model.download_target
-            == "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP@3e290738e96972307c6aeb9934ab170ca0eae1c1"
+            == "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP@b2c5354f779e430d0c1733143db848a72b71c16e"
             && variant.model.approx_size_bytes.is_some()
     }));
     let invented = families

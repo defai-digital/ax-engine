@@ -46,12 +46,12 @@ class Qwen38PrimaryAliasTest(unittest.TestCase):
 
     def test_download_repo_id_pins_primary_axq_pack(self) -> None:
         repo, profile, revision = self.cli._download_repo_id("qwen3.8-27b:axq")
-        self.assertEqual(repo, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP")
-        self.assertEqual(revision, "3e290738e96972307c6aeb9934ab170ca0eae1c1")
+        self.assertEqual(repo, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP")
+        self.assertEqual(revision, "b2c5354f779e430d0c1733143db848a72b71c16e")
         self.assertIsNotNone(profile)
         assert profile is not None
         self.assertEqual(profile.preset, "qwen3.8-27b")
-        self.assertIsNone(self.cli._profile_certification(profile))
+        self.assertEqual(self.cli._profile_certification(profile), "candidate")
 
 
 if __name__ == "__main__":

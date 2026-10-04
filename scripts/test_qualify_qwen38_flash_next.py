@@ -33,47 +33,22 @@ def _product_manifest() -> dict[str, object]:
             {
                 "name": "layers.0.mlp.experts.gate_proj",
                 "role": "ffn_gate_exps",
-                "quantization": {"mode": "affine", "bits": 4, "group_size": 64},
+                "quantization": {"mode": "mxfp4", "bits": 4, "group_size": 32},
             }
         ],
     }
 
 
 class QualifyFlashNextTest(unittest.TestCase):
-    def test_contract_distinguishes_blocked_mxfp4_target_from_affine_compatibility(self) -> None:
+    def test_contract_distinguishes_mxfp4_target_from_affine_compatibility(self) -> None:
         payload = mod.contract()
         self.assertEqual(payload["family"], "qwen4_exp")
-        self.assertIsNone(payload["alias"])
-        self.assertEqual(payload["existing_affine_alias"], "qwen3.8-flash-next:axq")
+        self.assertEqual(payload["alias"], "qwen3.8-flash-next:mxfp4")
         self.assertFalse(payload["sixbit_in_target_scope"])
-        self.assertEqual(payload["pack_revision"], "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35")
-        self.assertEqual(
-            payload["repo_id"],
-            "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
-        )
-        self.assertEqual(
-            payload["host_class"],
-            "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+",
-        )
-        self.assertTrue(payload["fail_closed"])
-        self.assertFalse(payload["ready"])
-        self.assertIn("MXFP4", payload["load_blocker"])
-        self.assertEqual(payload["experimental_opt_in"], "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1")
-        self.assertEqual(payload["experimental_2bit_opt_in"], "AX_ENGINE_2BIT_EXPERIMENTAL=1")
-        self.assertEqual(
-            payload["existing_affine_expert_layouts"],
-            [
-                {"bits": 4, "group_size": 64},
-                {"bits": 6, "group_size": 64},
-            ],
-        )
-        self.assertEqual(
-            payload["experimental_expert_layouts"],
-            [
-                {"mode": "affine", "bits": 2, "group_size": 32},
-                {"mode": "mxfp4", "bits": 4, "group_size": 32},
-            ],
-        )
+        self.assertEqual(payload["format_scope"], ["mxfp4", "mxfp8"])
+        self.assertTrue(payload["mtp_sidecar_required"])
+        self.assertIn("pending", payload["mxfp8_status"])
+        self.assertEqual(payload["experimental_expert_layouts"], [{"mode": "mxfp4", "bits": 4, "group_size": 32}])
         self.assertIn("qwen3.8-27b:axq", payload["not"])
         self.assertIn("Candidate", payload["status"])
         self.assertIn("MXFP4 MTP target", payload["status"])
@@ -98,7 +73,7 @@ class QualifyFlashNextTest(unittest.TestCase):
                 mod._live_preflight(model_dir)
             self.assertIn("model-manifest.json", str(raised.exception))
 
-    def test_live_preflight_accepts_existing_affine_metadata_without_qualification(self) -> None:
+    def test_live_preflight_accepts_mxfp4_metadata_without_qualification(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             model_dir = Path(td)
             (model_dir / "config.json").write_text("{}", encoding="utf-8")
@@ -108,7 +83,7 @@ class QualifyFlashNextTest(unittest.TestCase):
             )
             mod._live_preflight(model_dir)
 
-    def test_live_preflight_rejects_unknown_layout_and_ungated_mxfp4(self) -> None:
+    def test_live_preflight_mxfp4_needs_no_opt_in_and_rejects_unknown_layout(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             model_dir = Path(td)
             (model_dir / "config.json").write_text("{}", encoding="utf-8")
@@ -129,16 +104,16 @@ class QualifyFlashNextTest(unittest.TestCase):
                 "group_size": 32,
             }
             (model_dir / "model-manifest.json").write_text(json.dumps(mxfp4), encoding="utf-8")
-            with self.assertRaises(SystemExit) as raised:
-                mod._live_preflight(model_dir)
-            self.assertIn("MXFP4", str(raised.exception))
+            # MXFP4/group32 preflights without the experimental opt-in; the
+            # certification record (Candidate, gates open) tracks its status.
+            mod._live_preflight(model_dir)
             with patch.dict("os.environ", {"AX_ENGINE_FLASH_NEXT_EXPERIMENTAL": "1"}):
                 mod._live_preflight(model_dir)
-                # The same bits/group tuple cannot relabel affine as MXFP4.
-                mxfp4["tensors"][0]["quantization"]["mode"] = "affine"
-                (model_dir / "model-manifest.json").write_text(json.dumps(mxfp4))
-                with self.assertRaisesRegex(SystemExit, "unsupported expert layout"):
-                    mod._live_preflight(model_dir)
+            # The same bits/group tuple cannot relabel affine as MXFP4.
+            mxfp4["tensors"][0]["quantization"]["mode"] = "affine"
+            (model_dir / "model-manifest.json").write_text(json.dumps(mxfp4))
+            with self.assertRaisesRegex(SystemExit, "unsupported expert layout"):
+                mod._live_preflight(model_dir)
 
     def test_metadata_preflight_never_establishes_qualification(self) -> None:
         self.assertFalse(mod.contract()["release_ready"])
@@ -210,7 +185,7 @@ class QualifyFlashNextTest(unittest.TestCase):
                 "group_size": 32,
             }
             (root / "model-manifest.json").write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(SystemExit, "both experimental"):
+            with self.assertRaisesRegex(SystemExit, "unsupported expert"):
                 mod._live_preflight(root)
             manifest["tensors"][0]["role"] = "other"
             (root / "model-manifest.json").write_text(json.dumps(manifest))

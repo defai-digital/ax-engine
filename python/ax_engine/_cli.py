@@ -566,81 +566,21 @@ AUTOMATOSX_MODEL_PROFILES = (
     ),
     _automatosx_profile(
         "ax-qwen3.8-27b",
-        "AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-        ("ax-qwen38-27b", "ax-qwen3.8-27b-axq", "ax-qwen3.8"),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-27b-axq-6bit",
-        "AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-        (
-            "ax-qwen38-27b-axq-6bit",
-            "qwen3.8-27b:axq",
-            "qwen3.8-27b:axq-6bit",
-        ),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-27b-axq-4bit",
-        "AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
-        (
-            "ax-qwen38-27b-axq-4bit",
-            "qwen3.8-27b:axq-4bit",
-        ),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-27b-axq-6bit-base",
-        "AX-Qwen3.8-27B-MLX-AXQ-6bit",
-        ("qwen3.8-27b:axq-6bit-base", "ax-qwen3.8-27b-6bit"),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-27b-axq-4bit-base",
-        "AX-Qwen3.8-27B-MLX-AXQ-4bit",
-        ("qwen3.8-27b:axq-4bit-base", "ax-qwen3.8-27b-4bit"),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-27b-axq-8bit",
-        "AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
-        ("qwen3.8-27b:axq-8bit", "ax-qwen3.8-27b-8bit"),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-27b-axq-8bit-base",
-        "AX-Qwen3.8-27B-MLX-AXQ-8bit",
-        ("qwen3.8-27b:axq-8bit-base",),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-27b-axq-mxfp4",
         "AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
-        ("qwen3.8-27b:axq-mxfp4", "ax-qwen3.8-27b-mxfp4"),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-27b-axq-mxfp4-base",
-        "AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
-        ("qwen3.8-27b:axq-mxfp4-base",),
-        preset="qwen3.8-27b",
-    ),
-    _automatosx_profile(
-        "ax-qwen3.8-flash-next-axq-4bit",
-        "AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
         (
-            "qwen3.8-flash-next:axq",
-            "qwen3.8-flash-next:axq-4bit",
-            "ax-qwen3.8-flash-next",
-            "ax-qwen3.8-flash-next-4bit",
+            "ax-qwen38-27b", "ax-qwen3.8-27b-axq", "ax-qwen3.8",
+            "qwen3.8-27b:axq", "qwen3.8-27b:axq-mxfp4", "qwen3.8-27b:mxfp4",
+            "ax-qwen3.8-27b-axq-mxfp4", "ax-qwen3.8-27b-mxfp4",
         ),
+        preset="qwen3.8-27b",
     ),
     _automatosx_profile(
-        "ax-qwen3.8-flash-next-axq-6bit",
-        "AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+        "ax-qwen3.8-flash-next-axq-mxfp4",
+        "AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
         (
-            "qwen3.8-flash-next:axq-6bit",
-            "ax-qwen3.8-flash-next-6bit",
+            "qwen3.8-flash-next:axq", "qwen3.8-flash-next:mxfp4",
+            "qwen3.8-flash-next:axq-mxfp4", "ax-qwen3.8-flash-next",
+            "ax-qwen3.8-flash-next-mxfp4",
         ),
     ),
     _automatosx_profile(
@@ -1043,11 +983,8 @@ MODEL_PROFILES = (*MODEL_PROFILES, *AUTOMATOSX_MODEL_PROFILES)
 # Bare family aliases must not silently promote these rows until
 # checkpoint-level quality, runtime, and memory gates are published and pass.
 _PINNED_PROFILE_REVISIONS = {
-    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP": (
-        "680573112360bfd3f71556082f875c907c21a6e7"
-    ),
-    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP": (
-        "d514dcebf3086068ed7968caf395083c95ebcfca"
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP": (
+        "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35"
     ),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": ("6182ccbc41c7397ff90670f740c6d9eacfa4b09f"),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP": ("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"),
@@ -1059,13 +996,6 @@ _PINNED_PROFILE_REVISIONS = {
     ),
     "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit": ("323a48f2a821f7d0349466095b1b84562d11c9a0"),
     "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit": ("e52d06296bf133b248a6572561c4f2e150dc3429"),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP": ("7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e"),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP": ("3e290738e96972307c6aeb9934ab170ca0eae1c1"),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit": ("6df63e00b1fa952bffd3b4ad5ecd182f9d48a8a4"),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit": ("1a54b325bef89b056f8ee9a882452419cceb018e"),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit": ("36f9d25c4b1ea2282774b9acf84fdad0241a8a54"),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP": ("4037b7242a4de8deaf71247a685538591cad160a"),
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4": ("4797708af95b9d5cca343d0a4671511fc2765e1a"),
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP": ("b2c5354f779e430d0c1733143db848a72b71c16e"),
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-4bit": ("a524f97c81ec82be3eead17aabcf652450d33842"),
     "AutomatosX/AX-Qwen3-Coder-Next-MLX-AXQ-6bit": ("29e7bcf5e6ef2471cc3587783713e3631e98b50c"),
@@ -1131,14 +1061,13 @@ _PINNED_PROFILE_REVISIONS = {
 
 # Hub Checkpoint Tier 1 packs are pinned but not labeled candidate
 # (Holo3, Ornith, Qwen3-VL 30B, Coder-Next AXQ, GPT-OSS AXQ, Qwen 3.8
-# 6/8/MXFP4). Development AXQ stays in this set.
+# MXFP4). Development AXQ stays in this set.
 _CANDIDATE_PROFILE_REPOS = {
+    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit",
     "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
-    "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
     "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit",
     "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
@@ -1165,8 +1094,7 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
-    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP",
-    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
 }
 
 
@@ -1271,7 +1199,32 @@ def _normalize_alias(value: str) -> str:
     return value.strip().lower().replace("_", "-")
 
 
+def _reject_retired_qwen38_target(value: str) -> None:
+    normalized = _normalize_alias(value)
+    if "/" in value or "huggingface.co" in value or "hf.co" in value:
+        try:
+            repo, _ = parse_repo_ref(value)
+        except ValueError:
+            return
+        normalized = _normalize_alias(repo)
+    if not any(key in normalized for key in ("qwen3.8-27b", "qwen38-27b", "qwen3.8-flash-next")):
+        return
+    if "mxfp8" in normalized:
+        raise SystemExit(
+            "Qwen 3.8 AXQ MXFP8 MTP pack admission is pending; use the pinned MXFP4 MTP pack"
+        )
+    if re.search(r"(?:^|[-:])(?:axq-)?(?:[2468]bit|mxfp4-base)(?:$|[-:])", normalized) or (
+        normalized.startswith("automatosx/") and not normalized.endswith("-mxfp4-mtp")
+    ):
+        raise SystemExit(
+            "Qwen 3.8 affine and non-MTP packs are retired; use qwen3.8-27b:axq "
+            "or qwen3.8-flash-next:mxfp4 (MLX AXQ MXFP4 MTP). "
+            "MXFP8 MTP catalog admission is pending verified pack evidence."
+        )
+
+
 def _profile_for_model(value: str) -> ModelProfile | None:
+    _reject_retired_qwen38_target(value)
     normalized = _normalize_alias(value)
     for profile in MODEL_PROFILES:
         if normalized in {_normalize_alias(alias) for alias in profile.aliases}:
@@ -1482,6 +1435,7 @@ def _download_repo_id(
             repo_id, revision = parse_repo_ref(value)
         except ValueError as error:
             raise SystemExit(str(error)) from error
+        _reject_retired_qwen38_target(repo_id)
         return repo_id, None, revision
     raise SystemExit(
         f"unknown model alias or repo id: {value!r}; pass a Hugging Face repo id, "

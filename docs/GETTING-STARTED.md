@@ -1,5 +1,10 @@
 # Getting Started
 
+Qwen 3.8 27B and Flash Next now target **MLX AXQ MXFP4 / MXFP8 with MTP**.
+Standalone affine variants are retired; MXFP8 pack admission is pending.
+Historical 6-bit qualification and speed receipts do not apply to MX packs.
+See [format policy](QWEN38-FORMAT-POLICY.md).
+
 AX Engine is a Mac-first inference runtime **optimized first for Qwen 3.8 27B
 AXQ** (`qwen3.8-27b:axq`), with a local server, SDK bindings, and benchmark
 tooling. Product-path MTP on that pack is **31.05 tok/s** decode on the
@@ -369,7 +374,7 @@ work via raw `org/repo` ids; raw Hugging Face checkpoints need
 ax-engine tui                          # interactive: pick, download, serve, chat
 ax-engine download --list              # list managed aliases
 ax-engine serve qwen3.8-27b:axq --port 31418
-# Require the pinned Qwen 3.8 27B AXQ 6-bit MTP cache
+# Require the pinned Qwen 3.8 27B AXQ MXFP4 MTP cache
 ax-engine serve qwen3.8-27b:axq --offline --port 31418
 # Secondary dense AXQ candidate (not the primary pack)
 ax-engine serve qwen3.6-27b:axq --port 31418

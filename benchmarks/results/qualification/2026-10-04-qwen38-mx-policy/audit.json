@@ -1,0 +1,55 @@
+{
+  "schema_version": "ax.qwen38.mx_scope.v1",
+  "date": "2026-10-04",
+  "scope": "software retirement and pack-metadata audit only; no model execution or SKU qualification",
+  "format_scope": [
+    "mxfp4",
+    "mxfp8"
+  ],
+  "standalone_affine_retired": true,
+  "mtp_required_in_product_pack": true,
+  "mtp_execution_default": "unchanged; explicit opt-in",
+  "release_ready": false,
+  "qualification": false,
+  "mtp_certification": {
+    "MTP-S": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-D": "not_assessed"
+  },
+  "packs": [
+    {
+      "repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+      "revision": "b2c5354f779e430d0c1733143db848a72b71c16e",
+      "metadata_sha256": {
+        "config.json": "5fb63c8d952c521b289e1fd412a1e225020301c37cebcb44dfa881e334003619",
+        "axquant_manifest.json": "ee704531cca3bbe083f8acb3e65d34c972d24b95b076aa51b77f21b01cd62bb1"
+      },
+      "metadata_only": true,
+      "mtp_safetensors_listed": true
+    },
+    {
+      "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+      "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+      "metadata_sha256": {
+        "config.json": "fb3c637ce4a240453c454fbc1211fa1e893d0af12df54a9df19c9c017fa59237",
+        "axquant_manifest.json": "42030475bbae17dd1b3bf8dbb0a6defbfcc230165124d68d4fc2361ef6204385"
+      },
+      "metadata_only": true,
+      "mtp_safetensors_listed": true
+    }
+  ],
+  "primary_27b_manifest_quantized_tensor_modes": {
+    "affine": 2,
+    "mxfp4": 496
+  },
+  "primary_27b_top_level_quantization": "affine",
+  "primary_27b_mtp_sidecar_publisher_sha256": "914bef4ec6fcfde83925f9c138559253db030d9138b0a375623d6fdc06ebe898",
+  "mxfp8_status": "in scope; public pack metadata not verified; pin, native-pack audit and SKU qualification pending",
+  "historical_affine_receipts": "unchanged; not evidence for MXFP4/MXFP8 replacement packs",
+  "policy_source_sha256": {
+    "crates/ax-engine-core/src/qwen38_quantization.rs": "62c987c41a7f2b6a9a2b59d01ced786d4a0173581beb2d85ad5fa6350876f8a6",
+    "crates/ax-engine-bench/src/bin/ax-engine.rs": "bd7c3f09951516639d3c352960dea2b361796b5e7cc519cc881f1061f72f116a",
+    "crates/ax-engine-bench/src/tui/catalog.rs": "7afac81907e25b443388b3b561bd938092ff208b54055a6f1398d322b32c4ce7",
+    "python/ax_engine/_cli.py": "8bd8b43c11010e3762b93a01ca81f7d2c38d0ee06094e5b25a955c6910c2053f"
+  }
+}

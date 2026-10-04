@@ -39,7 +39,10 @@ fn family_list_renders_with_sizes_and_mtp_badge() {
     assert!(text.contains("Models"));
     assert!(text.contains("AX Qwen 3.5 9B"));
     assert!(text.contains("AX Qwen 3.6 35B"));
-    assert!(text.contains("bit"), "family rows show quant bits");
+    assert!(
+        text.contains("bit") || text.contains("MXFP4"),
+        "family rows show quant precision"
+    );
     assert!(text.contains('⚡'), "MTP badge should render");
     assert!(text.contains("Step 1 of"), "step header present");
 }

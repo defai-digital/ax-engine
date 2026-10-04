@@ -33,6 +33,9 @@ impl ModelProfile {
 
 fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
     match profile.repo_id {
+        "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP" => {
+            Some("0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35")
+        }
         "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP" => {
             Some("6182ccbc41c7397ff90670f740c6d9eacfa4b09f")
         }
@@ -44,12 +47,6 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         }
         "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-6bit" => {
             Some("b48b626d9b00e45d6200aa3c15e40cc47d83b7e7")
-        }
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP" => {
-            Some("7e865596cb32bd41b29c7a25c5b66b9c3ea25e5e")
-        }
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP" => {
-            Some("3e290738e96972307c6aeb9934ab170ca0eae1c1")
         }
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP" => {
             Some("952031cbfbb9cf31414a57eeb681c34dc08ec1e9")
@@ -86,21 +83,6 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         }
         "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit" => {
             Some("e52d06296bf133b248a6572561c4f2e150dc3429")
-        }
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit" => {
-            Some("6df63e00b1fa952bffd3b4ad5ecd182f9d48a8a4")
-        }
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit" => {
-            Some("1a54b325bef89b056f8ee9a882452419cceb018e")
-        }
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit" => {
-            Some("36f9d25c4b1ea2282774b9acf84fdad0241a8a54")
-        }
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP" => {
-            Some("4037b7242a4de8deaf71247a685538591cad160a")
-        }
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4" => {
-            Some("4797708af95b9d5cca343d0a4671511fc2765e1a")
         }
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP" => {
             Some("b2c5354f779e430d0c1733143db848a72b71c16e")
@@ -193,10 +175,10 @@ fn profile_certification(profile: ModelProfile) -> Option<&'static str> {
         | "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP"
         | "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-4bit"
         | "AutomatosX/AX-Qwen3-VL-8B-Instruct-MLX-AXQ-6bit"
-        | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP"
-        | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit"
         | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-4bit"
         | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit"
+        | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"
+        | "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP"
         | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP"
         | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP"
         | "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP"
@@ -251,6 +233,21 @@ struct MtpDownloadTarget {
 }
 
 const MODEL_PROFILES: &[ModelProfile] = &[
+    ModelProfile {
+        label: "ax-qwen3.8-flash-next-axq-mxfp4",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+        aliases: &[
+            "ax-qwen3.8-flash-next-axq-mxfp4",
+            "ax-qwen3.8-flash-next",
+            "ax-qwen3.8-flash-next-mxfp4",
+            "qwen3.8-flash-next:axq",
+            "qwen3.8-flash-next:mxfp4",
+            "qwen3.8-flash-next:axq-mxfp4",
+        ],
+        downloadable: true,
+        approx_size_bytes: Some(132_261_853_669),
+    },
     ModelProfile {
         label: "gemma4-12b",
         preset: Some("gemma4-12b"),
@@ -484,34 +481,6 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         ],
         downloadable: true,
         approx_size_bytes: Some(19_399_395_845),
-    },
-    ModelProfile {
-        label: "ax-qwen3.8-27b-axq-6bit",
-        preset: None,
-        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-        aliases: &[
-            "ax-qwen3.8-27b-axq-6bit",
-            "ax-qwen3.8-27b-axq",
-            "ax-qwen38-27b-axq-6bit",
-            "qwen3.8-27b:axq",
-            "qwen3.8-27b:axq-6bit",
-        ],
-        downloadable: true,
-        approx_size_bytes: Some(20_856_327_059),
-    },
-    ModelProfile {
-        label: "ax-qwen3.8-27b-axq-4bit",
-        preset: None,
-        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
-        aliases: &[
-            "ax-qwen3.8-27b-axq-4bit",
-            "ax-qwen38-27b-axq-4bit",
-            "qwen3.8-27b:axq-4bit",
-        ],
-        downloadable: true,
-        // Measured on-disk snapshot 2026-08-16: 18,203,066,368 bytes (~17 GiB).
-        // The previous 25 GB figure overstated the pack by ~38%.
-        approx_size_bytes: Some(18_203_066_368),
     },
     ModelProfile {
         label: "ax-qwen3.6-35b",
@@ -1360,67 +1329,18 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         approx_size_bytes: Some(8782284430),
     },
     ModelProfile {
-        label: "ax-qwen3.8-27b-axq-4bit-base",
-        preset: Some("qwen3.8-27b"),
-        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
-        aliases: &[
-            "ax-qwen3.8-27b-axq-4bit-base",
-            "qwen3.8-27b:axq-4bit-base",
-            "ax-qwen3.8-27b-4bit",
-        ],
-        downloadable: true,
-        approx_size_bytes: Some(17347922966),
-    },
-    ModelProfile {
-        label: "ax-qwen3.8-27b-axq-6bit-base",
-        preset: Some("qwen3.8-27b"),
-        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit",
-        aliases: &[
-            "ax-qwen3.8-27b-axq-6bit-base",
-            "qwen3.8-27b:axq-6bit-base",
-            "ax-qwen3.8-27b-6bit",
-        ],
-        downloadable: true,
-        approx_size_bytes: Some(20539844328),
-    },
-    ModelProfile {
-        label: "ax-qwen3.8-27b-axq-8bit-base",
-        preset: Some("qwen3.8-27b"),
-        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit",
-        aliases: &["ax-qwen3.8-27b-axq-8bit-base", "qwen3.8-27b:axq-8bit-base"],
-        downloadable: true,
-        approx_size_bytes: Some(27379005741),
-    },
-    ModelProfile {
-        label: "ax-qwen3.8-27b-axq-8bit",
-        preset: Some("qwen3.8-27b"),
-        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
-        aliases: &[
-            "ax-qwen3.8-27b-axq-8bit",
-            "qwen3.8-27b:axq-8bit",
-            "ax-qwen3.8-27b-8bit",
-        ],
-        downloadable: true,
-        approx_size_bytes: Some(30372618029),
-    },
-    ModelProfile {
-        label: "ax-qwen3.8-27b-axq-mxfp4-base",
-        preset: Some("qwen3.8-27b"),
-        repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
-        aliases: &[
-            "ax-qwen3.8-27b-axq-mxfp4-base",
-            "qwen3.8-27b:axq-mxfp4-base",
-        ],
-        downloadable: true,
-        approx_size_bytes: Some(16586849399),
-    },
-    ModelProfile {
         label: "ax-qwen3.8-27b-axq-mxfp4",
         preset: Some("qwen3.8-27b"),
         repo_id: "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
         aliases: &[
             "ax-qwen3.8-27b-axq-mxfp4",
             "qwen3.8-27b:axq-mxfp4",
+            "qwen3.8-27b:mxfp4",
+            "qwen3.8-27b:axq",
+            "ax-qwen3.8-27b",
+            "ax-qwen38-27b",
+            "ax-qwen3.8-27b-axq",
+            "ax-qwen3.8",
             "ax-qwen3.8-27b-mxfp4",
         ],
         downloadable: true,
@@ -4001,6 +3921,9 @@ fn download_repo_id(
     if let Some(dir) = local_model_dir(value) {
         return Ok((dir.to_string_lossy().into_owned(), None, None));
     }
+    if let Some(message) = qwen38_target_error(value) {
+        return Err(message.to_string());
+    }
     if let Some(profile) = profile {
         if !profile.downloadable {
             return Err(format!(
@@ -4017,6 +3940,9 @@ fn download_repo_id(
     }
     if value.contains('/') || value.contains("huggingface.co") || value.contains("hf.co") {
         let repo_ref = ax_engine_core::repo_ref::parse_repo_ref(value)?;
+        if let Some(message) = qwen38_target_error(&repo_ref.repo_id) {
+            return Err(message.to_string());
+        }
         return Ok((repo_ref.repo_id, None, repo_ref.revision));
     }
     Err(format!(
@@ -4176,7 +4102,34 @@ fn parse_summary_json(stdout: &str) -> Option<Value> {
     })
 }
 
+fn qwen38_target_error(value: &str) -> Option<&'static str> {
+    let value = value.to_ascii_lowercase();
+    let value = value.split('@').next().unwrap_or(&value);
+    if !["qwen3.8-27b", "qwen38-27b", "qwen3.8-flash-next"]
+        .iter()
+        .any(|key| value.contains(key))
+    {
+        return None;
+    }
+    if value.contains("mxfp8") {
+        return Some("Qwen 3.8 AXQ MXFP8 MTP pack admission is pending; use pinned MXFP4 MTP");
+    }
+    if ["-2bit", "-4bit", "-6bit", "-8bit", "mxfp4-base"]
+        .iter()
+        .any(|key| value.contains(key))
+        || (value.starts_with("automatosx/") && !value.ends_with("-mxfp4-mtp"))
+    {
+        return Some(
+            "Qwen 3.8 affine and non-MTP packs are retired; use qwen3.8-27b:axq or qwen3.8-flash-next:mxfp4 (MLX AXQ MXFP4 MTP)",
+        );
+    }
+    None
+}
+
 fn profile_for_model(value: &str) -> Option<ModelProfile> {
+    if qwen38_target_error(value).is_some() {
+        return None;
+    }
     let normalized = normalize_alias(value);
     MODEL_PROFILES.iter().copied().find(|profile| {
         normalize_alias(profile.label) == normalized
@@ -4603,7 +4556,7 @@ mod tests {
         );
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 80] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 74] = [
         "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
@@ -4666,13 +4619,6 @@ mod tests {
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit",
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-4bit-MTP",
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit",
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit",
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-8bit-MTP",
-        "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
         "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
@@ -4684,6 +4630,7 @@ mod tests {
         "AutomatosX/AX-gpt-oss-120b-MLX-AXQ-6bit",
         "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit",
         "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit",
+        "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
     ];
 
     #[test]
@@ -4725,7 +4672,7 @@ mod tests {
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            35
+            33
         );
     }
 
@@ -4933,6 +4880,54 @@ mod tests {
     }
 
     #[test]
+    fn qwen38_retirement_is_enforced_for_native_aliases_and_hub_refs() {
+        for target in [
+            "qwen3.8-27b:axq-6bit",
+            "qwen3.8-flash-next:axq-6bit",
+            "https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/tree/main",
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
+        ] {
+            assert!(
+                download_repo_id(target, None)
+                    .err()
+                    .unwrap()
+                    .contains("retired")
+            );
+        }
+        let flash = profile_for_model("qwen3.8-flash-next:axq").unwrap();
+        assert_eq!(
+            flash.repo_id,
+            "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP"
+        );
+        assert_eq!(
+            profile_revision(flash),
+            Some("0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35")
+        );
+        let (repo, _, revision) = download_repo_id(
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP@b2c5354f779e430d0c1733143db848a72b71c16e",
+            None,
+        )
+        .unwrap();
+        assert_eq!(repo, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP");
+        assert_eq!(
+            revision.as_deref(),
+            Some("b2c5354f779e430d0c1733143db848a72b71c16e")
+        );
+        for target in [
+            "qwen3.8-27b:axq-mxfp8",
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP",
+            "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP8-MTP/tree/main",
+        ] {
+            assert!(
+                download_repo_id(target, None)
+                    .err()
+                    .unwrap()
+                    .contains("pending")
+            );
+        }
+    }
+
+    #[test]
     fn qwen36_axq_candidates_are_explicit_and_revision_pinned() {
         let six = profile_for_model("qwen3.6-27b:axq").unwrap();
         assert_eq!(six.repo_id, "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP");
@@ -4950,12 +4945,15 @@ mod tests {
         );
 
         let qwen38 = profile_for_model("qwen3.8-27b:axq").unwrap();
-        assert_eq!(qwen38.repo_id, "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP");
+        assert_eq!(
+            qwen38.repo_id,
+            "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"
+        );
         assert_eq!(
             profile_revision(qwen38),
-            Some("3e290738e96972307c6aeb9934ab170ca0eae1c1")
+            Some("b2c5354f779e430d0c1733143db848a72b71c16e")
         );
-        assert_eq!(profile_certification(qwen38), None);
+        assert_eq!(profile_certification(qwen38), Some("candidate"));
 
         let vl_six = profile_for_model("qwen3-vl-30b-a3b:axq").unwrap();
         assert_eq!(

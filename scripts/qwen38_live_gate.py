@@ -149,6 +149,8 @@ def run_live(args, contract: dict, repo: Path) -> int:
         result['bundled_runtime_environment'] = {k: v for k, v in os.environ.items() if k == 'AX_ENGINE_METAL_BUILD_DIR'}
         if manifest.get('model_revision') != contract['revision']:
             raise ValueError('model revision mismatch')
+        if not contract.get('model_manifest_sha256'):
+            raise ValueError('MXFP4 release inventory binding pending; retired 6-bit inventory cannot qualify this pack')
         files = manifest.get('model_files', {})
         canonical = json.dumps(files, sort_keys=True, separators=(',', ':')).encode()
         if hashlib.sha256(canonical).hexdigest() != contract['model_manifest_sha256']:
