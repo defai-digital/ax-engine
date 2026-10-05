@@ -245,7 +245,6 @@ impl OpenAiResponseOptions {
             request.logit_bias.as_ref(),
         )?;
         reject_unsupported_top_logprobs(request.top_logprobs)?;
-        reject_unsupported_reasoning_effort(request.reasoning_effort.as_ref())?;
         // `parallel_tool_calls: false` is only meaningful when tools are
         // actually enabled; without `tools` / `tool_choice` the constraint is
         // vacuously satisfied and echoing `false` misrepresents nothing.
@@ -1411,20 +1410,32 @@ fn reject_unsupported_sampling_params(
 }
 
 /// AX has no effort levels: thinking is an on/off switch plus a token budget.
-/// Any non-null `reasoning_effort` fails closed so a caller does not assume
-/// `low` / `high` changes behavior.
-fn reject_unsupported_reasoning_effort(
+/// Any non-null `reasoning_effort`, or non-null `effort` inside a `reasoning`
+/// object, fails closed so a caller does not assume `low` / `high` changes
+/// behavior. Called by the `/v1/chat/completions` handler only: the Responses
+/// API reuses the chat request type but sends `reasoning.effort` as a standard
+/// field, so it keeps accepting (and ignoring) it.
+pub(crate) fn reject_unsupported_reasoning_effort(
     reasoning_effort: Option<&Value>,
+    reasoning: Option<&Value>,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if reasoning_effort.is_none_or(Value::is_null) {
+    let field = if reasoning_effort.is_some_and(|value| !value.is_null()) {
+        "reasoning_effort"
+    } else if reasoning
+        .and_then(|value| value.get("effort"))
+        .is_some_and(|value| !value.is_null())
+    {
+        "reasoning.effort"
+    } else {
         return Ok(());
-    }
+    };
     Err(error_response(
         StatusCode::BAD_REQUEST,
         "unsupported_parameter",
-        "reasoning_effort is not supported; use chat_template_kwargs.enable_thinking to switch \
-         thinking and ax_max_think_tokens to cap it"
-            .to_string(),
+        format!(
+            "{field} is not supported; use chat_template_kwargs.enable_thinking to switch \
+             thinking and ax_max_think_tokens to cap it"
+        ),
     ))
 }
 

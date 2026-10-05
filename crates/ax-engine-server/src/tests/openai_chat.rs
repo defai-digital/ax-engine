@@ -2103,33 +2103,67 @@ async fn openai_chat_request_rejects_unsupported_sampling_params() {
 }
 
 #[tokio::test]
-async fn openai_chat_request_rejects_reasoning_effort() {
+async fn openai_chat_endpoint_rejects_reasoning_effort() {
+    // Rejection happens in the handler before backend dispatch, so the
+    // unreachable llama.cpp URL is never contacted.
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+
+    for (field, value, named) in [
+        ("reasoning_effort", json!("low"), "reasoning_effort"),
+        ("reasoning_effort", json!("high"), "reasoning_effort"),
+        ("reasoning_effort", json!("none"), "reasoning_effort"),
+        ("reasoning", json!({"effort": "high"}), "reasoning.effort"),
+        (
+            "reasoning",
+            json!({"enabled": true, "effort": "low"}),
+            "reasoning.effort",
+        ),
+    ] {
+        let mut body = json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 2
+        });
+        body.as_object_mut()
+            .expect("chat body is an object")
+            .insert(field.to_string(), value.clone());
+        let (status, response) = json_response(
+            &app,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(json_request_body(&body)))
+                .expect("request should build"),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field}={value}");
+        assert_eq!(
+            response["error"]["code"],
+            json!("unsupported_parameter"),
+            "{field}={value}"
+        );
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with(named)),
+            "{field}={value}: {response}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn openai_chat_request_build_ignores_reasoning_effort_for_responses_reuse() {
+    // The Responses API reuses the chat request type and forwards its standard
+    // `reasoning.effort`. Only the chat-completions handler rejects effort, so
+    // building the request must not fail because of it (it may still fail for
+    // an unrelated reason such as the model not advertising reasoning).
     let state = test_app_state(|args| {
         args.model_id = "gemma4-e2b".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
     let live = state.snapshot();
 
-    for value in [json!("low"), json!("medium"), json!("high"), json!("none")] {
-        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
-            "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 8,
-            "reasoning_effort": value
-        }))
-        .expect("sample chat request should deserialize");
-        let error = match build_openai_chat_request(&live, request) {
-            Ok(_) => panic!("reasoning_effort {value} should fail closed"),
-            Err(error) => error,
-        };
-        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{value}");
-        assert_eq!(
-            error.1.0.error.code.as_deref(),
-            Some("unsupported_parameter"),
-            "{value}"
-        );
-    }
-
-    // Absent and explicit null stay accepted so standard clients keep working.
     for body in [
         json!({"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 8}),
         json!({
@@ -2137,11 +2171,26 @@ async fn openai_chat_request_rejects_reasoning_effort() {
             "max_tokens": 8,
             "reasoning_effort": null
         }),
+        json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8,
+            "reasoning": {"enabled": false, "effort": null}
+        }),
+        json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8,
+            "reasoning": {"effort": "high"}
+        }),
     ] {
         let request: OpenAiChatCompletionHttpRequest =
-            serde_json::from_value(body).expect("sample chat request should deserialize");
-        build_openai_chat_request(&live, request)
-            .expect("absent or null reasoning_effort should still build");
+            serde_json::from_value(body.clone()).expect("sample chat request should deserialize");
+        if let Err(error) = build_openai_chat_request(&live, request) {
+            assert!(
+                !error.1.0.error.message.contains("effort"),
+                "{body}: {}",
+                error.1.0.error.message
+            );
+        }
     }
 }
 

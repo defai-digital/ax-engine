@@ -10,7 +10,9 @@ use crate::openai::generation::{
     run_openai_llama_cpp_chat_generation, run_openai_mlx_lm_chat_generation,
     run_openai_text_generation,
 };
-use crate::openai::requests::build_openai_chat_request_offloading_media;
+use crate::openai::requests::{
+    build_openai_chat_request_offloading_media, reject_unsupported_reasoning_effort,
+};
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::validation::select_openai_model;
 
@@ -37,6 +39,10 @@ pub(crate) async fn openai_chat_completions(
                 .to_string(),
         ));
     }
+    reject_unsupported_reasoning_effort(
+        request.reasoning_effort.as_ref(),
+        request.reasoning.as_ref(),
+    )?;
     if mlx_lm::is_selected(&live) {
         return run_openai_mlx_lm_chat_generation(state, live, request).await;
     }
