@@ -221,28 +221,40 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
 
 def summarize(runs: dict[str, dict[str, Any]],
               lengths: tuple[int, ...] = LENGTHS) -> dict[str, Any]:
-    """Pure aggregation: token identity, paired MTP/direct decode ratios, route errors."""
-    direct, mtp = runs["disabled"], runs["required"]
-    summary: dict[str, Any] = {"prompt_ids_equal_across_modes":
-                               direct["prompt_id_hashes"] == mtp["prompt_id_hashes"]}
+    """Pure aggregation: token identity, paired challenger/direct decode ratios, route errors.
+
+    `disabled` is the direct baseline; the single other mode is the challenger
+    (`required` MTP, keyed `mtp_*`, or the product `default`, keyed `default_*`).
+    """
+    challengers = [mode for mode in runs if mode != "disabled"]
+    if "disabled" not in runs or len(challengers) != 1:
+        raise ValueError("summary needs the disabled baseline and exactly one other mode")
+    challenger = challengers[0]
+    prefix = "mtp" if challenger == "required" else challenger
+    direct, other = runs["disabled"], runs[challenger]
+    summary: dict[str, Any] = {"challenger_mode": challenger,
+                               "prompt_ids_equal_across_modes":
+                               direct["prompt_id_hashes"] == other["prompt_id_hashes"]}
     identical, divergences = 0, []
-    for d, m in zip(direct["trajectories"], mtp["trajectories"], strict=True):
+    for d, m in zip(direct["trajectories"], other["trajectories"], strict=True):
         a, b = d["output_tokens"], m["output_tokens"]
         if a == b:
             identical += 1
         else:
             index = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
             divergences.append({"prompt": d["prompt"], "first_difference_index": index,
-                                "direct_length": len(a), "mtp_length": len(b)})
+                                "direct_length": len(a), f"{prefix}_length": len(b)})
     summary["trajectories"] = {"compared": len(direct["trajectories"]), "identical": identical,
                                "divergences": divergences,
-                               "mtp_verified_steps": sum(t["verified_steps"] for t in mtp["trajectories"]),
-                               "direct_verified_steps": sum(t["verified_steps"] for t in direct["trajectories"])}
+                               f"{prefix}_verified_steps":
+                               sum(t["verified_steps"] for t in other["trajectories"]),
+                               "direct_verified_steps":
+                               sum(t["verified_steps"] for t in direct["trajectories"])}
     cells: dict[str, Any] = {}
     cell_identical = cell_total = 0
     for length in lengths:
         d_runs = [c for c in direct["cells"] if c["length"] == length and not c["warmup"]]
-        m_runs = [c for c in mtp["cells"] if c["length"] == length and not c["warmup"]]
+        m_runs = [c for c in other["cells"] if c["length"] == length and not c["warmup"]]
         ratios, d_rates, m_rates = [], [], []
         for d, m in zip(d_runs, m_runs, strict=True):
             cell_total += 1
@@ -255,14 +267,14 @@ def summarize(runs: dict[str, dict[str, Any]],
         cells[str(length)] = {
             "measured_runs": len(d_runs),
             "direct_decode_tok_s_median": statistics.median([r for r in d_rates if r]) if any(d_rates) else None,
-            "mtp_decode_tok_s_median": statistics.median([r for r in m_rates if r]) if any(m_rates) else None,
-            "mtp_over_direct_decode_ratio_median": statistics.median(ratios) if ratios else None,
-            "mtp_over_direct_decode_ratio_range": [min(ratios), max(ratios)] if ratios else None,
+            f"{prefix}_decode_tok_s_median": statistics.median([r for r in m_rates if r]) if any(m_rates) else None,
+            f"{prefix}_over_direct_decode_ratio_median": statistics.median(ratios) if ratios else None,
+            f"{prefix}_over_direct_decode_ratio_range": [min(ratios), max(ratios)] if ratios else None,
             "direct_ttft_s_median": statistics.median(c["timing"]["ttft_seconds"] for c in d_runs),
-            "mtp_ttft_s_median": statistics.median(c["timing"]["ttft_seconds"] for c in m_runs),
-            "mtp_draft_tokens": sum(c["mtp"].get("draft_tokens", 0) for c in m_runs),
-            "mtp_accepted_tokens": sum(c["mtp"].get("accepted_tokens", 0) for c in m_runs),
-            "mtp_verified_steps": sum(c["verified_steps"] for c in m_runs)}
+            f"{prefix}_ttft_s_median": statistics.median(c["timing"]["ttft_seconds"] for c in m_runs),
+            f"{prefix}_draft_tokens": sum(c["mtp"].get("draft_tokens", 0) for c in m_runs),
+            f"{prefix}_accepted_tokens": sum(c["mtp"].get("accepted_tokens", 0) for c in m_runs),
+            f"{prefix}_verified_steps": sum(c["verified_steps"] for c in m_runs)}
     summary["cells"] = cells
     summary["cell_token_identity"] = {"identical": cell_identical, "compared": cell_total}
     summary["route_errors"] = sum(r["route_errors"] for run in runs.values()
@@ -279,15 +291,20 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--limit-prompts", type=int, help="smoke runs: first N trajectory prompts")
     parser.add_argument("--lengths", type=int, nargs="+", help="smoke runs: input lengths to measure")
+    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES, default=list(MODES),
+                        help="the disabled baseline plus one challenger: required MTP or default")
     args = parser.parse_args()
+    if len(args.modes) != 2 or "disabled" not in args.modes:
+        parser.error("--modes must be the disabled baseline plus exactly one challenger")
     prompts = PROMPTS[: args.limit_prompts] if args.limit_prompts else PROMPTS
     lengths = tuple(args.lengths) if args.lengths else LENGTHS
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
-                "modes": list(MODES), "endpoint": "/v1/generate/stream", "temperature": 0,
+                "modes": list(args.modes), "endpoint": "/v1/generate/stream", "temperature": 0,
                 "output_tokens": OUTPUT_TOKENS, "trajectory_prompts": len(prompts),
                 "lengths": list(lengths), "warmups": WARMUPS, "measured": MEASURED,
                 "offset_stride": OFFSET_STRIDE, "total_blocks": TOTAL_BLOCKS,
-                "expert_stream": "auto", "generic_ngram_acceleration": "disabled",
+                "expert_stream": "auto", "generic_ngram_acceleration":
+                "product default (on) in default mode, disabled in the other modes",
                 "reference_baseline": "none", "qualification": False, "release_ready": False,
                 "scope": "server-path token identity and timings; MTP-S/P/D not assessed"}
     if args.dry_run:
@@ -307,7 +324,7 @@ def main() -> int:
     manifest_before = native.validate_inventory(args.model_dir, inventory)
     args.output.mkdir(parents=True, exist_ok=False)
     runs = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
-                           prompts, lengths) for mode in MODES}
+                           prompts, lengths) for mode in args.modes}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:
         raise ValueError("native manifest changed during the run")

@@ -90,6 +90,31 @@ class GenerateMatrixTests(unittest.TestCase):
         self.assertEqual(summary["cell_token_identity"], {"identical": 2, "compared": 3})
         self.assertEqual(summary["route_errors"], 1)
 
+    def test_summary_names_the_default_challenger_and_rejects_other_shapes(self):
+        total = mod.WARMUPS + mod.MEASURED
+        d_cells = [cell(512, r, [1, 2], 4.0) for r in range(total)]
+        p_cells = [cell(512, r, [1, 2], 5.0) for r in range(total)]
+        direct = run("disabled", [traj("p1", [1, 2, 3])], d_cells)
+        default = run("default", [traj("p1", [1, 2, 3])], p_cells)
+        summary = mod.summarize({"disabled": direct, "default": default}, lengths=(512,))
+        self.assertEqual(summary["challenger_mode"], "default")
+        self.assertAlmostEqual(summary["cells"]["512"]["default_over_direct_decode_ratio_median"], 0.8)
+        self.assertEqual(summary["trajectories"]["default_verified_steps"], 0)
+        self.assertNotIn("mtp_over_direct_decode_ratio_median", summary["cells"]["512"])
+        with self.assertRaises(ValueError):
+            mod.summarize({"disabled": direct}, lengths=(512,))
+        with self.assertRaises(ValueError):
+            mod.summarize({"disabled": direct, "default": default, "required": default}, lengths=(512,))
+
+    def test_modes_option_requires_the_baseline_and_one_challenger(self):
+        for modes in (["required"], ["disabled", "required", "default"], ["default", "required"]):
+            done = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--modes", *modes],
+                                  capture_output=True, text=True)
+            self.assertNotEqual(done.returncode, 0, modes)
+        done = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--modes", "disabled", "default"],
+                              capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(done.stdout)["modes"], ["disabled", "default"])
+
     def test_summary_flags_prompt_id_mismatch_between_modes(self):
         cells = [cell(512, r, [1], 1.0) for r in range(mod.WARMUPS + mod.MEASURED)]
         a = run("disabled", [traj("p", [1])], cells, {"a": "1"})

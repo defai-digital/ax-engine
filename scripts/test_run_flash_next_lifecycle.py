@@ -83,6 +83,14 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(contract["release_ready"])
         self.assertGreater(contract["total_blocks"] * 16, 16384)
 
+    def test_default_mode_can_be_selected_and_duplicates_are_rejected(self):
+        out = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--modes", "disabled", "default"],
+                             capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(out.stdout)["modes"], ["disabled", "default"])
+        done = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--modes", "default", "default"],
+                              capture_output=True, text=True)
+        self.assertNotEqual(done.returncode, 0)
+
     def test_live_run_requires_all_inputs(self):
         done = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
         self.assertNotEqual(done.returncode, 0)
