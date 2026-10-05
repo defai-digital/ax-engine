@@ -1,0 +1,13 @@
+2026-10-05T00:52:15.292803Z  INFO detected Apple Silicon Neural Accelerator policy snapshot target="ax_engine_mlx" silicon_generation=Some(2) macos_major=Some(27) macos_minor=Some(0) has_neural_accelerator=false macos_supports_na=true neural_accelerator_active=false
+2026-10-05T00:52:15.292883Z  INFO auto-raised MLX Metal command-buffer caps (optimistic; applies to all subsequent models in this process). AX_MLX_AUTO_BUFFER_CAPS=0 to disable; pre-set MLX_MAX_*_PER_BUFFER wins. First-model-wins: MLX freezes these at Metal device init. target="ax_engine_mlx" model_family="qwen4_exp" big_tensors=277 is_moe_class=true neural_accelerator_active=false mb_applied=true ops_applied=true target_mb=1024 target_ops=1000
+2026-10-05T00:52:37.500242Z  INFO warmed linear-attention Metal kernels at model load elapsed_ms=4
+2026-10-05T00:52:39.411271Z  INFO MTP admission at runner construction model_family=qwen4_exp mtp_depth=1 throughput_default=false certified_default_on=false route_safe=true disable_ngram=true mtp_requested=false linear_candidate=false linear_direct_fallback=false
+ax-engine-server preview listening on http://[loopback]:58860 model_id=qwen3.8-flash-next:mxfp4 support_tier=MlxPreview
+2026-10-05T00:52:56.023535Z  INFO ax-engine-server preview listening bind_address=[loopback]:58860 grpc_bind_address=None model_id=qwen3.8-flash-next:mxfp4 support_tier=MlxPreview
+2026-10-05T00:52:56.380732Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=4 stop_sequences=1
+2026-10-05T00:52:59.240650Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=5 stop_sequences=1
+2026-10-05T00:53:01.904884Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=6 stop_sequences=1
+2026-10-05T00:53:04.700712Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=7 stop_sequences=1
+2026-10-05T00:53:06.762968Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=8 stop_sequences=1
+2026-10-05T00:53:09.394979Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=9 stop_sequences=1
+2026-10-05T00:53:12.021599Z  WARN native MLX session ignores stop_sequences; apply stop strings on the decoded text request_id=10 stop_sequences=1

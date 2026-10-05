@@ -251,12 +251,12 @@ class AxEngineCliTests(unittest.TestCase):
             ),
             "qwen3.8-flash-next:axq": (
                 "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
-                "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+                "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
                 "candidate",
             ),
             "qwen3.8-flash-next:mxfp4": (
                 "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
-                "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
+                "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
                 "candidate",
             ),
             "ax-qwen3-vl-30b": (
@@ -826,8 +826,8 @@ class AxEngineCliTests(unittest.TestCase):
             stderr = ""
 
         cases = (
-            ("qwen3.8-flash-next:axq", "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35"),
-            ("qwen3.8-flash-next:mxfp4", "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35"),
+            ("qwen3.8-flash-next:axq", "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"),
+            ("qwen3.8-flash-next:mxfp4", "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"),
         )
         for alias, revision in cases:
             with (

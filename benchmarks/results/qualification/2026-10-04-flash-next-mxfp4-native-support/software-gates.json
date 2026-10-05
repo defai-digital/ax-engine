@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "scope": "isolated candidate at base 9c330ad3 plus the committed support changes; unrelated pending edits excluded",
+  "rust_toolchain": "1.97.1",
+  "python": "3.12.13",
+  "mlx": "0.32.3",
+  "gates": {
+    "fmt": "passed",
+    "clippy_all_targets_all_features_deny_warnings": "passed",
+    "cargo_test_no_fail_fast": {
+      "passed": 4068,
+      "failed": 0,
+      "ignored": 62,
+      "result_groups": 63
+    },
+    "bench_catalog_followup": {
+      "passed": 233,
+      "failed": 0
+    },
+    "maturin_develop_release_pyext": "passed",
+    "pytest": {
+      "passed": 285,
+      "skipped": 22,
+      "subtests_passed": 165
+    },
+    "check_scripts": "passed in isolated candidate",
+    "qualify_qwen38_27b_dry_run": "passed; non-promoting",
+    "qualify_qwen38_flash_next_dry_run": "passed; non-promoting",
+    "check_qwen38_primary_claims": "passed",
+    "target_native_direct_required_http_sse": "passed",
+    "target_required_ax_no_spec_rejection": "passed"
+  },
+  "helpers": [
+    {
+      "cli": "Claude Code",
+      "model": "claude-opus-5-5",
+      "final_exit_code": 0
+    },
+    {
+      "cli": "Muse",
+      "model": "muse-spark-1.3-contributor",
+      "final_exit_code": 0
+    },
+    {
+      "cli": "Grok",
+      "model": "grok-4.7-build",
+      "final_exit_code": 0
+    }
+  ],
+  "qualification": false,
+  "release_ready": false
+}

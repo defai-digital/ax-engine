@@ -36,7 +36,7 @@ MiniCPM-V, and others) are documented under
 - **Mac mini M4 Pro 64 GB** — best experience and qualification SKU for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); MXFP4 SKU qualification pending
 - **MacBook Pro M5 Max 128 GB** — benchmark host; historical 6-bit numbers do not qualify MXFP4
 - **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer) with 192 GB+ RAM** — qualification target for Qwen 3.8 Flash Next MXFP4 MTP
-  (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the pinned MXFP4 MTP pack.
+  (125B-A6B). Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the pinned MXFP4 MTP pack.
 
 Compact single models (Qwen 3.5 9B 4-bit preferred) still fit **16 GB**. Prefer
 4-bit for headroom on that class.

@@ -3,14 +3,14 @@
 Scope updated **2026-10-04**: MLX AXQ MXFP4 / MXFP8 with MTP sidecars only.
 `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select
 `AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP` at
-`0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35`. Standalone affine packs are
+`ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3`. Standalone affine packs are
 retired; MXFP8 pack audit and native admission are pending. Older affine
 receipts below are historical and do not qualify MX packs.
 See [format policy](../QWEN38-FORMAT-POLICY.md).
 
 Status: **Candidate; release qualification open**
 
-Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
 Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+**
 (corrected from the original MacBook Pro M5 Max 128 GB target by
@@ -19,7 +19,7 @@ Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+
 Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. The
 M5 Max 128 GB evidence recorded below remains historical evidence for the
 Auto expert-paging code path; it does not by itself qualify the corrected
-target. Last reviewed: **2026-09-23**.
+target. Last reviewed: **2026-10-04**.
 
 On 2026-09-23 the MXFP4 MTP direct-fallback behaviour was root-caused and
 instrumented. The draft cursor is created only on a genuine cold-start prefill,
@@ -43,9 +43,9 @@ omlx/MTPLX/ds4 peer-benchmark contract
 revision and required `/metrics` series, and fails closed under
 `--require-preconditions` when a precondition is absent (the default and
 `--dry-run` paths report the absent preconditions and exit 0).
-**No gate closes from either change; the peer
-numbers remain unverified because no Flash Next weights and no Ultra-class
-host exist on the authoring machine.**
+**No gate closes from either change. At that review, peer numbers were
+unverified because the authoring machine lacked Flash Next weights and an
+Ultra-class host. Exact-pack peer execution is still unvalidated.**
 
 "MTP Tier 2 pending" here uses the same three-gate vocabulary as the
 [Qwen 3.8 27B record](qwen3.8-27b-axq.md#what-mtp-tier-2-pending-means):
@@ -57,9 +57,9 @@ by itself close any gate.
 ## Current target and open gates
 
 The target is
-[`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/tree/0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35)
-at revision `0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35`. Published file
-metadata totals 132,261,853,669 bytes. Default MXFP4/group32 coexists with
+[`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP`](https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/tree/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3)
+at revision `ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3`. Published file
+metadata totals 132,261,877,478 bytes. Default MXFP4/group32 coexists with
 per-tensor affine8/group32 overrides and an affine8/group64 output head;
 the protected MTP sidecar is BF16.
 Storage medium and connection must be recorded for each campaign; older
@@ -69,6 +69,33 @@ its experimental status. Standalone affine formats, including 2/6-bit,
 are retired regardless of experimental flags. Small generated-tensor controls
 cover bounded U8 scale reads, full-layer/selected-row equivalence, malformed
 layouts and I/O recovery; target whole-model qualification is still open.
+
+[Current native functional controls](../../benchmarks/results/qualification/2026-10-04-flash-next-mxfp4-native-support/README.md)
+verify the 49-file current pack on Mac Studio M2 Ultra, 192 GiB, internal
+SSD with MLX 0.32.3. Direct and explicit required-MTP HTTP/SSE requests
+complete with correct count/JSON controls, repeated and extended prompts,
+post-stream reuse and a one-token budget. Family-specific verifier counters
+prove that the required path executes MTP; attach, prefill and step errors
+remain zero. `Required` plus `AX_NO_SPEC` rejects session activation.
+The native manifest, server binary, pack contents and staging receipt are
+bound before and after the controls. These bounded functional controls do
+not qualify model quality, long contexts, performance or MTP-S/P/D. The
+older 47-file pack receipts below remain historical and do not bind the
+15 changed trunk shards in this revision.
+
+To run the explicit experimental route after downloading the pinned pack:
+
+```bash
+ax-engine download qwen3.8-flash-next:mxfp4
+ax-engine serve qwen3.8-flash-next:mxfp4 -- --model-id qwen3.8-flash-next:mxfp4 --mlx-mtp-policy required --stream-experts auto --disable-ngram-acceleration
+```
+
+MTP controls use greedy text decoding (`temperature: 0`) without logits
+processors, with thinking disabled. The functional matrix disables generic
+n-gram acceleration to isolate the trained head. Other sampling, multimodal
+or thinking controls may use direct fallback; this receipt does not qualify
+those MTP paths. Default MTP remains off until its separate promotion gate.
+MXFP8 admission remains pending.
 
 [Pinned pack audit](../../benchmarks/results/qualification/2026-09-17-flash-next-mxfp4-paging/pack-audit.json)
 records full file hashes and quantization geometry. Successful Hub staging does
@@ -314,8 +341,8 @@ quality or later-candidate qualification result.
 Six-bit is excluded from this target campaign. The former Studio M5 Ultra
 256 GB target, the intermediate MacBook Pro M5 Max 128 GB target, and all
 affine results below are historical; they do not qualify MXFP4 on the
-current Ultra-class 192 GB+ target. Existing download aliases retain their
-original pack identity.
+current Ultra-class 192 GB+ target. Historical affine artifact identities remain unchanged; retired aliases
+return migration errors.
 
 | Gate | Current target state |
 | --- | --- |
@@ -338,10 +365,12 @@ Request-owned state, prefix serialization/restore, expert paging and native
 HTTP/SSE are implemented. N-gram table payloads are excluded from weight-load
 evaluation. Selected-expert and selected-prefill paths remain opt-in.
 
-The CLI maps `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:axq-6bit` to
-`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-4bit-MTP` and
-`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP`, respectively. An alias is
-not proof of published-pack availability or successful download qualification.
+The CLI maps `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` to
+`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP`, revision
+`ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3`. Explicit affine selectors,
+including `qwen3.8-flash-next:axq-6bit`, return a migration error.
+The current native functional receipt is distinct from the historical
+affine execution and delivery evidence below.
 Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 `de4b8e4d43b917e7706784d8bb445c9af86a3540`.
 

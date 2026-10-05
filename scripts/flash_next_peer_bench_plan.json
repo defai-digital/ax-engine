@@ -11,8 +11,8 @@
   },
   "pack": {
     "repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
-    "revision": "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35",
-    "published_bytes": 132261853669,
+    "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "published_bytes": 132261877478,
     "format": "MXFP4/group32 with per-tensor affine overrides and a BF16 MTP sidecar",
     "env_override": "AX_ENGINE_FLASH_NEXT_PACK_DIR",
     "admission_env": "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL"

@@ -7,6 +7,7 @@ import importlib.util
 import contextlib
 import io
 import json
+import struct
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,30 @@ def _product_manifest() -> dict[str, object]:
     }
 
 
+def _write_sidecar(root: Path) -> None:
+    (root / "mtplx_runtime.json").write_text(json.dumps({"mtp_norm_layout": "raw_hf_delta"}))
+    tensors = {f"mtp.tensor.{i}": {"dtype": "BF16", "shape": [1],
+                "data_offsets": [2*i, 2*i+2]} for i in range(31)}
+    header = json.dumps(tensors).encode()
+    (root / "mtp.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + bytes(62))
+
+
 class QualifyFlashNextTest(unittest.TestCase):
+    def test_preflight_rejects_boolean_geometry_and_falsy_invalid_blockers(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config.json").write_text("{}")
+            _write_sidecar(root)
+            for field in ("layer_count", "hidden_size", "blockers"):
+                manifest = _product_manifest()
+                if field == "blockers":
+                    manifest["runtime_status"][field] = False
+                else:
+                    manifest[field] = True
+                (root / "model-manifest.json").write_text(json.dumps(manifest))
+                with self.subTest(field=field), self.assertRaises(SystemExit):
+                    mod._live_preflight(root)
+
     def test_contract_distinguishes_mxfp4_target_from_affine_compatibility(self) -> None:
         payload = mod.contract()
         self.assertEqual(payload["family"], "qwen4_exp")
@@ -81,6 +105,7 @@ class QualifyFlashNextTest(unittest.TestCase):
                 json.dumps(_product_manifest()),
                 encoding="utf-8",
             )
+            _write_sidecar(model_dir)
             mod._live_preflight(model_dir)
 
     def test_live_preflight_mxfp4_needs_no_opt_in_and_rejects_unknown_layout(self) -> None:
@@ -106,6 +131,7 @@ class QualifyFlashNextTest(unittest.TestCase):
             (model_dir / "model-manifest.json").write_text(json.dumps(mxfp4), encoding="utf-8")
             # MXFP4/group32 preflights without the experimental opt-in; the
             # certification record (Candidate, gates open) tracks its status.
+            _write_sidecar(model_dir)
             mod._live_preflight(model_dir)
             with patch.dict("os.environ", {"AX_ENGINE_FLASH_NEXT_EXPERIMENTAL": "1"}):
                 mod._live_preflight(model_dir)
@@ -114,6 +140,31 @@ class QualifyFlashNextTest(unittest.TestCase):
             (model_dir / "model-manifest.json").write_text(json.dumps(mxfp4))
             with self.assertRaisesRegex(SystemExit, "unsupported expert layout"):
                 mod._live_preflight(model_dir)
+
+    def test_sidecar_metadata_fails_closed_before_any_payload_load(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with self.assertRaisesRegex(SystemExit, "requires mtp.safetensors"):
+                mod._mtp_metadata(root)
+            _write_sidecar(root)
+            self.assertEqual(mod._mtp_metadata(root)["tensor_count"], 31)
+            (root / "mtplx_runtime.json").write_text('{}')
+            with self.assertRaisesRegex(SystemExit, "mtp_norm_layout"):
+                mod._mtp_metadata(root)
+            _write_sidecar(root)
+            raw = (root / "mtp.safetensors").read_bytes()
+            for label, corrupt in [("truncated length", raw[:4]),
+                                   ("oversized header", struct.pack("<Q", 64*1024*1024+1)),
+                                   ("truncated payload", raw[:-1])]:
+                with self.subTest(label=label):
+                    (root / "mtp.safetensors").write_bytes(corrupt)
+                    with self.assertRaises(SystemExit):
+                        mod._mtp_metadata(root)
+            _write_sidecar(root)
+            raw = (root / "mtp.safetensors").read_bytes().replace(b'BF16', b'U32 ')
+            (root / "mtp.safetensors").write_bytes(raw)
+            with self.assertRaisesRegex(SystemExit, "unsupported sidecar tensor"):
+                mod._mtp_metadata(root)
 
     def test_metadata_preflight_never_establishes_qualification(self) -> None:
         self.assertFalse(mod.contract()["release_ready"])
@@ -126,6 +177,7 @@ class QualifyFlashNextTest(unittest.TestCase):
             root = Path(td)
             (root / "config.json").write_text("{}")
             (root / "model-manifest.json").write_text(json.dumps(_product_manifest()))
+            _write_sidecar(root)
             mod._live_preflight(root)
         payload = mod.contract()
         self.assertEqual(payload["mtp_certification"], expected)
@@ -159,6 +211,7 @@ class QualifyFlashNextTest(unittest.TestCase):
             (root / "model-manifest.json").write_text(json.dumps(_product_manifest()))
             out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                _write_sidecar(root)
                 code = mod.main(["--model-dir", str(root), "--json"])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out.getvalue())["family"], mod.contract()["family"])

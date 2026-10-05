@@ -143,15 +143,17 @@ fn build_mlx_core(
     .map_err(|e| {
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
     })?;
-    // `Required` means MTP must run: an attached but uncertified/conflicting
-    // drafter is not route-safe and would silently decode direct.
-    if config.mlx_mtp_policy == MlxMtpPolicy::Required && !runner.mtp_usable() {
-        return Err(EngineSessionError::MlxMtpRequiredButUnavailable);
-    }
     runner.set_mtp_requested(mtp_requested_for_policy(
         config.mlx_mtp_policy,
         runner.mtp_certified_default_on(),
     ));
+    // Validate the resolved activation, including the process kill switch.
+    // A usable attached head alone does not mean the setter enabled MTP.
+    validate_mtp_activation(
+        config.mlx_mtp_policy,
+        runner.mtp_usable(),
+        runner.mtp_requested(),
+    )?;
     // Couple PR4 FA private pool capacity to the session logical block table
     // when the opt-in flag is engaged (default remains OFF / contiguous).
     runner.align_fa_block_pool_to_kv(
@@ -167,6 +169,18 @@ fn build_mlx_core(
     // diffusion models (and PrefillChunk / TokenDecode for AR) per request.
     core.set_generation_kind(artifacts.manifest().generation_kind());
     Ok(core)
+}
+
+#[cfg(any(feature = "mlx-native", test))]
+fn validate_mtp_activation(
+    policy: MlxMtpPolicy,
+    usable: bool,
+    requested: bool,
+) -> Result<(), EngineSessionError> {
+    if policy == MlxMtpPolicy::Required && (!usable || !requested) {
+        return Err(EngineSessionError::MlxMtpRequiredButUnavailable);
+    }
+    Ok(())
 }
 
 /// Map the session MTP policy to the runner's `set_mtp_requested` argument.
@@ -220,6 +234,21 @@ mod tests {
         for value in ["", "0", "false", "no", "enabled"] {
             assert!(!prefix_reuse_disabled_value(value));
         }
+    }
+
+    #[test]
+    fn required_mtp_rejects_activation_suppressed_by_kill_switch() {
+        assert!(matches!(
+            validate_mtp_activation(MlxMtpPolicy::Required, true, false),
+            Err(EngineSessionError::MlxMtpRequiredButUnavailable)
+        ));
+        assert!(matches!(
+            validate_mtp_activation(MlxMtpPolicy::Required, false, true),
+            Err(EngineSessionError::MlxMtpRequiredButUnavailable)
+        ));
+        assert!(validate_mtp_activation(MlxMtpPolicy::Required, true, true).is_ok());
+        assert!(validate_mtp_activation(MlxMtpPolicy::Auto, true, false).is_ok());
+        assert!(validate_mtp_activation(MlxMtpPolicy::Disabled, true, false).is_ok());
     }
 
     #[test]

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "purpose": "bounded native functional support; no quality, speed, MTP-S/P/D or default promotion",
+  "base_commit": "9c330ad3ac5d2f554553e4b2de1fac932de1605e",
+  "runtime_dirty_paths": [
+    "crates/ax-engine-sdk/src/session/native.rs",
+    "crates/ax-engine-sdk/src/session/errors.rs"
+  ],
+  "runtime_sources_sha256": "2db126176811bd97f4b93af00d482437e08a73f51229731dc0ee47063bb05d8c",
+  "runtime_source_files": 370,
+  "server_sha256": "efe6b3f3c9b5d4e09aaffc7523a3969b3f1382348802d7fe7b8258d35e046f6a",
+  "build_profile": "release-server",
+  "rust_toolchain": "1.97.1",
+  "mlx_version": "0.32.3",
+  "mlx_assets_sha256": {
+    "libmlx.dylib": "ebc8a5f5465afb79d3d9c8f5b0929de1a9b277b7179db8672f92da77ae110a1e",
+    "libjaccl.dylib": "949e901df832d600a71ff2bc5f3738d55b010668102f36e071e1890807a965cd",
+    "mlx.metallib": "95974b7de464ec2be7833a914ca5a53d283a70789470fd84218738fc8fcea3e1"
+  },
+  "executed_harness_sha256": "dc089f16747868e7f60f109d02b5edbc8d8bd266344d447f6bfa50965e292bb5",
+  "executed_preflight_sha256": "a686cacfce1bd4290e939ace1bf889ff8ba90ec48302f651725abc581245e23e",
+  "tracked_harness_sha256": "dc089f16747868e7f60f109d02b5edbc8d8bd266344d447f6bfa50965e292bb5",
+  "preflight_followup": "The committed preflight additionally rejects boolean geometry and falsy non-list blockers; these valid pack metadata values are unaffected.",
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "published_members": 49,
+  "published_bytes": 132261877478,
+  "source_model_revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+  "functional_controls_passed": true,
+  "qualification": false,
+  "release_ready": false,
+  "mtp_gates": {
+    "MTP-S": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-D": "not_assessed"
+  },
+  "default_mtp_changed": false,
+  "raw_artifacts_sha256": {
+    "disabled-after_stream.json": "0b3a7c97dddcc596c8085aee6fa7c7f111cddcbe9d6374abe939dfa5bb67b175",
+    "disabled-count.json": "96eb497bb267803ae4cda47f76190feabd9137240b311da5954a15e7bf1bab21",
+    "disabled-extend.json": "1cc8f11a8337366c0bb428f904e936030ff501cfd7e6f3cbbc28f13f36c91170",
+    "disabled-json.json": "6cf89ad412ef2f79dd101eee38981c3db962791988835864e3142f6d1678f6e9",
+    "disabled-one_token.json": "d009515d6af2e44e915836dbab7ca0ae7c2797d1e7eb40708eaed3b018c8f0d0",
+    "disabled-repeat.json": "6aa781d093b41e9e3caae2519979946b76f6cf65b9decec798188faa01f72f12",
+    "disabled-stream.json": "c63c6454b42e3565a9aab0bb17976b7b3e1f32bd35e88d129e9f2e02f4ba556c",
+    "disabled-stream.sse": "24271a080e615a09d25589b570720829153d855ec916fa9547903260132d589f",
+    "pack-inventory.json": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+    "required-after_stream.json": "07dd7d821bc6a5fe875deba97360624eb9ba7a7bea9de4e83bcabfd575f0708b",
+    "required-count.json": "b5a239cd0907b0c13da6652c2f642ba87b334c9d9a66a6ee5aa2431f46a66d72",
+    "required-extend.json": "c854c3b8371b4e536230c6ea8c7535aab4570744b98396844c8ce339413efc14",
+    "required-json.json": "3fcbd17bb7f2bb9112e456f38b7ef28fae5858e73d3376240d7f48c1cb91a740",
+    "required-one_token.json": "e462bcf7f044bcdf733945239173ea23511f7cdd5eb170a3957cb395c9e39ba6",
+    "required-repeat.json": "a900126d50f52db12d44745d55d68e61811c2e3167057976b68de682d1665b0e",
+    "required-stream.json": "befcd4239bd9131e326618b19e7dbaf09b1d63ef499d34791213882a6d38f6ac",
+    "required-stream.sse": "352e0794a653bddb2aad9318ef5af73e2acef22d1ff04eb468c2c7c8df28d230",
+    "result.json": "a6991ad8473ba68733aea6781a85d0af7737a2fa9d14d39b1f4ecdba2a6a64e8",
+    "runtime-sources.json": "2db126176811bd97f4b93af00d482437e08a73f51229731dc0ee47063bb05d8c",
+    "server-disabled.log": "f0ec15fc4db5d82aa562e1c2a8c921bf04a228cdf4219c5f8c7e8e7ea81d1fcd",
+    "server-required-kill-switch.log": "5538ca792341f5cdd4f26131e59f4f08def4d447480364fc8cf12e5df352e3f2",
+    "server-required.log": "72def53b9e1f1ba79a2d18fb7e629f274bb57f72a1b329b062e5818d1a48c987",
+    "software-gates.json": "9cc055142c94ebc152c7ea5991eb23731775592803636d578042832d8bc005c2"
+  }
+}

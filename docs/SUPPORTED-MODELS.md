@@ -66,7 +66,7 @@ resolved session*, not how well a family is supported.
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
 | **64 GB (Mac mini M4 Pro)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); MXFP4 SKU qualification pending |
 | **128 GB (MacBook Pro M5 Max)** | 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill) |
-| **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M2 Ultra or newer)** | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. Super-class Qwen 3.8 (2.4T) stays experimental. |
+| **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M2 Ultra or newer)** | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
 Hardware detail: [FAQ — What hardware does AX Engine support?](FAQ.md#what-hardware-does-ax-engine-support).
@@ -119,7 +119,7 @@ Qwen 3.8 caveat:
   the unique general-purpose default and primary optimization target.
   Checkpoint Tier 1; MTP Tier 2 pending; AX certification record Candidate.
 - **Qwen 3.8 Flash Next** (`model_type=qwen4_exp`, 125B-A6B) is a second SKU
-  for Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
+  for Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
   CLI aliases `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4`
   select MXFP4 MTP. Standalone affine packs are retired, including 6-bit;
   experimental flags cannot bypass this policy. MXFP8 MTP remains in scope

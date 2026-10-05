@@ -984,7 +984,7 @@ MODEL_PROFILES = (*MODEL_PROFILES, *AUTOMATOSX_MODEL_PROFILES)
 # checkpoint-level quality, runtime, and memory gates are published and pass.
 _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP": (
-        "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35"
+        "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
     ),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": ("6182ccbc41c7397ff90670f740c6d9eacfa4b09f"),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP": ("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"),

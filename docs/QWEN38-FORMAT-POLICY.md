@@ -8,7 +8,7 @@ Other model families retain their existing support.
 | Model | Current selector | Pinned MXFP4 MTP revision | MXFP8 MTP |
 | --- | --- | --- | --- |
 | Qwen 3.8 27B | `qwen3.8-27b:axq`, `qwen3.8-27b:axq-mxfp4`, `qwen3.8-27b:mxfp4` | `b2c5354f779e430d0c1733143db848a72b71c16e` | Pack admission and SKU qualification pending |
-| Qwen 3.8 Flash Next | `qwen3.8-flash-next:axq`, `qwen3.8-flash-next:mxfp4` | `0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35` | Audited pack and dedicated native-path admission pending |
+| Qwen 3.8 Flash Next | `qwen3.8-flash-next:axq`, `qwen3.8-flash-next:mxfp4` | `ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3` | Audited pack and dedicated native-path admission pending |
 
 The generic AXQ selectors now resolve to MXFP4 MTP. An explicitly named
 retired format, such as `qwen3.8-27b:axq-6bit`, returns a migration error;

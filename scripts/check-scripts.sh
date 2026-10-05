@@ -224,6 +224,8 @@ bash scripts/check-qa.sh
   scripts/qwen38_live_gate.py \
   scripts/test_qualify_qwen38_27b.py \
   scripts/qualify_qwen38_flash_next.py \
+  scripts/check_flash_next_native_support.py \
+  scripts/test_check_flash_next_native_support.py \
   scripts/test_curate_flash_next_evidence.py \
   scripts/test_qualify_qwen38_flash_next.py \
   scripts/verify_flash_next_runner_states.py \
@@ -315,6 +317,7 @@ bash scripts/check-qa.sh
   scripts/test_qualify_qwen38_27b.py \
   scripts/test_curate_flash_next_evidence.py \
   scripts/test_qualify_qwen38_flash_next.py \
+  scripts/test_check_flash_next_native_support.py \
   scripts/test_verify_flash_next_runner_states.py \
   scripts/test_verify_flash_next_mtp_transactions.py \
   scripts/test_qwen38_primary_alias.py \
@@ -372,6 +375,7 @@ bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_qwen38_primary_claims.py
 "$PYTHON_BIN" scripts/qualify_qwen38_27b.py --dry-run
 "$PYTHON_BIN" scripts/qualify_qwen38_flash_next.py --dry-run
+"$PYTHON_BIN" scripts/check_flash_next_native_support.py --dry-run
 "$PYTHON_BIN" scripts/check_no_turboquant_references.py
 "$PYTHON_BIN" scripts/test_check_disk_prefix_cache_promotion.py
 "$PYTHON_BIN" scripts/check_disk_prefix_cache_promotion.py --help >/dev/null

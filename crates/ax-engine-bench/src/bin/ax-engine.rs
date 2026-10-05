@@ -34,7 +34,7 @@ impl ModelProfile {
 fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
     match profile.repo_id {
         "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP" => {
-            Some("0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35")
+            Some("ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3")
         }
         "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP" => {
             Some("6182ccbc41c7397ff90670f740c6d9eacfa4b09f")
@@ -246,7 +246,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3.8-flash-next:axq-mxfp4",
         ],
         downloadable: true,
-        approx_size_bytes: Some(132_261_853_669),
+        approx_size_bytes: Some(132_261_877_478),
     },
     ModelProfile {
         label: "gemma4-12b",
@@ -4901,7 +4901,7 @@ mod tests {
         );
         assert_eq!(
             profile_revision(flash),
-            Some("0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35")
+            Some("ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3")
         );
         let (repo, _, revision) = download_repo_id(
             "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP@b2c5354f779e430d0c1733143db848a72b71c16e",

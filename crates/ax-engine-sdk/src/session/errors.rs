@@ -52,7 +52,7 @@ pub enum EngineSessionError {
     )]
     MlxRuntimeUnavailable,
     #[error(
-        "MLX MTP was required, but the loaded model package has no validated MTP head or assistant drafter"
+        "MLX MTP was required, but no usable drafter was activated; check the model sidecar, route eligibility, and AX_NO_SPEC"
     )]
     MlxMtpRequiredButUnavailable,
     #[error("request_id must be greater than zero")]

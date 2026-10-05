@@ -14,6 +14,8 @@ import argparse
 import contextlib
 import json
 import sys
+import struct
+import math
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -21,10 +23,10 @@ FAMILY = "qwen4_exp"
 HOST_CLASS = "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+"
 PRIMARY_ALIAS = "qwen3.8-flash-next:mxfp4"
 PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP"
-PACK_REVISION = "0b0bf6c1603054df4a8eef0d4bc96bd4672d2c35"
+PACK_REVISION = "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
 SOURCE_REVISION = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
 STATUS = (
-    "Second SKU. MXFP4 MTP target; native support and checkpoint qualification pending. MTP Tier 2 pending. "
+    "Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."
 )
 EXPERIMENTAL_EXPERT_LAYOUTS = (
@@ -70,7 +72,7 @@ def contract() -> dict[str, Any]:
         "qualification_storage": "record the actual storage medium and connection; no cross-storage inference",
         "release_ready": False,
         "qualification": False,
-        "validation_scope": "manifest metadata only; native loader validation required",
+        "validation_scope": "manifest and sidecar header metadata only; native loader validation required",
         "convert": "metadata mapping; retired affine readiness is not MXFP4 readiness",
         "load_blocker": "none: MXFP4/group32 loads without an env var; target qualification pending",
         "unknown_layout_blocker": "qwen4_exp_weight_layout_unknown",
@@ -165,6 +167,63 @@ def _expert_layouts(manifest: dict[str, Any]) -> list[tuple[str, int, int]]:
     return layouts
 
 
+def _mtp_metadata(model_dir: Path) -> dict[str, Any]:
+    """Inspect bounded sidecar metadata without loading its 5 GB payload."""
+    runtime = model_dir / "mtplx_runtime.json"
+    sidecar = model_dir / "mtp.safetensors"
+    if not runtime.is_file() or not sidecar.is_file():
+        raise SystemExit("MXFP4 MTP requires mtp.safetensors and mtplx_runtime.json")
+    try:
+        declaration = json.loads(runtime.read_text(encoding="utf-8"))
+        if not isinstance(declaration, dict) or declaration.get("mtp_norm_layout") not in (
+            "raw_hf_delta", "mlx_multiplier"
+        ):
+            raise ValueError("mtp_norm_layout must be raw_hf_delta or mlx_multiplier")
+        with sidecar.open("rb") as handle:
+            raw_length = handle.read(8)
+            if len(raw_length) != 8:
+                raise ValueError("truncated sidecar header length")
+            header_length = struct.unpack("<Q", raw_length)[0]
+            if not 0 < header_length <= 64 * 1024 * 1024:
+                raise ValueError("sidecar header exceeds the bounded metadata contract")
+            raw_header = handle.read(header_length)
+            if len(raw_header) != header_length:
+                raise ValueError("truncated sidecar header")
+        header = json.loads(raw_header)
+        if not isinstance(header, dict):
+            raise ValueError("sidecar header must be an object")
+        tensors = {name: info for name, info in header.items() if name != "__metadata__"}
+        if len(tensors) != 31:
+            raise ValueError("Flash Next MTP requires 31 sidecar tensors")
+        payload_bytes = sidecar.stat().st_size - 8 - header_length
+        spans = []
+        for name, info in tensors.items():
+            if not name.startswith("mtp.") or not isinstance(info, dict):
+                raise ValueError(f"invalid sidecar tensor {name}")
+            width = {"BF16": 2, "F16": 2, "F32": 4}.get(info.get("dtype"))
+            shape, offsets = info.get("shape"), info.get("data_offsets")
+            if (width is None or not isinstance(shape, list) or not shape
+                    or any(type(dim) is not int or dim <= 0 for dim in shape)
+                    or not isinstance(offsets, list) or len(offsets) != 2
+                    or any(type(offset) is not int for offset in offsets)):
+                raise ValueError(f"unsupported sidecar tensor metadata: {name}")
+            start, end = offsets
+            if not 0 <= start < end <= payload_bytes or end - start != math.prod(shape) * width:
+                raise ValueError(f"invalid sidecar payload range: {name}")
+            spans.append((start, end))
+        position = 0
+        for start, end in sorted(spans):
+            if start != position:
+                raise ValueError("sidecar payload ranges overlap or have gaps")
+            position = end
+        if position != payload_bytes:
+            raise ValueError("sidecar payload has unbound trailing bytes")
+    except (OSError, ValueError, TypeError) as error:
+        raise SystemExit(f"invalid Flash Next MTP metadata: {error}") from error
+    return {"tensor_count": len(tensors), "mtp_norm_layout": declaration["mtp_norm_layout"],
+            "payload_bytes": payload_bytes, "scope": "header metadata; native names/geometry checks required"}
+
+
 def _live_preflight(model_dir: Path) -> None:
     if not model_dir.is_dir():
         raise SystemExit(f"model dir is not a directory: {model_dir}")
@@ -185,7 +244,7 @@ def _live_preflight(model_dir: Path) -> None:
     status = manifest.get("runtime_status") or {}
     if not isinstance(status, dict):
         raise SystemExit("runtime_status must be an object")
-    blockers = status.get("blockers") or []
+    blockers = status.get("blockers", [])
     if not isinstance(blockers, list):
         raise SystemExit("runtime_status.blockers must be a list")
     if blockers:
@@ -200,9 +259,9 @@ def _live_preflight(model_dir: Path) -> None:
         raise SystemExit("manifest tensors must be a nonempty list")
     layer_count = manifest.get("layer_count")
     hidden_size = manifest.get("hidden_size")
-    if not isinstance(layer_count, int) or layer_count <= 0:
+    if type(layer_count) is not int or layer_count <= 0:
         raise SystemExit("layer_count must be > 0")
-    if not isinstance(hidden_size, int) or hidden_size <= 0:
+    if type(hidden_size) is not int or hidden_size <= 0:
         raise SystemExit("hidden_size must be > 0")
     layouts = _expert_layouts(manifest)
     if len(layouts) > 1:
@@ -212,10 +271,11 @@ def _live_preflight(model_dir: Path) -> None:
     }
     if not layouts:
         raise SystemExit("manifest has no quantized expert tensors")
-    if layouts[0][0] == "mxfp4":
-        print("MXFP4/group32 preflight: no experimental opt-in required")
     if layouts[0] not in allowed:
         raise SystemExit(f"unsupported expert layout {layouts[0]}; standalone affine packs retired, MXFP8 admission pending")
+    sidecar = _mtp_metadata(model_dir)
+    print(f"MTP sidecar metadata: {sidecar['tensor_count']} tensors; {sidecar['mtp_norm_layout']}")
+    print("MXFP4/group32 preflight: no experimental opt-in required")
     print(f"live preflight ok: {model_dir}")
     print(f"family qwen4_exp; declared ready and {layouts[0]} layout; metadata preflight only")
     print("this metadata preflight does not qualify the MXFP4 MTP target")
