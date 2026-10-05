@@ -113,7 +113,13 @@ def disconnect_midstream(base: str) -> dict[str, Any]:
     body = json.dumps(chat_body(LONG_PROMPT, 512, stream=True))
     conn.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
     response = conn.getresponse()
-    first = response.fp.readline()
+    first = b""
+    for _ in range(50):  # chunked framing puts size lines before the first data line
+        first = response.fp.readline()
+        if first.startswith(b"data:") or not first:
+            break
+    if not first.startswith(b"data:"):
+        raise ValueError("stream produced no data event before the disconnect")
     seen_active = 0.0
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and seen_active < 1:
@@ -121,7 +127,9 @@ def disconnect_midstream(base: str) -> dict[str, Any]:
         time.sleep(0.2)
     conn.sock.shutdown(socket.SHUT_RDWR)
     conn.close()
-    return {"first_event_received": first.startswith(b"data:"), "active_streams_while_open": seen_active}
+    if seen_active < 1:
+        raise ValueError("server never reported the open stream as active")
+    return {"first_event_received": True, "active_streams_while_open": seen_active}
 
 
 def run_actions(base: str, mode: str) -> list[dict[str, Any]]:
