@@ -92,6 +92,9 @@ class QaCohortTests(unittest.TestCase):
         self.assertFalse(contract["qualification"])
         self.assertFalse(contract["release_ready"])
         self.assertEqual(contract["items"], 105)
+        # The pool must hold the 29,774-token lookup plus its output budget.
+        self.assertGreater(contract["total_blocks"] * contract["block_size_tokens"],
+                           29774 + contract["long_budget"])
         self.assertEqual(contract["modes"], ["disabled", "required"])
 
     def test_live_run_requires_all_inputs(self):

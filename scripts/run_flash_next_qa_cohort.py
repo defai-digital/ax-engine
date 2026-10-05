@@ -38,6 +38,9 @@ LONG_BUDGET = 64
 LONG_ID = "long_context_record_mass"
 REQUEST_TIMEOUT = 1800
 READY_TIMEOUT = 900
+# The default KV pool (16 tokens x 1024 blocks) caps context at 16,384 tokens,
+# below the 29,774-token lookup; the original cohort ran with 4,096 blocks.
+TOTAL_BLOCKS = 4096
 MODEL_ID = "qwen3.8-flash-next:mxfp4"
 
 # Runs in the frozen directory so the original checkers grade the answers.
@@ -130,8 +133,10 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, items: list[dict
     started = time.monotonic()
     rows: list[dict[str, Any]] = []
     with log_path.open("ab") as log:
-        process = subprocess.Popen(native.server_command(server, root, mode, port), stdout=log,
-                                   stderr=log, env=native.server_env(), start_new_session=True)
+        command = [*native.server_command(server, root, mode, port),
+                   "--total-blocks", str(TOTAL_BLOCKS)]
+        process = subprocess.Popen(command, stdout=log, stderr=log, env=native.server_env(),
+                                   start_new_session=True)
         rss = RssPeak(process.pid)
         try:
             while True:
@@ -224,6 +229,7 @@ def main() -> int:
                 "items": len(items), "items_sha256": sha256_bytes(args.items.read_bytes()),
                 "modes": list(MODES), "short_budget": SHORT_BUDGET, "long_budget": LONG_BUDGET,
                 "temperature": 0, "thinking": "disabled", "expert_stream": "auto",
+                "total_blocks": TOTAL_BLOCKS, "block_size_tokens": 16,
                 "request_timeout_seconds": REQUEST_TIMEOUT, "grader": "frozen closed_checks",
                 "qualification": False, "release_ready": False,
                 "scope": "functional and closed-answer QA; MTP-S/P/D and performance not assessed"}
