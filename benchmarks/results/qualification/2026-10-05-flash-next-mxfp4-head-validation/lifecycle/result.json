@@ -1,0 +1,314 @@
+{
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "modes": [
+    "disabled",
+    "required"
+  ],
+  "actions": [
+    "baseline",
+    "sse",
+    "budget_1",
+    "budget_2",
+    "stop",
+    "disconnect",
+    "recovery"
+  ],
+  "counters": [
+    "ax_engine_jobs_in_flight",
+    "ax_engine_generation_jobs_pending",
+    "ax_engine_generation_commands_queued",
+    "ax_engine_generation_active_streams",
+    "ax_engine_generation_buffered_stream_events"
+  ],
+  "total_blocks": 4096,
+  "expert_stream": "auto",
+  "qualification": false,
+  "release_ready": false,
+  "scope": "API lifecycle; MTP-S/P/D, quality and performance not assessed",
+  "server_sha256": "2e8e7a3ca1c46a182d7f381eadf28f9542e7aed2d3481ef49395b5cb82d49ed3",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "hardware": {
+    "form_factor": "Mac Studio",
+    "soc": "Apple M2 Ultra",
+    "memory_bytes": 206158430208,
+    "storage": {
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true,
+      "bus_protocol": "Apple Fabric"
+    },
+    "os": "27.0.1"
+  },
+  "lifecycle_passed": true,
+  "runs": [
+    {
+      "mode": "disabled",
+      "ready_seconds": 32.14,
+      "actions": [
+        {
+          "mode": "disabled",
+          "action": "baseline",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67
+          },
+          "activation_delta": {
+            "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+            "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+            "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+            "ax_engine_flash_next_mtp_step_errors_total": 0.0
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "sse",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "budget_1",
+          "text": "1",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 1,
+            "total_tokens": 31
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "budget_2",
+          "text": "1,",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "total_tokens": 32
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "stop",
+          "text": "1, 2, 3, ",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "disconnect",
+          "first_event_received": true,
+          "active_streams_while_open": 1.0,
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "disabled",
+          "action": "recovery",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        }
+      ],
+      "exit_code_after_stop": 0
+    },
+    {
+      "mode": "required",
+      "ready_seconds": 59.226,
+      "actions": [
+        {
+          "mode": "required",
+          "action": "baseline",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67
+          },
+          "activation_delta": {
+            "ax_engine_flash_next_mtp_verified_steps_total": 19.0,
+            "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+            "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+            "ax_engine_flash_next_mtp_step_errors_total": 0.0
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "sse",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "budget_1",
+          "text": "1",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 1,
+            "total_tokens": 31
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "budget_2",
+          "text": "1,",
+          "finish_reason": "length",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 2,
+            "total_tokens": 32
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "stop",
+          "text": "1, 2, 3, ",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "disconnect",
+          "first_event_received": true,
+          "active_streams_while_open": 1.0,
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        },
+        {
+          "mode": "required",
+          "action": "recovery",
+          "text": "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12",
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 30,
+            "completion_tokens": 37,
+            "total_tokens": 67
+          },
+          "drained": {
+            "ax_engine_jobs_in_flight": 0.0,
+            "ax_engine_generation_jobs_pending": 0.0,
+            "ax_engine_generation_commands_queued": 0.0,
+            "ax_engine_generation_active_streams": 0.0,
+            "ax_engine_generation_buffered_stream_events": 0.0
+          }
+        }
+      ],
+      "exit_code_after_stop": 0
+    }
+  ]
+}
