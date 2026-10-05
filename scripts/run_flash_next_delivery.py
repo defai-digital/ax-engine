@@ -76,11 +76,21 @@ def snapshot_dir(cache_root: Path) -> Path:
     return snapshots / native.PACK_REVISION
 
 
-def clean_env(cache_root: Path, python: Path) -> dict[str, str]:
-    """Product-default environment for the downloader, with only the cache and interpreter set."""
+def clean_env(cache_root: Path, python: Path, helper: Path | None = None,
+              bench: Path | None = None) -> dict[str, str]:
+    """Environment for the downloader: inherited overrides dropped, the stated inputs set.
+
+    A source build finds neither the bundled helper nor `ax-engine-bench`, so the
+    helper path and the build's `ax-engine-bench` directory are passed explicitly.
+    """
     kept = {name: value for name, value in os.environ.items()
             if not name.startswith(("AX_", "HF_", "MLX_", "XDG_CACHE"))}
-    return {**kept, "HF_HUB_CACHE": str(cache_root), "AX_ENGINE_PYTHON": str(python)}
+    env = {**kept, "HF_HUB_CACHE": str(cache_root), "AX_ENGINE_PYTHON": str(python)}
+    if helper is not None:
+        env["AX_ENGINE_DOWNLOAD_HELPER"] = str(helper)
+    if bench is not None:
+        env["PATH"] = f"{bench.parent}{os.pathsep}{env.get('PATH', '')}"
+    return env
 
 
 def terminal_record(stdout: str) -> dict[str, Any]:
@@ -132,6 +142,8 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--ax-engine", type=Path, help="product CLI used to download")
     parser.add_argument("--python", type=Path, help="interpreter with huggingface_hub for the downloader")
+    parser.add_argument("--helper", type=Path, help="download_model.py of the same source checkout")
+    parser.add_argument("--bench-bin", type=Path, help="ax-engine-bench of the same build (manifest generation)")
     parser.add_argument("--cache-root", type=Path, help="empty Hugging Face cache root on the internal SSD")
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--server-bin", type=Path)
@@ -175,7 +187,7 @@ def main() -> int:
     with (args.output / "download.ndjson").open("wb") as out, \
             (args.output / "download.stderr.log").open("wb") as err:
         done = subprocess.run([str(args.ax_engine), "download", ALIAS, "--progress-json"],
-                              stdout=out, stderr=err, env=clean_env(args.cache_root, args.python))
+                              stdout=out, stderr=err, env=clean_env(args.cache_root, args.python, args.helper, args.bench_bin))
     elapsed = round(time.monotonic() - started, 3)
     for name in ("download.ndjson", "download.stderr.log"):
         path = args.output / name
@@ -184,7 +196,9 @@ def main() -> int:
         **contract, "completed": False, "fresh_cache": fresh,
         "download": {"exit_code": done.returncode, "elapsed_seconds": elapsed,
                      "hub_client_version": hub.stdout.strip(),
-                     "ax_engine_sha256": sha256_file(args.ax_engine)},
+                     "ax_engine_sha256": sha256_file(args.ax_engine),
+                     "helper_sha256": sha256_file(args.helper) if args.helper else None,
+                     "bench_sha256": sha256_file(args.bench_bin) if args.bench_bin else None},
         "hardware": {"form_factor": native.form_factor(), "soc": chip, "memory_bytes": memory,
                      "storage": {"declared": inventory["storage"], **storage},
                      "os": platform.mac_ver()[0]},

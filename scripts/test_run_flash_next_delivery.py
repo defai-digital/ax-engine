@@ -57,6 +57,16 @@ class DeliveryTests(unittest.TestCase):
         for name in ("HF_HOME", "AX_STREAM_EXPERTS", "MLX_X", "XDG_CACHE_HOME"):
             self.assertNotIn(name, env)
 
+    def test_source_builds_get_an_explicit_helper_and_bench_directory(self):
+        with patch.dict(mod.os.environ, {"PATH": "/usr/bin"}):
+            env = mod.clean_env(Path("/cache"), Path("/py"), Path("/repo/scripts/download_model.py"),
+                                Path("/build/ax-engine-bench"))
+            plain = mod.clean_env(Path("/cache"), Path("/py"))
+        self.assertEqual(env["AX_ENGINE_DOWNLOAD_HELPER"], "/repo/scripts/download_model.py")
+        self.assertTrue(env["PATH"].startswith("/build:"))
+        self.assertNotIn("AX_ENGINE_DOWNLOAD_HELPER", plain)
+        self.assertEqual(plain["PATH"], "/usr/bin")
+
     def test_terminal_record_is_the_last_json_object(self):
         stdout = '{"event":"progress","n":1}\nnot json\n{"event":"done","status":"ready"}\n'
         self.assertEqual(mod.terminal_record(stdout)["status"], "ready")

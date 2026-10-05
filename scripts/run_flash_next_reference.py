@@ -38,9 +38,11 @@ from typing import Any, Callable, Iterable, Iterator
 
 try:
     import check_flash_next_native_support as native
+    import run_flash_next_generate_matrix as matrix
     import run_flash_next_qa_cohort as qa
 except ImportError:
     from scripts import check_flash_next_native_support as native
+    from scripts import run_flash_next_generate_matrix as matrix
     from scripts import run_flash_next_qa_cohort as qa
 
 PINNED = {"mlx": "0.32.2", "mlx-metal": "0.32.2", "mlx-vlm": "0.7.0rc0",
@@ -51,17 +53,12 @@ EOS_IDS = {248044, 248046}
 PREFILL_CHUNK = 1024
 MEMORY_LIMIT = 144 * 2**30
 CACHE_LIMIT = 2**30
-OUTPUT_TOKENS = 128
-LENGTHS = (512, 2048, 8192)
-WARMUPS = 2
-MEASURED = 3
-OFFSET_STRIDE = 7
+OUTPUT_TOKENS = matrix.OUTPUT_TOKENS
+LENGTHS = matrix.LENGTHS
+WARMUPS = matrix.WARMUPS
+MEASURED = matrix.MEASURED
 PHASES = ("qa", "matrix")
 RUNTIME_DISTRIBUTIONS = ("mlx", "mlx-metal", "mlx-vlm")
-
-
-def ids_sha(ids: list[int]) -> str:
-    return hashlib.sha256(json.dumps(ids).encode()).hexdigest()
 
 
 def collect(stream: Iterable[int], budget: int, eos: set[int],
@@ -129,23 +126,17 @@ def generate(model: Any, mx: Any, ids: list[int], budget: int) -> dict[str, Any]
     return record
 
 
-def workload_ids(long_ids: list[int], length: int, run: int) -> list[int]:
-    offset = run * OFFSET_STRIDE
-    if offset + length > len(long_ids):
-        raise ValueError("long document is too short for the requested workload")
-    return long_ids[offset: offset + length]
+def window_hashes(vocab_size: int, lengths: tuple[int, ...]) -> dict[str, str]:
+    """Hashes of the exact token IDs this runner feeds, keyed like the AX matrix result."""
+    return {f"cell-{length}-{run}": matrix.ids_sha(matrix.workload_ids(vocab_size, length, run))
+            for length in lengths for run in range(WARMUPS + MEASURED)}
 
 
-def verify_prompt_hashes(ax_hashes: dict[str, str], long_ids: list[int],
-                         lengths: tuple[int, ...]) -> dict[str, str]:
-    """The reference windows must be the exact token windows the AX matrix used."""
-    ours: dict[str, str] = {}
-    for length in lengths:
-        for run in range(WARMUPS + MEASURED):
-            key = f"cell-{length}-{run}"
-            ours[key] = ids_sha(workload_ids(long_ids, length, run))
-            if ax_hashes.get(key) != ours[key]:
-                raise ValueError(f"reference prompt window differs from the AX matrix: {key}")
+def verify_prompt_hashes(ax_hashes: dict[str, str], ours: dict[str, str]) -> dict[str, str]:
+    """When an AX matrix result is supplied, every window must be the exact IDs AX used."""
+    for key, value in ours.items():
+        if ax_hashes.get(key) != value:
+            raise ValueError(f"reference prompt window differs from the AX matrix: {key}")
     return ours
 
 
@@ -186,7 +177,7 @@ def main() -> int:
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--ax-matrix", type=Path,
-                        help="AX generate-matrix result.json whose prompt hashes the windows must match")
+                        help="optional AX generate-matrix result.json whose prompt hashes must match")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--phases", nargs="+", choices=PHASES, default=list(PHASES))
     parser.add_argument("--limit-items", type=int, help="smoke runs: first N QA items")
@@ -201,16 +192,15 @@ def main() -> int:
                 "memory_limit_bytes": MEMORY_LIMIT, "cache_limit_bytes": CACHE_LIMIT,
                 "qa_items": 105, "qa_budgets": {"short": qa.SHORT_BUDGET, "long": qa.LONG_BUDGET},
                 "output_tokens": OUTPUT_TOKENS, "lengths": list(lengths), "warmups": WARMUPS,
-                "measured": MEASURED, "offset_stride": OFFSET_STRIDE, "temperature": 0,
+                "measured": MEASURED, "workload_seed": matrix.WORKLOAD_SEED, "temperature": 0,
                 "timing": "in process; TTFT = prefill + first token; decode = tokens after the first",
                 "qualification": False, "release_ready": False,
                 "scope": "reference observations; no AX-versus-mlx-lm claim; MTP-S/P/D not assessed"}
     if args.dry_run:
         print(json.dumps(contract, indent=2))
         return 0
-    if not all((args.model_dir, args.inventory, args.output)) or \
-            ("matrix" in args.phases and not args.ax_matrix):
-        parser.error("live run requires model-dir, inventory, output and, for the matrix, ax-matrix")
+    if not all((args.model_dir, args.inventory, args.output)):
+        parser.error("live run requires model-dir, inventory and output")
     if platform.system() != "Darwin":
         parser.error("live run requires macOS on the Ultra-class 192 GiB+ target")
     memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True))
@@ -255,11 +245,11 @@ def main() -> int:
                                               trust_remote_code=False)
     items = qa.load_items(qa.FROZEN / "full-qa-items.json")
     if "matrix" in args.phases:
-        # Fail before the expensive load when the token windows cannot match the AX matrix.
-        ax_hashes = json.loads(args.ax_matrix.read_text())["runs"]["disabled"]["prompt_id_hashes"]
-        long_text = next(i for i in items if i["id"] == qa.LONG_ID)["user"]
-        long_ids = tokenizer.encode(long_text, add_special_tokens=False)
-        window_hashes = verify_prompt_hashes(ax_hashes, long_ids, lengths)
+        vocab_size = matrix.pack_vocab_size(args.model_dir)
+        window_ids = window_hashes(vocab_size, lengths)
+        if args.ax_matrix:
+            ax_hashes = json.loads(args.ax_matrix.read_text())["runs"]["disabled"]["prompt_id_hashes"]
+            verify_prompt_hashes(ax_hashes, window_ids)
     model = load_model(args.model_dir, lazy=True, strict=True).language_model
     if "qa" in args.phases:
         prepared = json.loads((qa.FROZEN / "full-qa-inputs.json").read_text())["prepared"]
@@ -283,12 +273,11 @@ def main() -> int:
                             normal_stops=all(r["normal_stop"] for r in rows))
         save()
     if "matrix" in args.phases:
-        record["matrix"] = {"long_document_tokens": len(long_ids),
-                            "prompt_id_hashes": window_hashes, "cells": []}
+        record["matrix"] = {"vocab_size": vocab_size, "prompt_id_hashes": window_ids, "cells": []}
         save("matrix")
         for length in lengths:
             for run in range(WARMUPS + MEASURED):
-                result = generate(model, mx, workload_ids(long_ids, length, run), OUTPUT_TOKENS)
+                result = generate(model, mx, matrix.workload_ids(vocab_size, length, run), OUTPUT_TOKENS)
                 cell = {"length": length, "run": run, "warmup": run < WARMUPS, **result}
                 record["matrix"]["cells"].append(cell)
                 print(f"matrix {length} run {run}{' (warmup)' if cell['warmup'] else ''}: "
