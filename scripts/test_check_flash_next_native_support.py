@@ -180,6 +180,13 @@ class NativeSupportTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "internal SSD"):
                     mod.storage_info(Path("model"))
 
+    def test_form_factor_is_named_only_for_known_studio_models(self):
+        for model, expected in (("Mac14,14", "Mac Studio"), ("Mac13,1", "Mac Studio"),
+                                ("Mac14,8", "unrecognized (Mac14,8)"),
+                                ("Mac16,5", "unrecognized (Mac16,5)")):
+            with patch.object(mod.subprocess, "check_output", return_value=model + "\n"):
+                self.assertEqual(mod.form_factor(), expected)
+
 
 if __name__ == "__main__":
     unittest.main()
