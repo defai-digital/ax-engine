@@ -91,6 +91,33 @@ class NativeSupportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "disabled-MTP or default"):
             mod.check_activation(before, {**before, mod.VERIFIED: 1}, False, 12, 48)
 
+    def test_symlinked_snapshot_members_resolve_only_inside_the_link_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            blobs, root, stray = base / "blobs", base / "snapshot", base / "stray"
+            for directory in (blobs, root, stray):
+                directory.mkdir()
+            names = ["config.json", "axquant_manifest.json", "mtplx_runtime.json",
+                     "mtp.safetensors", "model.safetensors.index.json", "model-1.safetensors"]
+            for name in names:
+                (blobs / f"blob-{name}").write_bytes(b"test")
+            (blobs / "blob-model.safetensors.index.json").write_text(
+                json.dumps({"weight_map": {"model.layers.0": "model-1.safetensors"}}))
+            for name in names:
+                (root / name).symlink_to(blobs / f"blob-{name}")
+            members = [{"name": name, "size": (root / name).stat().st_size,
+                        "sha256": mod.sha256(root / name),
+                        "publisher_sha256": mod.sha256(root / name)} for name in names]
+            inventory = {"repo_id": mod.PRIMARY_REPO, "revision": mod.PACK_REVISION,
+                         "members": members, "storage": "internal SSD"}
+            (root / ".ax-engine-download.json").write_text("{}")
+            with patch.object(mod, "_mtp_metadata"):
+                with self.assertRaisesRegex(ValueError, "escapes the model directory"):
+                    mod.validate_inventory(root, inventory)
+                with self.assertRaisesRegex(ValueError, "escapes the model directory"):
+                    mod.validate_inventory(root, inventory, stray)
+                self.assertEqual(mod.validate_inventory(root, inventory, base), {})
+
     def test_route_errors_and_output_budget_fail(self):
         before = {name: 0 for name in (mod.VERIFIED, *mod.ERRORS)}
         for error in mod.ERRORS:

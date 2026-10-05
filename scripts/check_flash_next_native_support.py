@@ -50,7 +50,13 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_inventory(root: Path, inventory: dict[str, Any]) -> dict[str, str]:
+def validate_inventory(root: Path, inventory: dict[str, Any],
+                       link_root: Path | None = None) -> dict[str, str]:
+    """Bind every pack member by size and SHA-256.
+
+    A Hugging Face snapshot holds symlinks into a sibling blob store; pass that
+    cache as `link_root` so links may resolve there but nowhere else.
+    """
     if inventory.get("repo_id") != PRIMARY_REPO or inventory.get("revision") != PACK_REVISION:
         raise ValueError("inventory must bind the current immutable Flash Next MXFP4 MTP pack")
     members = inventory.get("members")
@@ -66,7 +72,9 @@ def validate_inventory(root: Path, inventory: dict[str, Any]) -> dict[str, str]:
             raise ValueError("inventory contains an unsafe or duplicate path")
         names.add(name)
         path = root / relative
-        if not path.resolve().is_relative_to(root.resolve()):
+        resolved = path.resolve()
+        if not (resolved.is_relative_to(root.resolve())
+                or (link_root is not None and resolved.is_relative_to(link_root.resolve()))):
             raise ValueError("inventory member escapes the model directory")
         if path.stat().st_size != member["size"] or sha256(path) != member["sha256"]:
             raise ValueError(f"pack inventory mismatch: {name}")
@@ -81,7 +89,7 @@ def validate_inventory(root: Path, inventory: dict[str, Any]) -> dict[str, str]:
     if not shards <= names:
         raise ValueError("inventory omits indexed model shards")
     actual = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
-    allowed_local = {"model-manifest.json", "ax-engine-pack-inventory.json"}
+    allowed_local = {"model-manifest.json", "ax-engine-pack-inventory.json", ".ax-engine-download.json"}
     if actual - names - allowed_local:
         raise ValueError(f"unbound model-directory files: {sorted(actual - names - allowed_local)}")
     _mtp_metadata(root)
@@ -256,7 +264,8 @@ def check_blocked_required(server: Path, root: Path, output: Path) -> dict[str, 
         scrub_log(log_path)
 
 
-def _run_mode(server: Path, root: Path, output: Path, mode: str) -> list[dict[str, Any]]:
+def _run_mode(server: Path, root: Path, output: Path, mode: str,
+              ready: dict[str, float] | None = None) -> list[dict[str, Any]]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -266,9 +275,10 @@ def _run_mode(server: Path, root: Path, output: Path, mode: str) -> list[dict[st
     raw_log = output / f"server-{mode}.log"
     rows = []
     with raw_log.open("wb") as log:
+        started = time.monotonic()
         process = subprocess.Popen(command, stdout=log, stderr=log, env=env, start_new_session=True)
         try:
-            deadline = time.monotonic() + 900
+            deadline = started + 900
             while True:
                 if process.poll() is not None:
                     raise RuntimeError(f"owned {mode} server exited with {process.returncode}")
@@ -279,6 +289,8 @@ def _run_mode(server: Path, root: Path, output: Path, mode: str) -> list[dict[st
                     if time.monotonic() >= deadline:
                         raise TimeoutError("native server readiness timeout")
                     time.sleep(1)
+            if ready is not None:
+                ready[mode] = round(time.monotonic() - started, 3)
             for name, prompt, budget in CASES:
                 before = metrics(request(base, "/metrics").decode())
                 body = {"model": "qwen3.8-flash-next:mxfp4", "messages": [
@@ -304,9 +316,10 @@ def _run_mode(server: Path, root: Path, output: Path, mode: str) -> list[dict[st
     return rows
 
 
-def run_mode(server: Path, root: Path, output: Path, mode: str) -> list[dict[str, Any]]:
+def run_mode(server: Path, root: Path, output: Path, mode: str,
+             ready: dict[str, float] | None = None) -> list[dict[str, Any]]:
     try:
-        return _run_mode(server, root, output, mode)
+        return _run_mode(server, root, output, mode, ready)
     finally:
         scrub_log(output / f"server-{mode}.log")
 
@@ -318,6 +331,8 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--server-bin", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--link-root", type=Path,
+                        help="cache root that pack symlinks may resolve into (Hugging Face snapshots)")
     parser.add_argument("--modes", nargs="+", choices=SERVER_MODES, default=["disabled", "required"],
                         help="control modes; `default` runs the server with no policy flags")
     args = parser.parse_args()
@@ -344,7 +359,7 @@ def main() -> int:
     executable_before = sha256(args.server_bin)
     receipt_before = sha256(args.inventory)
     inventory = json.loads(args.inventory.read_text())
-    derived_before = validate_inventory(args.model_dir, inventory)
+    derived_before = validate_inventory(args.model_dir, inventory, args.link_root)
     args.output.mkdir(parents=True, exist_ok=False)
     negative = (check_blocked_required(args.server_bin.resolve(), args.model_dir.resolve(), args.output)
                 if "required" in args.modes else None)
@@ -352,9 +367,10 @@ def main() -> int:
     derived_ready = {"model-manifest.json": sha256(manifest)}
     if derived_before and derived_before != derived_ready:
         raise ValueError("native manifest changed during activation control")
-    results = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode)
-               for mode in contract["modes"]}
-    derived_after = validate_inventory(args.model_dir, inventory)
+    readiness: dict[str, float] = {}
+    results = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
+                              readiness) for mode in contract["modes"]}
+    derived_after = validate_inventory(args.model_dir, inventory, args.link_root)
     if derived_ready != derived_after:
         raise ValueError("native manifest changed during functional controls")
     if executable_before != sha256(args.server_bin) or receipt_before != sha256(args.inventory):
@@ -371,6 +387,7 @@ def main() -> int:
         "server_sha256": executable_before, "inventory_sha256": receipt_before,
         "native_manifest_before": derived_before, "native_manifest_ready": derived_ready,
         "native_manifest_after": derived_after,
+        "readiness_seconds": readiness, "page_cache": "not controlled",
         "comparisons": comparisons, "results": results}
     (args.output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print("Functional controls passed; qualification and MTP-S/P/D remain unassessed.")
