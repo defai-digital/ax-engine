@@ -48,23 +48,20 @@ class ReferenceRunnerTests(unittest.TestCase):
         self.assertNotIn("decode_tok_s", mod.timing_record(0.0, [1.0], 1.0))
         self.assertNotIn("ttft_seconds", mod.timing_record(0.0, [], 1.0))
 
-    def test_windows_have_exact_length_and_distinct_prefixes(self):
-        document = list(range(20000))
-        a, b = mod.workload_ids(document, 512, 0), mod.workload_ids(document, 512, 1)
-        self.assertEqual((len(a), len(b)), (512, 512))
-        self.assertNotEqual(a[:8], b[:8])
-        with self.assertRaises(ValueError):
-            mod.workload_ids(document[:600], 512, 20)
+    def test_window_hashes_cover_every_cell_and_match_the_shared_workload(self):
+        hashes = mod.window_hashes(248320, (512, 2048))
+        self.assertEqual(len(hashes), 2 * (mod.WARMUPS + mod.MEASURED))
+        ids = mod.matrix.workload_ids(248320, 512, 3)
+        self.assertEqual(hashes["cell-512-3"], mod.matrix.ids_sha(ids))
+        self.assertEqual(len(set(hashes.values())), len(hashes))
 
-    def test_prompt_hashes_must_match_the_ax_windows(self):
-        document = list(range(20000))
-        ax = {f"cell-512-{run}": mod.ids_sha(mod.workload_ids(document, 512, run))
-              for run in range(mod.WARMUPS + mod.MEASURED)}
-        self.assertEqual(mod.verify_prompt_hashes(ax, document, (512,)), ax)
+    def test_prompt_hashes_must_match_the_ax_matrix(self):
+        ours = mod.window_hashes(248320, (512,))
+        self.assertEqual(mod.verify_prompt_hashes(dict(ours), ours), ours)
         with self.assertRaisesRegex(ValueError, "cell-512-3"):
-            mod.verify_prompt_hashes({**ax, "cell-512-3": "0"}, document, (512,))
+            mod.verify_prompt_hashes({**ours, "cell-512-3": "0"}, ours)
         with self.assertRaisesRegex(ValueError, "cell-512-0"):
-            mod.verify_prompt_hashes({}, document, (512,))
+            mod.verify_prompt_hashes({}, ours)
 
     def test_matrix_summary_uses_measured_runs_and_reports_short_outputs(self):
         def cell(run, tokens, rate, ttft):

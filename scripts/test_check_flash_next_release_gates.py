@@ -21,6 +21,8 @@ TH = json.loads(mod.THRESHOLDS.read_text())
 GIB_KIB = 1024 * 1024
 FAILURES = ["format_csv_pair", "format_status_colon", "instruction_alphabet_first", "knowledge_water_formula"]
 HARDWARE = {"form_factor": "Mac Studio", "soc": "Apple M2 Ultra", "memory_bytes": 192 * 1024**3}
+CELL_HASHES = {f"cell-{length}-{run}": f"h{length}{run}" for length in (512, 2048, 8192)
+               for run in range(5)}
 COMMON = {"server_sha256": "s", "inventory_sha256": "i", "hardware": HARDWARE,
           "qualification": False, "release_ready": False}
 
@@ -57,10 +59,11 @@ def good():
         {"mode": mode, "ready_seconds": 33.0, "actions": [action] * 7, "final_verified_steps": 0.0,
          "exit_code_after_stop": 0} for mode in ("disabled", "default")]}
     matrix = {**COMMON, "runs": {m: {"ready_seconds": 33.0, "trajectories": [{"verified_steps": 0.0}],
+                                     "prompt_id_hashes": {"traj-00": "t", **CELL_HASHES},
                                      "cells": ax_cells()} for m in ("disabled", "default")}}
     reference = {**COMMON, "completed": True, "versions": {"mlx-vlm": "0.7.0rc0"},
                  "qa": {"rows": [0] * 105, "failures": list(FAILURES)},
-                 "matrix": {"cells": ref_cells()}}
+                 "matrix": {"cells": ref_cells(), "prompt_id_hashes": dict(CELL_HASHES)}}
     delivery = {**COMMON, "completed": True, "fresh_cache": True, "revision": TH["target"]["pack_revision"],
                 "download": {"exit_code": 0, "elapsed_seconds": 900.0},
                 "verification": {"members_verified": 49, "bytes_verified": 132261877478,
@@ -146,6 +149,17 @@ class ReleaseGateTests(unittest.TestCase):
         r = good()
         r["matrix"]["runs"]["disabled"]["cells"] = ax_cells(decode_seconds=7.0 / 0.9001, ttft=(4.0, 16.0, 80.0))
         self.assertEqual(failed(r), set(), "values just inside both bounds must pass")
+
+    def test_the_reference_must_use_the_same_token_ids_as_both_ax_arms(self):
+        r = good()
+        r["reference"]["matrix"]["prompt_id_hashes"]["cell-2048-3"] = "other"
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        r["matrix"]["runs"]["default"]["prompt_id_hashes"]["cell-512-0"] = "other"
+        self.assertEqual(failed(r), {"reference_relative"})
+        r = good()
+        r["matrix"]["runs"]["disabled"]["prompt_id_hashes"] = {"traj-00": "t"}
+        self.assertEqual(failed(r), {"reference_relative"})
 
     def test_a_short_measured_output_is_reported_not_averaged_away(self):
         r = good()

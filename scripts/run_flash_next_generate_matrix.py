@@ -8,9 +8,11 @@ Two phases per mode (MTP disabled and required), both through the native
   tokens each; the output token IDs must match between modes position by
   position, and any divergence is recorded with its index.
 * fixed workload: 512, 2048 and 8192 input tokens, 128 output tokens, two
-  warmups and three measured runs per cell. Each run uses a different token
-  offset into the same long document so a prefix-cache hit cannot skip prefill;
-  both modes use the same offsets, so runs pair across modes.
+  warmups and three measured runs per cell. Prompts are uniform random token
+  IDs (the distribution of the frozen mlx_lm reference prompt), drawn from a
+  deterministic per-(length, run) seed so no run shares a prefix with another
+  and a prefix-cache hit cannot skip prefill; every mode and the reference
+  runtime use the same IDs, so runs pair across systems.
 
 The pack and server binary are hash-bound before and after. Dry-run is
 weight-free. This records server-path token identity and timings for one
@@ -24,6 +26,7 @@ import hashlib
 import json
 from pathlib import Path
 import platform
+import random
 import socket
 import statistics
 import subprocess
@@ -37,17 +40,15 @@ except ImportError:
     from scripts import check_flash_next_native_support as native
 
 ROOT = Path(__file__).resolve().parents[1]
-FROZEN = ROOT / "benchmarks/results/qualification/2026-09-19-flash-next-mxfp4-installed-qa"
 MODES = ("disabled", "required")
 TOTAL_BLOCKS = 4096
 OUTPUT_TOKENS = 128
 LENGTHS = (512, 2048, 8192)
 WARMUPS = 2
 MEASURED = 3
-OFFSET_STRIDE = 7
+WORKLOAD_SEED = "flash-next-fixed-workload"
 READY_TIMEOUT = 900
 REQUEST_TIMEOUT = 3600
-LONG_ID = "long_context_record_mass"
 PROMPTS = (
     "Explain how a hash table handles collisions, with an example.",
     "Write a short story about a lighthouse keeper who finds a message in a bottle.",
@@ -145,11 +146,18 @@ def slim(response: dict[str, Any], before: dict[str, float], after: dict[str, fl
             "route_errors": sum(after.get(n, 0.0) - before.get(n, 0.0) for n in native.ERRORS)}
 
 
-def workload_ids(long_ids: list[int], length: int, run: int) -> list[int]:
-    offset = run * OFFSET_STRIDE
-    if offset + length > len(long_ids):
-        raise ValueError("long document is too short for the requested workload")
-    return long_ids[offset: offset + length]
+def workload_ids(vocab_size: int, length: int, run: int) -> list[int]:
+    """Uniform random token IDs, deterministic in (length, run) and distinct across runs."""
+    rng = random.Random(f"{WORKLOAD_SEED}:{length}:{run}")
+    return [rng.randrange(vocab_size) for _ in range(length)]
+
+
+def pack_vocab_size(root: Path) -> int:
+    config = json.loads((root / "config.json").read_text())
+    size = config.get("vocab_size") or config["text_config"]["vocab_size"]
+    if type(size) is not int or size <= 0:
+        raise ValueError("pack config has no usable vocab_size")
+    return size
 
 
 def decode_rate(timing: dict[str, Any]) -> float | None:
@@ -183,10 +191,8 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
                         raise TimeoutError("native server readiness timeout") from None
                     time.sleep(1)
             result["ready_seconds"] = round(time.monotonic() - started, 3)
-            items = json.loads((FROZEN / "full-qa-items.json").read_text())
-            long_text = next(i for i in items if i["id"] == LONG_ID)["user"]
-            long_ids = tokenize(base, long_text)
-            result["long_document_tokens"] = len(long_ids)
+            vocab_size = pack_vocab_size(root)
+            result["vocab_size"] = vocab_size
             result["prompt_id_hashes"] = {}
             for index, prompt in enumerate(prompts):
                 ids = chat_prompt_ids(base, prompt)
@@ -200,7 +206,7 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
                       f"{row['verified_steps']:.0f} verified", flush=True)
             for length in lengths:
                 for run in range(WARMUPS + MEASURED):
-                    ids = workload_ids(long_ids, length, run)
+                    ids = workload_ids(vocab_size, length, run)
                     result["prompt_id_hashes"][f"cell-{length}-{run}"] = ids_sha(ids)
                     before = native.metrics(native.request(base, "/metrics").decode())
                     response = generate(base, ids)
@@ -302,7 +308,7 @@ def main() -> int:
                 "modes": list(args.modes), "endpoint": "/v1/generate/stream", "temperature": 0,
                 "output_tokens": OUTPUT_TOKENS, "trajectory_prompts": len(prompts),
                 "lengths": list(lengths), "warmups": WARMUPS, "measured": MEASURED,
-                "offset_stride": OFFSET_STRIDE, "total_blocks": TOTAL_BLOCKS,
+                "workload_seed": WORKLOAD_SEED, "workload": "uniform random token IDs per (length, run)", "total_blocks": TOTAL_BLOCKS,
                 "expert_stream": "auto", "generic_ngram_acceleration":
                 "product default (on) in default mode, disabled in the other modes",
                 "reference_baseline": "none", "qualification": False, "release_ready": False,

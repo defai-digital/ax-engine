@@ -174,6 +174,12 @@ def gate_reference_relative(matrix: dict[str, Any], reference: dict[str, Any],
     problems, table = [], {}
     if not reference.get("completed") or not ref_cells:
         problems.append("reference matrix is incomplete")
+    ref_hashes = (reference.get("matrix") or {}).get("prompt_id_hashes") or {}
+    for arm in AX_ARMS:
+        ax_hashes = {key: value for key, value in matrix["runs"][arm]["prompt_id_hashes"].items()
+                     if key.startswith("cell-")}
+        if not ax_hashes or ax_hashes != ref_hashes:
+            problems.append(f"{arm}: prompt token IDs differ from the reference's")
     for length in lengths:
         ref = cell_stats([c for c in ref_cells if c["length"] == length], lambda r: r["generated_tokens"])
         if ref["full_length"] != ref["measured"]:

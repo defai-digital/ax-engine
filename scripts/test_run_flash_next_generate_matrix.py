@@ -65,13 +65,27 @@ class GenerateMatrixTests(unittest.TestCase):
         self.assertIsNone(mod.decode_rate({"decode_seconds": 2.0, "decode_tokens": 0}))
         self.assertIsNone(mod.decode_rate({}))
 
-    def test_workload_slices_have_exact_length_and_distinct_prefixes(self):
-        long_ids = list(range(10_000))
-        slices = [mod.workload_ids(long_ids, 512, r) for r in range(mod.WARMUPS + mod.MEASURED)]
-        self.assertTrue(all(len(s) == 512 for s in slices))
-        self.assertEqual(len({s[0] for s in slices}), len(slices))
-        with self.assertRaises(ValueError):
-            mod.workload_ids(long_ids, 9_999, 1)
+    def test_workloads_are_deterministic_uniform_ids_with_distinct_runs(self):
+        vocab = 248320
+        runs = [mod.workload_ids(vocab, 512, r) for r in range(mod.WARMUPS + mod.MEASURED)]
+        self.assertTrue(all(len(ids) == 512 for ids in runs))
+        self.assertTrue(all(0 <= token < vocab for ids in runs for token in ids))
+        self.assertEqual(runs[0], mod.workload_ids(vocab, 512, 0))
+        self.assertEqual(len({tuple(ids[:8]) for ids in runs}), len(runs), "runs must not share a prefix")
+        self.assertNotEqual(mod.workload_ids(vocab, 512, 0)[:8], mod.workload_ids(vocab, 2048, 0)[:8])
+        self.assertEqual(len(mod.workload_ids(vocab, 8192, 4)), 8192)
+
+    def test_pack_vocab_size_reads_flat_or_nested_config(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "config.json").write_text(json.dumps({"vocab_size": 7}))
+            self.assertEqual(mod.pack_vocab_size(root), 7)
+            (root / "config.json").write_text(json.dumps({"text_config": {"vocab_size": 9}}))
+            self.assertEqual(mod.pack_vocab_size(root), 9)
+            (root / "config.json").write_text(json.dumps({"vocab_size": "x"}))
+            with self.assertRaises(ValueError):
+                mod.pack_vocab_size(root)
 
     def test_summary_reports_identity_divergence_ratio_and_route_errors(self):
         total = mod.WARMUPS + mod.MEASURED
