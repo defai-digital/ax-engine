@@ -91,6 +91,16 @@ def validate_inventory(root: Path, inventory: dict[str, Any]) -> dict[str, str]:
     return {"model-manifest.json": sha256(manifest)} if manifest.exists() else {}
 
 
+# Mac Studio hardware identifiers (2022 M1 Ultra/Max, 2023 M2 Ultra/Max).
+STUDIO_MODELS = frozenset({"Mac13,1", "Mac13,2", "Mac14,13", "Mac14,14"})
+
+
+def form_factor() -> str:
+    """Name the form factor only when the hardware model identifier proves it."""
+    model = subprocess.check_output(["sysctl", "-n", "hw.model"], text=True).strip()
+    return "Mac Studio" if model in STUDIO_MODELS else f"unrecognized ({model})"
+
+
 def storage_info(root: Path) -> dict[str, Any]:
     device = subprocess.check_output(["df", "-P", str(root)], text=True).splitlines()[-1].split()[0]
     info = plistlib.loads(subprocess.check_output(["diskutil", "info", "-plist", device]))
@@ -334,7 +344,7 @@ def main() -> int:
                             direct["response"]["choices"] == mtp["response"]["choices"]})
     evidence = {**contract, "functional_controls_passed": True, "negative_control_result": negative,
                 "hardware": {
-        "form_factor": "Mac Studio", "soc": chip, "memory_bytes": memory,
+        "form_factor": form_factor(), "soc": chip, "memory_bytes": memory,
         "storage": {"declared": inventory["storage"], **storage}, "os": platform.mac_ver()[0]},
         "server_sha256": executable_before, "inventory_sha256": receipt_before,
         "native_manifest_before": derived_before, "native_manifest_ready": derived_ready,
