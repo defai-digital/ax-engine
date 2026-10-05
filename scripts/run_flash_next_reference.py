@@ -116,9 +116,11 @@ def token_stream(model: Any, mx: Any, ids: list[int], chunk: int = PREFILL_CHUNK
         mx.synchronize()
 
 
-def generate(model: Any, mx: Any, ids: list[int], budget: int) -> dict[str, Any]:
+def generate(model: Any, mx: Any, ids: list[int], budget: int, stop_on_eos: bool = True) -> dict[str, Any]:
+    """Greedy generation; `stop_on_eos=False` is the fixed-token benchmark mode (AX `ignore_eos`)."""
     start = time.monotonic()
-    generated, terminal, times = collect(token_stream(model, mx, ids), budget, EOS_IDS)
+    generated, terminal, times = collect(token_stream(model, mx, ids), budget,
+                                         EOS_IDS if stop_on_eos else set())
     record = {"generated_ids": generated, "terminal_eos_id": terminal,
               "normal_stop": terminal is not None,
               **timing_record(start, times, time.monotonic())}
@@ -279,7 +281,8 @@ def main() -> int:
         save("matrix")
         for length in lengths:
             for run in range(WARMUPS + MEASURED):
-                result = generate(model, mx, matrix.workload_ids(vocab_size, length, run), OUTPUT_TOKENS)
+                result = generate(model, mx, matrix.workload_ids(vocab_size, length, run), OUTPUT_TOKENS,
+                                 stop_on_eos=False)
                 cell = {"length": length, "run": run, "warmup": run < WARMUPS, **result}
                 record["matrix"]["cells"].append(cell)
                 print(f"matrix {length} run {run}{' (warmup)' if cell['warmup'] else ''}: "
