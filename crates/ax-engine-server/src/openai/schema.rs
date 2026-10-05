@@ -197,6 +197,10 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) top_logprobs: Option<u32>,
     #[serde(default)]
     pub(crate) reasoning: Option<Value>,
+    /// OpenAI effort level AX does not implement. Deserialized so a non-null
+    /// value fails closed instead of being silently ignored.
+    #[serde(default)]
+    pub(crate) reasoning_effort: Option<Value>,
     /// AX extension: thinking-budget controller cap on tokens emitted inside
     /// the open think block (forced close when reached; the remaining output
     /// budget still funds the answer).

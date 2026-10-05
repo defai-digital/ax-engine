@@ -2103,6 +2103,49 @@ async fn openai_chat_request_rejects_unsupported_sampling_params() {
 }
 
 #[tokio::test]
+async fn openai_chat_request_rejects_reasoning_effort() {
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4-e2b".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let live = state.snapshot();
+
+    for value in [json!("low"), json!("medium"), json!("high"), json!("none")] {
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8,
+            "reasoning_effort": value
+        }))
+        .expect("sample chat request should deserialize");
+        let error = match build_openai_chat_request(&live, request) {
+            Ok(_) => panic!("reasoning_effort {value} should fail closed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{value}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_parameter"),
+            "{value}"
+        );
+    }
+
+    // Absent and explicit null stay accepted so standard clients keep working.
+    for body in [
+        json!({"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 8}),
+        json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8,
+            "reasoning_effort": null
+        }),
+    ] {
+        let request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body).expect("sample chat request should deserialize");
+        build_openai_chat_request(&live, request)
+            .expect("absent or null reasoning_effort should still build");
+    }
+}
+
+#[tokio::test]
 async fn openai_chat_request_rejects_parallel_tool_calls_false() {
     // `parallel_tool_calls` is an OpenAI chat field, not an AX extension; the
     // tool-call parser can still emit several calls, so `false` must fail

@@ -245,6 +245,7 @@ impl OpenAiResponseOptions {
             request.logit_bias.as_ref(),
         )?;
         reject_unsupported_top_logprobs(request.top_logprobs)?;
+        reject_unsupported_reasoning_effort(request.reasoning_effort.as_ref())?;
         // `parallel_tool_calls: false` is only meaningful when tools are
         // actually enabled; without `tools` / `tool_choice` the constraint is
         // vacuously satisfied and echoing `false` misrepresents nothing.
@@ -1407,6 +1408,24 @@ fn reject_unsupported_sampling_params(
         return unsupported("logit_bias is not supported");
     }
     Ok(())
+}
+
+/// AX has no effort levels: thinking is an on/off switch plus a token budget.
+/// Any non-null `reasoning_effort` fails closed so a caller does not assume
+/// `low` / `high` changes behavior.
+fn reject_unsupported_reasoning_effort(
+    reasoning_effort: Option<&Value>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if reasoning_effort.is_none_or(Value::is_null) {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "reasoning_effort is not supported; use chat_template_kwargs.enable_thinking to switch \
+         thinking and ax_max_think_tokens to cap it"
+            .to_string(),
+    ))
 }
 
 fn reject_unsupported_top_logprobs(
