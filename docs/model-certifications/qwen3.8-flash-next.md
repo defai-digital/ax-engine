@@ -19,7 +19,7 @@ Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+
 Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. The
 M5 Max 128 GB evidence recorded below remains historical evidence for the
 Auto expert-paging code path; it does not by itself qualify the corrected
-target. Last reviewed: **2026-10-04**.
+target. Last reviewed: **2026-10-05**.
 
 On 2026-09-23 the MXFP4 MTP direct-fallback behaviour was root-caused and
 instrumented. The draft cursor is created only on a genuine cold-start prefill,
@@ -83,12 +83,28 @@ not qualify model quality, long contexts, performance or MTP-S/P/D. The
 older 47-file pack receipts below remain historical and do not bind the
 15 changed trunk shards in this revision.
 
+[Current-HEAD validation](../../benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-head-validation/README.md)
+rebinds the same pack to a server built from clean source `7efa5516` on the
+same Mac Studio M2 Ultra, 192 GiB, internal SSD. The functional controls repeat
+unchanged. The frozen 105-item QA cohort passes 101/105 in both direct and
+required-MTP modes with identical text, zero route errors and 442 verifier
+steps; the four retained failures are model outputs and the old-pack failure
+set does not carry over. All 14 lifecycle actions pass with drained counters.
+Single-observation readiness (33-80 s), peak RSS (about 73-76 GiB) and a
+268-272 s 29,774-token lookup are recorded without an acceptance threshold.
+These controls do not qualify model quality, performance, memory or MTP-S/P/D.
+
 To run the explicit experimental route after downloading the pinned pack:
 
 ```bash
 ax-engine download qwen3.8-flash-next:mxfp4
 ax-engine serve qwen3.8-flash-next:mxfp4 -- --model-id qwen3.8-flash-next:mxfp4 --mlx-mtp-policy required --stream-experts auto --disable-ngram-acceleration
 ```
+
+The default KV pool (16-token blocks x 1,024) limits context to 16,384
+tokens, so longer prompts return `context_length_exceeded`; add
+`--total-blocks 4096` (65,536 tokens) to the server arguments for the
+29,774-token lookup used by the QA cohort.
 
 MTP controls use greedy text decoding (`temperature: 0`) without logits
 processors, with thinking disabled. The functional matrix disables generic

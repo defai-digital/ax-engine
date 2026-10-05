@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "purpose": "functional, QA-cohort and lifecycle controls on the current pack; no qualification, MTP-S/P/D, performance or default promotion",
+  "server_source_commit": "7efa55162819103130be9d5f919b613460de0889",
+  "server_source_tree_clean": true,
+  "harness_commit": "16183df53bfb1693783ef466b1d3633331412693",
+  "rust_source_unchanged_between_server_commit_and_harness_commit": true,
+  "build_profile": "release-server",
+  "rust_toolchain": "1.97.1",
+  "server_sha256": "2e8e7a3ca1c46a182d7f381eadf28f9542e7aed2d3481ef49395b5cb82d49ed3",
+  "mlx_runtime_version_reported": "0.32.3",
+  "mlx_pip_metadata_version": "0.32.2 (mlx and mlx-metal); mlx.core and libmlx.dylib report 0.32.3 and match the repo pin",
+  "mlx_assets_sha256": {
+    "libmlx.dylib": "ebc8a5f5465afb79d3d9c8f5b0929de1a9b277b7179db8672f92da77ae110a1e",
+    "libjaccl.dylib": "949e901df832d600a71ff2bc5f3738d55b010668102f36e071e1890807a965cd",
+    "mlx.metallib": "95974b7de464ec2be7833a914ca5a53d283a70789470fd84218738fc8fcea3e1"
+  },
+  "executed_harness_sha256": {
+    "check_flash_next_native_support.py": "35c4170bf23de96156c4462e6c2d7529d1108617dd01567fb97c8ab20e8bda22",
+    "run_flash_next_qa_cohort.py": "8ede898d834a0be849bb6c83d615c348891cab7f3bfe153665a6d04deb86fbd4",
+    "run_flash_next_lifecycle.py": "8e4af6d180abee2cf6a655a62062bd217b1f15b777aaff9f232435933b63af91"
+  },
+  "frozen_qa_items_sha256": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
+  "pack_inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "published_members": 49,
+  "published_bytes": 132261877478,
+  "hardware": "Mac Studio, Apple M2 Ultra, 192 GiB, internal NVMe SSD (Apple Fabric), macOS 27.0.1",
+  "qualification": false,
+  "release_ready": false,
+  "mtp_gates": {
+    "MTP-S": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-D": "not_assessed"
+  },
+  "default_mtp_changed": false
+}

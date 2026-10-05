@@ -1,0 +1,19 @@
+{
+  "index": 95,
+  "id": "format_quoted_done",
+  "budget": 256,
+  "elapsed_seconds": 0.866,
+  "finish_reason": "stop",
+  "text": "\"done\"",
+  "usage": {
+    "prompt_tokens": 26,
+    "completion_tokens": 3,
+    "total_tokens": 29
+  },
+  "activation_delta": {
+    "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+    "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+    "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+    "ax_engine_flash_next_mtp_step_errors_total": 0.0
+  }
+}
