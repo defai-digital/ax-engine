@@ -79,6 +79,27 @@ class QaCohortTests(unittest.TestCase):
         self.assertEqual(required["verified_steps"], 5)
         self.assertEqual(required["route_errors"], 1)
 
+    def test_summary_compares_every_mode_with_the_disabled_baseline(self):
+        items = [{"id": "a"}]
+        runs = {m: {"ready_seconds": 1.0, "peak_rss_kib": 1, "rows": [row("a", text)]}
+                for m, text in (("disabled", "x"), ("default", "x"), ("required", "y"))}
+        grades = {m: {"a": {"passed": True}} for m in runs}
+        identity = mod.summarize(items, runs, grades)["text_identity_vs_disabled"]
+        self.assertEqual(identity["default"], {"matching_text_pairs": 1, "differing_text_ids": []})
+        self.assertEqual(identity["required"]["differing_text_ids"], ["a"])
+        pair = mod.summarize(items, {k: runs[k] for k in ("disabled", "default")},
+                             {k: grades[k] for k in ("disabled", "default")})
+        self.assertNotIn("matching_text_pairs", pair)
+        self.assertEqual(pair["text_identity_vs_disabled"]["default"]["matching_text_pairs"], 1)
+
+    def test_modes_option_requires_the_disabled_baseline(self):
+        done = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--modes", "default"],
+                              capture_output=True, text=True)
+        self.assertNotEqual(done.returncode, 0)
+        done = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--modes", "disabled", "default"],
+                              capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(done.stdout)["modes"], ["disabled", "default"])
+
     def test_rss_sampler_reports_a_positive_peak_for_a_live_process(self):
         sampler = mod.RssPeak(os.getpid(), interval=0.05)
         sampler.start()

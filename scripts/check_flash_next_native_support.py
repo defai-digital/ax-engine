@@ -133,7 +133,7 @@ def check_activation(before: dict[str, float], after: dict[str, float], required
     if required and budget > 1 and (completion_tokens <= 1 or delta[VERIFIED] <= 0):
         raise ValueError("required-MTP request completed without verified MTP steps")
     if not required and delta[VERIFIED] != 0:
-        raise ValueError("disabled-MTP control activated the drafter")
+        raise ValueError("disabled-MTP or default-policy control activated the drafter")
     return delta
 
 
@@ -189,11 +189,26 @@ def check_answer(name: str, response: dict[str, Any]) -> None:
             raise ValueError(f"count control returned incorrect content: {text!r}")
 
 
+SERVER_MODES = ("disabled", "required", "default")
+
+
 def server_command(server: Path, root: Path, mode: str, port: int) -> list[str]:
-    return [str(server), "--mlx", "--model-id", "qwen3.8-flash-next:mxfp4",
-            "--mlx-model-artifacts-dir", str(root), "--mlx-mtp-policy", mode,
-            "--disable-ngram-acceleration", "--stream-experts", "auto",
-            "--host", "127.0.0.1", "--port", str(port)]
+    """Server argv for one control mode.
+
+    `disabled` and `required` pin the MTP policy and turn generic n-gram
+    acceleration off to isolate the drafter. `default` passes none of those
+    flags, so it exercises exactly what an operator gets from the defaults
+    (auto MTP policy, generic n-gram acceleration, Auto expert paging).
+    """
+    if mode not in SERVER_MODES:
+        raise ValueError(f"unknown control mode {mode!r}; expected one of {SERVER_MODES}")
+    base = [str(server), "--mlx", "--model-id", "qwen3.8-flash-next:mxfp4",
+            "--mlx-model-artifacts-dir", str(root)]
+    tail = ["--host", "127.0.0.1", "--port", str(port)]
+    if mode == "default":
+        return [*base, *tail]
+    return [*base, "--mlx-mtp-policy", mode, "--disable-ngram-acceleration",
+            "--stream-experts", "auto", *tail]
 
 
 def server_env() -> dict[str, str]:
@@ -303,11 +318,16 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--server-bin", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--modes", nargs="+", choices=SERVER_MODES, default=["disabled", "required"],
+                        help="control modes; `default` runs the server with no policy flags")
     args = parser.parse_args()
+    if "disabled" not in args.modes or len(set(args.modes)) != len(args.modes):
+        parser.error("--modes must list each mode once and include the disabled baseline")
     contract = {"repo_id": PRIMARY_REPO, "revision": PACK_REVISION, "cases": [c[0] for c in CASES],
-                "modes": ["disabled", "required"], "expert_stream": "auto",
+                "modes": list(args.modes), "expert_stream": "auto",
                 "qualification": False, "release_ready": False,
-                "negative_control": "required plus AX_NO_SPEC must reject activation",
+                "negative_control": "required plus AX_NO_SPEC must reject activation"
+                if "required" in args.modes else "none: required mode not requested",
                 "scope": "functional HTTP execution; MTP-S/P/D and performance not assessed"}
     if args.dry_run:
         print(json.dumps(contract, indent=2))
@@ -326,7 +346,8 @@ def main() -> int:
     inventory = json.loads(args.inventory.read_text())
     derived_before = validate_inventory(args.model_dir, inventory)
     args.output.mkdir(parents=True, exist_ok=False)
-    negative = check_blocked_required(args.server_bin.resolve(), args.model_dir.resolve(), args.output)
+    negative = (check_blocked_required(args.server_bin.resolve(), args.model_dir.resolve(), args.output)
+                if "required" in args.modes else None)
     manifest = args.model_dir / "model-manifest.json"
     derived_ready = {"model-manifest.json": sha256(manifest)}
     if derived_before and derived_before != derived_ready:
@@ -338,10 +359,11 @@ def main() -> int:
         raise ValueError("native manifest changed during functional controls")
     if executable_before != sha256(args.server_bin) or receipt_before != sha256(args.inventory):
         raise ValueError("server binary or staging receipt changed during controls")
-    comparisons = []
-    for direct, mtp in zip(results["disabled"], results["required"], strict=True):
-        comparisons.append({"name": direct["name"], "text_equal":
-                            direct["response"]["choices"] == mtp["response"]["choices"]})
+    comparisons = {
+        mode: [{"name": direct["name"], "text_equal":
+                direct["response"]["choices"] == other["response"]["choices"]}
+               for direct, other in zip(results["disabled"], results[mode], strict=True)]
+        for mode in args.modes if mode != "disabled"}
     evidence = {**contract, "functional_controls_passed": True, "negative_control_result": negative,
                 "hardware": {
         "form_factor": form_factor(), "soc": chip, "memory_bytes": memory,

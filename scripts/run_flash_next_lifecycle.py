@@ -218,9 +218,13 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--server-bin", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES, default=list(MODES),
+                        help="control modes; `default` runs the server with no policy flags")
     args = parser.parse_args()
+    if len(set(args.modes)) != len(args.modes):
+        parser.error("--modes must list each mode once")
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
-                "modes": list(MODES), "actions": list(ACTIONS), "counters": list(COUNTERS),
+                "modes": list(args.modes), "actions": list(ACTIONS), "counters": list(COUNTERS),
                 "total_blocks": TOTAL_BLOCKS, "expert_stream": "auto", "qualification": False,
                 "release_ready": False,
                 "scope": "API lifecycle; MTP-S/P/D, quality and performance not assessed"}
@@ -241,7 +245,7 @@ def main() -> int:
     manifest_before = native.validate_inventory(args.model_dir, inventory)
     args.output.mkdir(parents=True, exist_ok=False)
     runs = [run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode)
-            for mode in MODES]
+            for mode in args.modes]
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:
         raise ValueError("native manifest changed during the run")

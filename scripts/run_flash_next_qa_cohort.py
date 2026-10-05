@@ -204,11 +204,20 @@ def summarize(items: list[dict[str, Any]], runs: dict[str, dict[str, Any]],
             "long_context_elapsed_seconds": next(
                 (r["elapsed_seconds"] for r in rows if r["id"] == LONG_ID), None),
         }
-    if set(runs) == set(MODES):
+    if "disabled" in runs and len(runs) > 1:
         direct = {r["id"]: r["text"] for r in runs["disabled"]["rows"]}
-        mtp = {r["id"]: r["text"] for r in runs["required"]["rows"]}
-        summary["matching_text_pairs"] = sum(1 for k in direct if mtp.get(k) == direct[k])
-        summary["differing_text_ids"] = sorted(k for k in direct if mtp.get(k) != direct[k])
+        identity = {}
+        for mode, run in runs.items():
+            if mode == "disabled":
+                continue
+            other = {r["id"]: r["text"] for r in run["rows"]}
+            identity[mode] = {
+                "matching_text_pairs": sum(1 for k in direct if other.get(k) == direct[k]),
+                "differing_text_ids": sorted(k for k in direct if other.get(k) != direct[k])}
+        summary["text_identity_vs_disabled"] = identity
+        if set(runs) == set(MODES):
+            summary["matching_text_pairs"] = identity["required"]["matching_text_pairs"]
+            summary["differing_text_ids"] = identity["required"]["differing_text_ids"]
     return summary
 
 
@@ -223,11 +232,15 @@ def main() -> int:
     parser.add_argument("--limit", type=int, help="run only the first N items (smoke runs)")
     parser.add_argument("--resume", action="store_true",
                         help="continue an interrupted run with an unchanged contract")
+    parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES, default=list(MODES),
+                        help="control modes; `default` runs the server with no policy flags")
     args = parser.parse_args()
+    if "disabled" not in args.modes or len(set(args.modes)) != len(args.modes):
+        parser.error("--modes must list each mode once and include the disabled baseline")
     items = load_items(args.items)
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
                 "items": len(items), "items_sha256": sha256_bytes(args.items.read_bytes()),
-                "modes": list(MODES), "short_budget": SHORT_BUDGET, "long_budget": LONG_BUDGET,
+                "modes": list(args.modes), "short_budget": SHORT_BUDGET, "long_budget": LONG_BUDGET,
                 "temperature": 0, "thinking": "disabled", "expert_stream": "auto",
                 "total_blocks": TOTAL_BLOCKS, "block_size_tokens": 16,
                 "request_timeout_seconds": REQUEST_TIMEOUT, "grader": "frozen closed_checks",
@@ -261,7 +274,7 @@ def main() -> int:
         args.output.mkdir(parents=True, exist_ok=False)
         contract_path.write_text(json.dumps(contract, indent=2) + "\n")
     runs = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
-                           items, args.resume) for mode in MODES}
+                           items, args.resume) for mode in args.modes}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:
         raise ValueError("native manifest changed during the run")

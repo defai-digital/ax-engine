@@ -77,6 +77,20 @@ class NativeSupportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "disabled-MTP"):
             mod.check_activation(before, after, False, 12, 48)
 
+    def test_default_mode_passes_no_policy_flags_and_must_not_activate_mtp(self):
+        pinned = mod.server_command(Path("/bin/server"), Path("/pack"), "disabled", 1)
+        self.assertIn("--mlx-mtp-policy", pinned)
+        self.assertIn("--disable-ngram-acceleration", pinned)
+        product = mod.server_command(Path("/bin/server"), Path("/pack"), "default", 1)
+        for flag in ("--mlx-mtp-policy", "--disable-ngram-acceleration", "--stream-experts"):
+            self.assertNotIn(flag, product)
+        self.assertEqual(product[product.index("--mlx-model-artifacts-dir") + 1], "/pack")
+        with self.assertRaisesRegex(ValueError, "unknown control mode"):
+            mod.server_command(Path("/bin/server"), Path("/pack"), "auto", 1)
+        before = {name: 0 for name in (mod.VERIFIED, *mod.ERRORS)}
+        with self.assertRaisesRegex(ValueError, "disabled-MTP or default"):
+            mod.check_activation(before, {**before, mod.VERIFIED: 1}, False, 12, 48)
+
     def test_route_errors_and_output_budget_fail(self):
         before = {name: 0 for name in (mod.VERIFIED, *mod.ERRORS)}
         for error in mod.ERRORS:
