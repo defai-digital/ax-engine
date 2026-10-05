@@ -31,6 +31,10 @@ class ReferenceRunnerTests(unittest.TestCase):
                                                  Clock([1.0, 2.0, 3.0]))
         self.assertEqual((generated, terminal, times), ([5, 6], 248044, [1.0, 2.0]))
 
+    def test_fixed_token_mode_keeps_eos_as_an_ordinary_token(self):
+        generated, terminal, times = mod.collect(iter([5, 248044, 7, 8]), 4, set(), Clock([1.0, 2.0, 3.0, 4.0]))
+        self.assertEqual((generated, terminal, len(times)), ([5, 248044, 7, 8], None, 4))
+
     def test_collect_stops_at_budget_and_reports_no_terminal(self):
         generated, terminal, times = mod.collect(iter(range(100)), 3, mod.EOS_IDS,
                                                  Clock([1.0, 2.0, 3.0, 4.0]))
