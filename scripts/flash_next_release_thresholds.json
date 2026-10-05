@@ -1,0 +1,61 @@
+{
+  "schema": "ax-engine.flash-next.release-thresholds.v1",
+  "frozen_on": "2026-10-05",
+  "frozen_before": "reference-runtime collection, fresh-cache delivery and product-default-mode runs",
+  "authority": "Maintainer instruction of 2026-10-05 approving the release scope, the pinned MLX-VLM reference, a fresh-cache delivery download and drafted memory/cold-start bounds.",
+  "release_scope": "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in (--mlx-mtp-policy required). MTP-S, MTP-P and MTP-D are not promoted and no MTP speedup is claimed.",
+  "target": {
+    "pack_repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+    "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+    "published_members": 49,
+    "published_bytes": 132261877478,
+    "host": "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GiB or more, internal SSD",
+    "kv_pool": "--total-blocks 4096 (65,536 tokens) for the long-context lookup; the 16,384-token default pool is documented, not changed"
+  },
+  "memory": {
+    "peak_server_rss_gib_max": 96,
+    "basis": "Half of the 192 GiB unified memory. Observed single peaks over the 105-item cohort were 73.1 and 76.2 GiB, so the bound leaves about 20 GiB of headroom for run-to-run variation."
+  },
+  "readiness": {
+    "warm_seconds_max": 120,
+    "first_load_after_delivery_seconds_max": 300,
+    "basis": "Process start to HTTP model-list readiness. Observed single readiness times were 32-81 s. File-cache state is not controlled (purge needs privileges), so the two cases are recorded separately and never mixed.",
+    "page_cache": "not controlled"
+  },
+  "long_lookup": {
+    "prompt_tokens": 29774,
+    "max_output_tokens": 64,
+    "wall_seconds_max": 400,
+    "basis": "Observed single wall times were 268-272 s."
+  },
+  "reference_relative": {
+    "reference": "pinned MLX-VLM 0.7.0rc0 (commit 6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb) with MLX 0.32.2, Transformers 5.18.0.dev0 and Tokenizers 0.23.2; independent in-process language graph on the same pack bytes. Not the primary mlx_lm baseline, which cannot load qwen4_exp.",
+    "decode_ratio_min": 0.90,
+    "ttft_ratio_max": 1.15,
+    "aggregation": "median of three measured runs per cell, required in each of the 512, 2048 and 8192 input-token cells",
+    "measurement_bias": "AX is timed through an HTTP stream on loopback and the reference in process; the bound therefore disadvantages AX by the transport overhead and is not a speedup claim."
+  },
+  "quality": {
+    "ax_only_failures_max": 0,
+    "basis": "Every frozen-cohort item that AX fails must also fail on the independent reference runtime on the same pack revision; AX-specific failures are zero. Retained failures stay disclosed as checkpoint output limits and are never reclassified as passes.",
+    "text_identity_required": "product-default text equals explicit-direct text for all 105 items"
+  },
+  "lifecycle": {
+    "actions_per_mode": 7,
+    "modes_required": ["disabled", "default"],
+    "counters_drained": true
+  },
+  "mtp": {
+    "default_verified_steps": 0,
+    "required_is_opt_in": true,
+    "gate_state": {"MTP-S": "not_assessed", "MTP-P": "not_assessed", "MTP-D": "not_assessed"},
+    "measured_ratio_disclosure": "Required MTP decoded at 0.90-0.93 of direct speed on 2026-10-05; it fails the MTP-P bounds (weighted >= 1.20x, median >= 1.10x) and is therefore not promoted."
+  },
+  "delivery": {
+    "fresh_cache": "empty cache root, product downloader, pinned revision, no pre-existing files",
+    "all_members_size_and_sha256": true,
+    "generated_manifest_runtime_ready": true,
+    "functional_controls_on_delivered_copy": ["disabled", "required", "default"]
+  },
+  "disclosure": "The memory, readiness and long-lookup bounds were set after observing the single measurements named above and are therefore descriptive guard rails, not independently pre-registered limits. The reference-relative, quality and identity bounds were frozen before any reference or product-default data were collected."
+}
