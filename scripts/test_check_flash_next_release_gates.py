@@ -24,7 +24,8 @@ HARDWARE = {"form_factor": "Mac Studio", "soc": "Apple M2 Ultra", "memory_bytes"
 CELL_HASHES = {f"cell-{length}-{run}": f"h{length}{run}" for length in (512, 2048, 8192)
                for run in range(5)}
 COMMON = {"server_sha256": "s", "inventory_sha256": "i", "hardware": HARDWARE,
-          "qualification": False, "release_ready": False}
+          "qualification": False, "release_ready": False,
+          "host_quiet": {"cpu_idle_percent": 95.0}, "host_idle_after": 93.0}
 
 
 def ax_cells(decode_seconds=7.0, ttft=(4.0, 16.0, 70.0), tokens=128):
@@ -203,6 +204,18 @@ class ReleaseGateTests(unittest.TestCase):
         r = good()
         r["reference"]["versions"] = {"mlx-vlm": "0.8"}
         self.assertEqual(failed(r), {"integrity"})
+
+    def test_timing_results_must_record_an_idle_host_before_and_after(self):
+        for name in ("qa", "lifecycle", "matrix", "reference"):
+            r = good()
+            r[name]["host_quiet"] = {"cpu_idle_percent": 80.0}
+            self.assertEqual(failed(r), {"integrity"}, name)
+            r = good()
+            r[name]["host_idle_after"] = 50.0
+            self.assertEqual(failed(r), {"integrity"}, name)
+            r = good()
+            del r[name]["host_quiet"]
+            self.assertEqual(failed(r), {"integrity"}, name)
 
     def test_lifecycle_needs_seven_drained_actions_in_each_required_mode(self):
         r = good()

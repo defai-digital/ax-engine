@@ -118,6 +118,27 @@ class NativeSupportTests(unittest.TestCase):
                     mod.validate_inventory(root, inventory, stray)
                 self.assertEqual(mod.validate_inventory(root, inventory, base), {})
 
+    def test_wait_for_quiet_returns_when_idle_and_times_out_when_busy(self):
+        ticks = iter([0.0, 5.0, 10.0, 15.0, 20.0])
+        idles = iter([40.0, 70.0, 93.5])
+        record = mod.wait_for_quiet(90.0, 900, sample=lambda: next(idles), sleep=lambda s: None,
+                                    clock=lambda: next(ticks))
+        self.assertEqual(record["cpu_idle_percent"], 93.5)
+        self.assertEqual(record["min_idle_percent"], 90.0)
+        clock = iter(range(0, 10_000, 400))
+        with self.assertRaisesRegex(TimeoutError, "stayed busy"):
+            mod.wait_for_quiet(90.0, 900, sample=lambda: 10.0, sleep=lambda s: None,
+                               clock=lambda: next(clock))
+
+    def test_cpu_idle_percent_reads_the_last_top_sample(self):
+        top = "CPU usage: 1% user, 2% sys, 97% idle\nCPU usage: 3.5% user, 1.5% sys, 95.0% idle\n"
+        with patch.object(mod.subprocess, "run") as run:
+            run.return_value.stdout = top
+            self.assertEqual(mod.cpu_idle_percent(), 95.0)
+            run.return_value.stdout = "nothing"
+            with self.assertRaises(ValueError):
+                mod.cpu_idle_percent()
+
     def test_route_errors_and_output_budget_fail(self):
         before = {name: 0 for name in (mod.VERIFIED, *mod.ERRORS)}
         for error in mod.ERRORS:

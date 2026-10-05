@@ -224,7 +224,9 @@ def main() -> int:
     manifest_before = native.validate_inventory(args.model_dir, inventory)
     runtime_before = runtime_hashes()
     args.output.mkdir(parents=True, exist_ok=False)
+    host_quiet = native.wait_for_quiet()
     record: dict[str, Any] = {**contract, "completed": False, "phase": "loading", "versions": versions,
+                              "host_quiet": host_quiet,
                               "language_sha256": language_sha, "inventory_sha256": native.sha256(args.inventory),
                               "hardware": {"form_factor": native.form_factor(), "soc": chip,
                                            "memory_bytes": memory, "os": platform.mac_ver()[0],
@@ -297,6 +299,7 @@ def main() -> int:
     if runtime_hashes() != runtime_before:
         raise ValueError("reference runtime files changed during the run")
     record["runtime_files_bound"] = len(runtime_before)
+    record["host_idle_after"] = native.cpu_idle_percent()
     record["completed"] = True
     save("complete")
     return 0

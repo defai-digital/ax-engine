@@ -245,6 +245,7 @@ def main() -> int:
     inventory = json.loads(args.inventory.read_text())
     manifest_before = native.validate_inventory(args.model_dir, inventory)
     args.output.mkdir(parents=True, exist_ok=False)
+    host_quiet = native.wait_for_quiet()
     runs = [run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode)
             for mode in args.modes]
     manifest_after = native.validate_inventory(args.model_dir, inventory)
@@ -257,6 +258,7 @@ def main() -> int:
                              "memory_bytes": memory,
                              "storage": {"declared": inventory["storage"], **storage},
                              "os": platform.mac_ver()[0]},
+                "host_quiet": host_quiet, "host_idle_after": native.cpu_idle_percent(),
                 "lifecycle_passed": True, "runs": runs}
     (args.output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print("Lifecycle controls passed; qualification and MTP-S/P/D remain unassessed.")
