@@ -51,7 +51,13 @@ These are not in the current compatibility contract:
 - full OpenAI parameter parity such as penalties, logprobs, or `n`; non-default
   `n`, `best_of`, `frequency_penalty`, `presence_penalty`, and `logit_bias`
   values fail closed with an `unsupported_parameter` error instead of being
-  silently ignored. Client `stop` sequences are honored on all backends
+  silently ignored. On `/v1/chat/completions`, effort levels do the same:
+  `reasoning_effort`, `reasoning.effort` and a `reasoning` string that is not
+  an on/off switch (for example `"high"`) are rejected, because thinking is a
+  switch plus a token budget, not a level; use
+  `chat_template_kwargs.enable_thinking` and `ax_max_think_tokens`. The
+  `/v1/responses` surface still accepts `reasoning.effort` and ignores its
+  value. Client `stop` sequences are honored on all backends
   including native MLX (OpenAI semantics; streaming ends early and cancels
   generation — see `docs/SERVER.md`)
 - full tokenizer ownership or arbitrary model chat-template discovery inside
