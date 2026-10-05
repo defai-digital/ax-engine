@@ -1,0 +1,6720 @@
+{
+  "accepted_failure_coverage": false,
+  "arm": "permuted",
+  "cases": [
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 1,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 82602,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "target_calls": [
+          [
+            8160
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "attempted_calls": [
+        [
+          8160
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 1,
+        "state": {
+          "axkb": {
+            "bytes": 152220,
+            "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+            "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+          },
+          "position": 66
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "trajectory-0",
+      "primary": 8160,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 1,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 82602,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "144fcbcc0810ca4de847e625af6a2c01be50ab8b1d2eb6013770330da5dd3a5d.bin",
+            "sha256": "144fcbcc0810ca4de847e625af6a2c01be50ab8b1d2eb6013770330da5dd3a5d"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+                "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 2,
+            "state": {
+              "axkb": {
+                "bytes": 154524,
+                "file": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603.bin",
+                "sha256": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603"
+              },
+              "position": 67
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117526897,
+              "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+              "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+            },
+            "position": 68
+          }
+        },
+        "consumed": [
+          369
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755.bin",
+            "sha256": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 163302,
+        "next": 279,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755.bin",
+            "sha256": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+            "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117526897,
+            "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+            "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+          },
+          "position": 68
+        },
+        "target_calls": [
+          [
+            369
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 1,
+          "state": {
+            "axkb": {
+              "bytes": 152220,
+              "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+              "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+            },
+            "position": 66
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        }
+      },
+      "attempted_calls": [
+        [
+          369
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 1,
+          "state": {
+            "axkb": {
+              "bytes": 152220,
+              "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+              "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+            },
+            "position": 66
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+            "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 2,
+        "state": {
+          "axkb": {
+            "bytes": 154524,
+            "file": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603.bin",
+            "sha256": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603"
+          },
+          "position": 67
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 1,
+          "state": {
+            "axkb": {
+              "bytes": 152220,
+              "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+              "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+            },
+            "position": 66
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117499249,
+          "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+          "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+        },
+        "position": 67
+      },
+      "label": "trajectory-1",
+      "primary": 369,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+                "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 2,
+            "state": {
+              "axkb": {
+                "bytes": 154524,
+                "file": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603.bin",
+                "sha256": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603"
+              },
+              "position": 67
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117526897,
+              "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+              "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+            },
+            "position": 68
+          }
+        },
+        "consumed": [
+          369
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755.bin",
+            "sha256": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 163302,
+        "next": 279,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755.bin",
+            "sha256": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+            "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117526897,
+            "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+            "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+          },
+          "position": 68
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "2f3d3b1cae73c26bcaabac15d8911aa71c95f18d815705dfcd4389c72df1f625.bin",
+            "sha256": "2f3d3b1cae73c26bcaabac15d8911aa71c95f18d815705dfcd4389c72df1f625"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271,
+        8160
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37.bin",
+                "sha256": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 3,
+            "state": {
+              "axkb": {
+                "bytes": 156828,
+                "file": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19.bin",
+                "sha256": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19"
+              },
+              "position": 68
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117554545,
+              "file": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036.bin",
+              "sha256": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036"
+            },
+            "position": 69
+          }
+        },
+        "consumed": [
+          279
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "15b2227daddb183244e5db15f7b8de4fba04ca5387a3024f46dd09eb8282556d.bin",
+            "sha256": "15b2227daddb183244e5db15f7b8de4fba04ca5387a3024f46dd09eb8282556d"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 15152,
+        "next": 2923,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "15b2227daddb183244e5db15f7b8de4fba04ca5387a3024f46dd09eb8282556d.bin",
+            "sha256": "15b2227daddb183244e5db15f7b8de4fba04ca5387a3024f46dd09eb8282556d"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37.bin",
+            "sha256": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117554545,
+            "file": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036.bin",
+            "sha256": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036"
+          },
+          "position": 69
+        },
+        "target_calls": [
+          [
+            279
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+              "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 2,
+          "state": {
+            "axkb": {
+              "bytes": 154524,
+              "file": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603.bin",
+              "sha256": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603"
+            },
+            "position": 67
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117526897,
+            "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+            "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+          },
+          "position": 68
+        }
+      },
+      "attempted_calls": [
+        [
+          279
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+              "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 2,
+          "state": {
+            "axkb": {
+              "bytes": 154524,
+              "file": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603.bin",
+              "sha256": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603"
+            },
+            "position": 67
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117526897,
+            "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+            "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+          },
+          "position": 68
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37.bin",
+            "sha256": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 3,
+        "state": {
+          "axkb": {
+            "bytes": 156828,
+            "file": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19.bin",
+            "sha256": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19"
+          },
+          "position": 68
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+              "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 2,
+          "state": {
+            "axkb": {
+              "bytes": 154524,
+              "file": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603.bin",
+              "sha256": "066a93caf579e41c2916effa9dbff0f7ff64b0145f3bb54ebecd2b3b20c6a603"
+            },
+            "position": 67
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117526897,
+            "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+            "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+          },
+          "position": 68
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117526897,
+          "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+          "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+        },
+        "position": 68
+      },
+      "label": "trajectory-2",
+      "primary": 279,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37.bin",
+                "sha256": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 3,
+            "state": {
+              "axkb": {
+                "bytes": 156828,
+                "file": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19.bin",
+                "sha256": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19"
+              },
+              "position": 68
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117554545,
+              "file": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036.bin",
+              "sha256": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036"
+            },
+            "position": 69
+          }
+        },
+        "consumed": [
+          279
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "15b2227daddb183244e5db15f7b8de4fba04ca5387a3024f46dd09eb8282556d.bin",
+            "sha256": "15b2227daddb183244e5db15f7b8de4fba04ca5387a3024f46dd09eb8282556d"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 15152,
+        "next": 2923,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "15b2227daddb183244e5db15f7b8de4fba04ca5387a3024f46dd09eb8282556d.bin",
+            "sha256": "15b2227daddb183244e5db15f7b8de4fba04ca5387a3024f46dd09eb8282556d"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37.bin",
+            "sha256": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117554545,
+            "file": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036.bin",
+            "sha256": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036"
+          },
+          "position": 69
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "9b445a07b35a906f61d32c0cd09baf7ccceb3f4966009ca2c49293dbd986e0f6.bin",
+            "sha256": "9b445a07b35a906f61d32c0cd09baf7ccceb3f4966009ca2c49293dbd986e0f6"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271,
+        8160,
+        369
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682.bin",
+                "sha256": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 4,
+            "state": {
+              "axkb": {
+                "bytes": 159132,
+                "file": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e.bin",
+                "sha256": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e"
+              },
+              "position": 69
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117582193,
+              "file": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa.bin",
+              "sha256": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa"
+            },
+            "position": 70
+          }
+        },
+        "consumed": [
+          2923
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "58867ba5d9545e31f2ae30337d97c04cd21f2445714e2dfd9a709466f6c019cd.bin",
+            "sha256": "58867ba5d9545e31f2ae30337d97c04cd21f2445714e2dfd9a709466f6c019cd"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 99336,
+        "next": 13909,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "58867ba5d9545e31f2ae30337d97c04cd21f2445714e2dfd9a709466f6c019cd.bin",
+            "sha256": "58867ba5d9545e31f2ae30337d97c04cd21f2445714e2dfd9a709466f6c019cd"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682.bin",
+            "sha256": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117582193,
+            "file": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa.bin",
+            "sha256": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa"
+          },
+          "position": 70
+        },
+        "target_calls": [
+          [
+            2923
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37.bin",
+              "sha256": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 3,
+          "state": {
+            "axkb": {
+              "bytes": 156828,
+              "file": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19.bin",
+              "sha256": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19"
+            },
+            "position": 68
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117554545,
+            "file": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036.bin",
+            "sha256": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036"
+          },
+          "position": 69
+        }
+      },
+      "attempted_calls": [
+        [
+          2923
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37.bin",
+              "sha256": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 3,
+          "state": {
+            "axkb": {
+              "bytes": 156828,
+              "file": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19.bin",
+              "sha256": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19"
+            },
+            "position": 68
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117554545,
+            "file": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036.bin",
+            "sha256": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036"
+          },
+          "position": 69
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682.bin",
+            "sha256": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 4,
+        "state": {
+          "axkb": {
+            "bytes": 159132,
+            "file": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e.bin",
+            "sha256": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e"
+          },
+          "position": 69
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37.bin",
+              "sha256": "c1c39f834dee1e7ce20f4ba45795ef0fbfec4454dd861f6c31bc3f3cf49f5d37"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 3,
+          "state": {
+            "axkb": {
+              "bytes": 156828,
+              "file": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19.bin",
+              "sha256": "d731ad0894799d3a977a113fb547445932c82e25cc4136566af25baf98106a19"
+            },
+            "position": 68
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117554545,
+            "file": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036.bin",
+            "sha256": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036"
+          },
+          "position": 69
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117554545,
+          "file": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036.bin",
+          "sha256": "93ee49cc8cfd467066deddb93d7280e4c5858ef4ef9097b921b03c0f2e621036"
+        },
+        "position": 69
+      },
+      "label": "trajectory-3",
+      "primary": 2923,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682.bin",
+                "sha256": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 4,
+            "state": {
+              "axkb": {
+                "bytes": 159132,
+                "file": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e.bin",
+                "sha256": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e"
+              },
+              "position": 69
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117582193,
+              "file": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa.bin",
+              "sha256": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa"
+            },
+            "position": 70
+          }
+        },
+        "consumed": [
+          2923
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "58867ba5d9545e31f2ae30337d97c04cd21f2445714e2dfd9a709466f6c019cd.bin",
+            "sha256": "58867ba5d9545e31f2ae30337d97c04cd21f2445714e2dfd9a709466f6c019cd"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 99336,
+        "next": 13909,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "58867ba5d9545e31f2ae30337d97c04cd21f2445714e2dfd9a709466f6c019cd.bin",
+            "sha256": "58867ba5d9545e31f2ae30337d97c04cd21f2445714e2dfd9a709466f6c019cd"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682.bin",
+            "sha256": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117582193,
+            "file": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa.bin",
+            "sha256": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa"
+          },
+          "position": 70
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "63f58e10c412d72af1b29607e7d18f99e80dce77976f3a81e97c3426b5004f70.bin",
+            "sha256": "63f58e10c412d72af1b29607e7d18f99e80dce77976f3a81e97c3426b5004f70"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271,
+        8160,
+        369,
+        279
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5.bin",
+                "sha256": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 5,
+            "state": {
+              "axkb": {
+                "bytes": 161436,
+                "file": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b.bin",
+                "sha256": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b"
+              },
+              "position": 70
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117609841,
+              "file": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b.bin",
+              "sha256": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b"
+            },
+            "position": 71
+          }
+        },
+        "consumed": [
+          13909
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "e1d361eb757a05e8a19254d4b9b4a043dea63c851d777ae0f85324a8ca239102.bin",
+            "sha256": "e1d361eb757a05e8a19254d4b9b4a043dea63c851d777ae0f85324a8ca239102"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 219974,
+        "next": 28253,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "e1d361eb757a05e8a19254d4b9b4a043dea63c851d777ae0f85324a8ca239102.bin",
+            "sha256": "e1d361eb757a05e8a19254d4b9b4a043dea63c851d777ae0f85324a8ca239102"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5.bin",
+            "sha256": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117609841,
+            "file": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b.bin",
+            "sha256": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b"
+          },
+          "position": 71
+        },
+        "target_calls": [
+          [
+            13909
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682.bin",
+              "sha256": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 4,
+          "state": {
+            "axkb": {
+              "bytes": 159132,
+              "file": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e.bin",
+              "sha256": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e"
+            },
+            "position": 69
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117582193,
+            "file": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa.bin",
+            "sha256": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa"
+          },
+          "position": 70
+        }
+      },
+      "attempted_calls": [
+        [
+          13909
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682.bin",
+              "sha256": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 4,
+          "state": {
+            "axkb": {
+              "bytes": 159132,
+              "file": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e.bin",
+              "sha256": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e"
+            },
+            "position": 69
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117582193,
+            "file": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa.bin",
+            "sha256": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa"
+          },
+          "position": 70
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5.bin",
+            "sha256": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 5,
+        "state": {
+          "axkb": {
+            "bytes": 161436,
+            "file": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b.bin",
+            "sha256": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b"
+          },
+          "position": 70
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682.bin",
+              "sha256": "c9a30f0d773c8a9e7cb5d471605f05a7b50e94ef7d663720c3dbc41d95504682"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 4,
+          "state": {
+            "axkb": {
+              "bytes": 159132,
+              "file": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e.bin",
+              "sha256": "db252d1c333059e841cb73fc51ca035b4a0f898d14ad4f77b7f54f077fb8c48e"
+            },
+            "position": 69
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117582193,
+            "file": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa.bin",
+            "sha256": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa"
+          },
+          "position": 70
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117582193,
+          "file": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa.bin",
+          "sha256": "6b07c17ce3770cb81ebf35c640ae2d8b11d1fc1dda43c882bdad76254b8d23fa"
+        },
+        "position": 70
+      },
+      "label": "trajectory-4",
+      "primary": 13909,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5.bin",
+                "sha256": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 5,
+            "state": {
+              "axkb": {
+                "bytes": 161436,
+                "file": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b.bin",
+                "sha256": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b"
+              },
+              "position": 70
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117609841,
+              "file": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b.bin",
+              "sha256": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b"
+            },
+            "position": 71
+          }
+        },
+        "consumed": [
+          13909
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "e1d361eb757a05e8a19254d4b9b4a043dea63c851d777ae0f85324a8ca239102.bin",
+            "sha256": "e1d361eb757a05e8a19254d4b9b4a043dea63c851d777ae0f85324a8ca239102"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 219974,
+        "next": 28253,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "e1d361eb757a05e8a19254d4b9b4a043dea63c851d777ae0f85324a8ca239102.bin",
+            "sha256": "e1d361eb757a05e8a19254d4b9b4a043dea63c851d777ae0f85324a8ca239102"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5.bin",
+            "sha256": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117609841,
+            "file": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b.bin",
+            "sha256": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b"
+          },
+          "position": 71
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "c726c5ba27fa7dab3d4719e1d3d40afd2ef80cfb78453a1b784fe488b789c3a1.bin",
+            "sha256": "c726c5ba27fa7dab3d4719e1d3d40afd2ef80cfb78453a1b784fe488b789c3a1"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271,
+        8160,
+        369,
+        279,
+        2923
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c.bin",
+                "sha256": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 6,
+            "state": {
+              "axkb": {
+                "bytes": 163740,
+                "file": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b.bin",
+                "sha256": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b"
+              },
+              "position": 71
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117637489,
+              "file": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103.bin",
+              "sha256": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103"
+            },
+            "position": 72
+          }
+        },
+        "consumed": [
+          28253
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "a5416f17173b82a156cecfcbd37539f466449357ec66dd9e16db39cbc27596a4.bin",
+            "sha256": "a5416f17173b82a156cecfcbd37539f466449357ec66dd9e16db39cbc27596a4"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 59256,
+        "next": 21261,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "a5416f17173b82a156cecfcbd37539f466449357ec66dd9e16db39cbc27596a4.bin",
+            "sha256": "a5416f17173b82a156cecfcbd37539f466449357ec66dd9e16db39cbc27596a4"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c.bin",
+            "sha256": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117637489,
+            "file": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103.bin",
+            "sha256": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103"
+          },
+          "position": 72
+        },
+        "target_calls": [
+          [
+            28253
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5.bin",
+              "sha256": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 5,
+          "state": {
+            "axkb": {
+              "bytes": 161436,
+              "file": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b.bin",
+              "sha256": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b"
+            },
+            "position": 70
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117609841,
+            "file": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b.bin",
+            "sha256": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b"
+          },
+          "position": 71
+        }
+      },
+      "attempted_calls": [
+        [
+          28253
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5.bin",
+              "sha256": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 5,
+          "state": {
+            "axkb": {
+              "bytes": 161436,
+              "file": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b.bin",
+              "sha256": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b"
+            },
+            "position": 70
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117609841,
+            "file": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b.bin",
+            "sha256": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b"
+          },
+          "position": 71
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c.bin",
+            "sha256": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 6,
+        "state": {
+          "axkb": {
+            "bytes": 163740,
+            "file": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b.bin",
+            "sha256": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b"
+          },
+          "position": 71
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5.bin",
+              "sha256": "5bf02d0f700bc645fdb3a640ddb5796d72296328d487bf47780c5c46096f19f5"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 5,
+          "state": {
+            "axkb": {
+              "bytes": 161436,
+              "file": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b.bin",
+              "sha256": "2b126b469d037559c5b22ed73432bd68655b9bb6d9d802b472b0a6a3bd66105b"
+            },
+            "position": 70
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117609841,
+            "file": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b.bin",
+            "sha256": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b"
+          },
+          "position": 71
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117609841,
+          "file": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b.bin",
+          "sha256": "f79aa174fd7844d54b09178bd0d6862c2e3c0413e885674bd57ef8cff475816b"
+        },
+        "position": 71
+      },
+      "label": "trajectory-5",
+      "primary": 28253,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c.bin",
+                "sha256": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 6,
+            "state": {
+              "axkb": {
+                "bytes": 163740,
+                "file": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b.bin",
+                "sha256": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b"
+              },
+              "position": 71
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117637489,
+              "file": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103.bin",
+              "sha256": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103"
+            },
+            "position": 72
+          }
+        },
+        "consumed": [
+          28253
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "a5416f17173b82a156cecfcbd37539f466449357ec66dd9e16db39cbc27596a4.bin",
+            "sha256": "a5416f17173b82a156cecfcbd37539f466449357ec66dd9e16db39cbc27596a4"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 59256,
+        "next": 21261,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "a5416f17173b82a156cecfcbd37539f466449357ec66dd9e16db39cbc27596a4.bin",
+            "sha256": "a5416f17173b82a156cecfcbd37539f466449357ec66dd9e16db39cbc27596a4"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c.bin",
+            "sha256": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117637489,
+            "file": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103.bin",
+            "sha256": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103"
+          },
+          "position": 72
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "bc7c610606adda28752535865bf67225f9c42b7ed7258613373fe1582f162248.bin",
+            "sha256": "bc7c610606adda28752535865bf67225f9c42b7ed7258613373fe1582f162248"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271,
+        8160,
+        369,
+        279,
+        2923,
+        13909
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5.bin",
+                "sha256": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 7,
+            "state": {
+              "axkb": {
+                "bytes": 166044,
+                "file": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df.bin",
+                "sha256": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df"
+              },
+              "position": 72
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117665137,
+              "file": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b.bin",
+              "sha256": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b"
+            },
+            "position": 73
+          }
+        },
+        "consumed": [
+          21261
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "7eb24c55b59c8e626a64234bfa27f4137a52a88ae7d68bc981a57ec870192ed9.bin",
+            "sha256": "7eb24c55b59c8e626a64234bfa27f4137a52a88ae7d68bc981a57ec870192ed9"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 78185,
+        "next": 310,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "7eb24c55b59c8e626a64234bfa27f4137a52a88ae7d68bc981a57ec870192ed9.bin",
+            "sha256": "7eb24c55b59c8e626a64234bfa27f4137a52a88ae7d68bc981a57ec870192ed9"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5.bin",
+            "sha256": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117665137,
+            "file": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b.bin",
+            "sha256": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b"
+          },
+          "position": 73
+        },
+        "target_calls": [
+          [
+            21261
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c.bin",
+              "sha256": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 6,
+          "state": {
+            "axkb": {
+              "bytes": 163740,
+              "file": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b.bin",
+              "sha256": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b"
+            },
+            "position": 71
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117637489,
+            "file": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103.bin",
+            "sha256": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103"
+          },
+          "position": 72
+        }
+      },
+      "attempted_calls": [
+        [
+          21261
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c.bin",
+              "sha256": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 6,
+          "state": {
+            "axkb": {
+              "bytes": 163740,
+              "file": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b.bin",
+              "sha256": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b"
+            },
+            "position": 71
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117637489,
+            "file": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103.bin",
+            "sha256": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103"
+          },
+          "position": 72
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5.bin",
+            "sha256": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 7,
+        "state": {
+          "axkb": {
+            "bytes": 166044,
+            "file": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df.bin",
+            "sha256": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df"
+          },
+          "position": 72
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c.bin",
+              "sha256": "210bfa2c39fb3eb1f4e81831ccac4c5076d61d5a201887527ccb23992648f15c"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 6,
+          "state": {
+            "axkb": {
+              "bytes": 163740,
+              "file": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b.bin",
+              "sha256": "d0f5ed8ba0550c5bc1a2e27267642c25c96accecc683aef553f342709330547b"
+            },
+            "position": 71
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117637489,
+            "file": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103.bin",
+            "sha256": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103"
+          },
+          "position": 72
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117637489,
+          "file": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103.bin",
+          "sha256": "e7ed0d90ff886d3d5ba9239c6a67c290ce7a369fbacef4eb4a9b1d9d8b682103"
+        },
+        "position": 72
+      },
+      "label": "trajectory-6",
+      "primary": 21261,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5.bin",
+                "sha256": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 7,
+            "state": {
+              "axkb": {
+                "bytes": 166044,
+                "file": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df.bin",
+                "sha256": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df"
+              },
+              "position": 72
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117665137,
+              "file": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b.bin",
+              "sha256": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b"
+            },
+            "position": 73
+          }
+        },
+        "consumed": [
+          21261
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "7eb24c55b59c8e626a64234bfa27f4137a52a88ae7d68bc981a57ec870192ed9.bin",
+            "sha256": "7eb24c55b59c8e626a64234bfa27f4137a52a88ae7d68bc981a57ec870192ed9"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 78185,
+        "next": 310,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "7eb24c55b59c8e626a64234bfa27f4137a52a88ae7d68bc981a57ec870192ed9.bin",
+            "sha256": "7eb24c55b59c8e626a64234bfa27f4137a52a88ae7d68bc981a57ec870192ed9"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5.bin",
+            "sha256": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117665137,
+            "file": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b.bin",
+            "sha256": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b"
+          },
+          "position": 73
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "258613c0be8593c699972edd098f6d7011103fe2bb7b1a0868a1546421fcc539.bin",
+            "sha256": "258613c0be8593c699972edd098f6d7011103fe2bb7b1a0868a1546421fcc539"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271,
+        8160,
+        369,
+        279,
+        2923,
+        13909,
+        28253
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da.bin",
+                "sha256": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 8,
+            "state": {
+              "axkb": {
+                "bytes": 168348,
+                "file": "130bafd6ea10baa95bafd1afbe99f4581b3ba1e44a20ea658b761f847cbaa928.bin",
+                "sha256": "130bafd6ea10baa95bafd1afbe99f4581b3ba1e44a20ea658b761f847cbaa928"
+              },
+              "position": 73
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117692785,
+              "file": "474c55d2e46d6ea9098ca69572ba1dc6c67335ceef9c8babe83a9a3cd45a9fb5.bin",
+              "sha256": "474c55d2e46d6ea9098ca69572ba1dc6c67335ceef9c8babe83a9a3cd45a9fb5"
+            },
+            "position": 74
+          }
+        },
+        "consumed": [
+          310
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "304a06c87be45aee59a183c053a16c272a08237499fe3aaa88076f26ee8a2ddb.bin",
+            "sha256": "304a06c87be45aee59a183c053a16c272a08237499fe3aaa88076f26ee8a2ddb"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 246778,
+        "next": 7995,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "304a06c87be45aee59a183c053a16c272a08237499fe3aaa88076f26ee8a2ddb.bin",
+            "sha256": "304a06c87be45aee59a183c053a16c272a08237499fe3aaa88076f26ee8a2ddb"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da.bin",
+            "sha256": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117692785,
+            "file": "474c55d2e46d6ea9098ca69572ba1dc6c67335ceef9c8babe83a9a3cd45a9fb5.bin",
+            "sha256": "474c55d2e46d6ea9098ca69572ba1dc6c67335ceef9c8babe83a9a3cd45a9fb5"
+          },
+          "position": 74
+        },
+        "target_calls": [
+          [
+            310
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5.bin",
+              "sha256": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 7,
+          "state": {
+            "axkb": {
+              "bytes": 166044,
+              "file": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df.bin",
+              "sha256": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df"
+            },
+            "position": 72
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117665137,
+            "file": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b.bin",
+            "sha256": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b"
+          },
+          "position": 73
+        }
+      },
+      "attempted_calls": [
+        [
+          310
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5.bin",
+              "sha256": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 7,
+          "state": {
+            "axkb": {
+              "bytes": 166044,
+              "file": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df.bin",
+              "sha256": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df"
+            },
+            "position": 72
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117665137,
+            "file": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b.bin",
+            "sha256": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b"
+          },
+          "position": 73
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da.bin",
+            "sha256": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 8,
+        "state": {
+          "axkb": {
+            "bytes": 168348,
+            "file": "130bafd6ea10baa95bafd1afbe99f4581b3ba1e44a20ea658b761f847cbaa928.bin",
+            "sha256": "130bafd6ea10baa95bafd1afbe99f4581b3ba1e44a20ea658b761f847cbaa928"
+          },
+          "position": 73
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5.bin",
+              "sha256": "f95c6366ef6a9dfe034292655eb1db7593ab052a6a84c3b20efe1193d2bdf7e5"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 7,
+          "state": {
+            "axkb": {
+              "bytes": 166044,
+              "file": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df.bin",
+              "sha256": "f2042123df9f496b24592388b4de967ee0116f6165ee69fd7f45e69a9aa999df"
+            },
+            "position": 72
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117665137,
+            "file": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b.bin",
+            "sha256": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b"
+          },
+          "position": 73
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117665137,
+          "file": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b.bin",
+          "sha256": "438bffc9e6e42e3d5a73aaa7e89958a156fa4011f1110f0cd2c6380341b6ef2b"
+        },
+        "position": 73
+      },
+      "label": "trajectory-7",
+      "primary": 310,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da.bin",
+                "sha256": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 8,
+            "state": {
+              "axkb": {
+                "bytes": 168348,
+                "file": "130bafd6ea10baa95bafd1afbe99f4581b3ba1e44a20ea658b761f847cbaa928.bin",
+                "sha256": "130bafd6ea10baa95bafd1afbe99f4581b3ba1e44a20ea658b761f847cbaa928"
+              },
+              "position": 73
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117692785,
+              "file": "474c55d2e46d6ea9098ca69572ba1dc6c67335ceef9c8babe83a9a3cd45a9fb5.bin",
+              "sha256": "474c55d2e46d6ea9098ca69572ba1dc6c67335ceef9c8babe83a9a3cd45a9fb5"
+            },
+            "position": 74
+          }
+        },
+        "consumed": [
+          310
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "304a06c87be45aee59a183c053a16c272a08237499fe3aaa88076f26ee8a2ddb.bin",
+            "sha256": "304a06c87be45aee59a183c053a16c272a08237499fe3aaa88076f26ee8a2ddb"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 246778,
+        "next": 7995,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "304a06c87be45aee59a183c053a16c272a08237499fe3aaa88076f26ee8a2ddb.bin",
+            "sha256": "304a06c87be45aee59a183c053a16c272a08237499fe3aaa88076f26ee8a2ddb"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da.bin",
+            "sha256": "72b5741806bfd448a5647958d0ab3c5e51a44944408102e52f5e8d1083c141da"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117692785,
+            "file": "474c55d2e46d6ea9098ca69572ba1dc6c67335ceef9c8babe83a9a3cd45a9fb5.bin",
+            "sha256": "474c55d2e46d6ea9098ca69572ba1dc6c67335ceef9c8babe83a9a3cd45a9fb5"
+          },
+          "position": 74
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "351a90f46ecfb3b98b2d9b398f5872fd228bd002ec8d6694d2ffc99c1fe98c8f.bin",
+            "sha256": "351a90f46ecfb3b98b2d9b398f5872fd228bd002ec8d6694d2ffc99c1fe98c8f"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271,
+        8160,
+        369,
+        279,
+        2923,
+        13909,
+        28253,
+        21261
+      ]
+    },
+    {
+      "actual": null,
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "attempted_calls": [],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+            "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 0,
+        "state": {
+          "axkb": {
+            "bytes": 149916,
+            "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+            "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+          },
+          "position": 65
+        }
+      },
+      "error": "invalid Flash Next MTP budget or draft/trunk alignment",
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "zero-budget",
+      "primary": 8160,
+      "reference": null,
+      "remaining": 0,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 0,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": null,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "target_calls": [
+          [
+            8160
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "attempted_calls": [
+        [
+          8160
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 0,
+        "state": {
+          "axkb": {
+            "bytes": 152220,
+            "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+            "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+          },
+          "position": 66
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "one-slot",
+      "primary": 8160,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 0,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": null,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "proposal_logits": null
+      },
+      "remaining": 1,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 1,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 82602,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "target_calls": [
+          [
+            8160
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "attempted_calls": [
+        [
+          8160
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 1,
+        "state": {
+          "axkb": {
+            "bytes": 152220,
+            "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+            "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+          },
+          "position": 66
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "primary-terminal",
+      "primary": 8160,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 1,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 82602,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "144fcbcc0810ca4de847e625af6a2c01be50ab8b1d2eb6013770330da5dd3a5d.bin",
+            "sha256": "144fcbcc0810ca4de847e625af6a2c01be50ab8b1d2eb6013770330da5dd3a5d"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [
+        8160
+      ],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 1,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 82602,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "target_calls": [
+          [
+            8160
+          ]
+        ]
+      },
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "attempted_calls": [
+        [
+          8160
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 1,
+        "state": {
+          "axkb": {
+            "bytes": 152220,
+            "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+            "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+          },
+          "position": 66
+        }
+      },
+      "error": null,
+      "failure": "none",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "correction-terminal",
+      "primary": 8160,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 1,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 82602,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "144fcbcc0810ca4de847e625af6a2c01be50ab8b1d2eb6013770330da5dd3a5d.bin",
+            "sha256": "144fcbcc0810ca4de847e625af6a2c01be50ab8b1d2eb6013770330da5dd3a5d"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": null,
+      "retry_error": null,
+      "terminal_ids": [
+        369
+      ],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": null,
+      "after_oracle": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "attempted_calls": [
+        [
+          8160
+        ]
+      ],
+      "before": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "cursor_after": {
+        "accepted": 0,
+        "hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+            "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "owner": 5856454459475889780,
+        "proposed": 0,
+        "state": {
+          "axkb": {
+            "bytes": 149916,
+            "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+            "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+          },
+          "position": 65
+        }
+      },
+      "error": "injected failure after materialized target transition",
+      "failure": "target_1",
+      "initial_after": {
+        "cursor": {
+          "accepted": 0,
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+              "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          },
+          "owner": 5856454459475889780,
+          "proposed": 0,
+          "state": {
+            "axkb": {
+              "bytes": 149916,
+              "file": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87.bin",
+              "sha256": "fec626830f0c4892ce73821c1ef3285ff5a19f4e48e5ad9a617c960c93e54e87"
+            },
+            "position": 65
+          }
+        },
+        "trunk": {
+          "axkb": {
+            "bytes": 117471601,
+            "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+            "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+          },
+          "position": 66
+        }
+      },
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "failure-target-1",
+      "primary": 8160,
+      "reference": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 1,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 82602,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "proposal_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "144fcbcc0810ca4de847e625af6a2c01be50ab8b1d2eb6013770330da5dd3a5d.bin",
+            "sha256": "144fcbcc0810ca4de847e625af6a2c01be50ab8b1d2eb6013770330da5dd3a5d"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        }
+      },
+      "remaining": 3,
+      "retry": {
+        "accepted": false,
+        "checkpoint": {
+          "cursor": {
+            "accepted": 0,
+            "hidden": {
+              "dtype": "Bfloat16",
+              "f32_le": {
+                "bytes": 40960,
+                "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+                "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+              },
+              "shape": [
+                1,
+                1,
+                10240
+              ]
+            },
+            "owner": 5856454459475889780,
+            "proposed": 1,
+            "state": {
+              "axkb": {
+                "bytes": 152220,
+                "file": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e.bin",
+                "sha256": "1ef5e3c1a70f4ef53e889a9b6c0be9f2b60ed72304d4e7456d0bb1f1a5cf816e"
+              },
+              "position": 66
+            }
+          },
+          "trunk": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          }
+        },
+        "consumed": [
+          8160
+        ],
+        "correction_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "draft": 82602,
+        "next": 369,
+        "next_logits": {
+          "dtype": "Float32",
+          "f32_le": {
+            "bytes": 993280,
+            "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+            "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+          },
+          "shape": [
+            1,
+            248320
+          ]
+        },
+        "primary_hidden": {
+          "dtype": "Bfloat16",
+          "f32_le": {
+            "bytes": 40960,
+            "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+            "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+          },
+          "shape": [
+            1,
+            1,
+            10240
+          ]
+        },
+        "primary_state": {
+          "axkb": {
+            "bytes": 117499249,
+            "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+            "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+          },
+          "position": 67
+        },
+        "target_calls": [
+          [
+            8160
+          ]
+        ]
+      },
+      "retry_error": null,
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    }
+  ],
+  "head_initial_histories": [
+    null
+  ],
+  "head_owner": 5856454459475889780,
+  "head_permutation_seed": 20260916,
+  "initial_hidden": {
+    "dtype": "Bfloat16",
+    "f32_le": {
+      "bytes": 40960,
+      "file": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca.bin",
+      "sha256": "e83f6155b847483fed14c01cb4fb112646ca9c939937418528ba29f1bcb610ca"
+    },
+    "shape": [
+      1,
+      1,
+      10240
+    ]
+  },
+  "initial_primary_logits": {
+    "dtype": "Float32",
+    "f32_le": {
+      "bytes": 993280,
+      "file": "fd93446cb153e031168f5808e716d17067fcc3b1e73061c791e0a7446a4df536.bin",
+      "sha256": "fd93446cb153e031168f5808e716d17067fcc3b1e73061c791e0a7446a4df536"
+    },
+    "shape": [
+      1,
+      248320
+    ]
+  },
+  "mtp_certification": {
+    "MTP-D": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-S": "not_assessed"
+  },
+  "prompt_ids": [
+    248045,
+    846,
+    198,
+    32,
+    24279,
+    682,
+    220,
+    17,
+    22,
+    65326,
+    19868,
+    321,
+    220,
+    16,
+    24,
+    48877,
+    19868,
+    13,
+    1049,
+    29318,
+    2943,
+    30459,
+    8222,
+    2250,
+    65326,
+    19868,
+    321,
+    1330,
+    48877,
+    19868,
+    1754,
+    11,
+    1179,
+    20539,
+    7840,
+    777,
+    48877,
+    19868,
+    13,
+    1697,
+    279,
+    9376,
+    14159,
+    321,
+    10033,
+    1204,
+    1754,
+    1698,
+    5324,
+    13,
+    3054,
+    524,
+    9370,
+    866,
+    975,
+    52727,
+    13,
+    248046,
+    198,
+    248045,
+    74455,
+    198,
+    248068,
+    271,
+    248069,
+    271
+  ],
+  "qualification": false,
+  "release_ready": false,
+  "schema": "ax.flash_next.mtp_transactions.v2",
+  "scope": "Private cursor transactions, forced verifier controls and ordinary singleton replay; not full MTP-S qualification",
+  "target_schedule": "canonical_singleton",
+  "trajectory_steps": 8,
+  "trunk_initial_histories": [
+    null,
+    [
+      248044,
+      248044
+    ],
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
+  "trunk_owner": 3701,
+  "verifier_cases": [
+    {
+      "actual": {
+        "accepted": true,
+        "after_draft": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "74aaea0532f20c46e6ad24310e04393aed3787976096dfb0bdebcddd1be7c6e8.bin",
+              "sha256": "74aaea0532f20c46e6ad24310e04393aed3787976096dfb0bdebcddd1be7c6e8"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755.bin",
+              "sha256": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117526897,
+              "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+              "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+            },
+            "position": 68
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+              "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        },
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        },
+        "committed": [
+          8160,
+          369
+        ],
+        "next": 279
+      },
+      "after_oracle": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "before": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "draft": 369,
+      "error": null,
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "matching-draft",
+      "primary": 8160,
+      "reference": {
+        "after_draft": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "74aaea0532f20c46e6ad24310e04393aed3787976096dfb0bdebcddd1be7c6e8.bin",
+              "sha256": "74aaea0532f20c46e6ad24310e04393aed3787976096dfb0bdebcddd1be7c6e8"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755.bin",
+              "sha256": "11e4435af820c2d456ac717ca04856c89f3e2f7c036e6090b2cad1a8ea7c0755"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117526897,
+              "file": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f.bin",
+              "sha256": "74bdf08fbeed522d9c8edaac930b50800d561e5405f1383145e78a5ee2f4d79f"
+            },
+            "position": 68
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532.bin",
+              "sha256": "353678b9fd34d8bd5eb00a86b218a7c36e09fb4f3f40806605452395c2e19532"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        },
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        }
+      },
+      "remaining": 3,
+      "target_calls": [
+        [
+          8160
+        ],
+        [
+          369
+        ]
+      ],
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "after_draft": null,
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        },
+        "committed": [
+          8160
+        ],
+        "next": 369
+      },
+      "after_oracle": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "before": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "draft": 370,
+      "error": null,
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "mismatching-draft",
+      "primary": 8160,
+      "reference": {
+        "after_draft": null,
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        }
+      },
+      "remaining": 3,
+      "target_calls": [
+        [
+          8160
+        ]
+      ],
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "after_draft": null,
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        },
+        "committed": [
+          8160
+        ],
+        "next": 369
+      },
+      "after_oracle": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "before": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "draft": 369,
+      "error": null,
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "one-slot",
+      "primary": 8160,
+      "reference": {
+        "after_draft": null,
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        }
+      },
+      "remaining": 1,
+      "target_calls": [
+        [
+          8160
+        ]
+      ],
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": null,
+      "after_oracle": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "before": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "draft": 369,
+      "error": "Flash Next MTP requires remaining output budget",
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "zero-budget",
+      "primary": 8160,
+      "reference": null,
+      "remaining": 0,
+      "target_calls": [],
+      "terminal_ids": [],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "after_draft": null,
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        },
+        "committed": [
+          8160
+        ],
+        "next": 369
+      },
+      "after_oracle": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "before": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "draft": 369,
+      "error": null,
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "primary-terminal",
+      "primary": 8160,
+      "reference": {
+        "after_draft": null,
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        }
+      },
+      "remaining": 3,
+      "target_calls": [
+        [
+          8160
+        ]
+      ],
+      "terminal_ids": [
+        8160
+      ],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "actual": {
+        "accepted": false,
+        "after_draft": null,
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        },
+        "committed": [
+          8160
+        ],
+        "next": 369
+      },
+      "after_oracle": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "before": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "draft": 369,
+      "error": null,
+      "input_after": {
+        "axkb": {
+          "bytes": 117471601,
+          "file": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb.bin",
+          "sha256": "fbb9d25b2bc29fac9e21883289ff1b8892c764c3364d9b6cc347208dd0400aeb"
+        },
+        "position": 66
+      },
+      "label": "correction-terminal",
+      "primary": 8160,
+      "reference": {
+        "after_draft": null,
+        "after_primary": {
+          "hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 10240,
+              "file": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852.bin",
+              "sha256": "10decdae28fe339b7ebe210423f43f707934575257bc485de72928cc7de8d852"
+            },
+            "shape": [
+              1,
+              1,
+              2560
+            ]
+          },
+          "logits": {
+            "dtype": "Float32",
+            "f32_le": {
+              "bytes": 993280,
+              "file": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131.bin",
+              "sha256": "4ddc2f097802a2a15b6f8088465208306f23860f4ce4979ea1edade09c2fe131"
+            },
+            "shape": [
+              1,
+              248320
+            ]
+          },
+          "state": {
+            "axkb": {
+              "bytes": 117499249,
+              "file": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7.bin",
+              "sha256": "6f874fe50fe85f781d83fb744ad786ad4f412005b622b275311834f7b371f9f7"
+            },
+            "position": 67
+          },
+          "stream_hidden": {
+            "dtype": "Bfloat16",
+            "f32_le": {
+              "bytes": 40960,
+              "file": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4.bin",
+              "sha256": "b84c3de8288fa1408e40a1feb785bcc689ab285f7387ae1ecd034a617d30d6b4"
+            },
+            "shape": [
+              1,
+              1,
+              10240
+            ]
+          }
+        }
+      },
+      "remaining": 3,
+      "target_calls": [
+        [
+          8160
+        ]
+      ],
+      "terminal_ids": [
+        369
+      ],
+      "tokens": [
+        248045,
+        846,
+        198,
+        32,
+        24279,
+        682,
+        220,
+        17,
+        22,
+        65326,
+        19868,
+        321,
+        220,
+        16,
+        24,
+        48877,
+        19868,
+        13,
+        1049,
+        29318,
+        2943,
+        30459,
+        8222,
+        2250,
+        65326,
+        19868,
+        321,
+        1330,
+        48877,
+        19868,
+        1754,
+        11,
+        1179,
+        20539,
+        7840,
+        777,
+        48877,
+        19868,
+        13,
+        1697,
+        279,
+        9376,
+        14159,
+        321,
+        10033,
+        1204,
+        1754,
+        1698,
+        5324,
+        13,
+        3054,
+        524,
+        9370,
+        866,
+        975,
+        52727,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    }
+  ]
+}

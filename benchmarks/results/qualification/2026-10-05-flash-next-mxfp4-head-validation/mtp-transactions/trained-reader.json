@@ -1,0 +1,16 @@
+{
+  "collection_valid": true,
+  "diagnostic_passed": true,
+  "arm": "trained",
+  "cases": 15,
+  "accepted_failure_coverage": true,
+  "terminal_cases_distinct": true,
+  "forced_verifier_controls_assessed": true,
+  "qualification": false,
+  "release_ready": false,
+  "mtp_certification": {
+    "MTP-D": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-S": "not_assessed"
+  }
+}

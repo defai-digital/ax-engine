@@ -82,6 +82,22 @@ dev-profile build with the runner's fast-path guards not entered, so it is not
 the server path; and the canonical schedule has no legacy-batched step, so
 the batched-state control added in `858fc4f8` is not exercised here.
 
+## MTP private-cursor transactions ([mtp-transactions](mtp-transactions))
+
+The real-pack `flash_next_real_private_cursor_evidence` test (canonical singleton
+schedule, Auto expert paging, one 66-token holdout prompt, eight trajectory
+steps) ran once with the trained draft head and once with the output projection
+permuted. The independent reader `scripts/verify_flash_next_mtp_transactions.py`
+recomputes both from the raw private records: the trained arm has 15 cases plus
+six forced verifier controls and covers accepted and failing paths
+(`accepted_failure_coverage: true`); the permuted arm has 13 cases plus six
+controls and, as expected for a wrong head, no accepted path. Both report
+`collection_valid` and `diagnostic_passed`. The reader itself reports MTP-S,
+MTP-P and MTP-D as `not_assessed`, and this is one prompt, so it is bounded
+control evidence only. The raw state blobs (114 files, about 2.9 GB) are not
+committed; only each arm's `result.json` and the reader output are, so the
+reader cannot be rerun from this directory.
+
 ## Server-path direct vs required-MTP ([generate-matrix](generate-matrix/result.json))
 
 Through `/v1/generate/stream`, greedy, MTP disabled and required, generic

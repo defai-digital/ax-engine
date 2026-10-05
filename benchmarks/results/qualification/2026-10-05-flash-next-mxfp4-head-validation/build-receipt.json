@@ -49,5 +49,18 @@
     "2048": 0.934,
     "8192": 0.901
   },
-  "mtp_gates_note": "not_assessed: the matrix did not freeze two named authorizing workloads, a negative control or a reference baseline; observed ratios are below 1.0 so no acceleration is claimed"
+  "mtp_gates_note": "not_assessed: the matrix did not freeze two named authorizing workloads, a negative control or a reference baseline; observed ratios are below 1.0 so no acceleration is claimed",
+  "mtp_transactions": {
+    "test": "ax-engine-mlx flash_next_real_private_cursor_evidence (ignored, real pack)",
+    "source_commit": "9da24b07",
+    "profile": "dev (unoptimized + debuginfo)",
+    "prompt_tokens": 66,
+    "prompt_manifest_sha256": "34853d8e4922d4a88a5e76d2b73da4c4dd4be3f0e150ec80b0dc3ddd21ea4f06",
+    "raw_blobs_committed": false,
+    "result_sha256": {
+      "trained": "1aa647fff51762152a06734b5ef2e170ba3d84fff8785681bac4eba28a951dff",
+      "permuted": "dd7b623ee0f75bf468e7ab4aea7b600bacaba95da8defadeb801f322fcb8ef13"
+    },
+    "reader_sha256": "744f07b0f9572d9bd6adfb8c4bf1e648383b0234ce5dc26392ab18019a2ac5db"
+  }
 }
