@@ -92,7 +92,14 @@ steps; the four retained failures are model outputs and the old-pack failure
 set does not carry over. All 14 lifecycle actions pass with drained counters.
 Single-observation readiness (33-80 s), peak RSS (about 73-76 GiB) and a
 268-272 s 29,774-token lookup are recorded without an acceptance threshold.
-These controls do not qualify model quality, performance, memory or MTP-S/P/D.
+Through the native generate stream, 16 natural-language prompts of 128
+greedy tokens and nine fixed-length cells (512, 2,048 and 8,192 input tokens)
+produce identical token sequences with MTP disabled and required, and the
+four-prompt numerical diagnostic reports no token or state difference. In the
+same run required MTP decodes at 0.90-0.93 of direct speed despite 75-93%
+draft acceptance (client-side timings, single host, no reference baseline), so
+MTP is not accelerating this pack and no speedup is claimed. These controls do
+not qualify model quality, performance, memory or MTP-S/P/D.
 
 To run the explicit experimental route after downloading the pinned pack:
 

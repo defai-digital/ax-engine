@@ -3,7 +3,7 @@
   "purpose": "functional, QA-cohort and lifecycle controls on the current pack; no qualification, MTP-S/P/D, performance or default promotion",
   "server_source_commit": "7efa55162819103130be9d5f919b613460de0889",
   "server_source_tree_clean": true,
-  "harness_commit": "16183df53bfb1693783ef466b1d3633331412693",
+  "harness_commit": "9da24b07",
   "rust_source_unchanged_between_server_commit_and_harness_commit": true,
   "build_profile": "release-server",
   "rust_toolchain": "1.97.1",
@@ -18,7 +18,8 @@
   "executed_harness_sha256": {
     "check_flash_next_native_support.py": "35c4170bf23de96156c4462e6c2d7529d1108617dd01567fb97c8ab20e8bda22",
     "run_flash_next_qa_cohort.py": "8ede898d834a0be849bb6c83d615c348891cab7f3bfe153665a6d04deb86fbd4",
-    "run_flash_next_lifecycle.py": "8e4af6d180abee2cf6a655a62062bd217b1f15b777aaff9f232435933b63af91"
+    "run_flash_next_lifecycle.py": "8e4af6d180abee2cf6a655a62062bd217b1f15b777aaff9f232435933b63af91",
+    "run_flash_next_generate_matrix.py": "5662bc6bfe323bc85dc1e8f6f6ee5c17bb73f063251664db4b9e70bb9a5d4308"
   },
   "frozen_qa_items_sha256": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
   "pack_inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
@@ -34,5 +35,19 @@
     "MTP-P": "not_assessed",
     "MTP-D": "not_assessed"
   },
-  "default_mtp_changed": false
+  "default_mtp_changed": false,
+  "mtp_diagnostic": {
+    "test": "ax-engine-mlx flash_next_first_token_divergence (ignored, real pack)",
+    "source_commit": "16183df5",
+    "profile": "dev (unoptimized + debuginfo)",
+    "prompt_manifest_sha256": "34853d8e4922d4a88a5e76d2b73da4c4dd4be3f0e150ec80b0dc3ddd21ea4f06",
+    "environment_overrides": {},
+    "scope": "native test thread; fastpath guards of the server runner are not entered"
+  },
+  "observed_server_path_decode_ratio_mtp_over_direct": {
+    "512": 0.917,
+    "2048": 0.934,
+    "8192": 0.901
+  },
+  "mtp_gates_note": "not_assessed: the matrix did not freeze two named authorizing workloads, a negative control or a reference baseline; observed ratios are below 1.0 so no acceleration is claimed"
 }

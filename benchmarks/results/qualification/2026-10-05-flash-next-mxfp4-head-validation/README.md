@@ -1,7 +1,8 @@
 # Flash Next MXFP4 current-HEAD validation
 
-Date: 2026-10-05 (local date). Functional, closed-answer QA and API lifecycle
-controls pass or are disclosed below; `qualification` and `release_ready`
+Date: 2026-10-05 (local date). Functional, closed-answer QA, API lifecycle,
+numerical-identity and server-path direct/MTP comparison runs pass or are
+disclosed below; `qualification` and `release_ready`
 remain false. MTP-S, MTP-P and MTP-D are not assessed. No default MTP
 promotion, speed claim or quality certification follows from this record.
 
@@ -69,11 +70,54 @@ data event, observes one active stream, drops the connection, and the five
 in-flight counters drain to zero. Recovery text and usage equal the baseline.
 Both servers exit zero. Required-MTP baseline shows 19 verifier steps.
 
+## MTP numerical diagnostic ([mtp-diagnostic](mtp-diagnostic/result.json))
+
+The real-pack `flash_next_first_token_divergence` test (canonical singleton
+schedule, default arithmetic, no environment overrides) runs the four frozen
+holdout prompts at 64 output tokens. Every prompt completes with no token
+difference and no state difference: 63 consumed positions each, exact compared
+full state, stream hidden and canonical logits, proposed/accepted of 34/29,
+31/31, 33/29 and 33/30. Scope limits: it runs on a native test thread in a
+dev-profile build with the runner's fast-path guards not entered, so it is not
+the server path; and the canonical schedule has no legacy-batched step, so
+the batched-state control added in `858fc4f8` is not exercised here.
+
+## Server-path direct vs required-MTP ([generate-matrix](generate-matrix/result.json))
+
+Through `/v1/generate/stream`, greedy, MTP disabled and required, generic
+n-gram acceleration disabled, `--total-blocks 4096`.
+
+* **Token identity:** all 16 chat-templated natural-language prompts produce
+  identical 128-token output sequences in both modes (1,118 verifier steps in
+  required mode), and all 9 measured workload cells are identical. Prompt token
+  IDs are equal across modes. Route errors are zero.
+* **Decode rate:** required MTP is slower than direct in every cell. Timings
+  are client-side (the server leaves its own timing fields at zero on this
+  path): TTFT, then tokens after the first token event over their time window,
+  loopback, median of three measured runs after two warmups, 128 output tokens.
+
+| Input tokens | Direct tok/s | Required-MTP tok/s | MTP / direct (range) | TTFT direct / MTP | Draft acceptance |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 | 17.93 | 16.45 | 0.917 (0.911-0.921) | 4.0 s / 4.1 s | 182/196 |
+| 2,048 | 17.48 | 16.24 | 0.934 (0.907-0.934) | 16.3 s / 16.5 s | 72/86 |
+| 8,192 | 17.13 | 15.46 | 0.901 (0.844-0.908) | 69.3 s / 70.5 s | 91/121 |
+
+Acceptance is high, so the shortfall is not a drafting problem. It is
+consistent with the ADR-032 design, which runs ordinary single-token target
+forwards for each MTP decision to keep exact parity; no profile was taken, so
+the cause is not established. All direct cells ran before all required cells,
+so cache histories differ. There is no reference-runtime baseline, no frozen
+pair of authorizing workloads and no negative control, so MTP-P stays
+`not_assessed` and no speedup is claimed; the observed ratios are below 1.0,
+so this record gives no support for promoting MTP to the default.
+
 ## Not established
 
-Model quality beyond this cohort, arbitrary and longer contexts, memory and
-cold-start acceptance, fresh-cache delivery, throughput, MTP-S/P/D, default
-promotion and the required `mlx_lm` primary baseline remain open. The older
+Model quality beyond this cohort, contexts beyond 8,192 input tokens in the
+timed matrix, memory and cold-start acceptance, fresh-cache delivery, an
+independent reconstruction of verifier decisions on the server path (MTP-S),
+MTP-P and MTP-D, default promotion and the required `mlx_lm` primary baseline
+remain open. The older
 47-file pack receipts stay historical.
 
 ## Reproduction
@@ -82,6 +126,7 @@ promotion and the required `mlx_lm` primary baseline remain open. The older
 python3 scripts/check_flash_next_native_support.py --dry-run
 python3 scripts/run_flash_next_qa_cohort.py --dry-run
 python3 scripts/run_flash_next_lifecycle.py --dry-run
+python3 scripts/run_flash_next_generate_matrix.py --dry-run
 ```
 
 Live runs take `--model-dir`, `--inventory`, `--server-bin` and a new
