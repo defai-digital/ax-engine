@@ -202,13 +202,14 @@ def run_mode(server: Path, root: Path, output: Path, mode: str) -> dict[str, Any
             ready = round(time.monotonic() - started, 3)
             actions = run_actions(base, mode)
             alive = process.poll() is None
+            final_verified = native.metrics(native.request(base, "/metrics").decode()).get(native.VERIFIED)
         finally:
             native.stop_owned(process)
     native.scrub_log(log_path)
     if not alive:
         raise RuntimeError(f"{mode} server died during the lifecycle controls")
     return {"mode": mode, "ready_seconds": ready, "actions": actions,
-            "exit_code_after_stop": process.returncode}
+            "final_verified_steps": final_verified, "exit_code_after_stop": process.returncode}
 
 
 def main() -> int:

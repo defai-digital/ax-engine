@@ -236,6 +236,8 @@ bash scripts/check-qa.sh
   scripts/test_run_flash_next_reference.py \
   scripts/run_flash_next_delivery.py \
   scripts/test_run_flash_next_delivery.py \
+  scripts/check_flash_next_release_gates.py \
+  scripts/test_check_flash_next_release_gates.py \
   scripts/test_curate_flash_next_evidence.py \
   scripts/test_qualify_qwen38_flash_next.py \
   scripts/verify_flash_next_runner_states.py \
@@ -333,6 +335,7 @@ bash scripts/check-qa.sh
   scripts/test_run_flash_next_generate_matrix.py \
   scripts/test_run_flash_next_reference.py \
   scripts/test_run_flash_next_delivery.py \
+  scripts/test_check_flash_next_release_gates.py \
   scripts/test_verify_flash_next_runner_states.py \
   scripts/test_verify_flash_next_mtp_transactions.py \
   scripts/test_qwen38_primary_alias.py \
