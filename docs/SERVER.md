@@ -326,7 +326,11 @@ than silently dropped.
   keep rejecting `reasoning` + `stream` with `400 unsupported_parameter`.
   Qwen clients may instead send
   `chat_template_kwargs.enable_thinking`; this takes precedence over
-  `reasoning`. `chat_template_kwargs.preserve_thinking=true` replays assistant
+  `reasoning`. `/v1/chat/completions` rejects effort levels
+  (`reasoning_effort`, `reasoning.effort`, or a `reasoning` string other than
+  `true`/`auto`/`exposed`/`include`/`enabled`/`false`/`off`/`disabled`) with
+  `400 unsupported_parameter`; cap thinking with `ax_max_think_tokens`.
+  `chat_template_kwargs.preserve_thinking=true` replays assistant
   `reasoning_content` in multi-turn history. This is the request shape used by
   OpenClaw's `qwen-chat-template` compatibility mode.
 - **`usage.prompt_tokens_details.cached_tokens`**: when the engine served
