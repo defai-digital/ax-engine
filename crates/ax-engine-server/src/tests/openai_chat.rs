@@ -2112,6 +2112,10 @@ async fn openai_chat_endpoint_rejects_reasoning_effort() {
         ("reasoning_effort", json!("low"), "reasoning_effort"),
         ("reasoning_effort", json!("high"), "reasoning_effort"),
         ("reasoning_effort", json!("none"), "reasoning_effort"),
+        ("reasoning", json!("high"), "reasoning string"),
+        ("reasoning", json!("low"), "reasoning string"),
+        ("reasoning", json!("none"), "reasoning string"),
+        ("reasoning", json!("bogus"), "reasoning string"),
         ("reasoning", json!({"effort": "high"}), "reasoning.effort"),
         (
             "reasoning",
@@ -2150,6 +2154,22 @@ async fn openai_chat_endpoint_rejects_reasoning_effort() {
             "{field}={value}: {response}"
         );
     }
+}
+
+#[test]
+fn reasoning_effort_check_accepts_on_off_switch_strings() {
+    use crate::openai::requests::reject_unsupported_reasoning_effort;
+
+    for value in [
+        "true", "auto", "exposed", "include", "enabled", " Auto ", "false", "off", "disabled",
+    ] {
+        assert!(
+            reject_unsupported_reasoning_effort(None, Some(&json!(value))).is_ok(),
+            "{value}"
+        );
+    }
+    assert!(reject_unsupported_reasoning_effort(None, Some(&json!(true))).is_ok());
+    assert!(reject_unsupported_reasoning_effort(None, Some(&json!({"enabled": true}))).is_ok());
 }
 
 #[tokio::test]

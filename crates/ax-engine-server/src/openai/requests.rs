@@ -1420,8 +1420,9 @@ fn reject_unsupported_sampling_params(
 }
 
 /// AX has no effort levels: thinking is an on/off switch plus a token budget.
-/// Any non-null `reasoning_effort`, or non-null `effort` inside a `reasoning`
-/// object, fails closed so a caller does not assume `low` / `high` changes
+/// Any non-null `reasoning_effort`, non-null `effort` inside a `reasoning`
+/// object, or a `reasoning` string that is not an on/off switch (for example
+/// `"high"`) fails closed so a caller does not assume `low` / `high` changes
 /// behavior. Called by the `/v1/chat/completions` handler only: the Responses
 /// API reuses the chat request type but sends `reasoning.effort` as a standard
 /// field, so it keeps accepting (and ignoring) it.
@@ -1429,6 +1430,22 @@ pub(crate) fn reject_unsupported_reasoning_effort(
     reasoning_effort: Option<&Value>,
     reasoning: Option<&Value>,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if let Some(Value::String(value)) = reasoning {
+        let value = value.trim().to_ascii_lowercase();
+        if !REASONING_ENABLE_STRINGS.contains(&value.as_str())
+            && !REASONING_DISABLE_STRINGS.contains(&value.as_str())
+        {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_parameter",
+                "reasoning string value is not supported; AX accepts only on/off switches \
+                 (true, auto, exposed, include, enabled, false, off, disabled). Use \
+                 chat_template_kwargs.enable_thinking to switch thinking and \
+                 ax_max_think_tokens to cap it"
+                    .to_string(),
+            ));
+        }
+    }
     let field = if reasoning_effort.is_some_and(|value| !value.is_null()) {
         "reasoning_effort"
     } else if reasoning
@@ -1481,6 +1498,11 @@ fn reject_unsupported_completion_logprobs(
     ))
 }
 
+/// `reasoning` string values that switch thinking on / off. Anything else
+/// (notably effort levels such as `"high"`) is not a switch.
+const REASONING_ENABLE_STRINGS: &[&str] = &["true", "auto", "exposed", "include", "enabled"];
+const REASONING_DISABLE_STRINGS: &[&str] = &["false", "off", "disabled"];
+
 pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
     let Some(reasoning) = reasoning else {
         return false;
@@ -1488,10 +1510,9 @@ pub(crate) fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
     match reasoning {
         Value::Null => false,
         Value::Bool(value) => *value,
-        Value::String(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "true" | "auto" | "exposed" | "include" | "enabled"
-        ),
+        Value::String(value) => {
+            REASONING_ENABLE_STRINGS.contains(&value.trim().to_ascii_lowercase().as_str())
+        }
         Value::Object(object) => object
             .get("enabled")
             .or_else(|| object.get("include"))
