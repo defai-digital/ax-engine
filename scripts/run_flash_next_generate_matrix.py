@@ -2,7 +2,7 @@
 """Compare Flash Next direct and required-MTP generation on the server path.
 
 Two phases per mode (MTP disabled and required), both through the native
-`/v1/generate` endpoint with greedy decoding:
+`/v1/generate/stream` endpoint with greedy decoding:
 
 * trajectory identity: 16 chat-templated natural-language prompts, 128 output
   tokens each; the output token IDs must match between modes position by
@@ -90,11 +90,49 @@ def chat_prompt_ids(base: str, user: str) -> list[int]:
     return tokenize(base, templated)
 
 
+def read_generate_stream(lines, clock=time.monotonic) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read a /v1/generate/stream body line by line and time its token events.
+
+    The server leaves `performance` timings at zero on this path, so TTFT and
+    the decode window are measured on the client (loopback, so overhead is small
+    but not zero). Returns the terminal response and the client timing record.
+    """
+    t0 = clock()
+    event, response, token_events = None, None, []
+    for raw in lines:
+        line = raw.decode().rstrip("\r\n")
+        if line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data = line[5:].strip()
+            if event == "error":
+                raise ValueError(f"generate stream error: {data}")
+            if event == "step":
+                count = len(json.loads(data).get("delta_tokens") or [])
+                if count:
+                    token_events.append((clock(), count))
+            elif event == "response":
+                response = json.loads(data)["response"]
+    if response is None:
+        raise ValueError("generate stream ended without a response event")
+    timing: dict[str, Any] = {"token_events": len(token_events)}
+    if token_events:
+        timing["ttft_seconds"] = round(token_events[0][0] - t0, 6)
+        timing["first_event_tokens"] = token_events[0][1]
+        timing["decode_tokens"] = sum(count for _, count in token_events[1:])
+        timing["decode_seconds"] = (round(token_events[-1][0] - token_events[0][0], 6)
+                                    if len(token_events) > 1 else None)
+    timing["total_seconds"] = round(clock() - t0, 6)
+    return response, timing
+
+
 def generate(base: str, ids: list[int], max_tokens: int = OUTPUT_TOKENS) -> dict[str, Any]:
     body = {"input_tokens": ids, "max_output_tokens": max_tokens, "sampling": {"temperature": 0}}
-    t0 = time.monotonic()
-    response = post_json(base, "/v1/generate", body, timeout=REQUEST_TIMEOUT)
-    response["wall_seconds"] = round(time.monotonic() - t0, 4)
+    req = urllib.request.Request(base + "/v1/generate/stream", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as stream:
+        response, timing = read_generate_stream(stream)
+    response["client_timing"] = timing
     return response
 
 
@@ -102,7 +140,7 @@ def slim(response: dict[str, Any], before: dict[str, float], after: dict[str, fl
     perf = response.get("performance", {})
     return {"output_tokens": response["output_tokens"], "prompt_tokens": len(response["prompt_tokens"]),
             "finish_reason": response.get("finish_reason"), "status": response.get("status"),
-            "wall_seconds": response["wall_seconds"], "performance": perf,
+            "timing": response["client_timing"], "mtp": perf.get("mtp", {}),
             "verified_steps": after.get(native.VERIFIED, 0.0) - before.get(native.VERIFIED, 0.0),
             "route_errors": sum(after.get(n, 0.0) - before.get(n, 0.0) for n in native.ERRORS)}
 
@@ -114,9 +152,10 @@ def workload_ids(long_ids: list[int], length: int, run: int) -> list[int]:
     return long_ids[offset: offset + length]
 
 
-def decode_rate(perf: dict[str, Any]) -> float | None:
-    time_us, count = perf.get("model_eval_time_us"), perf.get("model_eval_token_count")
-    return count / (time_us / 1e6) if time_us and count else None
+def decode_rate(timing: dict[str, Any]) -> float | None:
+    """Tokens per second after the first token event, from client timestamps."""
+    seconds, count = timing.get("decode_seconds"), timing.get("decode_tokens")
+    return count / seconds if seconds and count else None
 
 
 def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[str, ...] = PROMPTS,
@@ -169,9 +208,9 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
                     row = {"length": length, "run": run, "warmup": run < WARMUPS,
                            **slim(response, before, after)}
                     result["cells"].append(row)
-                    rate = decode_rate(row["performance"])
+                    rate = decode_rate(row["timing"])
                     print(f"{mode} {length} run {run}{' (warmup)' if row['warmup'] else ''}: "
-                          f"ttft {row['performance'].get('time_to_first_token_us', 0) / 1e6:.2f}s "
+                          f"ttft {row['timing'].get('ttft_seconds', 0):.2f}s "
                           f"decode {rate if rate is None else round(rate, 2)} tok/s "
                           f"{row['verified_steps']:.0f} verified", flush=True)
         finally:
@@ -208,7 +247,7 @@ def summarize(runs: dict[str, dict[str, Any]],
         for d, m in zip(d_runs, m_runs, strict=True):
             cell_total += 1
             cell_identical += d["output_tokens"] == m["output_tokens"]
-            rd, rm = decode_rate(d["performance"]), decode_rate(m["performance"])
+            rd, rm = decode_rate(d["timing"]), decode_rate(m["timing"])
             d_rates.append(rd)
             m_rates.append(rm)
             if rd and rm:
@@ -219,10 +258,10 @@ def summarize(runs: dict[str, dict[str, Any]],
             "mtp_decode_tok_s_median": statistics.median([r for r in m_rates if r]) if any(m_rates) else None,
             "mtp_over_direct_decode_ratio_median": statistics.median(ratios) if ratios else None,
             "mtp_over_direct_decode_ratio_range": [min(ratios), max(ratios)] if ratios else None,
-            "direct_ttft_s_median": statistics.median(
-                c["performance"]["time_to_first_token_us"] / 1e6 for c in d_runs),
-            "mtp_ttft_s_median": statistics.median(
-                c["performance"]["time_to_first_token_us"] / 1e6 for c in m_runs),
+            "direct_ttft_s_median": statistics.median(c["timing"]["ttft_seconds"] for c in d_runs),
+            "mtp_ttft_s_median": statistics.median(c["timing"]["ttft_seconds"] for c in m_runs),
+            "mtp_draft_tokens": sum(c["mtp"].get("draft_tokens", 0) for c in m_runs),
+            "mtp_accepted_tokens": sum(c["mtp"].get("accepted_tokens", 0) for c in m_runs),
             "mtp_verified_steps": sum(c["verified_steps"] for c in m_runs)}
     summary["cells"] = cells
     summary["cell_token_identity"] = {"identical": cell_identical, "compared": cell_total}
@@ -244,7 +283,7 @@ def main() -> int:
     prompts = PROMPTS[: args.limit_prompts] if args.limit_prompts else PROMPTS
     lengths = tuple(args.lengths) if args.lengths else LENGTHS
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
-                "modes": list(MODES), "endpoint": "/v1/generate", "temperature": 0,
+                "modes": list(MODES), "endpoint": "/v1/generate/stream", "temperature": 0,
                 "output_tokens": OUTPUT_TOKENS, "trajectory_prompts": len(prompts),
                 "lengths": list(lengths), "warmups": WARMUPS, "measured": MEASURED,
                 "offset_stride": OFFSET_STRIDE, "total_blocks": TOTAL_BLOCKS,
@@ -274,6 +313,7 @@ def main() -> int:
         raise ValueError("native manifest changed during the run")
     if server_sha != native.sha256(args.server_bin) or inventory_sha != native.sha256(args.inventory):
         raise ValueError("server binary or staging receipt changed during the run")
+    (args.output / "raw-runs.json").write_text(json.dumps(runs, indent=2) + "\n")
     summary = summarize(runs, lengths)
     evidence = {**contract, "server_sha256": server_sha, "inventory_sha256": inventory_sha,
                 "hardware": {"form_factor": native.form_factor(), "soc": chip, "memory_bytes": memory,
