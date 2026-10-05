@@ -12,7 +12,7 @@ use mlx_sys::{
     reshape, sigmoid, slice, softmax, sum_axis, take, try_eval,
 };
 
-use super::mlp::top_k_by_argpartition;
+use super::mlp::{SwitchGatherInputs, switch_gather_inputs, top_k_by_argpartition};
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_gather, qw_with_policy, squeeze_switch_singleton};
 use crate::expert_stream::{ExpertLayerSource, LayerExpertStack};
@@ -32,6 +32,12 @@ pub(crate) enum Qwen4ExpExpertWeights {
     Resident(Box<Qwen4ExpResidentExperts>),
     Streamed(std::sync::Arc<ExpertLayerSource>),
 }
+
+/// Prefill chunks gather experts in expert-id order, so each expert's weights
+/// are streamed once per run of rows (the layout mlx-lm's SwitchGLU uses for
+/// long prompts). Decode and short verifier windows keep the original
+/// unsorted gather; outputs are restored to token order before the weighted sum.
+const PREFILL_EXPERT_SORT_MIN_TOKENS: i32 = 64;
 
 pub(crate) struct Qwen4ExpMoeWeights {
     pub router: QuantizedWeight,
@@ -53,6 +59,8 @@ pub(crate) struct Qwen4ExpMoe {
     weights: Qwen4ExpMoeWeights,
     selected_decode: bool,
     selected_prefill: bool,
+    /// Gather experts in expert-id order for long prefill chunks.
+    prefill_expert_sort: bool,
 }
 
 /// A resolved streamed expert stack: split (or already-split) gate/up plus
@@ -166,6 +174,7 @@ impl Qwen4ExpMoe {
                 .is_some_and(|v| v == "1"),
             selected_prefill: std::env::var_os("AX_MLX_FLASH_NEXT_SELECTED_PREFILL")
                 .is_some_and(|v| v == "1"),
+            prefill_expert_sort: crate::fastpath::flash_next_prefill_expert_sort_enabled(),
         })
     }
 
@@ -449,11 +458,31 @@ impl Qwen4ExpMoe {
         let shape = self.validate_input(input)?;
         let w = &self.weights;
         let expanded = expand_dims_axes(input, &[-2, -3], None);
-        let gate = qw_gather(&expanded, experts.gate(), indices, false);
-        let up = qw_gather(&expanded, experts.up(), indices, false);
+        let gathered = if self.prefill_expert_sort
+            && shape[1] >= PREFILL_EXPERT_SORT_MIN_TOKENS
+            && policy == ProjectionBatchPolicy::Shared
+        {
+            switch_gather_inputs(&expanded, indices)
+        } else {
+            SwitchGatherInputs {
+                x: expanded,
+                indices: indices.clone(),
+                sorted_indices: false,
+                inv_order: None,
+                original_indices_shape: indices.shape(),
+            }
+        };
+        let sorted = gathered.sorted_indices;
+        let gate = qw_gather(&gathered.x, experts.gate(), &gathered.indices, sorted);
+        let up = qw_gather(&gathered.x, experts.up(), &gathered.indices, sorted);
         let gate_activation = silu_projection_dtype(&gate);
         let activated = multiply(&gate_activation, &up, None);
-        let down = squeeze_switch_singleton(&qw_gather(&activated, experts.down(), indices, false));
+        let down_gathered = qw_gather(&activated, experts.down(), &gathered.indices, sorted);
+        let down = if sorted {
+            gathered.unsort(down_gathered)
+        } else {
+            squeeze_switch_singleton(&down_gathered)
+        };
         let weighted = multiply(&down, &expand_dims_axes(routing, &[-1], None), None);
         let routed = sum_axis(&weighted, -2, false, None);
         let shared_gate_policy =
@@ -679,6 +708,56 @@ mod tests {
             .unwrap();
         eval(&[&expected, &actual]);
         assert_eq!(actual.data_f32(), expected.data_f32());
+    }
+
+    #[test]
+    fn prefill_expert_sort_matches_the_unsorted_gather() {
+        let tokens = 70i32;
+        let values: Vec<f32> = (0..tokens * 16)
+            .map(|i| (((i * 37) % 101) as f32 - 50.0) / 40.0)
+            .collect();
+        let input = reshape(&MlxArray::from_f32_slice(&values), &[1, tokens, 16], None);
+        let (mut module, _) = build_resident_module();
+        module.prefill_expert_sort = false;
+        let unsorted = module
+            .forward(&input, ProjectionBatchPolicy::Shared)
+            .unwrap();
+        module.prefill_expert_sort = true;
+        let sorted = module
+            .forward(&input, ProjectionBatchPolicy::Shared)
+            .unwrap();
+        eval(&[&unsorted, &sorted]);
+        assert_eq!(sorted.shape(), unsorted.shape());
+        let (a, b) = (sorted.data_f32(), unsorted.data_f32());
+        let max_abs = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_abs < 1.0e-5, "sorted prefill gather drifted: {max_abs}");
+    }
+
+    #[test]
+    fn short_windows_and_row_exact_verification_never_sort() {
+        // 8 rows stay below the prefill threshold: the sort flag must not
+        // change a single bit, so decode and short verifier windows keep
+        // their original arithmetic.
+        let tokens = 8i32;
+        let values: Vec<f32> = (0..tokens * 16)
+            .map(|i| ((i % 29) as f32 - 14.0) / 20.0)
+            .collect();
+        let input = reshape(&MlxArray::from_f32_slice(&values), &[1, tokens, 16], None);
+        let (mut module, _) = build_resident_module();
+        module.prefill_expert_sort = false;
+        let off = module
+            .forward(&input, ProjectionBatchPolicy::Shared)
+            .unwrap();
+        module.prefill_expert_sort = true;
+        let on = module
+            .forward(&input, ProjectionBatchPolicy::Shared)
+            .unwrap();
+        eval(&[&off, &on]);
+        assert_eq!(on.data_f32(), off.data_f32());
     }
 
     fn array(value: &Value, shape: &[i32]) -> MlxArray {

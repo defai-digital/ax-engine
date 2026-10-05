@@ -5227,13 +5227,25 @@ pub fn qwen_gated_delta_prefill_mlx_seq_eligible(seq: i32) -> bool {
     (128..=2048).contains(&seq)
 }
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX` — dedicated Flash Next prefill
     /// through MLX 0.32.3 with existing FP32 normalization and gates.
-    /// Default OFF; T=128..2048 and supported 128-dimensional heads only.
-    /// Singleton decode, short MTP verification and expert paging are unchanged.
+    /// Default ON; T=128..2048 and supported 128-dimensional heads only. Set
+    /// `AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX=0` to restore the sequential AX
+    /// recurrence. Singleton decode, short MTP verification and expert paging
+    /// are unchanged.
     flash_next_gdn_prefill_mlx_enabled,
     "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT` — gather routed experts in
+    /// expert-id order for Flash Next prefill chunks of at least 64 tokens, as
+    /// mlx-lm's SwitchGLU does for long prompts. Default ON; set `=0` to
+    /// restore the unsorted gather. Decode and short verifier windows never
+    /// sort.
+    flash_next_prefill_expert_sort_enabled,
+    "AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT"
 );
 
 env_flag!(
