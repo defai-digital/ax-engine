@@ -127,8 +127,14 @@ def read_generate_stream(lines, clock=time.monotonic) -> tuple[dict[str, Any], d
     return response, timing
 
 
-def generate(base: str, ids: list[int], max_tokens: int = OUTPUT_TOKENS) -> dict[str, Any]:
-    body = {"input_tokens": ids, "max_output_tokens": max_tokens, "sampling": {"temperature": 0}}
+def generate(base: str, ids: list[int], max_tokens: int = OUTPUT_TOKENS,
+             ignore_eos: bool = False) -> dict[str, Any]:
+    """Stream one greedy generation; fixed-workload cells set `ignore_eos` so every
+    run produces exactly `max_tokens` tokens (the API's fixed-token benchmark mode)."""
+    sampling: dict[str, Any] = {"temperature": 0}
+    if ignore_eos:
+        sampling["ignore_eos"] = True
+    body = {"input_tokens": ids, "max_output_tokens": max_tokens, "sampling": sampling}
     req = urllib.request.Request(base + "/v1/generate/stream", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as stream:
@@ -209,7 +215,7 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
                     ids = workload_ids(vocab_size, length, run)
                     result["prompt_id_hashes"][f"cell-{length}-{run}"] = ids_sha(ids)
                     before = native.metrics(native.request(base, "/metrics").decode())
-                    response = generate(base, ids)
+                    response = generate(base, ids, ignore_eos=True)
                     after = native.metrics(native.request(base, "/metrics").decode())
                     row = {"length": length, "run": run, "warmup": run < WARMUPS,
                            **slim(response, before, after)}
@@ -308,7 +314,7 @@ def main() -> int:
                 "modes": list(args.modes), "endpoint": "/v1/generate/stream", "temperature": 0,
                 "output_tokens": OUTPUT_TOKENS, "trajectory_prompts": len(prompts),
                 "lengths": list(lengths), "warmups": WARMUPS, "measured": MEASURED,
-                "workload_seed": WORKLOAD_SEED, "workload": "uniform random token IDs per (length, run)", "total_blocks": TOTAL_BLOCKS,
+                "workload_seed": WORKLOAD_SEED, "workload": "uniform random token IDs per (length, run), ignore_eos", "total_blocks": TOTAL_BLOCKS,
                 "expert_stream": "auto", "generic_ngram_acceleration":
                 "product default (on) in default mode, disabled in the other modes",
                 "reference_baseline": "none", "qualification": False, "release_ready": False,
@@ -329,6 +335,7 @@ def main() -> int:
     inventory = json.loads(args.inventory.read_text())
     manifest_before = native.validate_inventory(args.model_dir, inventory)
     args.output.mkdir(parents=True, exist_ok=False)
+    host_quiet = native.wait_for_quiet()
     runs = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
                            prompts, lengths) for mode in args.modes}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
@@ -342,6 +349,7 @@ def main() -> int:
                 "hardware": {"form_factor": native.form_factor(), "soc": chip, "memory_bytes": memory,
                              "storage": {"declared": inventory["storage"], **storage},
                              "os": platform.mac_ver()[0]},
+                "host_quiet": host_quiet, "host_idle_after": native.cpu_idle_percent(),
                 "summary": summary, "runs": runs}
     (args.output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

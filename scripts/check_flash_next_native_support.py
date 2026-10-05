@@ -117,6 +117,36 @@ def storage_info(root: Path) -> dict[str, Any]:
     return {"internal": True, "solid_state": True, "bus_protocol": info.get("BusProtocol")}
 
 
+def cpu_idle_percent() -> float:
+    """System-wide idle CPU over a 3-second window (second `top` sample)."""
+    out = subprocess.run(["top", "-l", "2", "-s", "3", "-n", "0"], capture_output=True, text=True,
+                         check=True).stdout
+    samples = re.findall(r"CPU usage:.*?([0-9.]+)% idle", out)
+    if not samples:
+        raise ValueError("top reported no CPU usage line")
+    return float(samples[-1])
+
+
+def wait_for_quiet(min_idle: float = 90.0, timeout: float = 900.0, sample=cpu_idle_percent,
+                   sleep=time.sleep, clock=time.monotonic) -> dict[str, float]:
+    """Block until system-wide idle CPU is at least `min_idle` percent.
+
+    Timing and memory evidence is only meaningful on an otherwise idle host; the
+    returned record is stored with the result so a reader can check it. The idle
+    share (not the load average) is used because a desktop session keeps the
+    load average near 3 on this 24-core host while the CPUs stay about 93% idle.
+    """
+    started = clock()
+    while True:
+        idle = sample()
+        if idle >= min_idle:
+            return {"cpu_idle_percent": round(idle, 2), "min_idle_percent": min_idle,
+                    "waited_seconds": round(clock() - started, 1)}
+        if clock() - started >= timeout:
+            raise TimeoutError(f"host stayed busy: {idle:.1f}% idle < {min_idle}%")
+        sleep(10)
+
+
 def metrics(text: str) -> dict[str, float]:
     result = {}
     for line in text.splitlines():

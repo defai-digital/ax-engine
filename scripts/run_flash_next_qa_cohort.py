@@ -273,6 +273,7 @@ def main() -> int:
     else:
         args.output.mkdir(parents=True, exist_ok=False)
         contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+    host_quiet = native.wait_for_quiet()
     runs = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
                            items, args.resume) for mode in args.modes}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
@@ -286,6 +287,7 @@ def main() -> int:
     evidence = {**contract, "hardware": {
         "form_factor": native.form_factor(), "soc": chip, "memory_bytes": memory,
         "storage": {"declared": inventory["storage"], **storage}, "os": platform.mac_ver()[0]},
+        "host_quiet": host_quiet, "host_idle_after": native.cpu_idle_percent(),
         "summary": summary, "grades": grades}
     (args.output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

@@ -30,7 +30,7 @@
   },
   "reference_relative": {
     "reference": "pinned MLX-VLM 0.7.0rc0 (commit 6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb) with MLX 0.32.2, Transformers 5.18.0.dev0 and Tokenizers 0.23.2; independent in-process language graph on the same pack bytes. Not the primary mlx_lm baseline, which cannot load qwen4_exp.",
-    "decode_ratio_min": 0.90,
+    "decode_ratio_min": 0.9,
     "ttft_ratio_max": 1.15,
     "aggregation": "median of three measured runs per cell, required in each of the 512, 2048 and 8192 input-token cells",
     "measurement_bias": "AX is timed through an HTTP stream on loopback and the reference in process; the bound therefore disadvantages AX by the transport overhead and is not a speedup claim."
@@ -42,20 +42,35 @@
   },
   "lifecycle": {
     "actions_per_mode": 7,
-    "modes_required": ["disabled", "default"],
+    "modes_required": [
+      "disabled",
+      "default"
+    ],
     "counters_drained": true
   },
   "mtp": {
     "default_verified_steps": 0,
     "required_is_opt_in": true,
-    "gate_state": {"MTP-S": "not_assessed", "MTP-P": "not_assessed", "MTP-D": "not_assessed"},
+    "gate_state": {
+      "MTP-S": "not_assessed",
+      "MTP-P": "not_assessed",
+      "MTP-D": "not_assessed"
+    },
     "measured_ratio_disclosure": "Required MTP decoded at 0.90-0.93 of direct speed on 2026-10-05; it fails the MTP-P bounds (weighted >= 1.20x, median >= 1.10x) and is therefore not promoted."
   },
   "delivery": {
     "fresh_cache": "empty cache root, product downloader, pinned revision, no pre-existing files",
     "all_members_size_and_sha256": true,
     "generated_manifest_runtime_ready": true,
-    "functional_controls_on_delivered_copy": ["disabled", "required", "default"]
+    "functional_controls_on_delivered_copy": [
+      "disabled",
+      "required",
+      "default"
+    ]
   },
-  "disclosure": "The memory, readiness and long-lookup bounds were set after observing the single measurements named above and are therefore descriptive guard rails, not independently pre-registered limits. The reference-relative, quality and identity bounds were frozen before any reference or product-default data were collected."
+  "disclosure": "The memory, readiness and long-lookup bounds were set after observing the single measurements named above and are therefore descriptive guard rails, not independently pre-registered limits. The reference-relative, quality and identity bounds were frozen before any reference or product-default data were collected.",
+  "timing_host": {
+    "min_cpu_idle_percent": 90.0,
+    "basis": "Timing, memory and readiness runs start only when system-wide CPU idle is at least 90% (3-second top sample) and the same bound must hold when they finish; the record is stored in each result. The desktop session keeps the load average near 3 on this 24-core host, so idle share is used. Added on 2026-10-05 before the final evidence collection; it tightens, and never relaxes, any earlier rule."
+  }
 }
