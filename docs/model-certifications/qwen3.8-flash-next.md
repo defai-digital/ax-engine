@@ -123,8 +123,16 @@ normal stops and 105/105 identical direct/MTP text pairs. Each mode still has
 102 quality passes and three original failures: alphabet comma spacing, the
 gravity answer `9`, and the water formula's subscript representation. Both modes
 return `1734` for the 29,774-token lookup. Original payload/runtime integrity
-and owned-process cleanup pass; the original QA verdict remains **failed**.
-The portable evidence reader independently replays the unchanged checkers.
+and owned-process cleanup pass; the frozen per-run verdict remains **failed**.
+The three retained failures are now adjudicated in
+[adjudication record](../../benchmarks/results/flash-next-installed-full-qa-4bit-c101-m2-20260917.adjudication.json):
+gravity and csv-pair are genuine model-output failures (identical across modes,
+no runtime cause) and stay retained; the water answer is the chemically
+conventional subscript rendering, and the exact matcher now NFKC-folds
+compatibility forms for future cohorts. `scripts/adjudicate_flash_next_qa.py`
+binds the adjudication to the frozen items/run hashes and closes the record as
+`passed_with_retained` without rewriting the pinned verdict, changing any
+threshold, or touching `qualification`/`release_ready` (both stay false). The portable evidence reader independently replays the unchanged checkers.
 These request timings do not establish MTP acceleration, and text identity
 does not by itself establish same-state MTP-S safety.
 
@@ -210,6 +218,20 @@ original M2 full diagnostic stopped incomplete with native SIGBUS and no
 post-run payload hashes; it supplies no full numerical verdict. M5/NAS
 installed qualification, performance, lifecycle and default-MTP promotion
 remain open.
+
+Two closing instrumentations now bound both failure modes. The bulk
+safetensors mmap loader re-stats every shard after the copy and fails closed
+with a typed error if size or mtime drifted while mapped, so a NAS/SMB
+replace-or-truncate that completes without faulting is refused as a load error
+instead of yielding torn tensors. The check runs after the copy and cannot
+prevent a SIGBUS raised by a truncation during the copy itself. And the full
+diagnostic now replays legacy-batched accepted pairs as one 2-token batched
+forward (the `compared_full_state_batched_identity` control): the verifier's
+2-row batch and a serial singleton replay round differently in GDN/QSA/PLE
+recurrent arrays, so a false batch-vs-singleton comparison alone no longer
+proves a defect — batch-vs-batch is what the next campaign host run must
+establish. The retained genuine divergences (documented above) remain open
+until that run completes.
 
 [The same-source M5 short diagnostic](../../benchmarks/results/qualification/2026-09-18-flash-next-mxfp4-m5-short/README.md)
 now completes with valid collection and failed state identity. The 41-input,

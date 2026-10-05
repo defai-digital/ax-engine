@@ -69,7 +69,9 @@ not run on this host.
 
 ## Flash Next (`qwen4_exp`)
 
-Native-path load and serve succeeded on the ADR-030 target spec with
+Native-path load and serve succeeded on the then-current ADR-030 M5 Max target
+spec (that machine target was superseded by ADR-037 on 2026-09-22; this record
+is retained as historical M5 evidence) with
 `AX_ENGINE_FLASH_NEXT_EXPERIMENTAL=1` (HTTP 200 chat reply; warm restart
 ready ~10 s). The 20-run contract was not completed: the trunk runs direct
 decode (MTP-S/P/D not assessed, not forced) at roughly 2 tok/s on the flappy

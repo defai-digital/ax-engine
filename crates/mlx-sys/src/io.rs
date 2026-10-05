@@ -141,6 +141,13 @@ fn load_safetensors_mmap_filtered(
     filter: Option<SafetensorsNameFilter<'_>>,
 ) -> Result<HashMap<String, MlxArray>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
+    // NAS/SMB-backed caches can replace or truncate a shard while it is
+    // mapped. Stat before and after the copies and fail closed on any drift,
+    // so a mutated file is refused instead of yielding torn tensors. This
+    // cannot catch a SIGBUS raised by a truncation during the copy itself.
+    let stat_before = file
+        .metadata()
+        .map_err(|e| format!("stat {}: {}", path.display(), e))?;
     let mmap = unsafe { Mmap::map(&file).map_err(|e| format!("mmap {}: {}", path.display(), e))? };
     let mmap = Arc::new(mmap);
 
@@ -289,7 +296,27 @@ fn load_safetensors_mmap_filtered(
     // Drop the mmap explicitly at function end so the mapping outlives
     // every `from_raw_data` copy above; MLX owns its own buffer by then.
     drop(mmap);
+    ensure_unchanged_since(path, &stat_before)?;
     Ok(result)
+}
+
+/// Fail closed when `path` no longer matches the metadata taken before it
+/// was mapped (size or mtime drift, or the path vanished).
+fn ensure_unchanged_since(path: &Path, before: &std::fs::Metadata) -> Result<(), String> {
+    let after = std::fs::metadata(path)
+        .map_err(|e| format!("stat after load {}: {}", path.display(), e))?;
+    if after.len() != before.len() || after.modified().ok() != before.modified().ok() {
+        return Err(format!(
+            "safetensors file {} changed while mapped (size {} -> {}, mtime {:?} -> {:?}); \
+             refusing to load possibly-torn tensors",
+            path.display(),
+            before.len(),
+            after.len(),
+            before.modified().ok(),
+            after.modified().ok()
+        ));
+    }
+    Ok(())
 }
 
 /// Map a safetensors dtype string to the dtype used for the loaded array.
@@ -353,6 +380,35 @@ mod tests {
                     .is_empty()
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drift_check_accepts_unchanged_file_and_rejects_size_or_mtime_change() {
+        let dir = std::env::temp_dir().join(format!("ax-drift-check-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shard.bin");
+        std::fs::write(&path, [0u8; 16]).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        assert!(ensure_unchanged_since(&path, &before).is_ok());
+
+        // Same size, later mtime.
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(before.modified().unwrap() + std::time::Duration::from_secs(5))
+            .unwrap();
+        let err = ensure_unchanged_since(&path, &before).unwrap_err();
+        assert!(err.contains("changed while mapped"), "{err}");
+
+        // Truncated file.
+        file.set_len(8).unwrap();
+        let err = ensure_unchanged_since(&path, &before).unwrap_err();
+        assert!(err.contains("size 16 -> 8"), "{err}");
+
+        // Replaced by a path that no longer exists.
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
+        let err = ensure_unchanged_since(&path, &before).unwrap_err();
+        assert!(err.contains("stat after load"), "{err}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "qa"))
 
 from checkers import (  # noqa: E402
+    check_exact_answer,
     check_regex,
     check_unicode_replacement,
     run_all_checks,
@@ -53,6 +54,34 @@ class QaCheckerTests(unittest.TestCase):
         checks = {check.name: check for check in report.checks}
         self.assertIn("unicode_replacement", checks)
         self.assertFalse(checks["unicode_replacement"].passed)
+
+    def test_exact_answer_nfkc_matches_compatibility_subscripts(self) -> None:
+        # flash-next emits the chemically conventional subscript form; the
+        # exact matcher must accept the NFKC-compatible ASCII spelling.
+        prompt = QaPrompt(
+            id="knowledge_water_formula",
+            category="science",
+            system=None,
+            user="What is the chemical formula for water?",
+            exact_answer="H2O",
+            min_length=1,
+        )
+        result = check_exact_answer("H\u2082O", prompt)
+        self.assertTrue(result.passed, result.detail)
+
+    def test_exact_answer_still_rejects_wrong_instruction_following(self) -> None:
+        # NFKC must not paper over a genuine instruction-following failure:
+        # the model echoed the meta word "pair" instead of the literal "name".
+        prompt = QaPrompt(
+            id="format_csv_pair",
+            category="format",
+            system=None,
+            user="Reply with only the CSV pair name,1",
+            exact_answer="name,1",
+            min_length=1,
+        )
+        result = check_exact_answer("pair,1", prompt)
+        self.assertFalse(result.passed)
 
     def test_regex_requires_all_patterns(self) -> None:
         prompt = QaPrompt(
