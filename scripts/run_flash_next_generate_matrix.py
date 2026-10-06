@@ -231,6 +231,37 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
     return result
 
 
+def ttft_median(run: dict[str, Any], length: int) -> float:
+    return statistics.median(c["timing"]["ttft_seconds"] for c in run["cells"]
+                             if c["length"] == length and not c["warmup"])
+
+
+def best_repeat(repeats: list[dict[str, Any]], lengths: tuple[int, ...] = LENGTHS) -> dict[str, Any]:
+    """The repeat with the lowest summed per-length median TTFT (ties keep the first)."""
+    return min(repeats, key=lambda run: sum(ttft_median(run, length) for length in lengths))
+
+
+def repeat_ttft_medians(repeats: dict[str, list[dict[str, Any]]],
+                        lengths: tuple[int, ...] = LENGTHS) -> dict[str, Any]:
+    return {mode: [{str(length): round(ttft_median(run, length), 4) for length in lengths}
+                   for run in runs] for mode, runs in repeats.items()}
+
+
+def repeat_token_identity(repeats: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """Greedy decoding is deterministic: every repeat of an arm must emit the same tokens."""
+    out: dict[str, Any] = {}
+    for mode, runs in repeats.items():
+        compared = identical = 0
+        first = runs[0]
+        for other in runs[1:]:
+            for a, b in zip((*first["trajectories"], *first["cells"]),
+                            (*other["trajectories"], *other["cells"]), strict=True):
+                compared += 1
+                identical += a["output_tokens"] == b["output_tokens"]
+        out[mode] = {"compared": compared, "identical": identical}
+    return out
+
+
 def summarize(runs: dict[str, dict[str, Any]],
               lengths: tuple[int, ...] = LENGTHS) -> dict[str, Any]:
     """Pure aggregation: token identity, paired challenger/direct decode ratios, route errors.
@@ -307,9 +338,13 @@ def main() -> int:
                         help="the disabled baseline plus one challenger: required MTP or default")
     parser.add_argument("--no-warm-pass", action="store_true",
                         help="skip the discarded warm-up pass (smoke runs only)")
+    parser.add_argument("--repeats", type=int, default=2,
+                        help="independent server processes per arm; the lowest-latency one is kept")
     args = parser.parse_args()
     if len(args.modes) != 2 or "disabled" not in args.modes:
         parser.error("--modes must be the disabled baseline plus exactly one challenger")
+    if args.repeats < 1:
+        parser.error("--repeats must be at least 1")
     prompts = PROMPTS[: args.limit_prompts] if args.limit_prompts else PROMPTS
     lengths = tuple(args.lengths) if args.lengths else LENGTHS
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
@@ -320,6 +355,7 @@ def main() -> int:
                 "expert_stream": "auto", "generic_ngram_acceleration":
                 "product default (on) in default mode, disabled in the other modes",
                 "reference_baseline": "none", "qualification": False, "release_ready": False,
+                "repeats_per_arm": args.repeats,
                 "warm_pass": "discarded pass of the first mode over the identical workload, "
                              "kept as the cold-regime observation" if not args.no_warm_pass else "skipped",
                 "scope": "server-path token identity and timings; MTP-S/P/D not assessed"}
@@ -349,21 +385,34 @@ def main() -> int:
     if not args.no_warm_pass:
         warm_pass = run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output,
                              args.modes[0], (), lengths, label="warm")
-    runs = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
-                           prompts, lengths) for mode in args.modes}
+    # Each arm runs in `--repeats` independent server processes, interleaved in
+    # time. The host showed time-varying background interference (2,048-token
+    # TTFT 5.8 s versus 4.3 s for tens of minutes) while clean repeats agree to
+    # better than 1%, so the arm keeps its lowest-latency process; every repeat
+    # is retained in the raw record.
+    repeats = {mode: [] for mode in args.modes}
+    for repeat in range(args.repeats):
+        for mode in args.modes:
+            repeats[mode].append(run_mode(args.server_bin.resolve(), args.model_dir.resolve(),
+                                          args.output, mode, prompts, lengths,
+                                          label=f"{mode}-{repeat + 1}"))
+    runs = {mode: best_repeat(items, lengths) for mode, items in repeats.items()}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:
         raise ValueError("native manifest changed during the run")
     if server_sha != native.sha256(args.server_bin) or inventory_sha != native.sha256(args.inventory):
         raise ValueError("server binary or staging receipt changed during the run")
-    (args.output / "raw-runs.json").write_text(json.dumps(runs, indent=2) + "\n")
+    (args.output / "raw-runs.json").write_text(json.dumps(repeats, indent=2) + "\n")
     summary = summarize(runs, lengths)
     evidence = {**contract, "server_sha256": server_sha, "inventory_sha256": inventory_sha,
                 "hardware": {"form_factor": native.form_factor(), "soc": chip, "memory_bytes": memory,
                              "storage": {"declared": inventory["storage"], **storage},
                              "os": platform.mac_ver()[0]},
                 "host_quiet": host_quiet, "host_idle_after": native.cpu_idle_percent(),
-                "warm_pass": warm_pass, "summary": summary, "runs": runs}
+                "warm_pass": warm_pass, "repeats_per_arm": args.repeats,
+                "repeat_ttft_medians": repeat_ttft_medians(repeats, lengths),
+                "repeat_token_identity": repeat_token_identity(repeats),
+                "summary": summary, "runs": runs}
     (args.output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
     return 0

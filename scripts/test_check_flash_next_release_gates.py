@@ -217,6 +217,14 @@ class ReleaseGateTests(unittest.TestCase):
             del r[name]["host_quiet"]
             self.assertEqual(failed(r), {"integrity"}, name)
 
+    def test_repeats_of_one_arm_must_be_token_identical(self):
+        r = good()
+        r["matrix"]["repeat_token_identity"] = {"disabled": {"compared": 25, "identical": 25},
+                                                "default": {"compared": 25, "identical": 25}}
+        self.assertEqual(failed(r), set())
+        r["matrix"]["repeat_token_identity"]["default"]["identical"] = 24
+        self.assertEqual(failed(r), {"integrity"})
+
     def test_lifecycle_needs_seven_drained_actions_in_each_required_mode(self):
         r = good()
         r["lifecycle"]["runs"][1]["actions"] = r["lifecycle"]["runs"][1]["actions"][:6]

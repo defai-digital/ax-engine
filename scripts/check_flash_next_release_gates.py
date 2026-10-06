@@ -251,6 +251,9 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> li
         quiet = results[name].get("host_quiet") or {}
         if quiet.get("cpu_idle_percent", -1) < floor or results[name].get("host_idle_after", -1) < floor:
             problems.append(f"{name}: host was not recorded idle (CPU idle >= {floor}%)")
+    for mode, identity in (results["matrix"].get("repeat_token_identity") or {}).items():
+        if identity["identical"] != identity["compared"]:
+            problems.append(f"matrix/{mode}: repeats of the same arm emitted different tokens")
     if results["reference"].get("versions", {}).get("mlx-vlm") != "0.7.0rc0":
         problems.append("reference runtime is not the pinned MLX-VLM")
     return [gate("integrity", not problems, "; ".join(problems) or

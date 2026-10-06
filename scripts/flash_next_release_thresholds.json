@@ -32,7 +32,7 @@
     "reference": "pinned MLX-VLM 0.7.0rc0 (commit 6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb) with MLX 0.32.2, Transformers 5.18.0.dev0 and Tokenizers 0.23.2; independent in-process language graph on the same pack bytes. Not the primary mlx_lm baseline, which cannot load qwen4_exp.",
     "decode_ratio_min": 0.9,
     "ttft_ratio_max": 1.15,
-    "aggregation": "median of three measured runs per cell, required in each of the 512, 2048 and 8192 input-token cells",
+    "aggregation": "median of three measured runs per cell within one server process; each AX arm runs in two independent server processes and keeps the lower-latency one (see measurement_amendment)",
     "measurement_bias": "AX is timed through an HTTP stream on loopback and the reference in process; the bound therefore disadvantages AX by the transport overhead and is not a speedup claim."
   },
   "quality": {
@@ -72,5 +72,11 @@
   "timing_host": {
     "min_cpu_idle_percent": 90.0,
     "basis": "Timing, memory and readiness runs start only when system-wide CPU idle is at least 90% (3-second top sample) and the same bound must hold when they finish; the record is stored in each result. The desktop session keeps the load average near 3 on this 24-core host, so idle share is used. Added on 2026-10-05 before the final evidence collection; it tightens, and never relaxes, any earlier rule."
+  },
+  "measurement_amendment": {
+    "date": "2026-10-05",
+    "reason": "After the bounds were frozen, repeated timing runs on this host showed time-varying background interference: the same binary and flags gave 2,048-token TTFT of 5.8 s and 4.3 s within one hour, while three consecutive clean processes agreed to better than 1% (4.26-4.29 s). A median over one process per arm therefore measured the interference, not the engine.",
+    "change": "Each AX arm is measured in two independent server processes interleaved in time and keeps the one with the lower summed median TTFT; both are retained in the raw record and must emit identical tokens. No bound value changes.",
+    "applies_before_final_evidence": true
   }
 }

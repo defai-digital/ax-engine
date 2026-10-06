@@ -147,6 +147,30 @@ class GenerateMatrixTests(unittest.TestCase):
         self.assertGreater(contract["total_blocks"] * 16,
                            max(contract["lengths"]) + contract["output_tokens"])
 
+    def test_best_repeat_keeps_the_lowest_latency_process_and_identity_is_checked(self):
+        def process(ttft, tokens=(1, 2)):
+            cells = [{"length": 512, "run": r, "warmup": r < mod.WARMUPS, "output_tokens": list(tokens),
+                      "timing": {"ttft_seconds": ttft + (10 if r < mod.WARMUPS else 0)}}
+                     for r in range(mod.WARMUPS + mod.MEASURED)]
+            return {"trajectories": [{"output_tokens": [9]}], "cells": cells}
+        slow, fast = process(1.8), process(1.2)
+        self.assertIs(mod.best_repeat([slow, fast], (512,)), fast)
+        self.assertIs(mod.best_repeat([fast, slow], (512,)), fast)
+        self.assertEqual(mod.repeat_ttft_medians({"disabled": [slow, fast]}, (512,)),
+                         {"disabled": [{"512": 1.8}, {"512": 1.2}]})
+        same = mod.repeat_token_identity({"disabled": [slow, fast]})["disabled"]
+        self.assertEqual(same, {"compared": 6, "identical": 6})
+        drift = mod.repeat_token_identity({"disabled": [slow, process(1.2, (1, 3))]})["disabled"]
+        self.assertEqual(drift, {"compared": 6, "identical": 1})
+
+    def test_repeats_must_be_positive(self):
+        done = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--repeats", "0"],
+                              capture_output=True, text=True)
+        self.assertNotEqual(done.returncode, 0)
+        ok = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--repeats", "3"],
+                            capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(ok.stdout)["repeats_per_arm"], 3)
+
     def test_warm_pass_can_be_skipped_only_by_an_explicit_flag(self):
         done = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--no-warm-pass"],
                               capture_output=True, text=True, check=True)
