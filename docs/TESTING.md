@@ -147,6 +147,34 @@ that separate reference. These records never claim an `mlx_lm` ratio.
 See the [Flash Next record](model-certifications/qwen3.8-flash-next.md).
 Do not treat a campaign host as either SKU.
 
+## Flash Next MTP verifier selection (development only)
+
+Required MTP on the audited MXFP4 pack verifies each round with two sequential
+one-token target forwards (the canonical schedule, ADR-032). That keeps output
+and retained state identical to direct decoding, but a round reads the expert
+weights twice, so it cannot decode faster than direct. Setting
+`AX_FLASH_NEXT_MTP_VERIFIER=batched` before loading the model selects one
+two-token target forward per round, with a one-token replay on rejection (the
+verifier pure-affine packs already use). Unset, empty or `canonical` keeps the
+default; any other value fails closed, so MTP does not attach and a `required`
+session is refused.
+
+The batched schedule is an experimental opt-in. Accepted rounds retain
+batch-rounded state, so a greedy stream can diverge from direct decoding at a
+near-tied logit. It grants no qualification and no MTP-S, MTP-P or MTP-D claim,
+and `--mlx-mtp-policy auto` never selects it. It is not a general speed-up: on
+the one development host it helped only short prompts with high draft
+acceptance, and it was slower than both direct decoding and the canonical
+schedule at multi-thousand-token contexts. The server logs a warning at load
+and reports `ax_mlx_flash_next_mtp_verifier_schedule` in every route decision
+(`0` unavailable, `1` canonical singleton, `2` batched).
+
+`scripts/run_flash_next_generate_matrix.py --mtp-verifier batched` runs the
+required-MTP arm that way. The harness strips inherited `AX_*` variables, so
+this option is the only way it passes the selection, and it fails the run if the
+engine-reported schedule differs from the requested one. The recorded contract
+carries `mtp_verifier`; the direct arm is unaffected.
+
 ## Flash Next residency control (development only)
 
 The ignored real-pack test writes four tokens, full F32 logit fingerprints,

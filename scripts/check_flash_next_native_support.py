@@ -249,11 +249,12 @@ def server_command(server: Path, root: Path, mode: str, port: int) -> list[str]:
             "--stream-experts", "auto", *tail]
 
 
-def server_env() -> dict[str, str]:
+def server_env(explicit: dict[str, str] | None = None) -> dict[str, str]:
     # Inherited overrides must not silently replace arithmetic, paging,
-    # prefix-reuse or the stated MTP control.
+    # prefix-reuse or the stated MTP control. A caller that deliberately selects
+    # an override passes it in `explicit` and records it in its own contract.
     return {**{name: value for name, value in os.environ.items()
-               if not name.startswith(("AX_", "MLX_"))}, "RUST_LOG": "info"}
+               if not name.startswith(("AX_", "MLX_"))}, "RUST_LOG": "info", **(explicit or {})}
 
 
 def stop_owned(process: subprocess.Popen) -> None:

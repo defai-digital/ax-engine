@@ -41,6 +41,14 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 MODES = ("disabled", "required")
+# Operator choice of the MXFP4 MTP target verifier. `canonical` is the product
+# schedule (two singleton target forwards per round). `batched` runs one
+# two-token target forward per round; its output may diverge from direct at
+# near-tied logits. Only the required-MTP arm receives it.
+VERIFIERS = ("canonical", "batched")
+VERIFIER_ENV = "AX_FLASH_NEXT_MTP_VERIFIER"
+VERIFIER_SCHEDULE_KEY = "ax_mlx_flash_next_mtp_verifier_schedule"
+VERIFIER_SCHEDULE_CODE = {"canonical": 1, "batched": 2}
 TOTAL_BLOCKS = 4096
 OUTPUT_TOKENS = 128
 LENGTHS = (512, 2048, 8192)
@@ -145,11 +153,31 @@ def generate(base: str, ids: list[int], max_tokens: int = OUTPUT_TOKENS,
 
 def slim(response: dict[str, Any], before: dict[str, float], after: dict[str, float]) -> dict[str, Any]:
     perf = response.get("performance", {})
+    decisions = (response.get("route") or {}).get("crossover_decisions") or {}
     return {"output_tokens": response["output_tokens"], "prompt_tokens": len(response["prompt_tokens"]),
             "finish_reason": response.get("finish_reason"), "status": response.get("status"),
             "timing": response["client_timing"], "mtp": perf.get("mtp", {}),
+            "verifier_schedule": decisions.get(VERIFIER_SCHEDULE_KEY),
             "verified_steps": after.get(native.VERIFIED, 0.0) - before.get(native.VERIFIED, 0.0),
             "route_errors": sum(after.get(n, 0.0) - before.get(n, 0.0) for n in native.ERRORS)}
+
+
+def arm_verifier(mode: str, verifier: str) -> str:
+    """The verifier an arm runs: only the required-MTP arm can select `batched`."""
+    return verifier if mode == "required" else "canonical"
+
+
+def check_verifier_schedule(row: dict[str, Any], mode: str, verifier: str) -> None:
+    """Fail a run whose engine-reported schedule differs from the requested verifier.
+
+    The server reports the schedule it resolved at load, so a scrubbed or mistyped
+    override cannot silently measure the wrong arm. Direct arms never use the
+    verifier but still report the format-derived canonical code.
+    """
+    expected = VERIFIER_SCHEDULE_CODE[arm_verifier(mode, verifier)]
+    if row.get("verifier_schedule") != expected:
+        raise RuntimeError(f"{mode} server reports verifier schedule "
+                           f"{row.get('verifier_schedule')!r}, expected {expected} ({verifier})")
 
 
 def workload_ids(vocab_size: int, length: int, run: int) -> list[int]:
@@ -173,7 +201,8 @@ def decode_rate(timing: dict[str, Any]) -> float | None:
 
 
 def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[str, ...] = PROMPTS,
-             lengths: tuple[int, ...] = LENGTHS, label: str | None = None) -> dict[str, Any]:
+             lengths: tuple[int, ...] = LENGTHS, label: str | None = None,
+             verifier: str = "canonical") -> dict[str, Any]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -181,9 +210,11 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
     log_path = output / f"server-{label or mode}.log"
     command = [*native.server_command(server, root, mode, port), "--total-blocks", str(TOTAL_BLOCKS)]
     started = time.monotonic()
-    result: dict[str, Any] = {"mode": mode, "trajectories": [], "cells": []}
+    result: dict[str, Any] = {"mode": mode, "verifier": arm_verifier(mode, verifier),
+                              "trajectories": [], "cells": []}
+    explicit = {VERIFIER_ENV: "batched"} if arm_verifier(mode, verifier) == "batched" else None
     with log_path.open("wb") as log:
-        process = subprocess.Popen(command, stdout=log, stderr=log, env=native.server_env(),
+        process = subprocess.Popen(command, stdout=log, stderr=log, env=native.server_env(explicit),
                                    start_new_session=True)
         try:
             while True:
@@ -207,6 +238,7 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
                 response = generate(base, ids)
                 after = native.metrics(native.request(base, "/metrics").decode())
                 row = {"index": index, "prompt": prompt, **slim(response, before, after)}
+                check_verifier_schedule(row, mode, verifier)
                 result["trajectories"].append(row)
                 print(f"{mode} traj {index + 1}/{len(prompts)}: {len(row['output_tokens'])} tok, "
                       f"{row['verified_steps']:.0f} verified", flush=True)
@@ -219,6 +251,7 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
                     after = native.metrics(native.request(base, "/metrics").decode())
                     row = {"length": length, "run": run, "warmup": run < WARMUPS,
                            **slim(response, before, after)}
+                    check_verifier_schedule(row, mode, verifier)
                     result["cells"].append(row)
                     rate = decode_rate(row["timing"])
                     print(f"{mode} {length} run {run}{' (warmup)' if row['warmup'] else ''}: "
@@ -338,6 +371,10 @@ def main() -> int:
                         help="the disabled baseline plus one challenger: required MTP or default")
     parser.add_argument("--no-warm-pass", action="store_true",
                         help="skip the discarded warm-up pass (smoke runs only)")
+    parser.add_argument("--mtp-verifier", choices=VERIFIERS, default="canonical",
+                        help="MTP target verifier for the required arm: the canonical product "
+                             "schedule, or the batched verifier (token identity with direct is "
+                             "then not expected at near-tied logits)")
     parser.add_argument("--repeats", type=int, default=2,
                         help="independent server processes per arm; the lowest-latency one is kept")
     args = parser.parse_args()
@@ -345,6 +382,8 @@ def main() -> int:
         parser.error("--modes must be the disabled baseline plus exactly one challenger")
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
+    if args.mtp_verifier != "canonical" and "required" not in args.modes:
+        parser.error("--mtp-verifier batched applies only to the required MTP arm")
     prompts = PROMPTS[: args.limit_prompts] if args.limit_prompts else PROMPTS
     lengths = tuple(args.lengths) if args.lengths else LENGTHS
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
@@ -356,6 +395,7 @@ def main() -> int:
                 "product default (on) in default mode, disabled in the other modes",
                 "reference_baseline": "none", "qualification": False, "release_ready": False,
                 "repeats_per_arm": args.repeats,
+                "mtp_verifier": args.mtp_verifier,
                 "warm_pass": "discarded pass of the first mode over the identical workload, "
                              "kept as the cold-regime observation" if not args.no_warm_pass else "skipped",
                 "scope": "server-path token identity and timings; MTP-S/P/D not assessed"}
@@ -395,7 +435,7 @@ def main() -> int:
         for mode in args.modes:
             repeats[mode].append(run_mode(args.server_bin.resolve(), args.model_dir.resolve(),
                                           args.output, mode, prompts, lengths,
-                                          label=f"{mode}-{repeat + 1}"))
+                                          label=f"{mode}-{repeat + 1}", verifier=args.mtp_verifier))
     runs = {mode: best_repeat(items, lengths) for mode, items in repeats.items()}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:

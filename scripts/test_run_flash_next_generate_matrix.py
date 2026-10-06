@@ -179,6 +179,49 @@ class GenerateMatrixTests(unittest.TestCase):
         self.assertIn("warm_pass", text)
         self.assertIn('label="warm"', text)
 
+    def test_batched_verifier_is_explicit_scoped_to_the_mtp_arm_and_recorded(self):
+        def dry(*extra):
+            return subprocess.run([sys.executable, str(SCRIPT), "--dry-run", *extra],
+                                  capture_output=True, text=True)
+        self.assertEqual(json.loads(dry().stdout)["mtp_verifier"], "canonical")
+        batched = dry("--mtp-verifier", "batched")
+        self.assertEqual(json.loads(batched.stdout)["mtp_verifier"], "batched")
+        self.assertNotEqual(dry("--mtp-verifier", "legacy").returncode, 0)
+        self.assertNotEqual(dry("--mtp-verifier", "batched", "--modes", "disabled", "default").returncode, 0)
+
+    def test_server_env_scrubs_inherited_overrides_but_keeps_an_explicit_one(self):
+        native = mod.native
+        import os
+        previous = os.environ.get(mod.VERIFIER_ENV)
+        os.environ[mod.VERIFIER_ENV] = "batched"
+        try:
+            self.assertNotIn(mod.VERIFIER_ENV, native.server_env())
+            self.assertEqual(native.server_env({mod.VERIFIER_ENV: "batched"})[mod.VERIFIER_ENV], "batched")
+        finally:
+            if previous is None:
+                os.environ.pop(mod.VERIFIER_ENV)
+            else:
+                os.environ[mod.VERIFIER_ENV] = previous
+
+    def test_reported_schedule_must_match_the_requested_verifier(self):
+        key = mod.VERIFIER_SCHEDULE_KEY
+        response = {"output_tokens": [1], "prompt_tokens": [2], "client_timing": {},
+                    "route": {"crossover_decisions": {key: 2}}}
+        row = mod.slim(response, {}, {})
+        self.assertEqual(row["verifier_schedule"], 2)
+        mod.check_verifier_schedule(row, "required", "batched")
+        # The direct arm never selects the batched verifier, so it reports canonical.
+        mod.check_verifier_schedule({"verifier_schedule": 1}, "disabled", "batched")
+        mod.check_verifier_schedule({"verifier_schedule": 1}, "required", "canonical")
+        for bad_row, mode, verifier in (({"verifier_schedule": 1}, "required", "batched"),
+                                        ({"verifier_schedule": 2}, "required", "canonical"),
+                                        ({"verifier_schedule": 2}, "disabled", "batched"),
+                                        ({}, "required", "canonical")):
+            with self.assertRaises(RuntimeError):
+                mod.check_verifier_schedule(bad_row, mode, verifier)
+        self.assertIsNone(mod.slim({"output_tokens": [], "prompt_tokens": [], "client_timing": {}},
+                                   {}, {})["verifier_schedule"])
+
     def test_live_run_requires_all_inputs(self):
         done = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
         self.assertNotEqual(done.returncode, 0)

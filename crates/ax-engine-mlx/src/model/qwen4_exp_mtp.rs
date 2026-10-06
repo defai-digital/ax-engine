@@ -1,7 +1,10 @@
 //! Experimental Flash Next draft graph with authoritative primary verification.
 //!
 //! Admitted MXFP4 trunks verify and retain state with ordinary singleton
-//! target transitions. Pure-affine trunks retain the legacy batched verifier.
+//! target transitions. Pure-affine trunks retain the legacy batched verifier,
+//! and an operator can select that batched verifier for MXFP4 with
+//! `AX_FLASH_NEXT_MTP_VERIFIER=batched`: one round then reads the weights once
+//! instead of twice, at the cost of near-tie divergence from direct decoding.
 //! Neither schedule grants qualification: target token and state identity,
 //! including exact ties, require independent direct-trajectory evidence.
 //!
@@ -175,6 +178,16 @@ fn trunk_forward(
         return Err("injected failure after materialized target transition".into());
     }
     Ok(output)
+}
+
+/// Route-decision code for the MTP target verifier schedule:
+/// 0 unavailable, 1 canonical singleton, 2 batched (length-2 verify).
+pub(crate) fn target_schedule_route_code(trunk: &Qwen4ExpWeights) -> u32 {
+    match trunk.target_schedule {
+        Qwen4ExpTargetSchedule::Unavailable(_) => 0,
+        Qwen4ExpTargetSchedule::CanonicalSingleton => 1,
+        Qwen4ExpTargetSchedule::LegacyBatched => 2,
+    }
 }
 
 #[cfg(test)]
