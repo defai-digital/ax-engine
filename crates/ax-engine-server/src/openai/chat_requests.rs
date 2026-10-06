@@ -2076,6 +2076,8 @@ fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
         // (not Coder-Next XML declarations).
         || normalized.contains("qwen3-6")
         || normalized.contains("qwen36")
+        // Qwen 3.8 packs ship the same function= call template as 3.5/3.6.
+        || chat::is_qwen38_model_id(model_id)
         || chat::is_qwen35_class_named_finetune(model_id)
     {
         QwenToolContractStyle::FunctionXml
@@ -4820,6 +4822,23 @@ mod media_tests {
         assert!(is_qwen3_vl_model_id("qwen3-vl-moe"));
         assert!(is_qwen3_vl_model_id("qwen3.6-27b"));
         assert!(!is_qwen3_vl_model_id("gemma4-unified"));
+    }
+
+    #[test]
+    fn qwen38_uses_function_xml_tool_dialect_but_dense_qwen3_8b_does_not() {
+        // The Qwen 3.8 packs ship the Qwen3.5/3.6 function= call template.
+        for model_id in ["qwen3.8-27b", "qwen3.8-27b-mtp", "qwen38-27b"] {
+            assert_eq!(
+                qwen_tool_contract_style(model_id),
+                QwenToolContractStyle::FunctionXml,
+                "{model_id}"
+            );
+        }
+        // Dense Qwen3-8B keeps the Qwen2.5-style JSON tool dialect.
+        assert_eq!(
+            qwen_tool_contract_style("qwen3-8b"),
+            QwenToolContractStyle::JsonTools
+        );
     }
 
     #[test]
