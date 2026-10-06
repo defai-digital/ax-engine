@@ -3144,6 +3144,52 @@ async fn openai_chat_request_rejects_video_even_with_supported_media() {
 }
 
 #[tokio::test]
+async fn openai_chat_request_points_unlimited_ocr_images_to_the_processed_input_path() {
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-ocr-image");
+    fs::write(
+        artifact_dir.join("model-manifest.json"),
+        r#"{"model_family":"unlimited_ocr"}"#,
+    )
+    .expect("manifest should write");
+    let state = native_mlx_openai_builder_state("unlimited-ocr", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "unlimited-ocr",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Free OCR."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("OCR image chat request should deserialize");
+
+    let error = build_openai_chat_request(&live, request)
+        .err()
+        .expect("inline images must be rejected for Unlimited-OCR");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_modality")
+    );
+    assert!(
+        error
+            .1
+            .0
+            .error
+            .message
+            .contains("prepare_unlimited_ocr_image_request"),
+        "unexpected message: {}",
+        error.1.0.error.message
+    );
+    assert!(!error.1.0.error.message.contains("Gemma4"));
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_request_rejects_empty_base64_image_with_clear_error() {
     let artifact_dir = gemma4_unified_artifact("native-openai-chat-empty-image");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
