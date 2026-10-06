@@ -46,7 +46,7 @@ def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str
     if not delivery.get("completed"):
         problems.append("delivery did not complete")
     if not delivery.get("fresh_cache"):
-        problems.append("cache was not empty at the start")
+        problems.append("the first attempt did not start from an empty cache")
     if (delivery.get("download") or {}).get("exit_code") != 0:
         problems.append("downloader did not exit 0")
     if delivery.get("revision") != target["pack_revision"]:
@@ -60,10 +60,13 @@ def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str
     if sorted(support.get("modes", [])) != sorted(spec["functional_controls_on_delivered_copy"]) \
             or not support.get("passed"):
         problems.append("functional controls did not pass in every required mode")
+    attempts = delivery.get("previous_attempts") or []
+    resumed = f" after {len(attempts)} failed attempt(s) that were resumed" if attempts else ""
     return [gate("delivery", not problems, "; ".join(problems) or
                  f"{verification.get('members_verified')} members, "
-                 f"{verification.get('bytes_verified')} bytes verified from an empty cache",
-                 download_seconds=(delivery.get("download") or {}).get("elapsed_seconds"))]
+                 f"{verification.get('bytes_verified')} bytes verified from an empty cache{resumed}",
+                 download_seconds=(delivery.get("download") or {}).get("elapsed_seconds"),
+                 failed_attempts=len(attempts))]
 
 
 def gate_readiness(delivery: dict[str, Any], runs: list[tuple[str, float]],

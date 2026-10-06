@@ -25,10 +25,47 @@ PRIMARY_ALIAS = "qwen3.8-flash-next:mxfp4"
 PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP"
 PACK_REVISION = "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
 SOURCE_REVISION = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
-STATUS = (
+STATUS_OPEN = (
     "Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."
 )
+STATUS_RELEASED = (
+    "Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; "
+    "model MTP is an explicit experimental opt-in. MTP Tier 2 pending. "
+    "AX certification record: Candidate (direct-default release gates passed; MTP gates open)."
+)
+RELEASE_SCOPE = (
+    "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in "
+    "(--mlx-mtp-policy required). MTP-S, MTP-P and MTP-D are not promoted and no MTP speedup is claimed."
+)
+RELEASE_VERDICT = (
+    Path(__file__).resolve().parents[1]
+    / "benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-release-gates/release-verdict.json"
+)
+MTP_NOT_ASSESSED = {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")}
+
+
+def release_record(path: Path = RELEASE_VERDICT) -> dict[str, Any]:
+    """Release state, derived from the committed evidence verdict.
+
+    The flags are never set by hand: they are true only when the verdict file is
+    present, binds this pack revision, passes every gate and leaves MTP-S/P/D
+    not assessed. Missing, malformed or failing evidence reads as not ready.
+    """
+    try:
+        verdict = json.loads(path.read_text(encoding="utf-8"))
+        gates = verdict["gates"]
+        ready = (
+            verdict.get("release_ready") is True
+            and verdict.get("pack_revision") == PACK_REVISION
+            and bool(gates)
+            and all(gate.get("passed") is True for gate in gates)
+            and verdict.get("mtp_certification") == MTP_NOT_ASSESSED
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {"release_ready": False, "verdict": None}
+    return {"release_ready": ready, "verdict": path.name,
+            "gates": [gate["gate"] for gate in gates], "source": verdict.get("source")}
 EXPERIMENTAL_EXPERT_LAYOUTS = (
     {"mode": "mxfp4", "bits": 4, "group_size": 32},
 )
@@ -38,6 +75,14 @@ EXPERT_ROLES = {
     "ffn_down_exps",
     "ffn_gate_up_exps_packed",
 }
+
+
+def status() -> str:
+    """The canonical status sentence for the current evidence state."""
+    return STATUS_RELEASED if release_record()["release_ready"] else STATUS_OPEN
+
+
+STATUS = status()
 
 
 def contract() -> dict[str, Any]:
@@ -61,7 +106,7 @@ def contract() -> dict[str, Any]:
         "sixbit_in_target_scope": False,
         "source_revision": SOURCE_REVISION,
         "host_class": HOST_CLASS,
-        "status": STATUS,
+        "status": status(),
         "ci": "dry-run only; do not mount Flash Next weights on CI",
         "fail_closed": True,
         "ready": False,
@@ -70,8 +115,10 @@ def contract() -> dict[str, Any]:
         "mtp_sidecar_required": True,
         "mxfp8_status": "in scope; audited pack pin and dedicated native-path validation pending",
         "qualification_storage": "record the actual storage medium and connection; no cross-storage inference",
-        "release_ready": False,
-        "qualification": False,
+        "release_ready": release_record()["release_ready"],
+        "qualification": release_record()["release_ready"],
+        "release_scope": RELEASE_SCOPE,
+        "release_verdict": release_record(),
         "validation_scope": "manifest and sidecar header metadata only; native loader validation required",
         "convert": "metadata mapping; retired affine readiness is not MXFP4 readiness",
         "load_blocker": "none: MXFP4/group32 loads without an env var; target qualification pending",
@@ -100,7 +147,7 @@ def contract() -> dict[str, Any]:
                 "and long-context decode-at-depth; diagnostic arithmetic profiles do not qualify"
             ),
         },
-        "mtp_certification": {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")},
+        "mtp_certification": dict(MTP_NOT_ASSESSED),
         "diagnostic_only": [
             "Independent direct/MTP token differences must be disclosed; they alone neither "
             "fail nor establish MTP-S. A near-tie explanation requires measured logits.",
@@ -132,7 +179,9 @@ def _print_contract(as_json: bool) -> None:
     print(f"alias:  {payload['alias'] or 'not registered for the MXFP4 target'}")
     print(f"repo:   {payload['repo_id']}")
     print(f"host:   {payload['host_class']}")
-    print("target admission: MXFP4/group32 loads without an env var; certification stays Candidate (gates open)")
+    print("target admission: MXFP4/group32 loads without an env var; certification stays Candidate "
+          f"({'direct-default release gates passed; MTP gates open' if payload['release_ready'] else 'gates open'})")
+    print(f"release scope: {payload['release_scope']}")
     print("standalone affine packs retired; MXFP8 pack audit and admission pending")
     print("fail-closed: convert must not remap onto qwen3_5")
     print("MTP gates (metadata preflight assesses none):")

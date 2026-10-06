@@ -63,8 +63,28 @@ def check_fresh(cache_root: Path, resume: bool) -> bool:
         raise ValueError("cache root exists and is not a directory")
     empty = not cache_root.exists() or not any(cache_root.iterdir())
     if not empty and not resume:
-        raise ValueError("fresh delivery requires an empty cache root (use --resume to continue one)")
+        raise ValueError("fresh delivery requires an empty cache root (use --previous-attempt to resume)")
     return empty
+
+
+def load_previous_attempts(directory: Path) -> tuple[bool, list[dict[str, Any]]]:
+    """Summaries of the failed attempts a resumed run continues, and whether the first started empty.
+
+    A resumed delivery is still a fresh-cache delivery only if its first attempt
+    started from an empty cache and nothing but the downloader wrote to it, so the
+    chain is carried forward and every failed attempt stays in the record.
+    """
+    previous = json.loads((directory / "result.json").read_text())
+    if previous.get("completed") or (previous.get("download") or {}).get("exit_code") in (0, None):
+        raise ValueError("the previous attempt did not fail; there is nothing to resume")
+    if previous.get("schema") != "ax-engine.flash-next.fresh-delivery.v2":
+        raise ValueError("the previous attempt is not a v2 delivery record")
+    stderr = directory / "download.stderr.log"
+    tail = stderr.read_text(errors="replace").splitlines()[-12:] if stderr.is_file() else []
+    summary = {"exit_code": previous["download"]["exit_code"],
+               "elapsed_seconds": previous["download"]["elapsed_seconds"],
+               "stderr_tail": scrub(tail)}
+    return bool(previous.get("fresh_cache")), [*previous.get("previous_attempts", []), summary]
 
 
 def snapshot_dir(cache_root: Path) -> Path:
@@ -148,8 +168,9 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--server-bin", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--resume", action="store_true",
-                        help="continue a partial cache; the record then says the cache was not fresh")
+    parser.add_argument("--previous-attempt", type=Path,
+                        help="output directory of a failed attempt on this same cache root; "
+                             "this run resumes it and records the failed attempt(s)")
     args = parser.parse_args()
     contract = {"schema": "ax-engine.flash-next.fresh-delivery.v2", "repo_id": native.PRIMARY_REPO,
                 "revision": native.PACK_REVISION, "alias": ALIAS, "published_members": PUBLISHED_MEMBERS,
@@ -170,7 +191,11 @@ def main() -> int:
     chip = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
     if "Ultra" not in chip or memory < 192 * 1024**3:
         parser.error("live run requires the Ultra-class 192 GiB+ Flash Next target")
-    fresh = check_fresh(args.cache_root, args.resume)
+    resuming = args.previous_attempt is not None
+    started_empty = check_fresh(args.cache_root, resuming)
+    fresh, attempts = started_empty, []
+    if resuming:
+        fresh, attempts = load_previous_attempts(args.previous_attempt)
     args.cache_root.mkdir(parents=True, exist_ok=True)
     storage = native.storage_info(args.cache_root)
     free = shutil.disk_usage(args.cache_root).free
@@ -193,7 +218,8 @@ def main() -> int:
         path = args.output / name
         path.write_text(scrub(path.read_text(errors="replace")))
     record: dict[str, Any] = {
-        **contract, "completed": False, "fresh_cache": fresh,
+        **contract, "completed": False, "fresh_cache": fresh, "previous_attempts": attempts,
+        "resumed": resuming,
         "download": {"exit_code": done.returncode, "elapsed_seconds": elapsed,
                      "hub_client_version": hub.stdout.strip(),
                      "ax_engine_sha256": sha256_file(args.ax_engine),

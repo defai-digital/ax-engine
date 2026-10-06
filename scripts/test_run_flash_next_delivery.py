@@ -35,6 +35,36 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not a directory"):
                 mod.check_fresh(file_root, False)
 
+    def test_resuming_carries_the_failed_attempts_and_the_original_fresh_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = Path(td) / "attempt-1"
+            first.mkdir()
+            record = {"schema": "ax-engine.flash-next.fresh-delivery.v2", "completed": False,
+                      "fresh_cache": True, "download": {"exit_code": 1, "elapsed_seconds": 450.0}}
+            (first / "result.json").write_text(json.dumps(record))
+            (first / "download.stderr.log").write_text("Error while downloading\nMax retries exceeded.\n")
+            fresh, attempts = mod.load_previous_attempts(first)
+            self.assertTrue(fresh)
+            self.assertEqual(attempts[0]["exit_code"], 1)
+            self.assertIn("Max retries exceeded.", attempts[0]["stderr_tail"])
+            second = Path(td) / "attempt-2"
+            second.mkdir()
+            (second / "result.json").write_text(json.dumps({
+                **record, "previous_attempts": attempts, "resumed": True,
+                "download": {"exit_code": 1, "elapsed_seconds": 90.0}}))
+            _, chain = mod.load_previous_attempts(second)
+            self.assertEqual([a["exit_code"] for a in chain], [1, 1])
+            # A cache that already holds data was not fresh to begin with.
+            (first / "result.json").write_text(json.dumps({**record, "fresh_cache": False}))
+            self.assertFalse(mod.load_previous_attempts(first)[0])
+            # Successful or foreign records cannot be resumed.
+            (first / "result.json").write_text(json.dumps({**record, "completed": True}))
+            with self.assertRaisesRegex(ValueError, "did not fail"):
+                mod.load_previous_attempts(first)
+            (first / "result.json").write_text(json.dumps({**record, "schema": "other"}))
+            with self.assertRaisesRegex(ValueError, "v2 delivery record"):
+                mod.load_previous_attempts(first)
+
     def test_snapshot_dir_requires_exactly_the_pinned_revision(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

@@ -166,9 +166,43 @@ class QualifyFlashNextTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "unsupported sidecar tensor"):
                 mod._mtp_metadata(root)
 
+    def test_release_flags_are_derived_from_the_committed_verdict_only(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "release-verdict.json"
+            self.assertEqual(mod.release_record(path), {"release_ready": False, "verdict": None})
+            good = {"release_ready": True, "pack_revision": mod.PACK_REVISION,
+                    "gates": [{"gate": "delivery", "passed": True}],
+                    "mtp_certification": {"MTP-S": "not_assessed", "MTP-P": "not_assessed",
+                                          "MTP-D": "not_assessed"}}
+            cases = {
+                "passing": (good, True),
+                "wrong revision": ({**good, "pack_revision": "other"}, False),
+                "failing gate": ({**good, "gates": [{"gate": "memory", "passed": False}]}, False),
+                "no gates": ({**good, "gates": []}, False),
+                "mtp promoted": ({**good, "mtp_certification": {"MTP-S": "passed",
+                                  "MTP-P": "not_assessed", "MTP-D": "not_assessed"}}, False),
+                "not marked ready": ({**good, "release_ready": False}, False),
+            }
+            for name, (verdict, expected) in cases.items():
+                path.write_text(json.dumps(verdict), encoding="utf-8")
+                self.assertEqual(mod.release_record(path)["release_ready"], expected, name)
+            path.write_text("not json", encoding="utf-8")
+            self.assertFalse(mod.release_record(path)["release_ready"])
+
+    def test_the_contract_reports_the_state_of_the_committed_verdict(self) -> None:
+        contract = mod.contract()
+        record = mod.release_record()
+        self.assertEqual(contract["release_ready"], record["release_ready"])
+        self.assertEqual(contract["qualification"], record["release_ready"])
+        self.assertEqual(contract["status"],
+                         mod.STATUS_RELEASED if record["release_ready"] else mod.STATUS_OPEN)
+        self.assertEqual(contract["mtp_certification"],
+                         {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")})
+        self.assertIn("explicit", contract["release_scope"])
+
     def test_metadata_preflight_never_establishes_qualification(self) -> None:
-        self.assertFalse(mod.contract()["release_ready"])
-        self.assertFalse(mod.contract()["qualification"])
+        # The weight-free preflight reads no verdict and sets no flag by itself.
+        self.assertIn("metadata", mod.contract()["validation_scope"])
         self.assertIn("metadata only", mod.contract()["validation_scope"])
 
     def test_mtp_gates_remain_unassessed_after_ready_metadata_preflight(self) -> None:
@@ -182,8 +216,8 @@ class QualifyFlashNextTest(unittest.TestCase):
         payload = mod.contract()
         self.assertEqual(payload["mtp_certification"], expected)
         self.assertEqual(set(payload["mtp_gates"]), set(expected))
-        self.assertFalse(payload["qualification"])
-        self.assertFalse(payload["release_ready"])
+        self.assertEqual(payload["qualification"], mod.release_record()["release_ready"])
+        self.assertEqual(payload["release_ready"], mod.release_record()["release_ready"])
         self.assertIn("same-state verifier", payload["mtp_gates"]["MTP-S"])
         self.assertIn("does not change defaults", payload["mtp_gates"]["MTP-P"])
         self.assertIn("release tag", payload["mtp_gates"]["MTP-D"])

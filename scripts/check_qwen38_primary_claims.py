@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -25,10 +26,37 @@ STATUS_FILES = (
     "docs/TESTING.md",
 )
 FLASH_NEXT_ALIAS = "qwen3.8-flash-next:axq"
-FLASH_NEXT_STATUS_SENTENCE = (
+FLASH_NEXT_STATUS_OPEN = (
     "Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. "
     "AX certification record: Candidate (gates open)."
 )
+FLASH_NEXT_STATUS_RELEASED = (
+    "Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; "
+    "model MTP is an explicit experimental opt-in. MTP Tier 2 pending. "
+    "AX certification record: Candidate (direct-default release gates passed; MTP gates open)."
+)
+FLASH_NEXT_RELEASE_VERDICT = (
+    "benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-release-gates/release-verdict.json"
+)
+FLASH_NEXT_PACK_REVISION = "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
+
+
+def flash_next_status_sentence(root: Path) -> str:
+    """The Flash Next status sentence docs must carry: released only when the committed verdict passes."""
+    try:
+        verdict = json.loads((root / FLASH_NEXT_RELEASE_VERDICT).read_text(encoding="utf-8"))
+        passed = (
+            verdict.get("release_ready") is True
+            and verdict.get("pack_revision") == FLASH_NEXT_PACK_REVISION
+            and bool(verdict["gates"])
+            and all(gate.get("passed") is True for gate in verdict["gates"])
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        passed = False
+    return FLASH_NEXT_STATUS_RELEASED if passed else FLASH_NEXT_STATUS_OPEN
+
+
+FLASH_NEXT_STATUS_SENTENCE = FLASH_NEXT_STATUS_OPEN
 FLASH_NEXT_STATUS_FILES = (
     "README.md",
     "docs/SUPPORTED-MODELS.md",
@@ -194,13 +222,14 @@ def find_primary_claim_issues(root: Path) -> list[Hit]:
 
 def find_flash_next_claim_issues(root: Path) -> list[Hit]:
     hits: list[Hit] = []
+    required_sentence = flash_next_status_sentence(root)
     for relative in FLASH_NEXT_STATUS_FILES:
         path = root / relative
         if not path.is_file():
             hits.append(Hit(path=relative, line_number=1, message="missing required file"))
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
-        if FLASH_NEXT_STATUS_SENTENCE not in text:
+        if required_sentence not in text:
             hits.append(
                 Hit(
                     path=relative,
