@@ -66,7 +66,7 @@ def good():
                  "qa": {"rows": [0] * 105, "failures": list(FAILURES)},
                  "matrix": {"cells": ref_cells(), "prompt_id_hashes": dict(CELL_HASHES)}}
     delivery = {**COMMON, "completed": True, "fresh_cache": True, "revision": TH["target"]["pack_revision"],
-                "download": {"exit_code": 0, "elapsed_seconds": 900.0},
+                "download": {"exit_code": 0, "elapsed_seconds": 900.0}, "previous_attempts": [],
                 "verification": {"members_verified": 49, "bytes_verified": 132261877478,
                                  "all_sizes_and_sha256_match": True, "native_manifest_runtime_ready": True},
                 "native_support": {"passed": True, "modes": ["disabled", "required", "default"],
@@ -187,6 +187,15 @@ class ReleaseGateTests(unittest.TestCase):
             mutate(r["delivery"])
             self.assertEqual(failed(r), {"delivery", "mtp_policy"} if
                              "default" not in r["delivery"]["native_support"]["modes"] else {"delivery"})
+
+    def test_a_resumed_delivery_passes_but_reports_its_failed_attempts(self):
+        r = good()
+        r["delivery"]["previous_attempts"] = [{"exit_code": 1, "elapsed_seconds": 450.0}]
+        result = verdict(r)
+        gate = next(g for g in result["gates"] if g["gate"] == "delivery")
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["failed_attempts"], 1)
+        self.assertIn("1 failed attempt", gate["detail"])
 
     def test_integrity_requires_one_binary_one_inventory_and_the_target_sku(self):
         r = good()

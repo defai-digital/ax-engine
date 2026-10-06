@@ -49,6 +49,37 @@ class CheckQwen38PrimaryClaimsTest(unittest.TestCase):
         self.seed_required()
         checker.check_qwen38_primary_claims(self.root)
 
+    def test_flash_next_status_follows_the_committed_release_verdict(self) -> None:
+        self.seed_required()
+        verdict_path = self.root / checker.FLASH_NEXT_RELEASE_VERDICT
+        gate = {"gate": "delivery", "passed": True}
+        for verdict, expected in (
+            (None, checker.FLASH_NEXT_STATUS_OPEN),
+            ({"release_ready": True, "pack_revision": checker.FLASH_NEXT_PACK_REVISION,
+              "gates": [gate]}, checker.FLASH_NEXT_STATUS_RELEASED),
+            ({"release_ready": True, "pack_revision": "other", "gates": [gate]},
+             checker.FLASH_NEXT_STATUS_OPEN),
+            ({"release_ready": True, "pack_revision": checker.FLASH_NEXT_PACK_REVISION,
+              "gates": [gate, {"gate": "memory", "passed": False}]}, checker.FLASH_NEXT_STATUS_OPEN),
+            ({"release_ready": False, "pack_revision": checker.FLASH_NEXT_PACK_REVISION,
+              "gates": [gate]}, checker.FLASH_NEXT_STATUS_OPEN),
+        ):
+            if verdict is None:
+                verdict_path.unlink(missing_ok=True)
+            else:
+                import json
+
+                self.write(checker.FLASH_NEXT_RELEASE_VERDICT, json.dumps(verdict))
+            self.assertEqual(checker.flash_next_status_sentence(self.root), expected)
+        # Docs still carrying the open sentence fail once the verdict passes.
+        import json
+
+        self.write(checker.FLASH_NEXT_RELEASE_VERDICT, json.dumps(
+            {"release_ready": True, "pack_revision": checker.FLASH_NEXT_PACK_REVISION,
+             "gates": [gate]}))
+        with self.assertRaisesRegex(checker.PrimaryClaimError, "Flash Next status sentence"):
+            checker.check_qwen38_primary_claims(self.root)
+
     def test_missing_status_sentence_fails(self) -> None:
         self.seed_required()
         self.write("README.md", "ax-engine serve qwen3.8-27b:axq\n")
