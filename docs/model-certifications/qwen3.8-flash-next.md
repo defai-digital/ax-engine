@@ -8,9 +8,9 @@ retired; MXFP8 pack audit and native admission are pending. Older affine
 receipts below are historical and do not qualify MX packs.
 See [format policy](../QWEN38-FORMAT-POLICY.md).
 
-Status: **Candidate; release qualification open**
+Status: **Candidate; direct-default release gates passed (one host); MTP gates open**
 
-Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open).
+Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed; MTP gates open).
 
 Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+**
 (corrected from the original MacBook Pro M5 Max 128 GB target by
@@ -54,6 +54,49 @@ promotion) are evidenced separately. For this SKU all three are open. Default
 admission remains fail-closed; the opt-in experimental evidence below does not
 by itself close any gate.
 
+## Direct-default release gates (2026-10-05)
+
+Release scope: direct decoding is the default product path; model MTP stays an
+explicit, experimental opt-in (`--mlx-mtp-policy required`). MTP-S, MTP-P and MTP-D
+are **not** promoted and no MTP speedup is claimed. For that scope, on one Mac Studio
+M2 Ultra, 192 GiB, internal SSD, the pinned pack passes every gate in the
+[release-gate evidence](../../benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-release-gates/README.md)
+(verdict: `release_ready = true`, produced by `scripts/check_flash_next_release_gates.py`
+from the frozen bounds in `scripts/flash_next_release_thresholds.json`). The release
+flags of `scripts/qualify_qwen38_flash_next.py` and the status sentence checked by
+`scripts/check_qwen38_primary_claims.py` are derived from that committed verdict and
+cannot be set by hand.
+
+| Gate | Frozen bound | Result |
+| --- | --- | --- |
+| Fresh delivery | empty cache, product downloader, pinned revision; all 49 members by size and SHA-256; runtime-ready manifest; disabled, required and product-default controls on the delivered copy | pass after 4 failed, resumed attempts (see below); first server start 44 s |
+| Quality | 105/105 complete; product-default text equals direct text; every item AX fails the reference also fails | 101/105 in every mode, text identical, four retained failures all also fail on the reference |
+| Lifecycle | 7 actions per mode with drained counters | pass in disabled, default and required modes |
+| Memory | peak server RSS at most 96 GiB | 76.3 GiB |
+| Readiness | at most 120 s warm, 300 s first load after delivery | worst staged-pack start 75.5 s; first load after delivery 44 s |
+| Long lookup | 29,774-token lookup at most 400 s | 104 s (268-272 s before the prefill changes) |
+| Reference-relative | decode at least 0.9x and TTFT at most 1.15x of the pinned MLX-VLM reference in every cell | product default, TTFT / decode ratio: 512 tokens 1.08 / 1.04; 2,048 tokens 0.66 / 1.30; 8,192 tokens 0.97 / 1.07 |
+| MTP policy | product default never verifies an MTP step; MTP-S/P/D stay `not_assessed` | 0 verified steps in every harness; required MTP decodes at 0.93, 0.92 and 0.91 of direct speed with identical tokens, so it stays opt-in |
+
+The comparison runtime is labelled non-primary because the reviewed `mlx_lm` cannot
+load `qwen4_exp`. AX is timed over the HTTP event stream and the reference in process,
+so the ratios are a release guard rail, not a speedup claim. Reaching them took six
+engine changes on the prefill and decode paths, recorded with their kill switches and
+numerics disclosure in
+[Flash Next prefill and decode, 2026-10-05](../performance/flash-next-prefill-decode-2026-10-05.md).
+
+Disclosures: the memory, readiness and long-lookup bounds were set after observing
+single measurements; the delivery took 5 attempts (Hub read timeouts, and a
+downloader defect that mistook a partial snapshot for a finished one, fixed in
+`cf48c216`) and its final attempt used the documented transport knobs, so it is not a
+default-transport reliability rate; each AX arm is the lower-latency of two server
+processes because the host showed time-varying interference; prefill arithmetic for
+long prompts changed and there is no teacher-forced comparison against the official
+graphs on this pack revision. Not covered: model MTP (MTP-S/P/D), MXFP8, NAS or
+other storage, other hosts, endurance, multi-model residency and multimodal use. The
+16,384-token default KV pool is unchanged; use `--total-blocks 4096` for contexts up
+to 65,536 tokens.
+
 ## Current target and open gates
 
 The target is
@@ -64,7 +107,7 @@ per-tensor affine8/group32 overrides and an affine8/group64 output head;
 the protected MTP sidecar is BF16.
 Storage medium and connection must be recorded for each campaign; older
 NAS/SMB receipts do not qualify external USB or internal NVMe runs.
-MXFP4/group32 loads without an environment opt-in — the certification record (Candidate, gates open) tracks
+MXFP4/group32 loads without an environment opt-in — the certification record (Candidate; direct-default release gates passed, MTP gates open) tracks
 its experimental status. Standalone affine formats, including 2/6-bit,
 are retired regardless of experimental flags. Small generated-tensor controls
 cover bounded U8 scale reads, full-layer/selected-row equivalence, malformed
@@ -99,7 +142,9 @@ four-prompt numerical diagnostic reports no token or state difference. In the
 same run required MTP decodes at 0.90-0.93 of direct speed despite 75-93%
 draft acceptance (client-side timings, single host, no reference baseline), so
 MTP is not accelerating this pack and no speedup is claimed. These controls do
-not qualify model quality, performance, memory or MTP-S/P/D.
+not qualify model quality, performance, memory or MTP-S/P/D. Their performance
+figures (prefill and decode) predate the prefill and decode changes; the
+[release gates](#direct-default-release-gates-2026-10-05) supersede them.
 
 To run the explicit experimental route after downloading the pinned pack:
 
@@ -396,7 +441,7 @@ return migration errors.
 | Numerical and MTP | Canonical source `bf06cbb2` passes the original two-prompt M5 diagnostic (90/133 positions to EOS) and four-prompt holdout (64 outputs each), including compared state/hidden/logits and complete integrity checks. Broader checkpoint/default/MTP qualification remains open. All `cd207324` failures and incomplete M2 SIGBUS remain retained |
 | Installed QA and lifecycle | Source `5d028881` passes installation and all 14 lifecycle actions with original pre/post integrity checks. New 105-input-per-mode QA is launched, without a result yet. Historical installed85 QA failures and both bf06 lifecycle failures remain retained |
 | Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
-| Release | Candidate; no release-ready or default-MTP promotion |
+| Release | Direct-default release gates passed on one host (see above); no default-MTP promotion, MTP-S/P/D not assessed |
 
 ## Existing affine implementation and historical evidence
 
