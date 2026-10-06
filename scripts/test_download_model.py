@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -210,7 +211,99 @@ def write_gemma_unified_fixture(model_dir: Path, media_file: str) -> None:
     (model_dir / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
 
 
+HUB_LISTING_CHECK = download_model._snapshot_matches_hub_listing
+
+
 class DownloadModelScriptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Existing flows must never reach the Hub for the completeness check.
+        patcher = patch.object(download_model, "_snapshot_matches_hub_listing", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _fake_hub(listing: list[tuple[str, int | None]] | Exception) -> types.ModuleType:
+        module = types.ModuleType("huggingface_hub")
+
+        class Sibling:
+            def __init__(self, rfilename: str, size: int | None) -> None:
+                self.rfilename, self.size = rfilename, size
+
+        class Info:
+            siblings = [] if isinstance(listing, Exception) else [Sibling(n, s) for n, s in listing]
+
+        class HfApi:
+            def repo_info(self, **_kwargs: object) -> Info:
+                if isinstance(listing, Exception):
+                    raise listing
+                return Info()
+
+        module.HfApi = HfApi  # type: ignore[attr-defined]
+        return module
+
+    def test_hub_listing_check_detects_a_partial_pinned_snapshot(self) -> None:
+        revision = "c" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp)
+            (snapshot / "config.json").write_text("{}")
+            (snapshot / "model-00001.safetensors").write_bytes(b"abcd")
+            listing = [("config.json", 2), ("model-00001.safetensors", 4),
+                       ("model-00002.safetensors", 8)]
+            with patch.dict(sys.modules, {"huggingface_hub": self._fake_hub(listing)}):
+                self.assertIs(HUB_LISTING_CHECK(snapshot, "o/r", revision), False)
+                (snapshot / "model-00002.safetensors").write_bytes(b"12345678")
+                self.assertIs(HUB_LISTING_CHECK(snapshot, "o/r", revision), True)
+                (snapshot / "model-00002.safetensors").write_bytes(b"123")
+                self.assertIs(HUB_LISTING_CHECK(snapshot, "o/r", revision), False)
+
+    def test_hub_listing_check_makes_no_claim_when_it_cannot_compare(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp)
+            listing = [("config.json", 2)]
+            with patch.dict(sys.modules, {"huggingface_hub": self._fake_hub(listing)}):
+                # A mutable ref is never compared.
+                self.assertIsNone(HUB_LISTING_CHECK(snapshot, "o/r", None))
+                self.assertIsNone(HUB_LISTING_CHECK(snapshot, "o/r", "main"))
+                with patch.dict(os.environ, {"HF_HUB_OFFLINE": "1"}):
+                    self.assertIsNone(HUB_LISTING_CHECK(snapshot, "o/r", "d" * 40))
+            with patch.dict(sys.modules, {"huggingface_hub": self._fake_hub(OSError("offline"))}):
+                self.assertIsNone(HUB_LISTING_CHECK(snapshot, "o/r", "d" * 40))
+            with patch.dict(sys.modules, {"huggingface_hub": self._fake_hub([])}):
+                self.assertIsNone(HUB_LISTING_CHECK(snapshot, "o/r", "d" * 40))
+            unsafe = [("../escape", 1), ("/abs", 1)]
+            with patch.dict(sys.modules, {"huggingface_hub": self._fake_hub(unsafe)}):
+                self.assertIsNone(HUB_LISTING_CHECK(snapshot, "o/r", "d" * 40))
+
+    def test_an_incomplete_pinned_snapshot_is_resumed_instead_of_trusted(self) -> None:
+        repo_id, revision = "owner/repo", "e" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = root / "hub" / "models--owner--repo" / "snapshots" / revision
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").write_text("{}")
+            write_safetensors(snapshot / "model.safetensors")
+            calls: list[str] = []
+
+            def fake_hf_download(model: str, **_kwargs: object) -> Path:
+                calls.append(model)
+                return snapshot
+
+            with (
+                patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True),
+                patch.object(download_model, "_snapshot_matches_hub_listing", return_value=False),
+                patch.object(download_model, "_run_hf_snapshot_download", fake_hf_download),
+                patch.object(download_model, "_total_repo_bytes", lambda _repo, _revision=None: None),
+            ):
+                download_model.download(repo_id, None, revision=revision, quiet=True)
+            self.assertEqual(calls, [repo_id], "an incomplete snapshot must be resumed")
+            calls.clear()
+            with (
+                patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True),
+                patch.object(download_model, "_snapshot_matches_hub_listing", return_value=True),
+                patch.object(download_model, "_run_hf_snapshot_download", fake_hf_download),
+            ):
+                download_model.download(repo_id, None, revision=revision, quiet=True)
+            self.assertEqual(calls, [], "a complete snapshot is reused without a download")
     def test_gemma_unified_native_manifest_is_ready_without_regeneration(self) -> None:
         for media_file in ("model-00003-of-00003.safetensors", "optiq/optiq_vision.safetensors"):
             with self.subTest(media_file=media_file), tempfile.TemporaryDirectory() as tmp:
