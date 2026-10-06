@@ -1,0 +1,86 @@
+{
+  "schema": "ax-engine.flash-next.fresh-delivery.v2",
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "alias": "qwen3.8-flash-next:mxfp4",
+  "published_members": 49,
+  "published_bytes": 132261877478,
+  "control_modes": [
+    "disabled",
+    "required",
+    "default"
+  ],
+  "downloader": "ax-engine download <alias> --progress-json (product CLI and helper)",
+  "page_cache": "not controlled",
+  "qualification": false,
+  "release_ready": false,
+  "scope": "delivery integrity and functional controls on the delivered copy; quality, performance and MTP-S/P/D not assessed",
+  "completed": false,
+  "fresh_cache": true,
+  "previous_attempts": [
+    {
+      "exit_code": 1,
+      "elapsed_seconds": 446.428,
+      "stderr_tail": [
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00014-of-00025.safetensors: The read operation timed out",
+        "Max retries exceeded.",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Trying to resume download...",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Trying to resume download...",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Trying to resume download...",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Trying to resume download...",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Max retries exceeded."
+      ]
+    },
+    {
+      "exit_code": 1,
+      "elapsed_seconds": 0.981,
+      "stderr_tail": []
+    },
+    {
+      "exit_code": 1,
+      "elapsed_seconds": 248.559,
+      "stderr_tail": [
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Trying to resume download...",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Trying to resume download...",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Trying to resume download...",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Trying to resume download...",
+        "Error while downloading from https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/resolve/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-00015-of-00025.safetensors: The read operation timed out",
+        "Max retries exceeded.",
+        "",
+        "Fetching 49 files:  43%|\u2588\u2588\u2588\u2588\u258e     | 21/49 [04:08<05:30, 11.81s/it]"
+      ]
+    }
+  ],
+  "resumed": true,
+  "download": {
+    "exit_code": 1,
+    "elapsed_seconds": 270.781,
+    "hub_client_version": "2.1.1",
+    "ax_engine_sha256": "74fa8c62229395de04b1ff5856081e81ca9fbd0aeacafbb25de2528ca1ff26a3",
+    "helper_sha256": "08d2c3ada198787f9d9f773193839beefc4bb4d95b55d4221b8ffe9959a4061f",
+    "bench_sha256": "27644c3732327165b9f2fb468a50528f1f52fb9c245a47484987f516cb76ef31"
+  },
+  "hardware": {
+    "form_factor": "Mac Studio",
+    "soc": "Apple M2 Ultra",
+    "memory_bytes": 206158430208,
+    "storage": {
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true,
+      "bus_protocol": "Apple Fabric"
+    },
+    "os": "27.0.1"
+  },
+  "server_sha256": "d5254f62adbfa476ce01fd17c7049ffb0112295372c80a294e95d7ccdfff68ed",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6"
+}

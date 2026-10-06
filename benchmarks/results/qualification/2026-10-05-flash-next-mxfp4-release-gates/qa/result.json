@@ -1,0 +1,1377 @@
+{
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "items": 105,
+  "items_sha256": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
+  "modes": [
+    "disabled",
+    "default",
+    "required"
+  ],
+  "short_budget": 256,
+  "long_budget": 64,
+  "temperature": 0,
+  "thinking": "disabled",
+  "expert_stream": "auto",
+  "total_blocks": 4096,
+  "block_size_tokens": 16,
+  "request_timeout_seconds": 1800,
+  "grader": "frozen closed_checks",
+  "qualification": false,
+  "release_ready": false,
+  "scope": "functional and closed-answer QA; MTP-S/P/D and performance not assessed",
+  "server_sha256": "d5254f62adbfa476ce01fd17c7049ffb0112295372c80a294e95d7ccdfff68ed",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "hardware": {
+    "form_factor": "Mac Studio",
+    "soc": "Apple M2 Ultra",
+    "memory_bytes": 206158430208,
+    "storage": {
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true,
+      "bus_protocol": "Apple Fabric"
+    },
+    "os": "27.0.1"
+  },
+  "host_quiet": {
+    "cpu_idle_percent": 93.1,
+    "min_idle_percent": 90.0,
+    "waited_seconds": 3.4
+  },
+  "host_idle_after": 93.18,
+  "summary": {
+    "requests": 315,
+    "modes": {
+      "disabled": {
+        "completed": 105,
+        "passed": 101,
+        "quality_failures": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ],
+        "normal_stops": true,
+        "verified_steps": 0.0,
+        "route_errors": 0.0,
+        "ready_seconds": 27.238,
+        "peak_rss_kib": 79970368,
+        "total_elapsed_seconds": 211.665,
+        "long_context_elapsed_seconds": 103.637
+      },
+      "default": {
+        "completed": 105,
+        "passed": 101,
+        "quality_failures": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ],
+        "normal_stops": true,
+        "verified_steps": 0.0,
+        "route_errors": 0.0,
+        "ready_seconds": 64.278,
+        "peak_rss_kib": 79904096,
+        "total_elapsed_seconds": 207.798,
+        "long_context_elapsed_seconds": 103.65
+      },
+      "required": {
+        "completed": 105,
+        "passed": 101,
+        "quality_failures": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ],
+        "normal_stops": true,
+        "verified_steps": 490.0,
+        "route_errors": 0.0,
+        "ready_seconds": 66.515,
+        "peak_rss_kib": 76669968,
+        "total_elapsed_seconds": 216.219,
+        "long_context_elapsed_seconds": 112.334
+      }
+    },
+    "text_identity_vs_disabled": {
+      "default": {
+        "matching_text_pairs": 105,
+        "differing_text_ids": []
+      },
+      "required": {
+        "matching_text_pairs": 105,
+        "differing_text_ids": []
+      }
+    }
+  },
+  "grades": {
+    "disabled": {
+      "instruction_sort_numbers": {
+        "passed": true,
+        "detail": "found '2, 2, 7, 9' (mode=auto)"
+      },
+      "math_average_scores": {
+        "passed": true,
+        "detail": "found '80' (mode=auto)"
+      },
+      "instruction_repeat_token": {
+        "passed": true,
+        "detail": "found 'ping ping ping ping' (mode=auto)"
+      },
+      "reasoning_cause_effect": {
+        "passed": true,
+        "detail": "found 'a' (mode=token)"
+      },
+      "instruction_alphabet_first": {
+        "passed": false,
+        "detail": "missing any of ['a,b,c,d,e'] (mode=auto)"
+      },
+      "reading_count_cats": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "format_xml_tag": {
+        "passed": true,
+        "detail": "found '<ok status=\"1\"/>' (mode=auto)"
+      },
+      "reasoning_syllogism_roses": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "knowledge_planet_count": {
+        "passed": true,
+        "detail": "found '8' (mode=auto)"
+      },
+      "common_sense_refrigerator": {
+        "passed": true,
+        "detail": "found 'cooler' (mode=auto)"
+      },
+      "reasoning_multi_step_ages": {
+        "passed": true,
+        "detail": "found '13' (mode=auto)"
+      },
+      "reading_comprehension_short": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "math_train_speed": {
+        "passed": true,
+        "detail": "found '300' (mode=auto)"
+      },
+      "math_lcm_small": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "science_boiling_celsius": {
+        "passed": true,
+        "detail": "found '100' (mode=auto)"
+      },
+      "instruction_uppercase_yes": {
+        "passed": true,
+        "detail": "found 'YES' (mode=case)"
+      },
+      "knowledge_html_anchor": {
+        "passed": true,
+        "detail": "found 'a' (mode=full)"
+      },
+      "math_negative_sum": {
+        "passed": true,
+        "detail": "found '8' (mode=auto)"
+      },
+      "science_gravity_earth": {
+        "passed": false,
+        "detail": "missing any of ['10', '9.8', '9.81', '10'] (mode=auto)"
+      },
+      "reasoning_transitivity": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "math_apples_store": {
+        "passed": true,
+        "detail": "found '47' (mode=auto)"
+      },
+      "reasoning_syllogism_cats": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "common_sense_sleep": {
+        "passed": true,
+        "detail": "found 'tired' (mode=auto)"
+      },
+      "reading_who_arrived": {
+        "passed": true,
+        "detail": "found 'Sam' (mode=auto)"
+      },
+      "math_work_rate_widgets": {
+        "passed": true,
+        "detail": "found '42' (mode=auto)"
+      },
+      "math_percent_of_eighty": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "math_km_to_meters": {
+        "passed": true,
+        "detail": "found '4000' (mode=auto)"
+      },
+      "math_gcd_18_24": {
+        "passed": true,
+        "detail": "found '6' (mode=auto)"
+      },
+      "math_mod_17_5": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "math_area_7_by_9": {
+        "passed": true,
+        "detail": "found '63' (mode=auto)"
+      },
+      "math_hours_in_three_days": {
+        "passed": true,
+        "detail": "found '72' (mode=auto)"
+      },
+      "math_half_of_ninety_six": {
+        "passed": true,
+        "detail": "found '48' (mode=auto)"
+      },
+      "reasoning_set_intersect_small": {
+        "passed": true,
+        "detail": "parsed=['2', '3'] expected=['2', '3']"
+      },
+      "reasoning_modus_ponens_rain": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "reasoning_odd_one_vehicle": {
+        "passed": true,
+        "detail": "found 'car' (mode=auto)"
+      },
+      "reasoning_larger_19_21": {
+        "passed": true,
+        "detail": "found '21' (mode=auto)"
+      },
+      "reasoning_dogs_are_animals": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "reasoning_false_sum": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "reasoning_min_of_three": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "reasoning_fourteen_even": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "instruction_reverse_stop": {
+        "passed": true,
+        "detail": "found 'pots' (mode=auto)"
+      },
+      "instruction_upper_ok": {
+        "passed": true,
+        "detail": "found 'OK' (mode=case)"
+      },
+      "instruction_count_alpha": {
+        "passed": true,
+        "detail": "found '5' (mode=auto)"
+      },
+      "instruction_last_word_fox": {
+        "passed": true,
+        "detail": "found 'fox' (mode=auto)"
+      },
+      "instruction_hyphen_abc": {
+        "passed": true,
+        "detail": "list=['a', 'b', 'c']"
+      },
+      "instruction_lower_mixed": {
+        "passed": true,
+        "detail": "found 'mixed' (mode=case)"
+      },
+      "instruction_first_three_engine": {
+        "passed": true,
+        "detail": "found 'eng' (mode=auto)"
+      },
+      "instruction_repeat_go_two": {
+        "passed": true,
+        "detail": "found 'go go' (mode=auto)"
+      },
+      "instruction_sort_ant_cat": {
+        "passed": true,
+        "detail": "list=['ant', 'cat']"
+      },
+      "reading_blue_cups": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "reading_who_left": {
+        "passed": true,
+        "detail": "found 'Rina' (mode=auto)"
+      },
+      "reading_train_hour": {
+        "passed": true,
+        "detail": "found '9' (mode=auto)"
+      },
+      "reading_apples_basket": {
+        "passed": true,
+        "detail": "found '5' (mode=auto)"
+      },
+      "reading_color_door": {
+        "passed": true,
+        "detail": "found 'green' (mode=auto)"
+      },
+      "reading_oldest_sibling": {
+        "passed": true,
+        "detail": "found 'Ken' (mode=auto)"
+      },
+      "reading_coins_sum": {
+        "passed": true,
+        "detail": "found '7' (mode=auto)"
+      },
+      "reading_destination_oslo": {
+        "passed": true,
+        "detail": "found 'Oslo' (mode=auto)"
+      },
+      "reading_closed_tuesday": {
+        "passed": true,
+        "detail": "found 'Tuesday' (mode=auto)"
+      },
+      "reading_box_weight": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "knowledge_water_formula": {
+        "passed": false,
+        "detail": "missing any of ['H2O'] (mode=auto)"
+      },
+      "knowledge_capital_france": {
+        "passed": true,
+        "detail": "found 'Paris' (mode=auto)"
+      },
+      "knowledge_http_get": {
+        "passed": true,
+        "detail": "found 'GET' (mode=case)"
+      },
+      "knowledge_days_week": {
+        "passed": true,
+        "detail": "found '7' (mode=auto)"
+      },
+      "knowledge_hours_day": {
+        "passed": true,
+        "detail": "found '24' (mode=auto)"
+      },
+      "knowledge_seconds_minute": {
+        "passed": true,
+        "detail": "found '60' (mode=auto)"
+      },
+      "knowledge_months_year": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "knowledge_si_time": {
+        "passed": true,
+        "detail": "found 'second' (mode=auto)"
+      },
+      "knowledge_earth_moons": {
+        "passed": true,
+        "detail": "found '1' (mode=auto)"
+      },
+      "knowledge_binary_bit_values": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "knowledge_rgb_primaries": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "common_sense_umbrella": {
+        "passed": true,
+        "detail": "found 'umbrella' (mode=auto)"
+      },
+      "common_sense_stove_touch": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "common_sense_night_sky": {
+        "passed": true,
+        "detail": "found 'dark' (mode=auto)"
+      },
+      "common_sense_ice_or_steam": {
+        "passed": true,
+        "detail": "found 'ice' (mode=auto)"
+      },
+      "common_sense_need_sleep": {
+        "passed": true,
+        "detail": "found 'sleep' (mode=auto)"
+      },
+      "common_sense_wet_from_rain": {
+        "passed": true,
+        "detail": "found 'wet' (mode=auto)"
+      },
+      "common_sense_book_use": {
+        "passed": true,
+        "detail": "found 'read' (mode=auto)"
+      },
+      "common_sense_hungry_action": {
+        "passed": true,
+        "detail": "found 'eat' (mode=auto)"
+      },
+      "common_sense_cut_paper": {
+        "passed": true,
+        "detail": "found 'scissors' (mode=auto)"
+      },
+      "common_sense_winter_coat": {
+        "passed": true,
+        "detail": "found 'coat' (mode=auto)"
+      },
+      "common_sense_thirst_drink": {
+        "passed": true,
+        "detail": "found 'water' (mode=auto)"
+      },
+      "science_freeze_celsius": {
+        "passed": true,
+        "detail": "found '0' (mode=auto)"
+      },
+      "science_photosynthesis_gas": {
+        "passed": true,
+        "detail": "found 'oxygen' (mode=auto)"
+      },
+      "science_states_of_matter": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "science_proton_charge": {
+        "passed": true,
+        "detail": "found 'positive' (mode=auto)"
+      },
+      "science_earth_planet_order": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "science_human_lungs": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "science_light_vs_sound": {
+        "passed": true,
+        "detail": "found 'light' (mode=auto)"
+      },
+      "science_salt_formula": {
+        "passed": true,
+        "detail": "found 'NaCl' (mode=auto)"
+      },
+      "science_carbon_dioxide": {
+        "passed": true,
+        "detail": "found 'CO\u2082' (mode=auto)"
+      },
+      "science_methane_hydrogens": {
+        "passed": true,
+        "detail": "found '4' (mode=auto)"
+      },
+      "science_sun_object": {
+        "passed": true,
+        "detail": "found 'star' (mode=auto)"
+      },
+      "format_csv_pair": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_json_ok_true": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_kv_equals": {
+        "passed": true,
+        "detail": "found 'key=value' (mode=full)"
+      },
+      "format_quoted_done": {
+        "passed": true,
+        "detail": "found '\"done\"' (mode=full)"
+      },
+      "format_pipe_colors": {
+        "passed": true,
+        "detail": "list=['red', 'green', 'blue']"
+      },
+      "format_digits_12345": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_bracket_list": {
+        "passed": true,
+        "detail": "found '[1,2,3]' (mode=full)"
+      },
+      "format_status_colon": {
+        "passed": false,
+        "detail": "missing any of ['status: ready'] (mode=full)"
+      },
+      "format_json_true_token": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_tsv_ab": {
+        "passed": true,
+        "detail": "list=['A', 'B']"
+      },
+      "format_xml_empty_n": {
+        "passed": true,
+        "detail": "found '<n/>' (mode=full)"
+      },
+      "format_csv_header": {
+        "passed": true,
+        "detail": "list=['name', 'age']"
+      },
+      "long_context_record_mass": {
+        "passed": true,
+        "detail": "found '1734' (mode=auto)"
+      }
+    },
+    "default": {
+      "instruction_sort_numbers": {
+        "passed": true,
+        "detail": "found '2, 2, 7, 9' (mode=auto)"
+      },
+      "math_average_scores": {
+        "passed": true,
+        "detail": "found '80' (mode=auto)"
+      },
+      "instruction_repeat_token": {
+        "passed": true,
+        "detail": "found 'ping ping ping ping' (mode=auto)"
+      },
+      "reasoning_cause_effect": {
+        "passed": true,
+        "detail": "found 'a' (mode=token)"
+      },
+      "instruction_alphabet_first": {
+        "passed": false,
+        "detail": "missing any of ['a,b,c,d,e'] (mode=auto)"
+      },
+      "reading_count_cats": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "format_xml_tag": {
+        "passed": true,
+        "detail": "found '<ok status=\"1\"/>' (mode=auto)"
+      },
+      "reasoning_syllogism_roses": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "knowledge_planet_count": {
+        "passed": true,
+        "detail": "found '8' (mode=auto)"
+      },
+      "common_sense_refrigerator": {
+        "passed": true,
+        "detail": "found 'cooler' (mode=auto)"
+      },
+      "reasoning_multi_step_ages": {
+        "passed": true,
+        "detail": "found '13' (mode=auto)"
+      },
+      "reading_comprehension_short": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "math_train_speed": {
+        "passed": true,
+        "detail": "found '300' (mode=auto)"
+      },
+      "math_lcm_small": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "science_boiling_celsius": {
+        "passed": true,
+        "detail": "found '100' (mode=auto)"
+      },
+      "instruction_uppercase_yes": {
+        "passed": true,
+        "detail": "found 'YES' (mode=case)"
+      },
+      "knowledge_html_anchor": {
+        "passed": true,
+        "detail": "found 'a' (mode=full)"
+      },
+      "math_negative_sum": {
+        "passed": true,
+        "detail": "found '8' (mode=auto)"
+      },
+      "science_gravity_earth": {
+        "passed": false,
+        "detail": "missing any of ['10', '9.8', '9.81', '10'] (mode=auto)"
+      },
+      "reasoning_transitivity": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "math_apples_store": {
+        "passed": true,
+        "detail": "found '47' (mode=auto)"
+      },
+      "reasoning_syllogism_cats": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "common_sense_sleep": {
+        "passed": true,
+        "detail": "found 'tired' (mode=auto)"
+      },
+      "reading_who_arrived": {
+        "passed": true,
+        "detail": "found 'Sam' (mode=auto)"
+      },
+      "math_work_rate_widgets": {
+        "passed": true,
+        "detail": "found '42' (mode=auto)"
+      },
+      "math_percent_of_eighty": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "math_km_to_meters": {
+        "passed": true,
+        "detail": "found '4000' (mode=auto)"
+      },
+      "math_gcd_18_24": {
+        "passed": true,
+        "detail": "found '6' (mode=auto)"
+      },
+      "math_mod_17_5": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "math_area_7_by_9": {
+        "passed": true,
+        "detail": "found '63' (mode=auto)"
+      },
+      "math_hours_in_three_days": {
+        "passed": true,
+        "detail": "found '72' (mode=auto)"
+      },
+      "math_half_of_ninety_six": {
+        "passed": true,
+        "detail": "found '48' (mode=auto)"
+      },
+      "reasoning_set_intersect_small": {
+        "passed": true,
+        "detail": "parsed=['2', '3'] expected=['2', '3']"
+      },
+      "reasoning_modus_ponens_rain": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "reasoning_odd_one_vehicle": {
+        "passed": true,
+        "detail": "found 'car' (mode=auto)"
+      },
+      "reasoning_larger_19_21": {
+        "passed": true,
+        "detail": "found '21' (mode=auto)"
+      },
+      "reasoning_dogs_are_animals": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "reasoning_false_sum": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "reasoning_min_of_three": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "reasoning_fourteen_even": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "instruction_reverse_stop": {
+        "passed": true,
+        "detail": "found 'pots' (mode=auto)"
+      },
+      "instruction_upper_ok": {
+        "passed": true,
+        "detail": "found 'OK' (mode=case)"
+      },
+      "instruction_count_alpha": {
+        "passed": true,
+        "detail": "found '5' (mode=auto)"
+      },
+      "instruction_last_word_fox": {
+        "passed": true,
+        "detail": "found 'fox' (mode=auto)"
+      },
+      "instruction_hyphen_abc": {
+        "passed": true,
+        "detail": "list=['a', 'b', 'c']"
+      },
+      "instruction_lower_mixed": {
+        "passed": true,
+        "detail": "found 'mixed' (mode=case)"
+      },
+      "instruction_first_three_engine": {
+        "passed": true,
+        "detail": "found 'eng' (mode=auto)"
+      },
+      "instruction_repeat_go_two": {
+        "passed": true,
+        "detail": "found 'go go' (mode=auto)"
+      },
+      "instruction_sort_ant_cat": {
+        "passed": true,
+        "detail": "list=['ant', 'cat']"
+      },
+      "reading_blue_cups": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "reading_who_left": {
+        "passed": true,
+        "detail": "found 'Rina' (mode=auto)"
+      },
+      "reading_train_hour": {
+        "passed": true,
+        "detail": "found '9' (mode=auto)"
+      },
+      "reading_apples_basket": {
+        "passed": true,
+        "detail": "found '5' (mode=auto)"
+      },
+      "reading_color_door": {
+        "passed": true,
+        "detail": "found 'green' (mode=auto)"
+      },
+      "reading_oldest_sibling": {
+        "passed": true,
+        "detail": "found 'Ken' (mode=auto)"
+      },
+      "reading_coins_sum": {
+        "passed": true,
+        "detail": "found '7' (mode=auto)"
+      },
+      "reading_destination_oslo": {
+        "passed": true,
+        "detail": "found 'Oslo' (mode=auto)"
+      },
+      "reading_closed_tuesday": {
+        "passed": true,
+        "detail": "found 'Tuesday' (mode=auto)"
+      },
+      "reading_box_weight": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "knowledge_water_formula": {
+        "passed": false,
+        "detail": "missing any of ['H2O'] (mode=auto)"
+      },
+      "knowledge_capital_france": {
+        "passed": true,
+        "detail": "found 'Paris' (mode=auto)"
+      },
+      "knowledge_http_get": {
+        "passed": true,
+        "detail": "found 'GET' (mode=case)"
+      },
+      "knowledge_days_week": {
+        "passed": true,
+        "detail": "found '7' (mode=auto)"
+      },
+      "knowledge_hours_day": {
+        "passed": true,
+        "detail": "found '24' (mode=auto)"
+      },
+      "knowledge_seconds_minute": {
+        "passed": true,
+        "detail": "found '60' (mode=auto)"
+      },
+      "knowledge_months_year": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "knowledge_si_time": {
+        "passed": true,
+        "detail": "found 'second' (mode=auto)"
+      },
+      "knowledge_earth_moons": {
+        "passed": true,
+        "detail": "found '1' (mode=auto)"
+      },
+      "knowledge_binary_bit_values": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "knowledge_rgb_primaries": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "common_sense_umbrella": {
+        "passed": true,
+        "detail": "found 'umbrella' (mode=auto)"
+      },
+      "common_sense_stove_touch": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "common_sense_night_sky": {
+        "passed": true,
+        "detail": "found 'dark' (mode=auto)"
+      },
+      "common_sense_ice_or_steam": {
+        "passed": true,
+        "detail": "found 'ice' (mode=auto)"
+      },
+      "common_sense_need_sleep": {
+        "passed": true,
+        "detail": "found 'sleep' (mode=auto)"
+      },
+      "common_sense_wet_from_rain": {
+        "passed": true,
+        "detail": "found 'wet' (mode=auto)"
+      },
+      "common_sense_book_use": {
+        "passed": true,
+        "detail": "found 'read' (mode=auto)"
+      },
+      "common_sense_hungry_action": {
+        "passed": true,
+        "detail": "found 'eat' (mode=auto)"
+      },
+      "common_sense_cut_paper": {
+        "passed": true,
+        "detail": "found 'scissors' (mode=auto)"
+      },
+      "common_sense_winter_coat": {
+        "passed": true,
+        "detail": "found 'coat' (mode=auto)"
+      },
+      "common_sense_thirst_drink": {
+        "passed": true,
+        "detail": "found 'water' (mode=auto)"
+      },
+      "science_freeze_celsius": {
+        "passed": true,
+        "detail": "found '0' (mode=auto)"
+      },
+      "science_photosynthesis_gas": {
+        "passed": true,
+        "detail": "found 'oxygen' (mode=auto)"
+      },
+      "science_states_of_matter": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "science_proton_charge": {
+        "passed": true,
+        "detail": "found 'positive' (mode=auto)"
+      },
+      "science_earth_planet_order": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "science_human_lungs": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "science_light_vs_sound": {
+        "passed": true,
+        "detail": "found 'light' (mode=auto)"
+      },
+      "science_salt_formula": {
+        "passed": true,
+        "detail": "found 'NaCl' (mode=auto)"
+      },
+      "science_carbon_dioxide": {
+        "passed": true,
+        "detail": "found 'CO\u2082' (mode=auto)"
+      },
+      "science_methane_hydrogens": {
+        "passed": true,
+        "detail": "found '4' (mode=auto)"
+      },
+      "science_sun_object": {
+        "passed": true,
+        "detail": "found 'star' (mode=auto)"
+      },
+      "format_csv_pair": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_json_ok_true": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_kv_equals": {
+        "passed": true,
+        "detail": "found 'key=value' (mode=full)"
+      },
+      "format_quoted_done": {
+        "passed": true,
+        "detail": "found '\"done\"' (mode=full)"
+      },
+      "format_pipe_colors": {
+        "passed": true,
+        "detail": "list=['red', 'green', 'blue']"
+      },
+      "format_digits_12345": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_bracket_list": {
+        "passed": true,
+        "detail": "found '[1,2,3]' (mode=full)"
+      },
+      "format_status_colon": {
+        "passed": false,
+        "detail": "missing any of ['status: ready'] (mode=full)"
+      },
+      "format_json_true_token": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_tsv_ab": {
+        "passed": true,
+        "detail": "list=['A', 'B']"
+      },
+      "format_xml_empty_n": {
+        "passed": true,
+        "detail": "found '<n/>' (mode=full)"
+      },
+      "format_csv_header": {
+        "passed": true,
+        "detail": "list=['name', 'age']"
+      },
+      "long_context_record_mass": {
+        "passed": true,
+        "detail": "found '1734' (mode=auto)"
+      }
+    },
+    "required": {
+      "instruction_sort_numbers": {
+        "passed": true,
+        "detail": "found '2, 2, 7, 9' (mode=auto)"
+      },
+      "math_average_scores": {
+        "passed": true,
+        "detail": "found '80' (mode=auto)"
+      },
+      "instruction_repeat_token": {
+        "passed": true,
+        "detail": "found 'ping ping ping ping' (mode=auto)"
+      },
+      "reasoning_cause_effect": {
+        "passed": true,
+        "detail": "found 'a' (mode=token)"
+      },
+      "instruction_alphabet_first": {
+        "passed": false,
+        "detail": "missing any of ['a,b,c,d,e'] (mode=auto)"
+      },
+      "reading_count_cats": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "format_xml_tag": {
+        "passed": true,
+        "detail": "found '<ok status=\"1\"/>' (mode=auto)"
+      },
+      "reasoning_syllogism_roses": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "knowledge_planet_count": {
+        "passed": true,
+        "detail": "found '8' (mode=auto)"
+      },
+      "common_sense_refrigerator": {
+        "passed": true,
+        "detail": "found 'cooler' (mode=auto)"
+      },
+      "reasoning_multi_step_ages": {
+        "passed": true,
+        "detail": "found '13' (mode=auto)"
+      },
+      "reading_comprehension_short": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "math_train_speed": {
+        "passed": true,
+        "detail": "found '300' (mode=auto)"
+      },
+      "math_lcm_small": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "science_boiling_celsius": {
+        "passed": true,
+        "detail": "found '100' (mode=auto)"
+      },
+      "instruction_uppercase_yes": {
+        "passed": true,
+        "detail": "found 'YES' (mode=case)"
+      },
+      "knowledge_html_anchor": {
+        "passed": true,
+        "detail": "found 'a' (mode=full)"
+      },
+      "math_negative_sum": {
+        "passed": true,
+        "detail": "found '8' (mode=auto)"
+      },
+      "science_gravity_earth": {
+        "passed": false,
+        "detail": "missing any of ['10', '9.8', '9.81', '10'] (mode=auto)"
+      },
+      "reasoning_transitivity": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "math_apples_store": {
+        "passed": true,
+        "detail": "found '47' (mode=auto)"
+      },
+      "reasoning_syllogism_cats": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "common_sense_sleep": {
+        "passed": true,
+        "detail": "found 'tired' (mode=auto)"
+      },
+      "reading_who_arrived": {
+        "passed": true,
+        "detail": "found 'Sam' (mode=auto)"
+      },
+      "math_work_rate_widgets": {
+        "passed": true,
+        "detail": "found '42' (mode=auto)"
+      },
+      "math_percent_of_eighty": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "math_km_to_meters": {
+        "passed": true,
+        "detail": "found '4000' (mode=auto)"
+      },
+      "math_gcd_18_24": {
+        "passed": true,
+        "detail": "found '6' (mode=auto)"
+      },
+      "math_mod_17_5": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "math_area_7_by_9": {
+        "passed": true,
+        "detail": "found '63' (mode=auto)"
+      },
+      "math_hours_in_three_days": {
+        "passed": true,
+        "detail": "found '72' (mode=auto)"
+      },
+      "math_half_of_ninety_six": {
+        "passed": true,
+        "detail": "found '48' (mode=auto)"
+      },
+      "reasoning_set_intersect_small": {
+        "passed": true,
+        "detail": "parsed=['2', '3'] expected=['2', '3']"
+      },
+      "reasoning_modus_ponens_rain": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "reasoning_odd_one_vehicle": {
+        "passed": true,
+        "detail": "found 'car' (mode=auto)"
+      },
+      "reasoning_larger_19_21": {
+        "passed": true,
+        "detail": "found '21' (mode=auto)"
+      },
+      "reasoning_dogs_are_animals": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "reasoning_false_sum": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "reasoning_min_of_three": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "reasoning_fourteen_even": {
+        "passed": true,
+        "detail": "found 'yes' (mode=token)"
+      },
+      "instruction_reverse_stop": {
+        "passed": true,
+        "detail": "found 'pots' (mode=auto)"
+      },
+      "instruction_upper_ok": {
+        "passed": true,
+        "detail": "found 'OK' (mode=case)"
+      },
+      "instruction_count_alpha": {
+        "passed": true,
+        "detail": "found '5' (mode=auto)"
+      },
+      "instruction_last_word_fox": {
+        "passed": true,
+        "detail": "found 'fox' (mode=auto)"
+      },
+      "instruction_hyphen_abc": {
+        "passed": true,
+        "detail": "list=['a', 'b', 'c']"
+      },
+      "instruction_lower_mixed": {
+        "passed": true,
+        "detail": "found 'mixed' (mode=case)"
+      },
+      "instruction_first_three_engine": {
+        "passed": true,
+        "detail": "found 'eng' (mode=auto)"
+      },
+      "instruction_repeat_go_two": {
+        "passed": true,
+        "detail": "found 'go go' (mode=auto)"
+      },
+      "instruction_sort_ant_cat": {
+        "passed": true,
+        "detail": "list=['ant', 'cat']"
+      },
+      "reading_blue_cups": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "reading_who_left": {
+        "passed": true,
+        "detail": "found 'Rina' (mode=auto)"
+      },
+      "reading_train_hour": {
+        "passed": true,
+        "detail": "found '9' (mode=auto)"
+      },
+      "reading_apples_basket": {
+        "passed": true,
+        "detail": "found '5' (mode=auto)"
+      },
+      "reading_color_door": {
+        "passed": true,
+        "detail": "found 'green' (mode=auto)"
+      },
+      "reading_oldest_sibling": {
+        "passed": true,
+        "detail": "found 'Ken' (mode=auto)"
+      },
+      "reading_coins_sum": {
+        "passed": true,
+        "detail": "found '7' (mode=auto)"
+      },
+      "reading_destination_oslo": {
+        "passed": true,
+        "detail": "found 'Oslo' (mode=auto)"
+      },
+      "reading_closed_tuesday": {
+        "passed": true,
+        "detail": "found 'Tuesday' (mode=auto)"
+      },
+      "reading_box_weight": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "knowledge_water_formula": {
+        "passed": false,
+        "detail": "missing any of ['H2O'] (mode=auto)"
+      },
+      "knowledge_capital_france": {
+        "passed": true,
+        "detail": "found 'Paris' (mode=auto)"
+      },
+      "knowledge_http_get": {
+        "passed": true,
+        "detail": "found 'GET' (mode=case)"
+      },
+      "knowledge_days_week": {
+        "passed": true,
+        "detail": "found '7' (mode=auto)"
+      },
+      "knowledge_hours_day": {
+        "passed": true,
+        "detail": "found '24' (mode=auto)"
+      },
+      "knowledge_seconds_minute": {
+        "passed": true,
+        "detail": "found '60' (mode=auto)"
+      },
+      "knowledge_months_year": {
+        "passed": true,
+        "detail": "found '12' (mode=auto)"
+      },
+      "knowledge_si_time": {
+        "passed": true,
+        "detail": "found 'second' (mode=auto)"
+      },
+      "knowledge_earth_moons": {
+        "passed": true,
+        "detail": "found '1' (mode=auto)"
+      },
+      "knowledge_binary_bit_values": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "knowledge_rgb_primaries": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "common_sense_umbrella": {
+        "passed": true,
+        "detail": "found 'umbrella' (mode=auto)"
+      },
+      "common_sense_stove_touch": {
+        "passed": true,
+        "detail": "found 'no' (mode=token)"
+      },
+      "common_sense_night_sky": {
+        "passed": true,
+        "detail": "found 'dark' (mode=auto)"
+      },
+      "common_sense_ice_or_steam": {
+        "passed": true,
+        "detail": "found 'ice' (mode=auto)"
+      },
+      "common_sense_need_sleep": {
+        "passed": true,
+        "detail": "found 'sleep' (mode=auto)"
+      },
+      "common_sense_wet_from_rain": {
+        "passed": true,
+        "detail": "found 'wet' (mode=auto)"
+      },
+      "common_sense_book_use": {
+        "passed": true,
+        "detail": "found 'read' (mode=auto)"
+      },
+      "common_sense_hungry_action": {
+        "passed": true,
+        "detail": "found 'eat' (mode=auto)"
+      },
+      "common_sense_cut_paper": {
+        "passed": true,
+        "detail": "found 'scissors' (mode=auto)"
+      },
+      "common_sense_winter_coat": {
+        "passed": true,
+        "detail": "found 'coat' (mode=auto)"
+      },
+      "common_sense_thirst_drink": {
+        "passed": true,
+        "detail": "found 'water' (mode=auto)"
+      },
+      "science_freeze_celsius": {
+        "passed": true,
+        "detail": "found '0' (mode=auto)"
+      },
+      "science_photosynthesis_gas": {
+        "passed": true,
+        "detail": "found 'oxygen' (mode=auto)"
+      },
+      "science_states_of_matter": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "science_proton_charge": {
+        "passed": true,
+        "detail": "found 'positive' (mode=auto)"
+      },
+      "science_earth_planet_order": {
+        "passed": true,
+        "detail": "found '3' (mode=auto)"
+      },
+      "science_human_lungs": {
+        "passed": true,
+        "detail": "found '2' (mode=auto)"
+      },
+      "science_light_vs_sound": {
+        "passed": true,
+        "detail": "found 'light' (mode=auto)"
+      },
+      "science_salt_formula": {
+        "passed": true,
+        "detail": "found 'NaCl' (mode=auto)"
+      },
+      "science_carbon_dioxide": {
+        "passed": true,
+        "detail": "found 'CO\u2082' (mode=auto)"
+      },
+      "science_methane_hydrogens": {
+        "passed": true,
+        "detail": "found '4' (mode=auto)"
+      },
+      "science_sun_object": {
+        "passed": true,
+        "detail": "found 'star' (mode=auto)"
+      },
+      "format_csv_pair": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_json_ok_true": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_kv_equals": {
+        "passed": true,
+        "detail": "found 'key=value' (mode=full)"
+      },
+      "format_quoted_done": {
+        "passed": true,
+        "detail": "found '\"done\"' (mode=full)"
+      },
+      "format_pipe_colors": {
+        "passed": true,
+        "detail": "list=['red', 'green', 'blue']"
+      },
+      "format_digits_12345": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_bracket_list": {
+        "passed": true,
+        "detail": "found '[1,2,3]' (mode=full)"
+      },
+      "format_status_colon": {
+        "passed": false,
+        "detail": "missing any of ['status: ready'] (mode=full)"
+      },
+      "format_json_true_token": {
+        "passed": true,
+        "detail": "matched 1/1 patterns"
+      },
+      "format_tsv_ab": {
+        "passed": true,
+        "detail": "list=['A', 'B']"
+      },
+      "format_xml_empty_n": {
+        "passed": true,
+        "detail": "found '<n/>' (mode=full)"
+      },
+      "format_csv_header": {
+        "passed": true,
+        "detail": "list=['name', 'age']"
+      },
+      "long_context_record_mass": {
+        "passed": true,
+        "detail": "found '1734' (mode=auto)"
+      }
+    }
+  }
+}

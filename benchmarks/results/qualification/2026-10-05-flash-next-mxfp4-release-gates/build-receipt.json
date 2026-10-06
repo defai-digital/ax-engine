@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "purpose": "direct-default release-gate evidence: reference collection, fresh-cache delivery, product-default QA/lifecycle/matrix on the final binaries",
+  "server_source_commit": "e41d96460e88512bd9f47f48f7832fdd90180f6e",
+  "server_source_tree_clean": true,
+  "harness_commit": "d12c537e",
+  "rust_source_unchanged_between_server_commit_and_evidence_commit": true,
+  "executed_harness_changed_after_harness_commit": [
+    "run_flash_next_delivery.py",
+    "check_flash_next_release_gates.py"
+  ],
+  "build_profile": "release-server",
+  "rust_toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "binaries_sha256": {
+    "ax-engine-server": "d5254f62adbfa476ce01fd17c7049ffb0112295372c80a294e95d7ccdfff68ed",
+    "ax-engine": "74fa8c62229395de04b1ff5856081e81ca9fbd0aeacafbb25de2528ca1ff26a3",
+    "ax-engine-bench": "27644c3732327165b9f2fb468a50528f1f52fb9c245a47484987f516cb76ef31"
+  },
+  "before_server_sha256": "2e8e7a3ca1c46a182d7f381eadf28f9542e7aed2d3481ef49395b5cb82d49ed3",
+  "before_server_source_commit": "7efa55162819103130be9d5f919b613460de0889",
+  "mlx_runtime_version_reported": "0.32.3",
+  "mlx_assets_sha256": {
+    "libmlx.dylib": "ebc8a5f5465afb79d3d9c8f5b0929de1a9b277b7179db8672f92da77ae110a1e",
+    "libjaccl.dylib": "949e901df832d600a71ff2bc5f3738d55b010668102f36e071e1890807a965cd",
+    "mlx.metallib": "95974b7de464ec2be7833a914ca5a53d283a70789470fd84218738fc8fcea3e1"
+  },
+  "reference_runtime": {
+    "runtime": "mlx-vlm",
+    "commit": "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb",
+    "versions": {
+      "mlx": "0.32.2",
+      "mlx-metal": "0.32.2",
+      "mlx-vlm": "0.7.0rc0",
+      "transformers": "5.18.0.dev0",
+      "tokenizers": "0.23.2"
+    },
+    "language_sha256": "30f059d6289451bde0f5ef816090ff946ebc857d1b557f83415e2ba867d76199",
+    "runtime_files_bound": 1750
+  },
+  "executed_harness_sha256": {
+    "check_flash_next_native_support.py": "d70e1d5f55e745977d2d6ad3bae5aa9c2c72b96fe5d3acf1142949a207fc4e7e",
+    "run_flash_next_qa_cohort.py": "7c3c3eabc2bece68dc5d973305a5a2b63db6148fdb3bec3f0283a42a588686a1",
+    "run_flash_next_lifecycle.py": "61ac6662c0abb87d77bee8c1cbf289e2a4c67936ceb683c3d7646434f8a38c4a",
+    "run_flash_next_generate_matrix.py": "27e6312c7d103b353d279ac2d00284dca6f79e43e96c7916c237df7fc8814260",
+    "run_flash_next_reference.py": "b5d7c17b52a8b41f2995242fbb97ed46ecb91bcf32479f8cd0a57781cbcf7db7",
+    "run_flash_next_delivery.py": "377c0d8279269a2135b2c31f689871aa1714e917a9c0ad54002a72018a1fa2cf",
+    "check_flash_next_release_gates.py": "3a18ff7c56319c4b94c1eb326d67c664363f760798b558fa414ed955f6836e1d",
+    "flash_next_release_thresholds.json": "eae647372bfafb6a4d2175d2fe5b1a517842dbb062228623a566a7c9cf71d337"
+  },
+  "reference_run_harness_commit": "62b6f4ec",
+  "frozen_qa_items_sha256": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
+  "pack_inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "published_members": 49,
+  "published_bytes": 132261877478,
+  "hardware": "Mac Studio, Apple M2 Ultra, 192 GiB, internal NVMe SSD (Apple Fabric), macOS 27.0.1",
+  "evidence_commit": "a790a52de49419089082919eb0dd25630dac4a63",
+  "qualification": false,
+  "release_ready": false,
+  "note": "Harness results carry qualification=false by design; the verdict is in release-verdict.json."
+}

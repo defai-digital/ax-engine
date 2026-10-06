@@ -1,0 +1,25 @@
+{
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "items": 105,
+  "items_sha256": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
+  "modes": [
+    "disabled",
+    "default",
+    "required"
+  ],
+  "short_budget": 256,
+  "long_budget": 64,
+  "temperature": 0,
+  "thinking": "disabled",
+  "expert_stream": "auto",
+  "total_blocks": 4096,
+  "block_size_tokens": 16,
+  "request_timeout_seconds": 1800,
+  "grader": "frozen closed_checks",
+  "qualification": false,
+  "release_ready": false,
+  "scope": "functional and closed-answer QA; MTP-S/P/D and performance not assessed",
+  "server_sha256": "d5254f62adbfa476ce01fd17c7049ffb0112295372c80a294e95d7ccdfff68ed",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6"
+}
