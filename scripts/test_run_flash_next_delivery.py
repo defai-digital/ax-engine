@@ -97,6 +97,18 @@ class DeliveryTests(unittest.TestCase):
         self.assertNotIn("AX_ENGINE_DOWNLOAD_HELPER", plain)
         self.assertEqual(plain["PATH"], "/usr/bin")
 
+    def test_transport_overrides_are_an_allowlist_of_integers_and_reach_the_environment(self):
+        parsed = mod.parse_transport(["AX_ENGINE_HF_MAX_WORKERS=2", "HF_HUB_DOWNLOAD_TIMEOUT=60"])
+        self.assertEqual(parsed, {"AX_ENGINE_HF_MAX_WORKERS": "2", "HF_HUB_DOWNLOAD_TIMEOUT": "60"})
+        for bad in ("PATH=/x", "AX_ENGINE_HF_MAX_WORKERS", "AX_ENGINE_HF_MAX_WORKERS=two",
+                    "HF_HUB_DOWNLOAD_TIMEOUT="):
+            with self.assertRaises(ValueError, msg=bad):
+                mod.parse_transport([bad])
+        env = mod.clean_env(Path("/cache"), Path("/py"), transport=parsed)
+        self.assertEqual(env["AX_ENGINE_HF_MAX_WORKERS"], "2")
+        with patch.dict(mod.os.environ, {"HF_HUB_DOWNLOAD_TIMEOUT": "5"}):
+            self.assertNotIn("HF_HUB_DOWNLOAD_TIMEOUT", mod.clean_env(Path("/cache"), Path("/py")))
+
     def test_terminal_record_is_the_last_json_object(self):
         stdout = '{"event":"progress","n":1}\nnot json\n{"event":"done","status":"ready"}\n'
         self.assertEqual(mod.terminal_record(stdout)["status"], "ready")
