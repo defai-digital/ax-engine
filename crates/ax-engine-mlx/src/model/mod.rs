@@ -1058,6 +1058,26 @@ fn qwen4_exp_forward_with_cache(
     token_offset: usize,
     policy: ProjectionBatchPolicy,
 ) -> qwen4_exp::Qwen4ExpOutput {
+    qwen4_exp_forward_with_cache_rows(
+        cfg,
+        weights,
+        token_ids,
+        cache,
+        token_offset,
+        policy,
+        qwen4_exp::LogitRows::All,
+    )
+}
+
+fn qwen4_exp_forward_with_cache_rows(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    policy: ProjectionBatchPolicy,
+    rows: qwen4_exp::LogitRows,
+) -> qwen4_exp::Qwen4ExpOutput {
     let weights = weights
         .qwen4_exp
         .as_ref()
@@ -1121,12 +1141,13 @@ fn qwen4_exp_forward_with_cache(
             state: staged,
         }
     } else {
-        qwen4_exp::forward(
+        qwen4_exp::forward_with_rows(
             weights,
             token_ids,
             state,
             cfg.compile_cache_identity,
             ProjectionBatchPolicy::Shared,
+            rows,
         )
         .unwrap_or_else(|error| panic!("Flash Next forward failed: {error}"))
     };
@@ -1152,8 +1173,9 @@ pub(crate) fn qwen4_exp_forward_with_streams(
     )
 }
 
-fn qwen4_exp_last_logits(cfg: &ModelConfig, logits: &MlxArray, count: usize) -> MlxArray {
-    let last = count as i32 - 1;
+/// Last-token logits from a full `[count, vocab]` or last-row `[1, vocab]` output.
+fn qwen4_exp_last_logits(cfg: &ModelConfig, logits: &MlxArray, _count: usize) -> MlxArray {
+    let last = logits.shape()[0] - 1;
     reshape(
         &slice(
             logits,
@@ -1176,13 +1198,20 @@ fn forward_and_logits_mode(
     logits_mode: FinalLogitsMode,
 ) -> MlxArray {
     if cfg.model_family == "qwen4_exp" {
-        let output = qwen4_exp_forward_with_cache(
+        // Only the last position's logits (or none) are ever read here.
+        let rows = if matches!(logits_mode, FinalLogitsMode::Skip) {
+            qwen4_exp::LogitRows::Skip
+        } else {
+            qwen4_exp::LogitRows::Last
+        };
+        let output = qwen4_exp_forward_with_cache_rows(
             cfg,
             weights,
             token_ids,
             cache,
             token_offset,
             ProjectionBatchPolicy::Shared,
+            rows,
         );
         return if matches!(logits_mode, FinalLogitsMode::Skip) {
             output.stream_hidden

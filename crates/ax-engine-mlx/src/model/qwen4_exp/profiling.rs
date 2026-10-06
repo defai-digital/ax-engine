@@ -1168,6 +1168,75 @@ fn flash_next_prefill_stage_profile() {
 }
 
 #[test]
+#[ignore = "requires the real campaign pack on the authorized M2 host"]
+fn flash_next_last_row_logits_match_the_full_projection() {
+    use crate::model::ModelConfig;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let vocab = artifacts.manifest().vocab_size;
+    let tokens = profile_prompt_ids(vocab);
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let initial = Qwen4ExpState::new(trunk, owner);
+    let run = |rows| {
+        forward_with_rows(
+            trunk,
+            &tokens,
+            &initial,
+            owner,
+            ProjectionBatchPolicy::Shared,
+            rows,
+        )
+        .unwrap()
+    };
+    let all = run(LogitRows::All);
+    let last = run(LogitRows::Last);
+    let skip = run(LogitRows::Skip);
+    let n = tokens.len() as i32;
+    assert_eq!(last.logits.shape(), [1, vocab as i32]);
+    let full_last = mlx_sys::slice(&all.logits, &[n - 1, 0], &[n, vocab as i32], &[1, 1], None);
+    mlx_sys::eval(&[&full_last, &last.logits]);
+    let (a, b) = (full_last.data_f32(), last.logits.data_f32());
+    let max_abs = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    let argmax = |values: &[f32]| {
+        values
+            .iter()
+            .enumerate()
+            .max_by(|x, y| x.1.total_cmp(y.1))
+            .map(|(index, _)| index)
+    };
+    eprintln!(
+        "last-row vs full-projection logits: max_abs={max_abs} argmax {:?}/{:?}",
+        argmax(a),
+        argmax(b)
+    );
+    assert_eq!(
+        argmax(a),
+        argmax(b),
+        "last-row logits changed the greedy token"
+    );
+    assert!(max_abs < 0.5, "last-row logits drifted by {max_abs}");
+    // The skipped projection must leave the recurrent state and hidden untouched.
+    let as_f32 = |value: &MlxArray| astype(value, MlxDtype::Float32, None);
+    let (skip_hidden, all_hidden) = (as_f32(&skip.hidden), as_f32(&all.hidden));
+    mlx_sys::eval(&[&skip_hidden, &all_hidden]);
+    assert_eq!(skip_hidden.data_f32(), all_hidden.data_f32());
+    assert!(
+        snapshot(skip.state) == snapshot(all.state),
+        "skipping the LM head changed the state"
+    );
+}
+
+#[test]
 fn paging_capture_preserves_context_without_evaluation() {
     assert!(CAPTURE.with_borrow(Option::is_none));
     let evaluations = evals();

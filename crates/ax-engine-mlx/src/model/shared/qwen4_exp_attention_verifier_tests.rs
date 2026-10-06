@@ -476,3 +476,102 @@ fn query_output_override_preserves_shared_affine_dense_value_and_head_paths() {
         exact_cache(head.next_state(), direct.next_state());
     }
 }
+
+#[test]
+fn device_selected_single_query_steps_are_bitwise_identical_to_host_selection() {
+    let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    for mode in [
+        None,
+        Some(MlxQuantizationMode::Affine),
+        Some(MlxQuantizationMode::Mxfp4),
+    ] {
+        let module = module(mode, mode);
+        let input = input();
+        let cache = prefill(&module, &input);
+        let host = crate::qwen4_exp_qsa::with_device_select(false, || {
+            singleton_output(&module, &input, &cache, SHARED)
+        });
+        let device = crate::qwen4_exp_qsa::with_device_select(true, || {
+            singleton_output(&module, &input, &cache, SHARED)
+        });
+        exact(device.delta(), host.delta());
+        exact_cache(device.next_state(), host.next_state());
+    }
+}
+
+#[test]
+fn batched_prefill_attention_matches_the_per_query_path() {
+    use crate::qwen4_exp_qsa::{QsaIndexKeyCache, QsaIndexer};
+    // 40 queries over a 4-token block / 2-block budget so many queries keep
+    // different token counts (growing prefix, then a full budget plus tail).
+    let queries_n = 40;
+    let indexer: QsaIndexer = module(None, None).indexer;
+    let hidden = astype(
+        &reshape(&wave(queries_n, HIDDEN, 23), &[1, queries_n, HIDDEN], None),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let selection = indexer
+        .select(&hidden, &QsaIndexKeyCache::empty(), 0)
+        .unwrap();
+    assert!(selection.device_tokens().is_none());
+    let lengths: std::collections::BTreeSet<usize> = (0..queries_n as usize)
+        .map(|q| selection.tokens_for_query(0, q).len())
+        .collect();
+    assert!(lengths.len() > 4, "need ragged selections, got {lengths:?}");
+    let cfg = Qwen4ExpAttentionConfig::new(HIDDEN as usize, 24, 2, 64, 32, 10_000.0, 1e-6).unwrap();
+    for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+        let tensor = |rows: i32, seed: i32| {
+            astype(
+                &reshape(&wave(rows, 64, seed), &[1, rows, 64], None),
+                dtype,
+                None,
+            )
+        };
+        let q = transpose(
+            &reshape(
+                &astype(&wave(queries_n * 24, 64, 29), dtype, None),
+                &[1, queries_n, 24, 64],
+                None,
+            ),
+            &[0, 2, 1, 3],
+            None,
+        );
+        let keys = reshape(
+            &concatenate(&[&tensor(queries_n, 31), &tensor(queries_n, 37)], 2, None),
+            &[1, queries_n, 2, 64],
+            None,
+        );
+        let values = reshape(
+            &concatenate(&[&tensor(queries_n, 41), &tensor(queries_n, 43)], 2, None),
+            &[1, queries_n, 2, 64],
+            None,
+        );
+        let per_query = with_batched_attention(false, || {
+            attend_selected(&q, &keys, &values, &selection, cfg).unwrap()
+        });
+        let batched = with_batched_attention(true, || {
+            attend_selected(&q, &keys, &values, &selection, cfg).unwrap()
+        });
+        assert_eq!(batched.shape(), per_query.shape());
+        let (a, b) = (values_of(&batched), values_of(&per_query));
+        let max_abs = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        let bound = if dtype == MlxDtype::Float32 {
+            2e-5
+        } else {
+            4e-3
+        };
+        assert!(
+            max_abs <= bound,
+            "{dtype:?}: batched attention drifted by {max_abs}"
+        );
+    }
+}
+
+fn values_of(value: &MlxArray) -> Vec<f32> {
+    values(value)
+}
