@@ -1,8 +1,17 @@
-# Experimental Flash Next MLX GDN prefill — 2026-10-03
+# Flash Next MLX GDN prefill — 2026-10-03
+
+> **Update 2026-10-05:** this adapter is now **on by default** for Flash Next
+> prefill chunks of 128-2,048 tokens, after a real-pack comparison against the
+> pinned MLX-VLM reference; set `AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX=0` to restore
+> the sequential recurrence. See
+> [Flash Next prefill and decode, 2026-10-05](flash-next-prefill-decode-2026-10-05.md).
+> The text below is the original default-off experiment record and is otherwise
+> unchanged.
 
 The dedicated `qwen4_exp` GDN branch can select MLX 0.32.3's published
-`gated_delta_update` operation for long prefill. The experiment is default-off and requires a build of this source change;
-it is not a published-release or default-promotion claim:
+`gated_delta_update` operation for long prefill. At the time of this record the
+experiment was default-off and required a build of this source change;
+it was not a published-release or default-promotion claim:
 
 ```bash
 AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX=1 ax-engine serve /path/to/flash-next-pack
