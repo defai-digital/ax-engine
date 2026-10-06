@@ -652,6 +652,19 @@ pub(crate) struct Qwen4ExpOutput {
     pub state: Qwen4ExpState,
 }
 
+/// Which positions get LM-head logits. A prefill chunk only ever needs the last
+/// row (or none for a non-final chunk), and the full `[tokens, vocab]` float32
+/// projection costs about 2 GiB and 0.26 s for a 2,048-token chunk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LogitRows {
+    /// One row per input token (verification windows, MTP drafting).
+    All,
+    /// Only the final position: `logits` is `[1, vocab]`.
+    Last,
+    /// No LM head: `logits` is an unused placeholder.
+    Skip,
+}
+
 /// Runs on staged state. The caller publishes `output.state` only after this
 /// function succeeds; IO or evaluation failure leaves its checkpoint intact.
 pub(crate) fn forward(
@@ -664,6 +677,18 @@ pub(crate) fn forward(
     forward_with_verifier_policy(weights, tokens, state, owner, policy, policy)
 }
 
+/// [`forward`] with a choice of logit rows.
+pub(crate) fn forward_with_rows(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
+    state: &Qwen4ExpState,
+    owner: u64,
+    policy: ProjectionBatchPolicy,
+    rows: LogitRows,
+) -> Result<Qwen4ExpOutput, String> {
+    forward_with_verifier_policy_rows(weights, tokens, state, owner, policy, policy, rows)
+}
+
 /// Keep verifier HC and selected MXFP4 projections aligned with singleton
 /// decode independently of shared projections and selected-expert paging.
 pub(crate) fn forward_with_verifier_policy(
@@ -673,6 +698,26 @@ pub(crate) fn forward_with_verifier_policy(
     owner: u64,
     policy: ProjectionBatchPolicy,
     verifier_policy: ProjectionBatchPolicy,
+) -> Result<Qwen4ExpOutput, String> {
+    forward_with_verifier_policy_rows(
+        weights,
+        tokens,
+        state,
+        owner,
+        policy,
+        verifier_policy,
+        LogitRows::All,
+    )
+}
+
+fn forward_with_verifier_policy_rows(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
+    state: &Qwen4ExpState,
+    owner: u64,
+    policy: ProjectionBatchPolicy,
+    verifier_policy: ProjectionBatchPolicy,
+    rows: LogitRows,
 ) -> Result<Qwen4ExpOutput, String> {
     if state.owner != owner || state.layers.len() != weights.layers.len() {
         return Err("qwen4_exp request state belongs to a different model".into());
@@ -695,7 +740,7 @@ pub(crate) fn forward_with_verifier_policy(
         .layout
         .expand(&embedded)
         .map_err(|e| e.to_string())?;
-    forward_prepared_with_verifier_policy(
+    forward_prepared_rows(
         weights,
         tokens,
         hidden,
@@ -703,6 +748,7 @@ pub(crate) fn forward_with_verifier_policy(
         owner,
         policy,
         verifier_policy,
+        rows,
     )
 }
 
@@ -791,11 +837,34 @@ pub(crate) fn forward_prepared(
 fn forward_prepared_with_verifier_policy(
     weights: &Qwen4ExpWeights,
     tokens: &[u32],
+    hidden: MlxArray,
+    state: &Qwen4ExpState,
+    owner: u64,
+    policy: ProjectionBatchPolicy,
+    verifier_policy: ProjectionBatchPolicy,
+) -> Result<Qwen4ExpOutput, String> {
+    forward_prepared_rows(
+        weights,
+        tokens,
+        hidden,
+        state,
+        owner,
+        policy,
+        verifier_policy,
+        LogitRows::All,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn forward_prepared_rows(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
     mut hidden: MlxArray,
     state: &Qwen4ExpState,
     owner: u64,
     policy: ProjectionBatchPolicy,
     verifier_policy: ProjectionBatchPolicy,
+    rows: LogitRows,
 ) -> Result<Qwen4ExpOutput, String> {
     let (end, vocabulary) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
     #[cfg(test)]
@@ -911,14 +980,46 @@ fn forward_prepared_with_verifier_policy(
         .map_err(|e| e.to_string())?;
     #[cfg(test)]
     profiling::mark("final_mixer", &[&mixed]);
-    let logits = astype(
-        &qw_with_policy(&mixed, &weights.lm_head, policy),
-        MlxDtype::Float32,
-        None,
-    );
-    let logits = reshape(&logits, &[tokens.len() as i32, vocabulary as i32], None);
+    let (logits, logit_rows) = match rows {
+        LogitRows::All => (
+            astype(
+                &qw_with_policy(&mixed, &weights.lm_head, policy),
+                MlxDtype::Float32,
+                None,
+            ),
+            tokens.len() as i32,
+        ),
+        LogitRows::Last => {
+            let shape = mixed.shape();
+            let (count, width) = (shape[shape.len() - 2], shape[shape.len() - 1]);
+            let last = mlx_sys::slice(
+                &mixed,
+                &[0, count - 1, 0],
+                &[shape[0], count, width],
+                &[1, 1, 1],
+                None,
+            );
+            (
+                astype(
+                    &qw_with_policy(&last, &weights.lm_head, policy),
+                    MlxDtype::Float32,
+                    None,
+                ),
+                1,
+            )
+        }
+        LogitRows::Skip => (MlxArray::from_f32(0.0), 0),
+    };
+    let logits = if rows == LogitRows::Skip {
+        logits
+    } else {
+        reshape(&logits, &[logit_rows, vocabulary as i32], None)
+    };
     let mut arrays = next.arrays();
-    arrays.extend([&logits, &mixed, &hidden]);
+    arrays.extend([&mixed, &hidden]);
+    if rows != LogitRows::Skip {
+        arrays.push(&logits);
+    }
     mlx_sys::try_eval(&arrays).map_err(|e| format!("qwen4_exp evaluation failed: {e}"))?;
     #[cfg(test)]
     profiling::note_eval();

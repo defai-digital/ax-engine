@@ -5239,6 +5239,26 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT` — choose Flash Next QSA blocks for
+    /// single-query steps (decode, singleton verification) on the device instead
+    /// of reading the scores back to the host, so one token's layers evaluate in
+    /// one graph. Default ON; set `=0` to restore the host selection. Multi-query
+    /// chunks always select on the host.
+    flash_next_qsa_device_select_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION` — attend a Flash Next prefill
+    /// chunk of 16 or more queries in padded, masked sub-batches instead of one
+    /// gather and attention call per query. Each query still attends to exactly
+    /// its own selected tokens. Default ON; set `=0` to restore the per-query
+    /// path.
+    flash_next_qsa_batched_attention_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT` — gather routed experts in
     /// expert-id order for Flash Next prefill chunks of at least 64 tokens, as
     /// mlx-lm's SwitchGLU does for long prompts. Default ON; set `=0` to

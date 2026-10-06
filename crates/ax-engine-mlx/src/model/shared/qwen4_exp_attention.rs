@@ -14,8 +14,9 @@
 #![allow(dead_code)]
 
 use mlx_sys::{
-    MlxArray, MlxDtype, astype, concatenate, contiguous, multiply, reshape, rms_norm,
-    scaled_dot_product_attention, slice, split, take, transpose,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, astype, concatenate, contiguous,
+    greater_equal, maximum, multiply, reshape, rms_norm, scaled_dot_product_attention,
+    scaled_dot_product_attention_with_mask, slice, split, take, transpose,
 };
 use thiserror::Error;
 
@@ -664,18 +665,42 @@ fn attend_selected(
             &[1, 1, 1, 1],
             None,
         );
+        if selection.device_tokens().is_none()
+            && seq >= BATCHED_ATTENTION_MIN_QUERIES
+            && batched_attention_enabled()
+        {
+            batch_out.push(attend_selected_batched(
+                &q_b, &k_b, &v_b, selection, b as usize, cfg,
+            )?);
+            continue;
+        }
         let mut seq_out = Vec::new();
         seq_out
             .try_reserve_exact(seq as usize)
             .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("attention query buffer"))?;
         for s in 0..seq {
-            let chosen = selection.tokens_for_query(b as usize, s as usize);
-            if chosen.is_empty() {
-                return Err(Qwen4ExpAttentionError::InvalidScalar(
-                    "selected token count",
-                ));
-            }
-            let idx = index_array(chosen)?;
+            let idx = if let Some(device) = selection.device_tokens() {
+                // Device selection: one query, exact host-known length.
+                let kept = device.shape()[2];
+                if s != 0 || kept <= 0 {
+                    return Err(Qwen4ExpAttentionError::InvalidScalar(
+                        "selected token count",
+                    ));
+                }
+                reshape(
+                    &slice(device, &[b, 0, 0], &[b + 1, 1, kept], &[1, 1, 1], None),
+                    &[kept],
+                    None,
+                )
+            } else {
+                let chosen = selection.tokens_for_query(b as usize, s as usize);
+                if chosen.is_empty() {
+                    return Err(Qwen4ExpAttentionError::InvalidScalar(
+                        "selected token count",
+                    ));
+                }
+                index_array(chosen)?
+            };
             let k_sel = transpose(&take(&k_b, &idx, 1, None), &[0, 2, 1, 3], None);
             let v_sel = transpose(&take(&v_b, &idx, 1, None), &[0, 2, 1, 3], None);
             let q_s = slice(
@@ -705,6 +730,168 @@ fn attend_selected(
     }
     Ok(concat_owned(&batch_out, 0))
 }
+
+/// Chunks of at least this many queries attend in padded sub-batches instead of
+/// one gather and attention call per query. Shorter windows (verifier, tails)
+/// keep the per-query path and its exact-length arithmetic.
+const BATCHED_ATTENTION_MIN_QUERIES: i32 = 16;
+fn batched_attention_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = BATCHED_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+    crate::fastpath::flash_next_qsa_batched_attention_enabled()
+}
+
+#[cfg(test)]
+thread_local! {
+    static BATCHED_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `action` with batched prefill attention forced on or off on this thread.
+#[cfg(test)]
+pub(crate) fn with_batched_attention<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            BATCHED_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(BATCHED_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+/// Upper bound on the gathered K+V bytes of one sub-batch.
+const BATCHED_ATTENTION_BYTES: usize = 1 << 30;
+
+/// Attend a chunk of host-selected queries as padded sub-batches.
+///
+/// Each query owns its selected token list; lists are padded with `-1` to the
+/// longest in the sub-batch, gathered together, and attention masks the padding,
+/// so every query still attends to exactly its own selected tokens (softmax over
+/// the unmasked entries; masked entries contribute exact zeros). Queries move to
+/// the batch axis, one query per entry, which replaces one gather and one
+/// attention dispatch per query with a handful per sub-batch.
+fn attend_selected_batched(
+    q_b: &MlxArray,
+    k_b: &MlxArray,
+    v_b: &MlxArray,
+    selection: &QsaSelection,
+    batch_index: usize,
+    cfg: Qwen4ExpAttentionConfig,
+) -> Result<MlxArray> {
+    let q_shape = q_b.shape();
+    let (q_heads, seq, dim) = (q_shape[1], q_shape[2] as usize, q_shape[3]);
+    let kv_shape = k_b.shape();
+    let (tokens, kv_heads) = (kv_shape[1], kv_shape[2]);
+    let keys = reshape(k_b, &[tokens, kv_heads, dim], None);
+    let values = reshape(v_b, &[tokens, kv_heads, dim], None);
+    let element_bytes = if q_b.dtype() == MlxDtype::Float32 {
+        4
+    } else {
+        2
+    };
+    let mut outputs = Vec::new();
+    let mut start = 0usize;
+    while start < seq {
+        let longest = (start..seq)
+            .take(BATCHED_ATTENTION_PROBE_QUERIES)
+            .map(|s| selection.tokens_for_query(batch_index, s).len())
+            .max()
+            .unwrap_or(0);
+        if longest == 0 {
+            return Err(Qwen4ExpAttentionError::InvalidScalar(
+                "selected token count",
+            ));
+        }
+        let per_query = longest * kv_heads as usize * dim as usize * element_bytes * 2;
+        let width = (BATCHED_ATTENTION_BYTES / per_query.max(1)).clamp(1, seq - start);
+        let end = start + width;
+        let padded = (start..end)
+            .map(|s| selection.tokens_for_query(batch_index, s).len())
+            .max()
+            .unwrap_or(0);
+        let mut indices = vec![-1_i32; width * padded];
+        for (row, s) in (start..end).enumerate() {
+            let chosen = selection.tokens_for_query(batch_index, s);
+            if chosen.is_empty() {
+                return Err(Qwen4ExpAttentionError::InvalidScalar(
+                    "selected token count",
+                ));
+            }
+            indices[row * padded..row * padded + chosen.len()].copy_from_slice(chosen);
+        }
+        let width_i = width as i32;
+        let padded_i = i32::try_from(padded)
+            .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("selected token count"))?;
+        let indices = MlxArray::from_raw_data(
+            indices.as_ptr().cast(),
+            std::mem::size_of_val(indices.as_slice()),
+            &[width_i, padded_i],
+            MlxDtype::Int32,
+        );
+        let valid = greater_equal(
+            &indices,
+            &MlxArray::from_raw_data(
+                (&0_i32 as *const i32).cast(),
+                std::mem::size_of::<i32>(),
+                &[1],
+                MlxDtype::Int32,
+            ),
+            None,
+        );
+        let safe = maximum(
+            &indices,
+            &MlxArray::from_raw_data(
+                (&0_i32 as *const i32).cast(),
+                std::mem::size_of::<i32>(),
+                &[1],
+                MlxDtype::Int32,
+            ),
+            None,
+        );
+        let flat = reshape(&safe, &[width_i * padded_i], None);
+        let gather = |source: &MlxArray| {
+            transpose(
+                &reshape(
+                    &take(source, &flat, 0, None),
+                    &[width_i, padded_i, kv_heads, dim],
+                    None,
+                ),
+                &[0, 2, 1, 3],
+                None,
+            )
+        };
+        let (k_sel, v_sel) = (gather(&keys), gather(&values));
+        let q_sub = transpose(
+            &slice(
+                q_b,
+                &[0, 0, start as i32, 0],
+                &[1, q_heads, end as i32, dim],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            &[2, 1, 0, 3],
+            None,
+        );
+        let mask = reshape(&valid, &[width_i, 1, 1, padded_i], None);
+        let attended = scaled_dot_product_attention_with_mask(
+            &contiguous(&q_sub, None),
+            &contiguous(&k_sel, None),
+            &contiguous(&v_sel, None),
+            cfg.scale,
+            ScaledDotProductAttentionMask::Array(&mask),
+            None,
+        );
+        // [width, q_heads, 1, dim] -> [1, q_heads, width, dim]
+        outputs.push(transpose(&attended, &[2, 1, 0, 3], None));
+        start = end;
+    }
+    Ok(concat_owned(&outputs, 2))
+}
+
+/// Queries inspected to size a sub-batch before its exact padding is known.
+const BATCHED_ATTENTION_PROBE_QUERIES: usize = 512;
 
 fn append_cache(past: Option<&MlxArray>, new: &MlxArray) -> Result<MlxArray> {
     let staged = match past {
