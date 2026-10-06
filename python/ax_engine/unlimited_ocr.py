@@ -194,23 +194,30 @@ def _load_rgb_image(value: Any):
             "Unlimited-OCR image requests require Pillow; install ax-engine[multimodal]"
         ) from exc
 
+    # Pillow's decompression-bomb guard raises an Exception subclass that is
+    # neither OSError nor ValueError.
+    decode_errors = (OSError, ValueError, Image.DecompressionBombError)
     if isinstance(value, Image.Image):
         _validate_dimensions(*value.size)
-        source = value.copy()
+        try:
+            # copy() forces the lazy decode of a still-unloaded image.
+            source = value.copy()
+        except decode_errors as exc:
+            raise ValueError("cannot decode Unlimited-OCR image") from exc
     elif isinstance(value, (str, Path)):
         path = Path(value).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"Unlimited-OCR image not found: {path}")
         try:
             opened = Image.open(path)
-        except (OSError, ValueError) as exc:
+        except decode_errors as exc:
             raise ValueError(f"cannot decode Unlimited-OCR image: {path}") from exc
         with opened:
             _validate_dimensions(*opened.size)
             try:
                 opened.load()
                 source = opened.copy()
-            except (OSError, ValueError) as exc:
+            except decode_errors as exc:
                 raise ValueError(f"cannot decode Unlimited-OCR image: {path}") from exc
     else:
         raise TypeError(
@@ -222,6 +229,8 @@ def _load_rgb_image(value: Any):
     try:
         transposed = ImageOps.exif_transpose(source)
         rgb = transposed.convert("RGB")
+    except decode_errors as exc:
+        raise ValueError("cannot convert Unlimited-OCR image to RGB") from exc
     finally:
         if transposed is not None and transposed is not source:
             transposed.close()
