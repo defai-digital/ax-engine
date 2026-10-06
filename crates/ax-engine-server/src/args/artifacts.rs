@@ -195,8 +195,7 @@ fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
         "qwen3.6-27b".to_string()
     } else if path_label.contains("qwen3-8-27b")
         || path_label.contains("qwen38-27b")
-        || path_label.contains("qwen3-8")
-        || path_label.contains("qwen38")
+        || has_qwen38_label(path_label)
     {
         "qwen3.8-27b".to_string()
     } else if path_label.contains("qwen3-5-9b") || path_label.contains("qwen35-9b") {
@@ -216,6 +215,18 @@ fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
         model_id.push_str("-mtp");
     }
     model_id
+}
+
+/// `Qwen3.8` normalizes to `qwen3-8`. Require a label boundary after it so the
+/// dense `Qwen3-8B` family (`qwen3-8b`) is not mistaken for Qwen 3.8.
+fn has_qwen38_label(path_label: &str) -> bool {
+    path_label.contains("qwen38")
+        || path_label.match_indices("qwen3-8").any(|(start, needle)| {
+            path_label[start + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| next == '-')
+        })
 }
 
 fn infer_qwen3_vl_model_id(path_label: &str) -> String {

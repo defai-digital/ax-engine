@@ -571,6 +571,15 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
             "qwen3.8-27b",
         ),
         (
+            "models--AutomatosX--AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+            "qwen3_5",
+            "qwen3.8-27b-mtp",
+        ),
+        // Dense Qwen3-8B shares the `qwen3-8` label prefix with Qwen 3.8 but
+        // is not a Qwen 3.8 pack.
+        ("models--mlx-community--Qwen3-8B-4bit", "qwen3", "qwen3"),
+        ("models--mlx-community--Qwen3-8B-MLX-8bit", "qwen3", "qwen3"),
+        (
             "models--mlx-community--Qwen3-VL-8B-Thinking-4bit",
             "qwen3_vl",
             "qwen3-vl-8b-thinking",
@@ -636,7 +645,7 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
             "qwen3-nemotron-32b-genrm",
         ),
         (
-            "models--AutomatosX--AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
+            "models--AutomatosX--AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8",
             "unlimited-ocr",
             "unlimited-ocr",
         ),
