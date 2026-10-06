@@ -9404,6 +9404,10 @@ impl MlxRunner {
             return Some(self.run_single_decode(state, last_token, sampling));
         }
 
+        if ngram_sampled_verify_unsupported(self.cfg.protected_prefix_sliding_window, sampling) {
+            return Some(self.run_single_decode(state, last_token, sampling));
+        }
+
         if state.ngram_acceleration_disabled_for_request {
             return Some(self.run_request_disabled_decode(
                 state,
@@ -22021,6 +22025,21 @@ mod tests {
         );
         assert!(!should_drain_pending_direct_before_ngram(true, false));
         assert!(!should_drain_pending_direct_before_ngram(false, true));
+    }
+
+    #[test]
+    fn protected_prefix_ring_blocks_only_sampled_ngram_verify() {
+        let sampled = MlxSamplingParams::new(0.3, 0.9, 0);
+        // Unlimited-OCR (protected-prefix ring) must not run the multi-token
+        // sampled verify: it would hit the ring's ordered-append assertion.
+        assert!(ngram_sampled_verify_unsupported(Some(128), sampled));
+        // Greedy replays singleton steps, so it keeps n-gram acceleration.
+        assert!(!ngram_sampled_verify_unsupported(
+            Some(128),
+            MlxSamplingParams::greedy()
+        ));
+        // Every other family keeps sampled n-gram verification.
+        assert!(!ngram_sampled_verify_unsupported(None, sampled));
     }
 
     #[test]
