@@ -63,6 +63,17 @@ pub(crate) fn should_drain_pending_direct_before_ngram(
     is_greedy && has_pending_direct
 }
 
+/// Sampled n-gram decode verifies a multi-token draft and trims the rejected
+/// tail. A protected-prefix R-SWA ring (Unlimited-OCR) only accepts single-token
+/// appends and refuses rollback, so those requests must decode one token at a
+/// time. Greedy decode already replays singleton steps and is unaffected.
+pub(crate) fn ngram_sampled_verify_unsupported(
+    protected_prefix_window: Option<usize>,
+    sampling: MlxSamplingParams,
+) -> bool {
+    protected_prefix_window.is_some() && sampling.temperature > 0.0
+}
+
 pub(crate) trait RouteDecisionSink {
     fn upsert_route_decision(&mut self, key: &str, value: u32);
 }
