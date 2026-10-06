@@ -642,6 +642,16 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 } else {
                     false
                 }
+            } else if artifact_family.as_deref() == Some("unlimited_ocr") {
+                // Unlimited-OCR consumes processed pixels through the AX
+                // `input_tokens` + `multimodal_inputs` extension; routing raw
+                // image parts into the Gemma4 renderer would only surface an
+                // unrelated Gemma4 config error.
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_modality",
+                    "Unlimited-OCR does not accept inline image parts in chat messages; prepare the request with ax_engine.prepare_unlimited_ocr_image_request and send its input_tokens and multimodal_inputs".to_string(),
+                ));
             } else if let Some(prompt) = render_gemma4_unified_chat_with_media(
                 model_id,
                 model_dir,
