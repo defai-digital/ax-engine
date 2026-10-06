@@ -211,6 +211,66 @@ fn chat_response_exposes_reasoning_only_when_requested() {
 }
 
 #[test]
+fn chat_response_routes_unclosed_qwen_think_block_to_reasoning() {
+    // The thinking prompt pre-fills `<think>`; a generation cut off by the
+    // token limit never emits `</think>` and must not leak into `content`.
+    let mut response = sample_generate_response(
+        "I need to determine if 1001 is prime.\n\nA prime number is",
+        Vec::new(),
+        Vec::new(),
+    );
+    response.model_id = "qwen3.8-27b".to_string();
+    let options = OpenAiResponseOptions {
+        include_reasoning: true,
+        ..Default::default()
+    };
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        options,
+        None,
+        None,
+    );
+    let message = &openai.choices[0].message;
+    assert_eq!(message.content, "");
+    assert_eq!(
+        message.reasoning_content.as_deref(),
+        Some("I need to determine if 1001 is prime.\n\nA prime number is")
+    );
+
+    // A closed block still splits normally.
+    response.output_text = Some("because 7 x 11 x 13.</think>\n\nNo.".to_string());
+    let closed = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    assert_eq!(closed.choices[0].message.content, "No.");
+
+    // Families that may answer without any marker keep their content.
+    let mut other = sample_generate_response("plain answer", Vec::new(), Vec::new());
+    other.model_id = "gemma-4-12b".to_string();
+    let kept = openai_chat_completion_response(
+        &other,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            include_reasoning: true,
+            ..Default::default()
+        },
+        None,
+        None,
+    );
+    assert_eq!(kept.choices[0].message.content, "plain answer");
+    assert!(kept.choices[0].message.reasoning_content.is_none());
+}
+
+#[test]
 fn chat_response_prefers_native_decode_reasoning_over_text_markers() {
     // Native MLX Gemma 4 decode strips channel framing at the token level and
     // hands the reasoning text alongside the cleaned content; the response

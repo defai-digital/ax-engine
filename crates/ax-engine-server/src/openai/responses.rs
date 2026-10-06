@@ -120,9 +120,23 @@ pub(crate) fn openai_chat_completion_response(
     // The native MLX decode extracts Gemma 4 thinking channels at the token
     // level, so their framing never survives into `output_text`; when the
     // decode supplied reasoning, use it instead of re-scanning text markers.
-    let (mut content, reasoning_content) = match native_reasoning {
+    let (content, reasoning_content) = match native_reasoning {
         Some(reasoning) if options.include_reasoning => (raw_content, Some(reasoning)),
         _ => split_reasoning_content(&raw_content, options.include_reasoning),
+    };
+    // Qwen thinking prompts pre-fill `<think>`, so a generation cut off before
+    // `</think>` is entirely reasoning (the streaming scanner already routes it
+    // that way). Other families may legitimately answer without any marker.
+    let (mut content, reasoning_content) = if options.include_reasoning
+        && reasoning_content.is_none()
+        && !content.trim().is_empty()
+        && !content.contains("<think>")
+        && !content.contains("</think>")
+        && crate::chat::is_qwen_thinking_model(&response.model_id)
+    {
+        (String::new(), Some(content.trim().to_string()))
+    } else {
+        (content, reasoning_content)
     };
     let (tool_calls, preserve_tool_content) = if options.parse_tool_calls {
         match extract_tool_calls(&mut content, options.tool_contract.as_deref()) {
