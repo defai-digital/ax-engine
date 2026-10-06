@@ -951,7 +951,7 @@ AUTOMATOSX_MODEL_PROFILES = (
     ),
     _automatosx_profile(
         "ax-unlimited-ocr",
-        "AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
+        "AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8",
         (
             "ax-unlimited-ocr-3b",
             "unlimited-ocr",
@@ -1031,7 +1031,9 @@ _PINNED_PROFILE_REVISIONS = {
     ),
     "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit": ("17e0ce81a7d6aeb6729a0c84b92340e26fbe1a6d"),
     "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit": ("04be51a3173b94e0a0d859be871cfb7a749405d2"),
-    "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8": ("4d928dce639633f1138113d733dd11c120da87c9"),
+    "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8": (
+        "da2260012416f6c7a1bab56d518709c7bd43ed5c"
+    ),
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit": ("1c3fb2a006883d88ee0b84a831b480e4a9dc97c6"),
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit": ("d6de0453b22af8bbbcfebbd43326ccea6ed35e64"),
     "AutomatosX/AX-Holo3-35B-A3B-MLX-AXQ-4bit": ("7b2256130cd55ea6b7489817a9a00c46e9874403"),
