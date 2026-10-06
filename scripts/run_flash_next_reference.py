@@ -128,6 +128,22 @@ def generate(model: Any, mx: Any, ids: list[int], budget: int, stop_on_eos: bool
     return record
 
 
+def materialize(model: Any, mx: Any, batch: int = 32) -> int:
+    """Read the lazily loaded weights into memory in bounded batches before any timing.
+
+    A lazy load defers every file read to the first forward pass, so a cold page
+    cache turns that first command buffer into a read of the whole pack and the
+    Metal watchdog aborts it. Evaluating the parameters in batches keeps each
+    command small and makes later timings independent of file-cache state.
+    """
+    from mlx.utils import tree_flatten
+
+    arrays = [array for _, array in tree_flatten(model.parameters())]
+    for start in range(0, len(arrays), batch):
+        mx.eval(*arrays[start: start + batch])
+    return len(arrays)
+
+
 def window_hashes(vocab_size: int, lengths: tuple[int, ...]) -> dict[str, str]:
     """Hashes of the exact token IDs this runner feeds, keyed like the AX matrix result."""
     return {f"cell-{length}-{run}": matrix.ids_sha(matrix.workload_ids(vocab_size, length, run))
@@ -255,6 +271,9 @@ def main() -> int:
             ax_hashes = json.loads(args.ax_matrix.read_text())["runs"]["disabled"]["prompt_id_hashes"]
             verify_prompt_hashes(ax_hashes, window_ids)
     model = load_model(args.model_dir, lazy=True, strict=True).language_model
+    loading_started = time.monotonic()
+    record["weights_materialized"] = materialize(model, mx)
+    record["weights_materialize_seconds"] = round(time.monotonic() - loading_started, 3)
     if "qa" in args.phases:
         prepared = json.loads((qa.FROZEN / "full-qa-inputs.json").read_text())["prepared"]
         if [p["id"] for p in prepared] != [i["id"] for i in items]:
