@@ -173,12 +173,12 @@ def decode_rate(timing: dict[str, Any]) -> float | None:
 
 
 def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[str, ...] = PROMPTS,
-             lengths: tuple[int, ...] = LENGTHS) -> dict[str, Any]:
+             lengths: tuple[int, ...] = LENGTHS, label: str | None = None) -> dict[str, Any]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     base = f"http://127.0.0.1:{port}"
-    log_path = output / f"server-{mode}.log"
+    log_path = output / f"server-{label or mode}.log"
     command = [*native.server_command(server, root, mode, port), "--total-blocks", str(TOTAL_BLOCKS)]
     started = time.monotonic()
     result: dict[str, Any] = {"mode": mode, "trajectories": [], "cells": []}
@@ -305,6 +305,8 @@ def main() -> int:
     parser.add_argument("--lengths", type=int, nargs="+", help="smoke runs: input lengths to measure")
     parser.add_argument("--modes", nargs="+", choices=native.SERVER_MODES, default=list(MODES),
                         help="the disabled baseline plus one challenger: required MTP or default")
+    parser.add_argument("--no-warm-pass", action="store_true",
+                        help="skip the discarded warm-up pass (smoke runs only)")
     args = parser.parse_args()
     if len(args.modes) != 2 or "disabled" not in args.modes:
         parser.error("--modes must be the disabled baseline plus exactly one challenger")
@@ -318,6 +320,8 @@ def main() -> int:
                 "expert_stream": "auto", "generic_ngram_acceleration":
                 "product default (on) in default mode, disabled in the other modes",
                 "reference_baseline": "none", "qualification": False, "release_ready": False,
+                "warm_pass": "discarded pass of the first mode over the identical workload, "
+                             "kept as the cold-regime observation" if not args.no_warm_pass else "skipped",
                 "scope": "server-path token identity and timings; MTP-S/P/D not assessed"}
     if args.dry_run:
         print(json.dumps(contract, indent=2))
@@ -336,6 +340,15 @@ def main() -> int:
     manifest_before = native.validate_inventory(args.model_dir, inventory)
     args.output.mkdir(parents=True, exist_ok=False)
     host_quiet = native.wait_for_quiet()
+    # The first server process after the host's file-cache or kernel-cache state
+    # changes serves its first requests 30-45% slower and settles over a few
+    # runs; every later process is steady. A discarded pass over the identical
+    # workload puts all measured arms in the steady regime, and its own timings
+    # are kept as the labelled cold-regime observation.
+    warm_pass = None
+    if not args.no_warm_pass:
+        warm_pass = run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output,
+                             args.modes[0], (), lengths, label="warm")
     runs = {mode: run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output, mode,
                            prompts, lengths) for mode in args.modes}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
@@ -350,7 +363,7 @@ def main() -> int:
                              "storage": {"declared": inventory["storage"], **storage},
                              "os": platform.mac_ver()[0]},
                 "host_quiet": host_quiet, "host_idle_after": native.cpu_idle_percent(),
-                "summary": summary, "runs": runs}
+                "warm_pass": warm_pass, "summary": summary, "runs": runs}
     (args.output / "result.json").write_text(json.dumps(evidence, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
     return 0

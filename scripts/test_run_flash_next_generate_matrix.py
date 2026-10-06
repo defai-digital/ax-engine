@@ -147,6 +147,14 @@ class GenerateMatrixTests(unittest.TestCase):
         self.assertGreater(contract["total_blocks"] * 16,
                            max(contract["lengths"]) + contract["output_tokens"])
 
+    def test_warm_pass_can_be_skipped_only_by_an_explicit_flag(self):
+        done = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--no-warm-pass"],
+                              capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(done.stdout)["lengths"], [512, 2048, 8192])
+        text = SCRIPT.read_text()
+        self.assertIn("warm_pass", text)
+        self.assertIn('label="warm"', text)
+
     def test_live_run_requires_all_inputs(self):
         done = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
         self.assertNotEqual(done.returncode, 0)
