@@ -28,6 +28,7 @@ import functools
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1298,6 +1299,51 @@ def _total_repo_bytes(repo_id: str, revision: str | None = None) -> int | None:
     return total or None
 
 
+_PINNED_REVISION_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _snapshot_matches_hub_listing(
+    snapshot: Path, repo_id: str, revision: str | None
+) -> bool | None:
+    """Whether every file the Hub lists for a pinned revision is present at its listed size.
+
+    A download interrupted before its index file arrives passes the local
+    structural validation with only some shards present, so a re-run would
+    mistake the partial snapshot for a finished one and fail later with a
+    misleading manifest error. Only an immutable (40-hex) revision is compared.
+    `None` means the comparison could not be made (unpinned revision, offline
+    mode, no client, API error) and the caller keeps trusting local validation.
+    """
+    if revision is None or not _PINNED_REVISION_RE.fullmatch(revision):
+        return None
+    if os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return None
+    _prefer_classic_hf_transfer()
+    try:
+        from huggingface_hub import HfApi
+    except ImportError:
+        return None
+    try:
+        info = HfApi().repo_info(repo_id=repo_id, revision=revision, files_metadata=True)
+    except Exception:
+        return None
+    listed = []
+    for sibling in getattr(info, "siblings", None) or []:
+        name = getattr(sibling, "rfilename", None)
+        if isinstance(name, str) and name and ".." not in Path(name).parts and not name.startswith("/"):
+            listed.append((name, getattr(sibling, "size", None)))
+    if not listed:
+        return None
+    for name, size in listed:
+        try:
+            actual = (snapshot / name).stat().st_size
+        except OSError:
+            return False
+        if isinstance(size, int) and actual != size:
+            return False
+    return True
+
+
 def _render_progress_bar(
     downloaded: int,
     total: int | None,
@@ -1938,7 +1984,11 @@ def download(
     snapshot = None if force else _latest_mlx_lm_snapshot(repo_id, revision)
     if snapshot is not None:
         _validate_snapshot_copy_links(snapshot)
-    if snapshot is not None and not _validation_errors(snapshot):
+    if (
+        snapshot is not None
+        and not _validation_errors(snapshot)
+        and (local_only or _snapshot_matches_hub_listing(snapshot, repo_id, revision) is not False)
+    ):
         if progress_json:
             _emit_progress(85, 100, "Using existing Hugging Face Hub cache snapshot")
         if dest is None:
