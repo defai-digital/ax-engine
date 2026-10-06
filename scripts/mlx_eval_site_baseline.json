@@ -41,7 +41,7 @@
     "try_eval": 2
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp/profiling.rs": {
-    "eval": 2,
+    "eval": 4,
     "try_eval": 3
   },
   "crates/ax-engine-mlx/src/model/qwen4_exp_integration_tests.rs": {
@@ -108,6 +108,7 @@
     "eval": 2
   },
   "crates/ax-engine-mlx/src/qwen4_exp_qsa.rs": {
+    "eval": 1,
     "try_eval": 3
   },
   "crates/ax-engine-mlx/src/runner/flash_next_tests.rs": {
