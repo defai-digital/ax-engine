@@ -49,7 +49,8 @@ fn load_png_rgb(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
             .ok_or_else(|| "rgb path has no stem".to_string())?;
         let (w, h) = parse_wxh_suffix(stem)
             .ok_or_else(|| format!("rgb file stem must end with _WxH, got {stem}"))?;
-        let expected = (w as usize) * (h as usize) * 3;
+        let expected = rgb_byte_len(w, h)
+            .ok_or_else(|| format!("rgb dimensions {w}x{h} overflow the byte length"))?;
         if bytes.len() != expected {
             return Err(format!(
                 "rgb length {} != {}x{}x3={}",
@@ -129,12 +130,21 @@ fn parse_ppm_p6(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     if i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
     }
-    let expected = (w as usize) * (h as usize) * 3;
-    let data = bytes
-        .get(i..i + expected)
+    let expected = rgb_byte_len(w, h)
+        .ok_or_else(|| format!("ppm dimensions {w}x{h} overflow the byte length"))?;
+    let data = i
+        .checked_add(expected)
+        .and_then(|end| bytes.get(i..end))
         .ok_or_else(|| format!("ppm truncated: need {expected} bytes"))?
         .to_vec();
     Ok((data, w, h))
+}
+
+/// `width * height * 3` without wrapping on untrusted header dimensions.
+fn rgb_byte_len(width: u32, height: u32) -> Option<usize> {
+    (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(3)
 }
 
 /// Very small BPE-free decode: map token ids via tokenizer.json string vocab if present.
@@ -298,5 +308,27 @@ fn main() -> ExitCode {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ppm_header_with_overflowing_dimensions_is_rejected() {
+        let error = parse_ppm_p6(b"P6\n4294967295 4294967295\n255\n")
+            .expect_err("overflowing dimensions must not wrap");
+        assert!(error.contains("overflow"), "{error}");
+    }
+
+    #[test]
+    fn ppm_with_short_payload_reports_truncation() {
+        let error =
+            parse_ppm_p6(b"P6\n2 1\n255\n\x00\x01\x02").expect_err("short payload must fail");
+        assert!(error.contains("truncated"), "{error}");
+        let (data, w, h) =
+            parse_ppm_p6(b"P6\n2 1\n255\n\x00\x01\x02\x03\x04\x05").expect("exact payload parses");
+        assert_eq!((w, h, data.len()), (2, 1, 6));
     }
 }

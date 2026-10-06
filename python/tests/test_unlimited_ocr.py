@@ -202,6 +202,43 @@ class UnlimitedOcrRequestTests(unittest.TestCase):
         self.assertEqual(global_only.soft_token_count, 273)
         self.assertFalse(global_only.multimodal_inputs["unlimited_ocr"]["cropping"])
 
+    def test_truncated_pil_image_becomes_value_error(self) -> None:
+        import io
+
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_model_contract(model_dir)
+            buffer = io.BytesIO()
+            Image.effect_noise((64, 64), 80).convert("RGB").save(buffer, format="PNG")
+            data = buffer.getvalue()
+            # The header parses, so Image.open succeeds; the pixel data is cut
+            # short and only fails when the lazy image is decoded.
+            lazy = Image.open(io.BytesIO(data[: len(data) // 2]))
+            with self.assertRaisesRegex(ValueError, "cannot decode Unlimited-OCR image"):
+                module.prepare_unlimited_ocr_image_request(
+                    model_dir,
+                    [IMAGE_TOKEN_ID],
+                    [lazy],
+                )
+
+    def test_decompression_bomb_becomes_value_error(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_model_contract(model_dir)
+            path = model_dir / "bomb.png"
+            Image.new("RGB", (20, 20)).save(path)
+            # More than twice the pixel limit makes Image.open raise
+            # DecompressionBombError instead of only warning.
+            with unittest.mock.patch.object(Image, "MAX_IMAGE_PIXELS", 10):
+                with self.assertRaisesRegex(ValueError, "cannot decode Unlimited-OCR image"):
+                    module.prepare_unlimited_ocr_image_request(
+                        model_dir,
+                        [IMAGE_TOKEN_ID],
+                        [path],
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
