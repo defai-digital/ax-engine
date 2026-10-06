@@ -1,0 +1,19 @@
+{
+  "index": 26,
+  "id": "math_km_to_meters",
+  "budget": 256,
+  "elapsed_seconds": 0.782,
+  "finish_reason": "stop",
+  "text": "4000",
+  "usage": {
+    "prompt_tokens": 27,
+    "completion_tokens": 4,
+    "total_tokens": 31
+  },
+  "activation_delta": {
+    "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+    "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+    "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+    "ax_engine_flash_next_mtp_step_errors_total": 0.0
+  }
+}

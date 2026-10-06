@@ -1,0 +1,7 @@
+{"event": "progress", "done": 0, "total": 100, "file": "Starting Hugging Face Hub download"}
+{"event": "progress", "done": 5, "total": 100, "file": "Download size ~123.2 GiB"}
+{"event": "progress", "done": 85, "total": 100, "file": "Downloading weights (34.0/34.0 GiB, elapsed 0s, ETA 0s)"}
+{"event": "progress", "done": 85, "total": 100, "file": "Downloaded Hugging Face Hub snapshot"}
+{"event": "progress", "done": 90, "total": 100, "file": "Generating manifest"}
+{"event": "progress", "done": 100, "total": 100, "file": "Ready"}
+{"alias":"ax-qwen3.8-flash-next-axq-mxfp4","certification":"candidate","config_present":true,"dest":"[home]/models/fresh-delivery-20261005/hf-cache/models--AutomatosX--AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/snapshots/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3","errors":[],"input":"qwen3.8-flash-next:mxfp4","manifest_path":"[home]/models/fresh-delivery-20261005/hf-cache/models--AutomatosX--AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/snapshots/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3/model-manifest.json","manifest_present":true,"repo_id":"AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP","revision":"ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3","safetensors_count":26,"schema_version":"ax.download_model.v1","server_command":["ax-engine-server","--mlx","--mlx-model-artifacts-dir","[home]/models/fresh-delivery-20261005/hf-cache/models--AutomatosX--AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP/snapshots/ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3","--port","31418"],"status":"ready"}

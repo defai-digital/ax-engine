@@ -1,0 +1,19 @@
+{
+  "index": 90,
+  "id": "science_methane_hydrogens",
+  "budget": 256,
+  "elapsed_seconds": 0.597,
+  "finish_reason": "stop",
+  "text": "4",
+  "usage": {
+    "prompt_tokens": 32,
+    "completion_tokens": 1,
+    "total_tokens": 33
+  },
+  "activation_delta": {
+    "ax_engine_flash_next_mtp_verified_steps_total": 0.0,
+    "ax_engine_flash_next_mtp_attach_failed_total": 0.0,
+    "ax_engine_flash_next_mtp_prefill_absorb_failures_total": 0.0,
+    "ax_engine_flash_next_mtp_step_errors_total": 0.0
+  }
+}
