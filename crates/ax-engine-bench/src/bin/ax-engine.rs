@@ -156,8 +156,8 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit" => {
             Some("04be51a3173b94e0a0d859be871cfb7a749405d2")
         }
-        "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8" => {
-            Some("4d928dce639633f1138113d733dd11c120da87c9")
+        "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8" => {
+            Some("da2260012416f6c7a1bab56d518709c7bd43ed5c")
         }
         "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit" => {
             Some("1c3fb2a006883d88ee0b84a831b480e4a9dc97c6")
@@ -1349,7 +1349,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
     ModelProfile {
         label: "ax-unlimited-ocr",
         preset: None,
-        repo_id: "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
+        repo_id: "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8",
         aliases: &[
             "ax-unlimited-ocr",
             "ax-unlimited-ocr-3b",
@@ -1357,7 +1357,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "unlimited-ocr-3b",
         ],
         downloadable: true,
-        approx_size_bytes: Some(3856472307),
+        approx_size_bytes: Some(4001212323),
     },
     ModelProfile {
         label: "ax-gpt-oss-120b-axq-6bit",
@@ -4620,7 +4620,7 @@ mod tests {
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
         "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
-        "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
+        "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
         "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
         "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",
