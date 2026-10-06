@@ -92,7 +92,7 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
-    "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8",
+    "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-gemma-4-26b-a4b-MLX-AXQ-4bit-MTP",

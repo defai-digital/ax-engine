@@ -78,7 +78,7 @@ fn quant_and_family_parsing() {
     assert_eq!(quant_bits("mlx-community/gemma-4-12B-it-4bit"), Some(4));
     assert_eq!(quant_bits("mlx-community/Qwen3.6-27B-8bit"), Some(8));
     assert_eq!(
-        quant_bits("AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-MXFP8"),
+        quant_bits("AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8"),
         Some(8)
     );
     assert_eq!(quant_bits("mlx-community/gpt-oss-20b-MXFP4-Q4"), Some(4));
