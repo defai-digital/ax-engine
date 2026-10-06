@@ -5249,6 +5249,17 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_DENSE_SHORT_CONTEXT` — when a Flash Next context
+    /// fits the QSA token budget (2,051 tokens for the shipped geometry), every
+    /// query keeps every visible token, so attend densely and causally instead of
+    /// scoring blocks and gathering. Same result in exact arithmetic; the fused
+    /// kernel sums keys in cache order rather than score order. Default ON; set
+    /// `=0` to restore the selected path everywhere.
+    flash_next_qsa_dense_short_context_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_DENSE_SHORT_CONTEXT"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION` — attend a Flash Next prefill
     /// chunk of 16 or more queries in padded, masked sub-batches instead of one
     /// gather and attention call per query. Each query still attends to exactly

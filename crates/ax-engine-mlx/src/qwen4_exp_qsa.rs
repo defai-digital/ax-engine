@@ -201,6 +201,13 @@ impl QsaConfig {
     fn max_keep(self) -> usize {
         self.token_budget as usize + self.compress_ratio as usize - 1
     }
+
+    /// Longest context for which every query keeps every visible token: block
+    /// `i` is complete once `4 * (i + 1)` tokens are visible, so up to
+    /// `block_topk` complete blocks plus a partial tail always fit the budget.
+    pub fn dense_context_limit(self) -> usize {
+        self.max_keep()
+    }
 }
 
 /// Shared index q/k projection and sanitized RMS gains (1 + raw delta).
@@ -343,6 +350,53 @@ impl QsaIndexer {
 
     pub(crate) fn projection_quantization_mode(&self) -> MlxQuantizationMode {
         self.qk_proj.mlx_quantization_mode()
+    }
+
+    /// Append the new chunk's raw index keys without scoring any block.
+    ///
+    /// When the whole context fits the token budget every query keeps every
+    /// visible token, so selection is the identity and attention can run densely
+    /// (see [`QsaConfig::dense_context_limit`]); only the key history still has
+    /// to advance so a later, longer context can score its blocks.
+    pub(crate) fn append_keys_with_projection(
+        &self,
+        hidden: &MlxArray,
+        cache: &QsaIndexKeyCache,
+        position_offset: usize,
+        projection: impl FnOnce(&MlxArray, &QuantizedWeight) -> MlxArray,
+    ) -> Result<QsaIndexKeyCache> {
+        let cfg = self.config;
+        let (batch, seq) = rank3_dims("hidden", hidden, cfg.hidden_size)?;
+        ensure_floating("hidden", hidden.dtype())?;
+        let cached_tokens = cache.token_count()?;
+        if position_offset != cached_tokens {
+            return Err(QsaError::PositionMismatch {
+                offset: position_offset,
+                cached_tokens,
+            });
+        }
+        if let Some(keys) = cache.keys() {
+            let shape = keys.shape();
+            if shape[0] != batch || shape[2] != cfg.head_dim {
+                return Err(QsaError::TensorShape {
+                    tensor: "index key cache",
+                    expected: format!("[{batch}, tokens, {}]", cfg.head_dim),
+                    actual: shape,
+                });
+            }
+            ensure_floating("index key cache", keys.dtype())?;
+            if keys.dtype() != hidden.dtype() {
+                return Err(QsaError::InvalidScalar("index key cache dtype mismatch"));
+            }
+        }
+        let projected = projection(hidden, &self.qk_proj);
+        let raw_keys = slice_last_dim(&projected, cfg.query_width(), cfg.proj_out(), None);
+        let raw_keys = reshape(&raw_keys, &[batch, seq, cfg.head_dim], None);
+        let staged = match cache.keys() {
+            Some(past) => contiguous(&concatenate(&[past, &raw_keys], 1, None), None),
+            None => contiguous(&raw_keys, None),
+        };
+        Ok(QsaIndexKeyCache { keys: Some(staged) })
     }
 
     /// Project the new hidden chunk, append raw keys, and return gather indices

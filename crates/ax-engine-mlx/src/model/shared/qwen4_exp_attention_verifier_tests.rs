@@ -575,3 +575,117 @@ fn batched_prefill_attention_matches_the_per_query_path() {
 fn values_of(value: &MlxArray) -> Vec<f32> {
     values(value)
 }
+
+fn close(actual: &MlxArray, expected: &MlxArray, bound: f32, label: &str) {
+    assert_eq!(actual.shape(), expected.shape(), "{label}: shape");
+    let (a, b) = (values(actual), values(expected));
+    let max_abs = a
+        .iter()
+        .zip(&b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    eprintln!("{label}: max abs difference {max_abs} (bound {bound})");
+    assert!(
+        max_abs <= bound,
+        "{label}: max abs difference {max_abs} > {bound}"
+    );
+}
+
+#[test]
+fn dense_short_context_attention_matches_the_selected_path_and_keeps_caches_exact() {
+    let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    for mode in [
+        None,
+        Some(MlxQuantizationMode::Affine),
+        Some(MlxQuantizationMode::Mxfp4),
+    ] {
+        let module = module(mode, mode);
+        // QSA geometry: ratio 4, budget 8 => every query keeps every token up to
+        // 11 tokens of context.
+        assert_eq!(module.indexer.config().dense_context_limit(), 11);
+        let input = input();
+        let steps = |dense: bool| {
+            with_dense_attention(dense, || {
+                let prefix = module
+                    .forward(
+                        &span(&input, 0, PREFIX),
+                        &Qwen4ExpAttentionCache::empty(),
+                        0,
+                        SHARED,
+                    )
+                    .unwrap();
+                evaluate(&prefix);
+                // A three-token continuation reaches 10 tokens of context.
+                let chunk = module
+                    .forward(
+                        &span(&input, PREFIX, PREFIX + 3),
+                        prefix.next_state(),
+                        PREFIX as usize,
+                        SHARED,
+                    )
+                    .unwrap();
+                evaluate(&chunk);
+                // A singleton step from the same 7-token state: context 8.
+                let single = module
+                    .forward(
+                        &span(&input, PREFIX, PREFIX + 1),
+                        prefix.next_state(),
+                        PREFIX as usize,
+                        SHARED,
+                    )
+                    .unwrap();
+                evaluate(&single);
+                (prefix, chunk, single)
+            })
+        };
+        let (dense_prefix, dense_chunk, dense_single) = steps(true);
+        let (host_prefix, host_chunk, host_single) = steps(false);
+        // The dense path advances the very same caches (keys, values, index keys).
+        exact_cache(dense_prefix.next_state(), host_prefix.next_state());
+        exact_cache(dense_chunk.next_state(), host_chunk.next_state());
+        exact_cache(dense_single.next_state(), host_single.next_state());
+        let bound = 5e-2;
+        close(
+            dense_prefix.delta(),
+            host_prefix.delta(),
+            bound,
+            "prefix chunk",
+        );
+        close(
+            dense_chunk.delta(),
+            host_chunk.delta(),
+            bound,
+            "continued chunk",
+        );
+        close(
+            dense_single.delta(),
+            host_single.delta(),
+            bound,
+            "singleton",
+        );
+    }
+}
+
+#[test]
+fn dense_attention_is_not_used_beyond_the_qsa_budget() {
+    let _exact_off = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+    let module = module(None, None);
+    let limit = module.indexer.config().dense_context_limit() as i32;
+    let total = limit + 4;
+    let long = astype(
+        &reshape(&wave(total, HIDDEN, 19), &[1, total, HIDDEN], None),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let run = |dense: bool| {
+        with_dense_attention(dense, || {
+            let out = module
+                .forward(&long, &Qwen4ExpAttentionCache::empty(), 0, SHARED)
+                .unwrap();
+            evaluate(&out);
+            out
+        })
+    };
+    // Past the budget selection is real, so the dense switch must not matter.
+    exact(run(true).delta(), run(false).delta());
+}
