@@ -52,6 +52,61 @@ pub(crate) enum Qwen4ExpTargetSchedule {
     Unavailable(String),
 }
 
+/// Operator selection of the MTP target verifier for an audited MXFP4 trunk.
+pub(crate) const MTP_VERIFIER_ENV: &str = "AX_FLASH_NEXT_MTP_VERIFIER";
+
+/// `Canonical` (the default) verifies with two sequential one-token target
+/// forwards, so output and retained state match direct decoding, but a round
+/// reads the weights twice and cannot beat direct decoding. `Batched` verifies
+/// with one two-token target forward and replays the primary on rejection. It
+/// is faster, but accepted rounds retain batch-rounded state, so the stream can
+/// diverge from direct decoding at near-tied logits. It grants no qualification.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Qwen4ExpMtpVerifierSelection {
+    #[default]
+    Canonical,
+    Batched,
+}
+
+/// Unset or empty selects `Canonical`. Any other unrecognized value is an
+/// error: an operator who asked for a verifier must not silently get another.
+pub(crate) fn parse_mtp_verifier_selection(
+    raw: Option<&str>,
+) -> Result<Qwen4ExpMtpVerifierSelection, String> {
+    match raw.map(str::trim) {
+        None | Some("") | Some("canonical") => Ok(Qwen4ExpMtpVerifierSelection::Canonical),
+        Some("batched") => Ok(Qwen4ExpMtpVerifierSelection::Batched),
+        Some(other) => Err(format!(
+            "invalid {MTP_VERIFIER_ENV} {other:?} (expected canonical or batched)"
+        )),
+    }
+}
+
+/// Apply the operator selection to a format-derived schedule. `Batched` only
+/// relaxes an audited MXFP4 canonical schedule; affine trunks already batch and
+/// an unavailable schedule stays unavailable.
+fn select_target_schedule(
+    schedule: Qwen4ExpTargetSchedule,
+    selection: Result<Qwen4ExpMtpVerifierSelection, String>,
+) -> Qwen4ExpTargetSchedule {
+    match (schedule, selection) {
+        (Qwen4ExpTargetSchedule::Unavailable(reason), _) => {
+            Qwen4ExpTargetSchedule::Unavailable(reason)
+        }
+        (_, Err(reason)) => Qwen4ExpTargetSchedule::Unavailable(reason),
+        (Qwen4ExpTargetSchedule::CanonicalSingleton, Ok(Qwen4ExpMtpVerifierSelection::Batched)) => {
+            tracing::warn!(
+                target: "ax_engine_mlx::weights",
+                env = MTP_VERIFIER_ENV,
+                "Flash Next MTP uses the batched verifier: output can diverge from direct \
+                 decoding at near-tied logits; no qualification is granted"
+            );
+            Qwen4ExpTargetSchedule::LegacyBatched
+        }
+        (schedule, Ok(_)) => schedule,
+    }
+}
+
 /// All Flash Next weights: shared trunk pieces plus one entry per layer.
 ///
 /// Bounded by construction: the n-gram table inside each [`Qwen4ExpPleBundle`]
@@ -206,13 +261,16 @@ fn load_with_schedule_admission(
         &schedule_modes,
         &mut schedule_index,
     ) {
-        Ok(_header_readers) => classify_target_schedule(
-            audited_mxfp4,
-            specs,
-            &name_map,
-            &streamed_layers,
-            &schedule_modes,
-            Some(&schedule_index),
+        Ok(_header_readers) => select_target_schedule(
+            classify_target_schedule(
+                audited_mxfp4,
+                specs,
+                &name_map,
+                &streamed_layers,
+                &schedule_modes,
+                Some(&schedule_index),
+            ),
+            parse_mtp_verifier_selection(std::env::var(MTP_VERIFIER_ENV).ok().as_deref()),
         ),
         Err(reason) => Qwen4ExpTargetSchedule::Unavailable(reason),
     };
@@ -2211,6 +2269,68 @@ mod tests {
             ),
             Qwen4ExpTargetSchedule::Unavailable(_)
         ));
+    }
+
+    #[test]
+    fn mtp_verifier_selection_is_explicit_and_only_relaxes_audited_mxfp4() {
+        use Qwen4ExpMtpVerifierSelection::{Batched, Canonical};
+        for unset in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("canonical"),
+            Some(" canonical\n"),
+        ] {
+            assert_eq!(parse_mtp_verifier_selection(unset), Ok(Canonical));
+        }
+        assert_eq!(parse_mtp_verifier_selection(Some("batched")), Ok(Batched));
+        for bad in ["batch", "1", "true", "BATCHED", "legacy"] {
+            let reason = parse_mtp_verifier_selection(Some(bad)).unwrap_err();
+            assert!(reason.contains(MTP_VERIFIER_ENV) && reason.contains(bad));
+        }
+
+        let select = select_target_schedule;
+        assert_eq!(
+            select(Qwen4ExpTargetSchedule::CanonicalSingleton, Ok(Canonical)),
+            Qwen4ExpTargetSchedule::CanonicalSingleton
+        );
+        assert_eq!(
+            select(Qwen4ExpTargetSchedule::CanonicalSingleton, Ok(Batched)),
+            Qwen4ExpTargetSchedule::LegacyBatched
+        );
+        for selection in [Canonical, Batched] {
+            assert_eq!(
+                select(Qwen4ExpTargetSchedule::LegacyBatched, Ok(selection)),
+                Qwen4ExpTargetSchedule::LegacyBatched
+            );
+        }
+        // An unclassified or rejected format is never relaxed into a schedule.
+        for selection in [Canonical, Batched] {
+            assert_eq!(
+                select(
+                    Qwen4ExpTargetSchedule::Unavailable("format".into()),
+                    Ok(selection)
+                ),
+                Qwen4ExpTargetSchedule::Unavailable("format".into())
+            );
+        }
+        assert_eq!(
+            select(
+                Qwen4ExpTargetSchedule::Unavailable("format".into()),
+                Err("selection".into())
+            ),
+            Qwen4ExpTargetSchedule::Unavailable("format".into())
+        );
+        // A malformed request fails closed instead of falling back silently.
+        for schedule in [
+            Qwen4ExpTargetSchedule::CanonicalSingleton,
+            Qwen4ExpTargetSchedule::LegacyBatched,
+        ] {
+            assert_eq!(
+                select(schedule, Err("selection".into())),
+                Qwen4ExpTargetSchedule::Unavailable("selection".into())
+            );
+        }
     }
 
     #[test]

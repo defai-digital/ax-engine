@@ -4584,6 +4584,12 @@ impl ExecutionRunner for MlxRunner {
                 "ax_mlx_flash_next_selected_expert_payload_kib",
                 u32::try_from(selected_reads.payload_bytes / 1024).unwrap_or(u32::MAX),
             );
+            if let Some(trunk) = self.weights.qwen4_exp.as_ref() {
+                route_decisions.upsert_route_decision(
+                    "ax_mlx_flash_next_mtp_verifier_schedule",
+                    crate::model::qwen4_exp_mtp::target_schedule_route_code(trunk),
+                );
+            }
             if !skip_route_telemetry {
                 ngram_acceleration.append_route_decisions(&mut route_decisions);
                 mtp_telemetry.append_route_decisions(&mut route_decisions);
