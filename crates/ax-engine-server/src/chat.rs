@@ -590,6 +590,19 @@ fn json_contains_u64(value: &Value, target: u64) -> bool {
     }
 }
 
+/// Qwen 3.8 reaches the server as `qwen3.8-*`, `qwen3-8-*` or `qwen38-*`. The
+/// label must end right after the `8` so dense `Qwen3-8B` is not matched.
+pub(crate) fn is_qwen38_model_id(model_id: &str) -> bool {
+    let normalized = normalize_model_id_token(model_id);
+    normalized.contains("qwen38")
+        || normalized.match_indices("qwen3-8").any(|(start, needle)| {
+            normalized[start + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| next == '-')
+        })
+}
+
 /// Qwen3.5-class 35B-A3B fine-tunes that keep product ids (Holo3 / Ornith)
 /// but share official Qwen3.5 ChatML + function-XML tools.
 pub(crate) fn is_qwen35_class_named_finetune(model_id: &str) -> bool {
@@ -2924,5 +2937,22 @@ mod tests {
             );
         }
         assert!(uses_qwen_coder_xml_tool_contract("Qwen3-Coder-Next-4bit"));
+    }
+
+    #[test]
+    fn qwen38_label_excludes_dense_qwen3_8b() {
+        for model_id in [
+            "qwen3.8-27b",
+            "qwen3.8-27b-mtp",
+            "Qwen3.8-27B",
+            "qwen38-27b",
+            "qwen3_8_27b",
+            "qwen3.8",
+        ] {
+            assert!(is_qwen38_model_id(model_id), "{model_id}");
+        }
+        for model_id in ["qwen3-8b", "Qwen3-8B-4bit", "qwen3-80b", "qwen3.6-27b"] {
+            assert!(!is_qwen38_model_id(model_id), "{model_id}");
+        }
     }
 }
