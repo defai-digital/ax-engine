@@ -445,20 +445,49 @@ impl Qwen4ExpAttention {
             } else {
                 policy
             };
-        let selection = match index_policy {
+        // When the whole context fits the QSA budget every query keeps every
+        // visible token, so selection is the identity: skip scoring and attend
+        // densely (causal). Only the index-key history still advances.
+        let dense =
+            dense_attention_enabled() && _total <= self.indexer.config().dense_context_limit();
+        let projection = |input: &MlxArray, weight: &QuantizedWeight| match index_policy {
             ProjectionBatchPolicy::Shared => {
-                self.indexer
-                    .select(hidden, cache.index(), position_offset)?
+                qw_with_policy(input, weight, ProjectionBatchPolicy::Shared)
             }
-            ProjectionBatchPolicy::RowExact => self.indexer.select_with_projection(
+            ProjectionBatchPolicy::RowExact => {
+                qw_with_policy(input, weight, ProjectionBatchPolicy::RowExact)
+            }
+        };
+        let selection = if dense {
+            None
+        } else {
+            Some(match index_policy {
+                ProjectionBatchPolicy::Shared => {
+                    self.indexer
+                        .select(hidden, cache.index(), position_offset)?
+                }
+                ProjectionBatchPolicy::RowExact => self.indexer.select_with_projection(
+                    hidden,
+                    cache.index(),
+                    position_offset,
+                    |input, weight| qw_with_policy(input, weight, ProjectionBatchPolicy::RowExact),
+                )?,
+            })
+        };
+        let next_index = if dense {
+            self.indexer.append_keys_with_projection(
                 hidden,
                 cache.index(),
                 position_offset,
-                |input, weight| qw_with_policy(input, weight, ProjectionBatchPolicy::RowExact),
-            )?,
+                projection,
+            )?
+        } else {
+            QsaIndexKeyCache::empty()
         };
         #[cfg(test)]
-        crate::model::qwen4_exp::profiling::mark("qsa_indexer", &[selection.gather_indices()]);
+        if let Some(selection) = &selection {
+            crate::model::qwen4_exp::profiling::mark("qsa_indexer", &[selection.gather_indices()]);
+        }
 
         let query_policy =
             if self.q_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
@@ -533,7 +562,12 @@ impl Qwen4ExpAttention {
             crate::model::qwen4_exp::profiling::dump(stage, &[array]);
         }
 
-        let attn = attend_selected(&queries, &staged_keys, &staged_values, &selection, cfg)?;
+        let attn = match &selection {
+            Some(selection) => {
+                attend_selected(&queries, &staged_keys, &staged_values, selection, cfg)?
+            }
+            None => attend_dense(&queries, &staged_keys, &staged_values, cfg),
+        };
         let attn = reshape(
             &transpose(&attn, &[0, 2, 1, 3], None),
             &[batch, seq, cfg.query_width],
@@ -550,8 +584,13 @@ impl Qwen4ExpAttention {
         let delta = qw_with_policy(&gated, &self.o_proj, output_policy);
         #[cfg(test)]
         {
+            if let Some(selection) = &selection {
+                crate::model::qwen4_exp::profiling::dump(
+                    "qsa_gather_indices",
+                    &[selection.gather_indices()],
+                );
+            }
             for (stage, array) in [
-                ("qsa_gather_indices", selection.gather_indices()),
                 ("qsa_attention_before_gate", &attn),
                 ("qsa_gate", &gate),
                 ("qsa_gated", &gated),
@@ -566,7 +605,10 @@ impl Qwen4ExpAttention {
             next_state: Qwen4ExpAttentionCache {
                 keys: Some(staged_keys),
                 values: Some(staged_values),
-                index: selection.into_next_cache(),
+                index: match selection {
+                    Some(selection) => selection.into_next_cache(),
+                    None => next_index,
+                },
             },
         })
     }
@@ -627,6 +669,53 @@ impl Qwen4ExpAttention {
 #[cfg(test)]
 #[path = "qwen4_exp_attention_verifier_tests.rs"]
 mod verifier_tests;
+
+fn dense_attention_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = DENSE_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+    crate::fastpath::flash_next_qsa_dense_short_context_enabled()
+}
+
+#[cfg(test)]
+thread_local! {
+    static DENSE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `action` with dense short-context attention forced on or off on this thread.
+#[cfg(test)]
+pub(crate) fn with_dense_attention<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DENSE_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(DENSE_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+/// Causal attention over the whole staged cache. Equivalent in exact arithmetic
+/// to the selected path when every query keeps every visible token; the fused
+/// kernel sums keys in cache order instead of score order.
+fn attend_dense(
+    queries: &MlxArray,
+    keys: &MlxArray,
+    values: &MlxArray,
+    cfg: Qwen4ExpAttentionConfig,
+) -> MlxArray {
+    let keys = contiguous(&transpose(keys, &[0, 2, 1, 3], None), None);
+    let values = contiguous(&transpose(values, &[0, 2, 1, 3], None), None);
+    scaled_dot_product_attention(
+        &contiguous(queries, None),
+        &keys,
+        &values,
+        cfg.scale,
+        true,
+        None,
+    )
+}
 
 fn attend_selected(
     queries: &MlxArray,
