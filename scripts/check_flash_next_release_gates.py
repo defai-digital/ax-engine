@@ -62,6 +62,8 @@ def gate_delivery(delivery: dict[str, Any], th: dict[str, Any]) -> list[dict[str
         problems.append("functional controls did not pass in every required mode")
     attempts = delivery.get("previous_attempts") or []
     resumed = f" after {len(attempts)} failed attempt(s) that were resumed" if attempts else ""
+    if delivery.get("transport_override"):
+        resumed += f" (transport override {delivery['transport_override']})"
     return [gate("delivery", not problems, "; ".join(problems) or
                  f"{verification.get('members_verified')} members, "
                  f"{verification.get('bytes_verified')} bytes verified from an empty cache{resumed}",

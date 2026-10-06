@@ -96,8 +96,22 @@ def snapshot_dir(cache_root: Path) -> Path:
     return snapshots / native.PACK_REVISION
 
 
+TRANSPORT_OVERRIDES = ("AX_ENGINE_HF_MAX_WORKERS", "HF_HUB_DOWNLOAD_TIMEOUT", "HF_HUB_ETAG_TIMEOUT")
+
+
+def parse_transport(items: list[str]) -> dict[str, str]:
+    """Documented downloader transport knobs only; anything else is refused."""
+    parsed: dict[str, str] = {}
+    for item in items:
+        name, separator, value = item.partition("=")
+        if not separator or name not in TRANSPORT_OVERRIDES or not value.isdigit():
+            raise ValueError(f"transport override must be NAME=<integer> with NAME in {TRANSPORT_OVERRIDES}")
+        parsed[name] = value
+    return parsed
+
+
 def clean_env(cache_root: Path, python: Path, helper: Path | None = None,
-              bench: Path | None = None) -> dict[str, str]:
+              bench: Path | None = None, transport: dict[str, str] | None = None) -> dict[str, str]:
     """Environment for the downloader: inherited overrides dropped, the stated inputs set.
 
     A source build finds neither the bundled helper nor `ax-engine-bench`, so the
@@ -110,6 +124,7 @@ def clean_env(cache_root: Path, python: Path, helper: Path | None = None,
         env["AX_ENGINE_DOWNLOAD_HELPER"] = str(helper)
     if bench is not None:
         env["PATH"] = f"{bench.parent}{os.pathsep}{env.get('PATH', '')}"
+    env.update(transport or {})
     return env
 
 
@@ -168,6 +183,9 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--server-bin", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--transport-env", action="append", default=[], metavar="NAME=VALUE",
+                        help="downloader transport override (AX_ENGINE_HF_MAX_WORKERS, "
+                             "HF_HUB_DOWNLOAD_TIMEOUT, HF_HUB_ETAG_TIMEOUT); recorded in the result")
     parser.add_argument("--previous-attempt", type=Path,
                         help="output directory of a failed attempt on this same cache root; "
                              "this run resumes it and records the failed attempt(s)")
@@ -191,6 +209,7 @@ def main() -> int:
     chip = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
     if "Ultra" not in chip or memory < 192 * 1024**3:
         parser.error("live run requires the Ultra-class 192 GiB+ Flash Next target")
+    transport = parse_transport(args.transport_env)
     resuming = args.previous_attempt is not None
     started_empty = check_fresh(args.cache_root, resuming)
     fresh, attempts = started_empty, []
@@ -212,14 +231,15 @@ def main() -> int:
     with (args.output / "download.ndjson").open("wb") as out, \
             (args.output / "download.stderr.log").open("wb") as err:
         done = subprocess.run([str(args.ax_engine), "download", ALIAS, "--progress-json"],
-                              stdout=out, stderr=err, env=clean_env(args.cache_root, args.python, args.helper, args.bench_bin))
+                              stdout=out, stderr=err, env=clean_env(args.cache_root, args.python, args.helper, args.bench_bin,
+                                            transport))
     elapsed = round(time.monotonic() - started, 3)
     for name in ("download.ndjson", "download.stderr.log"):
         path = args.output / name
         path.write_text(scrub(path.read_text(errors="replace")))
     record: dict[str, Any] = {
         **contract, "completed": False, "fresh_cache": fresh, "previous_attempts": attempts,
-        "resumed": resuming,
+        "resumed": resuming, "transport_override": transport,
         "download": {"exit_code": done.returncode, "elapsed_seconds": elapsed,
                      "hub_client_version": hub.stdout.strip(),
                      "ax_engine_sha256": sha256_file(args.ax_engine),
