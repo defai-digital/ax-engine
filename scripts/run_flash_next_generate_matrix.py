@@ -99,14 +99,20 @@ def chat_prompt_ids(base: str, user: str) -> list[int]:
     return tokenize(base, templated)
 
 
-def read_generate_stream(lines, clock=time.monotonic) -> tuple[dict[str, Any], dict[str, Any]]:
+def read_generate_stream(
+    lines, clock=None, *, started_at: float | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Read a /v1/generate/stream body line by line and time its token events.
 
     The server leaves `performance` timings at zero on this path, so TTFT and
     the decode window are measured on the client (loopback, so overhead is small
-    but not zero). Returns the terminal response and the client timing record.
+    but not zero). `started_at` includes request dispatch and the wait for HTTP
+    headers; callers reading an existing body can omit it. Returns the terminal
+    response and the client timing record.
     """
-    t0 = clock()
+    if clock is None:
+        clock = time.monotonic
+    t0 = clock() if started_at is None else started_at
     event, response, token_events = None, None, []
     for raw in lines:
         line = raw.decode().rstrip("\r\n")
@@ -145,8 +151,9 @@ def generate(base: str, ids: list[int], max_tokens: int = OUTPUT_TOKENS,
     body = {"input_tokens": ids, "max_output_tokens": max_tokens, "sampling": sampling}
     req = urllib.request.Request(base + "/v1/generate/stream", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
+    started_at = time.monotonic()
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as stream:
-        response, timing = read_generate_stream(stream)
+        response, timing = read_generate_stream(stream, started_at=started_at)
     response["client_timing"] = timing
     return response
 

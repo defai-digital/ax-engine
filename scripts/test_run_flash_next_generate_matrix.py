@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("run_flash_next_generate_matrix.py")
 sys.path.insert(0, str(SCRIPT.parent))
@@ -38,6 +39,30 @@ def run(mode: str, trajectories: list[dict], cells: list[dict], hashes: dict | N
 
 
 class GenerateMatrixTests(unittest.TestCase):
+    def test_generate_timing_includes_waiting_for_http_headers(self):
+        class Stream:
+            def __enter__(self):
+                return iter([
+                    b'event: step\n', b'data: {"delta_tokens": [1]}\n', b'\n',
+                    b'event: response\n',
+                    b'data: {"response": {"output_tokens": [1]}}\n', b'\n',
+                ])
+
+            def __exit__(self, *args):
+                pass
+
+        now = [10.0]
+
+        def open_stream(*args, **kwargs):
+            now[0] = 12.0  # Two seconds elapse before HTTP headers arrive.
+            return Stream()
+
+        with patch.object(mod.urllib.request, "urlopen", side_effect=open_stream), \
+                patch.object(mod.time, "monotonic", side_effect=lambda: now[0]):
+            response = mod.generate("http://127.0.0.1:31418", [2], max_tokens=1)
+        self.assertEqual(response["client_timing"]["ttft_seconds"], 2.0)
+        self.assertEqual(response["client_timing"]["total_seconds"], 2.0)
+
     def test_generate_stream_times_token_events_and_returns_the_terminal_response(self):
         ticks = iter([0.0, 1.0, 1.5, 3.5, 4.0])  # t0, two token events, end
         body = [b'event: request\n', b'data: {"request": {}}\n', b'\n',
