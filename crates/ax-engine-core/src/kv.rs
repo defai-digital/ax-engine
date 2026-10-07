@@ -279,12 +279,16 @@ impl KvManager {
         if target_full_block_count == 0 {
             return Ok(PrefixLookupResult::miss(self.config.cache_group_id));
         }
-        let target_block_keys =
-            self.full_block_key_sequence(prompt_tokens, target_full_block_count)?;
+        // Only the first-block key is hashed: candidates come from the
+        // first-block index, and the match length is then established by
+        // direct token comparison — hash equality was never sufficient for
+        // sharing anyway (see token_verified_block_count), so hashing every
+        // candidate's full prompt per lookup bought nothing.
+        let first_block_key = self.first_block_key(prompt_tokens)?;
         let mut best_match = PrefixLookupResult::miss(self.config.cache_group_id);
         let Some(candidate_request_ids) = self
             .live_prefix_requests_by_first_block
-            .get(&target_block_keys[0])
+            .get(&first_block_key)
         else {
             return Ok(best_match);
         };
@@ -306,12 +310,9 @@ impl KvManager {
 
             let candidate_prompt_full_block_count =
                 prompt_full_block_count(candidate_prompt_tokens, self.config.block_size_tokens);
-            let candidate_block_keys = self.full_block_key_sequence(
-                candidate_prompt_tokens,
-                (candidate_table.full_block_count as usize).min(candidate_prompt_full_block_count),
-            )?;
-            let hash_matched_block_count =
-                common_prefix_block_count(&candidate_block_keys, &target_block_keys);
+            let candidate_block_count = (candidate_table.full_block_count as usize)
+                .min(candidate_prompt_full_block_count)
+                .min(target_full_block_count);
             // Block keys are FNV-style 64-bit hashes over prompt-derived data,
             // so key equality is necessary but not sufficient: a collision
             // would map another request's KV blocks into this one (wrong
@@ -321,7 +322,7 @@ impl KvManager {
             let matched_block_count = token_verified_block_count(
                 candidate_prompt_tokens,
                 prompt_tokens,
-                hash_matched_block_count,
+                candidate_block_count,
                 self.config.block_size_tokens,
             );
             let matched_token_count = matched_block_count as u32 * self.config.block_size_tokens;
@@ -532,15 +533,19 @@ impl KvManager {
 
         // Validate the accounting before touching the free list so an
         // overflow fails closed instead of leaving popped blocks orphaned.
-        let new_logical_token_count = self
-            .block_tables
-            .get(&request_id)
-            .ok_or(KvManagerError::UnknownRequest(request_id))?
-            .logical_token_count
-            .checked_add(scheduled_tokens)
-            .ok_or(KvManagerError::InvariantViolation(
-                "logical_token_count overflow",
-            ))?;
+        let (was_share_indexed, new_logical_token_count) = {
+            let table = self
+                .block_tables
+                .get(&request_id)
+                .ok_or(KvManagerError::UnknownRequest(request_id))?;
+            let count = table
+                .logical_token_count
+                .checked_add(scheduled_tokens)
+                .ok_or(KvManagerError::InvariantViolation(
+                    "logical_token_count overflow",
+                ))?;
+            (table.full_block_count > 0, count)
+        };
         let required_new_blocks = required_new_blocks as usize;
         // Validate the whole pop set before touching the free list so an
         // invariant failure cannot orphan already-popped blocks or clobber a
@@ -560,11 +565,15 @@ impl KvManager {
         }
         // A duplicated id in the pop set would only collide with itself on
         // the second insert — after the first pop already mutated the ledger.
-        let mut seen = std::collections::HashSet::with_capacity(pop_set.len());
-        if pop_set.iter().any(|block_id| !seen.insert(block_id)) {
-            return Err(KvManagerError::InvariantViolation(
-                "free list contains a duplicate block",
-            ));
+        // Single-block appends (the steady-state decode case) cannot collide
+        // and skip the scratch set.
+        if pop_set.len() > 1 {
+            let mut seen = std::collections::HashSet::with_capacity(pop_set.len());
+            if pop_set.iter().any(|block_id| !seen.insert(block_id)) {
+                return Err(KvManagerError::InvariantViolation(
+                    "free list contains a duplicate block",
+                ));
+            }
         }
         let mut new_block_ids = Vec::with_capacity(required_new_blocks);
         for _ in 0..required_new_blocks {
@@ -583,8 +592,11 @@ impl KvManager {
             .allocated_blocks_total
             .saturating_add(u64::try_from(new_block_ids.len()).unwrap_or(u64::MAX));
 
-        self.remove_live_prefix_index(request_id)?;
-        {
+        // The live-prefix index key is derived from the immutable prompt, so
+        // it never changes for a registered request: membership only flips
+        // when the request gains its first shareable full block. Skip the
+        // remove/reinsert pair on steady-state appends.
+        let is_share_indexed = {
             let table = self
                 .block_tables
                 .get_mut(&request_id)
@@ -594,8 +606,11 @@ impl KvManager {
             table.full_block_count = table.logical_token_count / self.config.block_size_tokens;
             table.partial_block_tokens =
                 (table.logical_token_count % self.config.block_size_tokens) as u16;
+            table.full_block_count > 0
+        };
+        if !was_share_indexed && is_share_indexed {
+            self.insert_live_prefix_index(request_id)?;
         }
-        self.insert_live_prefix_index(request_id)?;
 
         Ok(AllocationPlan {
             request_id,
@@ -725,6 +740,16 @@ impl KvManager {
             .get(&request_id)
             .cloned()
             .ok_or(KvManagerError::UnknownRequest(request_id))
+    }
+
+    /// Logical token count without cloning the block table — the multi-token
+    /// reconciliation loop only needs the scalar.
+    pub fn logical_token_count(&self, request_id: RequestId) -> Result<u32, KvManagerError> {
+        Ok(self
+            .block_tables
+            .get(&request_id)
+            .ok_or(KvManagerError::UnknownRequest(request_id))?
+            .logical_token_count)
     }
 
     pub fn used_block_count(&self) -> u32 {
@@ -923,6 +948,21 @@ impl KvManager {
             .is_some_and(|ref_count| *ref_count == 1)
     }
 
+    /// Hash of the first prompt block — the live-prefix index key. The hash
+    /// chain starts at `None`, so this never needs the full sequence.
+    fn first_block_key(&self, prompt_tokens: &[u32]) -> Result<CachedBlockKey, KvManagerError> {
+        let block_size = self.config.block_size_tokens as usize;
+        let Some(first_block) = prompt_tokens.get(..block_size) else {
+            return Err(KvManagerError::InvariantViolation(
+                "first block key requires one full prompt block",
+            ));
+        };
+        Ok(CachedBlockKey {
+            cache_group_id: self.config.cache_group_id,
+            block_hash: hash_prefix_block(None, first_block),
+        })
+    }
+
     fn live_prefix_index_key(
         &self,
         table: &BlockTable,
@@ -934,10 +974,7 @@ impl KvManager {
             return Ok(None);
         }
 
-        Ok(self
-            .full_block_key_sequence(prompt_tokens, 1)?
-            .first()
-            .copied())
+        Ok(Some(self.first_block_key(prompt_tokens)?))
     }
 
     fn insert_live_prefix_index(&mut self, request_id: RequestId) -> Result<(), KvManagerError> {
@@ -1080,22 +1117,29 @@ impl KvManager {
         let mut matched_blocks = Vec::new();
         let mut cached_block_keys = Vec::new();
 
+        // Stream the hash chain and stop at the first miss instead of hashing
+        // the whole prompt up front: the chain is sequential, so a block that
+        // misses (or fails token verification) makes every later hash
+        // unreachable.
         let block_size_tokens = self.config.block_size_tokens as usize;
-        for (block_index, cache_key) in self
-            .full_block_key_sequence(prompt_tokens, full_block_count)?
-            .into_iter()
-            .enumerate()
-        {
+        let mut parent_block_hash = None;
+        for block_index in 0..full_block_count {
+            let start = block_index * block_size_tokens;
+            let end = start + block_size_tokens;
+            let block_hash = hash_prefix_block(parent_block_hash, &prompt_tokens[start..end]);
+            let cache_key = CachedBlockKey {
+                cache_group_id: self.config.cache_group_id,
+                block_hash,
+            };
             let Some(entry) = self.cached_blocks.get(&cache_key) else {
                 break;
             };
-            let start = block_index * block_size_tokens;
-            let end = start + block_size_tokens;
             if entry.block_tokens.as_slice() != &prompt_tokens[start..end] {
                 break;
             }
             matched_blocks.push(entry.block_id);
             cached_block_keys.push(cache_key);
+            parent_block_hash = Some(block_hash);
         }
 
         if matched_blocks.is_empty() {
@@ -1145,6 +1189,7 @@ impl KvManager {
         Ok(block_keys)
     }
 
+    #[cfg(test)]
     fn full_block_key_sequence(
         &self,
         prompt_tokens: &[u32],
@@ -1158,24 +1203,17 @@ impl KvManager {
     }
 }
 
-fn common_prefix_block_count(left: &[CachedBlockKey], right: &[CachedBlockKey]) -> usize {
-    left.iter()
-        .zip(right.iter())
-        .take_while(|(left, right)| left == right)
-        .count()
-}
-
 /// Number of leading blocks whose tokens are identical between two prompts,
-/// capped at `hash_matched_block_count`. Hash-equal blocks may still collide;
-/// only token-verified blocks are safe to share.
+/// capped at `max_block_count`. Hash equality is never sufficient for
+/// sharing; only token-verified blocks are safe to share.
 fn token_verified_block_count(
     candidate_prompt_tokens: &[u32],
     target_prompt_tokens: &[u32],
-    hash_matched_block_count: usize,
+    max_block_count: usize,
     block_size_tokens: u32,
 ) -> usize {
     let block_size = block_size_tokens as usize;
-    (0..hash_matched_block_count)
+    (0..max_block_count)
         .take_while(|&block_index| {
             let start = block_index * block_size;
             let end = start + block_size;
@@ -1553,6 +1591,32 @@ mod tests {
                 .live_prefix_requests_by_first_block
                 .contains_key(&first_key)
         );
+    }
+
+    #[test]
+    fn live_prefix_index_survives_steady_state_appends() {
+        // Once a request owns its first full block, later appends skip the
+        // index remove/reinsert; the entry must stay findable throughout.
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager.allocate(RequestId(1), 4).unwrap();
+        // Steady-state appends: partial-block fill, then a new block.
+        manager.allocate(RequestId(1), 2).unwrap();
+        manager.allocate(RequestId(1), 2).unwrap();
+
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+
+        assert!(lookup.hit);
+        assert!(!lookup.uses_retained_cache());
+        assert_eq!(lookup.matched_token_count, 8);
+        assert_eq!(lookup.matched_blocks.len(), 2);
     }
 
     #[test]

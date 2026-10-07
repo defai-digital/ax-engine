@@ -1596,10 +1596,7 @@ impl EngineCore {
                 .processed_prompt_tokens
                 .saturating_add(u32::try_from(record.generated_tokens.len()).unwrap_or(u32::MAX))
                 .saturating_sub(1);
-            let logical_tokens = self
-                .kv_manager
-                .block_table_snapshot(request_id)?
-                .logical_token_count;
+            let logical_tokens = self.kv_manager.logical_token_count(request_id)?;
             let Some(surplus) = cached_tokens
                 .checked_sub(logical_tokens)
                 .filter(|surplus| *surplus > 0)
