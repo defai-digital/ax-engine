@@ -1625,7 +1625,7 @@ fn demote_native_prefix_snapshot(
 /// a partial-boundary demote would reintroduce exactly that hazard.
 fn demote_native_insert_evictions(
     portable_cache: &Mutex<MlxPrefixCache>,
-    evicted: &[(MlxPrefixCacheKey, Arc<MlxNativePrefixSnapshot>)],
+    evicted: &[(Arc<MlxPrefixCacheKey>, Arc<MlxNativePrefixSnapshot>)],
     portable_store_phase: bool,
     telemetry: &mut MlxPrefixCacheTelemetry,
 ) {
@@ -1648,7 +1648,7 @@ fn reclaim_native_prefix_entries(
     native_cache: &Mutex<MlxNativePrefixCache>,
     pool: &SharedFaBlockPool,
     mut required_blocks: impl FnMut() -> Option<u32>,
-    mut on_evicted: impl FnMut(MlxPrefixCacheKey, &MlxNativePrefixSnapshot),
+    mut on_evicted: impl FnMut(&MlxPrefixCacheKey, &MlxNativePrefixSnapshot),
 ) -> u32 {
     let mut evictions = 0u32;
     while let Some(required) = required_blocks() {
@@ -1659,7 +1659,7 @@ fn reclaim_native_prefix_entries(
         let Some((key, retired)) = retired else {
             break;
         };
-        on_evicted(key, &retired);
+        on_evicted(&key, &retired);
         drop(retired);
         evictions = evictions.saturating_add(1);
     }
@@ -7068,7 +7068,7 @@ impl MlxRunner {
             pool,
             || cache.additional_fa_blocks_for_append(new_tokens),
             |key, snapshot| {
-                demote_native_prefix_snapshot(&self.prefix_cache, &key, snapshot, telemetry);
+                demote_native_prefix_snapshot(&self.prefix_cache, key, snapshot, telemetry);
             },
         );
         telemetry.native_evictions = telemetry.native_evictions.saturating_add(evictions);
@@ -7087,7 +7087,7 @@ impl MlxRunner {
             pool,
             || Some(required),
             |key, snapshot| {
-                demote_native_prefix_snapshot(&self.prefix_cache, &key, snapshot, telemetry);
+                demote_native_prefix_snapshot(&self.prefix_cache, key, snapshot, telemetry);
             },
         )
     }
@@ -15874,7 +15874,7 @@ mod tests {
             &pool,
             || active.additional_fa_blocks_for_append(1),
             |key, evicted| {
-                demote_native_prefix_snapshot(&portable, &key, evicted, &mut telemetry);
+                demote_native_prefix_snapshot(&portable, key, evicted, &mut telemetry);
             },
         );
         assert_eq!(evictions, 1);

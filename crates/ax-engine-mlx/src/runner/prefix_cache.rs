@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::Cell;
 
 /// Full byte charge of one snapshot: the KV payload plus the token identity
 /// (`4 * token_len`, one `u32` per token). Both the oversize pre-check
@@ -80,7 +81,10 @@ impl MlxPrefixSnapshot {
 
 pub(crate) struct MlxPrefixCacheEntry {
     pub(crate) snapshot: Arc<MlxPrefixSnapshot>,
-    pub(crate) touch_tick: u64,
+    /// Interior-mutable LRU clock: every cache handle sits behind a mutex, so
+    /// a `Cell` lets a hit refresh recency through the shared `get_key_value`
+    /// borrow instead of paying a second map lookup for `get_mut`.
+    pub(crate) touch_tick: Cell<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,8 +125,11 @@ pub(crate) struct MlxPrefixCacheStats {
 #[derive(Default)]
 pub(crate) struct MlxPrefixCache {
     pub(crate) policy: MlxPrefixCachePolicy,
-    pub(crate) entries: HashMap<MlxPrefixCacheKey, MlxPrefixCacheEntry>,
-    pub(crate) lru: VecDeque<(MlxPrefixCacheKey, u64)>,
+    /// The map owns the single `Arc` allocation per key; the LRU journal
+    /// shares it, so a touch costs a refcount bump instead of cloning the
+    /// key's three heap strings on every hit and insert.
+    pub(crate) entries: HashMap<Arc<MlxPrefixCacheKey>, MlxPrefixCacheEntry>,
+    pub(crate) lru: VecDeque<(Arc<MlxPrefixCacheKey>, u64)>,
     pub(crate) bytes: u64,
     pub(crate) next_touch_tick: u64,
 }
@@ -144,15 +151,15 @@ impl MlxPrefixCache {
             return None;
         }
         let touch_tick = self.allocate_touch_tick();
-        let snapshot = {
-            let entry = self.entries.get_mut(key)?;
+        let (stored_key, snapshot) = {
+            let (stored_key, entry) = self.entries.get_key_value(key)?;
             if entry.snapshot.tokens.as_slice() != requested_tokens {
                 return None;
             }
-            entry.touch_tick = touch_tick;
-            Arc::clone(&entry.snapshot)
+            entry.touch_tick.set(touch_tick);
+            (Arc::clone(stored_key), Arc::clone(&entry.snapshot))
         };
-        self.lru.push_back((key.clone(), touch_tick));
+        self.lru.push_back((stored_key, touch_tick));
         self.compact_stale_lru_if_needed();
         Some(snapshot)
     }
@@ -214,6 +221,7 @@ impl MlxPrefixCache {
             return MlxPrefixCacheInsertOutcome::default();
         }
 
+        let key = Arc::new(key);
         if let Some(previous) = self.entries.remove(&key) {
             self.bytes = self.bytes.saturating_sub(previous.snapshot.bytes);
         }
@@ -221,13 +229,13 @@ impl MlxPrefixCache {
         let touch_tick = self.allocate_touch_tick();
         self.bytes = self.bytes.saturating_add(snapshot.bytes);
         self.entries.insert(
-            key.clone(),
+            Arc::clone(&key),
             MlxPrefixCacheEntry {
                 snapshot: Arc::new(snapshot),
-                touch_tick,
+                touch_tick: Cell::new(touch_tick),
             },
         );
-        self.lru.push_back((key.clone(), touch_tick));
+        self.lru.push_back((Arc::clone(&key), touch_tick));
         self.compact_stale_lru_if_needed();
 
         let evictions = self.evict_until_within_policy();
@@ -295,7 +303,7 @@ impl MlxPrefixCache {
         self.lru.retain(|(key, touch_tick)| {
             entries
                 .get(key)
-                .is_some_and(|entry| entry.touch_tick == *touch_tick)
+                .is_some_and(|entry| entry.touch_tick.get() == *touch_tick)
         });
     }
 
@@ -308,7 +316,7 @@ impl MlxPrefixCache {
             let Some(entry) = self.entries.get(&key) else {
                 continue;
             };
-            if entry.touch_tick != touch_tick {
+            if entry.touch_tick.get() != touch_tick {
                 continue;
             }
             if let Some(removed) = self.entries.remove(&key) {
@@ -352,7 +360,8 @@ impl MlxNativePrefixSnapshot {
 
 struct MlxNativePrefixCacheEntry {
     snapshot: Arc<MlxNativePrefixSnapshot>,
-    touch_tick: u64,
+    /// Interior-mutable LRU clock; see `MlxPrefixCacheEntry::touch_tick`.
+    touch_tick: Cell<u64>,
 }
 
 #[cfg(test)]
@@ -373,13 +382,16 @@ pub(crate) struct MlxNativePrefixCacheInsertOutcome {
     /// the portable serialized store before dropping (ADR-016). Only the
     /// LRU-pressure kind bumps `evictions`; a same-key replacement does not.
     /// Subject to the same post-unlock drop contract as `retired`.
-    pub(crate) evicted: Vec<(MlxPrefixCacheKey, Arc<MlxNativePrefixSnapshot>)>,
+    pub(crate) evicted: Vec<(Arc<MlxPrefixCacheKey>, Arc<MlxNativePrefixSnapshot>)>,
 }
 
 pub(crate) struct MlxNativePrefixCache {
     policy: MlxPrefixCachePolicy,
-    entries: HashMap<MlxPrefixCacheKey, MlxNativePrefixCacheEntry>,
-    lru: VecDeque<(MlxPrefixCacheKey, u64)>,
+    /// The map owns the single `Arc` allocation per key; the LRU journal
+    /// shares it, so a touch costs a refcount bump instead of cloning the
+    /// key's three heap strings on every hit and insert.
+    entries: HashMap<Arc<MlxPrefixCacheKey>, MlxNativePrefixCacheEntry>,
+    lru: VecDeque<(Arc<MlxPrefixCacheKey>, u64)>,
     logical_bytes: u64,
     next_touch_tick: u64,
 }
@@ -453,7 +465,7 @@ impl MlxNativePrefixCache {
         // the previous two-pass `max` + `max_by_key` semantics). An entry whose
         // aligned length is the maximum necessarily matches the request on
         // that whole span, so the second pass's re-comparison was redundant.
-        let mut best: Option<(usize, usize, MlxPrefixCacheKey)> = None;
+        let mut best: Option<(usize, usize, Arc<MlxPrefixCacheKey>)> = None;
         for (key, entry) in &self.entries {
             if !Self::compatible_key(key, requested_key) {
                 continue;
@@ -486,14 +498,14 @@ impl MlxNativePrefixCache {
                 }
             };
             if replace {
-                best = Some((aligned, token_count, key.clone()));
+                best = Some((aligned, token_count, Arc::clone(key)));
             }
         }
         let (matched_len, _, best_key) = best?;
         let touch_tick = self.allocate_touch_tick();
         let snapshot = {
-            let entry = self.entries.get_mut(&best_key)?;
-            entry.touch_tick = touch_tick;
+            let entry = self.entries.get(&best_key)?;
+            entry.touch_tick.set(touch_tick);
             Arc::clone(&entry.snapshot)
         };
         self.lru.push_back((best_key, touch_tick));
@@ -559,23 +571,24 @@ impl MlxNativePrefixCache {
             };
         }
 
+        let key = Arc::new(key);
         if let Some(previous) = self.entries.remove(&key) {
             self.logical_bytes = self
                 .logical_bytes
                 .saturating_sub(previous.snapshot.logical_bytes);
-            evicted.push((key.clone(), previous.snapshot));
+            evicted.push((Arc::clone(&key), previous.snapshot));
         }
 
         let touch_tick = self.allocate_touch_tick();
         self.logical_bytes = self.logical_bytes.saturating_add(snapshot.logical_bytes);
         self.entries.insert(
-            key.clone(),
+            Arc::clone(&key),
             MlxNativePrefixCacheEntry {
                 snapshot,
-                touch_tick,
+                touch_tick: Cell::new(touch_tick),
             },
         );
-        self.lru.push_back((key.clone(), touch_tick));
+        self.lru.push_back((Arc::clone(&key), touch_tick));
         self.compact_stale_lru_if_needed();
 
         let mut evictions = 0u32;
@@ -601,12 +614,14 @@ impl MlxNativePrefixCache {
     /// the snapshot into the portable store (ADR-016). The caller drops the
     /// returned snapshot only after releasing the mutex that guards this
     /// cache.
-    pub(crate) fn take_lru(&mut self) -> Option<(MlxPrefixCacheKey, Arc<MlxNativePrefixSnapshot>)> {
+    pub(crate) fn take_lru(
+        &mut self,
+    ) -> Option<(Arc<MlxPrefixCacheKey>, Arc<MlxNativePrefixSnapshot>)> {
         while let Some((key, touch_tick)) = self.lru.pop_front() {
             let Some(entry) = self.entries.get(&key) else {
                 continue;
             };
-            if entry.touch_tick != touch_tick {
+            if entry.touch_tick.get() != touch_tick {
                 continue;
             }
             let removed = self.entries.remove(&key)?;
@@ -645,7 +660,7 @@ impl MlxNativePrefixCache {
         self.lru.retain(|(key, touch_tick)| {
             entries
                 .get(key)
-                .is_some_and(|entry| entry.touch_tick == *touch_tick)
+                .is_some_and(|entry| entry.touch_tick.get() == *touch_tick)
         });
     }
 }
