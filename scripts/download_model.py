@@ -1056,6 +1056,7 @@ def _validate_destination_before_activation(
         not _validation_errors(dest)
         and not _manifest_needs_rebuild(dest)
         and not manifest_needs_media_rebuild(dest)
+        and _snapshot_matches_hub_listing(dest, repo_id, revision) is not False
     ):
         raise RuntimeError(
             f"refusing to replace destination {dest}: another process made it ready "
@@ -1965,7 +1966,11 @@ def download(
         safetensors = _safetensors_files(dest)
         # Only trust a destination whose contents actually validate; a partial
         # or corrupted copy (interrupted older-version download) is recopied.
-        validation_ok = bool(safetensors) and not _validation_errors(dest)
+        validation_ok = (
+            bool(safetensors)
+            and not _validation_errors(dest)
+            and (local_only or _snapshot_matches_hub_listing(dest, repo_id, revision) is not False)
+        )
         if validation_ok and (dest / MODEL_MANIFEST_FILE).exists():
             if not quiet:
                 print(f"  already present with manifest: {dest}")
@@ -2060,6 +2065,11 @@ def download(
                 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = previous_progress
 
     _validate_snapshot_copy_links(snapshot)
+    if _snapshot_matches_hub_listing(snapshot, repo_id, revision) is False:
+        raise RuntimeError(
+            f"incomplete downloaded snapshot for {repo_id} at revision {revision}; "
+            "some Hub members are missing or have the wrong size; rerun to resume the download"
+        )
     snapshot_errors = _validation_errors(snapshot)
     if snapshot_errors:
         raise RuntimeError(
