@@ -856,7 +856,9 @@ impl PagedFaLayer {
     /// Move this view off every shared block that the pending write touches.
     /// Tensor handles are still clones of the old values until `write_tokens`
     /// applies functional updates. Pool ownership preparation is transactional
-    /// across every intersecting block.
+    /// across every intersecting block; on slab-backed pools the block content
+    /// copy shares the same critical section, so a concurrent snapshot
+    /// free/evict can never release a source row before it is copied.
     fn prepare_write(
         &mut self,
         pool: &SharedFaBlockPool,
@@ -870,18 +872,18 @@ impl PagedFaLayer {
         let last = (write_end - 1) / self.block_size;
         let last = last.min(self.block_ids.len().saturating_sub(1));
         let old_ids = self.block_ids[first..=last].to_vec();
-        let prepared = pool.make_unique_many(&old_ids)?;
+        // The block-table swap below commits only when the ownership move —
+        // and, for slab storage, the content copy — succeeded; a failed or
+        // panicking copy leaves this view on its original block ids.
+        let prepared = if self.slab_storage {
+            pool.make_unique_many_with_slab_copy(self.layer_idx, &old_ids)?
+        } else {
+            pool.make_unique_many(&old_ids)?
+        };
         let mut copies = 0u64;
-        let mut slab_copies = Vec::new();
         for (offset, (id, copied)) in prepared.into_iter().enumerate() {
             self.block_ids[first + offset] = id;
             copies = copies.saturating_add(u64::from(copied));
-            if copied && self.slab_storage {
-                slab_copies.push((old_ids[offset], id));
-            }
-        }
-        if self.slab_storage {
-            pool.copy_slab_blocks(self.layer_idx, &slab_copies)?;
         }
         Ok(copies)
     }
@@ -2414,6 +2416,15 @@ impl MlxKVCache {
     }
 
     pub fn serialize_to_bytes(&self) -> Vec<u8> {
+        // Fail closed before writing anything: DeepSeek V4 compressor layers
+        // cannot round-trip, and this infallible signature would otherwise
+        // encode them as EMPTY layers that claim tokens but restore empty.
+        // Store sites gate on `has_unserializable_layers`; this is the
+        // backstop for any future caller that forgets the gate.
+        assert!(
+            !self.has_unserializable_layers(),
+            "cannot serialize a cache with DeepSeek V4 compressor layers"
+        );
         let mut out = Vec::new();
         out.extend_from_slice(Self::SERIALIZE_MAGIC);
         out.extend_from_slice(&Self::SERIALIZE_VERSION.to_le_bytes());
@@ -4669,6 +4680,13 @@ impl MlxKVCache {
         let length = shape[2] as usize;
         let head_dim = shape[3];
         let dtype = k.dtype();
+        // A mismatch would leave the next append writing past `capacity`
+        // (zero-gap tokens SDPA would still attend to) or strand sibling
+        // layers behind the global seq_len.
+        debug_assert_eq!(
+            length, seq_len,
+            "set_layer_kv_logical commits tight buffers: K length must equal seq_len"
+        );
         // Compiled/speculative paths return dense K/V. Release this view's
         // paged ownership before replacing it so native adopters keep their
         // own references and the pool never leaks the removed IDs.
@@ -5464,6 +5482,10 @@ impl MlxKVCache {
         self.rope_offset = 0;
         self.mrope_position_delta = 0;
         self.growth_count = 0;
+        // A hard-cap trip from the previous occupant must not leak into the
+        // next one: the flag is per-occupancy state, and a reset cache gets
+        // a fresh budget attempt (a real over-cap append re-sets it).
+        self.hard_cap_exhausted = false;
     }
 }
 

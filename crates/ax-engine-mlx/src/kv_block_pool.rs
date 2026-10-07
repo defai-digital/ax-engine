@@ -405,6 +405,35 @@ impl FaBlockPool {
         Ok(out)
     }
 
+    /// Reverse a completed [`Self::make_unique_many`] ownership move.
+    /// Used when the slab copy coupled to the move fails or panics: the
+    /// caller's block table never adopted the replacements, so pool
+    /// ownership must return to the sources exactly. Each replacement still
+    /// has exactly the one reference this move gave it.
+    fn unmake_unique_many(
+        &mut self,
+        ids: &[PhysicalBlockId],
+        prepared: &[(PhysicalBlockId, bool)],
+    ) {
+        debug_assert_eq!(ids.len(), prepared.len());
+        for (id, (replacement, copied)) in ids.iter().zip(prepared.iter()) {
+            if !copied {
+                continue;
+            }
+            let replacement_idx = replacement.0 as usize;
+            debug_assert_eq!(self.ref_counts[replacement_idx], 1);
+            self.ref_counts[replacement_idx] = 0;
+            self.free.push_back(*replacement);
+            self.allocated_count = self.allocated_count.saturating_sub(1);
+            self.cow_copies = self.cow_copies.saturating_sub(1);
+            let idx = id.0 as usize;
+            self.ref_counts[idx] = self.ref_counts[idx].saturating_add(1);
+            if self.ref_counts[idx] == 2 {
+                self.shared_count = self.shared_count.saturating_add(1);
+            }
+        }
+    }
+
     /// Tokens represented by `n` full blocks.
     pub fn tokens_for_blocks(&self, n: u32) -> u32 {
         n.saturating_mul(self.config.block_size_tokens)
@@ -704,11 +733,27 @@ fn update_slab_tensor(
     start: &[i32],
     stop: &[i32],
 ) -> Result<(), FaBlockPoolError> {
+    // The destination handle moves out so MLX may donate the buffer. If the
+    // update panics (an MLX error surfaces through checked_ffi), put the old
+    // handle back before the panic resumes: parking_lot mutexes do not
+    // poison, so a `None` left behind would brick this layer's slab for
+    // every later gather and write.
     let old = slot.take().ok_or(FaBlockPoolError::InvalidConfig(
         "FA slab tensor was moved without replacement",
     ))?;
-    *slot = Some(slice_update(&old, update, start, stop, &[1, 1, 1, 1], None));
-    Ok(())
+    let updated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        slice_update(&old, update, start, stop, &[1, 1, 1, 1], None)
+    }));
+    match updated {
+        Ok(new) => {
+            *slot = Some(new);
+            Ok(())
+        }
+        Err(payload) => {
+            *slot = Some(old);
+            std::panic::resume_unwind(payload);
+        }
+    }
 }
 
 /// Cloneable synchronized handle used for both private and runner-wide pools.
@@ -786,6 +831,10 @@ impl SharedFaBlockPool {
     }
 
     /// Copy complete K/V blocks after allocator COW moved an owner to new IDs.
+    /// Production COW goes through `make_unique_many_with_slab_copy`, which
+    /// holds the pool lock across the copy; this standalone form remains for
+    /// the rowless-source semantics tests.
+    #[cfg(test)]
     pub(crate) fn copy_slab_blocks(
         &self,
         layer_idx: usize,
@@ -800,6 +849,17 @@ impl SharedFaBlockPool {
             ));
         };
         let mut storage = storage.lock();
+        Self::copy_slab_blocks_locked(&mut storage, layer_idx, copies)
+    }
+
+    /// Body of [`Self::copy_slab_blocks`] on an already-locked slab store, so
+    /// [`Self::make_unique_many_with_slab_copy`] can run the copy inside its
+    /// own pool-lock critical section.
+    fn copy_slab_blocks_locked(
+        storage: &mut FaSlabStorage,
+        layer_idx: usize,
+        copies: &[(PhysicalBlockId, PhysicalBlockId)],
+    ) -> Result<(), FaBlockPoolError> {
         let (block_size, n_kv_heads, head_dim, dtype) = {
             let arena = storage
                 .layers
@@ -817,10 +877,9 @@ impl SharedFaBlockPool {
         let targets: Vec<PhysicalBlockId> = copies.iter().map(|(_, target)| *target).collect();
         storage.ensure_layer(layer_idx, block_size, n_kv_heads, head_dim, dtype, &targets)?;
         // Resolve every source before touching any slab so a batch is applied
-        // all-or-nothing (callers commit the block-table swap first). A source
-        // block without a slab row was allocated but never written: its
-        // logical content is zeros, which is exactly what a rowless target
-        // reads back, so there is nothing to copy.
+        // all-or-nothing. A source block without a slab row was allocated but
+        // never written: its logical content is zeros, which is exactly what
+        // a rowless target reads back, so there is nothing to copy.
         let mut resolved = Vec::with_capacity(copies.len());
         {
             let arena = storage
@@ -1161,6 +1220,79 @@ impl SharedFaBlockPool {
         ids: &[PhysicalBlockId],
     ) -> Result<Vec<(PhysicalBlockId, bool)>, FaBlockPoolError> {
         self.inner.lock().make_unique_many(ids)
+    }
+
+    /// Allocator COW and slab content copy as one critical section.
+    ///
+    /// A plain `make_unique_many` releases the caller's reference on each
+    /// shared source block immediately; between that call and a separate
+    /// `copy_slab_blocks` the source's remaining owner could be dropped or
+    /// evicted, releasing (or recycling) the source's slab row before the
+    /// copy resolves it — the target then silently reads zeros or a
+    /// stranger's bytes. Holding the pool lock across both steps blocks any
+    /// concurrent `free` from touching the source rows mid-copy. Lock order
+    /// is `inner` then slab storage, the same nesting `free` and `snapshot`
+    /// already use.
+    ///
+    /// On a copy failure (including an MLX panic, caught and re-thrown after
+    /// rollback) the ownership move is reversed so the caller's block table —
+    /// which adopts the replacements only after `Ok` — never diverges from
+    /// pool ownership.
+    pub(crate) fn make_unique_many_with_slab_copy(
+        &self,
+        layer_idx: usize,
+        ids: &[PhysicalBlockId],
+    ) -> Result<Vec<(PhysicalBlockId, bool)>, FaBlockPoolError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(storage) = self.slab_storage.as_ref() else {
+            return Err(FaBlockPoolError::InvalidConfig(
+                "FA slab storage is not enabled",
+            ));
+        };
+        let mut pool = self.inner.lock();
+        let prepared = pool.make_unique_many(ids)?;
+        let copies: Vec<(PhysicalBlockId, PhysicalBlockId)> = ids
+            .iter()
+            .zip(prepared.iter())
+            .filter_map(|(source, (replacement, copied))| copied.then_some((*source, *replacement)))
+            .collect();
+        if copies.is_empty() {
+            return Ok(prepared);
+        }
+        let mut storage = storage.lock();
+        let copy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Self::copy_slab_blocks_locked(&mut storage, layer_idx, &copies)
+        }));
+        match copy {
+            Ok(Ok(())) => Ok(prepared),
+            Ok(Err(error)) => {
+                Self::rollback_slab_cow(&mut pool, &mut storage, ids, &prepared);
+                Err(error)
+            }
+            Err(payload) => {
+                Self::rollback_slab_cow(&mut pool, &mut storage, ids, &prepared);
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
+
+    /// Reverse the ownership move and release any slab rows the failed copy
+    /// assigned to the replacements. See `make_unique_many_with_slab_copy`.
+    fn rollback_slab_cow(
+        pool: &mut FaBlockPool,
+        storage: &mut FaSlabStorage,
+        ids: &[PhysicalBlockId],
+        prepared: &[(PhysicalBlockId, bool)],
+    ) {
+        let replacements: Vec<PhysicalBlockId> = prepared
+            .iter()
+            .filter(|(_, copied)| *copied)
+            .map(|(id, _)| *id)
+            .collect();
+        pool.unmake_unique_many(ids, prepared);
+        storage.release_ids(&replacements);
     }
 
     pub fn ref_count(&self, id: PhysicalBlockId) -> Result<u32, FaBlockPoolError> {
@@ -1511,6 +1643,98 @@ mod tests {
             pool.gather_slab_tokens(0, &[targets[1]], 0, 2),
             Err(FaBlockPoolError::UnallocatedBlock(_))
         ));
+    }
+
+    #[test]
+    fn update_slab_tensor_restores_the_slot_after_a_panicking_update() {
+        let mut slot = Some(array_f32(&[0.0; 8], &[1, 1, 4, 2]));
+        // The update shape disagrees with the destination slice extents, so
+        // MLX rejects it and the checked wrapper panics.
+        let bad_update = array_f32(&[1.0; 4], &[1, 1, 2, 2]);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = update_slab_tensor(&mut slot, &bad_update, &[0, 0, 0, 0], &[1, 1, 4, 2]);
+        }));
+        assert!(panicked.is_err(), "shape-mismatched update must panic");
+        assert!(
+            slot.is_some(),
+            "the slab handle must be restored before the panic resumes"
+        );
+    }
+
+    #[test]
+    fn slab_cow_copy_is_atomic_with_the_ownership_move() {
+        let pool = SharedFaBlockPool::new_with_slab_storage(FaBlockPoolConfig {
+            block_size_tokens: 2,
+            max_blocks: 4,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let ids = pool.allocate(1).expect("block");
+        pool.write_slab_tokens(
+            0,
+            &ids,
+            0,
+            &array_f32(&[1.0, 2.0], &[1, 1, 2, 1]),
+            &array_f32(&[3.0, 4.0], &[1, 1, 2, 1]),
+        )
+        .expect("write source");
+        // A second owner (the prefix snapshot) shares the block.
+        pool.retain(&ids).expect("retain snapshot ref");
+
+        let prepared = pool
+            .make_unique_many_with_slab_copy(0, &ids)
+            .expect("cow + copy");
+        assert_eq!(prepared.len(), 1);
+        let (replacement, copied) = prepared[0];
+        assert!(copied);
+        assert_ne!(replacement, ids[0]);
+        // The source keeps the snapshot's reference and its row; the
+        // replacement holds an independent copy of the same tokens.
+        assert_eq!(pool.ref_count(ids[0]).expect("source rc"), 1);
+        assert_eq!(pool.ref_count(replacement).expect("replacement rc"), 1);
+        let (k, v) = pool
+            .gather_slab_tokens(0, &[replacement], 0, 2)
+            .expect("gather replacement");
+        mlx_sys::eval(&[&k, &v]);
+        assert_eq!(k.data_f32(), vec![1.0, 2.0]);
+        assert_eq!(v.data_f32(), vec![3.0, 4.0]);
+        let (sk, _) = pool
+            .gather_slab_tokens(0, &ids, 0, 2)
+            .expect("gather source");
+        mlx_sys::eval(&[&sk]);
+        assert_eq!(sk.data_f32(), vec![1.0, 2.0]);
+        assert_eq!(pool.snapshot().cow_copies, 1);
+    }
+
+    #[test]
+    fn slab_cow_failure_rolls_back_the_ownership_move() {
+        let pool = SharedFaBlockPool::new_with_slab_storage(FaBlockPoolConfig {
+            block_size_tokens: 2,
+            max_blocks: 2,
+            hard_cap: true,
+        })
+        .expect("pool");
+        let ids = pool.allocate(1).expect("block");
+        pool.retain(&ids).expect("share");
+        // Layer 9 has no initialized slab arena, so the copy fails after the
+        // ownership move — the rollback must restore the exact prior state.
+        let err = pool
+            .make_unique_many_with_slab_copy(9, &ids)
+            .expect_err("uninitialized layer slab fails the copy");
+        assert!(matches!(err, FaBlockPoolError::InvalidConfig(_)));
+        assert_eq!(
+            pool.ref_count(ids[0]).expect("rc"),
+            2,
+            "source references are restored"
+        );
+        let snapshot = pool.snapshot();
+        assert_eq!(
+            snapshot.available_blocks, 1,
+            "replacement returned to the freelist"
+        );
+        assert_eq!(snapshot.allocated_blocks, 1);
+        assert_eq!(snapshot.cow_copies, 0);
+        assert_eq!(snapshot.shared_blocks, 1);
     }
 
     #[test]
