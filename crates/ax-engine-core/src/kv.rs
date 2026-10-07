@@ -542,6 +542,30 @@ impl KvManager {
                 "logical_token_count overflow",
             ))?;
         let required_new_blocks = required_new_blocks as usize;
+        // Validate the whole pop set before touching the free list so an
+        // invariant failure cannot orphan already-popped blocks or clobber a
+        // live refcount entry (the fail-closed discipline stated above).
+        if self.free_block_ids.len() < required_new_blocks {
+            return Err(KvManagerError::InvariantViolation("free list underflow"));
+        }
+        let pop_start = self.free_block_ids.len() - required_new_blocks;
+        let pop_set = &self.free_block_ids[pop_start..];
+        if pop_set
+            .iter()
+            .any(|block_id| self.block_ref_counts.contains_key(block_id))
+        {
+            return Err(KvManagerError::InvariantViolation(
+                "allocated block already had refcount state",
+            ));
+        }
+        // A duplicated id in the pop set would only collide with itself on
+        // the second insert — after the first pop already mutated the ledger.
+        let mut seen = std::collections::HashSet::with_capacity(pop_set.len());
+        if pop_set.iter().any(|block_id| !seen.insert(block_id)) {
+            return Err(KvManagerError::InvariantViolation(
+                "free list contains a duplicate block",
+            ));
+        }
         let mut new_block_ids = Vec::with_capacity(required_new_blocks);
         for _ in 0..required_new_blocks {
             let block_id = self
@@ -606,6 +630,18 @@ impl KvManager {
         );
         self.promote_prompt_prefix_to_cache(&table, &prompt_tokens)?;
         self.remove_live_prefix_index(request_id)?;
+        // Validate the whole release set before unregistering the request:
+        // erroring mid-loop would strand the trailing blocks of a request
+        // whose table no longer exists, leaving them impossible to reclaim.
+        if table
+            .block_ids
+            .iter()
+            .any(|block_id| !self.block_ref_counts.contains_key(block_id))
+        {
+            return Err(KvManagerError::InvariantViolation(
+                "block refcount missing during free",
+            ));
+        }
         let table = self
             .block_tables
             .remove(&request_id)
@@ -1323,6 +1359,85 @@ mod tests {
         assert_eq!(free.released_blocks, vec![BlockId(2)]);
         assert_eq!(manager.available_block_count(), 6);
         assert_eq!(manager.used_block_count(), 2);
+    }
+
+    #[test]
+    fn allocate_invariant_failure_leaves_free_list_and_refcounts_untouched() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6])
+            .unwrap();
+
+        // Corrupt the ledger: the next block due to be popped from the free
+        // stack already carries a live refcount entry.
+        let stale = *manager.free_block_ids.last().unwrap();
+        manager.block_ref_counts.insert(stale, 7);
+        let free_len_before = manager.free_block_ids.len();
+
+        let result = manager.allocate(RequestId(1), 5);
+
+        assert!(matches!(result, Err(KvManagerError::InvariantViolation(_))));
+        // The failed allocation must not have popped any block, rewritten the
+        // pre-existing refcount entry, or attached blocks to the request.
+        assert_eq!(manager.free_block_ids.len(), free_len_before);
+        assert_eq!(manager.block_ref_counts.get(&stale), Some(&7));
+        assert!(
+            manager
+                .block_table(RequestId(1))
+                .unwrap()
+                .block_ids
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn free_invariant_failure_keeps_the_request_registered() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6])
+            .unwrap();
+        manager.allocate(RequestId(1), 6).unwrap();
+
+        // Corrupt the ledger: the request's trailing partial block (never
+        // touched by prefix promotion) lost its refcount entry.
+        let owned = manager.block_table(RequestId(1)).unwrap().block_ids[1];
+        manager.block_ref_counts.remove(&owned);
+
+        let result = manager.free(RequestId(1));
+
+        assert!(matches!(result, Err(KvManagerError::InvariantViolation(_))));
+        // The failed free must leave the request registered so its remaining
+        // blocks stay reclaimable.
+        assert!(manager.block_table(RequestId(1)).is_ok());
+    }
+
+    #[test]
+    fn allocate_invariant_failure_on_duplicate_free_list_ids() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6])
+            .unwrap();
+
+        // Corrupt the ledger: the pop set holds the same block id twice (and
+        // no live refcount entry exists to catch it).
+        let len = manager.free_block_ids.len();
+        let dup = manager.free_block_ids[len - 1];
+        manager.free_block_ids[len - 2] = dup;
+
+        let result = manager.allocate(RequestId(1), 5);
+
+        assert!(matches!(result, Err(KvManagerError::InvariantViolation(_))));
+        // The second insert would have collided with the first; the failed
+        // allocation must have mutated nothing before failing.
+        assert_eq!(manager.free_block_ids.len(), len);
+        assert!(!manager.block_ref_counts.contains_key(&dup));
+        assert!(
+            manager
+                .block_table(RequestId(1))
+                .unwrap()
+                .block_ids
+                .is_empty()
+        );
     }
 
     #[test]

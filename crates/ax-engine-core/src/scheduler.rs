@@ -541,11 +541,14 @@ impl Scheduler {
                     let pool_tokens =
                         u64::from(input.total_kv_blocks) * u64::from(input.block_size_tokens);
                     if input.memory_pressure.as_deref() == Some(MEMORY_PRESSURE_KV_EXHAUSTED)
-                        && u64::from(snapshot.prompt_len) > pool_tokens
+                        && u64::from(snapshot.prompt_len) >= pool_tokens
                     {
                         // No other request can release enough capacity for this
-                        // prompt. Let the existing starvation bound terminate it;
-                        // plain deferral never increments that bound.
+                        // prompt — and a prompt that exactly fills the pool
+                        // also never completes, since the first decode append
+                        // needs a slot its own full blocks cannot provide. Let
+                        // the existing starvation bound terminate it; plain
+                        // deferral never increments that bound.
                         memory_blocked_requests.push(snapshot.request_id);
                     } else {
                         deferred_requests.push(snapshot.request_id);
@@ -591,6 +594,10 @@ impl Scheduler {
                 .iter()
                 .all(|seed| route_seed_can_join_batch(seed, &candidate_route));
             if !can_join {
+                // Same skip accounting as the other defer paths above: the
+                // requested tokens were schedulable in principle but
+                // route-incompatible with this step's batch.
+                token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
                 continue;
             }
@@ -1543,7 +1550,11 @@ mod tests {
     #[test]
     fn exhausted_pool_distinguishes_impossible_from_temporarily_blocked_prefill() {
         let scheduler = Scheduler::new();
-        for (prompt_len, impossible) in [(8, false), (9, true)] {
+        // Pool = 2 blocks × 4 tokens = 8 tokens. A 7-token prompt leaves one
+        // slot for the first decode append (temporarily blocked); a prompt
+        // that exactly fills the pool can never complete it, so it is just as
+        // impossible as one that exceeds it.
+        for (prompt_len, impossible) in [(7, false), (8, true), (9, true)] {
             let mut input = SchedulerInput::new(
                 StepId(16),
                 vec![make_snapshot(
@@ -1728,6 +1739,19 @@ mod tests {
             vec![RequestId(1), RequestId(2)]
         );
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(3)]);
+
+        // The route-incompatible deferral records its skipped tokens just
+        // like the budget and admission-cap defer paths.
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        let decisions = execution_batch
+            .route_metadata
+            .crossover_decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            decisions.get(ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS),
+            Some(&2)
+        );
     }
 
     #[test]
