@@ -269,7 +269,7 @@ direct AR, which already saturates DRAM. Do not mix those dense-27B decode
 numbers with Tiel completion tok/s.
 
 Qwen 3.8 Flash Next MXFP4 MTP is a second SKU for Mac Studio, Ultra-class
-Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. AX certification record: Candidate (gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
+Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
 See [Supported Models](SUPPORTED-MODELS.md).
 
 ## Which runtime path should I choose first?
