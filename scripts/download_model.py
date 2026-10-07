@@ -1028,6 +1028,7 @@ def _validate_destination_before_activation(
     repo_id: str,
     revision: str | None,
     force: bool,
+    local_only: bool = False,
 ) -> None:
     """Revalidate the destination after staging to close download-time races."""
     if not _path_exists(dest):
@@ -1056,7 +1057,7 @@ def _validate_destination_before_activation(
         not _validation_errors(dest)
         and not _manifest_needs_rebuild(dest)
         and not manifest_needs_media_rebuild(dest)
-        and _snapshot_matches_hub_listing(dest, repo_id, revision) is not False
+        and (local_only or _snapshot_matches_hub_listing(dest, repo_id, revision) is not False)
     ):
         raise RuntimeError(
             f"refusing to replace destination {dest}: another process made it ready "
@@ -1624,6 +1625,7 @@ def _copy_snapshot_to_dest(
     repo_id: str,
     revision: str | None,
     force: bool = False,
+    local_only: bool = False,
     prepare_destination: Callable[[Path], None] | None = None,
 ) -> None:
     """Copy the snapshot into `dest` atomically.
@@ -1674,6 +1676,7 @@ def _copy_snapshot_to_dest(
             repo_id=repo_id,
             revision=revision,
             force=force,
+            local_only=local_only,
         )
         if _path_exists(dest):
             # Reserve a collision-free name created by this invocation; remove
@@ -2014,6 +2017,7 @@ def download(
             repo_id=repo_id,
             revision=revision,
             force=force,
+            local_only=local_only,
             prepare_destination=prepare_destination,
         )
         return dest
