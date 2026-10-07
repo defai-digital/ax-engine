@@ -938,10 +938,12 @@ impl EngineCore {
         global_token_budget: u32,
     ) -> SchedulerInput {
         let kv_config = self.kv_manager.config();
+        let allocatable_blocks = self.kv_manager.allocatable_block_count();
         let mut input = SchedulerInput::new(
             step_id,
             request_snapshots,
-            self.kv_manager.memory_pressure(),
+            self.kv_manager
+                .memory_pressure_for_allocatable(allocatable_blocks),
             global_token_budget,
         );
         input.multi_prefill_fair = self.multi_prefill_fair;
@@ -949,7 +951,7 @@ impl EngineCore {
             self.max_prefill_tokens_per_request_per_step;
         input.max_inflight_prefill_requests = self.max_inflight_prefill_requests;
         input.block_size_tokens = kv_config.block_size_tokens;
-        input.available_kv_blocks = self.kv_manager.allocatable_block_count();
+        input.available_kv_blocks = allocatable_blocks;
         input.total_kv_blocks = kv_config.total_blocks;
         input
     }

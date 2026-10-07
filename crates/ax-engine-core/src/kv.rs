@@ -184,6 +184,16 @@ pub struct KvManager {
     live_prefix_requests_by_first_block: HashMap<CachedBlockKey, BTreeSet<RequestId>>,
     cached_blocks: HashMap<CachedBlockKey, CachedBlockEntry>,
     cached_children_by_parent: HashMap<CachedBlockKey, BTreeSet<CachedBlockKey>>,
+    /// Dense membership marker: whether a block currently backs a retained
+    /// prefix-cache entry. Written only by insert_cached_block /
+    /// remove_cached_block, so every cache residency change funnels through
+    /// one choke point.
+    cached_block_membership: Vec<bool>,
+    /// Cached entries whose block has no other owner (refcount == 1), i.e.
+    /// the reclaimable part of `allocatable_block_count`. Kept incrementally
+    /// at every refcount 1↔2 crossing so the per-step capacity read is O(1)
+    /// instead of scanning the retained cache.
+    reclaimable_cached_blocks: u32,
     next_cache_tick: u64,
     recent_evictions: u32,
     allocated_blocks_total: u64,
@@ -203,6 +213,8 @@ impl KvManager {
             live_prefix_requests_by_first_block: HashMap::new(),
             cached_blocks: HashMap::new(),
             cached_children_by_parent: HashMap::new(),
+            cached_block_membership: vec![false; config.total_blocks as usize],
+            reclaimable_cached_blocks: 0,
             next_cache_tick: 0,
             recent_evictions: 0,
             allocated_blocks_total: 0,
@@ -351,10 +363,15 @@ impl KvManager {
         self.validate_prefix_share(request_id, lookup)?;
 
         for block_id in &lookup.matched_blocks {
-            let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
-                KvManagerError::InvariantViolation("shared prefix block missing refcount"),
-            )?;
-            *ref_count += 1;
+            let old_count = {
+                let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
+                    KvManagerError::InvariantViolation("shared prefix block missing refcount"),
+                )?;
+                let old_count = *ref_count;
+                *ref_count += 1;
+                old_count
+            };
+            self.note_block_refcount_transition(*block_id, old_count, old_count + 1);
         }
         for cache_key in &lookup.cached_block_keys {
             let touch_tick = self.allocate_touch_tick();
@@ -419,10 +436,14 @@ impl KvManager {
         self.remove_live_prefix_index(request_id)?;
 
         for block_id in lookup.matched_blocks.iter().rev() {
-            let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
-                KvManagerError::InvariantViolation("shared prefix block missing refcount"),
-            )?;
-            *ref_count -= 1;
+            let new_count = {
+                let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
+                    KvManagerError::InvariantViolation("shared prefix block missing refcount"),
+                )?;
+                *ref_count -= 1;
+                *ref_count
+            };
+            self.note_block_refcount_transition(*block_id, new_count + 1, new_count);
         }
 
         let table = self
@@ -668,17 +689,28 @@ impl KvManager {
         let mut released_blocks = Vec::new();
 
         for block_id in table.block_ids.iter().rev().copied() {
-            let Some(ref_count) = self.block_ref_counts.get_mut(&block_id) else {
-                return Err(KvManagerError::InvariantViolation(
-                    "block refcount missing during free",
-                ));
+            let new_count = {
+                let Some(ref_count) = self.block_ref_counts.get_mut(&block_id) else {
+                    return Err(KvManagerError::InvariantViolation(
+                        "block refcount missing during free",
+                    ));
+                };
+                if *ref_count == 1 {
+                    None
+                } else {
+                    *ref_count -= 1;
+                    Some(*ref_count)
+                }
             };
-            if *ref_count == 1 {
-                self.block_ref_counts.remove(&block_id);
-                self.free_block_ids.push(block_id);
-                released_blocks.push(block_id);
-            } else {
-                *ref_count -= 1;
+            match new_count {
+                None => {
+                    self.block_ref_counts.remove(&block_id);
+                    self.free_block_ids.push(block_id);
+                    released_blocks.push(block_id);
+                }
+                Some(new_count) => {
+                    self.note_block_refcount_transition(block_id, new_count + 1, new_count);
+                }
             }
         }
         self.released_blocks_total = self
@@ -773,16 +805,52 @@ impl KvManager {
     /// vLLM's free queue, where evictable hashed blocks count as free, so a
     /// "full but reclaimable" pool is never reported as exhausted.
     pub fn allocatable_block_count(&self) -> u32 {
-        let reclaimable = self
-            .cached_blocks
-            .values()
-            .filter(|entry| self.cached_entry_releases_block(entry))
-            .count() as u32;
+        let reclaimable = self.reclaimable_cached_blocks;
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            reclaimable,
+            self.reclaimable_block_count_recomputed(),
+            "reclaimable cached-block counter drifted from the ledger"
+        );
         self.available_block_count() + reclaimable
     }
 
+    /// Scan-based source of truth for the incremental
+    /// `reclaimable_cached_blocks` counter; referenced by the debug assertion
+    /// in `allocatable_block_count`.
+    #[cfg(debug_assertions)]
+    fn reclaimable_block_count_recomputed(&self) -> u32 {
+        self.cached_blocks
+            .values()
+            .filter(|entry| self.cached_entry_releases_block(entry))
+            .count() as u32
+    }
+
+    /// Keep `reclaimable_cached_blocks` exact across a block's refcount
+    /// transition: only the 1↔2 boundary flips cache sole-ownership. Blocks
+    /// outside the retained cache never count.
+    fn note_block_refcount_transition(&mut self, block_id: BlockId, old: u32, new: u32) {
+        if !self.cached_block_membership[block_id.0 as usize] {
+            return;
+        }
+        match (old == 1, new == 1) {
+            (true, false) => {
+                self.reclaimable_cached_blocks = self.reclaimable_cached_blocks.saturating_sub(1);
+            }
+            (false, true) => {
+                self.reclaimable_cached_blocks = self.reclaimable_cached_blocks.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
     pub fn memory_pressure(&self) -> Option<String> {
-        let allocatable_blocks = self.allocatable_block_count();
+        self.memory_pressure_for_allocatable(self.allocatable_block_count())
+    }
+
+    /// Pressure label for an already-computed allocatable count, so a caller
+    /// that needs both the count and the label computes the count once.
+    pub fn memory_pressure_for_allocatable(&self, allocatable_blocks: u32) -> Option<String> {
         if allocatable_blocks == 0 {
             Some("kv_exhausted".into())
         } else if u64::from(allocatable_blocks) * u64::from(KV_LOW_FREE_BLOCKS_DIVISOR)
@@ -872,10 +940,18 @@ impl KvManager {
                 continue;
             }
 
-            let ref_count = self.block_ref_counts.get_mut(&block_id).ok_or(
-                KvManagerError::InvariantViolation("cache promotion block missing refcount"),
-            )?;
-            *ref_count += 1;
+            let old_count = {
+                let ref_count = self.block_ref_counts.get_mut(&block_id).ok_or(
+                    KvManagerError::InvariantViolation("cache promotion block missing refcount"),
+                )?;
+                let old_count = *ref_count;
+                *ref_count += 1;
+                old_count
+            };
+            // The cache entry is inserted below; at this point the block is
+            // still owned by the live request, so the +1 never crosses the
+            // reclaimable boundary within the cache (2 → 3 for the new entry).
+            self.note_block_refcount_transition(block_id, old_count, old_count + 1);
 
             self.insert_cached_block(
                 cache_key,
@@ -1053,6 +1129,14 @@ impl KvManager {
             !self.cached_blocks.contains_key(&cache_key),
             "cached block insertion must not replace an existing entry"
         );
+        self.cached_block_membership[entry.block_id.0 as usize] = true;
+        // A fresh entry inserted while its block is sole-owned by the cache is
+        // immediately reclaimable. (Promotion inserts while the live request
+        // still co-owns the block, so this normally stays false here and the
+        // count moves later via note_block_refcount_transition.)
+        if self.block_ref_counts.get(&entry.block_id) == Some(&1) {
+            self.reclaimable_cached_blocks = self.reclaimable_cached_blocks.saturating_add(1);
+        }
         if let Some(parent_key) =
             parent_cache_key(cache_key.cache_group_id, entry.parent_block_hash)
         {
@@ -1066,6 +1150,10 @@ impl KvManager {
 
     fn remove_cached_block(&mut self, cache_key: &CachedBlockKey) -> Option<CachedBlockEntry> {
         let entry = self.cached_blocks.remove(cache_key)?;
+        self.cached_block_membership[entry.block_id.0 as usize] = false;
+        if self.block_ref_counts.get(&entry.block_id) == Some(&1) {
+            self.reclaimable_cached_blocks = self.reclaimable_cached_blocks.saturating_sub(1);
+        }
         if let Some(parent_key) =
             parent_cache_key(cache_key.cache_group_id, entry.parent_block_hash)
         {
@@ -1591,6 +1679,43 @@ mod tests {
                 .live_prefix_requests_by_first_block
                 .contains_key(&first_key)
         );
+    }
+
+    #[test]
+    fn allocatable_count_tracks_reclaimable_cache_across_share_and_free() {
+        let mut manager = make_manager(8, 4);
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4])
+            .unwrap();
+        manager.allocate(RequestId(1), 4).unwrap();
+        assert_eq!(manager.allocatable_block_count(), 7);
+
+        // Freeing promotes the full block into the retained cache; it stays
+        // allocatable through on-demand eviction.
+        manager.free(RequestId(1)).unwrap();
+        assert_eq!(manager.allocatable_block_count(), 8);
+
+        // A live share makes the cached block non-reclaimable again.
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5])
+            .unwrap();
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5])
+            .unwrap();
+        assert!(lookup.uses_retained_cache());
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+        assert_eq!(manager.allocatable_block_count(), 7);
+
+        // Rolling the share back restores reclaimability; freeing the sharer
+        // returns the block to the cache as sole owner again.
+        manager
+            .rollback_prefix_share(RequestId(2), &lookup)
+            .unwrap();
+        assert_eq!(manager.allocatable_block_count(), 8);
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+        assert_eq!(manager.allocatable_block_count(), 7);
+        manager.free(RequestId(2)).unwrap();
+        assert_eq!(manager.allocatable_block_count(), 8);
     }
 
     #[test]
