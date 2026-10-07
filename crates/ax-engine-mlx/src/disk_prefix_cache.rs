@@ -798,6 +798,9 @@ impl DiskPrefixCache {
             }
             Ok(None) => Ok(None),
             Err(ReadEntryError::NotFound) => Ok(None),
+            // A page manifest this process cannot serve is a plain miss;
+            // never feed it to the corrupt-entry cleanup below.
+            Err(ReadEntryError::Unsupported) => Ok(None),
             Err(ReadEntryError::Invalid) => {
                 self.remove_unparseable_entry(&path, key_bytes);
                 Ok(None)
@@ -821,6 +824,9 @@ impl DiskPrefixCache {
             }
             Ok(None) => Ok(None),
             Err(ReadEntryError::NotFound) => Ok(None),
+            // A page manifest this process cannot serve is a plain miss;
+            // never feed it to the corrupt-entry cleanup below.
+            Err(ReadEntryError::Unsupported) => Ok(None),
             Err(ReadEntryError::Invalid) => {
                 self.remove_unparseable_entry(&path, key_bytes);
                 Ok(None)
@@ -870,6 +876,10 @@ impl DiskPrefixCache {
             }
             Err(e) => return Err(ReadEntryError::Io(e)),
         };
+        // Length checks must describe the opened inode, not the earlier path
+        // stat: a concurrent atomic replace between the two would otherwise
+        // make a healthy entry fail validation as a spurious miss.
+        let file_len = file.metadata().map_err(ReadEntryError::Io)?.len();
 
         let mut timings = DiskReadStageTimings::default();
         let read_started = std::time::Instant::now();
@@ -909,7 +919,7 @@ impl DiskPrefixCache {
             .checked_add(key_len as u64)
             .and_then(|n| n.checked_add(payload_len))
             .ok_or(ReadEntryError::Invalid)?;
-        if total_len != meta.len()
+        if total_len != file_len
             || payload_len > self.policy.max_entry_bytes
             || (flags == PAGE_MANIFEST_FLAG && payload_len > MAX_PAGE_MANIFEST_BYTES as u64)
             || payload_len > usize::MAX as u64
@@ -967,7 +977,10 @@ impl DiskPrefixCache {
         }
 
         let payload = if flags == PAGE_MANIFEST_FLAG {
-            let page_store = self.page_store.as_ref().ok_or(ReadEntryError::Invalid)?;
+            let page_store = self
+                .page_store
+                .as_ref()
+                .ok_or(ReadEntryError::Unsupported)?;
             let manifest = PageManifest::decode(
                 &stored_payload,
                 Some(expected_key),
@@ -1029,6 +1042,10 @@ impl DiskPrefixCache {
             }
             Err(e) => return Err(ReadEntryError::Io(e)),
         };
+        // Length checks must describe the opened inode, not the earlier path
+        // stat: a concurrent atomic replace between the two would otherwise
+        // make a healthy entry fail validation as a spurious miss.
+        let file_len = file.metadata().map_err(ReadEntryError::Io)?.len();
 
         let mut timings = DiskReadStageTimings::default();
         let read_started = std::time::Instant::now();
@@ -1065,7 +1082,7 @@ impl DiskPrefixCache {
             .checked_add(key_len as u64)
             .and_then(|n| n.checked_add(payload_len))
             .ok_or(ReadEntryError::Invalid)?;
-        if total_len != meta.len()
+        if total_len != file_len
             || payload_len > self.policy.max_entry_bytes
             || (flags == PAGE_MANIFEST_FLAG && payload_len > MAX_PAGE_MANIFEST_BYTES as u64)
             || payload_len > usize::MAX as u64
@@ -1113,7 +1130,10 @@ impl DiskPrefixCache {
             if digest.as_slice() != expected_hash {
                 return Err(ReadEntryError::Invalid);
             }
-            let page_store = self.page_store.as_ref().ok_or(ReadEntryError::Invalid)?;
+            let page_store = self
+                .page_store
+                .as_ref()
+                .ok_or(ReadEntryError::Unsupported)?;
             let manifest = PageManifest::decode(
                 &manifest_bytes,
                 Some(expected_key),
@@ -1347,13 +1367,14 @@ impl DiskPrefixCache {
         fs::rename(&tmp_path, &final_path)?;
         guard.disarm();
         // Sync the directory so the rename itself is durable before the
-        // store is reported committed (spec §7.3).
-        if let Ok(dir) = fs::File::open(&self.dir) {
-            let _ = dir.sync_all();
-        }
+        // store is reported committed (spec §7.3): propagate the error
+        // instead of reporting a commit a crash could still roll back.
+        fs::File::open(&self.dir)?.sync_all()?;
 
+        // Post-insert eviction runs the page-store GC itself; a second
+        // sweep here would re-walk and re-checksum every manifest under
+        // the same exclusive lock.
         let evictions = self.evict_until_within_policy_unlocked();
-        self.gc_page_store_unlocked();
         Ok(DiskPrefixCacheInsertOutcome { evictions })
     }
 
@@ -1564,7 +1585,10 @@ impl DiskPrefixCache {
             let size = metadata.len();
             let mtime = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
             let (producer_cold_prefill_us, stale_version) = peek_entry_utility_fields(&path);
-            let page_manifest = self.read_page_manifest_for_gc(&path);
+            // Eviction treats an unreadable manifest as a plain legacy file:
+            // removing the entry file is still valid, and its pages stay
+            // until a GC round with a complete live set collects them.
+            let page_manifest = self.read_page_manifest_for_gc(&path).ok().flatten();
             let page_hashes = page_manifest
                 .as_ref()
                 .map(PageManifest::page_hashes_hex)
@@ -1603,21 +1627,58 @@ impl DiskPrefixCache {
     /// Mark pages referenced by fully validated atomic manifests, then sweep
     /// old unreferenced blobs. The scan is the durable refcount source of
     /// truth: a shared hash remains live until its last manifest disappears.
+    ///
+    /// Any enumeration or manifest-read I/O error aborts the round before
+    /// the sweep: an incomplete live set must never delete pages a valid but
+    /// unreadable manifest still references. Content-validation failures
+    /// (bad magic, length, checksum, decode) legitimately mark nothing —
+    /// that file is corrupt, not a reference source.
     fn gc_page_store_unlocked(&self) {
         let Some(page_store) = self.page_store.as_ref() else {
             return;
         };
         let mut live = std::collections::HashSet::new();
-        let Ok(entries) = fs::read_dir(&self.dir) else {
-            return;
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::prefix_cache",
+                    error = %error,
+                    dir = %self.dir.display(),
+                    "page-era prefix-cache GC could not list the directory; skipping sweep",
+                );
+                return;
+            }
         };
-        for entry in entries.filter_map(Result::ok) {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        error = %error,
+                        dir = %self.dir.display(),
+                        "page-era prefix-cache GC enumeration failed; skipping sweep",
+                    );
+                    return;
+                }
+            };
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != ENTRY_EXTENSION) {
                 continue;
             }
-            if let Some(manifest) = self.read_page_manifest_for_gc(&path) {
-                live.extend(manifest.page_hashes_hex());
+            match self.read_page_manifest_for_gc(&path) {
+                Ok(Some(manifest)) => live.extend(manifest.page_hashes_hex()),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        target: "ax_engine_mlx::prefix_cache",
+                        error = %error,
+                        path = %path.display(),
+                        "page-era prefix-cache GC could not read a manifest; skipping sweep",
+                    );
+                    return;
+                }
             }
         }
         if let Err(error) = page_store.gc_unreferenced(&live) {
@@ -1632,43 +1693,74 @@ impl DiskPrefixCache {
     /// Bounded parser used only by GC/refcount accounting. Legacy payload
     /// entries are skipped after the fixed header, so this never loads a
     /// monolithic KV payload.
-    fn read_page_manifest_for_gc(&self, path: &Path) -> Option<PageManifest> {
-        use std::io::Read;
-
-        let meta = fs::symlink_metadata(path).ok()?;
+    ///
+    /// `Ok(None)` means the file is structurally not a valid page manifest
+    /// (legacy entry, truncation, length/checksum/decode failure): it marks
+    /// no pages. `Err` means an I/O failure where the manifest may still be
+    /// valid — the caller must abort the sweep instead of treating those
+    /// pages as unreferenced.
+    fn read_page_manifest_for_gc(
+        &self,
+        path: &Path,
+    ) -> Result<Option<PageManifest>, std::io::Error> {
+        // An entry that vanished between the directory listing and the stat
+        // or open is legitimately not a marking source; every other I/O
+        // failure aborts the sweep.
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
         if !meta.file_type().is_file() {
-            return None;
+            return Ok(None);
         }
-        let mut file = fs::File::open(path).ok()?;
+        let mut file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
         let mut header = [0u8; FIXED_HEADER_LEN];
-        file.read_exact(&mut header).ok()?;
+        if !read_exact_gc(&mut file, &mut header)? {
+            return Ok(None);
+        }
         if &header[0..4] != FILE_MAGIC
-            || u32::from_le_bytes(header[4..8].try_into().ok()?) != FILE_VERSION
-            || u32::from_le_bytes(header[8..12].try_into().ok()?) as usize != FIXED_HEADER_LEN
+            || u32::from_le_bytes(header[4..8].try_into().unwrap_or([0; 4])) != FILE_VERSION
+            || u32::from_le_bytes(header[8..12].try_into().unwrap_or([0; 4])) as usize
+                != FIXED_HEADER_LEN
         {
-            return None;
+            return Ok(None);
         }
-        let flags = u32::from_le_bytes(header[12..16].try_into().ok()?);
+        let flags = u32::from_le_bytes(header[12..16].try_into().unwrap_or([0; 4]));
         if flags != PAGE_MANIFEST_FLAG {
-            return None;
+            return Ok(None);
         }
-        let key_len = u32::from_le_bytes(header[16..20].try_into().ok()?) as usize;
-        let manifest_len = u64::from_le_bytes(header[20..28].try_into().ok()?);
-        let expected_hash: [u8; 32] = header[28..60].try_into().ok()?;
-        let prefill_slot = u32::from_le_bytes(header[60..64].try_into().ok()?);
-        let producer_cold_prefill_us = u64::from_le_bytes(header[64..72].try_into().ok()?);
-        let producer_serialize_us = u64::from_le_bytes(header[72..80].try_into().ok()?);
-        let total_len = (FIXED_HEADER_LEN as u64)
-            .checked_add(key_len as u64)?
-            .checked_add(manifest_len)?;
-        let manifest_len = usize::try_from(manifest_len).ok()?;
+        let key_len = u32::from_le_bytes(header[16..20].try_into().unwrap_or([0; 4])) as usize;
+        let manifest_len = u64::from_le_bytes(header[20..28].try_into().unwrap_or([0; 8]));
+        let expected_hash: [u8; 32] = header[28..60].try_into().unwrap_or([0; 32]);
+        let prefill_slot = u32::from_le_bytes(header[60..64].try_into().unwrap_or([0; 4]));
+        let producer_cold_prefill_us =
+            u64::from_le_bytes(header[64..72].try_into().unwrap_or([0; 8]));
+        let producer_serialize_us = u64::from_le_bytes(header[72..80].try_into().unwrap_or([0; 8]));
+        let Some(total_len) = (FIXED_HEADER_LEN as u64)
+            .checked_add(key_len as u64)
+            .and_then(|n| n.checked_add(manifest_len))
+        else {
+            return Ok(None);
+        };
+        let Ok(manifest_len) = usize::try_from(manifest_len) else {
+            return Ok(None);
+        };
         if total_len != meta.len() || manifest_len > MAX_PAGE_MANIFEST_BYTES {
-            return None;
+            return Ok(None);
         }
         let mut key = vec![0u8; key_len];
         let mut manifest_bytes = vec![0u8; manifest_len];
-        file.read_exact(&mut key).ok()?;
-        file.read_exact(&mut manifest_bytes).ok()?;
+        if !read_exact_gc(&mut file, &mut key)? {
+            return Ok(None);
+        }
+        if !read_exact_gc(&mut file, &mut manifest_bytes)? {
+            return Ok(None);
+        }
         let actual_hash = Self::entry_checksum_oneshot(
             flags,
             prefill_slot,
@@ -1678,14 +1770,14 @@ impl DiskPrefixCache {
             &manifest_bytes,
         );
         if actual_hash != expected_hash {
-            return None;
+            return Ok(None);
         }
-        PageManifest::decode(
+        Ok(PageManifest::decode(
             &manifest_bytes,
             Some(&key),
             self.policy.max_entry_bytes.max(self.policy.max_bytes),
         )
-        .ok()
+        .ok())
     }
 }
 
@@ -1805,10 +1897,15 @@ impl Drop for TempFileGuard {
 }
 
 /// Internal read outcome: `NotFound` is an ordinary miss, `Invalid` is a
-/// validation failure eligible for cleanup, `Io` is an environment error.
+/// validation failure eligible for cleanup, `Unsupported` is a structurally
+/// valid entry this process cannot serve (a page manifest while the local
+/// page store is closed — another process may have enabled page writes
+/// after this cache was opened): a plain miss that must never be treated
+/// as corrupt or deleted. `Io` is an environment error.
 enum ReadEntryError {
     NotFound,
     Invalid,
+    Unsupported,
     Io(std::io::Error),
 }
 
@@ -1841,6 +1938,18 @@ fn page_read_error(error: PageStoreError) -> ReadEntryError {
 
 fn elapsed_us(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+/// `read_exact` for the GC manifest parser: `UnexpectedEof` is truncation
+/// (a corrupt entry, reported as `Ok(false)`); any other error is a real
+/// I/O failure that must abort the sweep.
+fn read_exact_gc(file: &mut fs::File, buf: &mut [u8]) -> Result<bool, std::io::Error> {
+    use std::io::Read;
+    match file.read_exact(buf) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -3517,6 +3626,99 @@ mod tests {
         fs::write(blob, b"corrupt!").expect("corrupt page");
         assert!(cache.get(&key).expect("corruption is a miss").is_none());
         assert!(!cache.path_for(&key).exists());
+        assert!(page_store.blob_paths().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn page_manifest_is_a_miss_not_a_delete_for_a_reader_without_page_store() {
+        let dir = unique_tempdir("page-unsupported-reader");
+        let key = test_key("m", "p", "standard-fa", 4, 2, 21, &[1, 2]);
+        // Opened before any `.pages` directory exists and with page writes
+        // off: this cache holds no page store at all, mirroring a process
+        // that started before another process enabled page mode.
+        let reader = DiskPrefixCache::with_policy(
+            &dir,
+            DiskPrefixCachePolicy {
+                page_store: false,
+                ..DiskPrefixCachePolicy::default()
+            },
+        )
+        .expect("open reader");
+        assert!(reader.page_store.is_none());
+        let writer = DiskPrefixCache::with_policy(
+            &dir,
+            DiskPrefixCachePolicy {
+                page_store: true,
+                page_bytes: 8,
+                page_gc_grace_ms: 0,
+                ..DiskPrefixCachePolicy::default()
+            },
+        )
+        .expect("open page writer");
+        writer
+            .insert(&key, &payload_only(b"abcdefgh-tail"))
+            .expect("insert page manifest");
+
+        // The reader cannot serve the entry, but the miss must not delete
+        // the writer's valid manifest (previously `Invalid` fed the
+        // corrupt-entry cleanup under the exclusive lock).
+        assert!(reader.get(&key).expect("reader get").is_none());
+        assert!(
+            reader
+                .get_restored_timed(&key)
+                .expect("reader restore")
+                .is_none()
+        );
+        assert!(reader.path_for(&key).exists());
+        let hit = writer.get(&key).expect("writer get").expect("writer hit");
+        assert_eq!(hit.payload, b"abcdefgh-tail");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn page_gc_aborts_the_sweep_when_a_manifest_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = unique_tempdir("page-gc-abort");
+        let cache = DiskPrefixCache::with_policy(
+            &dir,
+            DiskPrefixCachePolicy {
+                page_store: true,
+                page_bytes: 8,
+                page_gc_grace_ms: 0,
+                ..DiskPrefixCachePolicy::default()
+            },
+        )
+        .expect("open");
+        let key = test_key("m", "p", "standard-fa", 4, 2, 31, &[1, 2]);
+        cache
+            .insert(&key, &payload_only(b"abcdefgh-tail"))
+            .expect("insert");
+        let page_store = cache.page_store.as_ref().expect("page store");
+        let blob_count = page_store.blob_paths().len();
+        assert!(blob_count > 0);
+
+        // A manifest that cannot be opened must abort the sweep: its pages
+        // are still referenced, and an incomplete live set must not delete
+        // them.
+        let manifest = cache.path_for(&key);
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o000)).expect("chmod 000");
+        cache.gc_page_store();
+        assert_eq!(
+            page_store.blob_paths().len(),
+            blob_count,
+            "a sweep with an incomplete live set must keep referenced pages",
+        );
+
+        // Readable again: the manifest marks its pages and nothing is
+        // collected; once the manifest is gone, the sweep reclaims.
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600)).expect("chmod 600");
+        cache.gc_page_store();
+        assert_eq!(page_store.blob_paths().len(), blob_count);
+        fs::remove_file(&manifest).expect("remove manifest");
+        cache.gc_page_store();
         assert!(page_store.blob_paths().is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
