@@ -205,6 +205,15 @@ impl MlxPrefixCache {
             return MlxPrefixCacheInsertOutcome::default();
         }
 
+        // Refuse an oversized snapshot up front, before replacing any resident
+        // entry: its byte charge alone exceeds the budget, so admitting it
+        // would let the eviction loop destroy every healthy entry before the
+        // oversized one self-evicts (leaving the cache empty). Mirrors the
+        // native cache's guard.
+        if snapshot.bytes > self.policy.max_bytes {
+            return MlxPrefixCacheInsertOutcome::default();
+        }
+
         if let Some(previous) = self.entries.remove(&key) {
             self.bytes = self.bytes.saturating_sub(previous.snapshot.bytes);
         }
@@ -435,20 +444,52 @@ impl MlxNativePrefixCache {
         requested_key: &MlxPrefixCacheKey,
         requested_tokens: &[u32],
     ) -> Option<(Arc<MlxNativePrefixSnapshot>, usize)> {
-        let matched_len = self.longest_prefix_len(requested_key, requested_tokens)?;
-        let best_key = self
-            .entries
-            .iter()
-            .filter(|(key, entry)| {
-                Self::compatible_key(key, requested_key)
-                    && entry
-                        .snapshot
-                        .tokens
-                        .get(..matched_len)
-                        .is_some_and(|tokens| tokens == &requested_tokens[..matched_len])
-            })
-            .max_by_key(|(_, entry)| entry.snapshot.token_count)
-            .map(|(key, _)| key.clone())?;
+        if !self.policy.enabled() || requested_key.block_size_tokens == 0 {
+            return None;
+        }
+        let block_size = requested_key.block_size_tokens as usize;
+        // One scan: track the best block-aligned prefix length and, among the
+        // entries reaching it, the largest donor (last one wins ties, matching
+        // the previous two-pass `max` + `max_by_key` semantics). An entry whose
+        // aligned length is the maximum necessarily matches the request on
+        // that whole span, so the second pass's re-comparison was redundant.
+        let mut best: Option<(usize, usize, MlxPrefixCacheKey)> = None;
+        for (key, entry) in &self.entries {
+            if !Self::compatible_key(key, requested_key) {
+                continue;
+            }
+            let common = entry
+                .snapshot
+                .tokens
+                .iter()
+                .zip(requested_tokens)
+                .take_while(|(left, right)| left == right)
+                .count();
+            // Exact snapshots remain valid even if a direct test/client
+            // inserted an unaligned entry. Partial adoption is always
+            // floored to a physical block boundary.
+            let aligned =
+                if common == requested_tokens.len() && common == entry.snapshot.token_count {
+                    common
+                } else {
+                    common - (common % block_size)
+                };
+            if aligned == 0 {
+                continue;
+            }
+            let token_count = entry.snapshot.token_count;
+            let replace = match &best {
+                None => true,
+                Some((best_aligned, best_token_count, _)) => {
+                    aligned > *best_aligned
+                        || (aligned == *best_aligned && token_count >= *best_token_count)
+                }
+            };
+            if replace {
+                best = Some((aligned, token_count, key.clone()));
+            }
+        }
+        let (matched_len, _, best_key) = best?;
         let touch_tick = self.allocate_touch_tick();
         let snapshot = {
             let entry = self.entries.get_mut(&best_key)?;
@@ -1614,6 +1655,38 @@ mod tests {
             }
             .admits_lower_bound(1)
         );
+    }
+
+    #[test]
+    fn portable_insert_refuses_oversized_entry_without_flushing_healthy_entries() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1024,
+            max_entries: 8,
+        });
+        let healthy_key = native_prefix_key(1);
+        let healthy = MlxPrefixSnapshot::from_shared_payload(
+            vec![0u8; 100].into(),
+            vec![1, 2, 3, 4],
+            4,
+            None,
+            None,
+        );
+        assert!(cache.insert(healthy_key.clone(), healthy).stored);
+
+        // Charge (payload + tokens) exceeds the whole budget: before the
+        // guard this inserted, evicted the healthy entry, then self-evicted.
+        let oversized = MlxPrefixSnapshot::from_shared_payload(
+            vec![0u8; 2048].into(),
+            vec![5, 6, 7, 8],
+            4,
+            None,
+            None,
+        );
+        let outcome = cache.insert(native_prefix_key(2), oversized);
+        assert!(!outcome.stored);
+        assert_eq!(outcome.evictions, 0);
+        assert_eq!(cache.entries.len(), 1);
+        assert!(cache.entries.contains_key(&healthy_key));
     }
 
     fn native_prefix_key(token: u32) -> MlxPrefixCacheKey {

@@ -467,11 +467,18 @@ struct FaLayerSlabArena {
     block_size: usize,
     dtype: MlxDtype,
     slabs: Vec<FaSlab>,
-    block_rows: HashMap<PhysicalBlockId, usize>,
+    /// Row index per physical block id, indexed by the dense pool id;
+    /// `UNASSIGNED_BLOCK_SLOT` marks ids with no row. The gather path probes
+    /// this once per block per layer per decode step, so a flat vec beats a
+    /// HashMap on both probe cost and metadata footprint.
+    block_rows: Vec<u32>,
     free_rows: Vec<usize>,
     next_row: usize,
     grow_events: u64,
 }
+
+/// Sentinel for the dense block→row / block→layer tables.
+const UNASSIGNED_BLOCK_SLOT: u32 = u32::MAX;
 
 impl FaLayerSlabArena {
     fn new(
@@ -487,7 +494,7 @@ impl FaLayerSlabArena {
             block_size,
             dtype,
             slabs: Vec::new(),
-            block_rows: HashMap::new(),
+            block_rows: Vec::new(),
             free_rows: Vec::new(),
             next_row: 0,
             grow_events: 0,
@@ -543,17 +550,22 @@ impl FaLayerSlabArena {
         self.grow_events = self.grow_events.saturating_add(1);
     }
 
+    fn row_of(&self, id: PhysicalBlockId) -> Option<usize> {
+        self.block_rows
+            .get(id.0 as usize)
+            .copied()
+            .filter(|&row| row != UNASSIGNED_BLOCK_SLOT)
+            .map(|row| row as usize)
+    }
+
     fn presize_for_ids(&mut self, ids: &[PhysicalBlockId]) {
-        let unassigned = ids
-            .iter()
-            .filter(|id| !self.block_rows.contains_key(id))
-            .count();
+        let unassigned = ids.iter().filter(|id| self.row_of(**id).is_none()).count();
         let minted = unassigned.saturating_sub(self.free_rows.len());
         self.ensure_capacity(self.next_row.saturating_add(minted));
     }
 
     fn assign_row(&mut self, id: PhysicalBlockId) -> usize {
-        if let Some(&row) = self.block_rows.get(&id) {
+        if let Some(row) = self.row_of(id) {
             return row;
         }
         let row = self.free_rows.pop().unwrap_or_else(|| {
@@ -562,12 +574,17 @@ impl FaLayerSlabArena {
             row
         });
         self.ensure_capacity(row.saturating_add(1));
-        self.block_rows.insert(id, row);
+        let idx = id.0 as usize;
+        if idx >= self.block_rows.len() {
+            self.block_rows.resize(idx + 1, UNASSIGNED_BLOCK_SLOT);
+        }
+        self.block_rows[idx] = row as u32;
         row
     }
 
     fn release_row(&mut self, id: PhysicalBlockId) {
-        if let Some(row) = self.block_rows.remove(&id) {
+        if let Some(row) = self.row_of(id) {
+            self.block_rows[id.0 as usize] = UNASSIGNED_BLOCK_SLOT;
             self.free_rows.push(row);
         }
     }
@@ -585,10 +602,27 @@ impl FaLayerSlabArena {
 struct FaSlabStorage {
     layers: HashMap<usize, FaLayerSlabArena>,
     /// A global block id belongs to exactly one layer while it has a row.
-    block_layers: HashMap<PhysicalBlockId, usize>,
+    /// Dense like the arena row tables: pool ids are dense from zero.
+    block_layers: Vec<u32>,
 }
 
 impl FaSlabStorage {
+    fn layer_of(&self, id: PhysicalBlockId) -> Option<usize> {
+        self.block_layers
+            .get(id.0 as usize)
+            .copied()
+            .filter(|&layer| layer != UNASSIGNED_BLOCK_SLOT)
+            .map(|layer| layer as usize)
+    }
+
+    fn set_layer(&mut self, id: PhysicalBlockId, layer_idx: usize) {
+        let idx = id.0 as usize;
+        if idx >= self.block_layers.len() {
+            self.block_layers.resize(idx + 1, UNASSIGNED_BLOCK_SLOT);
+        }
+        self.block_layers[idx] = layer_idx as u32;
+    }
+
     fn ensure_layer(
         &mut self,
         layer_idx: usize,
@@ -612,11 +646,7 @@ impl FaSlabStorage {
             ));
         }
         for id in ids {
-            if self
-                .block_layers
-                .get(id)
-                .is_some_and(|owner| *owner != layer_idx)
-            {
+            if self.layer_of(*id).is_some_and(|owner| owner != layer_idx) {
                 return Err(FaBlockPoolError::InvalidConfig(
                     "physical FA block was assigned to multiple layers",
                 ));
@@ -639,11 +669,7 @@ impl FaSlabStorage {
         layer_idx: usize,
         id: PhysicalBlockId,
     ) -> Result<usize, FaBlockPoolError> {
-        if self
-            .block_layers
-            .get(&id)
-            .is_some_and(|owner| *owner != layer_idx)
-        {
+        if self.layer_of(id).is_some_and(|owner| owner != layer_idx) {
             return Err(FaBlockPoolError::InvalidConfig(
                 "physical FA block was assigned to multiple layers",
             ));
@@ -655,16 +681,18 @@ impl FaSlabStorage {
                 "FA layer slab is not initialized",
             ))?
             .assign_row(id);
-        self.block_layers.insert(id, layer_idx);
+        self.set_layer(id, layer_idx);
         Ok(row)
     }
 
     fn release_ids(&mut self, ids: &[PhysicalBlockId]) {
         for id in ids {
-            if let Some(layer_idx) = self.block_layers.remove(id)
-                && let Some(arena) = self.layers.get_mut(&layer_idx)
-            {
-                arena.release_row(*id);
+            if let Some(layer_idx) = self.layer_of(*id) {
+                let idx = id.0 as usize;
+                self.block_layers[idx] = UNASSIGNED_BLOCK_SLOT;
+                if let Some(arena) = self.layers.get_mut(&layer_idx) {
+                    arena.release_row(*id);
+                }
             }
         }
     }
@@ -802,7 +830,7 @@ impl SharedFaBlockPool {
                     "FA layer slab is not initialized",
                 ))?;
             for &(source, target) in copies {
-                if let Some(&source_row) = arena.block_rows.get(&source) {
+                if let Some(source_row) = arena.row_of(source) {
                     resolved.push((source_row, target));
                 }
             }
@@ -991,9 +1019,7 @@ impl SharedFaBlockPool {
             .iter()
             .map(|id| {
                 arena
-                    .block_rows
-                    .get(id)
-                    .copied()
+                    .row_of(*id)
                     .ok_or(FaBlockPoolError::UnallocatedBlock(*id))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -1075,7 +1101,7 @@ impl SharedFaBlockPool {
         let arena = storage.layers.get(&layer_idx)?;
         let rows = block_ids
             .iter()
-            .map(|id| arena.block_rows.get(id).copied())
+            .map(|id| arena.row_of(*id))
             .collect::<Option<Vec<_>>>()?;
         let slab_idx = rows[0] / FA_POOL_SLAB_BLOCKS;
         if rows.iter().any(|row| row / FA_POOL_SLAB_BLOCKS != slab_idx) {

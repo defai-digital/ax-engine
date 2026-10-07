@@ -1560,9 +1560,23 @@ fn demote_native_prefix_snapshot(
         telemetry.record_demotion_skip();
         return;
     }
-    if !portable_cache.lock().enabled() || snapshot.cache.has_unserializable_layers() {
-        telemetry.record_demotion_skip();
-        return;
+    {
+        let cache = portable_cache.lock();
+        // Cheap admission probes before the O(KV) serialize: a disabled tier,
+        // or a resident entry that already supersedes this snapshot, makes the
+        // serialize pure waste. `insert_unless_superseded` below re-checks
+        // under the insert lock and stays authoritative.
+        let superseded = cache.enabled()
+            && cache.contains_superseding_snapshot(
+                key,
+                &snapshot.tokens,
+                snapshot.greedy_prefill_output_token,
+                false,
+            );
+        if !cache.enabled() || superseded || snapshot.cache.has_unserializable_layers() {
+            telemetry.record_demotion_skip();
+            return;
+        }
     }
     let payload: Arc<[u8]> = snapshot.cache.serialize_to_bytes().into();
     let demoted = MlxPrefixSnapshot::from_shared_payload(
