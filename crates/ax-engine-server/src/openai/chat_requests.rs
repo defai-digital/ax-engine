@@ -303,7 +303,9 @@ fn render_deepseek_openai_chat_prompt(
     let thinking = options.enable_thinking;
     let tool_context = tools.map(openai_value_is_present).unwrap_or(false)
         || messages.iter().any(|message| {
-            matches!(message.role.as_str(), "tool" | "function")
+            // Trim like `normalize_role` below: a padded role string renders
+            // as a valid turn and must also count as tool/user context here.
+            matches!(message.role.trim(), "tool" | "function")
                 || message
                     .tool_calls
                     .as_ref()
@@ -311,7 +313,7 @@ fn render_deepseek_openai_chat_prompt(
         });
     let last_user_idx = messages
         .iter()
-        .rposition(|message| matches!(message.role.as_str(), "user" | "tool" | "function"));
+        .rposition(|message| matches!(message.role.trim(), "user" | "tool" | "function"));
     let mut pairs = Vec::with_capacity(messages.len());
     for (index, message) in messages.iter().enumerate() {
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
@@ -694,7 +696,7 @@ fn render_llama_family_tools_prompt(
         prompt.push_str(header_open);
         prompt.push_str("system");
         prompt.push_str(header_close);
-        if tools.is_some() {
+        if tools.is_some() && environment_ipython {
             prompt.push_str("Environment: ipython\n");
         }
         prompt.push_str(system_text.trim());
@@ -2618,6 +2620,27 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     }))
 }
 
+/// Qwen3-VL media placeholders must tokenize to exactly one special token.
+/// A tokenizer that splits `<|image_pad|>` / `<|video_pad|>` into pieces
+/// would let the renderer expand only the first piece across the soft-token
+/// span, so fail closed here like the MiniCPM / Nemotron renderers do.
+fn qwen3_vl_single_placeholder_token(
+    tokens: &[u32],
+    label: &str,
+) -> Result<u32, HttpErrorResponse> {
+    match tokens {
+        [token] => Ok(*token),
+        _ => Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "qwen3_vl {label} placeholder must encode to one token, got {}",
+                tokens.len()
+            ),
+        )),
+    }
+}
+
 /// Build a native-MLX Qwen3-VL chat prompt from inline image/video parts.
 ///
 /// Media is decoded (data URI only), patchified for the portable ViT, and
@@ -2718,13 +2741,7 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
                 format!("failed to tokenize image placeholder: {error}"),
             )
         })?;
-    if image_ph_tokens.is_empty() {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "tokenizer produced empty image placeholder tokens".to_string(),
-        ));
-    }
+    let image_pad_id = qwen3_vl_single_placeholder_token(&image_ph_tokens, "image")?;
     let video_ph_tokens = tokenizer
         .encode(QWEN3_VL_VIDEO_PLACEHOLDER, false)
         .map_err(|error| {
@@ -2734,13 +2751,14 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
                 format!("failed to tokenize video placeholder: {error}"),
             )
         })?;
-    if !collected.videos.is_empty() && video_ph_tokens.is_empty() {
-        return Err(error_response(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "tokenizer produced empty video placeholder tokens".to_string(),
-        ));
-    }
+    let video_pad_id = if collected.videos.is_empty() {
+        None
+    } else {
+        Some(qwen3_vl_single_placeholder_token(
+            &video_ph_tokens,
+            "video",
+        )?)
+    };
 
     let image_starts = if collected.images.is_empty() {
         Vec::new()
@@ -2785,18 +2803,20 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
         (
             start,
             image_ph_tokens.len(),
-            image_ph_tokens[0],
+            image_pad_id,
             QwenMediaKind::Image(index),
         )
     }));
-    placeholder_spans.extend(video_starts.into_iter().enumerate().map(|(index, start)| {
-        (
-            start,
-            video_ph_tokens.len(),
-            video_ph_tokens[0],
-            QwenMediaKind::Video(index),
-        )
-    }));
+    if let Some(video_pad_id) = video_pad_id {
+        placeholder_spans.extend(video_starts.into_iter().enumerate().map(|(index, start)| {
+            (
+                start,
+                video_ph_tokens.len(),
+                video_pad_id,
+                QwenMediaKind::Video(index),
+            )
+        }));
+    }
     placeholder_spans.sort_unstable_by_key(|span| span.0);
 
     // Expand every placeholder span into the number of merged ViT tokens,
@@ -4943,6 +4963,38 @@ mod media_tests {
         let inputs = Qwen3VlRuntimeInputs { images: vec![rt] };
         assert!(!inputs.media_prefix_key("fp").is_empty());
     }
+
+    #[test]
+    fn qwen3_vl_placeholder_must_tokenize_to_one_token() {
+        assert_eq!(
+            qwen3_vl_single_placeholder_token(&[42], "image").expect("single token"),
+            42
+        );
+        assert!(qwen3_vl_single_placeholder_token(&[], "image").is_err());
+        assert!(qwen3_vl_single_placeholder_token(&[1, 2], "video").is_err());
+    }
+
+    #[test]
+    fn llama4_system_plus_tools_omits_llama3_environment_line() {
+        let messages: Vec<OpenAiChatMessage> = vec![
+            serde_json::from_value(json!({"role": "system", "content": "Be exact."}))
+                .expect("system message"),
+            serde_json::from_value(json!({"role": "user", "content": "Hello"}))
+                .expect("user message"),
+        ];
+        let tools = json!([{
+            "type": "function",
+            "function": {"name": "bash", "parameters": {"type": "object"}}
+        }]);
+
+        let llama4 = render_llama4_openai_chat_prompt(&messages, Some(&tools)).expect("render");
+        assert!(!llama4.contains("Environment: ipython"));
+        assert!(llama4.contains("<|header_start|>system<|header_end|>"));
+
+        // Llama 3 keeps the ipython environment line with tools set.
+        let llama3 = render_llama3_openai_chat_prompt(&messages, Some(&tools)).expect("render");
+        assert!(llama3.contains("Environment: ipython"));
+    }
 }
 
 #[cfg(test)]
@@ -5094,5 +5146,34 @@ mod deepseek_dsml_contract_tests {
         assert!(prompt.contains(
             "</｜DSML｜tool_calls><｜end▁of▁sentence｜><｜User｜><tool_result>Sunny</tool_result><｜Assistant｜><think>"
         ));
+    }
+
+    #[test]
+    fn padded_role_strings_still_count_for_last_user_index() {
+        // `normalize_role` trims role strings, so a padded role renders as a
+        // valid turn; the keep-reasoning window must count it as well.
+        let messages: Vec<OpenAiChatMessage> = vec![
+            serde_json::from_value(serde_json::json!({"role": " user", "content": "Hi"}))
+                .expect("user message with padded role"),
+            serde_json::from_value(serde_json::json!({
+                "role": "assistant",
+                "content": "Hello!",
+                "reasoning_content": "thinking out loud"
+            }))
+            .expect("assistant message"),
+        ];
+        let prompt = render_deepseek_openai_chat_prompt(
+            "deepseek-ai/DeepSeek-V3",
+            &messages,
+            None,
+            None,
+            ChatPromptRenderOptions {
+                enable_thinking: true,
+                preserve_thinking: false,
+                deepseek_v4_framing: None,
+            },
+        )
+        .expect("render");
+        assert!(prompt.contains("<think>thinking out loud</think>"));
     }
 }
