@@ -2762,6 +2762,9 @@ impl MlxRunner {
         let Some(ctx) = ctx else {
             return false;
         };
+        if think_budget_controller_active(ctx.max_think_tokens, ctx.answer_reserve_tokens) {
+            return false;
+        }
         if ctx.generated_len < 1 {
             return false;
         }
@@ -2992,6 +2995,12 @@ impl MlxRunner {
                 CoalescedDirectDisposition::Direct => {}
             }
 
+            // The latch wins over the scheduler feed on the next per-item
+            // step, so it must track the token this step emitted — a
+            // DrainToNgram row leaves `pending_direct` empty and would
+            // otherwise re-feed a stale latch from before the group.
+            row.state.next_model_last_token = Some(row.token);
+
             if row.state.cache.hard_cap_exhausted() {
                 should_clear_cache = true;
                 runs.push((
@@ -3099,6 +3108,9 @@ impl MlxRunner {
         let Some(ctx) = ctx else {
             return false;
         };
+        if think_budget_controller_active(ctx.max_think_tokens, ctx.answer_reserve_tokens) {
+            return false;
+        }
         let sampling = sampling_params_from_context(ctx);
         let states = self.states.lock();
         let Some(state) = states.get(&item.request_id) else {
@@ -5990,6 +6002,8 @@ impl MlxRunner {
                         Some(tok),
                         is_greedy,
                         sampling,
+                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
+                            .unwrap_or((None, None)),
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -6073,6 +6087,8 @@ impl MlxRunner {
                         Some(tok),
                         is_greedy,
                         sampling,
+                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
+                            .unwrap_or((None, None)),
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -6156,6 +6172,8 @@ impl MlxRunner {
                         Some(tok),
                         is_greedy,
                         sampling,
+                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
+                            .unwrap_or((None, None)),
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -6239,6 +6257,8 @@ impl MlxRunner {
                         Some(tok),
                         is_greedy,
                         sampling,
+                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
+                            .unwrap_or((None, None)),
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -6320,6 +6340,8 @@ impl MlxRunner {
                         Some(tok),
                         is_greedy,
                         sampling,
+                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
+                            .unwrap_or((None, None)),
                     );
                     let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     state.decode_telemetry.record_prefill_eval_barrier();
@@ -6736,6 +6758,8 @@ impl MlxRunner {
                             Some(tok),
                             is_greedy,
                             sampling,
+                            ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
+                                .unwrap_or((None, None)),
                         );
                         prefill_generation_state_wall_us = elapsed_us(generation_state_started);
                     }
@@ -6784,6 +6808,8 @@ impl MlxRunner {
                             Some(tok),
                             is_greedy,
                             sampling,
+                            ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
+                                .unwrap_or((None, None)),
                         );
                         vec![tok]
                     } else {
@@ -6844,7 +6870,10 @@ impl MlxRunner {
         // answer reserve / think cap is exhausted or the loop detector fired
         // inside an open think block (ds4-style soft+hard close). A budget
         // edge carries no stop reason: generation continues so the remaining
-        // output budget funds the answer (ds4 hard-limit semantics).
+        // output budget funds the answer (ds4 hard-limit semantics). Budget
+        // edges are routed onto the single-token path by `decode_one` (the
+        // swap is KV-exact there); this post-decode hook still handles the
+        // loop-detected close and re-applies the budget close on that route.
         let (sampled_tokens, stop_reason) = if let Some(ctx) = ctx
             && let Some((forced_tokens, forced_stop)) = think_budget_close_override(
                 stop_reason,
@@ -8599,6 +8628,28 @@ impl MlxRunner {
             )
         });
 
+        // Hard think-budget close due this step: force the single-token path
+        // (like the soft-close probe) instead of the post-decode override
+        // swapping the sampled token after the fact. The swap is KV-exact
+        // only when the step commits nothing beyond its feed token — the
+        // double-buffer direct pipeline and the speculative routes commit
+        // their emitted tokens in-step, and linear/recurrent state cannot
+        // roll back. Routing through run_single_decode keeps the close exact
+        // on every path. Loop-detected closes stay post-decode: they keep
+        // their stop reason and end the request, so the stale cache is
+        // discarded.
+        let think_hard_close_due = options.request_context.is_some_and(|ctx| {
+            think_budget_close_decision(
+                state.ngram_in_think,
+                self.cfg.think_end_token_id,
+                ctx.max_output_tokens.saturating_sub(ctx.generated_len),
+                state.think_emitted_tokens,
+                ctx.max_think_tokens,
+                ctx.answer_reserve_tokens,
+                false,
+            )
+        });
+
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
         // never populates the bonus queue.)
@@ -8769,16 +8820,18 @@ impl MlxRunner {
             return tokens;
         }
 
-        let pure_direct_pipeline = v4_uncertified_uses_pure_direct_pipeline(
-            self.mtp_model_policy.is_deepseek_v4_direct_fallback(),
-            self.disable_ngram_acceleration,
-            state.think_soft_close_armed,
-            sampling.uses_logits_processors(),
-            is_greedy || sampling.temperature <= 0.0,
-            self.mtp_requested,
-        );
+        let pure_direct_pipeline = !think_hard_close_due
+            && v4_uncertified_uses_pure_direct_pipeline(
+                self.mtp_model_policy.is_deepseek_v4_direct_fallback(),
+                self.disable_ngram_acceleration,
+                state.think_soft_close_armed,
+                sampling.uses_logits_processors(),
+                is_greedy || sampling.temperature <= 0.0,
+                self.mtp_requested,
+            );
         let direct_pipeline = pure_direct_pipeline
             || (!state.think_soft_close_armed
+                && !think_hard_close_due
                 && should_use_session_direct_pipeline(
                     self.disable_ngram_acceleration,
                     is_greedy || sampling.temperature <= 0.0,
@@ -8819,6 +8872,7 @@ impl MlxRunner {
             .unwrap_or(0);
 
         if !state.think_soft_close_armed
+            && !think_hard_close_due
             && ngram_request_disabled_direct_fast_path(
                 is_greedy,
                 sampling.uses_logits_processors(),
@@ -8846,6 +8900,7 @@ impl MlxRunner {
             is_greedy,
             options.final_by_max_output,
             options.request_context,
+            think_hard_close_due,
         );
         apply_decode_result(state, &result, options.terminal_token_ids)
     }
@@ -12466,6 +12521,8 @@ impl MlxRunner {
         prefill_output_token: Option<u32>,
         is_greedy: bool,
         sampling: MlxSamplingParams,
+        // (max_think_tokens, answer_reserve_tokens) from the request context.
+        think_budget_knobs: (Option<u32>, Option<u32>),
     ) {
         // When MTP is active, use a wider prompt window (NGRAM_MTP_PROMPT_FEED_MAX)
         // so real-code bigrams are seeded before the first decode step. Without
@@ -12854,6 +12911,19 @@ impl MlxRunner {
                 || state.flash_next_mtp.pending_restored_cursor.is_some())
             && is_greedy
             && !sampling.uses_logits_processors();
+        // A hard think-budget close due at the first token must not prime the
+        // double buffer: priming commits the prefill token that the
+        // post-decode override is about to replace with the close token, and
+        // the commit cannot be rolled back.
+        let think_close_due_at_first_token = think_budget_close_decision(
+            state.ngram_in_think,
+            self.cfg.think_end_token_id,
+            max_output,
+            state.think_emitted_tokens,
+            think_budget_knobs.0,
+            think_budget_knobs.1,
+            false,
+        );
         if (should_bootstrap_direct_pipeline(
             self.disable_ngram_acceleration,
             state.ngram_acceleration_disabled_for_request,
@@ -12861,6 +12931,7 @@ impl MlxRunner {
             mtp_uses_direct_pipeline,
             self.mtp_requested,
         ) || gemma_exact_direct_bootstrap)
+            && !think_close_due_at_first_token
             && !gemma_moe_long_mt_singleton
             && !flash_next_cursor_owns_decode
             && (is_greedy || (self.disable_ngram_acceleration && sampling.temperature <= 0.0))
@@ -12882,6 +12953,7 @@ impl MlxRunner {
     }
 
     /// Run one model decode step, updating the n-gram accept-rate gate.
+    #[allow(clippy::too_many_arguments)]
     fn run_model_decode(
         &self,
         state: &mut RequestState,
@@ -12890,19 +12962,30 @@ impl MlxRunner {
         is_greedy: bool,
         final_by_max_output: bool,
         ctx: Option<&RunnerRequestContext>,
+        think_hard_close_due: bool,
     ) -> Vec<u32> {
         // Think soft-close window: bypass MTP / n-gram speculation so every
         // step decides one token against materialized logits where the rank
-        // probe can fire. MTP session state resets exactly like the
+        // probe can fire. A due hard close takes the same route: the
+        // post-decode override swaps the sampled token for the close token,
+        // which is KV-exact only on this single-token path (the direct
+        // pipeline and speculative routes commit emitted tokens in-step).
+        // MTP session state resets exactly like the
         // DirectFallback arm; a pending direct-pipeline token drains first
         // (already committed — the probe applies from the next step).
-        if state.think_soft_close_armed {
+        if state.think_soft_close_armed || think_hard_close_due {
             state.mtp_pending_draft.clear();
             state.mtp_pending_draft_lazy = None;
             state.mtp_pending_draft_log_probs.clear();
             state.mtp_pending_draft_log_prob_temperature = None;
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources.clear();
+            // Skip-state logits/hidden were captured against the pre-close
+            // context; a later unarmed step would consume them with an empty
+            // pending draft and emit the pre-close prediction a position late.
+            state.mtp_skip_logits = None;
+            state.mtp_skip_argmax = None;
+            state.mtp_skip_hidden = None;
             state.mtp_decode_count = 0;
             if let Some(cache) = state.mtp_cache.as_mut() {
                 cache.reset();
@@ -13147,12 +13230,30 @@ fn compute_think_state(cfg: &ModelConfig, current: bool, tokens: &[u32]) -> bool
     state
 }
 
+/// Think-budget controllers (the forced think-close override, the soft-close
+/// rank probe, and `think_emitted_tokens` accounting) are enforced only on
+/// the per-item decode path. Grouped routes — tensor batching and row-exact
+/// coalescing — mirror the stop-detection tail but never run that controller,
+/// so a request carrying a think budget must stay on the per-item path.
+fn think_budget_controller_active(
+    max_think_tokens: Option<u32>,
+    answer_reserve_tokens: Option<u32>,
+) -> bool {
+    max_think_tokens.is_some() || answer_reserve_tokens.is_some()
+}
+
 /// Decide whether the thinking-budget controller must force the think-close
 /// token at this step. Hard close: the answer reserve (or the per-request
 /// think budget) is exhausted. Soft close: the loop detector fired while
-/// still inside the think block (a stuck reasoning trace). The override is
-/// KV-exact — this step's forward already consumed the sampled token, and
-/// the close token rides its own forward as the step's emitted token.
+/// still inside the think block (a stuck reasoning trace). Budget edges are
+/// decidable from pre-step state, so `decode_one` routes a due step through
+/// the single-token path (as with the armed soft-close probe): the
+/// post-decode override then swaps the sampled token for the close token,
+/// which is KV-exact only when the step commits nothing beyond its feed
+/// token — the direct pipeline and speculative routes commit their emitted
+/// tokens in-step, and linear/recurrent state cannot roll back. The
+/// post-decode override remains for loop-detected closes; those keep their
+/// stop reason and end the request, so the stale cache is discarded.
 pub(crate) fn think_budget_close_decision(
     in_think: bool,
     think_end_token_id: Option<u32>,
@@ -13264,6 +13365,21 @@ pub(crate) fn think_soft_close_armed(
     max_think_tokens.is_some_and(|cap| {
         think_emitted_tokens.saturating_add(THINK_SOFT_CLOSE_WINDOW_TOKENS) >= cap
     })
+}
+
+#[cfg(test)]
+mod think_budget_controller_active_tests {
+    use super::think_budget_controller_active;
+
+    #[test]
+    fn active_with_either_budget_knob() {
+        assert!(!think_budget_controller_active(None, None));
+        assert!(think_budget_controller_active(Some(4096), None));
+        assert!(think_budget_controller_active(None, Some(512)));
+        assert!(think_budget_controller_active(Some(4096), Some(512)));
+        // An explicit zero cap is still an active controller.
+        assert!(think_budget_controller_active(Some(0), None));
+    }
 }
 
 #[cfg(test)]
