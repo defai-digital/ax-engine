@@ -290,7 +290,7 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True),
-                patch.object(download_model, "_snapshot_matches_hub_listing", return_value=False),
+                patch.object(download_model, "_snapshot_matches_hub_listing", side_effect=[False, True]),
                 patch.object(download_model, "_run_hf_snapshot_download", fake_hf_download),
                 patch.object(download_model, "_total_repo_bytes", lambda _repo, _revision=None: None),
             ):
@@ -304,6 +304,102 @@ class DownloadModelScriptTest(unittest.TestCase):
             ):
                 download_model.download(repo_id, None, revision=revision, quiet=True)
             self.assertEqual(calls, [], "a complete snapshot is reused without a download")
+
+    def test_pinned_destination_missing_hub_members_is_repaired(self) -> None:
+        repo_id, revision = "owner/repo", "f" * 40
+        for has_manifest in (False, True):
+            with self.subTest(has_manifest=has_manifest), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                dest, snapshot = root / "dest", root / "snapshot"
+                for directory in (dest, snapshot):
+                    directory.mkdir()
+                    (directory / "config.json").write_text("{}")
+                    write_safetensors(directory / "model.safetensors")
+                write_provenance(dest, repo_id, revision)
+                if has_manifest:
+                    write_manifest(dest / "model-manifest.json")
+                (snapshot / "tokenizer.json").write_text("{}")
+                listing = [("config.json", 2), ("model.safetensors", None),
+                           ("tokenizer.json", 2)]
+                with (
+                    patch.dict(os.environ, {"HF_HOME": str(root / "empty-cache")}, clear=True),
+                    patch.dict(sys.modules, {"huggingface_hub": self._fake_hub(listing)}),
+                    patch.object(download_model, "_snapshot_matches_hub_listing", HUB_LISTING_CHECK),
+                    patch.object(download_model, "_run_hf_snapshot_download", return_value=snapshot)
+                        as transfer,
+                    patch.object(download_model, "_total_repo_bytes", return_value=None),
+                ):
+                    self.assertEqual(download_model.download(repo_id, dest, revision=revision,
+                                                              quiet=True), dest)
+                transfer.assert_called_once()
+                self.assertTrue((dest / "tokenizer.json").is_file())
+
+    def test_pinned_destination_reuse_preserves_complete_and_offline_paths(self) -> None:
+        repo_id, revision = "owner/repo", "f" * 40
+        for local_only in (False, True):
+            with self.subTest(local_only=local_only), tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp)
+                (dest / "config.json").write_text("{}")
+                write_safetensors(dest / "model.safetensors")
+                write_manifest(dest / "model-manifest.json")
+                write_provenance(dest, repo_id, revision)
+                with (
+                    patch.object(download_model, "_snapshot_matches_hub_listing", return_value=True)
+                        as listing,
+                    patch.object(download_model, "_run_hf_snapshot_download") as transfer,
+                ):
+                    self.assertEqual(download_model.download(repo_id, dest, revision=revision,
+                                                             local_only=local_only, quiet=True), dest)
+                transfer.assert_not_called()
+                if local_only:
+                    listing.assert_not_called()
+                else:
+                    listing.assert_called_once_with(dest, repo_id, revision)
+
+    def test_local_only_activation_still_protects_a_concurrently_ready_destination(self) -> None:
+        repo_id, revision = "owner/repo", "f" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest, snapshot = root / "dest", root / "snapshot"
+            for directory in (dest, snapshot):
+                directory.mkdir()
+                (directory / "config.json").write_text("{}")
+                write_safetensors(directory / "model.safetensors")
+            write_provenance(dest, repo_id, revision)
+            write_manifest(dest / "model-manifest.json")
+            with (
+                patch.object(download_model, "_snapshot_matches_hub_listing") as listing,
+                self.assertRaisesRegex(RuntimeError, "another process made it ready"),
+            ):
+                download_model._copy_snapshot_to_dest(snapshot, dest, repo_id=repo_id,
+                                                      revision=revision, local_only=True)
+            listing.assert_not_called()
+            self.assertTrue((dest / "model-manifest.json").is_file())
+
+    def test_incomplete_download_is_not_activated_over_existing_destination(self) -> None:
+        repo_id, revision = "owner/repo", "f" * 40
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest, snapshot = root / "dest", root / "snapshot"
+            for directory in (dest, snapshot):
+                directory.mkdir()
+                (directory / "config.json").write_text("{}")
+                write_safetensors(directory / "model.safetensors")
+            write_provenance(dest, repo_id, revision)
+            sentinel = dest / "keep.txt"
+            sentinel.write_text("existing destination")
+            listing = [("config.json", 2), ("model.safetensors", None), ("tokenizer.json", 2)]
+            with (
+                patch.dict(os.environ, {"HF_HOME": str(root / "empty-cache")}, clear=True),
+                patch.dict(sys.modules, {"huggingface_hub": self._fake_hub(listing)}),
+                patch.object(download_model, "_snapshot_matches_hub_listing", HUB_LISTING_CHECK),
+                patch.object(download_model, "_run_hf_snapshot_download", return_value=snapshot),
+                patch.object(download_model, "_total_repo_bytes", return_value=None),
+                self.assertRaisesRegex(RuntimeError, "incomplete.*snapshot"),
+            ):
+                download_model.download(repo_id, dest, revision=revision, force=True, quiet=True)
+            self.assertEqual(sentinel.read_text(), "existing destination")
+
     def test_gemma_unified_native_manifest_is_ready_without_regeneration(self) -> None:
         for media_file in ("model-00003-of-00003.safetensors", "optiq/optiq_vision.safetensors"):
             with self.subTest(media_file=media_file), tempfile.TemporaryDirectory() as tmp:
