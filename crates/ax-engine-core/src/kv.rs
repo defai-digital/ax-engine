@@ -467,6 +467,11 @@ impl KvManager {
                 "prefix share requires a hit lookup",
             ));
         }
+        if lookup.cache_group_id != self.config.cache_group_id {
+            return Err(KvManagerError::InvariantViolation(
+                "shared prefix belongs to a different cache group",
+            ));
+        }
         let matched_block_count = lookup.matched_blocks.len() as u32;
         let expected_token_count = matched_block_count * self.config.block_size_tokens;
         if lookup.matched_token_count != expected_token_count {
@@ -485,7 +490,15 @@ impl KvManager {
             ));
         }
 
+        // A repeated physical block cannot represent two positions in a
+        // prefix. Reject it before any retain changes the ownership ledger.
+        let mut seen = std::collections::HashSet::with_capacity(lookup.matched_blocks.len());
         for block_id in &lookup.matched_blocks {
+            if !seen.insert(*block_id) {
+                return Err(KvManagerError::InvariantViolation(
+                    "shared prefix contains a duplicate block",
+                ));
+            }
             if !self.block_ref_counts.contains_key(block_id) {
                 return Err(KvManagerError::InvariantViolation(
                     "shared prefix block missing refcount",
@@ -1469,6 +1482,62 @@ mod tests {
         assert_eq!(
             manager.block_table(RequestId(2)).unwrap().block_ids,
             Vec::<BlockId>::new()
+        );
+    }
+
+    #[test]
+    fn prefix_share_rejects_duplicate_blocks_without_mutation() {
+        let mut manager = make_manager(8, 4);
+        let tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        manager
+            .register_request(RequestId(1), tokens.clone())
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+        manager
+            .register_request(RequestId(2), tokens.clone())
+            .unwrap();
+        let mut lookup = manager.lookup_prefix(RequestId(2), &tokens).unwrap();
+        lookup.matched_blocks[1] = lookup.matched_blocks[0];
+        let counts = manager.block_ref_counts.clone();
+        let telemetry = manager.telemetry();
+
+        assert!(manager.share_prefix(RequestId(2), &lookup).is_err());
+        assert_eq!(manager.block_ref_counts, counts);
+        assert_eq!(manager.telemetry(), telemetry);
+        assert!(
+            manager
+                .block_table(RequestId(2))
+                .unwrap()
+                .block_ids
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn prefix_share_rejects_foreign_cache_group_without_mutation() {
+        let mut manager = make_manager(8, 4);
+        let tokens = vec![1, 2, 3, 4];
+        manager
+            .register_request(RequestId(1), tokens.clone())
+            .unwrap();
+        manager.allocate(RequestId(1), 4).unwrap();
+        manager
+            .register_request(RequestId(2), tokens.clone())
+            .unwrap();
+        let mut lookup = manager.lookup_prefix(RequestId(2), &tokens).unwrap();
+        lookup.cache_group_id = CacheGroupId(99);
+        let counts = manager.block_ref_counts.clone();
+        let telemetry = manager.telemetry();
+
+        assert!(manager.share_prefix(RequestId(2), &lookup).is_err());
+        assert_eq!(manager.block_ref_counts, counts);
+        assert_eq!(manager.telemetry(), telemetry);
+        assert!(
+            manager
+                .block_table(RequestId(2))
+                .unwrap()
+                .block_ids
+                .is_empty()
         );
     }
 

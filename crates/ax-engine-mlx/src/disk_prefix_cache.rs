@@ -802,7 +802,7 @@ impl DiskPrefixCache {
             // never feed it to the corrupt-entry cleanup below.
             Err(ReadEntryError::Unsupported) => Ok(None),
             Err(ReadEntryError::Invalid) => {
-                self.remove_unparseable_entry(&path, key_bytes);
+                self.remove_unparseable_entry(&path, key_bytes, false);
                 Ok(None)
             }
             Err(ReadEntryError::Io(e)) => Err(e.into()),
@@ -828,7 +828,7 @@ impl DiskPrefixCache {
             // never feed it to the corrupt-entry cleanup below.
             Err(ReadEntryError::Unsupported) => Ok(None),
             Err(ReadEntryError::Invalid) => {
-                self.remove_unparseable_entry(&path, key_bytes);
+                self.remove_unparseable_entry(&path, key_bytes, true);
                 Ok(None)
             }
             Err(ReadEntryError::Io(e)) => Err(e.into()),
@@ -1205,20 +1205,30 @@ impl DiskPrefixCache {
         )))
     }
 
-    /// Best-effort removal of a file that failed header / checksum / key
+    /// Best-effort removal of a file that failed framing or native payload
     /// validation. Re-validates under the exclusive lock before unlinking
     /// so a concurrent insert that just replaced the file with a healthy
     /// entry is never deleted. Without this cleanup, corrupt or
     /// stale-version files consume budget until mtime eviction reaches
     /// them, and keys that are never re-produced linger forever.
-    fn remove_unparseable_entry(&self, path: &Path, key_bytes: &[u8]) {
+    fn remove_unparseable_entry(&self, path: &Path, key_bytes: &[u8], restore_payload: bool) {
         let Ok(_lock) = self.lock_exclusive() else {
             return;
         };
-        let still_invalid = matches!(
-            self.read_entry_streaming(path, key_bytes),
-            Err(ReadEntryError::Invalid)
-        );
+        // Repeat the failing reader's validation: an intact outer checksum
+        // does not make a malformed native KV payload usable. Retesting only
+        // the opaque framing would leave that entry on disk indefinitely.
+        let still_invalid = if restore_payload {
+            matches!(
+                self.read_entry_restored(path, key_bytes),
+                Err(ReadEntryError::Invalid)
+            )
+        } else {
+            matches!(
+                self.read_entry_streaming(path, key_bytes),
+                Err(ReadEntryError::Invalid)
+            )
+        };
         if still_invalid && fs::remove_file(path).is_ok() {
             tracing::warn!(
                 target: "ax_engine_mlx::prefix_cache",
@@ -3385,6 +3395,74 @@ mod tests {
             "corrupt entry is a miss"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn native_restore_unlinks_checksummed_invalid_kv_payload() {
+        for page_store in [false, true] {
+            let dir = unique_tempdir("invalid-native-payload");
+            let cache = DiskPrefixCache::with_policy(
+                &dir,
+                DiskPrefixCachePolicy {
+                    page_store,
+                    page_gc_grace_ms: 0,
+                    ..DiskPrefixCachePolicy::default()
+                },
+            )
+            .expect("open");
+            let key = test_key("m", "p", "l", 4, 4, 0x89, &[1, 2, 3, 4]);
+            cache
+                .insert(&key, &payload_only(b"invalid native KV"))
+                .expect("insert");
+            assert!(cache.get(&key).expect("opaque get").is_some());
+
+            assert!(cache.get_restored_timed(&key).expect("restore").is_none());
+            assert!(
+                !cache.contains(&key),
+                "invalid native payload must be reclaimed"
+            );
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn native_cleanup_preserves_a_healthy_replacement() {
+        for page_store in [false, true] {
+            let dir = unique_tempdir("native-cleanup-replacement");
+            let cache = DiskPrefixCache::with_policy(
+                &dir,
+                DiskPrefixCachePolicy {
+                    page_store,
+                    ..DiskPrefixCachePolicy::default()
+                },
+            )
+            .expect("open");
+            let key = test_key("m", "p", "l", 4, 4, 0x90, &[1, 2, 3, 4]);
+            cache
+                .insert(&key, &payload_only(b"invalid native KV"))
+                .expect("insert invalid");
+            let path = cache.path_for(&key);
+            assert!(matches!(
+                cache.read_entry_restored(&path, &key),
+                Err(ReadEntryError::Invalid)
+            ));
+
+            // Simulate an atomic replacement between the failed read and
+            // the cleanup lock acquisition.
+            let payload = crate::kv_cache::MlxKVCache::new(2).serialize_to_bytes();
+            cache
+                .insert_parts(&key, &payload, Some(7), 0, 0)
+                .expect("replace");
+            cache.remove_unparseable_entry(&path, &key, true);
+
+            let (restored, _) = cache
+                .get_restored_timed(&key)
+                .expect("restore")
+                .expect("hit");
+            assert_eq!(restored.prefill_output_token, Some(7));
+            assert!(cache.contains(&key));
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
