@@ -1,0 +1,54 @@
+{
+  "schema_version": "ax.flash_next_peer_summary.v1",
+  "hardware": "Mac Studio, Apple M2 Ultra, 192 GiB unified memory, internal NVMe SSD",
+  "pack_repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "model_type": "qwen4_exp",
+  "contract": {
+    "suite": "flappy",
+    "sampling": "temperature 0, top_p 1, top_k 0, seed 0",
+    "max_tokens": 256,
+    "repetitions": 5,
+    "warmup_repetitions": 2,
+    "peer_depth": 3,
+    "ax_mtp_policy": "required",
+    "stream_experts": "auto"
+  },
+  "qualification": false,
+  "lanes": {
+    "ax": {
+      "status": "measured",
+      "exit_code": 0,
+      "elapsed_s": 584.058,
+      "artifact": "ax_engine.json",
+      "log": "ax.log",
+      "decode_tok_s_median": 22.202666581932682,
+      "prefill_tok_s_median": 325.3013319056324,
+      "measured_decode_samples": 20,
+      "measured_prefill_samples": 20
+    },
+    "mtplx": {
+      "status": "unsupported",
+      "exit_code": 1,
+      "elapsed_s": 4.823,
+      "artifact": "mtplx.json",
+      "log": "mtplx.log",
+      "reason": "Peer load rejected checkpoint tensors that are not parameters of its model module. No tokens were served."
+    },
+    "omlx": {
+      "status": "measured",
+      "exit_code": 0,
+      "elapsed_s": 318.825,
+      "artifact": "omlx.json",
+      "log": "omlx.log",
+      "decode_tok_s_median": 33.86859417621258,
+      "prefill_tok_s_median": null,
+      "measured_decode_samples": 20,
+      "measured_prefill_samples": 0
+    },
+    "mlx_lm": {
+      "status": "unsupported",
+      "reason": "mlx-lm has no loader for model_type 'qwen4_exp'; weights were not loaded"
+    }
+  }
+}

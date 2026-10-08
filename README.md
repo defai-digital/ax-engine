@@ -506,6 +506,55 @@ Artifacts:
 [Gemma family](benchmarks/results/mtp-axq-peer/2026-09-21-apple-m5-max-128gb-gemma/).
 Chart regenerated deterministically by `scripts/render_m5_peer_2026_09_21.py`.
 
+### Qwen 3.8 Flash Next peer snapshot (2026-10-08, M2 Ultra 192 GB)
+
+Same flappy contract as the tables above, on the pinned MXFP4 MTP pack
+`AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP` at
+`ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3` (`model_type=qwen4_exp`).
+One directory for every runtime. Host: Mac Studio, Apple M2 Ultra, 192 GiB
+unified memory, internal NVMe SSD, macOS 27.0.1. AX Engine **7.6.0**
+(`219e9c56`, release binary, rustc 1.97.1, MLX 0.32.3 as recorded by the AX
+harness). Lanes ran sequentially. A virtual machine was using about one full
+CPU core (one-minute load average 3.8). This is a single-host snapshot. It
+does not qualify MTP-S, MTP-P, or MTP-D, and it does not change the product
+default. MTP Tier 2 remains pending.
+
+| Pack (flappy) | AX Engine 7.6.0 | MTPLX 2.12.2 | OMLX 0.7.0 | mlx-lm 0.31.3 |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen 3.8 Flash Next AXQ MXFP4 MTP | 22.20 / 325.3 | — | 33.87 | — |
+
+Decode / prefill tok/s, median of 20 measured repetitions (4 cases × 5).
+Prompt lengths were 264, 273, 374, and 432 tokens. AX prefill is the
+runner-internal cold-prefill figure (prefix cache disabled). OMLX does not
+record a comparable prefill. `—` means that runtime did not serve this pack.
+
+AX ran pure MTP (`mtp_head_only_verify_loop`, n-gram stacking off). The Flash
+Next model policy depth on this build is 1: across the 20 repetitions it
+drafted 2,550 tokens at the first MTP position and accepted 2,535 of them,
+and the drafted counts at the next two positions stayed 0. Measured decode
+stayed in a narrow band, 22.12–22.37 tok/s. Expert stream stayed on Auto;
+the pack is not stream-required on this 192 GiB host, and the server was not
+passed `--stream-experts`.
+
+OMLX 0.7.0 used its VLM engine with MTP enabled and `mtp_fixed_depth` 3, on
+MLX 0.32.2 and mlx-vlm 0.7.4. Its loader only sees embedded MTP tensors that
+are listed in `model.safetensors.index.json`, and this pack keeps the 31
+`mtp.*` tensors in `mtp.safetensors` outside that index. The lane therefore
+read a same-byte symlink view whose copied index names that existing sidecar.
+The pack directory was not modified. The artifact does not record how many
+draft positions OMLX actually accepted, so 33.87 tok/s is not a same-width
+comparison with AX depth 1. Its fused attention kernel refused to launch on
+this GPU (threadgroup size 1024 exceeds the 896-thread limit) and decode
+used the MLX path. The 20 measured repetitions span 31.89–54.78 tok/s: on
+each case the first measured repetition was about 51–55 tok/s and the next
+four were about 32–36, so the median sits in the later cluster.
+
+MTPLX 2.12.2 rejected the pack at load: 384 PLE n-gram shard tensors are not
+parameters of its `qwen4_exp` module. No tokens were served. mlx-lm 0.31.3
+has no `qwen4_exp` loader, so that lane did not load weights either.
+Artifacts:
+[2026-10-08 Flash Next peer snapshot](benchmarks/results/mtp-axq-peer/2026-10-08-apple-m2-ultra-192gb-flash-next/).
+
 <a id="tiel-performance"></a>
 
 ### Tiel / Cyber-Tiel peer refresh (2026-09-20)

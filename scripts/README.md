@@ -266,6 +266,16 @@ throughput baselines.
   suites. Qwen MTP rows automatically select the validated exact-verifier
   profile; the summary fails closed on missing profile provenance, incomplete
   coverage, fallback, n-gram contamination, or non-publishable methodology.
+- `bench_flash_next_peer.py`: same-pack Qwen 3.8 Flash Next peer run for AX
+  Engine, MTPLX, and OMLX on the pinned MXFP4 MTP directory. The contract
+  matches the 27B flappy lane (greedy, fixed tokens, warmup plus measured
+  repetitions). `qwen4_exp` uses the OMLX VLM engine. OMLX reads a same-byte
+  symlink view whose index also names the existing `mtp.safetensors` sidecar;
+  the pack directory is not modified. mlx-lm is recorded as unsupported
+  without loading weights. A peer that rejects the checkpoint is recorded as
+  unsupported, not replaced with another pack. The run does not qualify
+  MTP-S/P/D or a product default. `scripts/flash_next_peer_bench_plan.json`
+  stays the non-executable preparation record.
 - `bench_qwen36_mtp_matrix.py`: Qwen 3.6 AX/MTPLX/lightning-mlx peer matrix.
   AX commands automatically select and record the validated exact-verifier
   profile. Peer lanes wait for eligible host conditions at both benchmark

@@ -1,0 +1,7 @@
+{
+  "schema_version": "ax.flash_next_peer_lane.v1",
+  "lane": "mtplx",
+  "status": "unsupported",
+  "reason": "Peer load rejected checkpoint tensors that are not parameters of its model module. No tokens were served.",
+  "hardware": "Mac Studio, Apple M2 Ultra, 192 GiB unified memory, internal NVMe SSD"
+}

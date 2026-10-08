@@ -47,6 +47,25 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
+def token_ids_from_encoded(encoded: Any) -> list[int]:
+    """Accept a token list or a chat-template mapping that yields input_ids."""
+    if hasattr(encoded, "input_ids"):
+        encoded = encoded.input_ids
+    elif isinstance(encoded, dict):
+        if "input_ids" not in encoded:
+            raise ValueError("chat template result has no input_ids")
+        encoded = encoded["input_ids"]
+    if hasattr(encoded, "tolist"):
+        encoded = encoded.tolist()
+    if (
+        isinstance(encoded, (list, tuple))
+        and encoded
+        and isinstance(encoded[0], (list, tuple))
+    ):
+        encoded = encoded[0]
+    return [int(token) for token in encoded]
+
+
 def prompt_tokens(
     case: dict[str, Any],
     tokenizer: Any,
@@ -76,12 +95,68 @@ def prompt_tokens(
         add_generation_prompt=True,
         **kwargs,
     )
-    tokens = [int(token) for token in encoded]
+    tokens = token_ids_from_encoded(encoded)
     return (
         tokens,
         hashlib.sha256(case["prompt"].encode("utf-8")).hexdigest(),
         hashlib.sha256(bytes().join(token.to_bytes(8, "little") for token in tokens)).hexdigest(),
     )
+
+
+def mtp_settings_kwargs(
+    field_names: set[str],
+    draft_tokens: int,
+    enable_thinking: bool,
+) -> dict[str, Any]:
+    """Map the draft width onto the installed OMLX settings field.
+
+    omlx 0.7 names the fixed Lightning width ``mtp_fixed_depth``. Earlier
+    builds used ``mtp_num_draft_tokens``. The 27B lane keeps draft width 1
+    unless the caller passes another value.
+    """
+    kwargs: dict[str, Any] = {
+        "mtp_enabled": True,
+        "enable_thinking": enable_thinking,
+    }
+    if "mtp_fixed_depth" in field_names:
+        kwargs["mtp_fixed_depth"] = draft_tokens
+    elif "mtp_num_draft_tokens" in field_names:
+        kwargs["mtp_num_draft_tokens"] = draft_tokens
+    else:
+        raise ValueError("OMLX ModelSettings has no MTP draft-depth field")
+    return kwargs
+
+
+def omlx_engine_kind(model_type: str | None, requested: str) -> str:
+    """Choose the OMLX engine for a checkpoint.
+
+    ``auto`` keeps the text BatchedEngine for the Qwen 3.8 27B lane and
+    selects the VLM engine for ``qwen4_exp`` (Flash Next). mlx-lm cannot
+    load that model type; OMLX serves it through mlx-vlm.
+    """
+    if requested not in {"auto", "batched", "vlm"}:
+        raise ValueError(f"unknown OMLX engine {requested!r}")
+    if requested != "auto":
+        return requested
+    if model_type is not None and model_type.startswith("qwen4_exp"):
+        return "vlm"
+    return "batched"
+
+
+def model_type_of(model_dir: Path) -> str | None:
+    config_path = model_dir / "config.json"
+    if not config_path.is_file():
+        return None
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    model_type = config.get("model_type")
+    if isinstance(model_type, str) and model_type:
+        return model_type
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        nested = text_config.get("model_type")
+        if isinstance(nested, str) and nested:
+            return nested
+    return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,23 +177,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--enable-thinking", action="store_true")
+    parser.add_argument(
+        "--engine",
+        choices=("auto", "batched", "vlm"),
+        default="auto",
+        help="auto uses the VLM engine for qwen4_exp and BatchedEngine otherwise",
+    )
+    parser.add_argument(
+        "--mtp-draft-tokens",
+        type=int,
+        default=1,
+        help="Lightning / embedded MTP draft width. The 27B peer lane uses 1.",
+    )
     return parser.parse_args()
 
 
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
-        from omlx.engine.batched import BatchedEngine
+        import omlx
         from omlx.model_settings import ModelSettings
     except ImportError as error:
         raise SystemExit("OMLX is required for this runner; install omlx 0.6.4 or newer") from error
 
+    model_type = model_type_of(Path(args.model))
+    kind = omlx_engine_kind(model_type, args.engine)
+    try:
+        if kind == "vlm":
+            from omlx.engine.vlm import VLMBatchedEngine as Engine
+        else:
+            from omlx.engine.batched import BatchedEngine as Engine
+    except ImportError as error:
+        raise SystemExit(
+            f"OMLX engine {kind!r} failed to import for model_type={model_type!r}. "
+            "qwen4_exp needs the VLM engine and mlx-vlm."
+        ) from error
+
     cases = load_cases(args.prompts)
-    settings = ModelSettings(
-        mtp_enabled=True,
-        mtp_num_draft_tokens=1,
-        enable_thinking=args.enable_thinking,
+    fields = set(getattr(ModelSettings, "__dataclass_fields__", {}))
+    settings_payload = mtp_settings_kwargs(
+        fields,
+        args.mtp_draft_tokens,
+        args.enable_thinking,
     )
-    engine = BatchedEngine(
+    settings = ModelSettings(**settings_payload)
+    engine = Engine(
         args.model,
         model_settings=settings,
         enable_thinking=args.enable_thinking,
@@ -194,12 +296,10 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "host_label": args.host_label,
         "runtime": {
             "name": "OMLX",
-            "version": "0.6.4-or-newer",
-            "model_settings": {
-                "mtp_enabled": True,
-                "mtp_num_draft_tokens": 1,
-                "enable_thinking": args.enable_thinking,
-            },
+            "version": getattr(omlx, "__version__", "unknown"),
+            "engine": kind,
+            "model_type": model_type,
+            "model_settings": settings_payload,
         },
         "model": args.model,
         "model_repo_id": args.model_repo_id,

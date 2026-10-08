@@ -1,0 +1,7 @@
+{
+  "schema_version": "ax.flash_next_peer_lane.v1",
+  "lane": "mlx_lm",
+  "status": "unsupported",
+  "reason": "mlx-lm has no loader for model_type 'qwen4_exp'; weights were not loaded",
+  "hardware": "Mac Studio, Apple M2 Ultra, 192 GiB unified memory, internal NVMe SSD"
+}
