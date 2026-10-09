@@ -1,4 +1,3 @@
-
 use super::*;
 use mlx_sys::astype;
 

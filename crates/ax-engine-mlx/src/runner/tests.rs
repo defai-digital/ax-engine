@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::ngram_accel::{DEFAULT_DRAFT_LEN, MAX_DRAFT_LEN};
 use ax_engine_core::model::{NativeGlmRouterConfig, NativeMlaAttentionConfig};

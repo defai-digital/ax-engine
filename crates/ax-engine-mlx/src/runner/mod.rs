@@ -2785,6 +2785,48 @@ impl MlxRunner {
     }
 }
 
+/// Inputs to [`MlxRunner::complete_multimodal_prefill`]: the branch-specific
+/// prefill result plus the per-request constants the shared tail needs.
+/// `publish_prefix_snapshot` is false for branches that never store a
+/// multimodal prefix (Unlimited-OCR).
+struct MultimodalPrefillTail<'a> {
+    full_prompt_tokens: Vec<u32>,
+    first_token: u32,
+    prefill_started: Instant,
+    prefill_forward_wall_us: u32,
+    publish_prefix_snapshot: bool,
+    model_id: &'a str,
+    block_size_tokens: u32,
+    media_key: Option<&'a str>,
+    ctx: Option<&'a RunnerRequestContext>,
+    sampling: MlxSamplingParams,
+    max_output: u32,
+    is_greedy: bool,
+}
+
+/// Reset per-request prefill state and assemble the full prompt (reused
+/// prefix plus this item's tokens) for a native multimodal prefill branch.
+fn begin_multimodal_prefill(
+    state: &mut RequestState,
+    item: &ax_engine_core::ExecutionItem,
+    token_ids: &[u32],
+) -> Vec<u32> {
+    state.cache.reset();
+    state.prompt_prefix_tokens.clear();
+    state.cached_prefill_output_token = None;
+    state.mtp_prefill_hidden = None;
+    state.mtp_prefill_history_tokens.clear();
+
+    let mut full_prompt_tokens = Vec::with_capacity(
+        item.reused_prefix_token_slice
+            .len()
+            .saturating_add(token_ids.len()),
+    );
+    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
+    full_prompt_tokens.extend_from_slice(token_ids);
+    full_prompt_tokens
+}
+
 fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) -> EmbeddingPooling {
     if model_family == "embeddinggemma" || model_family == "nemotron_embed" {
         EmbeddingPooling::Mean
@@ -5847,6 +5889,74 @@ impl MlxRunner {
         staged
     }
 
+    /// Shared tail of every native multimodal prefill branch: adopt the full
+    /// prompt as the request's prefix identity, publish the media-keyed prefix
+    /// snapshot when multimodal prefix reuse is on, then seed the generation
+    /// state from the sampled first token.
+    fn complete_multimodal_prefill(
+        &self,
+        state: &mut RequestState,
+        prefix_cache: &mut MlxPrefixCacheTelemetry,
+        tail: MultimodalPrefillTail<'_>,
+    ) {
+        let MultimodalPrefillTail {
+            full_prompt_tokens,
+            first_token: tok,
+            prefill_started,
+            prefill_forward_wall_us,
+            publish_prefix_snapshot,
+            model_id,
+            block_size_tokens,
+            media_key,
+            ctx,
+            sampling,
+            max_output,
+            is_greedy,
+        } = tail;
+        state.prompt_prefix_tokens = full_prompt_tokens;
+
+        let mut prefill_prefix_cache_wall_us = 0u32;
+        if publish_prefix_snapshot && multimodal_prefix_reuse_enabled() {
+            let prefix_cache_started = Instant::now();
+            let cold_prefill_us = elapsed_us(prefill_started);
+            prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                model_id,
+                block_size_tokens,
+                state,
+                PromptPrefixSnapshotStoreOptions {
+                    linear_boundary_snapshot: None,
+                    prefill_completes_prompt: true,
+                    greedy_prefill_output_token:
+                        prefill_output_token_cacheable(ctx, sampling).then_some(tok),
+                    cold_prefill_us: u64::from(cold_prefill_us),
+                    media_key,
+                },
+            ));
+            prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+        }
+
+        state
+            .decode_telemetry
+            .record_prefill(elapsed_us(prefill_started));
+        let generation_state_started = Instant::now();
+        self.initialize_generation_state(
+            state,
+            max_output,
+            Some(tok),
+            is_greedy,
+            sampling,
+            ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
+                .unwrap_or((None, None)),
+        );
+        let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
+        state.decode_telemetry.record_prefill_eval_barrier();
+        state.decode_telemetry.record_prefill_breakdown(
+            prefill_forward_wall_us,
+            prefill_prefix_cache_wall_us,
+            prefill_generation_state_wall_us,
+        );
+    }
+
     fn run_item(
         &self,
         item: &ax_engine_core::ExecutionItem,
@@ -6069,19 +6179,7 @@ impl MlxRunner {
                             "Gemma4 unified multimodal prefill requires the complete prompt in one execution item",
                         );
                     }
-                    state.cache.reset();
-                    state.prompt_prefix_tokens.clear();
-                    state.cached_prefill_output_token = None;
-                    state.mtp_prefill_hidden = None;
-                    state.mtp_prefill_history_tokens.clear();
-
-                    let mut full_prompt_tokens = Vec::with_capacity(
-                        item.reused_prefix_token_slice
-                            .len()
-                            .saturating_add(token_ids.len()),
-                    );
-                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
-                    full_prompt_tokens.extend_from_slice(token_ids);
+                    let full_prompt_tokens = begin_multimodal_prefill(&mut state, item, token_ids);
                     let repetition_history =
                         state.repetition_history(&full_prompt_tokens, sampling);
                     let prefill_forward_started = Instant::now();
@@ -6111,48 +6209,23 @@ impl MlxRunner {
                             Err(error) => return errored_item_run(item.request_id, error),
                         };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
-                    state.prompt_prefix_tokens = full_prompt_tokens;
-
-                    // WS-M3: store multimodal prefix under media-keyed identity when enabled.
-                    let mut prefill_prefix_cache_wall_us = 0u32;
-                    if multimodal_prefix_reuse_enabled() {
-                        let prefix_cache_started = Instant::now();
-                        let cold_prefill_us = elapsed_us(prefill_started);
-                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                    self.complete_multimodal_prefill(
+                        &mut state,
+                        &mut prefix_cache,
+                        MultimodalPrefillTail {
+                            full_prompt_tokens,
+                            first_token: tok,
+                            prefill_started,
+                            prefill_forward_wall_us,
+                            publish_prefix_snapshot: true,
                             model_id,
                             block_size_tokens,
-                            &state,
-                            PromptPrefixSnapshotStoreOptions {
-                                linear_boundary_snapshot: None,
-                                prefill_completes_prompt: true,
-                                greedy_prefill_output_token:
-                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
-                                cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: media_key.as_deref(),
-                            },
-                        ));
-                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
-                    }
-
-                    state
-                        .decode_telemetry
-                        .record_prefill(elapsed_us(prefill_started));
-                    let generation_state_started = Instant::now();
-                    self.initialize_generation_state(
-                        &mut state,
-                        max_output,
-                        Some(tok),
-                        is_greedy,
-                        sampling,
-                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
-                            .unwrap_or((None, None)),
-                    );
-                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
-                    state.decode_telemetry.record_prefill_eval_barrier();
-                    state.decode_telemetry.record_prefill_breakdown(
-                        prefill_forward_wall_us,
-                        prefill_prefix_cache_wall_us,
-                        prefill_generation_state_wall_us,
+                            media_key: media_key.as_deref(),
+                            ctx,
+                            sampling,
+                            max_output,
+                            is_greedy,
+                        },
                     );
                     Some(tok)
                 } else if let Some(inputs) = qwen3_vl_inputs {
@@ -6162,19 +6235,7 @@ impl MlxRunner {
                             "Qwen3-VL multimodal prefill requires the complete prompt in one execution item",
                         );
                     }
-                    state.cache.reset();
-                    state.prompt_prefix_tokens.clear();
-                    state.cached_prefill_output_token = None;
-                    state.mtp_prefill_hidden = None;
-                    state.mtp_prefill_history_tokens.clear();
-
-                    let mut full_prompt_tokens = Vec::with_capacity(
-                        item.reused_prefix_token_slice
-                            .len()
-                            .saturating_add(token_ids.len()),
-                    );
-                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
-                    full_prompt_tokens.extend_from_slice(token_ids);
+                    let full_prompt_tokens = begin_multimodal_prefill(&mut state, item, token_ids);
                     if let Err(error) = inputs.validate_for_prompt_len(full_prompt_tokens.len()) {
                         return errored_item_run(item.request_id, error.to_string());
                     }
@@ -6197,47 +6258,23 @@ impl MlxRunner {
                         Err(error) => return errored_item_run(item.request_id, error),
                     };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
-                    state.prompt_prefix_tokens = full_prompt_tokens;
-
-                    let mut prefill_prefix_cache_wall_us = 0u32;
-                    if multimodal_prefix_reuse_enabled() {
-                        let prefix_cache_started = Instant::now();
-                        let cold_prefill_us = elapsed_us(prefill_started);
-                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                    self.complete_multimodal_prefill(
+                        &mut state,
+                        &mut prefix_cache,
+                        MultimodalPrefillTail {
+                            full_prompt_tokens,
+                            first_token: tok,
+                            prefill_started,
+                            prefill_forward_wall_us,
+                            publish_prefix_snapshot: true,
                             model_id,
                             block_size_tokens,
-                            &state,
-                            PromptPrefixSnapshotStoreOptions {
-                                linear_boundary_snapshot: None,
-                                prefill_completes_prompt: true,
-                                greedy_prefill_output_token:
-                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
-                                cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: media_key.as_deref(),
-                            },
-                        ));
-                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
-                    }
-
-                    state
-                        .decode_telemetry
-                        .record_prefill(elapsed_us(prefill_started));
-                    let generation_state_started = Instant::now();
-                    self.initialize_generation_state(
-                        &mut state,
-                        max_output,
-                        Some(tok),
-                        is_greedy,
-                        sampling,
-                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
-                            .unwrap_or((None, None)),
-                    );
-                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
-                    state.decode_telemetry.record_prefill_eval_barrier();
-                    state.decode_telemetry.record_prefill_breakdown(
-                        prefill_forward_wall_us,
-                        prefill_prefix_cache_wall_us,
-                        prefill_generation_state_wall_us,
+                            media_key: media_key.as_deref(),
+                            ctx,
+                            sampling,
+                            max_output,
+                            is_greedy,
+                        },
                     );
                     Some(tok)
                 } else if let Some(inputs) = minicpm_v46_inputs {
@@ -6247,19 +6284,7 @@ impl MlxRunner {
                             "MiniCPM-V 4.6 multimodal prefill requires the complete prompt in one execution item",
                         );
                     }
-                    state.cache.reset();
-                    state.prompt_prefix_tokens.clear();
-                    state.cached_prefill_output_token = None;
-                    state.mtp_prefill_hidden = None;
-                    state.mtp_prefill_history_tokens.clear();
-
-                    let mut full_prompt_tokens = Vec::with_capacity(
-                        item.reused_prefix_token_slice
-                            .len()
-                            .saturating_add(token_ids.len()),
-                    );
-                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
-                    full_prompt_tokens.extend_from_slice(token_ids);
+                    let full_prompt_tokens = begin_multimodal_prefill(&mut state, item, token_ids);
                     if let Err(error) = inputs.validate_for_prompt_len(full_prompt_tokens.len()) {
                         return errored_item_run(item.request_id, error.to_string());
                     }
@@ -6282,47 +6307,23 @@ impl MlxRunner {
                         Err(error) => return errored_item_run(item.request_id, error),
                     };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
-                    state.prompt_prefix_tokens = full_prompt_tokens;
-
-                    let mut prefill_prefix_cache_wall_us = 0u32;
-                    if multimodal_prefix_reuse_enabled() {
-                        let prefix_cache_started = Instant::now();
-                        let cold_prefill_us = elapsed_us(prefill_started);
-                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                    self.complete_multimodal_prefill(
+                        &mut state,
+                        &mut prefix_cache,
+                        MultimodalPrefillTail {
+                            full_prompt_tokens,
+                            first_token: tok,
+                            prefill_started,
+                            prefill_forward_wall_us,
+                            publish_prefix_snapshot: true,
                             model_id,
                             block_size_tokens,
-                            &state,
-                            PromptPrefixSnapshotStoreOptions {
-                                linear_boundary_snapshot: None,
-                                prefill_completes_prompt: true,
-                                greedy_prefill_output_token:
-                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
-                                cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: media_key.as_deref(),
-                            },
-                        ));
-                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
-                    }
-
-                    state
-                        .decode_telemetry
-                        .record_prefill(elapsed_us(prefill_started));
-                    let generation_state_started = Instant::now();
-                    self.initialize_generation_state(
-                        &mut state,
-                        max_output,
-                        Some(tok),
-                        is_greedy,
-                        sampling,
-                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
-                            .unwrap_or((None, None)),
-                    );
-                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
-                    state.decode_telemetry.record_prefill_eval_barrier();
-                    state.decode_telemetry.record_prefill_breakdown(
-                        prefill_forward_wall_us,
-                        prefill_prefix_cache_wall_us,
-                        prefill_generation_state_wall_us,
+                            media_key: media_key.as_deref(),
+                            ctx,
+                            sampling,
+                            max_output,
+                            is_greedy,
+                        },
                     );
                     Some(tok)
                 } else if let Some(inputs) = nemotron_omni_inputs {
@@ -6332,19 +6333,7 @@ impl MlxRunner {
                             "Nemotron H Nano Omni multimodal prefill requires the complete prompt in one execution item",
                         );
                     }
-                    state.cache.reset();
-                    state.prompt_prefix_tokens.clear();
-                    state.cached_prefill_output_token = None;
-                    state.mtp_prefill_hidden = None;
-                    state.mtp_prefill_history_tokens.clear();
-
-                    let mut full_prompt_tokens = Vec::with_capacity(
-                        item.reused_prefix_token_slice
-                            .len()
-                            .saturating_add(token_ids.len()),
-                    );
-                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
-                    full_prompt_tokens.extend_from_slice(token_ids);
+                    let full_prompt_tokens = begin_multimodal_prefill(&mut state, item, token_ids);
                     if let Err(error) = inputs.validate_for_prompt_len(full_prompt_tokens.len()) {
                         return errored_item_run(item.request_id, error.to_string());
                     }
@@ -6367,47 +6356,23 @@ impl MlxRunner {
                         Err(error) => return errored_item_run(item.request_id, error),
                     };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
-                    state.prompt_prefix_tokens = full_prompt_tokens;
-
-                    let mut prefill_prefix_cache_wall_us = 0u32;
-                    if multimodal_prefix_reuse_enabled() {
-                        let prefix_cache_started = Instant::now();
-                        let cold_prefill_us = elapsed_us(prefill_started);
-                        prefix_cache.merge_from(self.store_prompt_prefix_snapshots(
+                    self.complete_multimodal_prefill(
+                        &mut state,
+                        &mut prefix_cache,
+                        MultimodalPrefillTail {
+                            full_prompt_tokens,
+                            first_token: tok,
+                            prefill_started,
+                            prefill_forward_wall_us,
+                            publish_prefix_snapshot: true,
                             model_id,
                             block_size_tokens,
-                            &state,
-                            PromptPrefixSnapshotStoreOptions {
-                                linear_boundary_snapshot: None,
-                                prefill_completes_prompt: true,
-                                greedy_prefill_output_token:
-                                    prefill_output_token_cacheable(ctx, sampling).then_some(tok),
-                                cold_prefill_us: u64::from(cold_prefill_us),
-                                media_key: media_key.as_deref(),
-                            },
-                        ));
-                        prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
-                    }
-
-                    state
-                        .decode_telemetry
-                        .record_prefill(elapsed_us(prefill_started));
-                    let generation_state_started = Instant::now();
-                    self.initialize_generation_state(
-                        &mut state,
-                        max_output,
-                        Some(tok),
-                        is_greedy,
-                        sampling,
-                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
-                            .unwrap_or((None, None)),
-                    );
-                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
-                    state.decode_telemetry.record_prefill_eval_barrier();
-                    state.decode_telemetry.record_prefill_breakdown(
-                        prefill_forward_wall_us,
-                        prefill_prefix_cache_wall_us,
-                        prefill_generation_state_wall_us,
+                            media_key: media_key.as_deref(),
+                            ctx,
+                            sampling,
+                            max_output,
+                            is_greedy,
+                        },
                     );
                     Some(tok)
                 } else if let Some(inputs) = unlimited_ocr_inputs {
@@ -6417,19 +6382,7 @@ impl MlxRunner {
                             "Unlimited-OCR multimodal prefill requires the complete prompt in one execution item",
                         );
                     }
-                    state.cache.reset();
-                    state.prompt_prefix_tokens.clear();
-                    state.cached_prefill_output_token = None;
-                    state.mtp_prefill_hidden = None;
-                    state.mtp_prefill_history_tokens.clear();
-
-                    let mut full_prompt_tokens = Vec::with_capacity(
-                        item.reused_prefix_token_slice
-                            .len()
-                            .saturating_add(token_ids.len()),
-                    );
-                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
-                    full_prompt_tokens.extend_from_slice(token_ids);
+                    let full_prompt_tokens = begin_multimodal_prefill(&mut state, item, token_ids);
                     if let Err(error) = inputs.validate_for_prompt_tokens(&full_prompt_tokens) {
                         return errored_item_run(item.request_id, error.to_string());
                     }
@@ -6470,27 +6423,23 @@ impl MlxRunner {
                         Err(error) => return errored_item_run(item.request_id, error),
                     };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
-                    state.prompt_prefix_tokens = full_prompt_tokens;
-
-                    state
-                        .decode_telemetry
-                        .record_prefill(elapsed_us(prefill_started));
-                    let generation_state_started = Instant::now();
-                    self.initialize_generation_state(
+                    self.complete_multimodal_prefill(
                         &mut state,
-                        max_output,
-                        Some(tok),
-                        is_greedy,
-                        sampling,
-                        ctx.map(|c| (c.max_think_tokens, c.answer_reserve_tokens))
-                            .unwrap_or((None, None)),
-                    );
-                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
-                    state.decode_telemetry.record_prefill_eval_barrier();
-                    state.decode_telemetry.record_prefill_breakdown(
-                        prefill_forward_wall_us,
-                        0,
-                        prefill_generation_state_wall_us,
+                        &mut prefix_cache,
+                        MultimodalPrefillTail {
+                            full_prompt_tokens,
+                            first_token: tok,
+                            prefill_started,
+                            prefill_forward_wall_us,
+                            publish_prefix_snapshot: false,
+                            model_id,
+                            block_size_tokens,
+                            media_key: media_key.as_deref(),
+                            ctx,
+                            sampling,
+                            max_output,
+                            is_greedy,
+                        },
                     );
                     Some(tok)
                 } else {

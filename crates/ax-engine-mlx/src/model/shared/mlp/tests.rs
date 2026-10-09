@@ -1,4 +1,3 @@
-
 use super::*;
 use mlx_sys::{
     MlxQuantizationMode, add, astype, concatenate, eval, quantize, quantized_matmul, slice,
