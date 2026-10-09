@@ -5012,8 +5012,8 @@ impl MlxKVCache {
         self.linear_prefix_capture_after
     }
 
+    #[cfg(test)]
     /// Transient prefix checkpoint for one linear-attention layer, if captured.
-    #[allow(dead_code)]
     pub(crate) fn linear_prefix_refs(&self, layer: usize) -> Option<(&MlxArray, &MlxArray)> {
         let state = self.linear_layers.get(layer)?;
         Some((

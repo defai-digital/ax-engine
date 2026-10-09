@@ -758,8 +758,8 @@ fn record_denoise_stage_commit_us(us: u32) {
 }
 
 /// Snapshot of cumulative denoise stage timers (microseconds).
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(dead_code)]
 pub struct DenoiseStageProfile {
     pub forward_us: u64,
     pub sample_us: u64,
@@ -767,8 +767,8 @@ pub struct DenoiseStageProfile {
     pub steps: u64,
 }
 
+#[cfg(test)]
 /// Read and zero denoise stage profile counters (test / tooling).
-#[allow(dead_code)]
 pub(crate) fn take_denoise_stage_profile() -> DenoiseStageProfile {
     DenoiseStageProfile {
         forward_us: DENOISE_STAGE_FORWARD_US.swap(0, Ordering::Relaxed),

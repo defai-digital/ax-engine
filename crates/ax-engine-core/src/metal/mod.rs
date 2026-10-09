@@ -284,15 +284,12 @@ struct MetalRuntimeState {
 /// Pre-allocated GPU buffers for a single-token fused layer forward pass.
 /// Reused across layers since only one layer is processed at a time.
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 struct FusedLayerArena {
     hidden: Buffer,
     normed: Buffer,
     gate: Buffer,
     up: Buffer,
     down: Buffer,
-    residual: Buffer,
-    attn_projected: Buffer,
     hidden_dim: u32,
     intermediate_dim: u32,
 }
@@ -306,8 +303,6 @@ impl FusedLayerArena {
             gate: new_zeroed_shared_buffer::<f32>(device, intermediate_dim),
             up: new_zeroed_shared_buffer::<f32>(device, intermediate_dim),
             down: new_zeroed_shared_buffer::<f32>(device, hidden_dim),
-            residual: new_zeroed_shared_buffer::<f32>(device, hidden_dim),
-            attn_projected: new_zeroed_shared_buffer::<f32>(device, hidden_dim),
             hidden_dim,
             intermediate_dim,
         }

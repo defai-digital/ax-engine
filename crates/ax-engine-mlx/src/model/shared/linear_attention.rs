@@ -1570,13 +1570,13 @@ fn linear_attention_full_gate_metal_allowed(
     true
 }
 
+#[cfg(test)]
 /// Exact S=2..=4 fused Metal is limited to the same early-layer window
 /// as 5-bit Qwen (`layer_idx < 16`). Later layers stay portable.
 /// Factory `dced27d4` still flipped ON to `f4b5490d`; call site stays off.
-#[allow(dead_code)]
 const EXACT_S2_FULL_GATE_METAL_LAYER_LIMIT: usize = 16;
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn exact_s2_full_gate_metal_allowed(seq: i32, layer_idx: usize, family_allow: bool) -> bool {
     family_allow
         && fastpath::qwen_linear_mtp_verify_seq_contains(seq as i64)
