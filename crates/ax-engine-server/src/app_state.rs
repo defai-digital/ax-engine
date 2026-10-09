@@ -159,11 +159,17 @@ impl AppState {
         // Drop any older parked generation for this id (best-effort retire).
         let previous = {
             let mut parked = self.parked.lock();
-            parked.insert(model_id, live)
+            parked.insert(model_id.clone(), live)
         };
         if let Some(previous) = previous {
             tokio::spawn(async move {
-                let _ = previous.retire().await;
+                if let Err(error) = previous.retire().await {
+                    tracing::warn!(
+                        model_id = %model_id,
+                        %error,
+                        "failed to retire a superseded parked generation"
+                    );
+                }
             });
         }
     }
