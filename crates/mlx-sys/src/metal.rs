@@ -93,20 +93,6 @@ impl MlxMetalKernel {
         .unwrap_or_else(|message| panic!("{message}"))
     }
 
-    /// Call the kernel.
-    ///
-    /// Returns the output arrays in the order declared in `output_names`.
-    pub fn apply(
-        &self,
-        inputs: &[&MlxArray],
-        output_specs: &[KernelOutputSpec],
-        grid: (i32, i32, i32),
-        thread_group: (i32, i32, i32),
-        s: Option<&MlxStream>,
-    ) -> Vec<MlxArray> {
-        self.apply_with_template(inputs, output_specs, &[], grid, thread_group, s)
-    }
-
     /// Call the kernel with template arguments.
     ///
     /// MLX fast kernels use template arguments for compile-time constants such

@@ -43,14 +43,14 @@ pub struct MlxVectorArray {
 }
 
 impl MlxVectorArray {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let inner = unsafe { ffi::mlx_vector_array_new() };
         Self { inner, owned: true }
     }
 
     /// Build from a slice of MlxArrays. Each array's handle is appended
     /// (incrementing the underlying refcount).
-    pub fn from_arrays(arrays: &[&MlxArray]) -> Self {
+    pub(crate) fn from_arrays(arrays: &[&MlxArray]) -> Self {
         let v = Self::new();
         for arr in arrays {
             unsafe {
@@ -71,7 +71,7 @@ impl MlxVectorArray {
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         unsafe {
             ensure_error_handler();
             let n = ffi::mlx_vector_array_size(self.inner);

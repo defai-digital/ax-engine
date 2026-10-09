@@ -162,7 +162,7 @@ pub fn take_last_error() -> Option<String> {
 
 /// Format a failure message for a named MLX operation from the captured
 /// error, falling back to a generic message when the handler saw nothing.
-pub fn last_error_message(operation: &str) -> String {
+pub(crate) fn last_error_message(operation: &str) -> String {
     match take_last_error() {
         Some(message) => format!("{operation} failed: {message}"),
         None => format!("{operation} failed with an unreported MLX error"),
@@ -198,7 +198,7 @@ thread_local! {
 pub struct ClosureBodyGuard(());
 
 impl ClosureBodyGuard {
-    pub fn enter() -> Self {
+    pub(crate) fn enter() -> Self {
         CLOSURE_BODY_DEPTH.with(|d| d.set(d.get().saturating_add(1)));
         ClosureBodyGuard(())
     }

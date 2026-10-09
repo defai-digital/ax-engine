@@ -646,7 +646,7 @@ pub fn swiglu_oai(up: &MlxArray, gate: &MlxArray, s: Option<&MlxStream>) -> MlxA
 }
 
 /// Parameterized OpenAI MoE SwiGLU (see [`swiglu_oai`]).
-pub fn swiglu_oai_with_params(
+pub(crate) fn swiglu_oai_with_params(
     up: &MlxArray,
     gate: &MlxArray,
     alpha: f32,

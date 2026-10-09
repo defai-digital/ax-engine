@@ -51,14 +51,6 @@ impl MlxArray {
         }
     }
 
-    /// Whether this wrapper currently holds no MLX array.
-    ///
-    /// This is a defensive inspection helper for FFI wrappers; public callers
-    /// cannot construct a null `MlxArray`.
-    pub fn is_null(&self) -> bool {
-        self.inner.ctx.is_null()
-    }
-
     /// Create a 1-D f32 array from a slice.
     pub fn from_f32_slice(data: &[f32]) -> Self {
         unsafe {
@@ -84,27 +76,6 @@ impl MlxArray {
                 ptr::null(),
                 0,
                 ffi::mlx_dtype_::MLX_FLOAT32,
-            );
-            panic_on_null_array("mlx_array_new_data", arr);
-            Self::from_raw(arr)
-        }
-    }
-
-    /// Create a 1-D f16 array from raw bytes (already packed as f16).
-    pub fn from_f16_bytes(data: &[u8]) -> Self {
-        assert!(
-            data.len().is_multiple_of(2),
-            "f16 data must have even byte length"
-        );
-        let len = data.len() / 2;
-        unsafe {
-            let shape = [len as i32];
-            prepare_error_capture();
-            let arr = ffi::mlx_array_new_data(
-                data.as_ptr() as *const _,
-                shape.as_ptr(),
-                1,
-                ffi::mlx_dtype_::MLX_FLOAT16,
             );
             panic_on_null_array("mlx_array_new_data", arr);
             Self::from_raw(arr)
@@ -382,10 +353,11 @@ impl MlxArray {
         }
     }
 
+    #[cfg(test)]
     /// True when the array's data has been computed and is readable. The
     /// `data_*` accessors fail with a recorded shim error (previously a
     /// SIGSEGV inside `mx::array::data<T>()`) when this is false.
-    pub fn is_evaled(&self) -> bool {
+    pub(crate) fn is_evaled(&self) -> bool {
         unsafe {
             ensure_error_handler();
             ffi::ax_shim_array_is_evaled(self.inner) == 1
