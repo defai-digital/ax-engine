@@ -503,7 +503,13 @@ impl Qwen4ExpAttention {
                 policy
             };
         let k_raw = qw_with_policy(hidden, &self.k_proj, key_policy);
-        let v_raw = qw_with_policy(hidden, &self.v_proj, policy);
+        let v_policy = if self.v_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4
+        {
+            verifier_policy
+        } else {
+            policy
+        };
+        let v_raw = qw_with_policy(hidden, &self.v_proj, v_policy);
         #[cfg(test)]
         for (stage, array) in [
             ("qsa_projected_query_gate", &q_packed),
@@ -565,6 +571,15 @@ impl Qwen4ExpAttention {
         let attn = match &selection {
             Some(selection) => {
                 attend_selected(&queries, &staged_keys, &staged_values, selection, cfg)?
+            }
+            // Short verifier windows replay each query row through the
+            // singleton dense kernel so the batched window matches the
+            // per-token decode arithmetic bit for bit.
+            None if verifier_policy == ProjectionBatchPolicy::RowExact
+                && seq > 1
+                && seq <= VERIFY_ROWWISE_MAX_QUERIES =>
+            {
+                attend_dense_rowwise(&queries, &staged_keys, &staged_values, cfg)
             }
             None => attend_dense(&queries, &staged_keys, &staged_values, cfg),
         };
@@ -717,6 +732,66 @@ fn attend_dense(
     )
 }
 
+/// Verifier windows stay under this many queries: the block schedule drafts at
+/// most `FLASH_NEXT_BLOCK_DRAFTS` tokens, so a window is at most four rows and
+/// the shape-invariant evidence covers exactly this range. Prefill keeps the
+/// fused multi-query kernel.
+const VERIFY_ROWWISE_MAX_QUERIES: i32 = 4;
+
+/// One dense causal SDPA call per query row. The fused multi-query kernel
+/// rounds differently from the singleton decode kernel, so a batched verifier
+/// window diverges from the singleton chain even with identical inputs. Row
+/// `s` sees the staged prefix through `past + s`, exactly the singleton call
+/// at that position.
+fn attend_dense_rowwise(
+    queries: &MlxArray,
+    keys: &MlxArray,
+    values: &MlxArray,
+    cfg: Qwen4ExpAttentionConfig,
+) -> MlxArray {
+    let q_shape = queries.shape();
+    let (batch, heads, seq, dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
+    let k_shape = keys.shape();
+    let (kv_heads, total) = (k_shape[2], k_shape[1]);
+    let past = total - seq;
+    let mut rows = Vec::with_capacity(seq as usize);
+    for s in 0..seq {
+        let q = slice(
+            queries,
+            &[0, 0, s, 0],
+            &[batch, heads, s + 1, dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let k = slice(
+            keys,
+            &[0, 0, 0, 0],
+            &[batch, past + s + 1, kv_heads, dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let v = slice(
+            values,
+            &[0, 0, 0, 0],
+            &[batch, past + s + 1, kv_heads, dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let k = contiguous(&transpose(&k, &[0, 2, 1, 3], None), None);
+        let v = contiguous(&transpose(&v, &[0, 2, 1, 3], None), None);
+        rows.push(scaled_dot_product_attention(
+            &contiguous(&q, None),
+            &k,
+            &v,
+            cfg.scale,
+            true,
+            None,
+        ));
+    }
+    let refs: Vec<&MlxArray> = rows.iter().collect();
+    concatenate(&refs, 2, None)
+}
+
 fn attend_selected(
     queries: &MlxArray,
     keys: &MlxArray,
@@ -768,19 +843,20 @@ fn attend_selected(
             .try_reserve_exact(seq as usize)
             .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("attention query buffer"))?;
         for s in 0..seq {
-            let idx = if let Some(device) = selection.device_tokens() {
-                // Device selection: one query, exact host-known length.
-                let kept = device.shape()[2];
-                if s != 0 || kept <= 0 {
+            let idx = if selection.device_tokens().is_some() {
+                // Device selection: exact host-known length per query row
+                // (singleton row, or block+tail segments for a window).
+                let Some(row) = selection.device_tokens_for_query(b as usize, s as usize) else {
+                    return Err(Qwen4ExpAttentionError::InvalidScalar(
+                        "selected token count",
+                    ));
+                };
+                if row.shape().first().copied().unwrap_or(0) <= 0 {
                     return Err(Qwen4ExpAttentionError::InvalidScalar(
                         "selected token count",
                     ));
                 }
-                reshape(
-                    &slice(device, &[b, 0, 0], &[b + 1, 1, kept], &[1, 1, 1], None),
-                    &[kept],
-                    None,
-                )
+                row
             } else {
                 let chosen = selection.tokens_for_query(b as usize, s as usize);
                 if chosen.is_empty() {

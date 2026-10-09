@@ -21,9 +21,10 @@
 #[cfg(test)]
 use mlx_sys::eval;
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, add, arange, argsort_axis, astype, concatenate,
-    contiguous, cos, divide, expand_dims_axes, matmul, maximum, multiply, negative, outer,
-    quantized_matmul_with_mode, reshape, rms_norm, sin, slice, slice_last_dim, sum_axis, transpose,
+    MlxArray, MlxDtype, MlxQuantizationMode, add, arange, argsort_axis, astype, broadcast_to,
+    concatenate, contiguous, cos, divide, expand_dims_axes, less, matmul, maximum, multiply,
+    negative, outer, quantized_matmul_with_mode, reshape, rms_norm, sin, slice, slice_last_dim,
+    sum_axis, transpose, where_cond,
 };
 use thiserror::Error;
 
@@ -267,6 +268,15 @@ pub struct QsaSelection {
     gather_indices: MlxArray,
     tokens: Vec<Vec<Vec<i32>>>,
     device_tokens: Option<MlxArray>,
+    /// Multi-query device selections: per `(batch, query)` row the packed
+    /// device tensor holds `block_len` selected-block tokens, then -1 padding
+    /// up to the block segment width, then `tail_len` visible-tail tokens.
+    /// Empty for host or singleton-device selections.
+    device_row_segments: Vec<(i32, i32)>,
+    /// Multi-query device selections: width of the trailing visible-tail
+    /// segment in the packed device rows (`compress_ratio - 1`). Zero unless
+    /// the selection came from the multi-query device path.
+    device_tail_width: i32,
     #[cfg(test)]
     test_host_tokens: std::sync::OnceLock<Vec<Vec<Vec<i32>>>>,
     next_cache: QsaIndexKeyCache,
@@ -280,26 +290,69 @@ impl QsaSelection {
     }
 
     /// `[batch, 1, kept]` int32 token indices chosen on the device, if any.
+    /// Multi-query device selections are `[batch, seq, max_keep]` padded.
     pub(crate) fn device_tokens(&self) -> Option<&MlxArray> {
         self.device_tokens.as_ref()
     }
 
+    /// One query row of device-chosen indices as an exact-length `[kept]`
+    /// int32 tensor: the singleton path slices its row; the multi-query window
+    /// path joins the row's block and tail segments, dropping -1 padding.
+    pub(crate) fn device_tokens_for_query(&self, batch: usize, query: usize) -> Option<MlxArray> {
+        let device = self.device_tokens.as_ref()?;
+        let shape = device.shape();
+        let (b, s) = (batch as i32, query as i32);
+        if shape[1] == 1 {
+            if query != 0 {
+                return None;
+            }
+            let kept = shape[2];
+            return Some(reshape(
+                &slice(device, &[b, 0, 0], &[b + 1, 1, kept], &[1, 1, 1], None),
+                &[kept],
+                None,
+            ));
+        }
+        let (block_len, tail_len) = self
+            .device_row_segments
+            .get(batch * shape[1] as usize + query)
+            .copied()?;
+        let width = shape[2];
+        let blocks_width = width - self.device_tail_width;
+        let row = slice(device, &[b, s, 0], &[b + 1, s + 1, width], &[1, 1, 1], None);
+        let blocks = slice(&row, &[0, 0, 0], &[1, 1, block_len], &[1, 1, 1], None);
+        let tail = slice(
+            &row,
+            &[0, 0, blocks_width],
+            &[1, 1, blocks_width + tail_len],
+            &[1, 1, 1],
+            None,
+        );
+        let kept = block_len + tail_len;
+        let joined = match (block_len > 0, tail_len > 0) {
+            (true, true) => concatenate(&[&blocks, &tail], -1, None),
+            (true, false) => blocks,
+            (false, true) => tail,
+            (false, false) => return None,
+        };
+        Some(reshape(&joined, &[kept], None))
+    }
+
     pub fn tokens_for_query(&self, batch: usize, query: usize) -> &[i32] {
         #[cfg(test)]
-        if let Some(device) = &self.device_tokens {
+        if self.device_tokens.is_some() {
             return &self.test_host_tokens.get_or_init(|| {
-                let as_u32 = astype(device, MlxDtype::Uint32, None);
-                eval(&[&as_u32]);
-                let shape = as_u32.shape();
-                let kept = shape[2] as usize;
+                let shape = self.device_tokens.as_ref().unwrap().shape();
                 (0..shape[0] as usize)
                     .map(|b| {
-                        vec![
-                            as_u32.data_u32()[b * kept..(b + 1) * kept]
-                                .iter()
-                                .map(|&token| token as i32)
-                                .collect(),
-                        ]
+                        (0..shape[1] as usize)
+                            .map(|s| {
+                                let row = self.device_tokens_for_query(b, s).unwrap();
+                                let row = astype(&row, MlxDtype::Uint32, None);
+                                eval(&[&row]);
+                                row.data_u32().iter().map(|&token| token as i32).collect()
+                            })
+                            .collect::<Vec<Vec<i32>>>()
                     })
                     .collect()
             })[batch][query];
@@ -421,7 +474,13 @@ impl QsaIndexer {
         projection: impl FnOnce(&MlxArray, &QuantizedWeight) -> MlxArray,
     ) -> Result<QsaSelection> {
         let single_query = hidden.shape().get(1) == Some(&1);
-        let device_select = single_query && device_select_enabled();
+        let seq = hidden.shape().get(1).copied().unwrap_or(0);
+        let device_select = if single_query {
+            device_select_enabled()
+        } else {
+            device_select_multi_enabled()
+                && seq <= crate::fastpath::QSA_DEVICE_SELECT_MULTI_MAX_QUERIES
+        };
         self.select_with_mode(hidden, cache, position_offset, projection, device_select)
     }
 
@@ -501,21 +560,46 @@ impl QsaIndexer {
         };
 
         if device_select {
-            if seq != 1 {
-                return Err(QsaError::InvalidScalar("device selection needs one query"));
+            if seq == 1 {
+                let device_tokens =
+                    select_tokens_device(cfg, batch, position_offset, n_complete, scores.as_ref())?;
+                return Ok(QsaSelection {
+                    gather_indices: device_tokens.clone(),
+                    tokens: Vec::new(),
+                    device_tokens: Some(device_tokens),
+                    device_row_segments: Vec::new(),
+                    device_tail_width: 0,
+                    #[cfg(test)]
+                    test_host_tokens: std::sync::OnceLock::new(),
+                    next_cache: QsaIndexKeyCache {
+                        keys: Some(staged_keys),
+                    },
+                });
             }
-            let device_tokens =
-                select_tokens_device(cfg, batch, position_offset, n_complete, scores.as_ref())?;
-            return Ok(QsaSelection {
-                gather_indices: device_tokens.clone(),
-                tokens: Vec::new(),
-                device_tokens: Some(device_tokens),
-                #[cfg(test)]
-                test_host_tokens: std::sync::OnceLock::new(),
-                next_cache: QsaIndexKeyCache {
-                    keys: Some(staged_keys),
-                },
-            });
+            // Short verifier windows select on the device when the block tally
+            // is complete; anything else keeps the host path below.
+            if n_complete >= cfg.block_topk() as i32 {
+                let (device_tokens, segments) = select_tokens_device_multi(
+                    cfg,
+                    batch,
+                    seq,
+                    position_offset,
+                    n_complete,
+                    scores.as_ref(),
+                )?;
+                return Ok(QsaSelection {
+                    gather_indices: device_tokens.clone(),
+                    tokens: Vec::new(),
+                    device_tokens: Some(device_tokens),
+                    device_row_segments: segments,
+                    device_tail_width: cfg.compress_ratio() as i32 - 1,
+                    #[cfg(test)]
+                    test_host_tokens: std::sync::OnceLock::new(),
+                    next_cache: QsaIndexKeyCache {
+                        keys: Some(staged_keys),
+                    },
+                });
+            }
         }
 
         let tokens = select_tokens(
@@ -546,6 +630,8 @@ impl QsaIndexer {
             gather_indices,
             tokens,
             device_tokens: None,
+            device_row_segments: Vec::new(),
+            device_tail_width: 0,
             #[cfg(test)]
             test_host_tokens: std::sync::OnceLock::new(),
             next_cache: QsaIndexKeyCache {
@@ -805,9 +891,19 @@ fn device_select_enabled() -> bool {
     crate::fastpath::flash_next_qsa_device_select_enabled()
 }
 
+fn device_select_multi_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = DEVICE_SELECT_MULTI_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+    crate::fastpath::flash_next_qsa_device_select_multi_enabled()
+}
+
 #[cfg(test)]
 thread_local! {
     static DEVICE_SELECT_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+    static DEVICE_SELECT_MULTI_OVERRIDE: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -821,6 +917,20 @@ pub(crate) fn with_device_select<T>(enabled: bool, action: impl FnOnce() -> T) -
         }
     }
     let _restore = Restore(DEVICE_SELECT_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+/// Run `action` with multi-query window selection forced on or off on this
+/// thread.
+#[cfg(test)]
+pub(crate) fn with_device_select_multi<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DEVICE_SELECT_MULTI_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(DEVICE_SELECT_MULTI_OVERRIDE.with(|value| value.replace(Some(enabled))));
     action()
 }
 
@@ -892,6 +1002,148 @@ fn select_tokens_device(
         concatenate(&refs, 2, None)
     };
     Ok(astype(&joined, MlxDtype::Int32, None))
+}
+
+/// Multi-query block selection on the device for short verifier windows.
+///
+/// Scores never leave the device; per-query keep counts are closed-form in the
+/// position offset, so the host uploads only two small `[seq]` vectors (no
+/// GPU→host read-back, no pipeline stall). The order is the same stable
+/// score-descending, lower-block-index-on-ties order as the host path and the
+/// singleton device path. Returns the packed `[batch, seq, topk*ratio +
+/// ratio-1]` int32 tokens (-1 padded) and per-`(batch, query)` segment lengths
+/// `(block tokens, tail tokens)`.
+fn select_tokens_device_multi(
+    cfg: QsaConfig,
+    batch: i32,
+    seq: i32,
+    position_offset: usize,
+    n_complete: i32,
+    scores: Option<&MlxArray>,
+) -> Result<(MlxArray, Vec<(i32, i32)>)> {
+    let ratio = cfg.compress_ratio();
+    let topk = cfg.block_topk();
+    if n_complete < topk as i32 {
+        return Err(QsaError::InvalidScalar("multi-query device block tally"));
+    }
+    // Closed-form per-row counts from position arithmetic. No GPU data is
+    // read back; these vectors are the only host input. Counts are
+    // batch-invariant (all rows share the window positions); segments are
+    // recorded per (batch, query) for the consumer.
+    let mut complete = Vec::with_capacity(seq as usize);
+    let mut keep = Vec::with_capacity(seq as usize);
+    let mut segments = Vec::with_capacity((batch * seq) as usize);
+    for s in 0..seq {
+        let visible = position_offset + s as usize + 1;
+        let complete_s = visible / ratio;
+        let keep_s = topk.min(complete_s);
+        complete.push(complete_s as i32);
+        keep.push(keep_s as i32);
+    }
+    for _b in 0..batch {
+        for s in 0..seq as usize {
+            let block_len = (keep[s] as usize * ratio) as i32;
+            let tail_len = (position_offset + s + 1 - complete[s] as usize * ratio) as i32;
+            segments.push((block_len, tail_len));
+        }
+    }
+    let host_i32 = |data: &[i32], shape: &[i32]| {
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Int32,
+        )
+    };
+    let mut parts: Vec<MlxArray> = Vec::with_capacity(2);
+    let scores = scores.ok_or(QsaError::InvalidScalar("block scores"))?;
+    // Blocks beyond a row's complete count are invalid: bias them out of the
+    // top-k sort (scores are ReLU-sums, so >= 0; -1e30 sorts last after
+    // negation). Then argsort (stable: lower block index first on ties,
+    // matching the host order) and keep the first `topk` columns.
+    let complete_dev = host_i32(&complete, &[1, seq, 1]);
+    let block_ids = reshape(
+        &arange(0.0, n_complete as f64, 1.0, MlxDtype::Int32, None),
+        &[1, 1, n_complete],
+        None,
+    );
+    let valid = less(&block_ids, &complete_dev, None);
+    let masked = where_cond(
+        &valid,
+        scores,
+        &broadcast_to(&MlxArray::from_f32(-1e30), &scores.shape(), None),
+        None,
+    );
+    let order = argsort_axis(&negative(&masked, None), -1, None);
+    let cols = slice(
+        &order,
+        &[0, 0, 0],
+        &[batch, seq, topk as i32],
+        &[1, 1, 1],
+        None,
+    );
+    let cols = astype(&cols, MlxDtype::Uint32, None);
+    let ratio_u32 = MlxArray::from_raw_data(
+        (&(ratio as u32) as *const u32).cast(),
+        std::mem::size_of::<u32>(),
+        &[1],
+        MlxDtype::Uint32,
+    );
+    let starts = expand_dims_axes(&multiply(&cols, &ratio_u32, None), &[-1], None);
+    let within = arange(0.0, ratio as f64, 1.0, MlxDtype::Uint32, None);
+    let tokens = add(&starts, &within, None);
+    let tokens = astype(
+        &reshape(&tokens, &[batch, seq, (topk * ratio) as i32], None),
+        MlxDtype::Int32,
+        None,
+    );
+    // Columns at or past a row's keep count came from invalid blocks: -1.
+    let keep_dev = host_i32(&keep, &[1, seq, 1]);
+    let col_ids = reshape(
+        &arange(0.0, topk as f64, 1.0, MlxDtype::Int32, None),
+        &[1, 1, topk as i32],
+        None,
+    );
+    let col_valid = less(&col_ids, &keep_dev, None);
+    let col_valid = reshape(
+        &broadcast_to(
+            &expand_dims_axes(&col_valid, &[-1], None),
+            &[batch, seq, topk as i32, ratio as i32],
+            None,
+        ),
+        &[batch, seq, (topk * ratio) as i32],
+        None,
+    );
+    let neg_one = MlxArray::from_raw_data(
+        (&(-1_i32) as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    );
+    let block_tokens = where_cond(&col_valid, &tokens, &neg_one, None);
+    parts.push(block_tokens);
+    // Visible tail: tokens complete*ratio .. visible-1, up to ratio-1 long.
+    let tail_width = ratio as i32 - 1;
+    let visible_dev = host_i32(
+        &((position_offset + 1)..=(position_offset + seq as usize))
+            .map(|v| v as i32)
+            .collect::<Vec<_>>(),
+        &[1, seq, 1],
+    );
+    let tail = add(
+        &multiply(&complete_dev, &host_i32(&[ratio as i32], &[1]), None),
+        &reshape(
+            &arange(0.0, tail_width as f64, 1.0, MlxDtype::Int32, None),
+            &[1, 1, tail_width],
+            None,
+        ),
+        None,
+    );
+    let tail_valid = less(&tail, &visible_dev, None);
+    parts.push(where_cond(&tail_valid, &tail, &neg_one, None));
+    let refs: Vec<&MlxArray> = parts.iter().collect();
+    let joined = concatenate(&refs, 2, None);
+    Ok((joined, segments))
 }
 
 /// Preserve the attention traversal order: score descending, lower block index
@@ -1145,6 +1397,105 @@ mod tests {
     }
 
     #[test]
+    fn multi_query_device_selection_matches_host_order() {
+        let mut seed = 0x85eb_ca6b_u32;
+        for (ratio, budget) in [(2usize, 8usize), (4, 8), (4, 2048), (3, 12)] {
+            let cfg = QsaConfig::new(2, 1, 4, 4, ratio, budget, 16, EPS, BASE).unwrap();
+            let topk = cfg.block_topk();
+            let max_keep = budget + ratio - 1;
+            let mut tallies = vec![topk, topk + 1, topk * 3 + 1, 40, 130];
+            tallies.retain(|&n| n >= topk);
+            for n_complete in tallies {
+                for seq in [2i32, 3, 4] {
+                    for partial in 0..ratio {
+                        let total = n_complete * ratio + partial;
+                        if total < seq as usize {
+                            continue;
+                        }
+                        let position_offset = total - seq as usize;
+                        // Few distinct values force many ties, including signed zero.
+                        let alphabet = [-0.0_f32, 0.0, 1.0, 2.0, 3.0];
+                        let scores: Vec<f32> = (0..(seq as usize * n_complete))
+                            .map(|_| {
+                                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                                alphabet[(seed >> 16) as usize % alphabet.len()]
+                            })
+                            .collect();
+                        let array = array_f32(&scores, &[1, seq, n_complete as i32]);
+                        let host = select_tokens(
+                            cfg,
+                            1,
+                            seq,
+                            position_offset,
+                            n_complete as i32,
+                            Some(&array),
+                        )
+                        .unwrap();
+                        let (device, segments) = select_tokens_device_multi(
+                            cfg,
+                            1,
+                            seq,
+                            position_offset,
+                            n_complete as i32,
+                            Some(&array),
+                        )
+                        .unwrap();
+                        assert_eq!(device.shape(), vec![1, seq, max_keep as i32]);
+                        let device = astype(&device, MlxDtype::Uint32, None);
+                        eval(&[&device]);
+                        let data: Vec<i32> = device
+                            .data_u32()
+                            .iter()
+                            .map(|&token| token as i32)
+                            .collect();
+                        let block_width = topk * ratio;
+                        for (s, expected) in host[0].iter().enumerate() {
+                            let (block_len, tail_len) = segments[s];
+                            let row = &data[s * max_keep..(s + 1) * max_keep];
+                            let mut content = row[..block_len as usize].to_vec();
+                            content.extend_from_slice(
+                                &row[block_width..block_width + tail_len as usize],
+                            );
+                            assert_eq!(
+                                content, *expected,
+                                "ratio={ratio} budget={budget} blocks={n_complete} seq={seq} \
+                                 partial={partial} row={s}"
+                            );
+                            assert_eq!(
+                                expected.len(),
+                                (block_len + tail_len) as usize,
+                                "segment lengths must match the host row length"
+                            );
+                            assert!(
+                                row[block_len as usize..block_width]
+                                    .iter()
+                                    .all(|&t| t == -1),
+                                "block padding must be -1"
+                            );
+                            assert!(
+                                row[block_width + tail_len as usize..]
+                                    .iter()
+                                    .all(|&t| t == -1),
+                                "tail padding must be -1"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multi_query_device_selection_requires_the_full_block_tally() {
+        let cfg = QsaConfig::new(2, 1, 4, 4, 4, 2048, 16, EPS, BASE).unwrap();
+        let scores = array_f32(&[1.0, 2.0], &[1, 2, 1]);
+        assert!(
+            select_tokens_device_multi(cfg, 1, 2, 3, 1, Some(&scores)).is_err(),
+            "fewer complete blocks than topk must fail closed to the host path"
+        );
+    }
+
+    #[test]
     fn device_selection_matches_host_order_including_ties_and_partial_tails() {
         let mut seed = 0x9e37_79b9_u32;
         for (ratio, budget) in [(2usize, 8usize), (4, 8), (4, 2048), (3, 12)] {
@@ -1217,16 +1568,35 @@ mod tests {
     }
 
     #[test]
-    fn single_query_steps_select_on_the_device_and_chunks_on_the_host() {
+    fn single_query_and_short_windows_select_on_the_device() {
         let spec = tiny(2, 4);
-        let hidden = hidden_for(&spec, 4);
         let cache = QsaIndexKeyCache::empty();
-        let chunk = with_device_select(true, || run(&spec, &hidden, &cache, 0));
+        // A short multi-query window (within the multi-query cap) selects on
+        // the device by default; forcing the multi flag off keeps host
+        // selection, and a chunk past the cap always selects on the host.
+        let window = hidden_for(&spec, 4);
+        let short = with_device_select_multi(true, || run(&spec, &window, &cache, 0));
         assert!(
-            chunk.device_tokens().is_none(),
-            "multi-query chunks select on the host"
+            short.device_tokens().is_some(),
+            "short verifier windows select on the device by default"
         );
-        let one = &hidden[..spec.hidden];
+        let forced_host = with_device_select_multi(false, || run(&spec, &window, &cache, 0));
+        assert!(
+            forced_host.device_tokens().is_none(),
+            "the multi-query kill switch restores host selection"
+        );
+        assert_eq!(
+            short.tokens_for_query(0, 2),
+            forced_host.tokens_for_query(0, 2),
+            "device and host selections must agree row by row"
+        );
+        let chunk = hidden_for(&spec, 6);
+        let long = with_device_select_multi(true, || run(&spec, &chunk, &cache, 0));
+        assert!(
+            long.device_tokens().is_none(),
+            "chunks past the multi-query cap select on the host"
+        );
+        let one = &window[..spec.hidden];
         let on = with_device_select(true, || run(&spec, one, &cache, 0));
         let off = with_device_select(false, || run(&spec, one, &cache, 0));
         assert!(on.device_tokens().is_some());

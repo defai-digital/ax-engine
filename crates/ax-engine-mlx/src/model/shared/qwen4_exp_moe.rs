@@ -493,9 +493,21 @@ impl Qwen4ExpMoe {
             };
         let shared_gate = qw_with_policy(input, &w.shared_gate, shared_gate_policy);
         let shared_activation = silu_projection_dtype(&shared_gate);
-        let shared_up = qw_with_policy(input, &w.shared_up, policy);
+        let shared_up_policy =
+            if w.shared_up.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+                verifier_policy
+            } else {
+                policy
+            };
+        let shared_up = qw_with_policy(input, &w.shared_up, shared_up_policy);
         let shared_input = multiply(&shared_activation, &shared_up, None);
-        let shared = qw_with_policy(&shared_input, &w.shared_down, policy);
+        let shared_down_policy =
+            if w.shared_down.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
+                verifier_policy
+            } else {
+                policy
+            };
+        let shared = qw_with_policy(&shared_input, &w.shared_down, shared_down_policy);
         let shared_router = qw_with_policy(input, &w.shared_router, policy);
         let shared_score = sigmoid_projection_dtype(&shared_router);
         let shared_output = multiply(&shared, &shared_score, None);
@@ -982,5 +994,145 @@ mod tests {
             error.contains("layer 1"),
             "unexpected error message: {error}"
         );
+    }
+
+    /// MXFP4 expert stack (scales-only 4/32, classified MXFP4) with
+    /// deterministic contents, for the window row-sharing test.
+    fn mxfp4_stack(experts: i32, out: i32, input: i32, phase: usize) -> QuantizedWeight {
+        let count = (experts * out * input) as usize;
+        let data: Vec<f32> = (0..count)
+            .map(|i| ((((i + phase) % 887) as f32) - 443.0) * 0.0012)
+            .collect();
+        let dense = MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[experts, out, input],
+            MlxDtype::Float32,
+        );
+        let quantized = mlx_sys::quantize(
+            &dense,
+            Some(32),
+            Some(4),
+            mlx_sys::MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        assert!(quantized.len() >= 2, "MXFP4 quantize returns weight+scales");
+        eval(&[&quantized[0], &quantized[1]]);
+        QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(quantized[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+        }
+    }
+
+    fn bf16_dense(out: i32, input: i32, phase: usize) -> QuantizedWeight {
+        let count = (out * input) as usize;
+        let data: Vec<f32> = (0..count)
+            .map(|i| ((((i + phase) % 677) as f32) - 338.0) * 0.001)
+            .collect();
+        QuantizedWeight::new(
+            astype(
+                &MlxArray::from_raw_data(
+                    data.as_ptr().cast(),
+                    std::mem::size_of_val(data.as_slice()),
+                    &[out, input],
+                    MlxDtype::Float32,
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            ),
+            None,
+            None,
+        )
+    }
+
+    /// The block MTP verifier retains batched MoE output, so a window whose
+    /// rows share an expert (M_e = 2..=4 in the grouped MXFP4 GEMM) must match
+    /// the singleton per-row arithmetic bit for bit. Identical rows force the
+    /// maximal collision: every row selects the same experts.
+    #[test]
+    fn mxfp4_moe_window_rows_sharing_experts_match_singleton_rows() {
+        let module = Qwen4ExpMoe::new(
+            64,
+            32,
+            32,
+            8,
+            2,
+            true,
+            Qwen4ExpMoeWeights {
+                router: bf16_dense(8, 64, 3),
+                experts: Qwen4ExpExpertWeights::Resident(Box::new(Qwen4ExpResidentExperts {
+                    gate: mxfp4_stack(8, 32, 64, 11),
+                    up: mxfp4_stack(8, 32, 64, 23),
+                    down: mxfp4_stack(8, 64, 32, 37),
+                })),
+                shared_gate: bf16_dense(32, 64, 41),
+                shared_up: bf16_dense(32, 64, 43),
+                shared_down: bf16_dense(64, 32, 47),
+                shared_router: bf16_dense(1, 64, 53),
+            },
+        )
+        .unwrap();
+        let row = |phase: usize, scale: f32| {
+            let data: Vec<f32> = (0..64)
+                .map(|i| ((((i + phase) % 61) as f32) - 30.0) * scale)
+                .collect();
+            astype(
+                &MlxArray::from_raw_data(
+                    data.as_ptr().cast(),
+                    std::mem::size_of_val(data.as_slice()),
+                    &[1, 1, 64],
+                    MlxDtype::Float32,
+                ),
+                MlxDtype::Bfloat16,
+                None,
+            )
+        };
+        let (a, b, c, d) = (row(0, 0.03), row(7, 0.02), row(13, -0.025), row(29, 0.04));
+        for (label, rows) in [
+            (
+                "identical",
+                vec![a.clone(), a.clone(), a.clone(), a.clone()],
+            ),
+            ("abab", vec![a.clone(), b.clone(), a.clone(), b.clone()]),
+            ("distinct", vec![a.clone(), b.clone(), c.clone(), d.clone()]),
+            ("three", vec![a.clone(), b.clone(), c.clone()]),
+            ("two", vec![a.clone(), b.clone()]),
+        ] {
+            let refs: Vec<&MlxArray> = rows.iter().collect();
+            let window = concatenate(&refs, 1, None);
+            let batched = module
+                .forward(&window, ProjectionBatchPolicy::Shared)
+                .unwrap();
+            for (s, single_input) in rows.iter().enumerate() {
+                let single = module
+                    .forward(single_input, ProjectionBatchPolicy::Shared)
+                    .unwrap();
+                let row_out = slice(
+                    &batched,
+                    &[0, s as i32, 0],
+                    &[1, s as i32 + 1, 64],
+                    &[1, 1, 1],
+                    None,
+                );
+                let row_out = astype(&contiguous(&row_out, None), MlxDtype::Float32, None);
+                let single = astype(&single, MlxDtype::Float32, None);
+                eval(&[&row_out, &single]);
+                assert_eq!(
+                    row_out.data_f32(),
+                    single.data_f32(),
+                    "MoE window row {s} ({label}) diverged from the singleton row"
+                );
+            }
+        }
     }
 }

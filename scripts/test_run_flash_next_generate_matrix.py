@@ -216,6 +216,17 @@ class GenerateMatrixTests(unittest.TestCase):
         self.assertNotEqual(dry("--mtp-verifier", "legacy").returncode, 0)
         self.assertNotEqual(dry("--mtp-verifier", "batched", "--modes", "disabled", "default").returncode, 0)
 
+    def test_ax_server_env_is_recorded_and_validated(self):
+        def dry(*extra):
+            return subprocess.run([sys.executable, str(SCRIPT), "--dry-run", *extra],
+                                  capture_output=True, text=True)
+        self.assertEqual(json.loads(dry().stdout)["ax_server_env"], {})
+        done = dry("--ax-server-env", "AX_MLX_FLASH_NEXT_STICKY_FALLBACK=1")
+        self.assertEqual(json.loads(done.stdout)["ax_server_env"],
+                         {"AX_MLX_FLASH_NEXT_STICKY_FALLBACK": "1"})
+        self.assertNotEqual(dry("--ax-server-env", "NOEQUALSSIGN").returncode, 0)
+        self.assertNotEqual(dry("--ax-server-env", "=1").returncode, 0)
+
     def test_server_env_scrubs_inherited_overrides_but_keeps_an_explicit_one(self):
         native = mod.native
         import os

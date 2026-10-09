@@ -3102,3 +3102,513 @@ fn qwen4_exp_mtp_prefill_cursor_matches_primary_across_quanta_and_budgets() {
         }
     }
 }
+
+/// Worst-per-kind plus top-array summary of one state comparison.
+fn flash_diff_state_summary(
+    records: &[crate::model::qwen4_exp_mtp::mtp_parity::MtpStateArrayRecord],
+) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    let mut kinds: BTreeMap<&'static str, (f32, f32, usize, usize)> = BTreeMap::new();
+    for record in records {
+        let entry = kinds.entry(record.kind).or_insert((0.0, 0.0, 0, 0));
+        entry.3 += 1;
+        if record.divergence.relative > entry.1 {
+            entry.0 = record.divergence.max_abs;
+            entry.1 = record.divergence.relative;
+            entry.2 = record.layer;
+        }
+    }
+    let mut sorted: Vec<_> = records.iter().collect();
+    sorted.sort_by(|a, b| b.divergence.relative.total_cmp(&a.divergence.relative));
+    serde_json::json!({
+        "arrays": records.len(),
+        "all_exact": records.iter().all(|r| r.divergence.max_abs == 0.0),
+        "max_abs": records.iter().map(|r| r.divergence.max_abs).fold(0.0_f32, |a, b| a.max(b)),
+        "max_relative": records.iter().map(|r| r.divergence.relative).fold(0.0_f32, |a, b| a.max(b)),
+        "per_kind_worst": kinds
+            .iter()
+            .map(|(kind, (max_abs, relative, layer, count))| serde_json::json!({
+                "kind": kind, "max_abs": max_abs, "relative": relative,
+                "worst_layer": layer, "arrays": count,
+            }))
+            .collect::<Vec<_>>(),
+        "top_arrays": sorted.iter().take(8).map(|r| r.to_json()).collect::<Vec<_>>(),
+    })
+}
+
+/// Real-pack differential between one multi-token verifier forward and the
+/// equivalent singleton chain, plus an end-to-end candidate-session identity
+/// run under the load-time `AX_FLASH_NEXT_MTP_VERIFIER` schedule. Diagnostic
+/// only: it records divergences and never asserts numeric closeness.
+///
+/// Envs: `AX_FLASH_NEXT_REAL_PACK` (pack dir) and `AX_FLASH_NEXT_RESULT_PATH`
+/// (JSON out) are required. `AX_FLASH_NEXT_PROMPT_IDS` optionally overrides the
+/// bootstrap seed; `AX_FLASH_NEXT_DIFF_STREAM=on` pages experts instead of
+/// loading resident; `AX_FLASH_NEXT_DIFF_SESSION_TOKENS` (default 48) bounds
+/// the session phase.
+#[test]
+#[ignore = "requires a real Flash Next pack; records the block/batched shape differential"]
+fn qwen4_exp_block_window_shape_differential_real_pack() {
+    use crate::expert_stream::StreamExpertsMode;
+    use crate::model::qwen4_exp_mtp::mtp_parity;
+    use crate::model::qwen4_exp_mtp::{CandidateSession, top_two_margin};
+    use crate::weights::qwen4_exp::load_with_paging_policy;
+    use std::collections::BTreeMap;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_REAL_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let root = artifacts.root_dir();
+    let seed: Vec<u32> = std::env::var("AX_FLASH_NEXT_PROMPT_IDS")
+        .ok()
+        .map(|raw| serde_json::from_str(&raw).unwrap())
+        .unwrap_or_else(|| vec![1, 2, 3, 4, 5, 6, 7]);
+    assert!(
+        (2..=128).contains(&seed.len()),
+        "AX_FLASH_NEXT_PROMPT_IDS must have 2..=128 tokens, got {}",
+        seed.len()
+    );
+    let stream = matches!(
+        std::env::var("AX_FLASH_NEXT_DIFF_STREAM").ok().as_deref(),
+        Some("on") | Some("1") | Some("true")
+    );
+    let mode = if stream {
+        StreamExpertsMode::On
+    } else {
+        StreamExpertsMode::Off
+    };
+    let trunk = load_with_paging_policy(root, artifacts.manifest(), mode, 1).unwrap();
+    let owner = 9410;
+    let session_budget: usize = std::env::var("AX_FLASH_NEXT_DIFF_SESSION_TOKENS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(48);
+    let bootstrap: usize = std::env::var("AX_FLASH_NEXT_DIFF_BOOTSTRAP")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(24);
+    let greedy = |output: &qwen4_exp::Qwen4ExpOutput| -> u32 {
+        let token = mlx_sys::argmax(&output.logits, None);
+        mlx_sys::eval(&[&token]);
+        token.data_u32()[0]
+    };
+
+    // Bootstrap a model-natural prefix from the seed so the session phase sees
+    // realistic draft acceptance: greedily extend the seed, then treat the
+    // extension as the prompt for every later phase.
+    let initial = qwen4_exp::Qwen4ExpState::new(&trunk, owner);
+    let mut prompt = seed.clone();
+    let mut checkpoint = qwen4_exp::forward(
+        &trunk,
+        &seed,
+        &initial,
+        owner,
+        ProjectionBatchPolicy::Shared,
+    )
+    .unwrap();
+    for _ in 0..bootstrap {
+        let token = greedy(&checkpoint);
+        prompt.push(token);
+        checkpoint = qwen4_exp::forward(
+            &trunk,
+            &[token],
+            &checkpoint.state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+    }
+
+    // Window phase: four greedy singleton steps from the checkpoint give the
+    // reference outputs; multi-token arms replay the same window from the same
+    // checkpoint state under explicit policy pairs.
+    let mut window_tokens = Vec::with_capacity(4);
+    let mut window_steps: Vec<qwen4_exp::Qwen4ExpOutput> = Vec::new();
+    let mut pending = greedy(&checkpoint);
+    let mut chain_state = checkpoint.state.clone();
+    for _ in 0..4 {
+        let output = qwen4_exp::forward(
+            &trunk,
+            &[pending],
+            &chain_state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        window_tokens.push(pending);
+        pending = greedy(&output);
+        chain_state = output.state.clone();
+        window_steps.push(output);
+    }
+    // `AX_FLASH_NEXT_DIFF_ONLY` gates phases for dump runs: comma list of
+    // w2ss/w2sr/w2rr/w3../w4.., ident4sr, ident4rr, session. Default: all.
+    let only: Option<Vec<String>> = std::env::var("AX_FLASH_NEXT_DIFF_ONLY")
+        .ok()
+        .map(|raw| raw.split(',').map(|item| item.trim().to_string()).collect());
+    let run = |name: &str| -> bool {
+        only.as_ref()
+            .is_none_or(|list| list.iter().any(|item| item == "all" || item == name))
+    };
+    // Identical-row control: four copies of the first window token, referenced
+    // against a singleton chain that also repeats that token. Rows disagreeing
+    // with each other prove cross-row coupling; rows all shifted together prove
+    // a pure kernel shape effect. Gated so dump runs of other arms stay clean.
+    let ident_token = window_tokens[0];
+    let mut ident_steps: Vec<qwen4_exp::Qwen4ExpOutput> = Vec::new();
+    if run("ident4sr") || run("ident4rr") {
+        let mut ident_state = checkpoint.state.clone();
+        for _ in 0..4 {
+            let output = qwen4_exp::forward(
+                &trunk,
+                &[ident_token],
+                &ident_state,
+                owner,
+                ProjectionBatchPolicy::Shared,
+            )
+            .unwrap();
+            ident_state = output.state.clone();
+            ident_steps.push(output);
+        }
+    }
+    let row_at = |array: &MlxArray, row: i32| -> MlxArray {
+        let shape = array.shape();
+        match shape.len() {
+            2 => mlx_sys::slice(array, &[row, 0], &[row + 1, shape[1]], &[1, 1], None),
+            _ => mlx_sys::slice(
+                array,
+                &[0, row, 0],
+                &[1, row + 1, shape[2]],
+                &[1, 1, 1],
+                None,
+            ),
+        }
+    };
+    let mut window_arms = Vec::new();
+    for window_len in [2usize, 3, 4] {
+        let window = &window_tokens[..window_len];
+        for (short, label, policy, verifier_policy) in [
+            (
+                "ss",
+                "shared_shared",
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::Shared,
+            ),
+            (
+                "sr",
+                "shared_rowexact",
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::RowExact,
+            ),
+            (
+                "rr",
+                "rowexact_rowexact",
+                ProjectionBatchPolicy::RowExact,
+                ProjectionBatchPolicy::RowExact,
+            ),
+        ] {
+            if !run(&format!("w{window_len}{short}")) {
+                continue;
+            }
+            let batched = qwen4_exp::forward_with_verifier_policy(
+                &trunk,
+                window,
+                &checkpoint.state,
+                owner,
+                policy,
+                verifier_policy,
+            )
+            .unwrap();
+            let mut rows = Vec::new();
+            for (index, step) in window_steps[..window_len].iter().enumerate() {
+                let logits_row = row_at(&batched.logits, index as i32);
+                let stream_row = row_at(&batched.stream_hidden, index as i32);
+                let hidden_row = row_at(&batched.hidden, index as i32);
+                let logits = mtp_parity::mtp_logits_divergence(&logits_row, &step.logits);
+                let stream = mtp_parity::mtp_logits_divergence(&stream_row, &step.stream_hidden);
+                let hidden = mtp_parity::mtp_logits_divergence(&hidden_row, &step.hidden);
+                let row_token = {
+                    let token = mlx_sys::argmax(&logits_row, None);
+                    mlx_sys::eval(&[&token]);
+                    token.data_u32()[0]
+                };
+                rows.push(serde_json::json!({
+                    "row": index,
+                    "logits_max_abs": logits.max_abs,
+                    "logits_relative": logits.relative,
+                    "logits_exact": logits.max_abs == 0.0,
+                    "stream_max_abs": stream.max_abs,
+                    "stream_relative": stream.relative,
+                    "hidden_max_abs": hidden.max_abs,
+                    "hidden_relative": hidden.relative,
+                    "argmax_match": row_token == greedy(step),
+                    "arm_token": row_token,
+                    "singleton_token": greedy(step),
+                    "arm_margin": top_two_margin(&batched.logits, index as i32).ok(),
+                    "singleton_margin": top_two_margin(&step.logits, 0).ok(),
+                }));
+            }
+            let records = mtp_parity::mtp_state_array_records(
+                &batched.state,
+                &window_steps[window_len - 1].state,
+            );
+            window_arms.push(serde_json::json!({
+                "window_len": window_len,
+                "policies": label,
+                "rows": rows,
+                "state": flash_diff_state_summary(&records),
+            }));
+        }
+    }
+
+    // Identical-row arms: window [t0, t0, t0, t0] under SR and RR policies.
+    for (short, label, policy, verifier_policy) in [
+        (
+            "sr",
+            "ident4_shared_rowexact",
+            ProjectionBatchPolicy::Shared,
+            ProjectionBatchPolicy::RowExact,
+        ),
+        (
+            "rr",
+            "ident4_rowexact_rowexact",
+            ProjectionBatchPolicy::RowExact,
+            ProjectionBatchPolicy::RowExact,
+        ),
+    ] {
+        if !run(&format!("ident4{short}")) {
+            continue;
+        }
+        let window = [ident_token; 4];
+        let batched = qwen4_exp::forward_with_verifier_policy(
+            &trunk,
+            &window,
+            &checkpoint.state,
+            owner,
+            policy,
+            verifier_policy,
+        )
+        .unwrap();
+        let mut rows = Vec::new();
+        for (index, step) in ident_steps.iter().enumerate() {
+            let logits_row = row_at(&batched.logits, index as i32);
+            let stream_row = row_at(&batched.stream_hidden, index as i32);
+            let hidden_row = row_at(&batched.hidden, index as i32);
+            let logits = mtp_parity::mtp_logits_divergence(&logits_row, &step.logits);
+            let stream = mtp_parity::mtp_logits_divergence(&stream_row, &step.stream_hidden);
+            let hidden = mtp_parity::mtp_logits_divergence(&hidden_row, &step.hidden);
+            let row0_logits = row_at(&batched.logits, 0);
+            let row0_hidden = row_at(&batched.hidden, 0);
+            let self_logits = if index == 0 {
+                0.0
+            } else {
+                mtp_parity::mtp_logits_divergence(&logits_row, &row0_logits).max_abs
+            };
+            let self_hidden = if index == 0 {
+                0.0
+            } else {
+                mtp_parity::mtp_logits_divergence(&hidden_row, &row0_hidden).max_abs
+            };
+            rows.push(serde_json::json!({
+                "row": index,
+                "logits_max_abs": logits.max_abs,
+                "logits_relative": logits.relative,
+                "stream_max_abs": stream.max_abs,
+                "hidden_max_abs": hidden.max_abs,
+                "hidden_relative": hidden.relative,
+                "row0_logits_max_abs": self_logits,
+                "row0_hidden_max_abs": self_hidden,
+            }));
+        }
+        let records = mtp_parity::mtp_state_array_records(&batched.state, &ident_steps[3].state);
+        window_arms.push(serde_json::json!({
+            "window_len": 4,
+            "policies": label,
+            "identical_rows": true,
+            "rows": rows,
+            "state": flash_diff_state_summary(&records),
+        }));
+    }
+
+    // Session phase: run the candidate session under the schedule selected at
+    // load, comparing against an independent singleton chain. Token comparison
+    // stops at the first mismatch; state comparison runs while streams match.
+    if !run("session") {
+        let result = serde_json::json!({
+            "qualification": false,
+            "diagnostic": "qwen4_exp block/batched window shape differential",
+            "pack": root.file_name().map(|name| name.to_string_lossy().into_owned()),
+            "stream_experts": stream,
+            "load_schedule": format!("{:?}", trunk.target_schedule),
+            "verifier_env": std::env::var("AX_FLASH_NEXT_MTP_VERIFIER").ok(),
+            "seed": seed,
+            "prompt_len": prompt.len(),
+            "window_tokens": window_tokens,
+            "window_arms": window_arms,
+            "session": serde_json::Value::Null,
+        });
+        std::fs::write(
+            std::env::var_os("AX_FLASH_NEXT_RESULT_PATH").unwrap(),
+            serde_json::to_vec_pretty(&result).unwrap(),
+        )
+        .unwrap();
+        return;
+    }
+    let head = crate::weights::qwen4_exp_mtp::load(root, artifacts.manifest(), &trunk).unwrap();
+    let mut session = CandidateSession::prefill(&trunk, &head, &prompt, owner, owner + 1).unwrap();
+    // The session prefills [prompt-1] + singleton tail; the reference chain
+    // must use the same split or it measures a prefill-schedule difference.
+    let mut direct = if prompt.len() > 1 {
+        let prefix = qwen4_exp::forward(
+            &trunk,
+            &prompt[..prompt.len() - 1],
+            &initial,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        qwen4_exp::forward(
+            &trunk,
+            &prompt[prompt.len() - 1..],
+            &prefix.state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap()
+    } else {
+        qwen4_exp::forward(
+            &trunk,
+            &prompt,
+            &initial,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap()
+    };
+    let tie_margin = mtp_parity::mtp_tie_margin();
+    let mut identity = mtp_parity::GreedyIdentityReport::exact();
+    let mut comparing = true;
+    let mut non_tie_mismatch = serde_json::Value::Null;
+    let mut generated: Vec<u32> = Vec::new();
+    let mut per_step = Vec::new();
+    let mut last_state_summary = serde_json::Value::Null;
+    let mut kind_peaks: BTreeMap<&'static str, (f32, f32, usize)> = BTreeMap::new();
+    while generated.len() < session_budget && comparing {
+        let committed = session
+            .step(&trunk, &head, session_budget - generated.len(), &[])
+            .unwrap();
+        assert!(!committed.is_empty() && committed.len() <= session_budget - generated.len());
+        let mut mismatch_here = false;
+        for &token in &committed {
+            if !comparing {
+                break;
+            }
+            let expected = greedy(&direct);
+            let margin = top_two_margin(&direct.logits, 0).unwrap();
+            let position = generated.len();
+            identity.compared_positions = position + 1;
+            generated.push(token);
+            if expected == token {
+                direct = qwen4_exp::forward(
+                    &trunk,
+                    &[token],
+                    &direct.state,
+                    owner,
+                    ProjectionBatchPolicy::Shared,
+                )
+                .unwrap();
+                continue;
+            }
+            identity.greedy_identity = false;
+            mismatch_here = true;
+            comparing = false;
+            match mtp_parity::classify_greedy_mismatch(
+                position, expected, token, margin, tie_margin,
+            ) {
+                Ok(Some(tie)) => identity.tie_divergences.push(tie),
+                Ok(None) => {}
+                Err(error) => {
+                    non_tie_mismatch = serde_json::json!({
+                        "position": position,
+                        "direct": expected,
+                        "session": token,
+                        "margin": margin,
+                        "tie_margin": tie_margin,
+                        "detail": error,
+                    });
+                }
+            }
+        }
+        let mut step_state_max_abs = serde_json::Value::Null;
+        let mut step_state_max_relative = serde_json::Value::Null;
+        if comparing {
+            let records = mtp_parity::mtp_state_array_records(&session.trunk_state, &direct.state);
+            for record in &records {
+                let entry = kind_peaks.entry(record.kind).or_insert((0.0, 0.0, 0));
+                if record.divergence.relative > entry.1 {
+                    *entry = (
+                        record.divergence.max_abs,
+                        record.divergence.relative,
+                        record.layer,
+                    );
+                }
+            }
+            step_state_max_abs = serde_json::json!(
+                records
+                    .iter()
+                    .map(|r| r.divergence.max_abs)
+                    .fold(0.0_f32, |a, b| a.max(b))
+            );
+            step_state_max_relative = serde_json::json!(
+                records
+                    .iter()
+                    .map(|r| r.divergence.relative)
+                    .fold(0.0_f32, |a, b| a.max(b))
+            );
+            last_state_summary = flash_diff_state_summary(&records);
+        }
+        per_step.push(serde_json::json!({
+            "committed": committed.len(),
+            "mismatch": mismatch_here,
+            "compared": comparing || mismatch_here,
+            "state_max_abs": step_state_max_abs,
+            "state_max_relative": step_state_max_relative,
+        }));
+    }
+    let result = serde_json::json!({
+        "qualification": false,
+        "diagnostic": "qwen4_exp block/batched window shape differential",
+        "pack": root.file_name().map(|name| name.to_string_lossy().into_owned()),
+        "stream_experts": stream,
+        "load_schedule": format!("{:?}", trunk.target_schedule),
+        "verifier_env": std::env::var("AX_FLASH_NEXT_MTP_VERIFIER").ok(),
+        "seed": seed,
+        "prompt_len": prompt.len(),
+        "window_tokens": window_tokens,
+        "window_arms": window_arms,
+        "session": {
+            "generated_len": generated.len(),
+            "compared_positions": identity.compared_positions,
+            "greedy_identity": identity.greedy_identity,
+            "tie_divergences": identity
+                .tie_divergences
+                .iter()
+                .map(mtp_parity::TieDivergence::to_json)
+                .collect::<Vec<_>>(),
+            "non_tie_mismatch": non_tie_mismatch,
+            "proposed": session.proposed,
+            "accepted": session.accepted,
+            "per_step": per_step,
+            "state_kind_peaks": kind_peaks
+                .iter()
+                .map(|(kind, (max_abs, relative, layer))| serde_json::json!({
+                    "kind": kind, "max_abs": max_abs, "relative": relative, "worst_layer": layer,
+                }))
+                .collect::<Vec<_>>(),
+            "last_comparable_state": last_state_summary,
+        },
+    });
+    std::fs::write(
+        std::env::var_os("AX_FLASH_NEXT_RESULT_PATH").unwrap(),
+        serde_json::to_vec_pretty(&result).unwrap(),
+    )
+    .unwrap();
+}

@@ -275,7 +275,7 @@ impl Qwen4ExpGdn {
         let v = astype(&split.v, MlxDtype::Float32, None);
         let a = add(
             &astype(
-                &qw_with_policy(input, &self.weights.decay, policy),
+                &qwen4_verifier_projection(input, &self.weights.decay, policy, verifier_policy),
                 MlxDtype::Float32,
                 None,
             ),
@@ -296,7 +296,12 @@ impl Qwen4ExpGdn {
             None,
         );
         let decay = exp(&log_decay, None);
-        let beta = qwen4_beta(&qw_with_policy(input, &self.weights.beta, policy));
+        let beta = qwen4_beta(&qwen4_verifier_projection(
+            input,
+            &self.weights.beta,
+            policy,
+            verifier_policy,
+        ));
         let recurrent = state.map_or_else(
             || zeros(&recurrent_shape, MlxDtype::Float32, None),
             |s| s.recurrent.clone(),
@@ -348,7 +353,7 @@ impl Qwen4ExpGdn {
             None,
         );
         let gate = reshape(
-            &qw_with_policy(input, &self.weights.gate, policy),
+            &qwen4_verifier_projection(input, &self.weights.gate, policy, verifier_policy),
             &[batch, seq, hv, dv],
             None,
         );

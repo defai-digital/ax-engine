@@ -211,7 +211,8 @@ def decode_rate(timing: dict[str, Any]) -> float | None:
 
 def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[str, ...] = PROMPTS,
              lengths: tuple[int, ...] = LENGTHS, label: str | None = None,
-             verifier: str = "canonical") -> dict[str, Any]:
+             verifier: str = "canonical",
+             extra_env: dict[str, str] | None = None) -> dict[str, Any]:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -221,7 +222,9 @@ def run_mode(server: Path, root: Path, output: Path, mode: str, prompts: tuple[s
     started = time.monotonic()
     result: dict[str, Any] = {"mode": mode, "verifier": arm_verifier(mode, verifier),
                               "trajectories": [], "cells": []}
-    explicit = {VERIFIER_ENV: "batched"} if arm_verifier(mode, verifier) == "batched" else None
+    explicit: dict[str, str] = dict(extra_env or {})
+    if arm_verifier(mode, verifier) != "canonical":
+        explicit[VERIFIER_ENV] = arm_verifier(mode, verifier)
     with log_path.open("wb") as log:
         process = subprocess.Popen(command, stdout=log, stderr=log, env=native.server_env(explicit),
                                    start_new_session=True)
@@ -383,10 +386,14 @@ def main() -> int:
     parser.add_argument("--mtp-verifier", choices=VERIFIERS, default="canonical",
                         help="MTP target verifier for the required arm: canonical, batched "
                              "(one two-token forward), or block (up to three drafts in one "
-                             "forward). Fully accepted batched and block rounds can diverge "
-                             "from direct decoding at near-tied logits")
+                             "forward). Verifier windows replay the singleton arithmetic "
+                             "row by row, so a fully accepted round retains bit-identical "
+                             "state to the canonical schedule")
     parser.add_argument("--repeats", type=int, default=2,
                         help="independent server processes per arm; the lowest-latency one is kept")
+    parser.add_argument("--ax-server-env", action="append", default=[], metavar="KEY=VALUE",
+                        help="extra server environment override passed explicitly to every arm "
+                             "and recorded in the contract (repeatable)")
     args = parser.parse_args()
     if len(args.modes) != 2 or "disabled" not in args.modes:
         parser.error("--modes must be the disabled baseline plus exactly one challenger")
@@ -394,6 +401,12 @@ def main() -> int:
         parser.error("--repeats must be at least 1")
     if args.mtp_verifier != "canonical" and "required" not in args.modes:
         parser.error("--mtp-verifier batched or block applies only to the required MTP arm")
+    ax_server_env: dict[str, str] = {}
+    for item in args.ax_server_env:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            parser.error("--ax-server-env entries must be KEY=VALUE")
+        ax_server_env[key] = value
     prompts = PROMPTS[: args.limit_prompts] if args.limit_prompts else PROMPTS
     lengths = tuple(args.lengths) if args.lengths else LENGTHS
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
@@ -406,6 +419,7 @@ def main() -> int:
                 "reference_baseline": "none", "qualification": False, "release_ready": False,
                 "repeats_per_arm": args.repeats,
                 "mtp_verifier": args.mtp_verifier,
+                "ax_server_env": ax_server_env,
                 "warm_pass": "discarded pass of the first mode over the identical workload, "
                              "kept as the cold-regime observation" if not args.no_warm_pass else "skipped",
                 "scope": "server-path token identity and timings; MTP-S/P/D not assessed"}
@@ -434,7 +448,7 @@ def main() -> int:
     warm_pass = None
     if not args.no_warm_pass:
         warm_pass = run_mode(args.server_bin.resolve(), args.model_dir.resolve(), args.output,
-                             args.modes[0], (), lengths, label="warm")
+                             args.modes[0], (), lengths, label="warm", extra_env=ax_server_env)
     # Each arm runs in `--repeats` independent server processes, interleaved in
     # time. The host showed time-varying background interference (2,048-token
     # TTFT 5.8 s versus 4.3 s for tens of minutes) while clean repeats agree to
@@ -445,7 +459,8 @@ def main() -> int:
         for mode in args.modes:
             repeats[mode].append(run_mode(args.server_bin.resolve(), args.model_dir.resolve(),
                                           args.output, mode, prompts, lengths,
-                                          label=f"{mode}-{repeat + 1}", verifier=args.mtp_verifier))
+                                          label=f"{mode}-{repeat + 1}", verifier=args.mtp_verifier,
+                                          extra_env=ax_server_env))
     runs = {mode: best_repeat(items, lengths) for mode, items in repeats.items()}
     manifest_after = native.validate_inventory(args.model_dir, inventory)
     if manifest_before and manifest_before != manifest_after:
