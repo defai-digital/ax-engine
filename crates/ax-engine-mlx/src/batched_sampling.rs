@@ -26,7 +26,9 @@
 
 use mlx_sys::{MlxArray, MlxDtype, argmax, astype, eval, reshape};
 
-use crate::sampling::{MlxSamplingParams, Xorshift64, sample_categorical};
+use crate::sampling::MlxSamplingParams;
+#[cfg(test)]
+use crate::sampling::{Xorshift64, sample_categorical};
 
 /// How a request's next token must be produced in the batched path so it is
 /// byte-identical to the single-sequence decode of that request.
@@ -60,7 +62,7 @@ pub enum BatchedSamplingClass {
 ///
 /// `deterministic_argmax_sampling` forces [`BatchedSamplingClass::Greedy`],
 /// matching how the runner derives `is_greedy` for the single path.
-pub fn batched_sampling_class(
+pub(crate) fn batched_sampling_class(
     sampling: MlxSamplingParams,
     deterministic_argmax_sampling: bool,
 ) -> Option<BatchedSamplingClass> {
@@ -127,6 +129,7 @@ pub fn argmax_batched(logits: &MlxArray) -> Vec<u32> {
     idx.data_u32().to_vec()
 }
 
+#[cfg(test)]
 /// General batched sampling with per-row parameters, RNG, and repetition
 /// context. Reads `[B, vocab]` logits back to host and applies the single-row
 /// [`sample_categorical`] to each row, so row `r`'s token is identical to a
@@ -137,7 +140,7 @@ pub fn argmax_batched(logits: &MlxArray) -> Vec<u32> {
 ///
 /// # Panics
 /// If `params`, `recent`, or `rngs` length differs from the batch size.
-pub fn sample_batched_host(
+pub(crate) fn sample_batched_host(
     logits: &MlxArray,
     params: &[MlxSamplingParams],
     recent: &[&[u32]],

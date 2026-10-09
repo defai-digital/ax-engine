@@ -6003,6 +6003,7 @@ env_flag!(
 // toggle the compiled denoise closure without recompiling. All are read once
 // per process and cached via OnceLock.
 
+#[cfg(test)]
 env_flag!(
     /// `AX_MLX_GEMMA4_ASSISTANT_COMPILE` — reserved for pure-graph assistant
     /// MTP compile (Phase B).
@@ -10197,8 +10198,6 @@ mod per_call_env_accessor_tests {
         ("src/runner/runner_telemetry.rs", "from_specs"),
         ("src/speculation_profile.rs", "speculation_profile_from_env"),
         ("src/tiel_memory_policy.rs", "wired_limit_scale_override"),
-        ("src/vision_feature_cache.rs", "from_env"),
-        ("src/vision_feature_cache.rs", "env_cache_enabled"),
         ("src/weight_rotation.rs", "weight_rotation_mode"),
         ("src/weight_rotation.rs", "shadow_log_rotation_candidates"),
         ("src/weights.rs", "mmap_weights_enabled"),

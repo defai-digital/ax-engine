@@ -5,8 +5,9 @@ use ax_engine_core::NativeModelArtifacts;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const BATCHED_DECODE_CERTIFICATION_FILE: &str = "batched-decode-certification.json";
-pub const BATCHED_DECODE_CERTIFICATION_SCHEMA: &str = "ax.mlx.batched_decode_certification.v1";
+pub(crate) const BATCHED_DECODE_CERTIFICATION_FILE: &str = "batched-decode-certification.json";
+pub(crate) const BATCHED_DECODE_CERTIFICATION_SCHEMA: &str =
+    "ax.mlx.batched_decode_certification.v1";
 /// Version of the batched-decode runtime contract certification evidence is
 /// bound to. Bump this whenever the required scenario matrix (or the runtime
 /// behavior it certifies) changes, so pre-existing evidence fails with an
@@ -16,7 +17,7 @@ pub const BATCHED_DECODE_CERTIFICATION_SCHEMA: &str = "ax.mlx.batched_decode_cer
 ///
 /// v4: required matrix extended with the batch-8 Decision A cohort scenario
 /// and the 992-token Gemma SWA window-boundary scenario.
-pub const BATCHED_DECODE_RUNTIME_CONTRACT: &str = "ax.mlx.batched_decode.runtime.v4";
+pub(crate) const BATCHED_DECODE_RUNTIME_CONTRACT: &str = "ax.mlx.batched_decode.runtime.v4";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BatchedDecodeCertificationScenario {
@@ -75,11 +76,11 @@ pub enum BatchedDecodeCertificationStatus {
 }
 
 impl BatchedDecodeCertificationStatus {
-    pub const fn is_certified(self) -> bool {
+    pub(crate) const fn is_certified(self) -> bool {
         matches!(self, Self::Certified)
     }
 
-    pub const fn route_reason(self) -> &'static str {
+    pub(crate) const fn route_reason(self) -> &'static str {
         match self {
             Self::Certified => "certified",
             Self::Missing => "certification_missing",
@@ -99,8 +100,8 @@ impl BatchedDecodeCertificationStatus {
     }
 }
 
-pub fn required_batched_decode_certification_scenarios() -> Vec<BatchedDecodeCertificationScenario>
-{
+pub(crate) fn required_batched_decode_certification_scenarios()
+-> Vec<BatchedDecodeCertificationScenario> {
     [
         (2, 32, 64, 0, false),
         (4, 32, 64, 0, false),
@@ -174,7 +175,7 @@ pub(crate) fn load_batched_decode_certification(
     validate_batched_decode_certification(&evidence, &context)
 }
 
-pub fn batched_decode_numerics_env_sha256() -> String {
+pub(crate) fn batched_decode_numerics_env_sha256() -> String {
     numerics_env_sha256_from_iter(env::vars())
 }
 

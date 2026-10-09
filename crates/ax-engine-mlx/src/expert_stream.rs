@@ -26,12 +26,12 @@ use serde::{Deserialize, Serialize};
 use crate::weights::QuantizedWeight;
 
 pub const EXPERT_STREAM_MANIFEST_FILE: &str = "ax_expert_stream.json";
-pub const EXPERT_STREAM_SCHEMA_V1: &str = "axquant.expert-stream.v1";
-pub const EXPERT_STREAM_MODE_LAYER_STACK: &str = "layer-stack";
+pub(crate) const EXPERT_STREAM_SCHEMA_V1: &str = "axquant.expert-stream.v1";
+pub(crate) const EXPERT_STREAM_MODE_LAYER_STACK: &str = "layer-stack";
 /// Serve/load admission: `AX_STREAM_EXPERTS=off|auto|on` (also `0`/`1`).
-pub const STREAM_EXPERTS_ENV: &str = "AX_STREAM_EXPERTS";
+pub(crate) const STREAM_EXPERTS_ENV: &str = "AX_STREAM_EXPERTS";
 /// Number of layer expert stacks kept resident concurrently (minimum 1).
-pub const STREAM_EXPERT_LAYERS_ENV: &str = "AX_STREAM_EXPERT_LAYERS";
+pub(crate) const STREAM_EXPERT_LAYERS_ENV: &str = "AX_STREAM_EXPERT_LAYERS";
 /// Extra unified-memory reserve (OS + KV + activations) when Auto decides
 /// whether a pack can stay fully resident. 48 GiB matches a serve process
 /// on a 192 GB Flash host without flipping the certified resident path.
@@ -171,7 +171,7 @@ fn layer_ordinal_in_name(name: &str) -> Option<u32> {
 impl ExpertStreamManifest {
     /// Parse and validate a manifest. Unknown `schema_version` or `mode` fail
     /// closed; v1 only supports `layer-stack` paging of packed expert stacks.
-    pub fn parse(bytes: &[u8]) -> Result<Self, ExpertStreamError> {
+    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, ExpertStreamError> {
         let mut manifest: Self = serde_json::from_slice(bytes)
             .map_err(|e| ExpertStreamError::InvalidManifest(format!("JSON parse: {e}")))?;
         if manifest.schema_version != EXPERT_STREAM_SCHEMA_V1 {
@@ -310,14 +310,17 @@ impl ExpertStreamManifest {
     }
 
     /// Layer indices that have at least one streamed tensor.
-    pub fn layer_indices(&self) -> Vec<u32> {
+    pub(crate) fn layer_indices(&self) -> Vec<u32> {
         let mut layers: Vec<u32> = self.tensors.iter().map(|t| t.layer).collect();
         layers.sort_unstable();
         layers.dedup();
         layers
     }
 
-    pub fn tensors_for_layer(&self, layer: u32) -> impl Iterator<Item = &ExpertStreamTensor> {
+    pub(crate) fn tensors_for_layer(
+        &self,
+        layer: u32,
+    ) -> impl Iterator<Item = &ExpertStreamTensor> {
         self.tensors.iter().filter(move |t| t.layer == layer)
     }
 }
@@ -334,7 +337,7 @@ fn is_quantization_sidecar_name(name: &str) -> bool {
 /// base name plus its MLX quantization sidecars (`.scales`, `.biases`) and any
 /// dense switch `.bias`. These names never enter the resident name map and are
 /// never `eval`ed at init.
-pub fn streamed_skip_names(manifest: &ExpertStreamManifest) -> HashSet<String> {
+pub(crate) fn streamed_skip_names(manifest: &ExpertStreamManifest) -> HashSet<String> {
     let mut skip = HashSet::new();
     for tensor in &manifest.tensors {
         let base = tensor
@@ -363,7 +366,7 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
 /// such as `offf` must not quietly replace an operator's explicit `off` with
 /// Auto paging. Admission paths propagate the error and fail closed, matching
 /// the Python binding's `ValueError` contract for the same variable.
-pub fn stream_experts_mode_from_env(
+pub(crate) fn stream_experts_mode_from_env(
     value: Option<&str>,
 ) -> Result<Option<StreamExpertsMode>, ExpertStreamError> {
     let Some(raw) = value.map(str::trim).filter(|raw| !raw.is_empty()) else {
@@ -374,25 +377,16 @@ pub fn stream_experts_mode_from_env(
         .map_err(ExpertStreamError::InvalidMode)
 }
 
-/// Whether `AX_STREAM_EXPERTS` force-enables streaming (`1`/`true`/`on`).
-/// An invalid value is not `on`.
-pub fn stream_experts_env_enabled() -> bool {
-    matches!(
-        stream_experts_mode_from_env(std::env::var(STREAM_EXPERTS_ENV).ok().as_deref()).ok(),
-        Some(Some(StreamExpertsMode::On))
-    )
-}
-
 /// Resident layer budget from `AX_STREAM_EXPERT_LAYERS`: `max(1, value)`,
 /// default 1 layer stack.
-pub fn expert_layer_budget_from_env(value: Option<&str>) -> usize {
+pub(crate) fn expert_layer_budget_from_env(value: Option<&str>) -> usize {
     value
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .filter(|n| *n >= 1)
         .unwrap_or(1)
 }
 
-pub fn expert_layer_budget() -> usize {
+pub(crate) fn expert_layer_budget() -> usize {
     expert_layer_budget_from_env(std::env::var(STREAM_EXPERT_LAYERS_ENV).ok().as_deref())
 }
 
@@ -469,13 +463,6 @@ pub fn stream_experts_mode_checked() -> Result<StreamExpertsMode, ExpertStreamEr
     )
 }
 
-/// Lenient mode for diagnostics that must still render a report when the
-/// environment is misconfigured. Never use this on an admission path; use
-/// [`stream_experts_mode_checked`] so an invalid value fails closed.
-pub fn stream_experts_mode() -> StreamExpertsMode {
-    stream_experts_mode_checked().unwrap_or(StreamExpertsMode::Auto)
-}
-
 /// Host unified-memory size (`hw.memsize` on macOS). `None` when unknown.
 pub fn unified_memory_bytes() -> Option<u64> {
     crate::hardware::sysctl_string(&["-n", "hw.memsize"])?
@@ -502,7 +489,7 @@ pub fn session_auto_resident_fits(
     crate::tiel_memory_policy::session_auto_resident_fits(artifacts, budget, manifest)
 }
 
-pub fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
+pub(crate) fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
     match available_bytes {
         // Unknown capacity (both sysctl probes failed, e.g. a sandboxed
         // service) cannot prove residency: page rather than risk an OOM.
@@ -571,8 +558,9 @@ where
     }
 }
 
+#[cfg(test)]
 /// File-backed admission used by tests and doctor.
-pub fn admit_expert_stream(
+pub(crate) fn admit_expert_stream(
     model_dir: &Path,
     requested: bool,
 ) -> Result<Option<ExpertStreamManifest>, ExpertStreamError> {
@@ -729,7 +717,7 @@ impl LayerExpertStack {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.gate_up_exps_packed.is_none()
             && self.gate_exps.is_none()
             && self.up_exps.is_none()
@@ -767,11 +755,15 @@ pub struct ExpertStackPager {
 }
 
 impl ExpertStackPager {
-    pub fn new(manifest: Arc<ExpertStreamManifest>, root: PathBuf, budget_layers: usize) -> Self {
+    pub(crate) fn new(
+        manifest: Arc<ExpertStreamManifest>,
+        root: PathBuf,
+        budget_layers: usize,
+    ) -> Self {
         Self::new_with_fuse(manifest, root, budget_layers, false)
     }
 
-    pub fn new_with_fuse(
+    pub(crate) fn new_with_fuse(
         manifest: Arc<ExpertStreamManifest>,
         root: PathBuf,
         budget_layers: usize,
@@ -841,15 +833,17 @@ impl ExpertStackPager {
         Ok(pager)
     }
 
-    pub fn manifest(&self) -> &ExpertStreamManifest {
+    #[cfg(test)]
+    pub(crate) fn manifest(&self) -> &ExpertStreamManifest {
         &self.manifest
     }
 
-    pub fn budget_layers(&self) -> usize {
+    pub(crate) fn budget_layers(&self) -> usize {
         self.budget_layers
     }
 
-    pub fn cached_layer_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn cached_layer_count(&self) -> usize {
         self.cache
             .lock()
             .expect("expert stream cache lock")
@@ -857,8 +851,9 @@ impl ExpertStackPager {
             .len()
     }
 
+    #[cfg(test)]
     /// Cached layer indices in LRU order (front = least recently used).
-    pub fn cached_layer_indices(&self) -> Vec<u32> {
+    pub(crate) fn cached_layer_indices(&self) -> Vec<u32> {
         self.cache
             .lock()
             .expect("expert stream cache lock")
@@ -925,8 +920,9 @@ impl ExpertStackPager {
         Ok(stack)
     }
 
+    #[cfg(test)]
     /// Successful selected-row payload reads; excludes headers and full-layer reads.
-    pub fn selected_payload_bytes_read(&self) -> Result<u64, ExpertStreamError> {
+    pub(crate) fn selected_payload_bytes_read(&self) -> Result<u64, ExpertStreamError> {
         let readers = self
             .selected_readers
             .lock()
@@ -937,8 +933,9 @@ impl ExpertStackPager {
             .sum())
     }
 
+    #[cfg(test)]
     /// Distinct layers that missed the selected-prefill payload cap.
-    pub fn selected_prefill_capacity_fallback_layers(&self) -> usize {
+    pub(crate) fn selected_prefill_capacity_fallback_layers(&self) -> usize {
         self.selected_prefill_capacity_fallbacks
             .lock()
             .expect("expert stream fallback lock")
@@ -948,7 +945,7 @@ impl ExpertStackPager {
     /// Make layer `layer`'s expert stack resident and return cheap clones of
     /// its `QuantizedWeight`s. Loads from disk on a cache miss, then evicts
     /// LRU layers beyond the budget.
-    pub fn ensure_layer(&self, layer: u32) -> Result<LayerExpertStack, ExpertStreamError> {
+    pub(crate) fn ensure_layer(&self, layer: u32) -> Result<LayerExpertStack, ExpertStreamError> {
         {
             let mut cache = self.cache.lock().expect("expert stream cache lock");
             if let Some(stack) = cache.entries.get(&layer).cloned() {
@@ -1172,11 +1169,12 @@ pub struct ExpertLayerSource {
 }
 
 impl ExpertLayerSource {
-    pub fn new(pager: Arc<ExpertStackPager>, layer: u32) -> Self {
+    pub(crate) fn new(pager: Arc<ExpertStackPager>, layer: u32) -> Self {
         Self { pager, layer }
     }
 
-    pub fn layer(&self) -> u32 {
+    #[cfg(test)]
+    pub(crate) fn layer(&self) -> u32 {
         self.layer
     }
 
@@ -1197,7 +1195,7 @@ impl ExpertLayerSource {
     }
 
     /// Resolve this layer's expert stack, paging it in when needed.
-    pub fn stack(&self) -> Result<LayerExpertStack, ExpertStreamError> {
+    pub(crate) fn stack(&self) -> Result<LayerExpertStack, ExpertStreamError> {
         self.pager.ensure_layer(self.layer)
     }
 }

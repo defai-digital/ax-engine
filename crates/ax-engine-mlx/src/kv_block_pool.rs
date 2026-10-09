@@ -36,7 +36,7 @@ fn env_flag_enabled(raw: Option<&str>) -> bool {
 
 /// Opt-in flag for FA private block-pool path in [`crate::kv_cache::MlxKVCache`].
 /// Default: OFF.
-pub fn fa_kv_block_pool_enabled() -> bool {
+pub(crate) fn fa_kv_block_pool_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
         let raw = std::env::var("AX_MLX_FA_KV_BLOCK_POOL").ok();
@@ -46,7 +46,7 @@ pub fn fa_kv_block_pool_enabled() -> bool {
 
 /// Second opt-in gate for one runner-wide FA pool plus native prefix sharing.
 /// The caller must also require [`fa_kv_block_pool_enabled`]. Default: OFF.
-pub fn fa_kv_block_sharing_enabled() -> bool {
+pub(crate) fn fa_kv_block_sharing_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
         let raw = std::env::var("AX_MLX_FA_KV_BLOCK_SHARING").ok();
@@ -56,7 +56,7 @@ pub fn fa_kv_block_sharing_enabled() -> bool {
 
 /// Third opt-in gate for the diagnostic native block-table kernel.
 /// The runner also requires the base pool and sharing flags. Default: OFF.
-pub fn fa_native_paged_attention_enabled() -> bool {
+pub(crate) fn fa_native_paged_attention_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
         let raw = std::env::var("AX_MLX_FA_NATIVE_PAGED_ATTENTION").ok();
@@ -87,7 +87,7 @@ pub(crate) fn fa_block_pool_max_blocks_override() -> Option<u32> {
     parse_fa_block_pool_max_blocks_override(raw.as_deref())
 }
 
-pub fn default_fa_block_pool_config() -> FaBlockPoolConfig {
+pub(crate) fn default_fa_block_pool_config() -> FaBlockPoolConfig {
     let max_blocks = fa_block_pool_max_blocks_override().unwrap_or(8192);
     FaBlockPoolConfig {
         block_size_tokens: 16,
@@ -167,7 +167,7 @@ pub struct FaBlockPool {
 }
 
 impl FaBlockPool {
-    pub fn new(config: FaBlockPoolConfig) -> Result<Self, FaBlockPoolError> {
+    pub(crate) fn new(config: FaBlockPoolConfig) -> Result<Self, FaBlockPoolError> {
         if config.block_size_tokens == 0 {
             return Err(FaBlockPoolError::InvalidConfig(
                 "block_size_tokens must be > 0",
@@ -203,27 +203,27 @@ impl FaBlockPool {
         })
     }
 
-    pub fn config(&self) -> FaBlockPoolConfig {
+    pub(crate) fn config(&self) -> FaBlockPoolConfig {
         self.config
     }
 
-    pub fn available_blocks(&self) -> u32 {
+    pub(crate) fn available_blocks(&self) -> u32 {
         self.free.len() as u32
     }
 
-    pub fn allocated_blocks(&self) -> u32 {
+    pub(crate) fn allocated_blocks(&self) -> u32 {
         self.allocated_count
     }
 
-    pub fn shared_blocks(&self) -> u32 {
+    pub(crate) fn shared_blocks(&self) -> u32 {
         self.shared_count
     }
 
-    pub fn cow_copies(&self) -> u64 {
+    pub(crate) fn cow_copies(&self) -> u64 {
         self.cow_copies
     }
 
-    pub fn ref_count(&self, id: PhysicalBlockId) -> Result<u32, FaBlockPoolError> {
+    pub(crate) fn ref_count(&self, id: PhysicalBlockId) -> Result<u32, FaBlockPoolError> {
         self.ref_counts
             .get(id.0 as usize)
             .copied()
@@ -231,7 +231,7 @@ impl FaBlockPool {
     }
 
     /// Allocate `n` blocks. Fail-closed: no partial allocation.
-    pub fn allocate(&mut self, n: u32) -> Result<Vec<PhysicalBlockId>, FaBlockPoolError> {
+    pub(crate) fn allocate(&mut self, n: u32) -> Result<Vec<PhysicalBlockId>, FaBlockPoolError> {
         if n == 0 {
             return Ok(Vec::new());
         }
@@ -256,7 +256,7 @@ impl FaBlockPool {
 
     /// Retain one ownership reference for every distinct allocated ID.
     /// Validation is complete before any count changes.
-    pub fn retain(&mut self, ids: &[PhysicalBlockId]) -> Result<(), FaBlockPoolError> {
+    pub(crate) fn retain(&mut self, ids: &[PhysicalBlockId]) -> Result<(), FaBlockPoolError> {
         let mut seen = HashSet::with_capacity(ids.len());
         for id in ids {
             let idx = id.0 as usize;
@@ -288,7 +288,7 @@ impl FaBlockPool {
     /// Duplicate IDs in a single call are treated as double-free so the free
     /// list cannot gain the same block twice (and `allocated_count` cannot
     /// under-count).
-    pub fn free(&mut self, ids: &[PhysicalBlockId]) -> Result<(), FaBlockPoolError> {
+    pub(crate) fn free(&mut self, ids: &[PhysicalBlockId]) -> Result<(), FaBlockPoolError> {
         // Validate all first so free is atomic.
         let mut seen = HashSet::with_capacity(ids.len());
         for id in ids {
@@ -314,12 +314,13 @@ impl FaBlockPool {
         Ok(())
     }
 
+    #[cfg(test)]
     /// Return a unique ID for one owner of `id`.
     ///
     /// Refcount 1 is already unique. A shared block consumes one free block,
     /// moves the caller's reference to it, and leaves other owners on `id`.
     /// Exhaustion is atomic: no reference count changes.
-    pub fn make_unique(
+    pub(crate) fn make_unique(
         &mut self,
         id: PhysicalBlockId,
     ) -> Result<(PhysicalBlockId, bool), FaBlockPoolError> {
@@ -353,7 +354,7 @@ impl FaBlockPool {
     /// Batch form of [`Self::make_unique`]. Validation and capacity checks are
     /// completed before any owner moves, so multi-block append preparation is
     /// all-or-nothing at the ownership layer.
-    pub fn make_unique_many(
+    pub(crate) fn make_unique_many(
         &mut self,
         ids: &[PhysicalBlockId],
     ) -> Result<Vec<(PhysicalBlockId, bool)>, FaBlockPoolError> {
@@ -434,13 +435,15 @@ impl FaBlockPool {
         }
     }
 
+    #[cfg(test)]
     /// Tokens represented by `n` full blocks.
-    pub fn tokens_for_blocks(&self, n: u32) -> u32 {
+    pub(crate) fn tokens_for_blocks(&self, n: u32) -> u32 {
         n.saturating_mul(self.config.block_size_tokens)
     }
 
+    #[cfg(test)]
     /// Blocks required to hold `tokens` (ceil).
-    pub fn blocks_for_tokens(&self, tokens: u32) -> u32 {
+    pub(crate) fn blocks_for_tokens(&self, tokens: u32) -> u32 {
         if tokens == 0 {
             return 0;
         }
@@ -768,7 +771,7 @@ pub struct SharedFaBlockPool {
 }
 
 impl SharedFaBlockPool {
-    pub fn new(config: FaBlockPoolConfig) -> Result<Self, FaBlockPoolError> {
+    pub(crate) fn new(config: FaBlockPoolConfig) -> Result<Self, FaBlockPoolError> {
         Ok(Self {
             inner: Arc::new(Mutex::new(FaBlockPool::new(config)?)),
             slab_storage: None,
@@ -776,7 +779,9 @@ impl SharedFaBlockPool {
         })
     }
 
-    pub fn new_with_slab_storage(config: FaBlockPoolConfig) -> Result<Self, FaBlockPoolError> {
+    pub(crate) fn new_with_slab_storage(
+        config: FaBlockPoolConfig,
+    ) -> Result<Self, FaBlockPoolError> {
         Ok(Self {
             inner: Arc::new(Mutex::new(FaBlockPool::new(config)?)),
             slab_storage: Some(Arc::new(Mutex::new(FaSlabStorage::default()))),
@@ -784,7 +789,7 @@ impl SharedFaBlockPool {
         })
     }
 
-    pub fn new_with_native_slab_storage(
+    pub(crate) fn new_with_native_slab_storage(
         config: FaBlockPoolConfig,
     ) -> Result<Self, FaBlockPoolError> {
         Ok(Self {
@@ -794,15 +799,15 @@ impl SharedFaBlockPool {
         })
     }
 
-    pub fn same_pool(&self, other: &Self) -> bool {
+    pub(crate) fn same_pool(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
-    pub fn slab_storage_enabled(&self) -> bool {
+    pub(crate) fn slab_storage_enabled(&self) -> bool {
         self.slab_storage.is_some()
     }
 
-    pub fn native_attention_enabled(&self) -> bool {
+    pub(crate) fn native_attention_enabled(&self) -> bool {
         self.native_attention
     }
 
@@ -1181,19 +1186,19 @@ impl SharedFaBlockPool {
         })
     }
 
-    pub fn config(&self) -> FaBlockPoolConfig {
+    pub(crate) fn config(&self) -> FaBlockPoolConfig {
         self.inner.lock().config()
     }
 
-    pub fn allocate(&self, n: u32) -> Result<Vec<PhysicalBlockId>, FaBlockPoolError> {
+    pub(crate) fn allocate(&self, n: u32) -> Result<Vec<PhysicalBlockId>, FaBlockPoolError> {
         self.inner.lock().allocate(n)
     }
 
-    pub fn retain(&self, ids: &[PhysicalBlockId]) -> Result<(), FaBlockPoolError> {
+    pub(crate) fn retain(&self, ids: &[PhysicalBlockId]) -> Result<(), FaBlockPoolError> {
         self.inner.lock().retain(ids)
     }
 
-    pub fn free(&self, ids: &[PhysicalBlockId]) -> Result<(), FaBlockPoolError> {
+    pub(crate) fn free(&self, ids: &[PhysicalBlockId]) -> Result<(), FaBlockPoolError> {
         let mut pool = self.inner.lock();
         let released = ids
             .iter()
@@ -1208,14 +1213,7 @@ impl SharedFaBlockPool {
         Ok(())
     }
 
-    pub fn make_unique(
-        &self,
-        id: PhysicalBlockId,
-    ) -> Result<(PhysicalBlockId, bool), FaBlockPoolError> {
-        self.inner.lock().make_unique(id)
-    }
-
-    pub fn make_unique_many(
+    pub(crate) fn make_unique_many(
         &self,
         ids: &[PhysicalBlockId],
     ) -> Result<Vec<(PhysicalBlockId, bool)>, FaBlockPoolError> {
@@ -1295,11 +1293,11 @@ impl SharedFaBlockPool {
         storage.release_ids(&replacements);
     }
 
-    pub fn ref_count(&self, id: PhysicalBlockId) -> Result<u32, FaBlockPoolError> {
+    pub(crate) fn ref_count(&self, id: PhysicalBlockId) -> Result<u32, FaBlockPoolError> {
         self.inner.lock().ref_count(id)
     }
 
-    pub fn snapshot(&self) -> FaBlockPoolSnapshot {
+    pub(crate) fn snapshot(&self) -> FaBlockPoolSnapshot {
         let pool = self.inner.lock();
         let (slab_count, slab_bytes, slab_grow_events) = self
             .slab_storage

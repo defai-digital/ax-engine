@@ -19,7 +19,7 @@ use thiserror::Error;
 
 /// Env var that toggles the experimental weight-rotation behavior.
 /// Defined by WEIGHT-ROTATION-IMPLEMENTATION-PLAN.md §P0.
-pub const WEIGHT_ROTATION_ENV: &str = "AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION";
+pub(crate) const WEIGHT_ROTATION_ENV: &str = "AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION";
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RotationError {
@@ -55,7 +55,7 @@ pub enum WeightRotationMode {
 /// Parse the env var value. Returns `Off` for `None`, `"off"`, `"0"`, `"false"`.
 /// Returns `Shadow` for `"shadow"`, `Enable` for `"enable"`. Anything else
 /// warns and stays fail-closed at `Off` rather than crashing the process.
-pub fn parse_weight_rotation_mode(raw: Option<&str>) -> WeightRotationMode {
+pub(crate) fn parse_weight_rotation_mode(raw: Option<&str>) -> WeightRotationMode {
     let Some(value) = raw else {
         return WeightRotationMode::Off;
     };
@@ -82,7 +82,7 @@ pub fn parse_weight_rotation_mode(raw: Option<&str>) -> WeightRotationMode {
 
 /// Resolve the active weight-rotation mode for this process. Cached on first
 /// call. Invalid env values warn and fall back to `Off` (fail-closed).
-pub fn weight_rotation_mode() -> WeightRotationMode {
+pub(crate) fn weight_rotation_mode() -> WeightRotationMode {
     static CACHED: OnceLock<WeightRotationMode> = OnceLock::new();
     *CACHED.get_or_init(|| {
         parse_weight_rotation_mode(std::env::var(WEIGHT_ROTATION_ENV).ok().as_deref())
@@ -96,14 +96,16 @@ pub fn weight_rotation_mode() -> WeightRotationMode {
 /// The randomised sign flip spreads outliers across all output dimensions,
 /// which reduces per-group dynamic range and improves low-bit quantisation
 /// error.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct HadamardRotation {
     dim: usize,
     sign_flip: Vec<i8>,
 }
 
+#[cfg(test)]
 impl HadamardRotation {
-    pub fn new(dim: usize, seed: u64) -> Result<Self, RotationError> {
+    pub(crate) fn new(dim: usize, seed: u64) -> Result<Self, RotationError> {
         if dim < 2 {
             return Err(RotationError::TooSmall(dim));
         }
@@ -116,11 +118,7 @@ impl HadamardRotation {
         })
     }
 
-    pub fn dim(&self) -> usize {
-        self.dim
-    }
-
-    pub fn sign_flip(&self) -> &[i8] {
+    pub(crate) fn sign_flip(&self) -> &[i8] {
         &self.sign_flip
     }
 
@@ -130,7 +128,7 @@ impl HadamardRotation {
     /// (`diag(s) * FWHT * diag(s)`) so `apply` is self-inverse up to a
     /// factor of `dim` — convenient for forward/inverse symmetry in tests
     /// and for fused-load activation rotation in P1.
-    pub fn apply_in_place(&self, buf: &mut [f32]) {
+    pub(crate) fn apply_in_place(&self, buf: &mut [f32]) {
         assert_eq!(buf.len(), self.dim, "buffer length must equal rotation dim");
         self.apply_sign_flip(buf);
         fwht_in_place(buf);
@@ -158,6 +156,7 @@ fn generate_sign_flip(dim: usize, seed: u64) -> Vec<i8> {
         .collect()
 }
 
+#[cfg(test)]
 fn fwht_in_place(buf: &mut [f32]) {
     let n = buf.len();
     debug_assert!(n.is_power_of_two(), "fwht requires power-of-2 length");
@@ -214,13 +213,15 @@ pub struct RotationCandidateDetail {
 }
 
 impl RotationCandidateDetail {
-    pub fn is_eligible(&self) -> bool {
+    pub(crate) fn is_eligible(&self) -> bool {
         !self.power_of_two_axes.is_empty()
     }
 }
 
 /// Detailed walk: returns one entry per rotation-candidate tensor.
-pub fn detail_rotation_candidates(specs: &[NativeTensorSpec]) -> Vec<RotationCandidateDetail> {
+pub(crate) fn detail_rotation_candidates(
+    specs: &[NativeTensorSpec],
+) -> Vec<RotationCandidateDetail> {
     let mut out = Vec::new();
     for spec in specs {
         if !ROTATION_CANDIDATE_ROLES.contains(&spec.role) {
@@ -253,7 +254,9 @@ pub fn detail_rotation_candidates(specs: &[NativeTensorSpec]) -> Vec<RotationCan
 /// Walk the manifest tensor specs and count rotation candidates. The "blocked"
 /// count is where the relevant dimension is not a power of 2, so the FWHT-based
 /// rotation cannot apply without padding (handled in P2+).
-pub fn summarize_rotation_candidates(specs: &[NativeTensorSpec]) -> RotationCandidateSummary {
+pub(crate) fn summarize_rotation_candidates(
+    specs: &[NativeTensorSpec],
+) -> RotationCandidateSummary {
     let detail = detail_rotation_candidates(specs);
     let mut s = RotationCandidateSummary {
         total_candidates: detail.len(),
@@ -277,7 +280,7 @@ pub fn summarize_rotation_candidates(specs: &[NativeTensorSpec]) -> RotationCand
 /// e.g. the Python extension). Shadow mode is opt-in and explicitly intended
 /// to surface visible diagnostic output; the dual path guarantees the message
 /// is observable regardless of which front-end loaded the engine.
-pub fn shadow_log_rotation_candidates(specs: &[NativeTensorSpec]) {
+pub(crate) fn shadow_log_rotation_candidates(specs: &[NativeTensorSpec]) {
     if weight_rotation_mode() != WeightRotationMode::Shadow {
         return;
     }
@@ -326,7 +329,7 @@ pub fn shadow_log_rotation_candidates(specs: &[NativeTensorSpec]) {
 ///
 /// `dim` must be a power of 2; the build allocates `dim²` f32 entries
 /// (e.g. 64 MB for `dim=4096`). One-time per process via the cache below.
-pub fn build_rotation_matrix(dim: usize, seed: u64) -> mlx_sys::MlxArray {
+pub(crate) fn build_rotation_matrix(dim: usize, seed: u64) -> mlx_sys::MlxArray {
     assert!(
         dim >= 2 && dim.is_power_of_two(),
         "rotation dim must be power-of-2 >= 2"
@@ -364,7 +367,7 @@ pub fn build_rotation_matrix(dim: usize, seed: u64) -> mlx_sys::MlxArray {
 /// it is purely to exercise the rotation infrastructure inside the forward
 /// path so the equivalence harness can catch any plumbing regression before
 /// real (non-identity) rotations are committed in P2.
-pub fn maybe_apply_rotation_identity(x: &mlx_sys::MlxArray) -> mlx_sys::MlxArray {
+pub(crate) fn maybe_apply_rotation_identity(x: &mlx_sys::MlxArray) -> mlx_sys::MlxArray {
     let mode = weight_rotation_mode();
     if !matches!(mode, WeightRotationMode::Enable | WeightRotationMode::Apply) {
         return x.clone();

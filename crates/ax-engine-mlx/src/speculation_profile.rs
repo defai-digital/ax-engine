@@ -69,7 +69,7 @@ pub enum ResolutionSource {
 }
 
 impl ResolutionSource {
-    pub fn route_code(self) -> u32 {
+    pub(crate) fn route_code(self) -> u32 {
         match self {
             Self::Default => 0,
             Self::Profile => 1,
@@ -83,7 +83,7 @@ impl ResolutionSource {
 
 /// Request temperature at/above which `auto` switches from the throughput regime
 /// to the diversity-preserving regime.
-pub const AUTO_DIVERSITY_TEMPERATURE: f32 = 0.5;
+pub(crate) const AUTO_DIVERSITY_TEMPERATURE: f32 = 0.5;
 
 // Informed by the 2026-06-09 12B-4bit-FFN ablation
 // (`benchmarks/results/gemma4-assistant-mtp/2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused`):
@@ -124,7 +124,7 @@ impl SpeculationProfile {
     }
 
     /// Stable route-telemetry code.
-    pub fn route_code(self) -> u32 {
+    pub(crate) fn route_code(self) -> u32 {
         match self {
             Self::Auto => 0,
             Self::Coding => 1,
@@ -161,7 +161,7 @@ impl SpeculationProfile {
     /// default already is the throughput setting); only the diversity regime
     /// raises it to cut greedy argmax-match bias on flat sampled text.
     /// `temperature` drives `auto`.
-    pub fn gemma_first_gate(self, temperature: Option<f32>) -> Option<f32> {
+    pub(crate) fn gemma_first_gate(self, temperature: Option<f32>) -> Option<f32> {
         match self.effective(temperature)? {
             Self::Coding | Self::Agentic => None,
             Self::Chatbot => Some(CHATBOT_GEMMA_FIRST_GATE),
@@ -171,7 +171,7 @@ impl SpeculationProfile {
 
     /// Gemma assistant deep-position gate this profile prescribes, or `None` to
     /// defer to the shipped default (which is already conservative).
-    pub fn gemma_deep_gate(self, temperature: Option<f32>) -> Option<f32> {
+    pub(crate) fn gemma_deep_gate(self, temperature: Option<f32>) -> Option<f32> {
         match self.effective(temperature)? {
             Self::Coding | Self::Agentic => None,
             Self::Chatbot => Some(CHATBOT_GEMMA_DEEP_GATE),
@@ -185,7 +185,7 @@ impl SpeculationProfile {
     /// defers: rejection sampling keeps the Qwen path distribution-exact at any
     /// gate, so raising it buys no diversity and only shortens drafts (see the
     /// gate-constant comment above for the measured cost of the former 0.99 pin).
-    pub fn qwen_gate(self, temperature: Option<f32>) -> Option<f32> {
+    pub(crate) fn qwen_gate(self, temperature: Option<f32>) -> Option<f32> {
         match self.effective(temperature)? {
             Self::Coding => Some(CODING_QWEN_GATE),
             Self::Agentic => Some(AGENTIC_QWEN_GATE),
@@ -196,13 +196,14 @@ impl SpeculationProfile {
     /// Whether this profile prefers the n-gram utility gate when the n-gram gate
     /// policy is not explicitly set. Diversity/chatbot prefers utility (prose
     /// rarely benefits from n-gram and stale matches can hurt).
-    pub fn prefers_ngram_utility(self, temperature: Option<f32>) -> bool {
+    pub(crate) fn prefers_ngram_utility(self, temperature: Option<f32>) -> bool {
         matches!(self.effective(temperature), Some(Self::Chatbot))
     }
 
+    #[cfg(test)]
     /// Whether this profile tightens n-gram structured-output safety when the
     /// safety mode is not explicitly set. Agentic protects JSON/tool-call syntax.
-    pub fn tightens_ngram_safety(self, temperature: Option<f32>) -> bool {
+    pub(crate) fn tightens_ngram_safety(self, temperature: Option<f32>) -> bool {
         matches!(self.effective(temperature), Some(Self::Agentic))
     }
 }
@@ -234,7 +235,7 @@ fn speculation_profile_override() -> Option<SpeculationProfile> {
 
 /// Resolved speculation profile: programmatic override (CLI) first, else
 /// `AX_MLX_SPECULATION_PROFILE` (cached), else [`SpeculationProfile::Auto`].
-pub fn speculation_profile_from_env() -> SpeculationProfile {
+pub(crate) fn speculation_profile_from_env() -> SpeculationProfile {
     if let Some(profile) = speculation_profile_override() {
         return profile;
     }
@@ -250,7 +251,7 @@ pub fn speculation_profile_from_env() -> SpeculationProfile {
 /// Generic precedence resolver: explicit value wins, else the profile preset,
 /// else the built-in default. Returns the chosen value and its source for
 /// telemetry.
-pub fn resolve_gate(
+pub(crate) fn resolve_gate(
     explicit: Option<f32>,
     preset: Option<f32>,
     default: f32,

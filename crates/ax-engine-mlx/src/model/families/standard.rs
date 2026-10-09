@@ -37,7 +37,7 @@ pub(crate) mod batched_profile {
     }
 
     /// Read and reset the per-stage microsecond accumulators.
-    pub fn take() -> [u128; 4] {
+    pub(crate) fn take() -> [u128; 4] {
         ACC.with(|a| {
             let v = *a.borrow();
             *a.borrow_mut() = [0; 4];
@@ -2119,7 +2119,7 @@ fn layer_forward_internal(
 /// layers, Qwen-compatible MoE, and scalar residuals. Per-layer-input gating
 /// remains unsupported; the batched runner routes only eligible requests here.
 #[allow(clippy::too_many_arguments)]
-pub fn layer_forward_batched(
+pub(crate) fn layer_forward_batched(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,
@@ -2303,7 +2303,7 @@ pub fn layer_forward_batched(
 /// layer output plus this layer's K/V (`[B, kv_heads, L, head_dim]`) so the
 /// caller can extract each row's `[0..len)` region into its per-request
 /// cache.
-pub fn layer_forward_batched_prefill(
+pub(crate) fn layer_forward_batched_prefill(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,
@@ -2519,7 +2519,7 @@ fn ffn_batched_moe_row_exact(cfg: &ModelConfig, w: &LayerWeights, normed2: &MlxA
 /// per-row state in `lin_state`) → residual → ffn-norm → batched FFN (dense or
 /// MoE) → residual. No KV cache (the recurrent state carries the history), so
 /// no offsets/mask. Decode-only.
-pub fn layer_forward_batched_linear(
+pub(crate) fn layer_forward_batched_linear(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,

@@ -375,7 +375,7 @@ pub(super) fn mtp_ngram_hurt_gate_mode() -> HurtGateMode {
 /// keeps single-observation patterns — which dominate the rejections that make
 /// the n-gram accept rate look bad — out of the draft. Override with
 /// `AX_MLX_MTP_NGRAM_MIN_SUPPORT`.
-pub const DEFAULT_MTP_NGRAM_MIN_SUPPORT: u32 = 3;
+pub(crate) const DEFAULT_MTP_NGRAM_MIN_SUPPORT: u32 = 3;
 
 pub(super) fn mtp_ngram_min_support() -> u32 {
     static CACHED: OnceLock<u32> = OnceLock::new();
@@ -395,7 +395,7 @@ pub(super) fn mtp_ngram_min_support() -> u32 {
 /// only stack when it is near-certain — otherwise its low-accept drafts add
 /// verify cost and get hurt-gated. Override with
 /// `AX_MLX_MTP_NGRAM_CONFIDENCE_THRESHOLD`.
-pub const DEFAULT_MTP_NGRAM_CONFIDENCE_THRESHOLD: f32 = 0.85;
+pub(crate) const DEFAULT_MTP_NGRAM_CONFIDENCE_THRESHOLD: f32 = 0.85;
 
 pub(super) fn mtp_ngram_confidence_threshold() -> f32 {
     static CACHED: OnceLock<f32> = OnceLock::new();
@@ -415,7 +415,7 @@ pub(super) fn mtp_ngram_confidence_threshold() -> f32 {
 /// sweep (all suites) measured n-gram accept 71% @ctx2, 80% @ctx3, ~78% @ctx4;
 /// ctx3 is the best accept *and* fires the most (ctx4 over-filters for no gain).
 /// Override with `AX_MLX_MTP_NGRAM_MIN_CONTEXT_LEN` (clamped to 2..=4).
-pub const DEFAULT_MTP_NGRAM_MIN_CONTEXT_LEN: usize = 3;
+pub(crate) const DEFAULT_MTP_NGRAM_MIN_CONTEXT_LEN: usize = 3;
 
 pub(super) fn mtp_ngram_min_context_len() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();

@@ -152,7 +152,7 @@ impl ModelWeights {
     /// Panics if called on a `qwen4_exp` load, where `final_norm` is `None`
     /// by construction: that family's forward path must read `qwen4_exp`
     /// weights directly rather than going through this generic accessor.
-    pub fn final_norm(&self) -> &MlxArray {
+    pub(crate) fn final_norm(&self) -> &MlxArray {
         self.final_norm.as_ref().expect(
             "ModelWeights::final_norm() called with final_norm == None: this checkpoint has no \
              generic final norm (Flash Next `qwen4_exp` ends in a hyper-connection mixer, not a \
@@ -177,7 +177,7 @@ pub struct PipelineStageWeights {
 }
 
 impl PipelineStageWeights {
-    pub fn global_layer_index(&self, local_index: usize) -> Option<usize> {
+    pub(crate) fn global_layer_index(&self, local_index: usize) -> Option<usize> {
         let local = u32::try_from(local_index).ok()?;
         let global = self.assignment.layers.start.checked_add(local)?;
         (global < self.assignment.layers.end).then_some(global as usize)
@@ -603,15 +603,19 @@ pub struct QuantizedWeight {
 
 /// Decode-only `lm_head` cache. 2-bit gs64 cuts ~2.14 GB/token vs BF16
 /// (q4 left ~0.8 tok/s on the 1.20 bar). Prefill must not use this cache.
-pub const DECODE_LM_HEAD_QUANT_BITS: i32 = 2;
-pub const DECODE_LM_HEAD_QUANT_GROUP_SIZE: i32 = 64;
+pub(crate) const DECODE_LM_HEAD_QUANT_BITS: i32 = 2;
+pub(crate) const DECODE_LM_HEAD_QUANT_GROUP_SIZE: i32 = 64;
 
 impl QuantizedWeight {
-    pub fn new(weight: MlxArray, scales: Option<MlxArray>, biases: Option<MlxArray>) -> Self {
+    pub(crate) fn new(
+        weight: MlxArray,
+        scales: Option<MlxArray>,
+        biases: Option<MlxArray>,
+    ) -> Self {
         Self::with_quantization(weight, scales, biases, None)
     }
 
-    pub fn with_quantization(
+    pub(crate) fn with_quantization(
         weight: MlxArray,
         scales: Option<MlxArray>,
         biases: Option<MlxArray>,
@@ -637,7 +641,7 @@ impl QuantizedWeight {
         }
     }
 
-    pub fn with_linear_bias(mut self, linear_bias: Option<MlxArray>) -> Self {
+    pub(crate) fn with_linear_bias(mut self, linear_bias: Option<MlxArray>) -> Self {
         self.linear_bias = linear_bias;
         self
     }
@@ -658,7 +662,7 @@ impl QuantizedWeight {
     /// so decode does not keep a second 2.54 GB buffer in the Metal
     /// residency set. No-ops when the tensor is quantized, not rank-2, or
     /// already prepared.
-    pub fn prepare_contiguous_decode_weight_t(&mut self) {
+    pub(crate) fn prepare_contiguous_decode_weight_t(&mut self) {
         if self.decode_weight_t.is_some() || self.scales.is_some() {
             return;
         }
@@ -674,13 +678,14 @@ impl QuantizedWeight {
         self.decode_weight_t = Some(transposed);
     }
 
+    #[cfg(test)]
     /// Explicitly build a lossy 2-bit gs64 affine cache for experiments.
     /// Target-head loading must use `prepare_lm_head_for_inference` instead.
     ///
     /// Same `mlx_sys::quantize` path as MTP `draft_lm_head`. No-ops when the
     /// tensor is already quantized, not rank-2, or last dim is not a
     /// multiple of 64.
-    pub fn prepare_decode_q2_lm_head(&mut self) {
+    pub(crate) fn prepare_decode_q2_lm_head(&mut self) {
         if self.decode_q2_weight.is_some() || self.scales.is_some() {
             return;
         }
@@ -710,11 +715,11 @@ impl QuantizedWeight {
         self.decode_q2_biases = Some(quantized[2].clone());
     }
 
-    pub fn is_quantized(&self) -> bool {
+    pub(crate) fn is_quantized(&self) -> bool {
         self.scales.is_some()
     }
 
-    pub fn mlx_quantization_mode(&self) -> MlxQuantizationMode {
+    pub(crate) fn mlx_quantization_mode(&self) -> MlxQuantizationMode {
         match self.mode.as_str() {
             "mxfp4" => MlxQuantizationMode::Mxfp4,
             "mxfp8" => MlxQuantizationMode::Mxfp8,
@@ -738,14 +743,14 @@ impl QuantizedWeight {
     /// MXFP4/MXFP8/NVFP4 keep scales but have no group-bias channel. Affine-only
     /// fused qmm helpers must not treat those modes as affine or MLX panics
     /// (`Biases must be provided for affine quantization`).
-    pub fn is_affine_quantized(&self) -> bool {
+    pub(crate) fn is_affine_quantized(&self) -> bool {
         self.scales.is_some()
             && self.biases.is_some()
             && matches!(self.mlx_quantization_mode(), MlxQuantizationMode::Affine)
     }
 
     /// Scales-only MXFP4 linear (4-bit, group 32, no group-bias channel).
-    pub fn is_mxfp4_quantized(&self) -> bool {
+    pub(crate) fn is_mxfp4_quantized(&self) -> bool {
         self.scales.is_some()
             && self.biases.is_none()
             && matches!(self.mlx_quantization_mode(), MlxQuantizationMode::Mxfp4)
@@ -755,11 +760,11 @@ impl QuantizedWeight {
     /// biases, or scales-only MXFP4 (the shim infers the mode from the absent
     /// bias channel). MXFP8/NVFP4 stay excluded — their Metal kernels cannot
     /// shapeless-compile and no fused path has measured evidence on them.
-    pub fn is_fused_qmm_quantized(&self) -> bool {
+    pub(crate) fn is_fused_qmm_quantized(&self) -> bool {
         self.is_affine_quantized() || self.is_mxfp4_quantized()
     }
 
-    pub fn matching_affine_quant(&self, other: &Self) -> bool {
+    pub(crate) fn matching_affine_quant(&self, other: &Self) -> bool {
         self.is_affine_quantized()
             && other.is_affine_quantized()
             && self.bits == other.bits
@@ -770,7 +775,7 @@ impl QuantizedWeight {
     }
 
     /// Matching MXFP4 pair (scales, no group biases, same gs/bits).
-    pub fn matching_mxfp4_quant(&self, other: &Self) -> bool {
+    pub(crate) fn matching_mxfp4_quant(&self, other: &Self) -> bool {
         matches!(self.mlx_quantization_mode(), MlxQuantizationMode::Mxfp4)
             && matches!(other.mlx_quantization_mode(), MlxQuantizationMode::Mxfp4)
             && self.bits == other.bits
@@ -784,7 +789,7 @@ impl QuantizedWeight {
     }
 
     /// Concatenate two matching affine or MXFP4 projections along the output axis.
-    pub fn concat_output_rows(&self, other: &Self) -> Option<Self> {
+    pub(crate) fn concat_output_rows(&self, other: &Self) -> Option<Self> {
         if !self.matching_affine_quant(other) && !self.matching_mxfp4_quant(other) {
             return None;
         }
@@ -821,7 +826,7 @@ impl QuantizedWeight {
     /// that share this contract can reuse one closure. Distinct contracts must
     /// not share: `bits`/`group_size`/`mode` are captured in the traced qmm,
     /// while optional tensor presence changes the positional input schema.
-    pub fn compile_contract_word(&self) -> u64 {
+    pub(crate) fn compile_contract_word(&self) -> u64 {
         let mode = match self.mlx_quantization_mode() {
             MlxQuantizationMode::Affine => 0u64,
             MlxQuantizationMode::Mxfp4 => 1,
@@ -838,7 +843,7 @@ impl QuantizedWeight {
 }
 
 /// Fold several quant contracts into a compile-cache salt.
-pub fn compile_quant_contract_salt(weights: &[&QuantizedWeight]) -> u64 {
+pub(crate) fn compile_quant_contract_salt(weights: &[&QuantizedWeight]) -> u64 {
     let mut h = 0x9E37_79B9_7F4A_7C15;
     for w in weights {
         h ^= w.compile_contract_word();
@@ -850,11 +855,11 @@ pub fn compile_quant_contract_salt(weights: &[&QuantizedWeight]) -> u64 {
 
 /// Shared layer slot for identity-safe verify compiles whose weights are
 /// function inputs. Pair with [`compile_quant_contract_salt`] on the compile id.
-pub const SHARED_VERIFY_COMPILE_LAYER: usize = 0;
+pub(crate) const SHARED_VERIFY_COMPILE_LAYER: usize = 0;
 
 impl LinearAttentionWeights {
     /// Materialize matching-bit QKVZ+BA into one packed weight at load.
-    pub fn prepare_fused_qkvz_ba_prefill(&mut self) {
+    pub(crate) fn prepare_fused_qkvz_ba_prefill(&mut self) {
         if self.fused_qkvz_ba.is_some() {
             return;
         }
@@ -873,7 +878,7 @@ impl LinearAttentionWeights {
     /// Dequantizes the checkpoint affine pack and requants to 2-bit. No-ops
     /// when either projection is missing, not affine-quantized, or already
     /// 2-bit. Decode keeps `in_proj_qkvz` / `in_proj_ba`.
-    pub fn prepare_prefill_q2_projections(&mut self) {
+    pub(crate) fn prepare_prefill_q2_projections(&mut self) {
         if self.prefill_q2_qkvz.is_some() || self.prefill_q2_ba.is_some() {
             return;
         }
@@ -890,13 +895,13 @@ impl LinearAttentionWeights {
 
 /// Prefill-only LA projection overlay. Same `mlx_sys::quantize` path as the
 /// decode 2-bit `lm_head`, but gs32 to match the packed QKVZ/BA group size.
-pub const PREFILL_LA_Q2_BITS: i32 = 2;
-pub const PREFILL_LA_Q2_GROUP_SIZE: i32 = 32;
+pub(crate) const PREFILL_LA_Q2_BITS: i32 = 2;
+pub(crate) const PREFILL_LA_Q2_GROUP_SIZE: i32 = 32;
 /// Prefill-only FFN overlay: keep checkpoint bits, requant gs32→gs64.
-pub const PREFILL_FFN_GS64_GROUP_SIZE: i32 = 64;
+pub(crate) const PREFILL_FFN_GS64_GROUP_SIZE: i32 = 64;
 /// Prefill-only FFN overlay: 3-bit gs32 (between washed 2-bit and steel 4/6-bit).
-pub const PREFILL_FFN_Q3_BITS: i32 = 3;
-pub const PREFILL_FFN_Q3_GROUP_SIZE: i32 = 32;
+pub(crate) const PREFILL_FFN_Q3_BITS: i32 = 3;
+pub(crate) const PREFILL_FFN_Q3_GROUP_SIZE: i32 = 32;
 
 pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<QuantizedWeight> {
     let scales = src.scales.as_ref()?;
@@ -1080,7 +1085,7 @@ const BUFFER_CAP_BIG_TENSOR_BYTES: u64 = 48 * 1024 * 1024;
 /// Minimum count of cap-busting tensors before the checkpoint is treated as
 /// MoE-class for buffer-cap purposes. Dense checkpoints carry ~2 (embedding
 /// + lm_head); MoE expert stacks push this to ~90–150.
-pub const BUFFER_CAP_MIN_BIG_TENSORS: usize = 16;
+pub(crate) const BUFFER_CAP_MIN_BIG_TENSORS: usize = 16;
 const BUFFER_CAP_TARGET_MB: u32 = 1024;
 const BUFFER_CAP_TARGET_OPS: u32 = 1000;
 

@@ -40,7 +40,7 @@ pub struct MtpAdaptiveGateState {
 }
 
 impl MtpAdaptiveGateState {
-    pub fn new(initial_gate: f32) -> Self {
+    pub(crate) fn new(initial_gate: f32) -> Self {
         Self {
             gate: initial_gate.clamp(gate_min(), gate_max()),
             head_conf_ewma: 0.0,
@@ -104,7 +104,7 @@ fn truthy_env(name: &str) -> bool {
 }
 
 /// Process flag: adaptive controller enabled (default OFF).
-pub fn adaptive_gate_enabled_from_env() -> bool {
+pub(crate) fn adaptive_gate_enabled_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| truthy_env("AX_MLX_MTP_ADAPTIVE_GATE"))
 }
@@ -149,7 +149,7 @@ fn residual_window_from_env() -> u32 {
 
 /// PROVISIONAL prior bins — replace via `AX_MLX_MTP_ADAPTIVE_GATE_PRIOR_BINS`
 /// after PR0 calibration (`thr:prior,...` descending thresholds).
-pub fn default_provisional_bins() -> &'static [(f32, f32)] {
+pub(crate) fn default_provisional_bins() -> &'static [(f32, f32)] {
     &[(0.95, 0.90), (0.90, 0.88), (0.85, 0.85), (0.00, 0.80)]
 }
 
@@ -181,7 +181,7 @@ fn bins_from_env() -> Vec<(f32, f32)> {
         .clone()
 }
 
-pub fn prior_from_head_conf(mean_conf: f32, bins: &[(f32, f32)]) -> f32 {
+pub(crate) fn prior_from_head_conf(mean_conf: f32, bins: &[(f32, f32)]) -> f32 {
     let lo = gate_min();
     let hi = gate_max();
     for &(threshold, prior) in bins {
@@ -204,7 +204,7 @@ fn ewma(prev: f32, samples: u32, obs: f32, alpha: f32) -> (f32, u32) {
 }
 
 /// Update state after one decode step; returns gate for the *next* draft.
-pub fn observe_step(
+pub(crate) fn observe_step(
     state: &mut MtpAdaptiveGateState,
     sig: AdaptiveStepSignals,
     cfg: &NextGateConfig,
@@ -299,7 +299,7 @@ pub fn observe_step(
 }
 
 /// True when this request may allocate adaptive state.
-pub fn adaptive_eligible(
+pub(crate) fn adaptive_eligible(
     adaptive_enabled: bool,
     profile: SpeculationProfile,
     temperature: Option<f32>,
@@ -310,7 +310,7 @@ pub fn adaptive_eligible(
 }
 
 /// Allocate initial adaptive state at generation start when eligible.
-pub fn maybe_init_state(
+pub(crate) fn maybe_init_state(
     adaptive_enabled: bool,
     profile: SpeculationProfile,
     temperature: Option<f32>,
@@ -329,7 +329,7 @@ pub fn maybe_init_state(
 /// model default > global default. High-temperature `auto` skips adaptive but
 /// can still use the model default because Qwen rejection sampling remains
 /// distribution-exact.
-pub fn resolve_mtp_gate(
+pub(crate) fn resolve_mtp_gate(
     profile: SpeculationProfile,
     temperature: Option<f32>,
     adaptive_enabled: bool,
@@ -377,7 +377,7 @@ pub fn resolve_mtp_gate(
 }
 
 /// Convenience: resolve using process env profile + adaptive flag + optional state.
-pub fn resolve_mtp_gate_from_env(
+pub(crate) fn resolve_mtp_gate_from_env(
     temperature: Option<f32>,
     adaptive: Option<&MtpAdaptiveGateState>,
     optimistic_override: Option<f32>,
@@ -397,7 +397,7 @@ pub fn resolve_mtp_gate_from_env(
 }
 
 /// Config snapshot for observe_step (env-backed).
-pub fn next_gate_config_from_env() -> NextGateConfig {
+pub(crate) fn next_gate_config_from_env() -> NextGateConfig {
     NextGateConfig {
         residual_window: residual_window_from_env(),
         residual_enabled: residual_enabled_from_env(),

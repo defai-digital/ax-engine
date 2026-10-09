@@ -130,7 +130,7 @@ pub(crate) fn compute_gated_delta_g(
 /// specialization is shape-keyed — warming a different shape compiles a
 /// different pipeline. Best-effort by contract: the caller logs and
 /// continues on `Err`.
-pub fn warm_gated_delta_decode_kernels(cfg: &LinearAttentionConfig) -> Result<(), String> {
+pub(crate) fn warm_gated_delta_decode_kernels(cfg: &LinearAttentionConfig) -> Result<(), String> {
     // Mirror the fused kernel's own precondition: configs below it never
     // dispatch the custom kernel in production either, so there is
     // nothing to warm.
@@ -790,7 +790,7 @@ pub(crate) fn gated_delta_fused_verify_no_checkpoint_from_qkv(
     Some((y, state_out, new_conv_state))
 }
 
-pub fn split_linear_attention_qkv(
+pub(crate) fn split_linear_attention_qkv(
     cfg: &LinearAttentionConfig,
     conv_out: &MlxArray,
 ) -> LinearAttentionQkv {
@@ -839,7 +839,7 @@ pub fn split_linear_attention_qkv(
 }
 
 /// Qwen3.5 gated-delta Q/K no-scale RMSNorm and scaling.
-pub fn normalize_linear_attention_qk(
+pub(crate) fn normalize_linear_attention_qk(
     cfg: &LinearAttentionConfig,
     q: &MlxArray,
     k: &MlxArray,

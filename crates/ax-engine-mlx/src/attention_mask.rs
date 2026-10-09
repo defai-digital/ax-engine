@@ -6,7 +6,11 @@ use mlx_sys::{
 ///
 /// Shape is `[seq_len, offset + seq_len]`. `window_size` applies the same
 /// sliding-window rule as mlx-lm: `linds >= rinds && linds < rinds + window`.
-pub fn create_causal_mask(seq_len: usize, offset: usize, window_size: Option<usize>) -> MlxArray {
+pub(crate) fn create_causal_mask(
+    seq_len: usize,
+    offset: usize,
+    window_size: Option<usize>,
+) -> MlxArray {
     let key_len = offset + seq_len;
     let rinds = arange(0.0, key_len as f64, 1.0, MlxDtype::Int32, None);
     let linds = if offset == 0 {
@@ -59,7 +63,7 @@ pub fn create_causal_mask(seq_len: usize, offset: usize, window_size: Option<usi
 /// (NaN), so it is rejected rather than silently produced.
 // Not yet called from the decode path: it is wired into the batched runner in
 // Phase 2. Exercised now only by the token-exact SDPA oracle in tests.
-pub fn batched_decode_validity_mask(valid_lengths: &[usize], key_len: usize) -> MlxArray {
+pub(crate) fn batched_decode_validity_mask(valid_lengths: &[usize], key_len: usize) -> MlxArray {
     batched_decode_validity_mask_with_window(valid_lengths, key_len, None)
 }
 
@@ -69,7 +73,7 @@ pub fn batched_decode_validity_mask(valid_lengths: &[usize], key_len: usize) -> 
 /// window, row `r` attends the half-open key interval
 /// `[valid_lengths[r] - window, valid_lengths[r])`, clamped at zero. This is
 /// the single-query form of [`create_causal_mask`]'s sliding rule.
-pub fn batched_decode_validity_mask_with_window(
+pub(crate) fn batched_decode_validity_mask_with_window(
     valid_lengths: &[usize],
     key_len: usize,
     window_size: Option<usize>,
@@ -147,7 +151,7 @@ pub fn batched_decode_validity_mask_with_window(
 /// # Panics
 /// If `prompt_lens` is empty, `padded_len == 0`, or any row length is 0 or
 /// exceeds `padded_len`.
-pub fn batched_prefill_causal_mask(prompt_lens: &[usize], padded_len: usize) -> MlxArray {
+pub(crate) fn batched_prefill_causal_mask(prompt_lens: &[usize], padded_len: usize) -> MlxArray {
     assert!(
         !prompt_lens.is_empty(),
         "batched prefill mask requires at least one row"
@@ -210,7 +214,7 @@ pub fn batched_prefill_causal_mask(prompt_lens: &[usize], padded_len: usize) -> 
 /// [`create_causal_mask`], broadcasting over batch and heads in SDPA. Built
 /// on the host (`seq_len <= slack + 1`, so at most a few KB) and evaluated
 /// before return so the array owns its data.
-pub fn create_ring_sliding_mask(
+pub(crate) fn create_ring_sliding_mask(
     seq_len: usize,
     window: usize,
     capacity: usize,

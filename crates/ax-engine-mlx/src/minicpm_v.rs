@@ -402,7 +402,7 @@ impl MiniCpmV46VisionWeights {
     }
 }
 
-pub fn load_minicpm_v46_vision_weights(
+pub(crate) fn load_minicpm_v46_vision_weights(
     name_map: &mut HashMap<String, MlxArray>,
     config_json: Option<&Value>,
 ) -> Result<Option<MiniCpmV46VisionWeights>, WeightLoadError> {

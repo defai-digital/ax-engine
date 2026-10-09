@@ -103,7 +103,7 @@ impl BatchedKvCache {
     /// A cache that can hold up to `max_batch` rows but starts with **none**
     /// active — for continuous batching, where requests join via
     /// [`Self::add_active_row`] and leave via [`Self::remove_active_row`].
-    pub fn with_capacity(num_layers: usize, max_batch: usize) -> Self {
+    pub(crate) fn with_capacity(num_layers: usize, max_batch: usize) -> Self {
         assert!(max_batch > 0, "BatchedKvCache requires max_batch >= 1");
         Self {
             num_layers,
@@ -115,10 +115,11 @@ impl BatchedKvCache {
         }
     }
 
+    #[cfg(test)]
     /// Set the per-layer KV quantization table propagated to per-request
     /// caches extracted via `writeback_row` (Phase 3b). Length mismatches are
     /// rejected by `MlxKVCache::set_kv_quant_table` at writeback time.
-    pub fn set_kv_quant_table(&mut self, table: Vec<Option<crate::model::KvQuantSpec>>) {
+    pub(crate) fn set_kv_quant_table(&mut self, table: Vec<Option<crate::model::KvQuantSpec>>) {
         self.kv_quant = if table.iter().any(Option::is_some) {
             Some(table)
         } else {
@@ -126,24 +127,24 @@ impl BatchedKvCache {
         };
     }
 
-    pub fn num_layers(&self) -> usize {
+    pub(crate) fn num_layers(&self) -> usize {
         self.num_layers
     }
 
     /// Number of active rows (the batch width decode runs over).
-    pub fn batch(&self) -> usize {
+    pub(crate) fn batch(&self) -> usize {
         self.active
     }
 
     /// Maximum rows this cache can hold.
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.allocated
     }
 
     /// Reserve a fresh active row (the contiguous next slot) and return its
     /// index; the caller then seeds it via [`Self::seed_row_layer`]. Panics if
     /// the cache is already at capacity.
-    pub fn add_active_row(&mut self) -> usize {
+    pub(crate) fn add_active_row(&mut self) -> usize {
         assert!(
             self.active < self.allocated,
             "BatchedKvCache at capacity {}",
@@ -161,7 +162,7 @@ impl BatchedKvCache {
     /// `slot` (`Some(old_last)` when a move happened, `None` when `slot` was
     /// already the last active row) so the caller can update its slot→request
     /// map.
-    pub fn remove_active_row(&mut self, slot: usize) -> Option<usize> {
+    pub(crate) fn remove_active_row(&mut self, slot: usize) -> Option<usize> {
         assert!(slot < self.active, "remove_active_row: slot out of range");
         let last = self.active - 1;
         let moved = if slot != last {
@@ -202,18 +203,19 @@ impl BatchedKvCache {
     }
 
     /// Logical token count of row `r`.
-    pub fn row_len(&self, row: usize) -> usize {
+    pub(crate) fn row_len(&self, row: usize) -> usize {
         self.lengths[row]
     }
 
+    #[cfg(test)]
     /// Per-row logical lengths for the active rows — the input a batched
     /// attention mask is built from. `lengths().len() == batch()`.
-    pub fn lengths(&self) -> &[usize] {
+    pub(crate) fn lengths(&self) -> &[usize] {
         &self.lengths[..self.active]
     }
 
     /// Max logical length across active rows (the token extent of `layer_view`).
-    pub fn max_len(&self) -> usize {
+    pub(crate) fn max_len(&self) -> usize {
         self.lengths[..self.active]
             .iter()
             .copied()
@@ -221,17 +223,18 @@ impl BatchedKvCache {
             .unwrap_or(0)
     }
 
+    #[cfg(test)]
     /// Clear row `r`'s logical length so its slot can be reused. The backing
     /// bytes are left in place and overwritten by the next seed/append into
     /// that row (positions `[0..len]` are always rewritten before they are read
     /// back), so no wipe is needed. This is the primitive the runner's slot
     /// reuse (Phase 2) builds on.
-    pub fn reset_row(&mut self, row: usize) {
+    pub(crate) fn reset_row(&mut self, row: usize) {
         self.lengths[row] = 0;
     }
 
     /// Materialize all allocated K/V buffers so seed sources may be released.
-    pub fn materialize(&self) {
+    pub(crate) fn materialize(&self) {
         let arrays = self
             .layers
             .iter()
@@ -246,7 +249,7 @@ impl BatchedKvCache {
     /// Advance every row's logical length by `n`. Call once per decode step
     /// after all layers have been appended, mirroring the single-sequence
     /// cache's `seq_len += 1`.
-    pub fn advance_all(&mut self, n: usize) {
+    pub(crate) fn advance_all(&mut self, n: usize) {
         for len in &mut self.lengths[..self.active] {
             *len += n;
         }
@@ -395,7 +398,7 @@ impl BatchedKvCache {
     ///
     /// Does NOT advance lengths — call [`Self::advance_all`]`(1)` once after all
     /// layers, mirroring the single cache's per-step `seq_len` bump.
-    pub fn append_decode_layer(
+    pub(crate) fn append_decode_layer(
         &mut self,
         layer: usize,
         new_k: &MlxArray,
@@ -444,11 +447,12 @@ impl BatchedKvCache {
         )
     }
 
+    #[cfg(test)]
     /// The batched attention view of `layer`: `[batch, n_kv_heads, max_len,
     /// head_dim]`. Positions beyond a row's length are stale/zero and must be
     /// masked by the caller using [`Self::lengths`]. Returns `None` if the layer
     /// has not been written yet.
-    pub fn layer_view(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
+    pub(crate) fn layer_view(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
         let layer_kv = self.layers[layer].as_ref()?;
         let max_len = self.max_len();
         if max_len == 0 {
@@ -471,7 +475,7 @@ impl BatchedKvCache {
     /// A single row's valid KV view `[1, n_kv_heads, row_len, head_dim]` — used
     /// by the token-exact oracle to compare row `r` against a single-sequence
     /// cache. Returns `None` for an empty row or unwritten layer.
-    pub fn row_view(&self, layer: usize, row: usize) -> Option<(MlxArray, MlxArray)> {
+    pub(crate) fn row_view(&self, layer: usize, row: usize) -> Option<(MlxArray, MlxArray)> {
         let layer_kv = self.layers[layer].as_ref()?;
         let len = self.lengths[row];
         if len == 0 {
@@ -505,7 +509,7 @@ impl BatchedKvCache {
     /// preemption harness on real weights, not here.
     // Used when a scheduler-deferred resident leaves continuous batching and
     // must resume later through its private request cache.
-    pub fn writeback_row(&self, row: usize) -> MlxKVCache {
+    pub(crate) fn writeback_row(&self, row: usize) -> MlxKVCache {
         let mut cache = MlxKVCache::new(self.num_layers());
         if let Some(table) = &self.kv_quant {
             // Written-back layers are dense (`set_layer_kv_logical`); each
