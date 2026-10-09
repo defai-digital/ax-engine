@@ -9,181 +9,146 @@
     "example": "crates/ax-engine-core/examples/engine_step_cost.rs",
     "profile": "release",
     "arms": {
-      "baseline": "the example built against the baseline commit's core sources",
-      "candidate": "the same example built against the working tree carrying the three changes described in README.md"
+      "baseline": "the example built against the core sources of baseline_commit",
+      "candidate": "the same example built against the sources of the commit that carries this artifact"
     },
-    "requests_decode_for_whole_window": "max_output_tokens = u32::MAX; no request finishes during measurement",
+    "window": "steady-state decode only: max_output_tokens = u32::MAX, and the example asserts that every measured step decodes every live request and schedules no prefill work",
     "retained_requests": "finished prompts of the same length left in the prefix cache before the measured requests start",
     "warmup_steps": 8,
+    "measured_steps_per_trial": 1000,
     "trials_per_invocation": 5,
+    "rounds": 4,
+    "order": "per configuration the two binaries alternate; the order flips every round (ABBA)",
+    "summary": "median, interquartile range and minimum of the 20 per-trial mean step times per arm and configuration",
     "power_and_thermal_state": "not controlled; isolated operation evidence only",
-    "runs": {
-      "engine-step-cost-64-step-grid.jsonl": {
-        "measured_steps_per_trial": 64,
-        "invocations_per_arm": 24,
-        "order": "baseline and candidate binaries alternate; each invocation runs the whole default grid",
-        "summary": "median and minimum of the per-trial mean step time",
-        "results": [
-          {
-            "requests": 1,
-            "context": 4096,
-            "retained_requests": 0,
-            "trials_per_arm": 120,
-            "baseline_median_us": 7.8,
-            "baseline_min_us": 6.9,
-            "candidate_median_us": 6.7,
-            "candidate_min_us": 6.2,
-            "median_ratio": 1.16
-          },
-          {
-            "requests": 1,
-            "context": 4096,
-            "retained_requests": 8,
-            "trials_per_arm": 120,
-            "baseline_median_us": 10.9,
-            "baseline_min_us": 9.7,
-            "candidate_median_us": 6.1,
-            "candidate_min_us": 5.6,
-            "median_ratio": 1.79
-          },
-          {
-            "requests": 1,
-            "context": 32768,
-            "retained_requests": 0,
-            "trials_per_arm": 120,
-            "baseline_median_us": 18.8,
-            "baseline_min_us": 17.0,
-            "candidate_median_us": 13.6,
-            "candidate_min_us": 12.2,
-            "median_ratio": 1.38
-          },
-          {
-            "requests": 1,
-            "context": 32768,
-            "retained_requests": 8,
-            "trials_per_arm": 120,
-            "baseline_median_us": 56.0,
-            "baseline_min_us": 51.5,
-            "candidate_median_us": 13.1,
-            "candidate_min_us": 12.1,
-            "median_ratio": 4.27
-          },
-          {
-            "requests": 16,
-            "context": 4096,
-            "retained_requests": 0,
-            "trials_per_arm": 120,
-            "baseline_median_us": 64.8,
-            "baseline_min_us": 58.9,
-            "candidate_median_us": 51.2,
-            "candidate_min_us": 48.1,
-            "median_ratio": 1.27
-          },
-          {
-            "requests": 16,
-            "context": 4096,
-            "retained_requests": 8,
-            "trials_per_arm": 120,
-            "baseline_median_us": 67.0,
-            "baseline_min_us": 61.4,
-            "candidate_median_us": 50.4,
-            "candidate_min_us": 47.2,
-            "median_ratio": 1.33
-          },
-          {
-            "requests": 16,
-            "context": 32768,
-            "retained_requests": 0,
-            "trials_per_arm": 120,
-            "baseline_median_us": 370.3,
-            "baseline_min_us": 281.4,
-            "candidate_median_us": 210.8,
-            "candidate_min_us": 181.7,
-            "median_ratio": 1.76
-          },
-          {
-            "requests": 16,
-            "context": 32768,
-            "retained_requests": 8,
-            "trials_per_arm": 120,
-            "baseline_median_us": 420.1,
-            "baseline_min_us": 353.3,
-            "candidate_median_us": 256.6,
-            "candidate_min_us": 192.0,
-            "median_ratio": 1.64
-          }
-        ]
+    "results": [
+      {
+        "requests": 1,
+        "context": 4096,
+        "retained_requests": 0,
+        "trials_per_arm": 20,
+        "baseline_median_us": 7.2,
+        "baseline_q1_us": 6.5,
+        "baseline_q3_us": 7.5,
+        "baseline_min_us": 6.3,
+        "candidate_median_us": 5.7,
+        "candidate_q1_us": 5.5,
+        "candidate_q3_us": 6.1,
+        "candidate_min_us": 5.2,
+        "median_ratio": 1.26
       },
-      "engine-step-cost-1000-steps.jsonl": {
-        "measured_steps_per_trial": 1000,
-        "invocations_per_arm": 3,
-        "order": "per configuration, baseline and candidate binaries alternate, three rounds",
-        "summary": "median and minimum of the per-trial mean step time",
-        "results": [
-          {
-            "requests": 1,
-            "context": 32768,
-            "retained_requests": 0,
-            "trials_per_arm": 15,
-            "baseline_median_us": 18.5,
-            "baseline_min_us": 17.8,
-            "candidate_median_us": 13.6,
-            "candidate_min_us": 12.3,
-            "median_ratio": 1.36
-          },
-          {
-            "requests": 1,
-            "context": 32768,
-            "retained_requests": 8,
-            "trials_per_arm": 15,
-            "baseline_median_us": 58.2,
-            "baseline_min_us": 56.0,
-            "candidate_median_us": 12.8,
-            "candidate_min_us": 12.5,
-            "median_ratio": 4.56
-          },
-          {
-            "requests": 16,
-            "context": 4096,
-            "retained_requests": 0,
-            "trials_per_arm": 15,
-            "baseline_median_us": 71.2,
-            "baseline_min_us": 69.3,
-            "candidate_median_us": 52.1,
-            "candidate_min_us": 47.5,
-            "median_ratio": 1.37
-          },
-          {
-            "requests": 16,
-            "context": 32768,
-            "retained_requests": 0,
-            "trials_per_arm": 15,
-            "baseline_median_us": 326.2,
-            "baseline_min_us": 281.5,
-            "candidate_median_us": 198.1,
-            "candidate_min_us": 182.2,
-            "median_ratio": 1.65
-          },
-          {
-            "requests": 16,
-            "context": 32768,
-            "retained_requests": 8,
-            "trials_per_arm": 15,
-            "baseline_median_us": 391.7,
-            "baseline_min_us": 323.4,
-            "candidate_median_us": 237.4,
-            "candidate_min_us": 172.8,
-            "median_ratio": 1.65
-          }
-        ]
+      {
+        "requests": 1,
+        "context": 4096,
+        "retained_requests": 8,
+        "trials_per_arm": 20,
+        "baseline_median_us": 10.8,
+        "baseline_q1_us": 10.4,
+        "baseline_q3_us": 11.3,
+        "baseline_min_us": 9.4,
+        "candidate_median_us": 5.3,
+        "candidate_q1_us": 5.3,
+        "candidate_q3_us": 5.6,
+        "candidate_min_us": 5.1,
+        "median_ratio": 2.03
+      },
+      {
+        "requests": 1,
+        "context": 32768,
+        "retained_requests": 0,
+        "trials_per_arm": 20,
+        "baseline_median_us": 18.6,
+        "baseline_q1_us": 18.4,
+        "baseline_q3_us": 19.3,
+        "baseline_min_us": 18.0,
+        "candidate_median_us": 12.7,
+        "candidate_q1_us": 12.4,
+        "candidate_q3_us": 13.3,
+        "candidate_min_us": 12.1,
+        "median_ratio": 1.47
+      },
+      {
+        "requests": 1,
+        "context": 32768,
+        "retained_requests": 8,
+        "trials_per_arm": 20,
+        "baseline_median_us": 57.4,
+        "baseline_q1_us": 56.8,
+        "baseline_q3_us": 58.2,
+        "baseline_min_us": 56.2,
+        "candidate_median_us": 13.0,
+        "candidate_q1_us": 12.6,
+        "candidate_q3_us": 14.2,
+        "candidate_min_us": 12.4,
+        "median_ratio": 4.4
+      },
+      {
+        "requests": 16,
+        "context": 4096,
+        "retained_requests": 0,
+        "trials_per_arm": 20,
+        "baseline_median_us": 69.4,
+        "baseline_q1_us": 68.8,
+        "baseline_q3_us": 69.9,
+        "baseline_min_us": 64.9,
+        "candidate_median_us": 52.8,
+        "candidate_q1_us": 52.2,
+        "candidate_q3_us": 53.6,
+        "candidate_min_us": 51.5,
+        "median_ratio": 1.32
+      },
+      {
+        "requests": 16,
+        "context": 4096,
+        "retained_requests": 8,
+        "trials_per_arm": 20,
+        "baseline_median_us": 71.2,
+        "baseline_q1_us": 69.9,
+        "baseline_q3_us": 73.2,
+        "baseline_min_us": 68.6,
+        "candidate_median_us": 53.7,
+        "candidate_q1_us": 53.2,
+        "candidate_q3_us": 54.2,
+        "candidate_min_us": 51.5,
+        "median_ratio": 1.33
+      },
+      {
+        "requests": 16,
+        "context": 32768,
+        "retained_requests": 0,
+        "trials_per_arm": 20,
+        "baseline_median_us": 333.9,
+        "baseline_q1_us": 310.3,
+        "baseline_q3_us": 346.1,
+        "baseline_min_us": 284.9,
+        "candidate_median_us": 193.5,
+        "candidate_q1_us": 188.7,
+        "candidate_q3_us": 198.6,
+        "candidate_min_us": 176.2,
+        "median_ratio": 1.73
+      },
+      {
+        "requests": 16,
+        "context": 32768,
+        "retained_requests": 8,
+        "trials_per_arm": 20,
+        "baseline_median_us": 401.6,
+        "baseline_q1_us": 383.2,
+        "baseline_q3_us": 413.8,
+        "baseline_min_us": 324.2,
+        "candidate_median_us": 234.9,
+        "candidate_q1_us": 221.1,
+        "candidate_q3_us": 245.4,
+        "candidate_min_us": 172.2,
+        "median_ratio": 1.71
       }
-    }
+    ]
   },
   "source_sha256": {
     "crates/ax-engine-core/src/engine.rs": "19eabfc611afd20c1ee3e33a599a38258752b01e725c3fba6043c4d596189701",
     "crates/ax-engine-core/src/kv.rs": "5bb0ebe7d4cc2280cc139790822a2342ce3fc9bf80917120940fdab9f859d015",
     "crates/ax-engine-core/src/request.rs": "e2ff29d7a57ab0790ad042b0bb27ef069ba18f9327f58c2e9079c77ea2300699",
     "crates/ax-engine-core/src/scheduler.rs": "a73482e2db8ef862f92432b1972f6d9381e800c8d85a2cc26144a7b4fc0b0cbc",
-    "crates/ax-engine-core/examples/engine_step_cost.rs": "20bee711aca042560d32145bfaae21c46050c890d5122ebc036d2cac2dd8ec05"
+    "crates/ax-engine-core/examples/engine_step_cost.rs": "374f776f2e0578d02090ac056f6bbedaa9fa7d695440b333924670b416447a4a"
   }
 }

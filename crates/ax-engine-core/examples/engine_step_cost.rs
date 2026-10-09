@@ -148,6 +148,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut cpu_time_us = 0_u64;
             for _ in 0..measured_steps {
                 let outcome = engine.step(requests as u32, true)?;
+                // The window must be pure steady-state decode of every live request.
+                assert!(
+                    !is_prefilling(&outcome),
+                    "prefill work inside the measured window"
+                );
+                assert_eq!(
+                    outcome.schedule_plan.selected_requests.len() as u64,
+                    requests,
+                    "every live request must decode each measured step"
+                );
                 cpu_time_us += outcome.metrics.cpu_time_us;
                 black_box(&outcome);
             }
