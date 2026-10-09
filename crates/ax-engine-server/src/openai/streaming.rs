@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ax_engine_sdk::{
     EngineSessionError, EngineTokenizer, EngineTokenizerError, GenerateFinishReason,
     GenerateRequest, GenerateRouteReport, GenerateStreamEvent, LlamaCppChatGenerateRequest,
-    LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend,
-    finish_reason_from_mlx_lm,
+    LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle, RuntimeReport,
+    SelectedBackend, finish_reason_from_mlx_lm,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -79,35 +79,18 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     request: MlxLmChatGenerateRequest,
     include_usage: bool,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let permit = state.try_admit(&live).map_err(admission_error_response)?;
-    let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
-    let runtime = live.runtime_report.clone();
-    let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
-    let (stream, permit) = run_blocking_session_task(move || {
-        let stream = mlx_lm::start_chat_stream(&runtime, &mlx_lm_backend, &request)?;
-        Ok((stream, permit))
-    })
-    .await?;
-
-    let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_sse_blocking_stream_task(
-        tx,
+    stream_delegated_openai_chat(
+        state,
+        live,
+        model_id,
+        include_usage,
         "openai mlx_lm chat stream",
-        permit,
-        move |tx, cancel| {
-            drive_openai_mlx_lm_chat_stream(
-                tx,
-                &cancel,
-                request_id,
-                model_id,
-                stream,
-                include_usage,
-            );
-        },
-    );
-
-    Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
+        mlx_lm::config,
+        move |runtime, backend| mlx_lm::start_chat_stream(runtime, backend, &request),
+        drive_openai_mlx_lm_chat_stream,
+    )
+    .await
 }
 
 pub(crate) async fn stream_openai_llama_cpp_chat_request(
@@ -116,33 +99,54 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     request: LlamaCppChatGenerateRequest,
     include_usage: bool,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let model_id = request.model_id.clone();
+    stream_delegated_openai_chat(
+        state,
+        live,
+        model_id,
+        include_usage,
+        "openai llama.cpp chat stream",
+        llama_cpp::config,
+        move |runtime, backend| {
+            llama_cpp::start_streaming_chat_generate(runtime, backend, &request)
+        },
+        drive_openai_llama_cpp_chat_stream,
+    )
+    .await
+}
+
+/// Shared setup for the delegated (mlx-lm / llama.cpp) chat streams: admit
+/// the request, start the backend stream on a blocking thread, then hand the
+/// stream to a driver that writes the OpenAI SSE chunks.
+#[allow(clippy::too_many_arguments)]
+async fn stream_delegated_openai_chat<C, H>(
+    state: AppState,
+    live: LiveState,
+    model_id: String,
+    include_usage: bool,
+    task_name: &'static str,
+    backend_config: fn(&LiveState) -> Result<C, EngineSessionError>,
+    start_stream: impl FnOnce(&RuntimeReport, &C) -> Result<H, EngineSessionError> + Send + 'static,
+    drive: fn(StreamEventSender, &AtomicBool, u64, String, H, bool),
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)>
+where
+    C: Send + 'static,
+    H: Send + 'static,
+{
     let permit = state.try_admit(&live).map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
-    let model_id = request.model_id.clone();
     let runtime = live.runtime_report.clone();
-    let llama_backend = llama_cpp::config(&live).map_err(map_session_error)?;
+    let backend = backend_config(&live).map_err(map_session_error)?;
     let (stream, permit) = run_blocking_session_task(move || {
-        let stream = llama_cpp::start_streaming_chat_generate(&runtime, &llama_backend, &request)?;
+        let stream = start_stream(&runtime, &backend)?;
         Ok((stream, permit))
     })
     .await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_sse_blocking_stream_task(
-        tx,
-        "openai llama.cpp chat stream",
-        permit,
-        move |tx, cancel| {
-            drive_openai_llama_cpp_chat_stream(
-                tx,
-                &cancel,
-                request_id,
-                model_id,
-                stream,
-                include_usage,
-            );
-        },
-    );
+    spawn_sse_blocking_stream_task(tx, task_name, permit, move |tx, cancel| {
+        drive(tx, &cancel, request_id, model_id, stream, include_usage);
+    });
 
     Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }

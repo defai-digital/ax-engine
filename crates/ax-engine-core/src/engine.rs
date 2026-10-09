@@ -352,39 +352,15 @@ impl EngineCore {
             match self.dispatch_runner(&mut schedule_plan) {
                 Ok(outcome) => outcome,
                 Err(step_error) => {
-                    let failure_message = format!("engine step failed: {step_error}");
                     // `apply_execution_results` resolves updates in order and
                     // may error part-way through; requests it already moved to
                     // Runnable/Finished hold valid, KV-consistent progress and
                     // must keep it. Only requests still Running were left
                     // unresolved by this step.
-                    let unresolved_requests = schedule_plan
-                        .selected_requests
-                        .iter()
-                        .copied()
-                        .filter(|request_id| {
-                            self.request_manager
-                                .record(*request_id)
-                                .is_some_and(|record| record.state == RequestState::Running)
-                        })
-                        .collect::<Vec<_>>();
-                    if let Err(fail_error) = self
-                        .request_manager
-                        .fail_nonterminal_requests(&unresolved_requests, &failure_message)
-                    {
-                        error!(
-                            error = %fail_error,
-                            original_error = %step_error,
-                            "failed to mark scheduled requests failed after engine step error"
-                        );
-                    }
-                    if let Err(cleanup_error) = self.drain_terminal_cleanup() {
-                        error!(
-                            error = %cleanup_error,
-                            original_error = %step_error,
-                            "failed to complete terminal cleanup after engine step error"
-                        );
-                    }
+                    self.fail_unresolved_step_requests(
+                        &schedule_plan.selected_requests,
+                        &format!("engine step failed: {step_error}"),
+                    );
                     return Err(step_error);
                 }
             };
@@ -491,12 +467,14 @@ impl EngineCore {
         {
             error!(
                 error = %fail_error,
+                original_error = failure_message,
                 "failed to mark scheduled requests failed after engine step error"
             );
         }
         if let Err(cleanup_error) = self.drain_terminal_cleanup() {
             error!(
                 error = %cleanup_error,
+                original_error = failure_message,
                 "failed to complete terminal cleanup after engine step error"
             );
         }

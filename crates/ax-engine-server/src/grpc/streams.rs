@@ -81,9 +81,10 @@ fn spawn_grpc_stream_task<T, F>(
 where
     T: Send + 'static,
     F: FnOnce(
-            mpsc::Sender<Result<T, Status>>,
+            &mpsc::Sender<Result<T, Status>>,
             &mut dyn FnMut() -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
-        ) + Send
+        ) -> Result<(), Status>
+        + Send
         + 'static,
 {
     // Detect client disconnect the same way the SSE path does: a producer
@@ -116,7 +117,7 @@ where
                     }
                     events.blocking_recv().transpose()
                 };
-                driver(tx, &mut next_event);
+                finish_grpc_stream(&tx, driver(&tx, &mut next_event));
             });
             monitor_grpc_stream_task(handle, task_name, error_tx);
         }
@@ -132,7 +133,7 @@ where
                     }
                     context.next_stream_event(&mut state)
                 };
-                driver(tx, &mut next_event);
+                finish_grpc_stream(&tx, driver(&tx, &mut next_event));
             });
         }
         StreamStateSource::Stateful {
@@ -147,11 +148,19 @@ where
                     }
                     session.next_stream_event(&mut state)
                 };
-                driver(tx, &mut next_event);
+                finish_grpc_stream(&tx, driver(&tx, &mut next_event));
             });
         }
     }
     Ok(())
+}
+
+/// Ends the client's stream with `status` when the drive loop failed; a
+/// closed receiver (client gone) makes the send a no-op.
+fn finish_grpc_stream<T>(tx: &mpsc::Sender<Result<T, Status>>, result: Result<(), Status>) {
+    if let Err(status) = result {
+        let _ = tx.blocking_send(Err(status));
+    }
 }
 
 fn monitor_grpc_stream_task<T: Send + 'static>(
@@ -289,12 +298,7 @@ pub(super) fn spawn_grpc_generate_stream(
         tx,
         "grpc generate stream",
         stream_context,
-        move |tx, next_event| {
-            let result = drive_grpc_generate_events(&tx, next_event);
-            if let Err(status) = result {
-                let _ = tx.blocking_send(Err(status));
-            }
-        },
+        move |tx, next_event| drive_grpc_generate_events(tx, next_event),
     )
 }
 
@@ -340,17 +344,14 @@ pub(super) fn spawn_grpc_chat_stream(
                 .as_ref()
                 .and_then(ChatChannelStreamFilter::from_tokenizer);
             let mut decoder = tokenizer.map(IncrementalDecoder::new);
-            let result = drive_grpc_chat_events(
+            drive_grpc_chat_events(
                 &model_id,
                 &mut chat_role_emitted,
-                &tx,
+                tx,
                 decoder.as_mut(),
                 channel_filter.as_mut(),
                 next_event,
-            );
-            if let Err(status) = result {
-                let _ = tx.blocking_send(Err(status));
-            }
+            )
         },
     )
 }
@@ -488,10 +489,7 @@ pub(super) fn spawn_grpc_completion_stream(
         stream_context,
         move |tx, next_event| {
             let mut decoder = tokenizer.map(IncrementalDecoder::new);
-            let result = drive_grpc_completion_events(&model_id, &tx, decoder.as_mut(), next_event);
-            if let Err(status) = result {
-                let _ = tx.blocking_send(Err(status));
-            }
+            drive_grpc_completion_events(&model_id, tx, decoder.as_mut(), next_event)
         },
     )
 }
