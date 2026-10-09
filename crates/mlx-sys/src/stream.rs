@@ -183,7 +183,7 @@ impl MlxStream {
     /// Use this instead of calling `ffi::mlx_default_cpu_stream_new()` directly
     /// to avoid leaking the wrapper object. ax_shim allocates a heap wrapper even
     /// for default streams; callers are responsible for freeing it.
-    pub fn default_cpu() -> Self {
+    pub(crate) fn default_cpu() -> Self {
         prepare_error_capture();
         let inner = unsafe { ffi::mlx_default_cpu_stream_new() };
         panic_on_null_stream("mlx_default_cpu_stream_new", inner);

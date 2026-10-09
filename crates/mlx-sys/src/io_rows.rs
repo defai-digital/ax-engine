@@ -70,12 +70,7 @@ pub struct RowTensorMeta {
     pub data_end: u64,
 }
 
-impl RowTensorMeta {
-    /// Total tensor payload bytes (`rows * row_bytes`).
-    pub fn byte_len(&self) -> usize {
-        self.rows.saturating_mul(self.row_bytes)
-    }
-}
+impl RowTensorMeta {}
 
 /// Owned safetensors row reader.
 ///
@@ -287,21 +282,23 @@ fn validate_entry(
 }
 
 impl SafetensorsRowReader {
+    #[cfg(test)]
     /// Open a safetensors file for row gathers with the default byte budget.
     ///
     /// Reads only the 8-byte header length plus the bounded JSON header (cap
     /// [`MAX_HEADER_BYTES`]). Validates every tensor entry strictly; files
     /// that mix rank-2 tables with unrelated ranks or dtypes need
     /// [`Self::open_selected`] instead.
-    pub fn open(path: &Path) -> Result<Self, String> {
+    pub(crate) fn open(path: &Path) -> Result<Self, String> {
         Self::open_inner(path, None, DEFAULT_MAX_GATHER_BYTES, 2, &[])
     }
 
+    #[cfg(test)]
     /// Open with an explicit per-gather output byte budget.
     ///
     /// The budget is immutable for the life of the reader. Like [`Self::open`],
     /// validates every tensor entry strictly.
-    pub fn open_with_budget(path: &Path, max_gather_bytes: usize) -> Result<Self, String> {
+    pub(crate) fn open_with_budget(path: &Path, max_gather_bytes: usize) -> Result<Self, String> {
         Self::open_inner(path, None, max_gather_bytes, 2, &[])
     }
 
@@ -452,8 +449,9 @@ impl SafetensorsRowReader {
         })
     }
 
+    #[cfg(test)]
     /// Immutable per-gather output byte budget chosen at open.
-    pub fn max_gather_bytes(&self) -> usize {
+    pub(crate) fn max_gather_bytes(&self) -> usize {
         self.max_gather_bytes
     }
 
@@ -466,10 +464,11 @@ impl SafetensorsRowReader {
         self.payload_bytes_read.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
     /// Sorted tensor names known to this reader.
     ///
     /// For [`Self::open_selected`] this is exactly the requested selection.
-    pub fn tensor_names(&self) -> Vec<String> {
+    pub(crate) fn tensor_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.tensors.keys().cloned().collect();
         names.sort();
         names

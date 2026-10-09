@@ -25,7 +25,7 @@ thread_local! {
 /// FFI dispatch. Composition wrappers (e.g. `silu`, `gelu`) do **not** call
 /// this — their dispatches are accounted for by the inner direct-FFI ops.
 #[inline]
-pub fn bump() {
+pub(crate) fn bump() {
     OP_COUNT.with(|c| c.set(c.get().saturating_add(1)));
 }
 
