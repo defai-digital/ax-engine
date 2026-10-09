@@ -312,7 +312,6 @@ impl EngineCore {
         let mut cleanup_results = self.drain_terminal_cleanup()?;
         let retried_memory_blocked = self.request_manager.retry_memory_blocked()?;
         let admitted_requests = self.request_manager.admit_waiting()?;
-        self.refresh_execution_plan_refs()?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
@@ -321,7 +320,7 @@ impl EngineCore {
             "prepared step state"
         );
 
-        let request_snapshots = self.request_manager.snapshots();
+        let request_snapshots = self.snapshots_with_refreshed_plan_refs()?;
         let schedule_plan = self.scheduler.plan(&self.scheduler_input(
             step_id,
             request_snapshots,
@@ -828,8 +827,7 @@ impl EngineCore {
             // otherwise a same-prefix c4 batch can restore only the first
             // three requests and make the fourth recompute token by token
             // under KV pressure.
-            self.refresh_execution_plan_refs()?;
-            let request_snapshots = self.request_manager.snapshots();
+            let request_snapshots = self.snapshots_with_refreshed_plan_refs()?;
             schedule_plan = self.scheduler.plan(&self.scheduler_input(
                 schedule_plan.step_id,
                 request_snapshots,
@@ -1586,12 +1584,25 @@ impl EngineCore {
     }
 
     fn refresh_execution_plan_refs(&mut self) -> Result<(), EngineCoreError> {
-        for snapshot in self.request_manager.snapshots() {
-            let execution_plan_binding = self.execution_plan_resolver.resolve(&snapshot);
+        self.snapshots_with_refreshed_plan_refs().map(drop)
+    }
+
+    /// Re-resolve every request's execution-plan binding and return the
+    /// snapshots as they look after the bindings are applied. One snapshot
+    /// pass serves both: a snapshot deep-copies each request's prompt and
+    /// output history, so taking one to resolve and another to schedule
+    /// doubled the per-step copy cost.
+    fn snapshots_with_refreshed_plan_refs(
+        &mut self,
+    ) -> Result<Vec<crate::request::RequestSnapshot>, EngineCoreError> {
+        let mut snapshots = self.request_manager.snapshots();
+        for snapshot in &mut snapshots {
+            let execution_plan_binding = self.execution_plan_resolver.resolve(snapshot);
+            snapshot.apply_execution_plan_binding(execution_plan_binding.as_ref());
             self.request_manager
                 .set_execution_plan_binding(snapshot.request_id, execution_plan_binding)?;
         }
-        Ok(())
+        Ok(snapshots)
     }
 
     fn annotate_prefix_reuse(
@@ -2656,6 +2667,34 @@ mod tests {
                 .map(|snapshot| snapshot.state),
             state_before,
             "an overflowing step must not admit or transition requests"
+        );
+    }
+
+    #[test]
+    fn snapshots_with_refreshed_plan_refs_match_snapshots_taken_after_the_refresh() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+        // Requests in different phases get different plan bindings: a decoding
+        // one and a fresh prefill (request 1 finishes and leaves the live set).
+        engine.submit(make_submission(1, 1, 1)).unwrap();
+        engine.submit(make_submission(2, 2, 6)).unwrap();
+        engine.step(8, true).unwrap();
+        engine.step(8, true).unwrap();
+        engine.submit(make_submission(3, 3, 4)).unwrap();
+        engine.request_manager.admit_waiting().unwrap();
+
+        let merged = engine.snapshots_with_refreshed_plan_refs().unwrap();
+        let after_refresh = engine.request_manager.snapshots();
+
+        assert_eq!(merged.len(), 2);
+        assert!(
+            merged
+                .iter()
+                .all(|snapshot| snapshot.execution_plan_ref.is_some())
+        );
+        assert_eq!(
+            merged, after_refresh,
+            "patched snapshots must equal a fresh snapshot taken after the bindings were applied"
         );
     }
 

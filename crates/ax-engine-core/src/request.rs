@@ -624,6 +624,21 @@ pub struct RequestSnapshot {
     pub diffusion_block_committed: bool,
 }
 
+impl RequestSnapshot {
+    /// Mirror of [`RequestRecord::set_execution_plan_binding`] on an
+    /// already-taken snapshot, so a caller that applies a binding to the record
+    /// does not need a second full snapshot to observe it.
+    pub(crate) fn apply_execution_plan_binding(&mut self, binding: Option<&ExecutionPlanBinding>) {
+        if let Some(binding) = binding {
+            self.execution_plan_ref = Some(binding.execution_plan_ref.clone());
+            self.route_metadata_hint = binding.route_metadata.clone();
+        } else {
+            self.execution_plan_ref = None;
+            self.route_metadata_hint = RouteMetadata::empty();
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum StateTransitionError {
     #[error("invalid request state transition: {from:?} -> {to:?}")]

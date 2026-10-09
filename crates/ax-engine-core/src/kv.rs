@@ -182,8 +182,13 @@ pub struct KvManager {
     prompt_tokens: HashMap<RequestId, Vec<u32>>,
     block_ref_counts: HashMap<BlockId, u32>,
     live_prefix_requests_by_first_block: HashMap<CachedBlockKey, BTreeSet<RequestId>>,
+    /// Sum of the set sizes in `live_prefix_requests_by_first_block`; kept
+    /// incrementally so per-step telemetry does not walk the whole index.
+    live_prefix_request_refs: u64,
     cached_blocks: HashMap<CachedBlockKey, CachedBlockEntry>,
     cached_children_by_parent: HashMap<CachedBlockKey, BTreeSet<CachedBlockKey>>,
+    /// Sum of the set sizes in `cached_children_by_parent` (see above).
+    cached_child_edges: u64,
     /// Dense membership marker: whether a block currently backs a retained
     /// prefix-cache entry. Written only by insert_cached_block /
     /// remove_cached_block, so every cache residency change funnels through
@@ -211,8 +216,10 @@ impl KvManager {
             prompt_tokens: HashMap::new(),
             block_ref_counts: HashMap::new(),
             live_prefix_requests_by_first_block: HashMap::new(),
+            live_prefix_request_refs: 0,
             cached_blocks: HashMap::new(),
             cached_children_by_parent: HashMap::new(),
+            cached_child_edges: 0,
             cached_block_membership: vec![false; config.total_blocks as usize],
             reclaimable_cached_blocks: 0,
             next_cache_tick: 0,
@@ -752,18 +759,10 @@ impl KvManager {
             prompt_entries: count(self.prompt_tokens.len()),
             block_ref_entries: count(self.block_ref_counts.len()),
             live_prefix_index_keys: count(self.live_prefix_requests_by_first_block.len()),
-            live_prefix_request_refs: self
-                .live_prefix_requests_by_first_block
-                .values()
-                .map(|requests| count(requests.len()))
-                .fold(0u64, u64::saturating_add),
+            live_prefix_request_refs: self.live_prefix_request_refs,
             cached_blocks: count(self.cached_blocks.len()),
             cached_child_index_keys: count(self.cached_children_by_parent.len()),
-            cached_child_edges: self
-                .cached_children_by_parent
-                .values()
-                .map(|children| count(children.len()))
-                .fold(0u64, u64::saturating_add),
+            cached_child_edges: self.cached_child_edges,
         }
     }
 
@@ -1083,10 +1082,14 @@ impl KvManager {
             .get(&request_id)
             .ok_or(KvManagerError::UnknownRequest(request_id))?;
         if let Some(first_block_key) = self.live_prefix_index_key(table, prompt_tokens)? {
-            self.live_prefix_requests_by_first_block
+            if self
+                .live_prefix_requests_by_first_block
                 .entry(first_block_key)
                 .or_default()
-                .insert(request_id);
+                .insert(request_id)
+            {
+                self.live_prefix_request_refs += 1;
+            }
         }
         Ok(())
     }
@@ -1105,7 +1108,9 @@ impl KvManager {
                 .live_prefix_requests_by_first_block
                 .get_mut(&first_block_key)
             {
-                requests.remove(&request_id);
+                if requests.remove(&request_id) {
+                    self.live_prefix_request_refs -= 1;
+                }
                 if requests.is_empty() {
                     self.live_prefix_requests_by_first_block
                         .remove(&first_block_key);
@@ -1160,10 +1165,14 @@ impl KvManager {
         if let Some(parent_key) =
             parent_cache_key(cache_key.cache_group_id, entry.parent_block_hash)
         {
-            self.cached_children_by_parent
+            if self
+                .cached_children_by_parent
                 .entry(parent_key)
                 .or_default()
-                .insert(cache_key);
+                .insert(cache_key)
+            {
+                self.cached_child_edges += 1;
+            }
         }
         self.cached_blocks.insert(cache_key, entry);
     }
@@ -1178,7 +1187,9 @@ impl KvManager {
             parent_cache_key(cache_key.cache_group_id, entry.parent_block_hash)
         {
             if let Some(children) = self.cached_children_by_parent.get_mut(&parent_key) {
-                children.remove(cache_key);
+                if children.remove(cache_key) {
+                    self.cached_child_edges -= 1;
+                }
                 if children.is_empty() {
                     self.cached_children_by_parent.remove(&parent_key);
                 }
@@ -1640,6 +1651,75 @@ mod tests {
                 .block_ids
                 .is_empty()
         );
+    }
+
+    fn assert_incremental_telemetry_matches_recount(manager: &KvManager) {
+        let live_refs: u64 = manager
+            .live_prefix_requests_by_first_block
+            .values()
+            .map(|requests| requests.len() as u64)
+            .sum();
+        let child_edges: u64 = manager
+            .cached_children_by_parent
+            .values()
+            .map(|children| children.len() as u64)
+            .sum();
+        let telemetry = manager.telemetry();
+        assert_eq!(telemetry.live_prefix_request_refs, live_refs);
+        assert_eq!(telemetry.cached_child_edges, child_edges);
+    }
+
+    #[test]
+    fn incremental_telemetry_sums_match_container_contents_through_churn() {
+        let mut manager = make_manager(4, 4);
+        assert_incremental_telemetry_matches_recount(&manager);
+
+        manager
+            .register_request(RequestId(1), vec![1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        manager
+            .register_request(RequestId(2), vec![1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+        assert_incremental_telemetry_matches_recount(&manager);
+        assert_eq!(manager.telemetry().live_prefix_request_refs, 1);
+
+        let lookup = manager
+            .lookup_prefix(RequestId(2), &[1, 2, 3, 4, 5, 6, 7, 8, 99])
+            .unwrap();
+        manager.share_prefix(RequestId(2), &lookup).unwrap();
+        assert_incremental_telemetry_matches_recount(&manager);
+        assert_eq!(manager.telemetry().live_prefix_request_refs, 2);
+
+        manager
+            .rollback_prefix_share(RequestId(2), &lookup)
+            .unwrap();
+        assert_incremental_telemetry_matches_recount(&manager);
+        assert_eq!(manager.telemetry().live_prefix_request_refs, 1);
+
+        manager.free(RequestId(1)).unwrap();
+        assert_incremental_telemetry_matches_recount(&manager);
+        // Freed full blocks stay in the retained prefix cache as a two-block chain.
+        assert_eq!(manager.telemetry().cached_child_edges, 1);
+
+        // Pressure evicts the retained chain; the edge count must follow.
+        manager
+            .register_request(
+                RequestId(3),
+                vec![
+                    50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65,
+                ],
+            )
+            .unwrap();
+        manager.allocate(RequestId(3), 16).unwrap();
+        assert_incremental_telemetry_matches_recount(&manager);
+        assert_eq!(manager.telemetry().cached_child_edges, 0);
+
+        manager.free(RequestId(3)).unwrap();
+        manager
+            .free(RequestId(2))
+            .unwrap_or_else(|_| unreachable!());
+        assert_incremental_telemetry_matches_recount(&manager);
     }
 
     #[test]

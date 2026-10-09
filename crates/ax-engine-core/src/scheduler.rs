@@ -364,11 +364,12 @@ impl Scheduler {
     }
 
     pub(crate) fn plan(&self, input: &SchedulerInput) -> SchedulePlan {
+        // Borrow the snapshots: each owns the request's full prompt/output
+        // history, and planning only reads them.
         let mut runnable = input
             .request_snapshots
             .iter()
             .filter(|snapshot| snapshot.state == RequestState::Runnable)
-            .cloned()
             .collect::<Vec<_>>();
         runnable.sort_by_key(|snapshot| (snapshot.arrival_sequence, snapshot.request_id));
 
@@ -457,7 +458,7 @@ impl Scheduler {
                 continue;
             }
 
-            let Some(mode) = self.request_mode(&snapshot) else {
+            let Some(mode) = self.request_mode(snapshot) else {
                 deferred_requests.push(snapshot.request_id);
                 continue;
             };
@@ -482,7 +483,7 @@ impl Scheduler {
             .count() as u32;
 
         for (snapshot, mode) in candidates {
-            let requested_tokens = schedulable_token_count(&snapshot, mode);
+            let requested_tokens = schedulable_token_count(snapshot, mode);
             if remaining_budget == 0 {
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
@@ -521,7 +522,7 @@ impl Scheduler {
 
             let candidate_budget = match (mode, pressure_prefill_budget) {
                 (ExecutionMode::Prefill, Some(0))
-                    if prefill_tail_fits_partial_block(&snapshot, input.block_size_tokens) =>
+                    if prefill_tail_fits_partial_block(snapshot, input.block_size_tokens) =>
                 {
                     // Exhausted pool, but this in-progress prefill already owns
                     // a partial block with room for its whole remaining prompt:
@@ -569,7 +570,7 @@ impl Scheduler {
                 _ => remaining_budget,
             };
 
-            let Some(item) = self.build_execution_item(&snapshot, candidate_budget) else {
+            let Some(item) = self.build_execution_item(snapshot, candidate_budget) else {
                 // Same accounting as the zero-budget and admission-cap defer
                 // paths above: a request that could not be built at all (the
                 // indivisible multimodal guard, or a degenerate decode) had
@@ -582,7 +583,7 @@ impl Scheduler {
             let candidate_route = BatchRouteSeed {
                 mode,
                 execution_plan_ref: snapshot.execution_plan_ref.clone(),
-                route_metadata: route_seed(&snapshot),
+                route_metadata: route_seed(snapshot),
             };
             let can_join = mode_route_seeds
                 .iter()
