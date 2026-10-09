@@ -15,7 +15,7 @@ pub struct DeviceResidentSnapshot {
 }
 
 impl DeviceResidentSnapshot {
-    pub fn utilization_fraction(self) -> f64 {
+    pub(crate) fn utilization_fraction(self) -> f64 {
         if self.budget_bytes == 0 {
             return 1.0;
         }

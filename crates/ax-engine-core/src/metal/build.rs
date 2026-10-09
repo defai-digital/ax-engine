@@ -504,27 +504,25 @@ impl MetalKernelAssets {
         })
     }
 
-    pub fn build_dir(&self) -> &Path {
+    #[cfg(test)]
+    pub(crate) fn build_dir(&self) -> &Path {
         &self.build_dir
     }
 
-    pub fn workspace_root(&self) -> &Path {
-        &self.workspace_root
-    }
-
-    pub fn manifest(&self) -> &MetalKernelManifest {
+    #[cfg(test)]
+    pub(crate) fn manifest(&self) -> &MetalKernelManifest {
         &self.manifest
     }
 
-    pub fn default_block_size_tokens(&self) -> u32 {
+    pub(crate) fn default_block_size_tokens(&self) -> u32 {
         self.manifest.default_block_size_tokens
     }
 
-    pub fn supported_block_size_tokens(&self) -> &[u32] {
+    pub(crate) fn supported_block_size_tokens(&self) -> &[u32] {
         &self.manifest.supported_block_size_tokens
     }
 
-    pub fn validate_block_size_tokens(
+    pub(crate) fn validate_block_size_tokens(
         &self,
         block_size_tokens: u32,
     ) -> Result<(), MetalRuntimeError> {
@@ -535,26 +533,27 @@ impl MetalKernelAssets {
         )
     }
 
-    pub fn build_report(&self) -> &MetalBuildReport {
+    pub(crate) fn build_report(&self) -> &MetalBuildReport {
         &self.build_report
     }
 
-    pub fn resolved_source_file(&self) -> &Path {
-        &self.resolved_source_file
-    }
-
-    pub fn build_status(&self) -> MetalBuildStatus {
+    pub(crate) fn build_status(&self) -> MetalBuildStatus {
         self.build_report.status
     }
 
-    pub fn kernel(&self, name: &str) -> Option<&MetalKernelSpec> {
+    #[cfg(test)]
+    pub(crate) fn kernel(&self, name: &str) -> Option<&MetalKernelSpec> {
         self.manifest
             .kernels
             .iter()
             .find(|kernel| kernel.name == name)
     }
 
-    pub fn required_kernel(&self, name: &str) -> Result<&MetalKernelSpec, MetalRuntimeError> {
+    #[cfg(test)]
+    pub(crate) fn required_kernel(
+        &self,
+        name: &str,
+    ) -> Result<&MetalKernelSpec, MetalRuntimeError> {
         let Some(kernel) = self.kernel(name) else {
             return Err(MetalRuntimeError::UnknownKernel {
                 kernel_name: name.to_string(),
@@ -570,11 +569,13 @@ impl MetalKernelAssets {
         Ok(kernel)
     }
 
-    pub fn compiled_metallib_path(&self) -> Option<&Path> {
+    #[cfg(test)]
+    pub(crate) fn compiled_metallib_path(&self) -> Option<&Path> {
         self.build_report.outputs.metallib.as_deref()
     }
 
-    pub fn compiled_metallib_bytes(&self) -> Result<Vec<u8>, MetalRuntimeError> {
+    #[cfg(test)]
+    pub(crate) fn compiled_metallib_bytes(&self) -> Result<Vec<u8>, MetalRuntimeError> {
         let Some(path) = self.compiled_metallib_path() else {
             return Err(MetalRuntimeError::BuildNotCompiled {
                 status: self.build_report.status,
@@ -1844,6 +1845,7 @@ fn workspace_root_from_manifest_path(manifest_path: &Path) -> Result<PathBuf, Me
     Ok(workspace_root.to_path_buf())
 }
 
+#[cfg(test)]
 pub(super) fn load_compiled_metallib_binary(
     assets: &MetalKernelAssets,
 ) -> Result<MetalKernelBinary, MetalRuntimeError> {
@@ -1866,6 +1868,7 @@ pub(super) fn load_compiled_metallib_binary(
     })
 }
 
+#[cfg(test)]
 pub(super) fn resolve_required_kernel_names(
     assets: &MetalKernelAssets,
 ) -> Result<Vec<String>, MetalRuntimeError> {
@@ -1877,6 +1880,7 @@ pub(super) fn resolve_required_kernel_names(
     Ok(resolved_kernel_names)
 }
 
+#[cfg(test)]
 fn manifest_kernel_names(manifest: &MetalKernelManifest) -> BTreeSet<String> {
     manifest
         .kernels
@@ -1885,6 +1889,7 @@ fn manifest_kernel_names(manifest: &MetalKernelManifest) -> BTreeSet<String> {
         .collect()
 }
 
+#[cfg(test)]
 pub(super) fn validate_compiled_kernel_inventory(
     manifest: &MetalKernelManifest,
     compiled_kernel_names: &[String],

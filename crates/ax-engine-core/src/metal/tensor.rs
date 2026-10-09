@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use crate::model::{NativeTensorDataType, NativeTensorSpec};
 
 use super::MetalNativeTensorBufferBinding;
@@ -134,6 +132,7 @@ pub(super) fn q4km_row_byte_offset(row_offset: usize, row_width: usize) -> Optio
     row_offset.checked_mul(n_blocks)?.checked_mul(144)
 }
 
+#[cfg(test)]
 /// Exact Rust port of llama.cpp get_scale_min_k4.
 fn q4km_get_scale_min(j: usize, scales: &[u8]) -> (u8, u8) {
     if j < 4 {
@@ -145,6 +144,7 @@ fn q4km_get_scale_min(j: usize, scales: &[u8]) -> (u8, u8) {
     }
 }
 
+#[cfg(test)]
 /// Dequantize one 144-byte block_q4_K block -> 256 F16 values (512 bytes).
 /// Exact port of llama.cpp dequantize_row_q4_K.
 fn dequantize_q4km_block_to_f16(block: &[u8]) -> [u16; 256] {
@@ -177,6 +177,7 @@ fn dequantize_q4km_block_to_f16(block: &[u8]) -> [u16; 256] {
     out
 }
 
+#[cfg(test)]
 /// Dequantize Q8_0 tensor to F16. Block = 2 bytes (F16 scale) + 32 int8 values = 34 bytes.
 /// Matches llama.cpp dequantize_row_q8_0.
 pub(super) fn dequantize_q8zero_tensor_to_f16(
@@ -203,6 +204,7 @@ pub(super) fn dequantize_q8zero_tensor_to_f16(
     Some((NativeTensorDataType::F16, f16))
 }
 
+#[cfg(test)]
 /// Dequantize Q5_K tensor to F16.
 /// Block = 4 (d+dmin F16) + 12 (scales) + 32 (qh 5th bits) + 128 (qs low 4 bits) = 176 bytes.
 /// Matches llama.cpp dequantize_row_q5_K + get_scale_min_k4.
@@ -260,6 +262,7 @@ pub(super) fn dequantize_q5km_tensor_to_f16(
     Some((NativeTensorDataType::F16, f16))
 }
 
+#[cfg(test)]
 /// Dequantize Q6_K tensor to F16.
 /// Block = 128 (ql) + 64 (qh) + 16 (scales int8) + 2 (d F16) = 210 bytes per 256 elements.
 /// Matches llama.cpp dequantize_row_q6_K.
@@ -314,6 +317,7 @@ pub(super) fn dequantize_q6km_tensor_to_f16(
     Some((NativeTensorDataType::F16, f16))
 }
 
+#[cfg(test)]
 /// Dequantize an entire Q4Km tensor to F16 bytes.
 /// Used at model-load time for token embedding tensors.
 pub(super) fn dequantize_q4km_tensor_to_f16(
@@ -338,6 +342,7 @@ pub(super) fn dequantize_q4km_tensor_to_f16(
     Some((NativeTensorDataType::F16, f16_bytes))
 }
 
+#[cfg(test)]
 pub(super) fn native_dense_shadow_bytes(
     spec: &NativeTensorSpec,
     source_bytes: &[u8],

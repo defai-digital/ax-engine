@@ -32,7 +32,7 @@ pub struct SchedulerInput {
 
 impl SchedulerInput {
     /// Legacy-compatible constructor: fair multi-prefill off, unlimited KV headroom.
-    pub fn new(
+    pub(crate) fn new(
         step_id: StepId,
         request_snapshots: Vec<RequestSnapshot>,
         memory_pressure: Option<String>,
@@ -118,8 +118,8 @@ pub const ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB: &str =
 pub const ROUTE_DECISION_AX_MLX_KV_ROTATED_RING_LAYERS: &str = "ax_mlx_kv_rotated_ring_layers";
 pub const ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK: &str = "ax_mlx_kv_rotating_ring_slack";
 pub const ROUTE_DECISION_AX_MLX_KV_QUANTIZED_LAYERS: &str = "ax_mlx_kv_quantized_layers";
-pub const ROUTE_KV_MODE_PAGED_METADATA: &str = "paged_metadata";
-pub const ROUTE_BARRIER_MODE_SERIAL: &str = "serial";
+pub(crate) const ROUTE_KV_MODE_PAGED_METADATA: &str = "paged_metadata";
+pub(crate) const ROUTE_BARRIER_MODE_SERIAL: &str = "serial";
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS: &str = "ax_mlx_kv_linear_state_layers";
 pub const ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB: &str = "ax_mlx_kv_linear_state_kib";
 pub const ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT: &str = "ax_mlx_kv_growth_count";
@@ -140,27 +140,28 @@ pub const ROUTE_DECISION_AX_MLX_KV_PAGED_ATTENTION_FALLBACKS: &str =
     "ax_mlx_kv_paged_attention_fallbacks";
 pub const ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM: &str = "ax_mlx_model_mla_kv_latent_dim";
 pub const ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS: &str = "ax_mlx_model_moe_active_experts";
-pub const ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS: &str =
     "ax_scheduler_scheduled_prefill_tokens";
-pub const ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS: &str =
     "ax_scheduler_scheduled_decode_tokens";
-pub const ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS: &str =
     "ax_scheduler_skipped_prefill_tokens";
-pub const ROUTE_DECISION_AX_SCHEDULER_SKIPPED_DECODE_TOKENS: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_SKIPPED_DECODE_TOKENS: &str =
     "ax_scheduler_skipped_decode_tokens";
-pub const ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES: &str =
     "ax_scheduler_mixed_prefill_decode_batches";
-pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED: &str =
     "ax_scheduler_fair_multi_prefill_enabled";
-pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS: &str =
     "ax_scheduler_fair_multi_prefill_chunk_tokens";
-pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMISSION_CAP: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMISSION_CAP: &str =
     "ax_scheduler_fair_multi_prefill_admission_cap";
-pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMITTED: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ADMITTED: &str =
     "ax_scheduler_fair_multi_prefill_admitted";
-pub const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_DEFERRED_BY_ADMISSION: &str =
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_DEFERRED_BY_ADMISSION: &str =
     "ax_scheduler_fair_multi_prefill_deferred_by_admission";
-pub const ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS: [&str; 5] = [
+#[cfg(test)]
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_TOKEN_BUDGET_KEYS: [&str; 5] = [
     ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_PREFILL_TOKENS,
     ROUTE_DECISION_AX_SCHEDULER_SCHEDULED_DECODE_TOKENS,
     ROUTE_DECISION_AX_SCHEDULER_SKIPPED_PREFILL_TOKENS,
@@ -358,11 +359,11 @@ const MEMORY_PRESSURE_KV_EXHAUSTED: &str = "kv_exhausted";
 const MEMORY_PRESSURE_KV_LOW_PREFIX: &str = "kv_low_free_blocks:";
 
 impl Scheduler {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 
-    pub fn plan(&self, input: &SchedulerInput) -> SchedulePlan {
+    pub(crate) fn plan(&self, input: &SchedulerInput) -> SchedulePlan {
         let mut runnable = input
             .request_snapshots
             .iter()

@@ -72,7 +72,7 @@ pub enum TrunkStyle {
 
 impl MlxRunnerAdmission {
     /// Whether this registration is eligible for primary-runner validation.
-    pub const fn allows_primary(self) -> bool {
+    pub(crate) const fn allows_primary(self) -> bool {
         matches!(self, Self::Primary)
     }
 }
@@ -95,24 +95,9 @@ impl LayerForwardRoute {
         }
     }
 
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Standard => "standard",
-            Self::Llama4 => "llama4",
-            Self::GlmMoeLite => "glm4_moe_lite",
-            Self::DeepseekV3 => "deepseek_v3",
-            Self::DeepseekV4 => "deepseek_v4",
-            Self::Mistral3 => "mistral3",
-            Self::MuseGlimmer => "muse_glimmer",
-            Self::Mixtral => "mixtral",
-            Self::GptOss => "gpt_oss",
-            Self::NemotronH => "nemotron_h",
-            Self::Qwen4Exp => "qwen4_exp",
-        }
-    }
-
+    #[cfg(test)]
     /// Trunk composition style for this route (ADR-025 D3).
-    pub const fn trunk_style(self) -> TrunkStyle {
+    pub(crate) const fn trunk_style(self) -> TrunkStyle {
         match self {
             Self::DeepseekV4 | Self::Qwen4Exp => TrunkStyle::DedicatedTrunk,
             Self::Standard

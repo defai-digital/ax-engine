@@ -64,10 +64,6 @@ impl RequestManager {
         }
     }
 
-    pub fn cache_group_id(&self) -> CacheGroupId {
-        self.cache_group_id
-    }
-
     pub fn submit(
         &mut self,
         submission: RequestSubmission,
@@ -76,7 +72,7 @@ impl RequestManager {
     }
 
     /// Submit a request and bind its generation strategy in one step (ADR-038).
-    pub fn submit_with_generation_kind(
+    pub(crate) fn submit_with_generation_kind(
         &mut self,
         submission: RequestSubmission,
         generation_kind: crate::GenerationKind,
@@ -96,7 +92,7 @@ impl RequestManager {
         Ok(request_id)
     }
 
-    pub fn admit_waiting(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
+    pub(crate) fn admit_waiting(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
         let request_ids = self.sorted_request_ids(|record| record.state == RequestState::Waiting);
 
         for request_id in &request_ids {
@@ -106,7 +102,7 @@ impl RequestManager {
         Ok(request_ids)
     }
 
-    pub fn retry_memory_blocked(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
+    pub(crate) fn retry_memory_blocked(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
         let request_ids =
             self.sorted_request_ids(|record| record.state == RequestState::BlockedOnMemory);
 
@@ -117,7 +113,7 @@ impl RequestManager {
         Ok(request_ids)
     }
 
-    pub fn cancel(&mut self, request_id: RequestId) -> Result<(), RequestManagerError> {
+    pub(crate) fn cancel(&mut self, request_id: RequestId) -> Result<(), RequestManagerError> {
         self.transition_request(request_id, RequestRecord::request_cancel)
     }
 
@@ -125,7 +121,7 @@ impl RequestManager {
         self.records.get(&request_id)
     }
 
-    pub fn retention_telemetry(&self) -> RequestRetentionTelemetry {
+    pub(crate) fn retention_telemetry(&self) -> RequestRetentionTelemetry {
         let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
         RequestRetentionTelemetry {
             active_records: count(self.records.len()),
@@ -154,7 +150,7 @@ impl RequestManager {
             .or_else(|| self.terminal_snapshots.get(&request_id).cloned())
     }
 
-    pub fn sync_block_table(
+    pub(crate) fn sync_block_table(
         &mut self,
         request_id: RequestId,
         block_table: BlockTable,
@@ -167,41 +163,7 @@ impl RequestManager {
         Ok(())
     }
 
-    /// Bind the generation paradigm for strategy-aware scheduling (ADR-038).
-    pub fn set_generation_kind(
-        &mut self,
-        request_id: RequestId,
-        generation_kind: crate::GenerationKind,
-    ) -> Result<(), RequestManagerError> {
-        let record = self
-            .records
-            .get_mut(&request_id)
-            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
-        record.set_generation_kind(generation_kind);
-        Ok(())
-    }
-
-    /// Update diffusion schedule progress for multi-step strategy planning.
-    pub fn set_diffusion_schedule_progress(
-        &mut self,
-        request_id: RequestId,
-        denoise_steps_in_block: u32,
-        commit_ready: bool,
-        block_committed: bool,
-    ) -> Result<(), RequestManagerError> {
-        let record = self
-            .records
-            .get_mut(&request_id)
-            .ok_or(RequestManagerError::UnknownRequest(request_id))?;
-        record.set_diffusion_schedule_progress(
-            denoise_steps_in_block,
-            commit_ready,
-            block_committed,
-        );
-        Ok(())
-    }
-
-    pub fn set_execution_plan_binding(
+    pub(crate) fn set_execution_plan_binding(
         &mut self,
         request_id: RequestId,
         binding: Option<ExecutionPlanBinding>,
@@ -214,7 +176,7 @@ impl RequestManager {
         Ok(())
     }
 
-    pub fn apply_prefix_reuse(
+    pub(crate) fn apply_prefix_reuse(
         &mut self,
         request_id: RequestId,
         matched_prompt_tokens: u32,
@@ -228,7 +190,7 @@ impl RequestManager {
         Ok(())
     }
 
-    pub fn rollback_prefix_reuse(
+    pub(crate) fn rollback_prefix_reuse(
         &mut self,
         request_id: RequestId,
         matched_prompt_tokens: u32,
@@ -254,7 +216,7 @@ impl RequestManager {
     /// Returns the number of prompt tokens that were forfeited (the
     /// `processed_prompt_tokens` value prior to reset), useful for surfacing the
     /// preempt cost in `StepMetrics`.
-    pub fn preempt_for_recompute(
+    pub(crate) fn preempt_for_recompute(
         &mut self,
         request_id: RequestId,
     ) -> Result<u32, RequestManagerError> {
@@ -282,7 +244,7 @@ impl RequestManager {
         Ok(forfeited)
     }
 
-    pub fn validate_prefix_reuse(
+    pub(crate) fn validate_prefix_reuse(
         &self,
         request_id: RequestId,
         matched_prompt_tokens: u32,
@@ -326,7 +288,7 @@ impl RequestManager {
             .collect()
     }
 
-    pub fn apply_schedule_plan(
+    pub(crate) fn apply_schedule_plan(
         &mut self,
         schedule_plan: &SchedulePlan,
     ) -> Result<(), RequestManagerError> {
@@ -391,7 +353,7 @@ impl RequestManager {
         Ok(())
     }
 
-    pub fn collect_terminal_cleanup(&self) -> Vec<RequestId> {
+    pub(crate) fn collect_terminal_cleanup(&self) -> Vec<RequestId> {
         let request_ids = self.sorted_request_ids(|record| record.state.is_terminal());
         request_ids
             .into_iter()
@@ -403,7 +365,7 @@ impl RequestManager {
             .collect()
     }
 
-    pub fn mark_terminal_cleaned(
+    pub(crate) fn mark_terminal_cleaned(
         &mut self,
         request_id: RequestId,
     ) -> Result<(), RequestManagerError> {
@@ -432,7 +394,7 @@ impl RequestManager {
         Ok(())
     }
 
-    pub fn apply_execution_results(
+    pub(crate) fn apply_execution_results(
         &mut self,
         runner_output: &RunnerOutput,
         sampled_tokens: &[SampledToken],

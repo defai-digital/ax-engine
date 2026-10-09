@@ -108,7 +108,7 @@ pub struct PaddedCostLimits {
 /// is rejected here outright — [`plan_prefill_cohorts`] routes it to the
 /// sequential path — so `max_len <= max_padded_tokens / 2` holds for every
 /// admitted cohort by construction.
-pub fn padded_window_admits(
+pub(crate) fn padded_window_admits(
     count: u32,
     current_max_len: u32,
     next_len: u32,
@@ -228,6 +228,7 @@ pub fn default_padded_token_budget(prefill_chunk_tokens: u32, max_batch_rows: u3
         .saturating_mul(2)
 }
 
+#[cfg(test)]
 /// Explicit upper bound, in bytes, of the padded `[B, L, L]` attention-mask
 /// transient for any cohort admitted under `max_padded_tokens`: the mask is
 /// `B * L^2 = (B * L) * L` elements, and every admitted cohort has
@@ -235,7 +236,7 @@ pub fn default_padded_token_budget(prefill_chunk_tokens: u32, max_batch_rows: u3
 /// `budget^2 / 2` elements. This is the number the execution side must keep
 /// beside its steady-state KV budget: the transient is NOT modeled there and
 /// an allocation failure aborts the process (uncatchable MLX C++ throw).
-pub fn padded_mask_bytes_upper_bound(max_padded_tokens: u32, element_bytes: u32) -> u64 {
+pub(crate) fn padded_mask_bytes_upper_bound(max_padded_tokens: u32, element_bytes: u32) -> u64 {
     // `budget^2 / 2 * element_bytes` exceeds u64 for budgets near u32::MAX;
     // saturate rather than wrap so the bound never under-reports.
     let budget = u128::from(max_padded_tokens);

@@ -86,7 +86,7 @@ pub struct ChatContract {
 
 impl ChatContract {
     /// Convenience constructor for rows without a chat surface.
-    pub const fn not_applicable() -> Self {
+    pub(crate) const fn not_applicable() -> Self {
         Self {
             template: ChatTemplateKind::NotApplicable,
             output_policy: ChatOutputPolicy::Plain,

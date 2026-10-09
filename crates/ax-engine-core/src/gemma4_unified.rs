@@ -30,7 +30,7 @@ pub enum ImageDetail {
 }
 
 impl ImageDetail {
-    pub fn parse(raw: &str) -> Option<Self> {
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "low" => Some(Self::Low),
             "high" => Some(Self::High),
@@ -40,7 +40,7 @@ impl ImageDetail {
     }
 
     /// Map detail to a ladder budget. `Auto` returns `None` (use checkpoint default).
-    pub fn to_budget(self) -> Option<u32> {
+    pub(crate) fn to_budget(self) -> Option<u32> {
         match self {
             Self::Low => Some(70),
             Self::High => Some(560),
@@ -892,7 +892,8 @@ impl Gemma4UnifiedProcessorConfig {
         Ok((tokens, soft_token_ranges))
     }
 
-    pub fn expand_image_placeholders(
+    #[cfg(test)]
+    pub(crate) fn expand_image_placeholders(
         &self,
         input_tokens: &[u32],
         images: &[Gemma4UnifiedImageInput],
@@ -909,7 +910,8 @@ impl Gemma4UnifiedProcessorConfig {
         )
     }
 
-    pub fn expand_audio_placeholders(
+    #[cfg(test)]
+    pub(crate) fn expand_audio_placeholders(
         &self,
         input_tokens: &[u32],
         audios: &[Gemma4UnifiedAudioInput],
@@ -927,7 +929,8 @@ impl Gemma4UnifiedProcessorConfig {
         )
     }
 
-    pub fn expand_video_placeholders(
+    #[cfg(test)]
+    pub(crate) fn expand_video_placeholders(
         &self,
         input_tokens: &[u32],
         videos: &[Gemma4UnifiedVideoInput],
@@ -1075,6 +1078,7 @@ impl Gemma4UnifiedAudioProcessor {
     }
 }
 
+#[cfg(test)]
 fn expand_placeholders<T>(
     modality: Gemma4UnifiedModality,
     input_tokens: &[u32],

@@ -55,7 +55,7 @@ impl PressureLevel {
 
     /// Numerically dominant of two levels. Used when host and device probes
     /// disagree — the more severe wins.
-    pub fn max(self, other: PressureLevel) -> PressureLevel {
+    pub(crate) fn max(self, other: PressureLevel) -> PressureLevel {
         if self.as_u64() >= other.as_u64() {
             self
         } else {
@@ -75,15 +75,16 @@ pub struct PressureThresholds {
 
 impl PressureThresholds {
     /// Defaults agreed in `.internal/prd/engine-serving-invariants.md` §9 risks.
-    pub const DEFAULT: PressureThresholds = PressureThresholds {
+    pub(crate) const DEFAULT: PressureThresholds = PressureThresholds {
         soft_fraction: 0.75,
         hard_fraction: 0.90,
     };
 
+    #[cfg(test)]
     /// Construct custom thresholds. The constructor sorts the pair so `soft`
     /// is always ≤ `hard`; this avoids silently-inverted policy on a caller
     /// mistake. Returns `None` if either input is NaN.
-    pub fn new(soft: f64, hard: f64) -> Option<Self> {
+    pub(crate) fn new(soft: f64, hard: f64) -> Option<Self> {
         if soft.is_nan() || hard.is_nan() {
             return None;
         }

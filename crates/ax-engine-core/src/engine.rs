@@ -4,7 +4,9 @@ use std::time::Instant;
 
 use crate::execution_plan::{DeterministicExecutionPlanResolver, ExecutionPlanResolver};
 use crate::generation::GenerationKind;
-use crate::ids::{CacheGroupId, RequestId, StepId};
+#[cfg(test)]
+use crate::ids::CacheGroupId;
+use crate::ids::{RequestId, StepId};
 use crate::kv::{
     AllocationStatus, FreeResult, KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
@@ -129,10 +131,6 @@ pub struct EngineCore {
 }
 
 impl EngineCore {
-    pub fn new(cache_group_id: CacheGroupId) -> Self {
-        Self::with_kv_config(KvManagerConfig::validated(cache_group_id, 16, 1024))
-    }
-
     pub fn with_kv_config(kv_config: KvManagerConfig) -> Self {
         Self::with_runtime_components(kv_config, DeterministicRunner, DeterministicSampler)
     }
@@ -150,7 +148,7 @@ impl EngineCore {
         )
     }
 
-    pub fn with_runtime_components_and_planner<P, R, S>(
+    pub(crate) fn with_runtime_components_and_planner<P, R, S>(
         kv_config: KvManagerConfig,
         execution_plan_resolver: P,
         runner: R,
@@ -217,10 +215,6 @@ impl EngineCore {
     /// Set the generation paradigm applied to newly submitted requests (ADR-038).
     pub fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
         self.generation_kind = generation_kind;
-    }
-
-    pub fn generation_kind(&self) -> GenerationKind {
-        self.generation_kind
     }
 
     pub fn last_metal_dispatch(&self) -> Option<crate::metal::MetalDispatchTrace> {
