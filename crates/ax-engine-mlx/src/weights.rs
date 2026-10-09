@@ -7320,6 +7320,7 @@ mod tests {
         for schedule in [
             Qwen4ExpTargetSchedule::CanonicalSingleton,
             Qwen4ExpTargetSchedule::LegacyBatched,
+            Qwen4ExpTargetSchedule::LegacyBlock,
         ] {
             let result = load_flash_next_mtp_for_schedule(&schedule, || {
                 opened += 1;
@@ -7329,7 +7330,7 @@ mod tests {
             });
             assert!(matches!(result, Err(WeightLoadError::FileMissing(_))));
         }
-        assert_eq!(opened, 2);
+        assert_eq!(opened, 3);
     }
 
     #[test]

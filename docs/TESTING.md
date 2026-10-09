@@ -155,23 +155,30 @@ and retained state identical to direct decoding, but a round reads the expert
 weights twice, so it cannot decode faster than direct. Setting
 `AX_FLASH_NEXT_MTP_VERIFIER=batched` before loading the model selects one
 two-token target forward per round, with a one-token replay on rejection (the
-verifier pure-affine packs already use). Unset, empty or `canonical` keeps the
-default; any other value fails closed, so MTP does not attach and a `required`
-session is refused.
+verifier pure-affine packs already use). `AX_FLASH_NEXT_MTP_VERIFIER=block`
+selects one target forward over the primary plus up to three drafted tokens.
+A partial block replays the accepted prefix with singleton transitions,
+because recurrent state cannot be sliced; a fully accepted block keeps the
+batch-rounded state. Unset, empty or `canonical` keeps the default; any other
+value fails closed, so MTP does not attach and a `required` session is refused.
+The block value does not widen an affine trunk that already uses the length-2
+verifier.
 
-The batched schedule is an experimental opt-in. Accepted rounds retain
-batch-rounded state, so a greedy stream can diverge from direct decoding at a
-near-tied logit. It grants no qualification and no MTP-S, MTP-P or MTP-D claim,
-and `--mlx-mtp-policy auto` never selects it. It is not a general speed-up: on
-the one development host it helped only short prompts with high draft
-acceptance, and it was slower than both direct decoding and the canonical
-schedule at multi-thousand-token contexts. The server logs a warning at load
-and reports `ax_mlx_flash_next_mtp_verifier_schedule` in every route decision
-(`0` unavailable, `1` canonical singleton, `2` batched).
+The batched and block schedules are experimental opt-ins. A fully accepted
+round retains batch-rounded state, so a greedy stream can diverge from direct
+decoding at a near-tied logit. Neither grants qualification or an MTP-S, MTP-P
+or MTP-D claim, and `--mlx-mtp-policy auto` never selects either. The length-2
+batched schedule is not a general speed-up: on the one development host it
+helped only short prompts with high draft acceptance, and it was slower than
+both direct decoding and the canonical schedule at multi-thousand-token
+contexts. The server logs a warning at load and reports
+`ax_mlx_flash_next_mtp_verifier_schedule` in every route decision
+(`0` unavailable, `1` canonical singleton, `2` batched, `3` block).
 
 `scripts/run_flash_next_generate_matrix.py --mtp-verifier batched` runs the
-required-MTP arm that way. The harness strips inherited `AX_*` variables, so
-this option is the only way it passes the selection, and it fails the run if the
+required-MTP arm on the length-2 schedule. `--mtp-verifier block` runs the
+wider schedule. The harness strips inherited `AX_*` variables, so this option
+is the only way it passes the selection, and it fails the run if the
 engine-reported schedule differs from the requested one. The recorded contract
 carries `mtp_verifier`; the direct arm is unaffected.
 

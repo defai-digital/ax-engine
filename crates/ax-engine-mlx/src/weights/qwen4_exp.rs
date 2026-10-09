@@ -49,6 +49,9 @@ use super::{QuantizedWeight, WeightLoadError, take_weight, take_weight_spec, try
 pub(crate) enum Qwen4ExpTargetSchedule {
     CanonicalSingleton,
     LegacyBatched,
+    /// One target forward verifies up to three drafted tokens. Only the
+    /// explicit `block` verifier selects this, and only for audited MXFP4.
+    LegacyBlock,
     Unavailable(String),
 }
 
@@ -58,14 +61,18 @@ pub(crate) const MTP_VERIFIER_ENV: &str = "AX_FLASH_NEXT_MTP_VERIFIER";
 /// `Canonical` (the default) verifies with two sequential one-token target
 /// forwards, so output and retained state match direct decoding, but a round
 /// reads the weights twice and cannot beat direct decoding. `Batched` verifies
-/// with one two-token target forward and replays the primary on rejection. It
-/// is faster, but accepted rounds retain batch-rounded state, so the stream can
-/// diverge from direct decoding at near-tied logits. It grants no qualification.
+/// with one two-token target forward and replays the primary on rejection.
+/// `Block` verifies up to three drafted tokens in one target forward and
+/// replays the accepted prefix when the block is not fully accepted. Both
+/// opt-ins can retain batch-rounded state on a fully accepted round, so the
+/// stream can diverge from direct decoding at near-tied logits. Neither grants
+/// qualification.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Qwen4ExpMtpVerifierSelection {
     #[default]
     Canonical,
     Batched,
+    Block,
 }
 
 /// Unset or empty selects `Canonical`. Any other unrecognized value is an
@@ -76,15 +83,17 @@ pub(crate) fn parse_mtp_verifier_selection(
     match raw.map(str::trim) {
         None | Some("") | Some("canonical") => Ok(Qwen4ExpMtpVerifierSelection::Canonical),
         Some("batched") => Ok(Qwen4ExpMtpVerifierSelection::Batched),
+        Some("block") => Ok(Qwen4ExpMtpVerifierSelection::Block),
         Some(other) => Err(format!(
-            "invalid {MTP_VERIFIER_ENV} {other:?} (expected canonical or batched)"
+            "invalid {MTP_VERIFIER_ENV} {other:?} (expected canonical, batched, or block)"
         )),
     }
 }
 
-/// Apply the operator selection to a format-derived schedule. `Batched` only
-/// relaxes an audited MXFP4 canonical schedule; affine trunks already batch and
-/// an unavailable schedule stays unavailable.
+/// Apply the operator selection to a format-derived schedule. `Batched` and
+/// `Block` only relax an audited MXFP4 canonical schedule; affine trunks
+/// already batch and stay on the length-2 verifier, and an unavailable
+/// schedule stays unavailable.
 fn select_target_schedule(
     schedule: Qwen4ExpTargetSchedule,
     selection: Result<Qwen4ExpMtpVerifierSelection, String>,
@@ -102,6 +111,16 @@ fn select_target_schedule(
                  decoding at near-tied logits; no qualification is granted"
             );
             Qwen4ExpTargetSchedule::LegacyBatched
+        }
+        (Qwen4ExpTargetSchedule::CanonicalSingleton, Ok(Qwen4ExpMtpVerifierSelection::Block)) => {
+            tracing::warn!(
+                target: "ax_engine_mlx::weights",
+                env = MTP_VERIFIER_ENV,
+                "Flash Next MTP uses the block verifier: up to three drafted tokens share one \
+                 target forward; a fully accepted round retains batch-rounded state and can \
+                 diverge from direct decoding at near-tied logits; no qualification is granted"
+            );
+            Qwen4ExpTargetSchedule::LegacyBlock
         }
         (schedule, Ok(_)) => schedule,
     }
@@ -2273,7 +2292,7 @@ mod tests {
 
     #[test]
     fn mtp_verifier_selection_is_explicit_and_only_relaxes_audited_mxfp4() {
-        use Qwen4ExpMtpVerifierSelection::{Batched, Canonical};
+        use Qwen4ExpMtpVerifierSelection::{Batched, Block, Canonical};
         for unset in [
             None,
             Some(""),
@@ -2284,7 +2303,8 @@ mod tests {
             assert_eq!(parse_mtp_verifier_selection(unset), Ok(Canonical));
         }
         assert_eq!(parse_mtp_verifier_selection(Some("batched")), Ok(Batched));
-        for bad in ["batch", "1", "true", "BATCHED", "legacy"] {
+        assert_eq!(parse_mtp_verifier_selection(Some("block")), Ok(Block));
+        for bad in ["batch", "1", "true", "BATCHED", "legacy", "BLOCK"] {
             let reason = parse_mtp_verifier_selection(Some(bad)).unwrap_err();
             assert!(reason.contains(MTP_VERIFIER_ENV) && reason.contains(bad));
         }
@@ -2298,14 +2318,18 @@ mod tests {
             select(Qwen4ExpTargetSchedule::CanonicalSingleton, Ok(Batched)),
             Qwen4ExpTargetSchedule::LegacyBatched
         );
-        for selection in [Canonical, Batched] {
+        assert_eq!(
+            select(Qwen4ExpTargetSchedule::CanonicalSingleton, Ok(Block)),
+            Qwen4ExpTargetSchedule::LegacyBlock
+        );
+        for selection in [Canonical, Batched, Block] {
             assert_eq!(
                 select(Qwen4ExpTargetSchedule::LegacyBatched, Ok(selection)),
                 Qwen4ExpTargetSchedule::LegacyBatched
             );
         }
         // An unclassified or rejected format is never relaxed into a schedule.
-        for selection in [Canonical, Batched] {
+        for selection in [Canonical, Batched, Block] {
             assert_eq!(
                 select(
                     Qwen4ExpTargetSchedule::Unavailable("format".into()),
@@ -2325,6 +2349,7 @@ mod tests {
         for schedule in [
             Qwen4ExpTargetSchedule::CanonicalSingleton,
             Qwen4ExpTargetSchedule::LegacyBatched,
+            Qwen4ExpTargetSchedule::LegacyBlock,
         ] {
             assert_eq!(
                 select(schedule, Err("selection".into())),

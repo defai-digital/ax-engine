@@ -211,6 +211,8 @@ class GenerateMatrixTests(unittest.TestCase):
         self.assertEqual(json.loads(dry().stdout)["mtp_verifier"], "canonical")
         batched = dry("--mtp-verifier", "batched")
         self.assertEqual(json.loads(batched.stdout)["mtp_verifier"], "batched")
+        block = dry("--mtp-verifier", "block")
+        self.assertEqual(json.loads(block.stdout)["mtp_verifier"], "block")
         self.assertNotEqual(dry("--mtp-verifier", "legacy").returncode, 0)
         self.assertNotEqual(dry("--mtp-verifier", "batched", "--modes", "disabled", "default").returncode, 0)
 

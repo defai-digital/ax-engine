@@ -218,7 +218,9 @@ fn runner_identity_admitted(
 ) -> bool {
     match schedule {
         Qwen4ExpTargetSchedule::CanonicalSingleton => identity.greedy_identity,
-        Qwen4ExpTargetSchedule::LegacyBatched => identity.identity_until_first_tie,
+        Qwen4ExpTargetSchedule::LegacyBatched | Qwen4ExpTargetSchedule::LegacyBlock => {
+            identity.identity_until_first_tie
+        }
         Qwen4ExpTargetSchedule::Unavailable(_) => false,
     }
 }

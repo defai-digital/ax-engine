@@ -1,12 +1,14 @@
 //! Experimental Flash Next draft graph with authoritative primary verification.
 //!
 //! Admitted MXFP4 trunks verify and retain state with ordinary singleton
-//! target transitions. Pure-affine trunks retain the legacy batched verifier,
-//! and an operator can select that batched verifier for MXFP4 with
-//! `AX_FLASH_NEXT_MTP_VERIFIER=batched`: one round then reads the weights once
-//! instead of twice, at the cost of near-tie divergence from direct decoding.
-//! Neither schedule grants qualification: target token and state identity,
-//! including exact ties, require independent direct-trajectory evidence.
+//! target transitions. Pure-affine trunks retain the legacy batched verifier.
+//! `AX_FLASH_NEXT_MTP_VERIFIER=batched` selects that length-2 verifier for
+//! MXFP4: one round reads the weights once instead of twice.
+//! `AX_FLASH_NEXT_MTP_VERIFIER=block` verifies up to three drafted tokens in
+//! one target forward and replays the accepted prefix when the block is not
+//! fully accepted. A fully accepted batched or block round keeps
+//! batch-rounded state, so a greedy stream can diverge from direct decoding
+//! at a near-tied logit. None of these schedules grants qualification.
 //!
 //! The sidecar has no published official forward oracle. Its candidate input
 //! combiner uses a shared hidden projection per residual stream and adds a
@@ -157,14 +159,16 @@ fn trunk_forward(
             }
             qwen4_exp::forward(trunk, tokens, state, owner, ProjectionBatchPolicy::Shared)
         }
-        Qwen4ExpTargetSchedule::LegacyBatched => qwen4_exp::forward_with_verifier_policy(
-            trunk,
-            tokens,
-            state,
-            owner,
-            ProjectionBatchPolicy::Shared,
-            ProjectionBatchPolicy::RowExact,
-        ),
+        Qwen4ExpTargetSchedule::LegacyBatched | Qwen4ExpTargetSchedule::LegacyBlock => {
+            qwen4_exp::forward_with_verifier_policy(
+                trunk,
+                tokens,
+                state,
+                owner,
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::RowExact,
+            )
+        }
         Qwen4ExpTargetSchedule::Unavailable(reason) => {
             return Err(format!(
                 "Flash Next MTP target schedule unavailable: {reason}"
@@ -181,12 +185,14 @@ fn trunk_forward(
 }
 
 /// Route-decision code for the MTP target verifier schedule:
-/// 0 unavailable, 1 canonical singleton, 2 batched (length-2 verify).
+/// 0 unavailable, 1 canonical singleton, 2 batched (length-2 verify),
+/// 3 block (up to three drafts, one target forward).
 pub(crate) fn target_schedule_route_code(trunk: &Qwen4ExpWeights) -> u32 {
     match trunk.target_schedule {
         Qwen4ExpTargetSchedule::Unavailable(_) => 0,
         Qwen4ExpTargetSchedule::CanonicalSingleton => 1,
         Qwen4ExpTargetSchedule::LegacyBatched => 2,
+        Qwen4ExpTargetSchedule::LegacyBlock => 3,
     }
 }
 
@@ -195,6 +201,7 @@ pub(crate) fn target_schedule_name(trunk: &Qwen4ExpWeights) -> &'static str {
     match trunk.target_schedule {
         Qwen4ExpTargetSchedule::CanonicalSingleton => "canonical_singleton",
         Qwen4ExpTargetSchedule::LegacyBatched => "legacy_batched",
+        Qwen4ExpTargetSchedule::LegacyBlock => "legacy_block",
         Qwen4ExpTargetSchedule::Unavailable(_) => "unavailable",
     }
 }
@@ -566,6 +573,80 @@ pub(crate) fn verify_one(
     }
 }
 
+/// Drafts verified by one `LegacyBlock` target forward. The canonical and
+/// length-2 schedules stay at one draft.
+pub(crate) const FLASH_NEXT_BLOCK_DRAFTS: usize = 3;
+
+/// How many drafts this round may propose. Canonical and length-2 schedules
+/// stay at one. A block round needs room for at least two drafts plus the
+/// unconsumed bonus (`remaining - 1 >= 2`).
+pub(crate) fn block_draft_limit(schedule: &Qwen4ExpTargetSchedule, remaining: usize) -> usize {
+    if !matches!(schedule, Qwen4ExpTargetSchedule::LegacyBlock) {
+        return 1;
+    }
+    let room = remaining.saturating_sub(1);
+    if room < 2 {
+        return 1;
+    }
+    room.min(FLASH_NEXT_BLOCK_DRAFTS)
+}
+
+/// Longest draft prefix whose verifier row matches and neither side is terminal.
+/// `inputs[i]` produced `corrections[i]`; `inputs[0]` is the primary.
+pub(crate) fn accepted_draft_prefix(
+    inputs: &[u32],
+    corrections: &[u32],
+    drafts: &[u32],
+    terminal_ids: &[u32],
+) -> usize {
+    let limit = drafts.len().min(corrections.len()).min(inputs.len());
+    let mut accepted = 0;
+    for index in 0..limit {
+        let input = inputs[index];
+        let correction = corrections[index];
+        if terminal_ids.contains(&input)
+            || terminal_ids.contains(&correction)
+            || drafts[index] != correction
+        {
+            break;
+        }
+        accepted += 1;
+    }
+    accepted
+}
+
+fn singleton_stream_row(hidden: &MlxArray, width: i32) -> Result<MlxArray, String> {
+    if hidden.shape() == [1, 1, width] {
+        return Ok(hidden.clone());
+    }
+    let sequence = hidden.shape().get(1).copied().unwrap_or(0);
+    if sequence <= 0 {
+        return Err("Flash Next MTP stream row is missing".into());
+    }
+    let row = take_sequence_row(hidden, sequence - 1)?;
+    try_eval(&[&row])?;
+    Ok(row)
+}
+
+fn catch_up_head(
+    head: &Qwen4ExpMtpWeights,
+    mut draft_state: Qwen4ExpState,
+    mut preceding: MlxArray,
+    tokens: &[u32],
+    hiddens_after: &[MlxArray],
+    owner: u64,
+) -> Result<(Qwen4ExpState, MlxArray), String> {
+    if tokens.is_empty() || tokens.len() != hiddens_after.len() {
+        return Err("Flash Next MTP head catch-up length mismatch".into());
+    }
+    let width = head.graph.layout.packed_width() as i32;
+    for (token, after) in tokens.iter().zip(hiddens_after.iter()) {
+        draft_state = head_advance_cache(head, &preceding, &[*token], &draft_state, owner)?;
+        preceding = singleton_stream_row(after, width)?;
+    }
+    Ok((draft_state, preceding))
+}
+
 /// Request-owned draft history, kept separate from the authoritative KV cache.
 #[derive(Clone)]
 pub(crate) struct Qwen4ExpDraftCursor {
@@ -581,6 +662,8 @@ pub(crate) struct CursorStep {
     pub committed_len: usize,
     pub emitted: Vec<u32>,
     pub accepted: bool,
+    pub drafted: usize,
+    pub accepted_drafts: usize,
     pub draft_wall_us: u32,
     pub correction_wall_us: u32,
     pub bonus_wall_us: u32,
@@ -598,6 +681,8 @@ struct AdvancedStep {
     consumed: Vec<u32>,
     next_primary: u32,
     accepted: bool,
+    drafted: usize,
+    accepted_drafts: usize,
     draft_wall_us: u32,
     correction_wall_us: u32,
     bonus_wall_us: u32,
@@ -755,15 +840,27 @@ impl Qwen4ExpDraftCursor {
         if remaining == 0 || !self.aligned(state) || self.owner == trunk_owner {
             return Err("invalid Flash Next MTP budget or draft/trunk alignment".into());
         }
-        let hidden = self
-            .stream_hidden
-            .as_ref()
-            .ok_or("missing MTP stream row")?;
+        let hidden = self.stream_hidden.clone().ok_or("missing MTP stream row")?;
+        let draft_limit = block_draft_limit(&trunk.target_schedule, remaining);
+        if draft_limit >= 2
+            && let Some(step) = self.try_advance_block(
+                trunk,
+                head,
+                state,
+                trunk_owner,
+                primary,
+                &hidden,
+                draft_limit,
+                terminal_ids,
+            )?
+        {
+            return Ok(step);
+        }
         if remaining == 1 {
             // No draft can be accepted, but its QSA history must stay aligned.
             let started = Instant::now();
             let draft_state =
-                head_advance_cache(head, hidden, &[primary], &self.draft_state, self.owner)?;
+                head_advance_cache(head, &hidden, &[primary], &self.draft_state, self.owner)?;
             let draft_wall_us = elapsed_us(started);
             let started = Instant::now();
             let output = trunk_forward(trunk, &[primary], state, trunk_owner)?;
@@ -792,6 +889,8 @@ impl Qwen4ExpDraftCursor {
                 consumed: vec![primary],
                 next_primary,
                 accepted: false,
+                drafted: 0,
+                accepted_drafts: 0,
                 draft_wall_us,
                 correction_wall_us,
                 bonus_wall_us: 0,
@@ -802,7 +901,7 @@ impl Qwen4ExpDraftCursor {
             });
         }
         let draft_started = Instant::now();
-        let proposed = head_forward(head, hidden, &[primary], &self.draft_state, self.owner)?;
+        let proposed = head_forward(head, &hidden, &[primary], &self.draft_state, self.owner)?;
         let draft = next_token(&proposed)?;
         let mut draft_wall_us = elapsed_us(draft_started);
         let verified = verify_one(
@@ -867,6 +966,8 @@ impl Qwen4ExpDraftCursor {
             consumed,
             next_primary,
             accepted,
+            drafted: 1,
+            accepted_drafts: usize::from(accepted),
             draft_wall_us,
             correction_wall_us,
             bonus_wall_us,
@@ -875,6 +976,164 @@ impl Qwen4ExpDraftCursor {
             correction_margin,
             bonus_margin,
         })
+    }
+
+    /// Verify a recurrent draft block with one target forward.
+    ///
+    /// Returns `Ok(None)` when the head stops before two drafts, so the caller
+    /// keeps the length-2 path. The cursor is unpublished until this returns
+    /// `Some`: a failure, or a short chain, leaves both caches untouched.
+    #[allow(clippy::too_many_arguments)]
+    fn try_advance_block(
+        &mut self,
+        trunk: &Qwen4ExpWeights,
+        head: &Qwen4ExpMtpWeights,
+        state: &Qwen4ExpState,
+        trunk_owner: u64,
+        primary: u32,
+        hidden: &MlxArray,
+        draft_limit: usize,
+        terminal_ids: &[u32],
+    ) -> Result<Option<AdvancedStep>, String> {
+        let draft_started = Instant::now();
+        let mut spec_hidden = hidden.clone();
+        let mut spec_state = self.draft_state.clone();
+        let mut cursor_token = primary;
+        let mut drafts = Vec::with_capacity(draft_limit);
+        for _ in 0..draft_limit {
+            let proposed =
+                head_forward(head, &spec_hidden, &[cursor_token], &spec_state, self.owner)?;
+            let draft = next_token(&proposed)?;
+            if terminal_ids.contains(&draft) {
+                break;
+            }
+            drafts.push(draft);
+            spec_hidden = proposed.stream_hidden;
+            spec_state = proposed.state;
+            cursor_token = draft;
+        }
+        if drafts.len() < 2 {
+            return Ok(None);
+        }
+        let mut draft_wall_us = elapsed_us(draft_started);
+        let mut window = Vec::with_capacity(1 + drafts.len());
+        window.push(primary);
+        window.extend_from_slice(&drafts);
+        let started = Instant::now();
+        let batched = trunk_forward(trunk, &window, state, trunk_owner)?;
+        let correction_wall_us = elapsed_us(started);
+        if batched.logits.shape().first().copied() != Some(window.len() as i32) {
+            return Err("Flash Next MTP block verify logit rows do not match the window".into());
+        }
+        let mut corrections = Vec::with_capacity(drafts.len());
+        for index in 0..drafts.len() {
+            corrections.push(token_at_row(&batched.logits, index as i32)?);
+        }
+        let accepted_drafts = accepted_draft_prefix(&window, &corrections, &drafts, terminal_ids);
+        let correction_margin = top_two_margin(&batched.logits, 0)?;
+        let width = head.graph.layout.packed_width() as i32;
+        let preceding = singleton_stream_row(hidden, width)?;
+        #[cfg(test)]
+        let logits_for_test = batched.logits.clone();
+        let align_started = Instant::now();
+        let (draft_state, next_hidden, trunk_state, next_primary, bonus_margin, rejection_wall_us) =
+            if accepted_drafts == drafts.len() {
+                let mut rows = Vec::with_capacity(window.len());
+                for index in 0..window.len() {
+                    rows.push(take_sequence_row(&batched.stream_hidden, index as i32)?);
+                }
+                let bonus_index = drafts.len() as i32;
+                let bonus = token_at_row(&batched.logits, bonus_index)?;
+                let bonus_margin = top_two_margin(&batched.logits, bonus_index)?;
+                let (draft_state, next_hidden) = catch_up_head(
+                    head,
+                    self.draft_state.clone(),
+                    preceding,
+                    &window,
+                    &rows,
+                    self.owner,
+                )?;
+                (
+                    draft_state,
+                    next_hidden,
+                    batched.state,
+                    bonus,
+                    bonus_margin,
+                    0,
+                )
+            } else {
+                let prefix = &window[..=accepted_drafts];
+                let replay_started = Instant::now();
+                let mut replay_trunk = state.clone();
+                let mut hiddens_after = Vec::with_capacity(prefix.len());
+                let mut last = None;
+                for token in prefix {
+                    let output = trunk_forward(trunk, &[*token], &replay_trunk, trunk_owner)?;
+                    hiddens_after.push(output.stream_hidden.clone());
+                    replay_trunk = output.state.clone();
+                    last = Some(output);
+                }
+                let rejection_wall_us = elapsed_us(replay_started);
+                let last = last.ok_or("Flash Next MTP block replay prefix is empty")?;
+                let bonus = next_token(&last)?;
+                let bonus_margin = top_two_margin(&last.logits, 0)?;
+                let (draft_state, next_hidden) = catch_up_head(
+                    head,
+                    self.draft_state.clone(),
+                    preceding,
+                    prefix,
+                    &hiddens_after,
+                    self.owner,
+                )?;
+                (
+                    draft_state,
+                    next_hidden,
+                    last.state,
+                    bonus,
+                    bonus_margin,
+                    rejection_wall_us,
+                )
+            };
+        #[cfg(test)]
+        if FAIL_ACCEPTED_CATCHUP.with(Cell::get) {
+            return Err("injected failure after materialized accepted head catch-up".into());
+        }
+        draft_wall_us = draft_wall_us.saturating_add(elapsed_us(align_started));
+        let consumed = if accepted_drafts == drafts.len() {
+            window
+        } else {
+            window[..=accepted_drafts].to_vec()
+        };
+        #[cfg(test)]
+        let drafted_token = drafts.first().copied();
+        self.draft_state = draft_state;
+        self.stream_hidden = Some(next_hidden);
+        self.proposed += drafts.len();
+        self.accepted += accepted_drafts;
+        Ok(Some(AdvancedStep {
+            #[cfg(test)]
+            observation: CandidateStepObservation {
+                target_schedule: target_schedule_name(trunk),
+                draft_token: drafted_token,
+                verification_logits: Some(logits_for_test.clone()),
+                canonical_correction_logits: None,
+                canonical_primary: None,
+                next_logits: logits_for_test,
+            },
+            trunk_state,
+            consumed,
+            next_primary,
+            accepted: accepted_drafts > 0,
+            drafted: drafts.len(),
+            accepted_drafts,
+            draft_wall_us,
+            correction_wall_us,
+            bonus_wall_us: 0,
+            rejection_wall_us,
+            verify_wall_us: sum_verify_wall_us(correction_wall_us, 0, rejection_wall_us),
+            correction_margin,
+            bonus_margin,
+        }))
     }
 
     /// The runner has already emitted `primary`. Return only newly predicted
@@ -907,6 +1166,8 @@ impl Qwen4ExpDraftCursor {
             committed_len,
             emitted,
             accepted: advanced.accepted,
+            drafted: advanced.drafted,
+            accepted_drafts: advanced.accepted_drafts,
             draft_wall_us: advanced.draft_wall_us,
             correction_wall_us: advanced.correction_wall_us,
             bonus_wall_us: advanced.bonus_wall_us,
@@ -2480,5 +2741,59 @@ pub(crate) mod trained_head {
         assert_ne!(row_permutation(32, PERMUTE_HEAD_SEED ^ 1), first);
         assert_eq!(agreement_rate(&[]), 0.0);
         assert_eq!(agreement_rate(&[true, true, false, true]), 0.75);
+    }
+}
+
+#[cfg(test)]
+mod block_verifier_tests {
+    use super::{
+        FLASH_NEXT_BLOCK_DRAFTS, Qwen4ExpTargetSchedule, accepted_draft_prefix, block_draft_limit,
+    };
+
+    #[test]
+    fn block_draft_limit_stays_one_except_for_a_wide_block_budget() {
+        let canonical = Qwen4ExpTargetSchedule::CanonicalSingleton;
+        let batched = Qwen4ExpTargetSchedule::LegacyBatched;
+        let block = Qwen4ExpTargetSchedule::LegacyBlock;
+        assert_eq!(block_draft_limit(&canonical, 256), 1);
+        assert_eq!(block_draft_limit(&batched, 256), 1);
+        assert_eq!(block_draft_limit(&block, 1), 1);
+        assert_eq!(block_draft_limit(&block, 2), 1);
+        assert_eq!(block_draft_limit(&block, 3), 2);
+        assert_eq!(block_draft_limit(&block, 4), 3);
+        assert_eq!(block_draft_limit(&block, 256), FLASH_NEXT_BLOCK_DRAFTS);
+        assert_eq!(FLASH_NEXT_BLOCK_DRAFTS, 3);
+    }
+
+    #[test]
+    fn accepted_draft_prefix_stops_on_mismatch_or_terminal() {
+        let inputs = [10, 20, 30];
+        let drafts = [20, 30, 40];
+        assert_eq!(
+            accepted_draft_prefix(&inputs, &[20, 30, 40], &drafts, &[]),
+            3
+        );
+        assert_eq!(
+            accepted_draft_prefix(&inputs, &[20, 31, 40], &drafts, &[]),
+            1
+        );
+        assert_eq!(
+            accepted_draft_prefix(&inputs, &[21, 30, 40], &drafts, &[]),
+            0
+        );
+        assert_eq!(
+            accepted_draft_prefix(&inputs, &[20, 30, 40], &drafts, &[30]),
+            1
+        );
+        assert_eq!(
+            accepted_draft_prefix(&inputs, &[20, 30, 40], &drafts, &[10]),
+            0
+        );
+        assert_eq!(
+            accepted_draft_prefix(&inputs, &[20, 99, 40], &drafts, &[99]),
+            1
+        );
+        assert_eq!(accepted_draft_prefix(&inputs, &[20], &drafts, &[]), 1);
+        assert_eq!(accepted_draft_prefix(&[], &[], &[], &[]), 0);
     }
 }

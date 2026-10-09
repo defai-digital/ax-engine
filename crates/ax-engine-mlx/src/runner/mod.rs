@@ -9070,15 +9070,20 @@ impl MlxRunner {
 
         // A one-token budget cannot accept a draft; it is neither a miss nor
         // a partial reject, so it contributes no accept/reject sample.
-        let accepted = usize::from(step.accepted);
         state.mtp_telemetry.record_correctness_mode(
             MtpCorrectnessMode::GreedyExact,
             MtpProposalLaw::DeterministicDelta,
         );
-        if remaining_output > 1 {
-            state
-                .mtp_telemetry
-                .record_step(1, accepted, &[MtpDraftSource::Mtp], None, accepted);
+        if remaining_output > 1 && step.drafted > 0 {
+            let sources = [MtpDraftSource::Mtp; 3];
+            let drafted = step.drafted.min(sources.len());
+            state.mtp_telemetry.record_step(
+                drafted,
+                step.accepted_drafts.min(drafted),
+                &sources[..drafted],
+                None,
+                step.accepted_drafts.min(drafted),
+            );
         }
         state.mtp_telemetry.record_timings(MtpStepTimings {
             verify_forward_wall_us: step.verify_wall_us,

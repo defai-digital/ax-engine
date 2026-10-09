@@ -43,12 +43,14 @@ ROOT = Path(__file__).resolve().parents[1]
 MODES = ("disabled", "required")
 # Operator choice of the MXFP4 MTP target verifier. `canonical` is the product
 # schedule (two singleton target forwards per round). `batched` runs one
-# two-token target forward per round; its output may diverge from direct at
-# near-tied logits. Only the required-MTP arm receives it.
-VERIFIERS = ("canonical", "batched")
+# two-token target forward per round. `block` runs one target forward over the
+# primary plus up to three drafted tokens. Fully accepted batched and block
+# rounds may diverge from direct at near-tied logits. Only the required-MTP
+# arm receives either opt-in.
+VERIFIERS = ("canonical", "batched", "block")
 VERIFIER_ENV = "AX_FLASH_NEXT_MTP_VERIFIER"
 VERIFIER_SCHEDULE_KEY = "ax_mlx_flash_next_mtp_verifier_schedule"
-VERIFIER_SCHEDULE_CODE = {"canonical": 1, "batched": 2}
+VERIFIER_SCHEDULE_CODE = {"canonical": 1, "batched": 2, "block": 3}
 TOTAL_BLOCKS = 4096
 OUTPUT_TOKENS = 128
 LENGTHS = (512, 2048, 8192)
@@ -170,7 +172,7 @@ def slim(response: dict[str, Any], before: dict[str, float], after: dict[str, fl
 
 
 def arm_verifier(mode: str, verifier: str) -> str:
-    """The verifier an arm runs: only the required-MTP arm can select `batched`."""
+    """The verifier an arm runs: only the required-MTP arm can leave canonical."""
     return verifier if mode == "required" else "canonical"
 
 
@@ -379,9 +381,10 @@ def main() -> int:
     parser.add_argument("--no-warm-pass", action="store_true",
                         help="skip the discarded warm-up pass (smoke runs only)")
     parser.add_argument("--mtp-verifier", choices=VERIFIERS, default="canonical",
-                        help="MTP target verifier for the required arm: the canonical product "
-                             "schedule, or the batched verifier (token identity with direct is "
-                             "then not expected at near-tied logits)")
+                        help="MTP target verifier for the required arm: canonical, batched "
+                             "(one two-token forward), or block (up to three drafts in one "
+                             "forward). Fully accepted batched and block rounds can diverge "
+                             "from direct decoding at near-tied logits")
     parser.add_argument("--repeats", type=int, default=2,
                         help="independent server processes per arm; the lowest-latency one is kept")
     args = parser.parse_args()
@@ -390,7 +393,7 @@ def main() -> int:
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
     if args.mtp_verifier != "canonical" and "required" not in args.modes:
-        parser.error("--mtp-verifier batched applies only to the required MTP arm")
+        parser.error("--mtp-verifier batched or block applies only to the required MTP arm")
     prompts = PROMPTS[: args.limit_prompts] if args.limit_prompts else PROMPTS
     lengths = tuple(args.lengths) if args.lengths else LENGTHS
     contract = {"repo_id": native.PRIMARY_REPO, "revision": native.PACK_REVISION,
