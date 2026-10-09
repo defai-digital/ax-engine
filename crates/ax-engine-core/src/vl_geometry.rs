@@ -59,7 +59,7 @@ impl MropeSections {
         }
     }
 
-    pub fn total_positions(self) -> u32 {
+    pub(crate) fn total_positions(self) -> u32 {
         self.temporal
             .saturating_mul(self.height)
             .saturating_mul(self.width)

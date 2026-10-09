@@ -103,11 +103,13 @@ impl MultimodalPrefillAdapter {
         false
     }
 
-    pub fn has_vision(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_vision(&self) -> bool {
         self.modalities.contains(&PrefillModality::Vision)
     }
 
-    pub fn has_audio(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_audio(&self) -> bool {
         self.modalities.contains(&PrefillModality::Audio)
     }
 }

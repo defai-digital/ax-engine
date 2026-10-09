@@ -89,7 +89,7 @@ pub struct MetalDispatchWorkload {
 }
 
 impl MetalDispatchWorkload {
-    pub fn from_runner_input(input: &RunnerInput) -> Result<Self, MetalRuntimeError> {
+    pub(crate) fn from_runner_input(input: &RunnerInput) -> Result<Self, MetalRuntimeError> {
         let kv_metadata = build_dispatch_kv_metadata(input)?;
         let scheduled_requests = input.execution_batch.items.len() as u32;
         let decode_requests = input

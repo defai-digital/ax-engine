@@ -27,7 +27,7 @@ const HF_NORM_ONLY: &str = "hf_norm_only";
 /// Runtime blocker recorded when the on-disk weight layout could not be
 /// interpreted from `axquant_manifest.json` (missing file or unrecognized
 /// exporter tuple).
-pub const QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER: &str = "qwen4_exp_weight_layout_unknown";
+pub(crate) const QWEN4_EXP_WEIGHT_LAYOUT_UNKNOWN_BLOCKER: &str = "qwen4_exp_weight_layout_unknown";
 
 fn is_expert_role(role: NativeTensorRole) -> bool {
     matches!(

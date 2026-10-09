@@ -57,7 +57,7 @@ pub struct PrefixLookupResult {
 }
 
 impl PrefixLookupResult {
-    pub fn miss(cache_group_id: CacheGroupId) -> Self {
+    pub(crate) fn miss(cache_group_id: CacheGroupId) -> Self {
         Self {
             matched_blocks: Vec::new(),
             matched_token_count: 0,
@@ -223,7 +223,7 @@ impl KvManager {
         }
     }
 
-    pub fn config(&self) -> KvManagerConfig {
+    pub(crate) fn config(&self) -> KvManagerConfig {
         self.config
     }
 
@@ -457,7 +457,7 @@ impl KvManager {
         Ok(())
     }
 
-    pub fn validate_prefix_share(
+    pub(crate) fn validate_prefix_share(
         &self,
         request_id: RequestId,
         lookup: &PrefixLookupResult,
@@ -515,7 +515,8 @@ impl KvManager {
         Ok(())
     }
 
-    pub fn can_allocate(
+    #[cfg(test)]
+    pub(crate) fn can_allocate(
         &self,
         request_id: RequestId,
         scheduled_tokens: u32,
@@ -736,11 +737,11 @@ impl KvManager {
         })
     }
 
-    pub fn take_recent_evictions(&mut self) -> u32 {
+    pub(crate) fn take_recent_evictions(&mut self) -> u32 {
         std::mem::take(&mut self.recent_evictions)
     }
 
-    pub fn telemetry(&self) -> KvTelemetry {
+    pub(crate) fn telemetry(&self) -> KvTelemetry {
         let count = |value: usize| u64::try_from(value).unwrap_or(u64::MAX);
         KvTelemetry {
             allocated_blocks_total: self.allocated_blocks_total,
@@ -766,7 +767,10 @@ impl KvManager {
         }
     }
 
-    pub fn block_table(&self, request_id: RequestId) -> Result<BlockTableView, KvManagerError> {
+    pub(crate) fn block_table(
+        &self,
+        request_id: RequestId,
+    ) -> Result<BlockTableView, KvManagerError> {
         let table = self
             .block_tables
             .get(&request_id)
@@ -777,7 +781,7 @@ impl KvManager {
         })
     }
 
-    pub fn block_table_snapshot(
+    pub(crate) fn block_table_snapshot(
         &self,
         request_id: RequestId,
     ) -> Result<BlockTable, KvManagerError> {
@@ -789,7 +793,7 @@ impl KvManager {
 
     /// Logical token count without cloning the block table — the multi-token
     /// reconciliation loop only needs the scalar.
-    pub fn logical_token_count(&self, request_id: RequestId) -> Result<u32, KvManagerError> {
+    pub(crate) fn logical_token_count(&self, request_id: RequestId) -> Result<u32, KvManagerError> {
         Ok(self
             .block_tables
             .get(&request_id)
@@ -801,7 +805,7 @@ impl KvManager {
         self.config.total_blocks - self.available_block_count()
     }
 
-    pub fn block_count_for(&self, request_id: RequestId) -> u32 {
+    pub(crate) fn block_count_for(&self, request_id: RequestId) -> u32 {
         self.block_tables
             .get(&request_id)
             .map(|table| table.block_ids.len() as u32)
@@ -857,13 +861,16 @@ impl KvManager {
         }
     }
 
-    pub fn memory_pressure(&self) -> Option<String> {
+    pub(crate) fn memory_pressure(&self) -> Option<String> {
         self.memory_pressure_for_allocatable(self.allocatable_block_count())
     }
 
     /// Pressure label for an already-computed allocatable count, so a caller
     /// that needs both the count and the label computes the count once.
-    pub fn memory_pressure_for_allocatable(&self, allocatable_blocks: u32) -> Option<String> {
+    pub(crate) fn memory_pressure_for_allocatable(
+        &self,
+        allocatable_blocks: u32,
+    ) -> Option<String> {
         if allocatable_blocks == 0 {
             Some("kv_exhausted".into())
         } else if u64::from(allocatable_blocks) * u64::from(KV_LOW_FREE_BLOCKS_DIVISOR)

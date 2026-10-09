@@ -40,14 +40,6 @@ impl GenerationKind {
             Self::EncoderEmbed => 2,
         }
     }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Autoregressive => "autoregressive",
-            Self::BlockDiffusion => "block_diffusion",
-            Self::EncoderEmbed => "encoder_embed",
-        }
-    }
 }
 
 /// Scheduler / runner work-unit vocabulary.
@@ -90,11 +82,12 @@ pub struct GenerationProgress {
 }
 
 impl GenerationProgress {
+    #[cfg(test)]
     /// Build progress from scheduler-facing request counters.
     ///
     /// Diffusion-specific fields (`commit_ready`, `block_committed`, denoise
     /// steps) stay at defaults unless the runner overlays them.
-    pub fn from_request_counters(
+    pub(crate) fn from_request_counters(
         processed_prompt_tokens: u32,
         prompt_len: u32,
         generated_visible_tokens: u32,
@@ -131,7 +124,7 @@ pub struct GenerationStrategyDescriptor {
 }
 
 impl GenerationStrategyDescriptor {
-    pub const fn for_kind(kind: GenerationKind) -> Self {
+    pub(crate) const fn for_kind(kind: GenerationKind) -> Self {
         let first_visible = match kind {
             GenerationKind::Autoregressive => FirstVisibleEventKind::FirstToken,
             GenerationKind::BlockDiffusion => FirstVisibleEventKind::FirstBlock,
@@ -143,12 +136,14 @@ impl GenerationStrategyDescriptor {
         }
     }
 
-    pub fn from_manifest(manifest: &NativeModelManifest) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_manifest(manifest: &NativeModelManifest) -> Self {
         Self::for_kind(GenerationKind::from_manifest(manifest))
     }
 
+    #[cfg(test)]
     /// Canonical work-unit sequence shape for documentation and planners.
-    pub const fn default_work_units(self) -> &'static [WorkUnitKind] {
+    pub(crate) const fn default_work_units(self) -> &'static [WorkUnitKind] {
         match self.kind {
             GenerationKind::Autoregressive => {
                 &[WorkUnitKind::PrefillChunk, WorkUnitKind::TokenDecode]
@@ -166,7 +161,7 @@ impl GenerationStrategyDescriptor {
     ///
     /// This is the Phase 2 strategy boundary: callers do not hard-code
     /// family-specific step shapes when they can use this planner.
-    pub fn plan_next_work_unit(self, progress: GenerationProgress) -> WorkUnitKind {
+    pub(crate) fn plan_next_work_unit(self, progress: GenerationProgress) -> WorkUnitKind {
         match self.kind {
             GenerationKind::EncoderEmbed => WorkUnitKind::EmbedForward,
             GenerationKind::Autoregressive => {
@@ -191,13 +186,15 @@ impl GenerationStrategyDescriptor {
         }
     }
 
+    #[cfg(test)]
     /// Whether this strategy emits a token stream (vs a single embedding).
-    pub const fn emits_token_stream(self) -> bool {
+    pub(crate) const fn emits_token_stream(self) -> bool {
         !matches!(self.kind, GenerationKind::EncoderEmbed)
     }
 
+    #[cfg(test)]
     /// Metrics label for the first user-visible event (stable string).
-    pub const fn first_visible_metric_label(self) -> &'static str {
+    pub(crate) const fn first_visible_metric_label(self) -> &'static str {
         match self.first_visible {
             FirstVisibleEventKind::FirstToken => "ttft_first_token",
             FirstVisibleEventKind::FirstBlock => "time_to_first_block",

@@ -74,7 +74,7 @@ pub struct RunnerRequestMultimodalInput {
 }
 
 impl RunnerInput {
-    pub fn request_context(&self, request_id: RequestId) -> Option<&RunnerRequestContext> {
+    pub(crate) fn request_context(&self, request_id: RequestId) -> Option<&RunnerRequestContext> {
         self.request_contexts
             .iter()
             .find(|context| context.request_id == request_id)
@@ -119,14 +119,14 @@ pub struct RequestExecutionUpdate {
 
 impl RequestExecutionUpdate {
     #[inline]
-    pub fn has_output_tokens(&self) -> bool {
+    pub(crate) fn has_output_tokens(&self) -> bool {
         self.output_token.is_some() || !self.output_tokens.is_empty()
     }
 
     /// Mid-block diffusion denoise progress: schedule feedback only, no visible
     /// token yet. Decode contract allows this without logits/output tokens.
     #[inline]
-    pub fn is_diffusion_schedule_progress_only(&self) -> bool {
+    pub(crate) fn is_diffusion_schedule_progress_only(&self) -> bool {
         matches!(
             self.diffusion_schedule,
             Some(DiffusionScheduleUpdate {
@@ -258,28 +258,6 @@ impl EmbeddingMatrix {
     pub fn row(&self, i: usize) -> &[f32] {
         assert!(i < self.batch_size, "row index {i} out of bounds");
         &self.data[i * self.hidden_size..(i + 1) * self.hidden_size]
-    }
-
-    /// Non-panicking variant of [`row`](Self::row); returns `None`
-    /// when `i >= batch_size`.
-    pub fn row_get(&self, i: usize) -> Option<&[f32]> {
-        if i < self.batch_size {
-            Some(&self.data[i * self.hidden_size..(i + 1) * self.hidden_size])
-        } else {
-            None
-        }
-    }
-
-    /// Iterator over all rows.
-    pub fn rows(&self) -> impl Iterator<Item = &[f32]> {
-        (0..self.batch_size).map(|i| self.row(i))
-    }
-
-    /// Total byte length of the row-major buffer (`batch_size *
-    /// hidden_size * 4`). Useful when writing the matrix to a file or
-    /// passing its size to a C FFI caller.
-    pub fn byte_len(&self) -> usize {
-        self.data.len() * std::mem::size_of::<f32>()
     }
 }
 

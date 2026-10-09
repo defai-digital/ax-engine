@@ -136,7 +136,7 @@ impl PipelineTopology {
     }
 
     /// Fence an incoming frame against this exact immutable generation.
-    pub fn validate_frame_route(
+    pub(crate) fn validate_frame_route(
         &self,
         frame: &ActivationFrameHeader,
     ) -> Result<(), PipelineContractError> {
@@ -174,7 +174,7 @@ pub enum ActivationDtype {
 }
 
 impl ActivationDtype {
-    pub const fn size_bytes(self) -> usize {
+    pub(crate) const fn size_bytes(self) -> usize {
         match self {
             Self::Bfloat16 | Self::Float16 => 2,
             Self::Float32 => 4,
@@ -205,7 +205,7 @@ pub struct ActivationFrameHeader {
 }
 
 impl ActivationFrameHeader {
-    pub fn validate(&self) -> Result<(), PipelineContractError> {
+    pub(crate) fn validate(&self) -> Result<(), PipelineContractError> {
         if self.wire_version != PIPELINE_WIRE_VERSION {
             return Err(PipelineContractError::UnsupportedWireVersion(
                 self.wire_version,
@@ -248,7 +248,7 @@ impl ActivationFrameHeader {
         Ok(())
     }
 
-    pub fn verify_payload(&self, payload: &[u8]) -> Result<(), PipelineContractError> {
+    pub(crate) fn verify_payload(&self, payload: &[u8]) -> Result<(), PipelineContractError> {
         self.validate()?;
         if u64::try_from(payload.len()).ok() != Some(self.payload_bytes) {
             return Err(PipelineContractError::ActivationSizeMismatch {
@@ -351,7 +351,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// Request IDs are process-unique and monotonically increasing on the gateway,
 /// so a ring of the most recent closes still rejects practical replays while
 /// keeping ledger memory O(1) over multi-day rank uptime.
-pub const PIPELINE_CLOSED_REQUEST_CAP: usize = 65_536;
+pub(crate) const PIPELINE_CLOSED_REQUEST_CAP: usize = 65_536;
 
 /// Per-rank replay, ordering, cancellation, and token-offset fence.
 ///
@@ -448,10 +448,6 @@ impl PipelineRequestLedger {
                 }
             }
         }
-    }
-
-    pub fn is_active(&self, request_id: u64) -> bool {
-        self.active.contains_key(&request_id)
     }
 
     /// Number of closed request IDs currently retained for resurrection fencing.

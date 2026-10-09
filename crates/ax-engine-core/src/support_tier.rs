@@ -51,15 +51,6 @@ impl ModelSupportTier {
             Self::Experimental => "experimental",
         }
     }
-
-    /// Short human-readable summary of what the tier promises.
-    pub const fn summary(self) -> &'static str {
-        match self {
-            Self::Certified => "repo-owned graph with certification/benchmark evidence",
-            Self::Compatible => "loads via manifest capability probing; no cert/perf guarantee",
-            Self::Experimental => "feature-gated path; shape and behavior may change",
-        }
-    }
 }
 
 impl std::fmt::Display for ModelSupportTier {

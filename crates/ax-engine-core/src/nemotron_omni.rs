@@ -28,7 +28,7 @@ pub enum NemotronOmniRuntimeInputError {
 /// Per-modality upper bound on media items accepted in one request. Mirrors the
 /// serving edge's `MAX_INLINE_IMAGES_PER_REQUEST` so SDK-direct callers get the
 /// same bound, and keeps the span bookkeeping bounded.
-pub const MAX_MEDIA_ITEMS_PER_MODALITY: usize = 40;
+pub(crate) const MAX_MEDIA_ITEMS_PER_MODALITY: usize = 40;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct NemotronOmniImageRuntimeInput {
@@ -49,7 +49,7 @@ const fn default_image_downsample_factor() -> u32 {
 }
 
 impl NemotronOmniImageRuntimeInput {
-    pub fn validate(&self, prompt_len: usize) -> Result<(), NemotronOmniRuntimeInputError> {
+    pub(crate) fn validate(&self, prompt_len: usize) -> Result<(), NemotronOmniRuntimeInputError> {
         validate_span(self.placeholder_index, self.soft_token_count, prompt_len)?;
         if self.pixel_values.is_empty() {
             return Err(NemotronOmniRuntimeInputError::EmptyMedia);
@@ -104,7 +104,7 @@ pub struct NemotronOmniAudioRuntimeInput {
 }
 
 impl NemotronOmniAudioRuntimeInput {
-    pub fn validate(&self, prompt_len: usize) -> Result<(), NemotronOmniRuntimeInputError> {
+    pub(crate) fn validate(&self, prompt_len: usize) -> Result<(), NemotronOmniRuntimeInputError> {
         validate_span(self.placeholder_index, self.soft_token_count, prompt_len)?;
         if self.samples.is_empty() {
             return Err(NemotronOmniRuntimeInputError::EmptyMedia);

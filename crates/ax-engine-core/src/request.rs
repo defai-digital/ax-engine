@@ -425,12 +425,12 @@ impl RequestRecord {
     }
 
     /// Bind the generation strategy for this request (from the loaded model).
-    pub fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
+    pub(crate) fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
         self.generation_kind = generation_kind;
     }
 
     /// Update diffusion schedule progress used by the strategy planner.
-    pub fn set_diffusion_schedule_progress(
+    pub(crate) fn set_diffusion_schedule_progress(
         &mut self,
         denoise_steps_in_block: u32,
         commit_ready: bool,
@@ -467,7 +467,7 @@ impl RequestRecord {
         }
     }
 
-    pub fn set_execution_plan_binding(&mut self, binding: Option<ExecutionPlanBinding>) {
+    pub(crate) fn set_execution_plan_binding(&mut self, binding: Option<ExecutionPlanBinding>) {
         if let Some(binding) = binding {
             self.execution_plan_ref = Some(binding.execution_plan_ref);
             self.route_metadata_hint = binding.route_metadata;
@@ -477,23 +477,23 @@ impl RequestRecord {
         }
     }
 
-    pub fn mark_runnable(&mut self) -> Result<(), StateTransitionError> {
+    pub(crate) fn mark_runnable(&mut self) -> Result<(), StateTransitionError> {
         self.transition_to(RequestState::Runnable)
     }
 
-    pub fn start_running(&mut self) -> Result<(), StateTransitionError> {
+    pub(crate) fn start_running(&mut self) -> Result<(), StateTransitionError> {
         self.transition_to(RequestState::Running)
     }
 
-    pub fn mark_blocked_on_memory(&mut self) -> Result<(), StateTransitionError> {
+    pub(crate) fn mark_blocked_on_memory(&mut self) -> Result<(), StateTransitionError> {
         self.transition_to(RequestState::BlockedOnMemory)
     }
 
-    pub fn unblock_memory(&mut self) -> Result<(), StateTransitionError> {
+    pub(crate) fn unblock_memory(&mut self) -> Result<(), StateTransitionError> {
         self.transition_to(RequestState::Runnable)
     }
 
-    pub fn finish_with_reason(
+    pub(crate) fn finish_with_reason(
         &mut self,
         terminal_stop_reason: Option<StopReason>,
     ) -> Result<(), StateTransitionError> {
@@ -501,12 +501,12 @@ impl RequestRecord {
         self.transition_to(RequestState::Finished)
     }
 
-    pub fn fail(&mut self, error: impl Into<String>) -> Result<(), StateTransitionError> {
+    pub(crate) fn fail(&mut self, error: impl Into<String>) -> Result<(), StateTransitionError> {
         self.last_error = Some(error.into());
         self.transition_to(RequestState::Failed)
     }
 
-    pub fn request_cancel(&mut self) -> Result<(), StateTransitionError> {
+    pub(crate) fn request_cancel(&mut self) -> Result<(), StateTransitionError> {
         self.cancel_requested = true;
         match self.state {
             RequestState::Waiting | RequestState::Runnable | RequestState::BlockedOnMemory => {
@@ -518,7 +518,7 @@ impl RequestRecord {
         }
     }
 
-    pub fn resolve_running_step(
+    pub(crate) fn resolve_running_step(
         &mut self,
         completed_normally: bool,
     ) -> Result<(), StateTransitionError> {
@@ -548,7 +548,7 @@ impl RequestRecord {
         }
     }
 
-    pub fn cleanup_request_id(&self) -> Option<RequestId> {
+    pub(crate) fn cleanup_request_id(&self) -> Option<RequestId> {
         if self.state.is_terminal() {
             Some(self.request_id)
         } else {

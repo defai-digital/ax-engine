@@ -12,32 +12,6 @@ pub struct MetalBringupSampler {
 }
 
 impl MetalBringupSampler {
-    pub fn from_build_dir(path: impl AsRef<Path>) -> Result<Self, MetalRuntimeError> {
-        Self::from_bringup(MetalRuntimeBringup::from_build_dir(path)?)
-    }
-
-    pub fn from_assets(assets: MetalKernelAssets) -> Result<Self, MetalRuntimeError> {
-        Self::from_bringup(MetalRuntimeBringup::from_assets(assets)?)
-    }
-
-    fn from_bringup(bringup: MetalRuntimeBringup) -> Result<Self, MetalRuntimeError> {
-        #[cfg(target_os = "macos")]
-        let (argmax_out, logprob_out) = {
-            let device = &bringup.state.device;
-            (
-                Mutex::new(new_zeroed_shared_buffer::<u32>(device, 1)),
-                Mutex::new(new_zeroed_shared_buffer::<f32>(device, 1)),
-            )
-        };
-        Ok(Self {
-            bringup,
-            #[cfg(target_os = "macos")]
-            argmax_out,
-            #[cfg(target_os = "macos")]
-            logprob_out,
-        })
-    }
-
     #[cfg(target_os = "macos")]
     fn sample_argmax_logprob_native_available(&self) -> bool {
         self.bringup

@@ -9,7 +9,7 @@ mod qwen4_exp;
 
 pub const AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION: &str = "ax.native_model.v1";
 pub const AX_NATIVE_MODEL_MANIFEST_FILE: &str = "model-manifest.json";
-pub const QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL: u32 = 4;
+pub(crate) const QWEN3_5_DEFAULT_FULL_ATTENTION_INTERVAL: u32 = 4;
 pub const SUPPORTED_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[4, 5, 6, 8];
 /// Set to `"1"` to allow loading affine-quantized MLX artifacts at 3-bit.
 /// Production validation rejects 3-bit by default; this gate is for
@@ -426,7 +426,7 @@ impl NativeTensorRole {
     }
 
     /// Roles that must not be materialized/`eval`'d at `load_weights`.
-    pub fn skip_eval_at_load(self, manifest: &NativeModelManifest) -> bool {
+    pub(crate) fn skip_eval_at_load(self, manifest: &NativeModelManifest) -> bool {
         matches!(self, Self::NgramEmbedding) && manifest.qwen4_exp.never_eval_ngram_at_load
     }
 }
@@ -467,7 +467,7 @@ impl NativeLinearAttentionConfig {
             || self.conv_kernel_dim.is_some()
     }
 
-    pub fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         !self.is_enabled()
     }
 
@@ -506,7 +506,7 @@ impl NativeMlaAttentionConfig {
             || self.value_head_dim.is_some()
     }
 
-    pub fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         !self.is_enabled()
     }
 }
@@ -544,7 +544,7 @@ pub struct NativeDeepseekV4AttentionConfig {
 }
 
 impl NativeDeepseekV4AttentionConfig {
-    pub fn is_enabled(&self) -> bool {
+    pub(crate) fn is_enabled(&self) -> bool {
         self.head_dim.is_some()
             || self.qk_rope_head_dim.is_some()
             || self.q_lora_rank.is_some()
@@ -557,7 +557,7 @@ impl NativeDeepseekV4AttentionConfig {
             || self.has_attn_sinks
     }
 
-    pub fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         !self.is_enabled()
     }
 }
@@ -704,7 +704,7 @@ impl Default for NativeQwen4ExpConfig {
 }
 
 impl NativeQwen4ExpConfig {
-    pub fn is_enabled(&self) -> bool {
+    pub(crate) fn is_enabled(&self) -> bool {
         self.output_gate_type.is_some()
             || !self.ple_layer_ids.is_empty()
             || self.ple_embed_dim.is_some()
@@ -724,7 +724,7 @@ impl NativeQwen4ExpConfig {
             || self.indexer_kv_heads.is_some()
     }
 
-    pub fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         !self.is_enabled()
     }
 }
@@ -767,7 +767,7 @@ impl NativeMoeConfig {
             || self.expert_intermediate_size.is_some()
     }
 
-    pub fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         !self.is_enabled()
     }
 }
@@ -795,7 +795,7 @@ impl NativeGlmRouterConfig {
             || self.has_shared_experts
     }
 
-    pub fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         !self.is_enabled()
     }
 }
@@ -939,7 +939,7 @@ pub enum WeightSanitize {
 }
 
 impl WeightSanitize {
-    pub fn is_none(&self) -> bool {
+    pub(crate) fn is_none(&self) -> bool {
         matches!(self, WeightSanitize::None)
     }
 }
@@ -1033,7 +1033,7 @@ impl NativeDiffusionConfig {
             || self.confidence_threshold.is_some()
     }
 
-    pub fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         !self.is_enabled()
     }
 }
@@ -1051,11 +1051,12 @@ pub struct DroppedTensorsProvenance {
 }
 
 impl DroppedTensorsProvenance {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.count == 0 && self.media_role_hits == 0 && self.names_sample.is_empty()
     }
 
-    pub fn has_media_role_drops(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_media_role_drops(&self) -> bool {
         self.media_role_hits > 0
     }
 }
@@ -1323,14 +1324,16 @@ impl NativeModelArtifacts {
         &self.manifest.tensors
     }
 
-    pub fn global_tensor(&self, role: NativeTensorRole) -> Option<&NativeTensorSpec> {
+    #[cfg(test)]
+    pub(crate) fn global_tensor(&self, role: NativeTensorRole) -> Option<&NativeTensorSpec> {
         self.manifest
             .tensors
             .iter()
             .find(|tensor| tensor.role == role && tensor.layer_index.is_none())
     }
 
-    pub fn layer_tensor(
+    #[cfg(test)]
+    pub(crate) fn layer_tensor(
         &self,
         layer_index: u32,
         role: NativeTensorRole,
@@ -1341,7 +1344,8 @@ impl NativeModelArtifacts {
             .find(|tensor| tensor.role == role && tensor.layer_index == Some(layer_index))
     }
 
-    pub fn resolve_tensor_path(&self, tensor: &NativeTensorSpec) -> PathBuf {
+    #[cfg(test)]
+    pub(crate) fn resolve_tensor_path(&self, tensor: &NativeTensorSpec) -> PathBuf {
         self.root_dir.join(&tensor.file)
     }
 
@@ -1406,32 +1410,34 @@ model certification remains separate."
         }
     }
 
-    pub fn layer_uses_attention_value_from_key(&self, layer_index: u32) -> bool {
+    #[cfg(test)]
+    pub(crate) fn layer_uses_attention_value_from_key(&self, layer_index: u32) -> bool {
         self.manifest
             .attention_value_from_key_layers
             .contains(&layer_index)
     }
 
-    pub fn layer_uses_attention_v_norm_no_scale(&self, layer_index: u32) -> bool {
+    #[cfg(test)]
+    pub(crate) fn layer_uses_attention_v_norm_no_scale(&self, layer_index: u32) -> bool {
         self.manifest
             .attention_v_norm_no_scale_layers
             .contains(&layer_index)
     }
 
-    pub fn linear_attention_config(&self) -> Option<&NativeLinearAttentionConfig> {
+    pub(crate) fn linear_attention_config(&self) -> Option<&NativeLinearAttentionConfig> {
         self.manifest
             .linear_attention
             .is_enabled()
             .then_some(&self.manifest.linear_attention)
     }
 
-    pub fn moe_config(&self) -> Option<&NativeMoeConfig> {
+    pub(crate) fn moe_config(&self) -> Option<&NativeMoeConfig> {
         self.manifest.moe.is_enabled().then_some(&self.manifest.moe)
     }
 
     /// Returns the number of head dimensions that receive rotary embedding.
     /// When `partial_rotary_factor` is set, only a fraction of head_dim is rotated.
-    pub fn rotary_dim(&self) -> usize {
+    pub(crate) fn rotary_dim(&self) -> usize {
         let head_dim = self.manifest.attention_head_dim as usize;
         if let Some(factor) = self.manifest.partial_rotary_factor {
             let dim = (head_dim as f32 * factor) as usize;

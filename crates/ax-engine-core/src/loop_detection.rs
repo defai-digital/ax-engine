@@ -24,8 +24,9 @@ impl LoopDetectionConfig {
         min_count: 4,
     };
 
+    #[cfg(test)]
     /// Disabled detector (no pattern size).
-    pub const DISABLED: Self = Self {
+    pub(crate) const DISABLED: Self = Self {
         min_pattern_size: 1,
         max_pattern_size: 0,
         min_count: 4,
@@ -38,8 +39,9 @@ impl LoopDetectionConfig {
             && self.min_pattern_size <= self.max_pattern_size
     }
 
+    #[cfg(test)]
     /// Build from request override fields. `max_pattern_size == 0` disables.
-    pub fn from_request(
+    pub(crate) fn from_request(
         min_pattern_size: Option<u32>,
         max_pattern_size: Option<u32>,
         min_count: Option<u32>,

@@ -25,7 +25,7 @@ pub enum MiniCpmV46RuntimeInputError {
 /// Upper bound on images accepted in one request. Mirrors the serving edge's
 /// `MAX_INLINE_IMAGES_PER_REQUEST` so SDK-direct callers get the same bound,
 /// and keeps the span bookkeeping bounded.
-pub const MAX_IMAGES_PER_REQUEST: usize = 40;
+pub(crate) const MAX_IMAGES_PER_REQUEST: usize = 40;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct MiniCpmV46ImageRuntimeInput {
@@ -48,7 +48,7 @@ const fn default_spatial_downsample_factor() -> u32 {
 }
 
 impl MiniCpmV46ImageRuntimeInput {
-    pub fn validate(&self, prompt_len: usize) -> Result<(), MiniCpmV46RuntimeInputError> {
+    pub(crate) fn validate(&self, prompt_len: usize) -> Result<(), MiniCpmV46RuntimeInputError> {
         if self.soft_token_count == 0 {
             return Err(MiniCpmV46RuntimeInputError::ZeroSoftTokens);
         }

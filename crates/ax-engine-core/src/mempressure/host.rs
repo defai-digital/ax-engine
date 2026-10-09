@@ -26,7 +26,7 @@ impl HostRssSnapshot {
     /// `used / budget` as a fraction in `[0.0, 1.0]`. A zero budget returns
     /// `1.0` (treat "no budget allocated" as fully-loaded so a misconfigured
     /// deployment does not silently report `Normal`).
-    pub fn utilization_fraction(self) -> f64 {
+    pub(crate) fn utilization_fraction(self) -> f64 {
         if self.budget_bytes == 0 {
             return 1.0;
         }

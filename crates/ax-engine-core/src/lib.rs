@@ -9,6 +9,7 @@ pub mod engine;
 pub mod execution_plan;
 pub mod gemma4_unified;
 pub mod generation;
+#[cfg(test)]
 pub mod gguf;
 pub mod ids;
 pub mod kv;

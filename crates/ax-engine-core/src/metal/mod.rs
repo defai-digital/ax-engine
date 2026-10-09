@@ -9,28 +9,31 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 use std::fs;
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 use std::io::{Read, Seek, SeekFrom};
 #[cfg(target_os = "macos")]
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(all(test, target_os = "macos"))]
+use metal::{BinaryArchive, ComputePipelineDescriptor};
 #[cfg(target_os = "macos")]
 use metal::{
-    BinaryArchive, Buffer, CommandQueue, ComputePipelineDescriptor, ComputePipelineState, Device,
-    Library, MTLCommandBufferStatus, MTLSize,
+    Buffer, CommandQueue, ComputePipelineState, Device, Library, MTLCommandBufferStatus, MTLSize,
 };
 #[cfg(target_os = "macos")]
 use objc::rc::autoreleasepool;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::model::NativeTensorRole;
 use crate::model::{
     NativeModelArtifacts, NativeModelArtifactsSummary, NativeModelError, NativeTensorDataType,
-    NativeTensorRole, NativeTensorSpec,
+    NativeTensorSpec,
 };
 use crate::runner::{
     ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelBindingSummary,
@@ -86,20 +89,21 @@ pub const PHASE1_MLX_METAL_TARGET: &str = "apple_m2_or_newer_macos_aarch64";
 pub const PHASE1_METAL_LANGUAGE_STANDARD: &str = "metal3.1";
 pub const PHASE1_METAL_LIBRARY_NAME: &str = "ax_phase1_dense_path";
 pub const PHASE1_METAL_BUILD_GATE: &str = "bringup_allowed";
-pub const PHASE1_METAL_BLOCK_SIZE_ALIGNMENT_TOKENS: u32 = 16;
+pub(crate) const PHASE1_METAL_BLOCK_SIZE_ALIGNMENT_TOKENS: u32 = 16;
 pub const PHASE1_DEFAULT_BLOCK_SIZE_TOKENS: u32 = 16;
 pub const PHASE1_SUPPORTED_BLOCK_SIZE_TOKENS: &[u32] = &[PHASE1_DEFAULT_BLOCK_SIZE_TOKENS];
-pub const PHASE1_NUMERIC_HEAD_COUNT: u32 = 2;
-pub const PHASE1_NUMERIC_HEAD_DIM: u32 = 4;
-pub const PHASE1_NUMERIC_HEAD_SIZE: u32 = PHASE1_NUMERIC_HEAD_COUNT * PHASE1_NUMERIC_HEAD_DIM;
-pub const PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD: u32 = 3;
+pub(crate) const PHASE1_NUMERIC_HEAD_COUNT: u32 = 2;
+pub(crate) const PHASE1_NUMERIC_HEAD_DIM: u32 = 4;
+pub(crate) const PHASE1_NUMERIC_HEAD_SIZE: u32 =
+    PHASE1_NUMERIC_HEAD_COUNT * PHASE1_NUMERIC_HEAD_DIM;
+pub(crate) const PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD: u32 = 3;
 pub const PHASE1_REQUIRED_METAL_KERNELS: &[&str] = &[
     "reshape_and_cache",
     "paged_decode_attention",
     "gather_kv_cache",
     "copy_blocks",
 ];
-pub const PHASE1_DEFERRED_METAL_KERNELS: &[&str] = &["swap_blocks"];
+pub(crate) const PHASE1_DEFERRED_METAL_KERNELS: &[&str] = &["swap_blocks"];
 pub const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
     "kv_scale_update",
     "vector_add_f32",
@@ -154,18 +158,18 @@ pub struct MetalDispatchNumericLayout {
 }
 
 impl MetalDispatchNumericLayout {
-    pub const fn new(head_count: u32, head_dim: u32) -> Self {
+    pub(crate) const fn new(head_count: u32, head_dim: u32) -> Self {
         Self {
             head_count,
             head_dim,
         }
     }
 
-    pub const fn phase1_default() -> Self {
+    pub(crate) const fn phase1_default() -> Self {
         Self::new(PHASE1_NUMERIC_HEAD_COUNT, PHASE1_NUMERIC_HEAD_DIM)
     }
 
-    pub fn head_size(self) -> u32 {
+    pub(crate) fn head_size(self) -> u32 {
         self.head_count.saturating_mul(self.head_dim)
     }
 
@@ -550,18 +554,20 @@ impl MetalOptionalKernelDispatchPlan {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 struct BinaryArchiveSession {
     archive: Option<BinaryArchive>,
     info: MetalBinaryArchiveInfo,
 }
 
 impl MetalRuntimeBringup {
-    pub fn from_build_dir(path: impl AsRef<Path>) -> Result<Self, MetalRuntimeError> {
+    #[cfg(test)]
+    pub(crate) fn from_build_dir(path: impl AsRef<Path>) -> Result<Self, MetalRuntimeError> {
         Self::from_assets(MetalKernelAssets::from_build_dir(path)?)
     }
 
-    pub fn from_assets(assets: MetalKernelAssets) -> Result<Self, MetalRuntimeError> {
+    #[cfg(test)]
+    pub(crate) fn from_assets(assets: MetalKernelAssets) -> Result<Self, MetalRuntimeError> {
         let metallib = load_compiled_metallib_binary(&assets)?;
         let required_kernel_names = resolve_required_kernel_names(&assets)?;
 
@@ -579,15 +585,11 @@ impl MetalRuntimeBringup {
         }
     }
 
-    pub fn assets(&self) -> &MetalKernelAssets {
+    pub(crate) fn assets(&self) -> &MetalKernelAssets {
         &self.assets
     }
 
-    pub fn metallib(&self) -> &MetalKernelBinary {
-        &self.metallib
-    }
-
-    pub fn report(&self) -> &MetalRuntimeBringupReport {
+    pub(crate) fn report(&self) -> &MetalRuntimeBringupReport {
         &self.report
     }
 
@@ -768,6 +770,7 @@ struct MetalNativeTensorBinding {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::large_enum_variant)]
+#[cfg_attr(not(test), allow(dead_code))]
 enum MetalAttentionQkvBindings {
     Packed(MetalNativeTensorBinding),
     Split {
@@ -779,6 +782,7 @@ enum MetalAttentionQkvBindings {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
 enum MetalFfnGateUpBindings {
     Packed(MetalNativeTensorBinding),
     Split {
@@ -788,6 +792,7 @@ enum MetalFfnGateUpBindings {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
 enum MetalMoeExpertGateUpBindings {
     Packed(MetalNativeTensorBinding),
     Split {
@@ -847,6 +852,7 @@ struct MetalNativeModelBindings {
 }
 
 impl MetalNativeTensorBinding {
+    #[cfg(test)]
     fn from_spec(artifacts: &NativeModelArtifacts, spec: &NativeTensorSpec) -> Self {
         Self {
             spec: spec.clone(),
@@ -1220,6 +1226,7 @@ fn native_dense_kernel_coverage_for_model_bindings(
 }
 
 impl MetalNativeModelBindings {
+    #[cfg(test)]
     fn from_artifacts(artifacts: &NativeModelArtifacts) -> Result<Self, NativeModelError> {
         let token_embedding = required_global_tensor_binding(
             artifacts,
@@ -1387,6 +1394,7 @@ struct MetalNativeModelBufferBindings {
 
 #[cfg(target_os = "macos")]
 impl MetalNativeModelBufferBindings {
+    #[cfg(test)]
     fn from_model_bindings(
         device: &Device,
         bindings: &MetalNativeModelBindings,
@@ -1460,6 +1468,7 @@ impl MetalNativeModelBufferBindings {
     }
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn read_native_tensor_bytes(
     binding: &MetalNativeTensorBinding,
@@ -1496,6 +1505,7 @@ fn read_native_tensor_bytes(
     Ok(bytes)
 }
 
+#[cfg(test)]
 fn required_global_tensor_binding(
     artifacts: &NativeModelArtifacts,
     role: NativeTensorRole,
@@ -1509,6 +1519,7 @@ fn required_global_tensor_binding(
     Ok(MetalNativeTensorBinding::from_spec(artifacts, spec))
 }
 
+#[cfg(test)]
 fn required_layer_tensor_binding(
     artifacts: &NativeModelArtifacts,
     layer_index: u32,
@@ -1526,6 +1537,7 @@ fn required_layer_tensor_binding(
     Ok(MetalNativeTensorBinding::from_spec(artifacts, spec))
 }
 
+#[cfg(test)]
 fn attention_qkv_bindings(
     artifacts: &NativeModelArtifacts,
     layer_index: u32,
@@ -1557,6 +1569,7 @@ fn attention_qkv_bindings(
     })
 }
 
+#[cfg(test)]
 fn ffn_gate_up_bindings(
     artifacts: &NativeModelArtifacts,
     layer_index: u32,
@@ -1583,6 +1596,7 @@ fn ffn_gate_up_bindings(
     })
 }
 
+#[cfg(test)]
 fn moe_bindings(
     artifacts: &NativeModelArtifacts,
     layer_index: u32,
@@ -1629,6 +1643,7 @@ fn moe_bindings(
     }))
 }
 
+#[cfg(test)]
 fn linear_attention_bindings(
     artifacts: &NativeModelArtifacts,
     layer_index: u32,
@@ -2144,11 +2159,8 @@ impl fmt::Debug for MetalBringupRunner {
 }
 
 impl MetalBringupRunner {
-    pub fn from_build_dir(path: impl AsRef<Path>) -> Result<Self, MetalRuntimeError> {
-        Self::from_build_dir_and_model_artifacts(path, None)
-    }
-
-    pub fn from_build_dir_and_model_artifacts(
+    #[cfg(test)]
+    pub(crate) fn from_build_dir_and_model_artifacts(
         path: impl AsRef<Path>,
         model_artifacts_dir: Option<&Path>,
     ) -> Result<Self, MetalRuntimeError> {
@@ -2172,11 +2184,8 @@ impl MetalBringupRunner {
         )
     }
 
-    pub fn from_assets(assets: MetalKernelAssets) -> Result<Self, MetalRuntimeError> {
-        Self::from_assets_and_model_artifacts(assets, None)
-    }
-
-    pub fn from_assets_and_model_artifacts(
+    #[cfg(test)]
+    pub(crate) fn from_assets_and_model_artifacts(
         assets: MetalKernelAssets,
         model_artifacts: Option<NativeModelArtifacts>,
     ) -> Result<Self, MetalRuntimeError> {
@@ -2215,19 +2224,11 @@ impl MetalBringupRunner {
         })
     }
 
-    pub fn bringup(&self) -> &MetalRuntimeBringup {
-        &self.bringup
-    }
-
-    pub fn last_dispatch(&self) -> Option<MetalDispatchTrace> {
+    pub(crate) fn last_dispatch(&self) -> Option<MetalDispatchTrace> {
         self.last_dispatch
             .lock()
             .ok()
             .and_then(|dispatch| dispatch.clone())
-    }
-
-    pub fn model_artifacts(&self) -> Option<&NativeModelArtifacts> {
-        self.model_artifacts.as_ref()
     }
 
     #[cfg(target_os = "macos")]
@@ -2597,11 +2598,13 @@ pub struct MetalAssetValidator {
 }
 
 impl MetalAssetValidator {
-    pub fn from_build_dir(path: impl AsRef<Path>) -> Result<Self, MetalRuntimeError> {
+    #[cfg(test)]
+    pub(crate) fn from_build_dir(path: impl AsRef<Path>) -> Result<Self, MetalRuntimeError> {
         Self::from_assets(MetalKernelAssets::from_build_dir(path)?)
     }
 
-    pub fn from_assets(assets: MetalKernelAssets) -> Result<Self, MetalRuntimeError> {
+    #[cfg(test)]
+    pub(crate) fn from_assets(assets: MetalKernelAssets) -> Result<Self, MetalRuntimeError> {
         let metallib = load_compiled_metallib_binary(&assets)?;
         let resolved_kernel_names = resolve_required_kernel_names(&assets)?;
 
@@ -2612,19 +2615,18 @@ impl MetalAssetValidator {
         })
     }
 
-    pub fn assets(&self) -> &MetalKernelAssets {
-        &self.assets
-    }
-
-    pub fn metallib(&self) -> &MetalKernelBinary {
+    #[cfg(test)]
+    pub(crate) fn metallib(&self) -> &MetalKernelBinary {
         &self.metallib
     }
 
-    pub fn resolved_kernel_names(&self) -> &[String] {
+    #[cfg(test)]
+    pub(crate) fn resolved_kernel_names(&self) -> &[String] {
         &self.resolved_kernel_names
     }
 
-    pub fn validate_block_size_tokens(
+    #[cfg(test)]
+    pub(crate) fn validate_block_size_tokens(
         &self,
         block_size_tokens: u32,
     ) -> Result<(), MetalRuntimeError> {
@@ -7054,6 +7056,7 @@ fn metal_dispatch_execution_info(
     }
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn load_macos_runtime_bringup(
     assets: MetalKernelAssets,
@@ -7151,12 +7154,13 @@ fn load_macos_runtime_bringup(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 struct PreparedComputePipeline {
     info: MetalComputePipelineInfo,
     handle: MetalPipelineHandle,
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn prepare_compute_pipeline(
     device: &Device,
@@ -7200,6 +7204,7 @@ fn prepare_compute_pipeline(
     })
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn build_compute_pipeline_state(
     device: &Device,
@@ -7246,6 +7251,7 @@ fn build_compute_pipeline_state(
     device.new_compute_pipeline_state(&descriptor)
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn binary_archive_path(metallib_path: &Path, assets: &MetalKernelAssets) -> PathBuf {
     metallib_path
@@ -7257,6 +7263,7 @@ fn binary_archive_path(metallib_path: &Path, assets: &MetalKernelAssets) -> Path
         ))
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn prepare_binary_archive(device: &Device, archive_path: PathBuf) -> BinaryArchiveSession {
     let _ = device;
@@ -7277,6 +7284,7 @@ fn prepare_binary_archive(device: &Device, archive_path: PathBuf) -> BinaryArchi
     }
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn finalize_binary_archive(mut session: BinaryArchiveSession) -> MetalBinaryArchiveInfo {
     if let Some(archive) = session.archive.as_ref() {
@@ -7298,6 +7306,7 @@ fn finalize_binary_archive(mut session: BinaryArchiveSession) -> MetalBinaryArch
     session.info
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn append_binary_archive_note(info: &mut MetalBinaryArchiveInfo, message: String) {
     match info.note.as_mut() {
@@ -7311,6 +7320,7 @@ fn append_binary_archive_note(info: &mut MetalBinaryArchiveInfo, message: String
     }
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn device_info(device: &Device) -> MetalDeviceInfo {
     let max_threads = device.max_threads_per_threadgroup();
@@ -7922,6 +7932,7 @@ fn find_pipeline_handle<'a>(
         })
 }
 
+#[cfg(test)]
 fn pipeline_lookup_index(function_names: &[String]) -> BTreeMap<String, usize> {
     let mut lookup = BTreeMap::new();
     for (index, function_name) in function_names.iter().enumerate() {
@@ -7930,6 +7941,7 @@ fn pipeline_lookup_index(function_names: &[String]) -> BTreeMap<String, usize> {
     lookup
 }
 
+#[cfg(test)]
 #[cfg(target_os = "macos")]
 fn build_optional_kernel_dispatch_plan(
     optional_pipeline_lookup: &BTreeMap<String, usize>,

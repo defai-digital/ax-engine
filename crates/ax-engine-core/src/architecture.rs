@@ -4,10 +4,10 @@
 //! It does not replace the on-disk manifest schema and is not a second wire
 //! format in Phase 1.
 
-use crate::generation::{
-    GenerationKind, GenerationStrategyDescriptor, is_block_diffusion_manifest,
-    is_encoder_embed_manifest,
-};
+use crate::generation::{GenerationKind, GenerationStrategyDescriptor};
+#[cfg(test)]
+use crate::generation::{is_block_diffusion_manifest, is_encoder_embed_manifest};
+#[cfg(test)]
 use crate::model::{NativeModelManifest, NativeTensorRole};
 
 /// Attention mechanism for one layer.
@@ -79,7 +79,8 @@ pub struct StructuralCapabilities {
 }
 
 impl StructuralCapabilities {
-    pub fn from_layers(
+    #[cfg(test)]
+    pub(crate) fn from_layers(
         layers: &[LayerSpec],
         generation: GenerationKind,
         has_layer_gating: bool,
@@ -163,15 +164,17 @@ impl StructuralCapabilities {
         reasons
     }
 
+    #[cfg(test)]
     /// Backward-compatible alias for [`Self::batched_decode_structural_rejections`].
     #[inline]
-    pub fn dense_batched_decode_structural_rejections(self) -> Vec<&'static str> {
+    pub(crate) fn dense_batched_decode_structural_rejections(self) -> Vec<&'static str> {
         self.batched_decode_structural_rejections()
     }
 
+    #[cfg(test)]
     /// True when structural caps match the dense full-attention batched pilot
     /// shape (still requires numerical certification separately).
-    pub fn is_structurally_dense_full_attention_only(self) -> bool {
+    pub(crate) fn is_structurally_dense_full_attention_only(self) -> bool {
         self.batched_decode_structural_rejections().is_empty()
             && self.has_full_attention
             && !self.has_sliding_window
@@ -180,13 +183,14 @@ impl StructuralCapabilities {
             && !self.has_moe
     }
 
+    #[cfg(test)]
     /// Structural blockers for a **Gemma-style** continuous decode pilot
     /// (interleaved SWA is allowed; MoE / MLA / linear / diffusion are not).
     ///
     /// This is not the dense full-attention Qwen pilot. A future SWA-aware
     /// multi-request path would still need numerical certification and
     /// windowed KV views (see `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS`).
-    pub fn gemma_swa_decode_structural_rejections(self) -> Vec<&'static str> {
+    pub(crate) fn gemma_swa_decode_structural_rejections(self) -> Vec<&'static str> {
         let mut reasons = Vec::new();
         if self.is_diffusion {
             reasons.push("diffusion");
@@ -223,8 +227,9 @@ impl StructuralCapabilities {
         reasons
     }
 
+    #[cfg(test)]
     /// True when caps look like interleaved SWA Gemma text (not MoE/gating).
-    pub fn is_structurally_gemma_swa_text_candidate(self) -> bool {
+    pub(crate) fn is_structurally_gemma_swa_text_candidate(self) -> bool {
         self.gemma_swa_decode_structural_rejections().is_empty()
             && self.has_sliding_window
             && self.has_full_attention
@@ -246,8 +251,9 @@ pub struct ArchitectureSpec {
 }
 
 impl ArchitectureSpec {
+    #[cfg(test)]
     /// Derive a structural architecture from a validated (or test) manifest.
-    pub fn from_manifest(manifest: &NativeModelManifest) -> Self {
+    pub(crate) fn from_manifest(manifest: &NativeModelManifest) -> Self {
         let generation = GenerationKind::from_manifest(manifest);
         let strategy = GenerationStrategyDescriptor::for_kind(generation);
         let layers = build_layer_specs(manifest, generation);
@@ -305,15 +311,18 @@ impl ArchitectureSpec {
         }
     }
 
-    pub fn is_block_diffusion(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_block_diffusion(&self) -> bool {
         matches!(self.generation, GenerationKind::BlockDiffusion)
     }
 
-    pub fn is_encoder_embed(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_encoder_embed(&self) -> bool {
         matches!(self.generation, GenerationKind::EncoderEmbed)
     }
 }
 
+#[cfg(test)]
 fn uses_geglu(family: &str) -> bool {
     matches!(
         family,
@@ -327,10 +336,12 @@ fn uses_geglu(family: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 fn uses_mxfp4_moe(family: &str) -> bool {
     family == "gpt_oss"
 }
 
+#[cfg(test)]
 /// Families whose decode MoE path uses `moe_router_qwen3` (the only router
 /// the continuous batched FFN implements). Mixtral shares that router layout
 /// but is still rejected for sliding-window structure.
@@ -341,6 +352,7 @@ fn family_uses_batched_qwen3_moe_router(family: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 fn build_layer_specs(manifest: &NativeModelManifest, generation: GenerationKind) -> Vec<LayerSpec> {
     let layer_count = manifest.layer_count;
     let window = manifest.sliding_window_size;
