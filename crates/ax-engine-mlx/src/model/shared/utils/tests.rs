@@ -1,4 +1,3 @@
-
 use super::*;
 use mlx_sys::{
     MlxQuantizationMode, clear_cache, contiguous, eval, get_peak_memory, matmul, quantize,
