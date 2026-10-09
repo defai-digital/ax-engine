@@ -123,13 +123,11 @@ pub(crate) fn mtp_multirow_batch_enabled() -> bool {
 /// compiled per shape — on the current eager path the pad compute is a likely
 /// regression, so padding is deferred (see `docs/performance/README.md`). Landed
 /// now, like `BatchedLinearState` was, so the bucket math is ready + verified.
-#[allow(dead_code)]
 pub(crate) const DEFAULT_DECODE_BATCH_BUCKETS: &[usize] = &[1, 2, 4, 8, 16, 32, 64];
 
 /// Smallest bucket `>= active`; returns `active` unchanged when it exceeds every
 /// bucket (unbounded tail) or `buckets` is empty. Pure — the env/caching wrapper
 /// is [`decode_batch_bucket`].
-#[allow(dead_code)]
 fn snap_batch_to_buckets(active: usize, buckets: &[usize]) -> usize {
     buckets
         .iter()

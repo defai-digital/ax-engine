@@ -667,7 +667,6 @@ pub(super) fn expand_grouped_kv_heads_cpu(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 pub(super) fn expand_grouped_kv_heads_with_path(
     values: &[f32],
     q_heads: usize,
@@ -734,7 +733,6 @@ pub(super) fn expand_batched_grouped_kv_heads_with_path(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 pub(super) fn expand_grouped_kv_heads_with_optional_native_path(
     bringup: Option<&MetalRuntimeBringup>,
     values: &[f32],
@@ -2447,7 +2445,6 @@ pub(super) fn gelu_approx(value: f32) -> f32 {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 pub(super) fn project_matrix_rows(
     binding: &MetalNativeTensorBufferBinding,
     row_offset: usize,
@@ -2575,7 +2572,6 @@ pub(super) fn project_batched_matrix_rows_with_tally(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
 pub(super) fn project_matrix_head_prefix(
     binding: &MetalNativeTensorBufferBinding,
     row_offset: usize,

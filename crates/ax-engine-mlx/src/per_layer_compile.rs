@@ -457,30 +457,6 @@ pub(crate) fn apply_per_layer_input_gate_decode(
     result
 }
 
-/// Apply a compiled dense FFN prefill closure for a fixed prompt geometry.
-///
-/// Unlike decode, prefill uses `shapeless=false` and keys the cache by
-/// `leading_elements` (product of all dims except the last). MLX's shapeless
-/// compile is not correct across different sequence lengths for quantized
-/// matmul graphs, so each prompt length gets its own compiled graph.
-#[allow(dead_code)]
-pub(crate) fn apply_layer_dense_ffn_prefill(
-    model_identity: u64,
-    layer_index: usize,
-    leading_elements: i64,
-    inputs: &[&MlxArray],
-    ffn_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
-) -> Option<Vec<MlxArray>> {
-    apply_layer_dense_ffn_prefill_min(
-        model_identity,
-        layer_index,
-        leading_elements,
-        crate::fastpath::DENSE_FFN_PREFILL_COMPILE_MIN_LEADING,
-        inputs,
-        ffn_fn,
-    )
-}
-
 /// Like [`apply_layer_dense_ffn_prefill`] with a caller-chosen min leading
 /// (Qwen split prefill uses 128 so contract p128 amortizes).
 pub(crate) fn apply_layer_dense_ffn_prefill_min(
