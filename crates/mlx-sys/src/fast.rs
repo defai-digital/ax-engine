@@ -226,6 +226,10 @@ pub fn scaled_dot_product_attention_with_mask(
 /// per-query-head attention sinks (`[n_q_heads]`). The sink logit joins the
 /// softmax denominator but contributes no value — matching mlx-lm's
 /// `scaled_dot_product_attention(..., sinks=)` used by GPT-OSS.
+///
+/// `force_fused` stays false. mlx-c 0.7.0 exposes the flag, and a true value
+/// rejects shapes that have no fused kernel instead of using MLX's fallback.
+#[allow(clippy::too_many_arguments)]
 pub fn scaled_dot_product_attention_with_mask_and_sinks(
     queries: &MlxArray,
     keys: &MlxArray,
@@ -235,7 +239,26 @@ pub fn scaled_dot_product_attention_with_mask_and_sinks(
     sinks: Option<&MlxArray>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
+    try_scaled_dot_product_attention(queries, keys, values, scale, mask, sinks, false, s)
+        .unwrap_or_else(|message| panic!("{message}"))
+}
+
+/// Same attention as [`scaled_dot_product_attention_with_mask_and_sinks`],
+/// with mlx-c's `force_fused` flag. `false` keeps MLX's kernel selection.
+/// `true` requires a fused kernel and returns the MLX rejection otherwise.
+#[allow(clippy::too_many_arguments)]
+pub fn try_scaled_dot_product_attention(
+    queries: &MlxArray,
+    keys: &MlxArray,
+    values: &MlxArray,
+    scale: f32,
+    mask: ScaledDotProductAttentionMask<'_>,
+    sinks: Option<&MlxArray>,
+    force_fused: bool,
+    s: Option<&MlxStream>,
+) -> Result<MlxArray, String> {
     crate::op_count::bump();
+    ensure_error_handler();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mask_mode = match mask {
@@ -251,21 +274,20 @@ pub fn scaled_dot_product_attention_with_mask_and_sinks(
         };
         let sinks_arr = sinks.map(|sinks| sinks.inner).unwrap_or(null_arr);
         let mut res = MlxArray::empty();
-        checked_ffi!(
-            "mlx_fast_scaled_dot_product_attention",
-            ffi::mlx_fast_scaled_dot_product_attention(
-                &mut res.inner,
-                queries.inner,
-                keys.inner,
-                values.inner,
-                scale,
-                mask_mode.as_ptr(),
-                mask_arr,
-                sinks_arr,
-                stream,
-            )
+        let rc = ffi::mlx_fast_scaled_dot_product_attention(
+            &mut res.inner,
+            queries.inner,
+            keys.inner,
+            values.inner,
+            scale,
+            mask_mode.as_ptr(),
+            mask_arr,
+            sinks_arr,
+            force_fused,
+            stream,
         );
-        res
+        status_to_result("mlx_fast_scaled_dot_product_attention", rc)?;
+        Ok(res)
     }
 }
 
@@ -360,5 +382,81 @@ mod gated_delta_tests {
         ] {
             assert!(try_gated_delta_update(q, k, v, g, b, s, None).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod sdpa_binding_tests {
+    use super::*;
+    use crate::{MlxDtype, eval};
+
+    fn attention_inputs(heads: i32, seq: i32, dim: i32) -> (MlxArray, MlxArray, MlxArray) {
+        let shape = [1, heads, seq, dim];
+        let n = (heads * seq * dim) as usize;
+        let data: Vec<f32> = (0..n).map(|i| ((i % 11) as f32 - 5.0) / 11.0).collect();
+        let array = |phase: f32| {
+            let shifted: Vec<f32> = data.iter().map(|value| value + phase).collect();
+            MlxArray::from_raw_data(
+                shifted.as_ptr().cast(),
+                shifted.len() * 4,
+                &shape,
+                MlxDtype::Float32,
+            )
+        };
+        (array(0.0), array(0.1), array(-0.2))
+    }
+
+    fn max_abs(a: &MlxArray, b: &MlxArray) -> f32 {
+        a.data_f32()
+            .iter()
+            .zip(b.data_f32())
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn force_fused_rejects_unsupported_head_dim_without_changing_fallback() {
+        let (q, k, v) = attention_inputs(1, 2, 8);
+        let rejected = try_scaled_dot_product_attention(
+            &q,
+            &k,
+            &v,
+            1.0,
+            ScaledDotProductAttentionMask::None,
+            None,
+            true,
+            None,
+        )
+        .expect_err("head dim 8 has no fused kernel");
+        assert!(
+            rejected.contains("force_fused"),
+            "unexpected rejection: {rejected}"
+        );
+        let fallback = scaled_dot_product_attention(&q, &k, &v, 1.0, false, None);
+        eval(&[&fallback]);
+        assert!(fallback.data_f32().iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn force_fused_matches_default_selection_for_vector_kernel_shape() {
+        let (q, k, v) = attention_inputs(1, 1, 64);
+        let run = |force_fused| {
+            try_scaled_dot_product_attention(
+                &q,
+                &k,
+                &v,
+                0.125,
+                ScaledDotProductAttentionMask::None,
+                None,
+                force_fused,
+                None,
+            )
+            .expect("head dim 64 sequence 1 is a fused vector shape")
+        };
+        let forced = run(true);
+        let selected = run(false);
+        eval(&[&forced, &selected]);
+        assert!(forced.data_f32().iter().all(|value| value.is_finite()));
+        assert!(max_abs(&forced, &selected) <= 1e-5);
     }
 }

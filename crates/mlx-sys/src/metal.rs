@@ -130,6 +130,33 @@ impl MlxMetalKernel {
         thread_group: (i32, i32, i32),
         s: Option<&MlxStream>,
     ) -> Result<Vec<MlxArray>, String> {
+        self.try_apply_with_template_options(
+            inputs,
+            output_specs,
+            template_args,
+            grid,
+            thread_group,
+            None,
+            false,
+            s,
+        )
+    }
+
+    /// Call the kernel, optionally filling each output with `init_value`
+    /// before launch. `verbose` matches mlx-c's Metal config flag. Both
+    /// default off on [`Self::try_apply_with_template`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_apply_with_template_options(
+        &self,
+        inputs: &[&MlxArray],
+        output_specs: &[KernelOutputSpec],
+        template_args: &[KernelTemplateArg<'_>],
+        grid: (i32, i32, i32),
+        thread_group: (i32, i32, i32),
+        init_value: Option<f32>,
+        verbose: bool,
+        s: Option<&MlxStream>,
+    ) -> Result<Vec<MlxArray>, String> {
         prepare_error_capture();
         unsafe {
             let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
@@ -240,6 +267,28 @@ impl MlxMetalKernel {
                 ffi::mlx_vector_array_free(in_vec);
                 ffi::mlx_fast_metal_kernel_config_free(config);
                 return Err(message);
+            }
+            if let Some(value) = init_value {
+                prepare_error_capture();
+                let rc = ffi::mlx_fast_metal_kernel_config_set_init_value(config, value);
+                if let Err(message) =
+                    status_to_result("mlx_fast_metal_kernel_config_set_init_value", rc)
+                {
+                    ffi::mlx_vector_array_free(in_vec);
+                    ffi::mlx_fast_metal_kernel_config_free(config);
+                    return Err(message);
+                }
+            }
+            if verbose {
+                prepare_error_capture();
+                let rc = ffi::mlx_fast_metal_kernel_config_set_verbose(config, true);
+                if let Err(message) =
+                    status_to_result("mlx_fast_metal_kernel_config_set_verbose", rc)
+                {
+                    ffi::mlx_vector_array_free(in_vec);
+                    ffi::mlx_fast_metal_kernel_config_free(config);
+                    return Err(message);
+                }
             }
 
             let mut out_vec = ffi::mlx_vector_array_new();
@@ -391,7 +440,39 @@ fn build_string_vec(strs: &[&str]) -> ffi::mlx_vector_string {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transforms::try_eval;
+    use crate::transforms::{eval, try_eval};
+    use crate::zeros;
+
+    #[test]
+    fn init_value_fills_outputs_the_kernel_does_not_write() {
+        let kernel = MlxMetalKernel::try_new(
+            "ax_shim_init_value_noop",
+            &["in"],
+            &["out"],
+            "if (thread_position_in_grid.x > 1000000u) { out[0] = in[0]; }",
+            "",
+            true,
+        )
+        .expect("kernel construct");
+        let input = zeros(&[4], MlxDtype::Float32, None);
+        let outputs = kernel
+            .try_apply_with_template_options(
+                &[&input],
+                &[KernelOutputSpec {
+                    shape: vec![4],
+                    dtype: MlxDtype::Float32,
+                }],
+                &[],
+                (1, 1, 1),
+                (1, 1, 1),
+                Some(2.5),
+                false,
+                None,
+            )
+            .expect("kernel apply");
+        eval(&[&outputs[0]]);
+        assert_eq!(outputs[0].data_f32(), vec![2.5, 2.5, 2.5, 2.5]);
+    }
 
     #[test]
     fn broken_kernel_source_surfaces_err_and_leaves_mlx_usable() {

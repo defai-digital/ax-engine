@@ -659,8 +659,14 @@ extern "C" int mlx_fast_rope_dynamic(mlx_array* r, const mlx_array x, int dims, 
 }
 extern "C" int mlx_fast_scaled_dot_product_attention(mlx_array* r,
     const mlx_array q, const mlx_array k, const mlx_array v,
-    float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, const mlx_stream s) {
-  AX_TRY { aset(r, mx::fast::scaled_dot_product_attention(aref(q), aref(k), aref(v), scale, safe_str(mask_mode), opt_arr(mask_arr), opt_arr(sinks), false, sd(s))); return 0; } AX_CATCH }
+    float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks,
+    bool force_fused, const mlx_stream s) {
+  AX_TRY {
+    aset(r, mx::fast::scaled_dot_product_attention(
+        aref(q), aref(k), aref(v), scale, safe_str(mask_mode), opt_arr(mask_arr),
+        opt_arr(sinks), force_fused, sd(s)));
+    return 0;
+  } AX_CATCH }
 extern "C" int mlx_fast_layer_norm(mlx_array* r, const mlx_array x, const mlx_array w, const mlx_array b, float eps, const mlx_stream s) {
   AX_TRY { aset(r, mx::fast::layer_norm(aref(x), opt_arr(w), opt_arr(b), eps, sd(s))); return 0; } AX_CATCH }
 
@@ -696,6 +702,10 @@ extern "C" int mlx_fast_metal_kernel_config_set_grid(mlx_fast_metal_kernel_confi
   AX_TRY { mcfgref(c).grid = {g1,g2,g3}; return 0; } AX_CATCH }
 extern "C" int mlx_fast_metal_kernel_config_set_thread_group(mlx_fast_metal_kernel_config c, int t1, int t2, int t3) {
   AX_TRY { mcfgref(c).thread_group = {t1,t2,t3}; return 0; } AX_CATCH }
+extern "C" int mlx_fast_metal_kernel_config_set_init_value(mlx_fast_metal_kernel_config c, float value) {
+  AX_TRY { mcfgref(c).init_value = value; return 0; } AX_CATCH }
+extern "C" int mlx_fast_metal_kernel_config_set_verbose(mlx_fast_metal_kernel_config c, bool verbose) {
+  AX_TRY { mcfgref(c).verbose = verbose; return 0; } AX_CATCH }
 extern "C" int mlx_fast_metal_kernel_config_add_template_arg_dtype(mlx_fast_metal_kernel_config c, const char* name, mlx_dtype dt) {
   AX_TRY { mcfgref(c).template_args.push_back({safe_str(name), to_dtype(dt)}); return 0; } AX_CATCH }
 extern "C" int mlx_fast_metal_kernel_config_add_template_arg_int(mlx_fast_metal_kernel_config c, const char* name, int v) {

@@ -1,9 +1,10 @@
-/* ax_shim.h — drop-in C ABI replacement for mlx-c.
+/* ax_shim.h — C ABI over MLX C++ for the operations AX calls.
  *
- * Every type and function declared here matches the mlx-c public API exactly
- * so that existing bindgen output (ffi::mlx_*) requires zero changes.
- * The implementation in ax_shim.cpp calls mlx::core directly, bypassing the
- * mlx-c wrapper layer.
+ * Names that also exist in mlx-c 0.7.0 use that signature. That includes
+ * scaled_dot_product_attention's force_fused flag and the Metal kernel
+ * init_value / verbose setters. CUDA entry points are not declared.
+ * ax_mlx_* names are AX extensions: mlx-c 0.7.0 does not bind
+ * gated_delta_update. The implementation calls mlx::core directly.
  */
 #ifndef AX_SHIM_H
 #define AX_SHIM_H
@@ -266,7 +267,7 @@ int mlx_from_fp8(mlx_array* res, const mlx_array x, mlx_dtype dtype, const mlx_s
 int mlx_fast_rms_norm(mlx_array* res, const mlx_array x, const mlx_array weight, float eps, const mlx_stream s);
 int mlx_fast_rope(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, int offset, const mlx_array freqs, const mlx_stream s);
 int mlx_fast_rope_dynamic(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, const mlx_array offset, const mlx_array freqs, const mlx_stream s);
-int mlx_fast_scaled_dot_product_attention(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, const mlx_stream s);
+int mlx_fast_scaled_dot_product_attention(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, bool force_fused, const mlx_stream s);
 int mlx_fast_layer_norm(mlx_array* res, const mlx_array x, const mlx_array weight, const mlx_array bias, float eps, const mlx_stream s);
 int ax_mlx_gated_delta_update(mlx_array* output, mlx_array* final_state,
     const mlx_array q, const mlx_array k, const mlx_array v,
@@ -282,6 +283,8 @@ void mlx_fast_metal_kernel_config_free(mlx_fast_metal_kernel_config cls);
 int mlx_fast_metal_kernel_config_add_output_arg(mlx_fast_metal_kernel_config cls, const int* shape, size_t size, mlx_dtype dtype);
 int mlx_fast_metal_kernel_config_set_grid(mlx_fast_metal_kernel_config cls, int grid1, int grid2, int grid3);
 int mlx_fast_metal_kernel_config_set_thread_group(mlx_fast_metal_kernel_config cls, int thread1, int thread2, int thread3);
+int mlx_fast_metal_kernel_config_set_init_value(mlx_fast_metal_kernel_config cls, float value);
+int mlx_fast_metal_kernel_config_set_verbose(mlx_fast_metal_kernel_config cls, bool verbose);
 int mlx_fast_metal_kernel_config_add_template_arg_dtype(mlx_fast_metal_kernel_config cls, const char* name, mlx_dtype dtype);
 int mlx_fast_metal_kernel_config_add_template_arg_int(mlx_fast_metal_kernel_config cls, const char* name, int value);
 int mlx_fast_metal_kernel_config_add_template_arg_bool(mlx_fast_metal_kernel_config cls, const char* name, bool value);
