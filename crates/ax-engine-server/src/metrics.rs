@@ -397,6 +397,33 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         );
         append_step_metric(
             &mut body,
+            "ax_engine_flash_next_mtp_cursor_paused_steps_total",
+            "Flash Next MTP decode steps served direct while the draft cursor was paused for a later catch-up across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_cursor_paused_steps_total,
+            |step| step.flash_next_mtp_cursor_paused_steps_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_cursor_resumed_total",
+            "Flash Next MTP paused draft cursors that caught up through their buffered rows and resumed proposing across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_cursor_resumed_total,
+            |step| step.flash_next_mtp_cursor_resumed_total,
+        );
+        append_step_metric(
+            &mut body,
+            "ax_engine_flash_next_mtp_cursor_pause_overflows_total",
+            "Flash Next MTP paused draft cursors dropped because their catch-up buffer filled across observed engine steps (unlabeled: summed across loaded models).",
+            "counter",
+            &step_models,
+            process.flash_next_mtp_cursor_pause_overflows_total,
+            |step| step.flash_next_mtp_cursor_pause_overflows_total,
+        );
+        append_step_metric(
+            &mut body,
             "ax_engine_flash_next_mtp_verified_steps_total",
             "Flash Next MTP draft steps that completed verification across observed engine steps (unlabeled: summed across loaded models).",
             "counter",

@@ -14,7 +14,7 @@ use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     FinalLogitsMode, ModelConfig, deepseek_v4_forward_all_positions_with_packed, forward,
     forward_all_positions_post_norm_last_lm_head, forward_argmax, forward_cache_only,
-    forward_lazy_single_argmax, forward_qwen_visual_prefill,
+    forward_lazy_single_argmax_capturing, forward_qwen_visual_prefill,
     forward_with_initial_hidden_and_media_ranges,
 };
 use crate::sampling::{
@@ -1497,13 +1497,37 @@ pub fn start_direct_pipeline(
     last_token: u32,
     cache: &mut MlxKVCache,
 ) -> MlxArray {
+    start_direct_pipeline_capturing(cfg, weights, last_token, cache).0
+}
+
+/// [`start_direct_pipeline`] with the trunk's post-norm stream row for
+/// `last_token` captured alongside the lazy token.
+///
+/// The row is the packed residual the Flash Next draft head consumes for that
+/// token, materialized by the forward before this returns. `None` means the
+/// family has no stream row, and callers must fail closed instead of pairing a
+/// missing row with a committed token.
+pub fn start_direct_pipeline_capturing(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    last_token: u32,
+    cache: &mut MlxKVCache,
+) -> (MlxArray, Option<MlxArray>) {
     let token_offset = cache.seq_len();
-    let logits = forward_argmax(cfg, weights, &[last_token], cache, token_offset);
+    let mut stream_row = None;
+    let logits = crate::model::forward_argmax_capturing(
+        cfg,
+        weights,
+        &[last_token],
+        cache,
+        token_offset,
+        &mut stream_row,
+    );
     cache.advance(1);
     // KV cache is in token_arr's computation graph; no extra refs needed.
     let token_arr = argmax(&logits, None);
     async_eval(&[&token_arr]);
-    token_arr
+    (token_arr, stream_row)
 }
 
 /// Advance the double-buffer direct pipeline by one step.
@@ -1532,7 +1556,20 @@ pub fn advance_direct_pipeline_with_timings(
     pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
     cache: &mut MlxKVCache,
 ) -> DirectPipelineAdvance {
-    let mut prepared = prepare_direct_pipeline_advance(cfg, weights, pending, cache);
+    advance_direct_pipeline_capturing_with_timings(cfg, weights, pending, cache).0
+}
+
+/// [`advance_direct_pipeline_with_timings`] with the trunk's post-norm stream
+/// row for the token this step consumed — the token it returns. `None` means
+/// the family has no stream row, and callers must fail closed.
+pub fn advance_direct_pipeline_capturing_with_timings(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
+    cache: &mut MlxKVCache,
+) -> (DirectPipelineAdvance, Option<MlxArray>) {
+    let (mut prepared, stream_row) =
+        prepare_direct_pipeline_advance_capturing(cfg, weights, pending, cache);
 
     // Submit step N+1 to the GPU before waiting for step N.
     // KV cache is in next_token_arr's computation graph (via SDPA), so no extra
@@ -1560,11 +1597,14 @@ pub fn advance_direct_pipeline_with_timings(
     let tok = pending.first_u32_unchecked();
     prepared.timings.pending_read_wall_us = elapsed_us(pending_read_started);
 
-    DirectPipelineAdvance {
-        token: tok,
-        next_pending: prepared.next_pending,
-        timings: prepared.timings,
-    }
+    (
+        DirectPipelineAdvance {
+            token: tok,
+            next_pending: prepared.next_pending,
+            timings: prepared.timings,
+        },
+        stream_row,
+    )
 }
 
 /// Build the next batch=1 direct-decode graph without submitting or
@@ -1581,6 +1621,17 @@ pub fn prepare_direct_pipeline_advance(
     pending: &MlxArray,
     cache: &mut MlxKVCache,
 ) -> PreparedDirectPipelineAdvance {
+    prepare_direct_pipeline_advance_capturing(cfg, weights, pending, cache).0
+}
+
+/// [`prepare_direct_pipeline_advance`] with the trunk's post-norm stream row
+/// for the token this graph consumes, captured for the caller.
+pub fn prepare_direct_pipeline_advance_capturing(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    pending: &MlxArray,
+    cache: &mut MlxKVCache,
+) -> (PreparedDirectPipelineAdvance, Option<MlxArray>) {
     // Build next step's graph using the lazy pending token.
     // forward_lazy_single accepts an unevaluated MlxArray, so this runs entirely
     // on the CPU without waiting for `pending` to be materialised.
@@ -1590,7 +1641,15 @@ pub fn prepare_direct_pipeline_advance(
         reset_forward_stage_timings();
     }
     let forward_started = Instant::now();
-    let logits = forward_lazy_single_argmax(cfg, weights, pending, cache, token_offset);
+    let mut stream_row = None;
+    let logits = forward_lazy_single_argmax_capturing(
+        cfg,
+        weights,
+        pending,
+        cache,
+        token_offset,
+        &mut stream_row,
+    );
     let forward_wall_us = elapsed_us(forward_started);
     let forward_stage = if stage_profile {
         take_forward_stage_timings()
@@ -1602,20 +1661,23 @@ pub fn prepare_direct_pipeline_advance(
     let next_token_arr = argmax(&logits, None);
     let argmax_wall_us = elapsed_us(argmax_started);
 
-    PreparedDirectPipelineAdvance {
-        next_pending: next_token_arr,
-        timings: DirectPipelineTimings {
-            forward_wall_us,
-            forward_layer_loop_wall_us: forward_stage.layer_loop_wall_us,
-            forward_head_wall_us: forward_stage.head_wall_us,
-            argmax_wall_us,
-            linear_attention_layer_ops: forward_stage.linear_attention_layer_ops,
-            linear_attention_layer_count: forward_stage.linear_attention_layer_count,
-            full_attention_layer_ops: forward_stage.full_attention_layer_ops,
-            full_attention_layer_count: forward_stage.full_attention_layer_count,
-            ..DirectPipelineTimings::default()
+    (
+        PreparedDirectPipelineAdvance {
+            next_pending: next_token_arr,
+            timings: DirectPipelineTimings {
+                forward_wall_us,
+                forward_layer_loop_wall_us: forward_stage.layer_loop_wall_us,
+                forward_head_wall_us: forward_stage.head_wall_us,
+                argmax_wall_us,
+                linear_attention_layer_ops: forward_stage.linear_attention_layer_ops,
+                linear_attention_layer_count: forward_stage.linear_attention_layer_count,
+                full_attention_layer_ops: forward_stage.full_attention_layer_ops,
+                full_attention_layer_count: forward_stage.full_attention_layer_count,
+                ..DirectPipelineTimings::default()
+            },
         },
-    }
+        stream_row,
+    )
 }
 
 /// Decode one token: forward pass for a single token and return sampled ID.

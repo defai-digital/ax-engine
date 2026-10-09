@@ -6,9 +6,10 @@
 //! MXFP4: one round reads the weights once instead of twice.
 //! `AX_FLASH_NEXT_MTP_VERIFIER=block` verifies up to three drafted tokens in
 //! one target forward and replays the accepted prefix when the block is not
-//! fully accepted. A fully accepted batched or block round keeps
-//! batch-rounded state, so a greedy stream can diverge from direct decoding
-//! at a near-tied logit. None of these schedules grants qualification.
+//! fully accepted. Multi-token verifier windows replay the singleton
+//! arithmetic row by row (row-exact projections, per-row dense attention), so
+//! a verified round retains bit-identical state to the canonical schedule.
+//! None of these schedules grants qualification.
 //!
 //! The sidecar has no published official forward oracle. Its candidate input
 //! combiner uses a shared hidden projection per residual stream and adds a
@@ -141,6 +142,42 @@ thread_local! {
     static FAIL_ACCEPTED_CATCHUP: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Transaction-failure injection for tests outside this module tree.
+#[cfg(test)]
+pub(crate) mod test_injection {
+    use super::{FAIL_ACCEPTED_CATCHUP, FAIL_TARGET_CALL};
+
+    /// Fails the Nth (1-based, counted from installation) materialized target
+    /// transition for the current thread, restoring the hooks on drop.
+    #[must_use]
+    pub(crate) struct InjectedTargetFailure {
+        previous_target: Option<usize>,
+        previous_catchup: bool,
+    }
+
+    impl Drop for InjectedTargetFailure {
+        fn drop(&mut self) {
+            FAIL_TARGET_CALL.with(|failure| failure.set(self.previous_target));
+            FAIL_ACCEPTED_CATCHUP.with(|failure| failure.set(self.previous_catchup));
+        }
+    }
+
+    /// Fail target transition `index` (1-based) and reset the call counter so
+    /// the index counts from this call.
+    pub(crate) fn fail_target_transition(index: usize) -> InjectedTargetFailure {
+        let previous_target = FAIL_TARGET_CALL.with(|failure| failure.get());
+        let previous_catchup = FAIL_ACCEPTED_CATCHUP.with(|failure| failure.get());
+        FAIL_TARGET_CALL.with(|failure| failure.set(Some(index)));
+        FAIL_ACCEPTED_CATCHUP.with(|failure| failure.set(false));
+        super::TRUNK_FORWARD_COUNT.with(|count| count.set(0));
+        super::TRUNK_FORWARD_TOKENS.with(|calls| calls.borrow_mut().clear());
+        InjectedTargetFailure {
+            previous_target,
+            previous_catchup,
+        }
+    }
+}
+
 fn trunk_forward(
     trunk: &Qwen4ExpWeights,
     tokens: &[u32],
@@ -223,6 +260,74 @@ fn next_token(output: &Qwen4ExpOutput) -> Result<u32, String> {
         return Err("Flash Next MTP logits row is missing".into());
     }
     token_at_row(&output.logits, shape[0] - 1)
+}
+
+/// Argmax token and top-two margin of one logits row, in a single device
+/// barrier.
+///
+/// The argmax and the top-2 reduction cover the same row of the same Float32
+/// logits, so one `try_eval` materializes both. Values are identical to running
+/// [`token_at_row`] and [`top_two_margin`] separately; only the barrier count
+/// changes. The non-finite check is the same tripwire `top_two_margin` applies.
+fn row_token_and_margin(logits: &MlxArray, row: i32) -> Result<(u32, f32), String> {
+    let shape = logits.shape();
+    if shape.len() != 2 || row < 0 || row >= shape[0] {
+        return Err("Flash Next MTP logits row is missing".into());
+    }
+    let row_logits = slice(logits, &[row, 0], &[row + 1, shape[1]], &[1, 1], None);
+    let token = argmax(&row_logits, None);
+    if shape[1] < 2 {
+        // A one-column row has no second candidate; the margin is zero by
+        // definition, matching `top_two_margin`.
+        try_eval(&[&token])?;
+        return Ok((token.data_u32()[0], 0.0));
+    }
+    let top = astype(&topk(&row_logits, 2, None), MlxDtype::Float32, None);
+    try_eval(&[&token, &top])?;
+    let values = top.data_f32();
+    if values.len() < 2 {
+        return Ok((token.data_u32()[0], 0.0));
+    }
+    let first = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let second = values.iter().copied().fold(f32::INFINITY, f32::min);
+    if !first.is_finite() || !second.is_finite() {
+        return Err("Flash Next MTP top-two logits are not finite".into());
+    }
+    Ok((token.data_u32()[0], first - second))
+}
+
+/// Argmax token of one logits row plus the fail-closed finiteness check on its
+/// selected logit, in a single device barrier.
+///
+/// This is the production bonus read: `CursorStep.bonus_margin` is route-dead,
+/// so the top-two margin is not computed, but the NaN tripwire it carried must
+/// survive — a non-finite bonus row has to fail the step instead of committing
+/// a corrupt token.
+fn row_token_and_selected_logit(logits: &MlxArray, row: i32) -> Result<u32, String> {
+    let shape = logits.shape();
+    if shape.len() != 2 || row < 0 || row >= shape[0] {
+        return Err("Flash Next MTP logits row is missing".into());
+    }
+    let row_logits = slice(logits, &[row, 0], &[row + 1, shape[1]], &[1, 1], None);
+    let token = argmax(&row_logits, None);
+    let top = astype(&topk(&row_logits, 1, None), MlxDtype::Float32, None);
+    try_eval(&[&token, &top])?;
+    match top.data_f32().first() {
+        Some(value) if value.is_finite() => Ok(token.data_u32()[0]),
+        Some(_) => Err("Flash Next MTP top-two logits are not finite".into()),
+        None => Err("Flash Next MTP top logits are missing".into()),
+    }
+}
+
+/// Bonus-token read for the accepted canonical path. The diagnostics build
+/// keeps the full margin; production returns it as zero and only fails closed
+/// on a non-finite selected logit.
+fn bonus_token_and_margin(logits: &MlxArray) -> Result<(u32, f32), String> {
+    #[cfg(test)]
+    let result = row_token_and_margin(logits, 0);
+    #[cfg(not(test))]
+    let result = row_token_and_selected_logit(logits, 0).map(|token| (token, 0.0));
+    result
 }
 
 /// Top-1 minus top-2 of one logits row, in the row's native logit units.
@@ -334,6 +439,8 @@ pub(crate) struct VerifiedStep {
     /// Top-two margin of the correction decision, including on rejection.
     pub correction_margin: f32,
     /// Top-two margin of the bonus logits row on acceptance; 0 otherwise.
+    /// Diagnostics builds only: production reads the bonus token with a
+    /// selected-logit finiteness check and reports the margin as zero.
     pub bonus_margin: f32,
 }
 
@@ -443,8 +550,9 @@ pub(crate) fn verify_one(
     ) {
         let started = Instant::now();
         let after_primary = trunk_forward(trunk, &[primary], state, owner)?;
-        let correction = next_token(&after_primary)?;
-        let correction_margin = top_two_margin(&after_primary.logits, 0)?;
+        // Canonical verification forwards a singleton, so the single logits row
+        // is both `next_token`'s last row and the correction margin's row 0.
+        let (correction, correction_margin) = row_token_and_margin(&after_primary.logits, 0)?;
         let correction_wall_us = elapsed_us(started);
         let accepted = remaining > 1
             && !terminal_ids.contains(&primary)
@@ -453,8 +561,7 @@ pub(crate) fn verify_one(
         let (after_draft, next_primary, bonus_margin, bonus_wall_us) = if accepted {
             let started = Instant::now();
             let output = trunk_forward(trunk, &[draft], &after_primary.state, owner)?;
-            let bonus = next_token(&output)?;
-            let margin = top_two_margin(&output.logits, 0)?;
+            let (bonus, margin) = bonus_token_and_margin(&output.logits)?;
             (Some(output), bonus, margin, elapsed_us(started))
         } else {
             (None, correction, 0.0, 0)
@@ -670,6 +777,7 @@ pub(crate) struct CursorStep {
     pub rejection_wall_us: u32,
     pub verify_wall_us: u32,
     pub correction_margin: f32,
+    /// Zero in production (see `VerifiedStep::bonus_margin`); route-dead.
     #[allow(dead_code)]
     pub bonus_margin: f32,
 }
@@ -2795,5 +2903,51 @@ mod block_verifier_tests {
         );
         assert_eq!(accepted_draft_prefix(&inputs, &[20], &drafts, &[]), 1);
         assert_eq!(accepted_draft_prefix(&[], &[], &[], &[]), 0);
+    }
+}
+
+#[cfg(test)]
+mod bonus_read_tests {
+    use super::{row_token_and_margin, row_token_and_selected_logit};
+    use mlx_sys::{MlxArray, MlxDtype, eval};
+
+    fn logits_row(values: &[f32]) -> MlxArray {
+        let array = MlxArray::from_raw_data(
+            values.as_ptr().cast(),
+            std::mem::size_of_val(values),
+            &[1, values.len() as i32],
+            MlxDtype::Float32,
+        );
+        eval(&[&array]);
+        array
+    }
+
+    #[test]
+    fn coalesced_row_reads_agree_with_the_separate_ops() {
+        let row = logits_row(&[1.0, 5.0, 3.5, 0.5]);
+        let (token, margin) = row_token_and_margin(&row, 0).unwrap();
+        assert_eq!(token, 1);
+        assert!((margin - 1.5).abs() < 1e-6, "margin={margin}");
+        assert_eq!(row_token_and_selected_logit(&row, 0).unwrap(), token);
+    }
+
+    #[test]
+    fn single_column_rows_report_a_zero_margin() {
+        let row = logits_row(&[2.0]);
+        assert_eq!(row_token_and_margin(&row, 0).unwrap(), (0, 0.0));
+        assert_eq!(row_token_and_selected_logit(&row, 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn non_finite_rows_fail_the_bonus_read_closed() {
+        let infinite = logits_row(&[f32::INFINITY, 1.0]);
+        assert!(row_token_and_selected_logit(&infinite, 0).is_err());
+        assert!(row_token_and_margin(&infinite, 0).is_err());
+        let all_nan = logits_row(&[f32::NAN, f32::NAN]);
+        assert!(row_token_and_selected_logit(&all_nan, 0).is_err());
+        assert!(row_token_and_margin(&all_nan, 0).is_err());
+        // Missing rows keep the historical error.
+        assert!(row_token_and_selected_logit(&infinite, 4).is_err());
+        assert!(row_token_and_margin(&infinite, 4).is_err());
     }
 }

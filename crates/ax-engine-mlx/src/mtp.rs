@@ -1,8 +1,8 @@
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add, argmax,
-    astype, broadcast_to, concatenate, eval, multiply, random_categorical, reshape, rms_norm,
-    rope_dynamic, scaled_dot_product_attention_with_mask, sigmoid, slice, slice_update_dynamic,
-    softmax, take,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add, arange,
+    argmax, astype, broadcast_to, concatenate, cumsum, equal, eval, multiply, random_categorical,
+    reshape, rms_norm, rope_dynamic, scaled_dot_product_attention_with_mask, sigmoid, slice,
+    slice_update_dynamic, softmax, sum_axis, take,
 };
 
 use crate::fastpath;
@@ -220,6 +220,50 @@ fn gpu_draft_log_prob_lazy(
     let log_prob = mlx_log(&prob, None);
     let floor = MlxArray::from_f32(-30.0f32);
     mlx_sys::maximum(&log_prob, &floor, None)
+}
+
+/// Device-side greedy acceptance over an MTP verify window.
+///
+/// `predicted` is the verifier argmax for `[primary, drafts...]` (`[n + 1]`
+/// u32); `drafts_dev` holds the `n` proposed draft tokens on device. Returns a
+/// lazy `[2]` u32 array `[accept_count, correction_token]`, where
+/// `accept_count` is the longest prefix with `predicted[i] == drafts[i]` and
+/// `correction_token` is `predicted[accept_count]` — the first-mismatch
+/// argmax, or the verifier tail (bonus) token when every draft matches. This
+/// mirrors the greedy branch of the runner's host-side `mtp_accept_count`;
+/// the caller evaluates it inside the normal verify batch and reads two
+/// scalars instead of downloading the full `predicted` window.
+pub(crate) fn mtp_greedy_accept_lazy(
+    predicted: &MlxArray,
+    drafts_dev: &MlxArray,
+    n: usize,
+) -> MlxArray {
+    debug_assert!(n >= 1, "empty draft windows must not reach device accept");
+    let n_i32 = i32::try_from(n).unwrap_or(i32::MAX);
+    let predicted_drafts = slice(predicted, &[0], &[n_i32], &[1], None);
+    let matches = equal(&predicted_drafts, drafts_dev, None);
+    // Inclusive prefix sums: position i holds cumsum == i + 1 iff every draft
+    // up to and including i matched, so the count of holding positions is the
+    // accepted prefix length.
+    let prefix_sums = cumsum(
+        &astype(&matches, MlxDtype::Int32, None),
+        0,
+        false,
+        true,
+        None,
+    );
+    let positions = arange(1.0, n as f64 + 1.0, 1.0, MlxDtype::Int32, None);
+    let prefix_holds = equal(&prefix_sums, &positions, None);
+    let accept_count = sum_axis(
+        &astype(&prefix_holds, MlxDtype::Uint32, None),
+        0,
+        true,
+        None,
+    );
+    // `accept_count <= n` and `predicted` has n + 1 rows, so the lazy index is
+    // always in bounds; a full accept selects the tail (bonus) token.
+    let correction = take(predicted, &accept_count, 0, None);
+    concatenate(&[&accept_count, &correction], 0, None)
 }
 
 /// GPU-side stochastic sampling: `random_categorical(logits / T)`.
@@ -1384,12 +1428,45 @@ pub fn mtp_draft_tokens(
     )
 }
 
+/// Greedy drafts record temperature-scaled log-probs only when a consumer
+/// exists: an active confidence gate (which gates on head probabilities) or
+/// the adaptive-gate controller's telemetry (`AX_MLX_MTP_ADAPTIVE_GATE`).
+/// Greedy acceptance is a pure argmax prefix match and the deterministic-delta
+/// proposal law feeds zeroed log-probs to rejection sampling, so nothing else
+/// reads them — skipping the per-depth full-vocab softmax is
+/// behavior-preserving.
 fn greedy_draft_needs_temperature_log_probs(
     draft_temperature: f32,
     min_confidence: f32,
-    qwen_exact_profile: bool,
+    adaptive_gate_enabled: bool,
 ) -> bool {
-    draft_temperature > 0.0 && !(qwen_exact_profile && min_confidence == 0.0)
+    draft_temperature > 0.0 && (min_confidence > 0.0 || adaptive_gate_enabled)
+}
+
+/// Process-env wrapper over [`greedy_draft_needs_temperature_log_probs`]; the
+/// adaptive-gate flag is `OnceLock`-cached process-wide.
+fn greedy_draft_needs_temperature_log_probs_from_env(
+    draft_temperature: f32,
+    min_confidence: f32,
+) -> bool {
+    greedy_draft_needs_temperature_log_probs(
+        draft_temperature,
+        min_confidence,
+        crate::mtp_adaptive_gate::adaptive_gate_enabled_from_env(),
+    )
+}
+
+/// Whether the Qwen draft path computes temperature-scaled log-probs for these
+/// inputs — the confidence gate (which keys off head probabilities) or the
+/// adaptive-gate controller's telemetry (`AX_MLX_MTP_ADAPTIVE_GATE`) must
+/// consume them. Recording sites call this instead of re-deriving the recorded
+/// temperature from profile flags: the recorded T must describe what the draft
+/// path actually wrote.
+pub fn qwen_greedy_temperature_log_probs_computed(
+    draft_head_temperature: f32,
+    min_confidence: f32,
+) -> bool {
+    greedy_draft_needs_temperature_log_probs_from_env(draft_head_temperature, min_confidence)
 }
 
 /// Temperature at which Qwen MTP draft log-probs are recorded by
@@ -1401,53 +1478,75 @@ fn greedy_draft_needs_temperature_log_probs(
 /// log-probs at T=1.0 breaks exactness — the common Qwen3.6 linear exact /
 /// confidence-gated path.
 ///
-/// Mirrors the branch structure of [`mtp_draft_tokens_gated`]:
+/// `temperature_log_probs_computed` is the draft path's own decision (see
+/// [`qwen_greedy_temperature_log_probs_computed`] for the Qwen greedy rule);
+/// it is an input, never re-derived here:
+/// - not computed → **1.0** (callers clear the recorded temperature with the
+///   empty log-prob vector)
 /// - confidence gate force-greedy → log-probs at **1.0**
 /// - stochastic mode → head draft temperature (or 1.0 if unset)
 /// - greedy mode with temperature log-probs → head draft temperature
-/// - pure greedy (exact profile, gate 0) → **1.0** when log-probs exist
 pub fn qwen_mtp_draft_log_prob_temperature(
     mode: MtpDraftMode,
     draft_head_temperature: f32,
     min_confidence: f32,
-    qwen_exact_profile: bool,
+    temperature_log_probs_computed: bool,
 ) -> f32 {
+    if !temperature_log_probs_computed {
+        return 1.0;
+    }
     let head_t = if draft_head_temperature > 0.0 {
         draft_head_temperature
     } else {
         1.0
     };
     let gate_forces_greedy = min_confidence > 0.0 && mode != MtpDraftMode::Stochastic;
-    if gate_forces_greedy {
-        return 1.0;
-    }
-    match mode {
-        MtpDraftMode::Stochastic => head_t,
-        MtpDraftMode::Greedy => {
-            if greedy_draft_needs_temperature_log_probs(
-                draft_head_temperature,
-                min_confidence,
-                qwen_exact_profile,
-            ) {
-                head_t
-            } else {
-                1.0
-            }
-        }
-    }
+    if gate_forces_greedy { 1.0 } else { head_t }
 }
 
-/// Process-env draft mode + head T / gate / exact profile → recorded log-prob T.
+/// Process-env draft mode + head T / gate → recorded log-prob T for the Qwen
+/// draft path, with the computed flag taken from the same consumer rule
+/// [`mtp_draft_tokens_gated`] applies.
 pub fn qwen_mtp_draft_log_prob_temperature_from_env(
     draft_head_temperature: f32,
     min_confidence: f32,
-    qwen_exact_profile: bool,
+) -> f32 {
+    let mode = mtp_draft_mode_from_env();
+    let computed = mode != MtpDraftMode::Greedy
+        || qwen_greedy_temperature_log_probs_computed(draft_head_temperature, min_confidence);
+    qwen_mtp_draft_log_prob_temperature(mode, draft_head_temperature, min_confidence, computed)
+}
+
+/// Temperature at which GLM MTP draft log-probs are recorded.
+///
+/// GLM's draft path recomputes temperature-scaled log-probs on every draft
+/// (head T when the gate is off, 1.0 when the gate forces greedy, the sampling
+/// T on the stochastic path), so it always records the computed branch — the
+/// Qwen consumer rule that can skip them never applies here. Do not call the
+/// Qwen accessor for GLM: it would record 1.0 against genuinely computed head-T
+/// log-probs.
+pub fn glm_mtp_draft_log_prob_temperature(
+    mode: MtpDraftMode,
+    draft_head_temperature: f32,
+    min_confidence: f32,
 ) -> f32 {
     qwen_mtp_draft_log_prob_temperature(
+        mode,
+        draft_head_temperature,
+        min_confidence,
+        /* temperature_log_probs_computed */ true,
+    )
+}
+
+/// Process-env wrapper over [`glm_mtp_draft_log_prob_temperature`].
+pub fn glm_mtp_draft_log_prob_temperature_from_env(
+    draft_head_temperature: f32,
+    min_confidence: f32,
+) -> f32 {
+    glm_mtp_draft_log_prob_temperature(
         mtp_draft_mode_from_env(),
         draft_head_temperature,
         min_confidence,
-        qwen_exact_profile,
     )
 }
 
@@ -1512,16 +1611,15 @@ pub fn mtp_draft_tokens_gated(
                 rng,
             ),
             MtpDraftMode::Greedy => {
-                // The exact Qwen depth-one profile uses a deterministic-delta
-                // proposal law. With the confidence gate disabled, the
-                // temperature-scaled draft log-prob is neither used for
-                // gating nor acceptance, so avoid building its full-vocabulary
-                // softmax. Preserve the established path for every other
-                // runtime profile.
-                let use_temperature = greedy_draft_needs_temperature_log_probs(
+                // Greedy acceptance is a pure argmax prefix match and the
+                // deterministic-delta proposal law feeds rejection sampling
+                // zeroed log-probs, so the temperature-scaled full-vocabulary
+                // softmax has exactly two consumers: the confidence gate and
+                // the adaptive-gate telemetry. Skip it when neither is active
+                // (this subsumes the old exact-profile-only skip).
+                let use_temperature = greedy_draft_needs_temperature_log_probs_from_env(
                     head.draft_sampling.temperature,
                     min_confidence,
-                    fastpath::qwen_linear_mtp_exact_enabled(),
                 );
                 if use_temperature {
                     mtp_draft_tokens_sampled(
@@ -3005,24 +3103,31 @@ fn deepseek_v4_mtp_draft_tokens_greedy(
 #[cfg(test)]
 mod qwen_mtp_log_prob_temperature_tests {
     use super::{
-        MtpDraftMode, greedy_draft_needs_temperature_log_probs, qwen_mtp_draft_log_prob_temperature,
+        MtpDraftMode, glm_mtp_draft_log_prob_temperature, greedy_draft_needs_temperature_log_probs,
+        qwen_greedy_temperature_log_probs_computed, qwen_mtp_draft_log_prob_temperature,
     };
 
     #[test]
-    fn exact_profile_zero_gate_records_t1_not_head_0_7() {
-        // Qwen3.6 linear exact production path: greedy drafts, no confidence
-        // gate → pure greedy log-probs at T=1.0. Accept must not use head 0.7.
-        assert!(!greedy_draft_needs_temperature_log_probs(0.7, 0.0, true));
+    fn greedy_gate_disabled_adaptive_off_records_no_log_probs() {
+        // Default relaxed throughput profile: greedy drafts, gate 0, adaptive
+        // gate off → no temperature log-probs; acceptance is a pure argmax
+        // prefix match with zeroed deterministic-delta log-probs. The recorded
+        // temperature states that (the runner clears it with the empty
+        // vector), never the head T.
+        assert!(!greedy_draft_needs_temperature_log_probs(0.7, 0.0, false));
+        assert!(!qwen_greedy_temperature_log_probs_computed(0.7, 0.0));
         assert_eq!(
-            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, true),
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, false),
             1.0
         );
     }
 
     #[test]
     fn confidence_gate_force_greedy_records_t1() {
+        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.5, false));
+        assert!(qwen_greedy_temperature_log_probs_computed(0.7, 0.5));
         assert_eq!(
-            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.5, false),
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.5, true),
             1.0
         );
     }
@@ -3036,12 +3141,180 @@ mod qwen_mtp_log_prob_temperature_tests {
     }
 
     #[test]
-    fn non_exact_greedy_with_head_t_uses_temperature_log_probs() {
-        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.0, false));
+    fn greedy_gate_disabled_adaptive_on_keeps_temperature_log_probs() {
+        // The adaptive-gate telemetry is the only gate-0 consumer of the
+        // draft log-probs.
+        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.0, true));
         assert_eq!(
-            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, false),
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, true),
             0.7
         );
+    }
+
+    #[test]
+    fn glm_greedy_gate_disabled_records_computed_head_temperature() {
+        // GLM recomputes head-T log-probs on every draft, so its recorded
+        // temperature is the computed branch even where the Qwen consumer rule
+        // would skip them: greedy + gate 0 records 0.7, not the 1.0 the Qwen
+        // accessor would report for the same inputs.
+        assert_eq!(
+            qwen_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0, false),
+            1.0,
+            "the skip case must not be reachable for GLM's recording rule"
+        );
+        assert_eq!(
+            glm_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.0),
+            0.7
+        );
+        assert_eq!(
+            glm_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.7, 0.5),
+            1.0,
+            "gate-forced greedy writes T=1.0 log-probs"
+        );
+        assert_eq!(
+            glm_mtp_draft_log_prob_temperature(MtpDraftMode::Stochastic, 0.7, 0.0),
+            0.7
+        );
+        assert_eq!(
+            glm_mtp_draft_log_prob_temperature(MtpDraftMode::Greedy, 0.0, 0.0),
+            1.0,
+            "no head temperature records 1.0"
+        );
+    }
+
+    #[test]
+    fn greedy_temperature_log_prob_decision_matrix() {
+        for adaptive_gate in [false, true] {
+            // Gate disabled: log-probs only for the adaptive-gate telemetry.
+            assert_eq!(
+                greedy_draft_needs_temperature_log_probs(0.7, 0.0, adaptive_gate),
+                adaptive_gate
+            );
+            // Gate active: gating keys off the head's T=1.0 probabilities.
+            assert!(greedy_draft_needs_temperature_log_probs(
+                0.7,
+                0.5,
+                adaptive_gate
+            ));
+            // No head temperature: never a temperature path regardless.
+            assert!(!greedy_draft_needs_temperature_log_probs(
+                0.0,
+                0.0,
+                adaptive_gate
+            ));
+            assert!(!greedy_draft_needs_temperature_log_probs(
+                0.0,
+                0.5,
+                adaptive_gate
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod device_greedy_accept_tests {
+    use super::*;
+
+    fn u32_arr(data: &[u32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            &[i32::try_from(data.len()).unwrap_or(0)],
+            MlxDtype::Uint32,
+        )
+    }
+
+    /// Host reference mirroring the greedy arm of the runner's
+    /// `mtp_accept_count`: longest argmax-matching prefix, first-mismatch
+    /// argmax as the rejection correction, none on full accept.
+    fn host_greedy_accept_reference(predicted: &[u32], pending: &[u32]) -> (usize, Option<u32>) {
+        let mut ac = 0;
+        for (i, &draft) in pending.iter().enumerate() {
+            if predicted[i] == draft {
+                ac += 1;
+            } else {
+                return (ac, predicted.get(i).copied());
+            }
+        }
+        (ac, None)
+    }
+
+    /// Assert the packed readback matches the host greedy reference.
+    fn assert_packed_matches_host(predicted: &[u32], pending: &[u32], drafts_dev: &MlxArray) {
+        let n = pending.len();
+        let predicted_arr = u32_arr(predicted);
+        let packed = mtp_greedy_accept_lazy(&predicted_arr, drafts_dev, n);
+        eval(&[&packed]);
+        assert_eq!(packed.shape(), vec![2]);
+        let pair = packed.data_u32();
+        let ac = pair[0] as usize;
+        let correction = pair[1];
+        let (expected_ac, expected_rejection) = host_greedy_accept_reference(predicted, pending);
+        assert_eq!(ac, expected_ac, "{predicted:?} vs {pending:?}");
+        let all_accepted = ac == n;
+        assert_eq!(
+            (!all_accepted).then_some(correction),
+            expected_rejection,
+            "{predicted:?} vs {pending:?}"
+        );
+        // The packed correction is always `predicted[ac]`: the first-mismatch
+        // argmax, or the tail (bonus) token on full accept.
+        assert_eq!(correction, predicted[ac], "{predicted:?} vs {pending:?}");
+    }
+
+    /// The runner's async-draft arm builds the device draft window from the
+    /// per-depth lazy `[1]` tokens: one token is used directly, several are
+    /// concatenated into the window.
+    fn drafts_dev_from_lazy(tokens: &[MlxArray]) -> MlxArray {
+        if tokens.len() == 1 {
+            tokens[0].clone()
+        } else {
+            let parts: Vec<&MlxArray> = tokens.iter().collect();
+            mlx_sys::concatenate(&parts, 0, None)
+        }
+    }
+
+    #[test]
+    fn mtp_greedy_accept_lazy_matches_host_greedy_branch() {
+        // Each case is (verifier argmax window [n + 1], pending drafts [n]).
+        let cases: Vec<(Vec<u32>, Vec<u32>)> = vec![
+            (vec![9, 5], vec![9]),             // n=1 full accept
+            (vec![9, 5], vec![7]),             // n=1 mismatch at 0
+            (vec![4, 4, 6], vec![4, 4]),       // n=2 full accept
+            (vec![4, 2, 6], vec![4, 4]),       // n=2 mismatch at 1
+            (vec![3, 4, 6], vec![4, 4]),       // n=2 mismatch at 0
+            (vec![1, 1, 1, 8], vec![1, 1, 1]), // n=3 full accept
+            (vec![1, 1, 2, 8], vec![1, 1, 1]), // n=3 mismatch at 2
+            (vec![1, 2, 1, 8], vec![1, 1, 1]), // n=3 mismatch at 1
+            (vec![5, 1, 1, 8], vec![1, 1, 1]), // n=3 mismatch at 0
+        ];
+        for (predicted, pending) in cases {
+            let drafts_dev = u32_arr(&pending);
+            assert_packed_matches_host(&predicted, &pending, &drafts_dev);
+        }
+    }
+
+    #[test]
+    fn mtp_greedy_accept_lazy_matches_host_for_lazy_draft_windows() {
+        // Async-draft (`AX_MLX_MTP_ASYNC_DRAFT`) windows reach the device
+        // accept through the per-depth lazy tokens: a single draft uses that
+        // array directly, a multi-depth window concatenates it. Both
+        // constructions must reduce to the same host-prefix decision as the
+        // host-uploaded draft array.
+        let cases: Vec<(Vec<u32>, Vec<u32>)> = vec![
+            (vec![9, 5], vec![9]),             // n=1 full accept
+            (vec![9, 5], vec![7]),             // n=1 mismatch at 0
+            (vec![4, 4, 6], vec![4, 4]),       // n=2 full accept
+            (vec![3, 4, 6], vec![4, 4]),       // n=2 mismatch at 0
+            (vec![1, 1, 1, 8], vec![1, 1, 1]), // n=3 full accept
+            (vec![1, 2, 1, 8], vec![1, 1, 1]), // n=3 mismatch at 1
+            (vec![5, 1, 1, 8], vec![1, 1, 1]), // n=3 mismatch at 0
+        ];
+        for (predicted, pending) in cases {
+            let lazy: Vec<MlxArray> = pending.iter().map(|tok| u32_arr(&[*tok])).collect();
+            let drafts_dev = drafts_dev_from_lazy(&lazy);
+            assert_packed_matches_host(&predicted, &pending, &drafts_dev);
+        }
     }
 }
 
@@ -3392,11 +3665,14 @@ mod confidence_gate_tests {
     }
 
     #[test]
-    fn exact_profile_skips_unused_temperature_log_probs_only_with_gate_disabled() {
-        assert!(!greedy_draft_needs_temperature_log_probs(0.7, 0.0, true));
-        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.1, true));
-        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.0, false));
-        assert!(!greedy_draft_needs_temperature_log_probs(0.0, 0.0, false));
+    fn greedy_temperature_log_probs_follow_consumers_not_profile() {
+        // The skip is consumer-driven, not profile-scoped: with the gate
+        // disabled and the adaptive-gate telemetry off, greedy drafts record
+        // no temperature log-probs; either consumer re-enables them.
+        assert!(!greedy_draft_needs_temperature_log_probs(0.7, 0.0, false));
+        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.1, false));
+        assert!(greedy_draft_needs_temperature_log_probs(0.7, 0.0, true));
+        assert!(!greedy_draft_needs_temperature_log_probs(0.0, 0.0, true));
     }
 
     #[test]

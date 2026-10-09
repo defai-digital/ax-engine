@@ -9,7 +9,8 @@ use crate::sampling::{
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
-    ModelConfig, forward, forward_all_positions, forward_all_positions_update_cache, forward_argmax,
+    ModelConfig, forward, forward_all_positions, forward_all_positions_update_cache,
+    forward_argmax, forward_capturing,
 };
 use crate::weights::ModelWeights;
 
@@ -1791,8 +1792,48 @@ pub fn single_decode_with_sampling_buffers(
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
     soft_close: Option<ThinkSoftCloseProbe>,
 ) -> Vec<u32> {
+    single_decode_with_sampling_buffers_capturing(
+        cfg,
+        weights,
+        cache,
+        ngram,
+        last_token,
+        sampling,
+        repetition_tokens,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+        soft_close,
+        None,
+    )
+}
+
+/// [`single_decode_with_sampling_buffers`] with the trunk's post-norm stream
+/// row for `last_token` captured for the caller. `stream_row` is filled by
+/// families that own a packed residual stream (Flash Next); others leave it
+/// untouched.
+#[allow(clippy::too_many_arguments)]
+pub fn single_decode_with_sampling_buffers_capturing(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    ngram: &mut NgramTable,
+    last_token: u32,
+    sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+    soft_close: Option<ThinkSoftCloseProbe>,
+    stream_row: Option<&mut Option<MlxArray>>,
+) -> Vec<u32> {
     let token_offset = cache.seq_len();
-    let logits = forward(cfg, weights, &[last_token], cache, token_offset);
+    let logits = match stream_row {
+        Some(sink) => forward_capturing(cfg, weights, &[last_token], cache, token_offset, sink),
+        None => forward(cfg, weights, &[last_token], cache, token_offset),
+    };
     cache.advance(1);
 
     let tok = if let Some(probe) = soft_close {

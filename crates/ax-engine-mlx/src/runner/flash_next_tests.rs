@@ -636,9 +636,17 @@ fn generate_observed(
                 observe(trunk);
             }
             if let Some(cursor) = &state.flash_next_mtp.cursor {
-                let trunk = state.cache.qwen4_exp.as_ref().unwrap();
-                assert_eq!(trunk.position(), state.cache.seq_len());
-                assert!(cursor.aligned(trunk));
+                if state.flash_next_mtp.paused.is_none() {
+                    let trunk = state.cache.qwen4_exp.as_ref().unwrap();
+                    assert_eq!(trunk.position(), state.cache.seq_len());
+                    assert!(cursor.aligned(trunk));
+                } else {
+                    // A paused cursor is behind the trunk on purpose: the
+                    // buffered rows carry it when the pause ends.
+                    let trunk = state.cache.qwen4_exp.as_ref().unwrap();
+                    assert_eq!(trunk.position(), state.cache.seq_len());
+                    assert!(!cursor.aligned(trunk));
+                }
             }
         }
         if update.stop_reason.is_some() {
@@ -1454,4 +1462,491 @@ fn flash_next_real_runner_mtp_paired_cost() {
     );
     evidence["tie_count"] = pair_identity.tie_divergences.len().into();
     std::fs::write(output_path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+}
+
+/// Think-block token IDs used by the paused-cursor tests. They only have to be
+/// valid IDs in the synthetic fixture's vocabulary, so they reuse prompt IDs.
+const PAUSE_TEST_THINK_START: u32 = 1;
+const PAUSE_TEST_THINK_END: u32 = 2;
+
+/// Request context whose think-budget close falls due after `think_tokens`
+/// emitted think tokens: the Flash Next candidate is blocked mid-decode and
+/// must pause instead of dropping its cursor.
+fn think_window_context(
+    id: u64,
+    prompt_len: usize,
+    budget: u32,
+    think_tokens: u32,
+) -> RunnerRequestContext {
+    RunnerRequestContext {
+        max_think_tokens: Some(think_tokens),
+        ..context(id, prompt_len, budget)
+    }
+}
+
+fn arm_pause_test_think_window(runner: &mut MlxRunner) {
+    runner.cfg.think_start_token_id = Some(PAUSE_TEST_THINK_START);
+    runner.cfg.think_end_token_id = Some(PAUSE_TEST_THINK_END);
+}
+
+fn reset_prefix_stores(runner: &MlxRunner) {
+    *runner.prefix_cache.lock() = MlxPrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 64 * 1024 * 1024,
+        max_entries: 128,
+    });
+    *runner.native_prefix_cache.lock() = MlxNativePrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 64 * 1024 * 1024,
+        max_entries: 128,
+    });
+}
+
+fn route_decisions(decisions: &[(String, u32)]) -> std::collections::HashMap<String, u32> {
+    decisions.iter().cloned().collect()
+}
+
+/// Pause-route tests prefer the pinned real pack (`AX_FLASH_NEXT_REAL_PACK`):
+/// its audited MXFP4 envelope passes product admission, while the 2026-09-15
+/// synthetic oracle is dense/affine and is rejected by the ADR-039 MX-only
+/// policy. The synthetic path stays for a future envelope-conformant fixture.
+fn pause_test_artifacts() -> NativeModelArtifacts {
+    if let Some(root) = std::env::var_os("AX_FLASH_NEXT_REAL_PACK") {
+        return NativeModelArtifacts::from_dir(PathBuf::from(root)).unwrap();
+    }
+    artifacts()
+}
+
+/// Arbitrary in-vocab prompt content; on the real pack the first token is the
+/// manifest-derived think-start id so the session enters think mode.
+fn pause_test_prompt() -> Vec<u32> {
+    if std::env::var_os("AX_FLASH_NEXT_REAL_PACK").is_some() {
+        vec![248_068, 9_708, 11, 790, 3_699, 4_688, 1_477, 21_955]
+    } else {
+        vec![PAUSE_TEST_THINK_START, 3, 4, 5, 6, 7, 8, 9]
+    }
+}
+
+/// The synthetic fixture has no manifest think ids; the real pack derives them
+/// (248,068/248,069) — assert instead of overriding there.
+fn maybe_arm_pause_test_think_window(runner: &mut MlxRunner) {
+    if std::env::var_os("AX_FLASH_NEXT_REAL_PACK").is_some() {
+        assert!(runner.cfg.think_start_token_id.is_some());
+        assert!(runner.cfg.think_end_token_id.is_some());
+    } else {
+        arm_pause_test_think_window(runner);
+    }
+}
+
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_REAL_PACK (the synthetic oracle is dense/affine and no longer passes ADR-039 admission)"]
+fn flash_next_paused_cursor_catches_up_after_a_think_window() {
+    let artifacts = pause_test_artifacts();
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2, true).unwrap();
+    assert!(runner.has_mtp());
+    maybe_arm_pause_test_think_window(&mut runner);
+    let prompt = pause_test_prompt();
+    let budget = 12;
+    let mut generations = Vec::new();
+    for mode in 0..2usize {
+        reset_prefix_stores(&runner);
+        runner.set_mtp_requested(mode == 1);
+        generations.push(generate(
+            &runner,
+            &prompt,
+            100,
+            think_window_context(1400 + mode as u64, prompt.len(), budget, 2),
+        ));
+    }
+    let direct = &generations[0];
+    let candidate = &generations[1];
+    // The pause must not change the emitted stream: the trunk verifier still
+    // decides every committed token, think-close overrides included.
+    assert_eq!(candidate.tokens, direct.tokens);
+    assert_eq!(candidate.tokens.len(), budget as usize);
+    assert!(candidate.maximum("ax_mlx_flash_next_mtp_verified_steps") > 0);
+    assert!(candidate.maximum("ax_mlx_flash_next_mtp_cursor_paused_steps") > 0);
+    assert!(candidate.maximum("ax_mlx_flash_next_mtp_cursor_resumed") > 0);
+    assert_eq!(candidate.maximum("ax_mlx_flash_next_mtp_cursor_dropped"), 0);
+    assert_eq!(candidate.maximum("ax_mlx_flash_next_mtp_step_errors"), 0);
+    assert_eq!(
+        direct.maximum("ax_mlx_flash_next_mtp_cursor_paused_steps"),
+        0
+    );
+    assert_eq!(direct.maximum("ax_mlx_flash_next_mtp_cursor_resumed"), 0);
+}
+
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_REAL_PACK (the synthetic oracle is dense/affine and no longer passes ADR-039 admission)"]
+fn flash_next_paused_cursor_drops_when_the_catch_up_fails() {
+    let artifacts = pause_test_artifacts();
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2, true).unwrap();
+    assert!(runner.has_mtp());
+    maybe_arm_pause_test_think_window(&mut runner);
+    let prompt = pause_test_prompt();
+    let budget = 8;
+    let reference = {
+        reset_prefix_stores(&runner);
+        runner.set_mtp_requested(false);
+        generate(
+            &runner,
+            &prompt,
+            100,
+            think_window_context(1500, prompt.len(), budget, 2),
+        )
+    };
+    reset_prefix_stores(&runner);
+    runner.set_mtp_requested(true);
+    let ctx = think_window_context(1501, prompt.len(), budget, 2);
+    let prefill = execute(&runner, ctx, &prompt, ExecutionMode::Prefill);
+    assert!(prefill.request_updates[0].error.is_none());
+    let mut tokens: Vec<u32> = prefill.request_updates[0]
+        .output_token
+        .into_iter()
+        .collect();
+    // The cursor must attach before the soft-close can pause it: step until the
+    // pause lands (the close is due after two think tokens). A zero budget would
+    // close before the cursor exists and never pause anything.
+    let mut pause_steps = 0;
+    loop {
+        let output = execute(
+            &runner,
+            RunnerRequestContext {
+                generated_len: tokens.len() as u32,
+                ..ctx
+            },
+            &[*tokens.last().unwrap()],
+            ExecutionMode::Decode,
+        );
+        assert!(output.request_updates[0].error.is_none());
+        let update = &output.request_updates[0];
+        tokens.extend(update.output_token);
+        tokens.extend_from_slice(&update.output_tokens);
+        pause_steps += 1;
+        let paused = runner
+            .states
+            .lock()
+            .get(&ctx.request_id)
+            .is_some_and(|state| state.flash_next_mtp.paused.is_some());
+        if paused {
+            break;
+        }
+        assert!(
+            pause_steps < 8,
+            "the think soft-close did not pause the cursor"
+        );
+    }
+    // Corrupt the catch-up buffer: the flushed rows no longer match the head's
+    // packed width, so the catch-up must fail closed instead of proposing.
+    {
+        let mut states = runner.states.lock();
+        let state = states.get_mut(&ctx.request_id).unwrap();
+        assert!(state.flash_next_mtp.paused.is_some());
+        assert!(state.flash_next_mtp.cursor.is_some());
+        let buffer = state.flash_next_mtp.paused.as_mut().unwrap();
+        buffer.rows.clear();
+        let row =
+            MlxArray::from_raw_data([1.0f32].as_ptr().cast(), 4, &[1, 1, 1], MlxDtype::Float32);
+        buffer.rows.push((tokens[0], row));
+    }
+    let mut last = None;
+    let mut steps = 1;
+    while tokens.len() < budget as usize {
+        let output = execute(
+            &runner,
+            RunnerRequestContext {
+                generated_len: tokens.len() as u32,
+                ..ctx
+            },
+            &[*tokens.last().unwrap()],
+            ExecutionMode::Decode,
+        );
+        assert!(output.request_updates[0].error.is_none());
+        let update = &output.request_updates[0];
+        tokens.extend(update.output_token);
+        tokens.extend_from_slice(&update.output_tokens);
+        last = Some(output);
+        steps += 1;
+        assert!(steps < 64, "decode did not terminate");
+    }
+    let decisions = route_decisions(&last.unwrap().route_metadata.crossover_decisions);
+    assert_eq!(
+        decisions.get("ax_mlx_flash_next_mtp_cursor_dropped"),
+        Some(&1),
+        "a failed catch-up drops exactly one cursor"
+    );
+    // Absent and zero are the same observation: the counter row exists whenever
+    // the route emitted it, even when nothing was counted.
+    assert!(
+        matches!(
+            decisions.get("ax_mlx_flash_next_mtp_cursor_resumed"),
+            None | Some(&0)
+        ),
+        "no resume may be counted"
+    );
+    assert!(
+        matches!(
+            decisions.get("ax_mlx_flash_next_mtp_cursor_pause_overflows"),
+            None | Some(&0)
+        ),
+        "no pause overflow may be counted"
+    );
+    // The dropped cursor finishes the request on the direct route, which must
+    // emit the same stream as the direct control.
+    assert_eq!(tokens, reference.tokens);
+}
+
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_REAL_PACK (the synthetic oracle is dense/affine and no longer passes ADR-039 admission)"]
+fn flash_next_step_error_drops_the_cursor_on_the_first_failure() {
+    let artifacts = pause_test_artifacts();
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2, true).unwrap();
+    assert!(runner.has_mtp());
+    let prompt = [1, 3, 4, 5, 6, 7, 8, 9];
+    let budget = 8;
+    let reference = {
+        reset_prefix_stores(&runner);
+        runner.set_mtp_requested(false);
+        generate(&runner, &prompt, 100, context(1600, prompt.len(), budget))
+    };
+    reset_prefix_stores(&runner);
+    runner.set_mtp_requested(true);
+    let ctx = context(1601, prompt.len(), budget);
+    let prefill = execute(&runner, ctx, &prompt, ExecutionMode::Prefill);
+    assert!(prefill.request_updates[0].error.is_none());
+    let mut tokens: Vec<u32> = prefill.request_updates[0]
+        .output_token
+        .into_iter()
+        .collect();
+    // Fail the first materialized target transition of the next cursor step.
+    let _failure = crate::model::qwen4_exp_mtp::test_injection::fail_target_transition(1);
+    let first = execute(
+        &runner,
+        ctx,
+        &[*tokens.last().unwrap()],
+        ExecutionMode::Decode,
+    );
+    assert!(first.request_updates[0].error.is_none());
+    tokens.extend(first.request_updates[0].output_token);
+    tokens.extend_from_slice(&first.request_updates[0].output_tokens);
+    let decisions = route_decisions(&first.route_metadata.crossover_decisions);
+    assert_eq!(
+        decisions.get("ax_mlx_flash_next_mtp_step_errors"),
+        Some(&1),
+        "the injected failure must be the first error"
+    );
+    // Absent and zero are the same observation: the counter row exists whenever
+    // the route emitted it, even when nothing was counted.
+    assert!(
+        matches!(
+            decisions.get("ax_mlx_flash_next_mtp_verified_steps"),
+            None | Some(&0)
+        ),
+        "no verification may complete past the injected failure"
+    );
+    assert_eq!(
+        decisions.get("ax_mlx_flash_next_mtp_cursor_dropped"),
+        Some(&1)
+    );
+    assert!(
+        matches!(
+            decisions.get("ax_mlx_flash_next_mtp_cursor_paused_steps"),
+            None | Some(&0)
+        ),
+        "no pause may be counted"
+    );
+    assert!(
+        matches!(
+            decisions.get("ax_mlx_flash_next_mtp_cursor_resumed"),
+            None | Some(&0)
+        ),
+        "no resume may be counted"
+    );
+    // The dropped cursor decodes direct for the rest of the request and the
+    // emitted stream stays identical to a pure-direct run.
+    let mut last = None;
+    while tokens.len() < budget as usize {
+        let output = execute(
+            &runner,
+            RunnerRequestContext {
+                generated_len: tokens.len() as u32,
+                ..ctx
+            },
+            &[*tokens.last().unwrap()],
+            ExecutionMode::Decode,
+        );
+        assert!(output.request_updates[0].error.is_none());
+        let update = &output.request_updates[0];
+        tokens.extend(update.output_token);
+        tokens.extend_from_slice(&update.output_tokens);
+        last = Some(output);
+    }
+    let tail = route_decisions(&last.unwrap().route_metadata.crossover_decisions);
+    assert_eq!(tail.get("ax_mlx_flash_next_mtp_step_errors"), Some(&1));
+    assert_eq!(tokens, reference.tokens);
+}
+
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_REAL_PACK (the synthetic oracle is dense/affine and no longer passes ADR-039 admission)"]
+fn flash_next_paused_step_drains_a_pending_direct_token() {
+    let artifacts = pause_test_artifacts();
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2, true).unwrap();
+    assert!(runner.has_mtp());
+    maybe_arm_pause_test_think_window(&mut runner);
+    let prompt = pause_test_prompt();
+    let budget = 8;
+    reset_prefix_stores(&runner);
+    runner.set_mtp_requested(true);
+    let ctx = think_window_context(1700, prompt.len(), budget, 2);
+    let prefill = execute(&runner, ctx, &prompt, ExecutionMode::Prefill);
+    assert!(prefill.request_updates[0].error.is_none());
+    let mut tokens: Vec<u32> = prefill.request_updates[0]
+        .output_token
+        .into_iter()
+        .collect();
+    // The cursor must attach before the soft-close can pause it: step until the
+    // pause lands (the close is due after two think tokens).
+    let mut pause_steps = 0;
+    loop {
+        let output = execute(
+            &runner,
+            RunnerRequestContext {
+                generated_len: tokens.len() as u32,
+                ..ctx
+            },
+            &[*tokens.last().unwrap()],
+            ExecutionMode::Decode,
+        );
+        assert!(output.request_updates[0].error.is_none());
+        let update = &output.request_updates[0];
+        tokens.extend(update.output_token);
+        tokens.extend_from_slice(&update.output_tokens);
+        pause_steps += 1;
+        let paused = runner
+            .states
+            .lock()
+            .get(&ctx.request_id)
+            .is_some_and(|state| state.flash_next_mtp.paused.is_some());
+        if paused {
+            break;
+        }
+        assert!(
+            pause_steps < 8,
+            "the think soft-close did not pause the cursor"
+        );
+    }
+    // The pause lands when the close is decided; the forced close token is
+    // emitted on the following step. Let it pass so the injected lazy token is
+    // the only pending-direct content when the drain runs.
+    let settle = execute(
+        &runner,
+        RunnerRequestContext {
+            generated_len: tokens.len() as u32,
+            ..ctx
+        },
+        &[*tokens.last().unwrap()],
+        ExecutionMode::Decode,
+    );
+    assert!(settle.request_updates[0].error.is_none());
+    tokens.extend(settle.request_updates[0].output_token);
+    tokens.extend_from_slice(&settle.request_updates[0].output_tokens);
+    // The cursor is paused here. No production step leaves a lazy direct token
+    // behind while paused, so one is injected: what this test pins is the drain
+    // contract, not the fabrication.
+    let drained_token = 5;
+    let buffered_rows = {
+        let mut states = runner.states.lock();
+        let state = states.get_mut(&ctx.request_id).unwrap();
+        assert!(state.flash_next_mtp.paused.is_some());
+        assert!(state.flash_next_mtp.cursor.is_some());
+        let data = [drained_token];
+        state.pending_direct = Some(MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1],
+            MlxDtype::Uint32,
+        ));
+        state
+            .flash_next_mtp
+            .paused
+            .as_ref()
+            .map(|buffer| buffer.rows.len())
+    };
+    let drain = execute(
+        &runner,
+        RunnerRequestContext {
+            generated_len: tokens.len() as u32,
+            ..ctx
+        },
+        &[*tokens.last().unwrap()],
+        ExecutionMode::Decode,
+    );
+    assert!(drain.request_updates[0].error.is_none());
+    // "Do not continue the double buffer after the drain": the lazy token is
+    // emitted, its slot is left empty, and the pause survives the drain.
+    assert_eq!(drain.request_updates[0].output_token, Some(drained_token));
+    let decisions = route_decisions(&drain.route_metadata.crossover_decisions);
+    assert!(
+        decisions
+            .get("ax_mlx_flash_next_mtp_direct_fallback_pending_direct")
+            .is_some_and(|value| *value > 0),
+        "the drain must be attributed to the pending-direct reason"
+    );
+    {
+        let states = runner.states.lock();
+        let state = states.get(&ctx.request_id).unwrap();
+        assert!(state.pending_direct.is_none());
+        assert!(state.flash_next_mtp.paused.is_some());
+        assert!(state.flash_next_mtp.cursor.is_some());
+        assert_eq!(
+            state
+                .flash_next_mtp
+                .paused
+                .as_ref()
+                .map(|buffer| buffer.rows.len()),
+            buffered_rows,
+            "the drain consumes no trunk position and so adds no buffered row"
+        );
+    }
+    assert!(drain.request_updates[0].stop_reason.is_none());
+}
+
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_REAL_PACK (the synthetic oracle is dense/affine and no longer passes ADR-039 admission)"]
+fn flash_next_sticky_kill_switch_drops_on_the_first_block() {
+    // `AX_MLX_FLASH_NEXT_STICKY_FALLBACK=1` is a `OnceLock`-cached env read, so
+    // legacy parity is asserted through the scoped override: the same think
+    // window that pauses a cursor without the switch must drop it with it.
+    let _sticky = crate::fastpath::scoped_flash_next_sticky_fallback(true);
+    let artifacts = pause_test_artifacts();
+    let mut runner = MlxRunner::from_artifacts(&artifacts, 2, true).unwrap();
+    assert!(runner.has_mtp());
+    maybe_arm_pause_test_think_window(&mut runner);
+    let prompt = pause_test_prompt();
+    let budget = 12;
+    let mut generations = Vec::new();
+    for mode in 0..2usize {
+        reset_prefix_stores(&runner);
+        runner.set_mtp_requested(mode == 1);
+        generations.push(generate(
+            &runner,
+            &prompt,
+            100,
+            think_window_context(1800 + mode as u64, prompt.len(), budget, 2),
+        ));
+    }
+    let direct = &generations[0];
+    let candidate = &generations[1];
+    assert_eq!(candidate.tokens, direct.tokens);
+    // The legacy policy drops the cursor at the first think-control block,
+    // which can precede any completed verification; the live-cursor proof is
+    // that the drop is counted exactly once (a drop only counts a live cursor).
+    assert_eq!(candidate.maximum("ax_mlx_flash_next_mtp_cursor_dropped"), 1);
+    assert_eq!(
+        candidate.maximum("ax_mlx_flash_next_mtp_cursor_paused_steps"),
+        0
+    );
+    assert_eq!(candidate.maximum("ax_mlx_flash_next_mtp_cursor_resumed"), 0);
+    assert!(
+        candidate.maximum("ax_mlx_flash_next_mtp_direct_fallback_think_control") > 0,
+        "the legacy policy must attribute the block to the think-control reason"
+    );
 }

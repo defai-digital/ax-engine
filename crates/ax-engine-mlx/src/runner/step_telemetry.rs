@@ -151,6 +151,21 @@ pub(super) struct MtpTelemetry {
     pub(super) utility_stacked_ngram_submitted_tokens: u32,
     /// Steps where auto-optimistic activated (EWMA ≥ 0.99 without env override).
     pub(super) auto_optimistic_steps: u32,
+    /// Cost-model depth controller: depth chosen for the next cycle (0 once
+    /// parked).
+    pub(super) cost_depth_current: u32,
+    /// 1 once the cost-model controller parks the request on direct decode.
+    pub(super) cost_park_events: u32,
+    /// Direct single-token reference probes the controller recorded.
+    pub(super) cost_probe_steps: u32,
+    /// Conservative direct-step reference the controller scored against.
+    pub(super) cost_direct_reference_wall_us: u32,
+    /// Controller width; the per-depth arrays are meaningful for 1..=width.
+    pub(super) cost_width: u32,
+    /// Per-depth cycle-wall EMA (µs), indexed by depth - 1; 0 = unmeasured.
+    pub(super) cost_t_depth_us: [u32; MTP_COST_MAX_DEPTH],
+    /// Per-depth conditional acceptance ×1000, indexed by depth - 1; 0 = none.
+    pub(super) cost_p_depth_x1000: [u32; MTP_COST_MAX_DEPTH],
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -215,6 +230,16 @@ impl MtpTelemetry {
         self.profitability_baseline_equivalent_wall_us = snapshot.baseline_equivalent_wall_us;
         self.profitability_estimated_speedup_x1000 = snapshot.estimated_speedup_x1000;
         self.profitability_bypass_events = u32::from(snapshot.bypassed);
+    }
+
+    pub(super) fn record_cost_depth_snapshot(&mut self, snapshot: MtpCostDepthSnapshot) {
+        self.cost_depth_current = snapshot.depth_current;
+        self.cost_park_events = snapshot.park_events;
+        self.cost_probe_steps = snapshot.probe_steps;
+        self.cost_direct_reference_wall_us = snapshot.direct_reference_wall_us;
+        self.cost_width = snapshot.width;
+        self.cost_t_depth_us = snapshot.t_depth_us;
+        self.cost_p_depth_x1000 = snapshot.p_depth_x1000;
     }
 
     pub(super) fn record_optimistic_step(&mut self) {
@@ -827,6 +852,20 @@ impl MtpTelemetry {
         self.auto_optimistic_steps = self
             .auto_optimistic_steps
             .saturating_add(other.auto_optimistic_steps);
+        // Cost-model depth controller: counters aggregate like the
+        // profitability block; the per-depth EMAs are point-in-time values, so
+        // the most recently merged active controller wins.
+        self.cost_depth_current = self.cost_depth_current.max(other.cost_depth_current);
+        self.cost_park_events = self.cost_park_events.saturating_add(other.cost_park_events);
+        self.cost_probe_steps = self.cost_probe_steps.saturating_add(other.cost_probe_steps);
+        self.cost_direct_reference_wall_us = self
+            .cost_direct_reference_wall_us
+            .saturating_add(other.cost_direct_reference_wall_us);
+        if other.cost_width > 0 {
+            self.cost_width = other.cost_width;
+            self.cost_t_depth_us = other.cost_t_depth_us;
+            self.cost_p_depth_x1000 = other.cost_p_depth_x1000;
+        }
     }
 
     pub(super) fn baseline_utility(&self) -> DraftSourceUtility {
@@ -912,6 +951,13 @@ impl MtpTelemetry {
             (
                 "ax_mtp_profitability_bypass_events",
                 self.profitability_bypass_events,
+            ),
+            ("ax_mtp_cost_depth_current", self.cost_depth_current),
+            ("ax_mtp_cost_park_events", self.cost_park_events),
+            ("ax_mtp_cost_probe_steps", self.cost_probe_steps),
+            (
+                "ax_mtp_cost_direct_reference_wall_us",
+                self.cost_direct_reference_wall_us,
             ),
             (
                 "ax_mtp_residual_correction_tokens",
@@ -1277,6 +1323,17 @@ impl MtpTelemetry {
             };
             decisions
                 .upsert_route_decision(&format!("ax_mtp_accept_rate_depth{d}_x1000"), rate_x1000);
+        }
+        // Cost-model controller depth estimates (d is the draft depth, 1-based).
+        for depth in 1..=self.cost_width.min(MTP_COST_MAX_DEPTH as u32) as usize {
+            decisions.upsert_route_decision(
+                &format!("ax_mtp_cost_t_depth{depth}_us"),
+                self.cost_t_depth_us[depth - 1],
+            );
+            decisions.upsert_route_decision(
+                &format!("ax_mtp_cost_p_depth{depth}_x1000"),
+                self.cost_p_depth_x1000[depth - 1],
+            );
         }
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);

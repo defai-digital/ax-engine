@@ -837,6 +837,31 @@ pub fn forward(
         cache,
         token_offset,
         FinalLogitsMode::Full,
+        None,
+    )
+}
+
+/// [`forward`] with the trunk's post-norm stream row captured for the caller.
+///
+/// `stream_row` receives the row of the last input token's position when the
+/// family owns one (Flash Next). Every other family leaves the sink untouched,
+/// which callers treat as "no capture available" and fail closed on.
+pub fn forward_capturing(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    stream_row: &mut Option<MlxArray>,
+) -> MlxArray {
+    forward_and_logits_mode(
+        cfg,
+        weights,
+        token_ids,
+        cache,
+        token_offset,
+        FinalLogitsMode::Full,
+        Some(stream_row),
     )
 }
 
@@ -855,6 +880,27 @@ pub fn forward_argmax(
         cache,
         token_offset,
         FinalLogitsMode::ArgmaxOnly,
+        None,
+    )
+}
+
+/// [`forward_argmax`] with the trunk's post-norm stream row captured.
+pub fn forward_argmax_capturing(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    stream_row: &mut Option<MlxArray>,
+) -> MlxArray {
+    forward_and_logits_mode(
+        cfg,
+        weights,
+        token_ids,
+        cache,
+        token_offset,
+        FinalLogitsMode::ArgmaxOnly,
+        Some(stream_row),
     )
 }
 
@@ -880,6 +926,7 @@ pub fn forward_cache_only(
         cache,
         token_offset,
         FinalLogitsMode::Skip,
+        None,
     )
 }
 
@@ -1066,9 +1113,14 @@ fn qwen4_exp_forward_with_cache(
         token_offset,
         policy,
         qwen4_exp::LogitRows::All,
+        None,
     )
 }
 
+/// [`qwen4_exp_forward_with_cache`] with an optional stream-row sink. The sink
+/// is filled only for a singleton input, where the captured row is exactly the
+/// packed residual the Flash Next draft head consumes.
+#[allow(clippy::too_many_arguments)]
 fn qwen4_exp_forward_with_cache_rows(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1077,6 +1129,7 @@ fn qwen4_exp_forward_with_cache_rows(
     token_offset: usize,
     policy: ProjectionBatchPolicy,
     rows: qwen4_exp::LogitRows,
+    stream_row: Option<&mut Option<MlxArray>>,
 ) -> qwen4_exp::Qwen4ExpOutput {
     let weights = weights
         .qwen4_exp
@@ -1152,6 +1205,11 @@ fn qwen4_exp_forward_with_cache_rows(
         .unwrap_or_else(|error| panic!("Flash Next forward failed: {error}"))
     };
     cache.qwen4_exp = Some(output.state.clone());
+    if let Some(sink) = stream_row
+        && token_ids.len() == 1
+    {
+        *sink = Some(output.stream_hidden.clone());
+    }
     output
 }
 
@@ -1189,6 +1247,11 @@ fn qwen4_exp_last_logits(cfg: &ModelConfig, logits: &MlxArray, _count: usize) ->
     )
 }
 
+/// `stream_row` receives the Flash Next trunk's post-norm stream row for the
+/// last input position when it is `Some` and the family owns one. Rows are
+/// captured for singleton inputs only: the paused-cursor catch-up pairs one row
+/// per trunk-consumed token. Every other family ignores the sink.
+#[allow(clippy::too_many_arguments)]
 fn forward_and_logits_mode(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1196,6 +1259,7 @@ fn forward_and_logits_mode(
     cache: &mut MlxKVCache,
     token_offset: usize,
     logits_mode: FinalLogitsMode,
+    stream_row: Option<&mut Option<MlxArray>>,
 ) -> MlxArray {
     if cfg.model_family == "qwen4_exp" {
         // Only the last position's logits (or none) are ever read here.
@@ -1212,6 +1276,7 @@ fn forward_and_logits_mode(
             token_offset,
             ProjectionBatchPolicy::Shared,
             rows,
+            stream_row,
         );
         return if matches!(logits_mode, FinalLogitsMode::Skip) {
             output.stream_hidden
@@ -4503,6 +4568,7 @@ pub fn forward_lazy_single(
         cache,
         token_offset,
         LazySingleTokenMode::NormalizedFullLogits,
+        None,
     )
 }
 
@@ -4521,6 +4587,29 @@ pub fn forward_lazy_single_argmax(
         cache,
         token_offset,
         LazySingleTokenMode::SingletonArgmaxOnly,
+        None,
+    )
+}
+
+/// [`forward_lazy_single_argmax`] with the trunk's post-norm stream row
+/// captured for the caller. `stream_row` is filled by families that own a
+/// packed residual stream (Flash Next); others leave it untouched.
+pub fn forward_lazy_single_argmax_capturing(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_arr: &MlxArray,
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    stream_row: &mut Option<MlxArray>,
+) -> MlxArray {
+    forward_lazy_single_and_logits_mode(
+        cfg,
+        weights,
+        token_arr,
+        cache,
+        token_offset,
+        LazySingleTokenMode::SingletonArgmaxOnly,
+        Some(stream_row),
     )
 }
 
@@ -4531,6 +4620,7 @@ fn forward_lazy_single_and_logits_mode(
     cache: &mut MlxKVCache,
     token_offset: usize,
     lazy_mode: LazySingleTokenMode,
+    stream_row: Option<&mut Option<MlxArray>>,
 ) -> MlxArray {
     if cfg.model_family == "qwen4_exp" {
         assert_eq!(
@@ -4540,13 +4630,15 @@ fn forward_lazy_single_and_logits_mode(
         );
         let ids = mlx_sys::contiguous(&reshape(token_arr, &[1], None), None);
         mlx_sys::eval(&[&ids]);
-        let output = qwen4_exp_forward_with_cache(
+        let output = qwen4_exp_forward_with_cache_rows(
             cfg,
             weights,
             ids.data_u32(),
             cache,
             token_offset,
             ProjectionBatchPolicy::Shared,
+            qwen4_exp::LogitRows::All,
+            stream_row,
         );
         return qwen4_exp_last_logits(cfg, &output.logits, 1);
     }

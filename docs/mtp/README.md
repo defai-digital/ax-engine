@@ -65,6 +65,22 @@ reported by `ax_mlx_mtp_model_gate_default_present` and
 `ax_mlx_qwen_linear_mtp_depth_one_gate_zero_model_default` key remains for
 backward-compatible Qwen benchmark checks.
 
+Experimental, opt-in knobs (default off, no product surface; measured A/B
+evidence lives under
+`benchmarks/results/inference/mlx-inference/2026-10-08-m5max-27b-mtp-depth-flags-ab/`):
+`AX_MLX_MTP_DEVICE_GREEDY_ACCEPT` moves greedy acceptance on-device, and
+`AX_MLX_MTP_COST_MODEL_DEPTH` replaces streak-based draft-depth control with
+a cost model that can park speculation for the rest of a request when every
+depth loses to direct. Their counters (`ax_mtp_cost_depth_current`,
+`ax_mtp_cost_park_events`, per-depth `ax_mtp_cost_t_depth{d}_us` /
+`ax_mtp_cost_p_depth{d}_x1000`) appear in route decisions only when enabled.
+Flash Next requests that hit a transient think-window or pending-token block
+now pause the draft cursor and resume instead of dropping it; the legacy
+drop-on-block behavior remains available as
+`AX_MLX_FLASH_NEXT_STICKY_FALLBACK=1`, and the lifecycle is visible through
+`ax_mlx_flash_next_mtp_cursor_paused_steps` /
+`ax_mlx_flash_next_mtp_cursor_resumed` route keys.
+
 ## Where To Go
 
 | Need | Read |

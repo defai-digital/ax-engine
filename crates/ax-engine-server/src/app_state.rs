@@ -751,6 +751,12 @@ struct EngineStepStats {
     flash_next_mtp_prefill_absorb_failures_last: u64,
     flash_next_mtp_cursor_dropped_total: u64,
     flash_next_mtp_cursor_dropped_last: u64,
+    flash_next_mtp_cursor_paused_steps_total: u64,
+    flash_next_mtp_cursor_paused_steps_last: u64,
+    flash_next_mtp_cursor_resumed_total: u64,
+    flash_next_mtp_cursor_resumed_last: u64,
+    flash_next_mtp_cursor_pause_overflows_total: u64,
+    flash_next_mtp_cursor_pause_overflows_last: u64,
     flash_next_mtp_verified_steps_total: u64,
     flash_next_mtp_verified_steps_last: u64,
     flash_next_mtp_accepted_steps_total: u64,
@@ -828,6 +834,10 @@ impl EngineStepStats {
             flash_next_mtp_prefill_absorb_failures_total: self
                 .flash_next_mtp_prefill_absorb_failures_total,
             flash_next_mtp_cursor_dropped_total: self.flash_next_mtp_cursor_dropped_total,
+            flash_next_mtp_cursor_paused_steps_total: self.flash_next_mtp_cursor_paused_steps_total,
+            flash_next_mtp_cursor_resumed_total: self.flash_next_mtp_cursor_resumed_total,
+            flash_next_mtp_cursor_pause_overflows_total: self
+                .flash_next_mtp_cursor_pause_overflows_total,
             flash_next_mtp_verified_steps_total: self.flash_next_mtp_verified_steps_total,
             flash_next_mtp_accepted_steps_total: self.flash_next_mtp_accepted_steps_total,
             flash_next_mtp_step_errors_total: self.flash_next_mtp_step_errors_total,
@@ -895,6 +905,9 @@ pub(crate) struct EngineStepGauges {
     pub(crate) flash_next_mtp_resumed_without_cursor_total: u64,
     pub(crate) flash_next_mtp_prefill_absorb_failures_total: u64,
     pub(crate) flash_next_mtp_cursor_dropped_total: u64,
+    pub(crate) flash_next_mtp_cursor_paused_steps_total: u64,
+    pub(crate) flash_next_mtp_cursor_resumed_total: u64,
+    pub(crate) flash_next_mtp_cursor_pause_overflows_total: u64,
     pub(crate) flash_next_mtp_verified_steps_total: u64,
     pub(crate) flash_next_mtp_accepted_steps_total: u64,
     pub(crate) flash_next_mtp_step_errors_total: u64,
@@ -1135,6 +1148,21 @@ impl ServerMetrics {
                     &mut entry.flash_next_mtp_cursor_dropped_total,
                     &mut entry.flash_next_mtp_cursor_dropped_last,
                     "ax_mlx_flash_next_mtp_cursor_dropped",
+                ),
+                (
+                    &mut entry.flash_next_mtp_cursor_paused_steps_total,
+                    &mut entry.flash_next_mtp_cursor_paused_steps_last,
+                    "ax_mlx_flash_next_mtp_cursor_paused_steps",
+                ),
+                (
+                    &mut entry.flash_next_mtp_cursor_resumed_total,
+                    &mut entry.flash_next_mtp_cursor_resumed_last,
+                    "ax_mlx_flash_next_mtp_cursor_resumed",
+                ),
+                (
+                    &mut entry.flash_next_mtp_cursor_pause_overflows_total,
+                    &mut entry.flash_next_mtp_cursor_pause_overflows_last,
+                    "ax_mlx_flash_next_mtp_cursor_pause_overflows",
                 ),
                 (
                     &mut entry.flash_next_mtp_verified_steps_total,
@@ -1383,6 +1411,15 @@ impl ServerMetrics {
         process.flash_next_mtp_cursor_dropped_total = process
             .flash_next_mtp_cursor_dropped_total
             .saturating_add(entry.flash_next_mtp_cursor_dropped_total);
+        process.flash_next_mtp_cursor_paused_steps_total = process
+            .flash_next_mtp_cursor_paused_steps_total
+            .saturating_add(entry.flash_next_mtp_cursor_paused_steps_total);
+        process.flash_next_mtp_cursor_resumed_total = process
+            .flash_next_mtp_cursor_resumed_total
+            .saturating_add(entry.flash_next_mtp_cursor_resumed_total);
+        process.flash_next_mtp_cursor_pause_overflows_total = process
+            .flash_next_mtp_cursor_pause_overflows_total
+            .saturating_add(entry.flash_next_mtp_cursor_pause_overflows_total);
         process.flash_next_mtp_verified_steps_total = process
             .flash_next_mtp_verified_steps_total
             .saturating_add(entry.flash_next_mtp_verified_steps_total);

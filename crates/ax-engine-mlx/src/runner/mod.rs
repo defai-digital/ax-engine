@@ -8,9 +8,9 @@ use std::time::Instant;
 
 use mlx_sys::{
     MlxArray, MlxDtype, MlxStream, add, argmax, argpartition_axis, astype, async_eval, clear_cache,
-    divide, enable_compile, eval, max_recommended_working_set_size, multiply, power, reshape,
-    set_cache_limit, set_memory_limit, set_wired_limit, slice, softmax, stack, sum_axis, take,
-    take_along_axis,
+    concatenate, divide, enable_compile, eval, max_recommended_working_set_size, multiply, power,
+    reshape, set_cache_limit, set_memory_limit, set_wired_limit, slice, softmax, stack, sum_axis,
+    take, take_along_axis,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -52,8 +52,8 @@ use crate::gemma4_assistant_mtp::{
     resolve_gemma4_assistant_mtp_deep_gate, resolve_gemma4_assistant_mtp_first_gate,
 };
 use crate::generate::{
-    CacheOnlyPrefillLayout, DirectPipelineTimings, advance_direct_pipeline_with_timings,
-    chunked_prefill_cache_only,
+    CacheOnlyPrefillLayout, DirectPipelineTimings, advance_direct_pipeline_capturing_with_timings,
+    advance_direct_pipeline_with_timings, chunked_prefill_cache_only,
     chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers,
     chunked_prefill_minicpm_v46_with_sampling_buffers,
     chunked_prefill_nemotron_omni_with_sampling_buffers,
@@ -62,7 +62,7 @@ use crate::generate::{
     chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers,
     chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
     decode_step, direct_pipeline_barrier_enabled, prepare_direct_pipeline_advance,
-    sample_token_from_prefill_logits, start_direct_pipeline,
+    sample_token_from_prefill_logits, start_direct_pipeline, start_direct_pipeline_capturing,
 };
 use crate::kv_block_pool::{
     FaBlockPoolConfig, FaBlockPoolError, SharedFaBlockPool, default_fa_block_pool_config,
@@ -97,7 +97,7 @@ use crate::ngram_accel::{
     THINK_SOFT_CLOSE_PROBE_RANK, ThinkSoftCloseProbe, classify_prompt_class,
     ngram_accel_decode_step_with_sampling_buffers, ngram_feedback_policy,
     recompute_committed_prefix_with_argmax, revalidate_greedy_prefix_with_argmax,
-    sequential_greedy_mtp_verify, single_decode_with_sampling_buffers,
+    sequential_greedy_mtp_verify, single_decode_with_sampling_buffers_capturing,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64, sample_categorical_into,
@@ -111,6 +111,7 @@ use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
 
 mod manifest_validation;
+mod mtp_depth_controller;
 mod mtp_model_policy;
 mod mtp_ngram_gates;
 mod mtp_profitability;
@@ -123,6 +124,7 @@ mod step_telemetry;
 mod util;
 
 use manifest_validation::*;
+use mtp_depth_controller::*;
 use mtp_model_policy::*;
 use mtp_ngram_gates::*;
 use mtp_profitability::*;
@@ -516,6 +518,15 @@ struct RequestState {
     mtp_suspended_for_batched_decode: bool,
     /// Measured direct-vs-MTP cost policy for exact greedy Qwen depth one.
     mtp_profitability: MtpProfitabilityState,
+    /// Measured cost-model draft-depth controller (opt-in via
+    /// `AX_MLX_MTP_COST_MODEL_DEPTH`); supersedes the streak controller when
+    /// enabled and parks speculation for the request when direct decode wins.
+    mtp_cost_depth: MtpCostDepthController,
+    /// Decode steps taken since the cost controller's last decision. The
+    /// controller's cycle wall is only a clean depth-cost sample when exactly
+    /// one step ran in it (any fallback / think-window / n-gram step in
+    /// between spans foreign work).
+    mtp_cost_steps_since_decision: u32,
     /// Per-request latch: once auto-optimistic activates (EWMA ≥ 0.99),
     /// it stays latched until the argmax-based EWMA drops below 0.85.
     /// Hysteresis prevents oscillation because argmax acceptance is strictly
@@ -568,9 +579,9 @@ struct RequestState {
 /// The cursor is created by a cold prefill (empty cache) or reconstructed
 /// from a restored prefix snapshot's serialized sidecar payload, and then
 /// advanced together with the authoritative trunk. Any trunk advance that
-/// bypasses the cursor (a restore without a usable payload, a direct
-/// fallback step, sampled prefill) drops it, and the request decodes direct
-/// for the rest of its generation.
+/// bypasses the cursor without a catch-up buffer (a restore without a usable
+/// payload, sampled prefill, an exhausted budget) drops it, and the request
+/// decodes direct for the rest of its generation.
 #[derive(Default)]
 struct FlashNextMtpRequestState {
     cursor: Option<crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor>,
@@ -580,18 +591,124 @@ struct FlashNextMtpRequestState {
     /// take-once slot: whichever decision arm runs consumes it, so a stale
     /// pending cursor can never leak into a later prefill quantum.
     pending_restored_cursor: Option<crate::model::qwen4_exp_mtp::Qwen4ExpDraftCursor>,
+    /// `Some` while the cursor is paused: a blocked step kept it, the trunk is
+    /// advancing direct, and every token the trunk consumes has its stream row
+    /// buffered for the catch-up that ends the pause.
+    paused: Option<FlashNextCursorPauseBuffer>,
+    /// Sticky per-request latch: the Flash Next route has blocked at least one
+    /// decode step, so steps it does not serve decode on the greedy direct
+    /// double buffer instead of the generic n-gram route.
+    blocked_direct: bool,
     /// Emitted tokens since the last MLX buffer-cache clear.
     emitted_since_clear: u32,
     telemetry: FlashNextMtpTelemetry,
 }
 
+/// Catch-up rows buffered while a Flash Next cursor is paused.
+///
+/// Entry `(token, row)` pairs a token the trunk consumed with the stream row
+/// that consuming it produced. `Qwen4ExpDraftCursor::absorb` pairs `rows[i]`
+/// with `tokens[i + 1]` and adopts the last row as the head's next preceding
+/// hidden state, so a buffer holding exactly the tokens the trunk consumed
+/// since the pause began — in order — advances the head to the same boundary.
+///
+/// Rows arrive already materialized by the forward that produced them; the
+/// buffer never holds a lazy view of the decode graph.
+#[derive(Default)]
+struct FlashNextCursorPauseBuffer {
+    rows: Vec<(u32, MlxArray)>,
+}
+
+/// Paused-catch-up row cap. One row is ~16 KiB on Flash Next; 256 of them
+/// bound the buffer at a few MiB, which covers a full think window while
+/// keeping a pathological window from growing without limit.
+const FLASH_NEXT_CURSOR_PAUSE_ROW_CAP: usize = 256;
+
+impl FlashNextCursorPauseBuffer {
+    /// Buffer one consumed token's stream row. `false` means the cap is
+    /// reached and the caller must fail closed instead of keeping a gap.
+    fn push(&mut self, token: u32, row: MlxArray) -> bool {
+        if self.rows.len() >= FLASH_NEXT_CURSOR_PAUSE_ROW_CAP {
+            return false;
+        }
+        self.rows.push((token, row));
+        true
+    }
+
+    fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The consumed tokens, in trunk order, and their rows stacked into the
+    /// `[1, count, width]` tensor `absorb` takes. Fails closed when any row is
+    /// not the `[1, 1, width]` stream row the others share: a foreign row
+    /// would panic inside the concatenate instead of dropping the cursor.
+    fn try_absorb_parts(&self) -> Result<(Vec<u32>, MlxArray), String> {
+        let tokens: Vec<u32> = self.rows.iter().map(|(token, _)| *token).collect();
+        let Some((_, first)) = self.rows.first() else {
+            return Err("Flash Next pause absorb with no rows".into());
+        };
+        let expected = first.shape();
+        for (_, row) in &self.rows {
+            let shape = row.shape();
+            if shape.len() != 3 || shape[0] != 1 || shape[1] != 1 || shape != expected {
+                return Err(format!(
+                    "Flash Next pause absorb row shape {shape:?} does not match {expected:?}"
+                ));
+            }
+        }
+        let rows = self
+            .rows
+            .iter()
+            .map(|(_, row)| row)
+            .collect::<Vec<&MlxArray>>();
+        Ok((tokens, concatenate(&rows, 1, None)))
+    }
+}
+
 impl FlashNextMtpRequestState {
     /// Drop the draft history. Counts only a live cursor so repeated fallback
-    /// steps after the first drop do not inflate the counter.
+    /// steps after the first drop do not inflate the counter. The catch-up
+    /// buffer goes with it: buffered rows are only meaningful for the cursor
+    /// that consumed them.
     fn drop_cursor(&mut self) {
+        self.paused = None;
         if self.cursor.take().is_some() {
             self.telemetry.cursor_dropped = self.telemetry.cursor_dropped.saturating_add(1);
         }
+    }
+
+    /// Buffer one consumed token's stream row while the cursor is paused.
+    ///
+    /// Overflow drops the cursor: a gap in the row history would misalign the
+    /// head, so no step may extend a buffer that can never be flushed. Callers
+    /// hold the invariant that a pause only exists while a cursor is live.
+    fn extend_pause(&mut self, token: u32, row: MlxArray) -> bool {
+        let buffer = self.paused.get_or_insert_with(Default::default);
+        if buffer.push(token, row) {
+            return true;
+        }
+        self.telemetry.cursor_pause_overflows =
+            self.telemetry.cursor_pause_overflows.saturating_add(1);
+        self.drop_cursor();
+        false
+    }
+
+    /// Whether the live cursor may ride along in a prefix snapshot's sidecar
+    /// payload. A paused cursor is mid-catch-up: its draft state is behind the
+    /// snapshot trunk and its buffered rows have no payload representation, so
+    /// a restore must replay instead.
+    fn prefix_snapshot_eligible(&self) -> bool {
+        self.cursor.is_some() && self.paused.is_none()
+    }
+
+    /// Tokens and rows for one catch-up `absorb` call, when the buffer has rows.
+    fn take_pause_absorb_parts(&mut self) -> Option<Result<(Vec<u32>, MlxArray), String>> {
+        let buffer = self.paused.take()?;
+        if buffer.is_empty() {
+            return None;
+        }
+        Some(buffer.try_absorb_parts())
     }
 }
 
@@ -612,6 +729,14 @@ struct FlashNextMtpTelemetry {
     prefill_absorb_failures: u32,
     /// Live cursors discarded by fallback, misalignment, or step errors.
     cursor_dropped: u32,
+    /// Decode steps served direct while a live cursor was paused for a later
+    /// catch-up.
+    cursor_paused_steps: u32,
+    /// Paused cursors that caught up through the buffered rows and resumed
+    /// proposing.
+    cursor_resumed: u32,
+    /// Paused cursors discarded because the catch-up buffer filled up.
+    cursor_pause_overflows: u32,
     /// Verified cursor steps.
     verified_steps: u32,
     /// Verified steps whose draft token was accepted.
@@ -645,6 +770,9 @@ impl Default for FlashNextMtpTelemetry {
             cursor_restored: 0,
             prefill_absorb_failures: 0,
             cursor_dropped: 0,
+            cursor_paused_steps: 0,
+            cursor_resumed: 0,
+            cursor_pause_overflows: 0,
             verified_steps: 0,
             accepted_steps: 0,
             direct_fallback_steps: 0,
@@ -672,6 +800,13 @@ impl FlashNextMtpTelemetry {
             .prefill_absorb_failures
             .saturating_add(other.prefill_absorb_failures);
         self.cursor_dropped = self.cursor_dropped.saturating_add(other.cursor_dropped);
+        self.cursor_paused_steps = self
+            .cursor_paused_steps
+            .saturating_add(other.cursor_paused_steps);
+        self.cursor_resumed = self.cursor_resumed.saturating_add(other.cursor_resumed);
+        self.cursor_pause_overflows = self
+            .cursor_pause_overflows
+            .saturating_add(other.cursor_pause_overflows);
         self.verified_steps = self.verified_steps.saturating_add(other.verified_steps);
         self.accepted_steps = self.accepted_steps.saturating_add(other.accepted_steps);
         self.direct_fallback_steps = self
@@ -717,6 +852,15 @@ impl FlashNextMtpTelemetry {
                 self.prefill_absorb_failures,
             ),
             ("ax_mlx_flash_next_mtp_cursor_dropped", self.cursor_dropped),
+            (
+                "ax_mlx_flash_next_mtp_cursor_paused_steps",
+                self.cursor_paused_steps,
+            ),
+            ("ax_mlx_flash_next_mtp_cursor_resumed", self.cursor_resumed),
+            (
+                "ax_mlx_flash_next_mtp_cursor_pause_overflows",
+                self.cursor_pause_overflows,
+            ),
             ("ax_mlx_flash_next_mtp_verified_steps", self.verified_steps),
             ("ax_mlx_flash_next_mtp_accepted_steps", self.accepted_steps),
             (
@@ -804,15 +948,65 @@ impl FlashNextMtpFallbackReason {
     }
 }
 
-impl From<FlashNextMtpDecodeBlock> for FlashNextMtpFallbackReason {
-    fn from(block: FlashNextMtpDecodeBlock) -> Self {
-        match block {
-            FlashNextMtpDecodeBlock::NotStrictGreedy => Self::NotStrictGreedy,
-            FlashNextMtpDecodeBlock::ThinkControl => Self::ThinkControl,
-            FlashNextMtpDecodeBlock::PendingDirect => Self::PendingDirect,
-            FlashNextMtpDecodeBlock::NoBudget => Self::NoBudget,
-            FlashNextMtpDecodeBlock::CursorUnavailable => Self::CursorUnavailable,
+impl FlashNextMtpDecodeBlock {
+    /// Reason bucket used for route accounting. A paused step is not a distinct
+    /// reason: it serves direct because the cursor cannot verify this step — it
+    /// is still catching up to the trunk. The pause counters carry that state.
+    const fn fallback_reason(self) -> FlashNextMtpFallbackReason {
+        match self {
+            Self::NotStrictGreedy => FlashNextMtpFallbackReason::NotStrictGreedy,
+            Self::ThinkControl => FlashNextMtpFallbackReason::ThinkControl,
+            Self::PendingDirect => FlashNextMtpFallbackReason::PendingDirect,
+            Self::NoBudget => FlashNextMtpFallbackReason::NoBudget,
+            Self::CursorUnavailable | Self::CursorPaused => {
+                FlashNextMtpFallbackReason::CursorUnavailable
+            }
         }
+    }
+}
+
+/// How a blocked Flash Next decode step treats the live draft cursor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FlashNextMtpFallbackDisposition {
+    /// Discard the cursor: the request decodes direct for the rest of its
+    /// generation.
+    Drop,
+    /// Keep the cursor without proposing: the trunk advances direct while the
+    /// rows of every token it consumes are buffered for a later catch-up.
+    RetainPaused,
+}
+
+/// Disposition of one blocked Flash Next decode step. Pure so the reason ×
+/// kill-switch truth table is testable without model weights.
+///
+/// `sticky_fallback` is the `AX_MLX_FLASH_NEXT_STICKY_FALLBACK=1` legacy
+/// policy: every block drops the cursor, exactly as before the paused state
+/// existed.
+///
+/// Think control and a pending direct token are transient: the next step can
+/// propose again once the window closes or the lazy token drains, so the
+/// cursor is worth retaining. A step error drops on the first failure — the
+/// transaction contract publishes nothing on error, but the graph may already
+/// be half applied, so retry is not worth the risk. No budget, non-greedy
+/// sampling, a missing cursor and a failed capture are all terminal for the
+/// candidate: dropping keeps the request on a route that cannot misalign the
+/// head.
+const fn flash_next_mtp_fallback_disposition(
+    reason: FlashNextMtpFallbackReason,
+    sticky_fallback: bool,
+) -> FlashNextMtpFallbackDisposition {
+    if sticky_fallback {
+        return FlashNextMtpFallbackDisposition::Drop;
+    }
+    match reason {
+        FlashNextMtpFallbackReason::ThinkControl | FlashNextMtpFallbackReason::PendingDirect => {
+            FlashNextMtpFallbackDisposition::RetainPaused
+        }
+        FlashNextMtpFallbackReason::NotStrictGreedy
+        | FlashNextMtpFallbackReason::NoBudget
+        | FlashNextMtpFallbackReason::CursorUnavailable
+        | FlashNextMtpFallbackReason::ComponentsUnavailable
+        | FlashNextMtpFallbackReason::StepError => FlashNextMtpFallbackDisposition::Drop,
     }
 }
 
@@ -830,10 +1024,17 @@ enum FlashNextMtpDecodeBlock {
     NoBudget,
     /// No cursor, or its history does not end at the trunk boundary.
     CursorUnavailable,
+    /// The cursor is retained but deliberately behind the trunk: this step
+    /// continues the paused catch-up instead of proposing.
+    CursorPaused,
 }
 
 /// Decode-time admission for the Flash Next cursor. Pure so the gate order is
 /// testable without model weights.
+///
+/// `cursor_paused` is the state *before* this step. A paused cursor is behind
+/// the trunk by construction, so the stale-gap reason means "keep pausing"
+/// rather than "drop": the pause ends only when every other gate clears.
 #[allow(clippy::too_many_arguments)]
 fn flash_next_mtp_decode_block(
     strict_greedy: bool,
@@ -841,6 +1042,7 @@ fn flash_next_mtp_decode_block(
     think_budget_close_due: bool,
     pending_direct: bool,
     remaining_output: usize,
+    cursor_paused: bool,
     cursor_aligned: bool,
 ) -> Option<FlashNextMtpDecodeBlock> {
     if !strict_greedy {
@@ -851,6 +1053,8 @@ fn flash_next_mtp_decode_block(
         Some(FlashNextMtpDecodeBlock::PendingDirect)
     } else if remaining_output == 0 {
         Some(FlashNextMtpDecodeBlock::NoBudget)
+    } else if cursor_paused {
+        Some(FlashNextMtpDecodeBlock::CursorPaused)
     } else if !cursor_aligned {
         Some(FlashNextMtpDecodeBlock::CursorUnavailable)
     } else {
@@ -987,6 +1191,8 @@ impl RequestState {
             mtp_bypassed: false,
             mtp_suspended_for_batched_decode: false,
             mtp_profitability: MtpProfitabilityState::default(),
+            mtp_cost_depth: MtpCostDepthController::default(),
+            mtp_cost_steps_since_decision: 0,
             auto_optimistic_active: false,
             mtp_adaptive_gate: None,
             mtp_draft_gate_x1000: 0,
@@ -8371,7 +8577,14 @@ impl MlxRunner {
             // `prefix_snapshot_parts` returns `None` for an unaligned cursor,
             // and no live cursor simply stores a trunk-only snapshot; either
             // way a sidecar problem never fails the store itself.
-            let mtp_cursor_payload: Option<Arc<[u8]>> = if prefix_len == state.cache.seq_len() {
+            //
+            // A paused cursor is unaligned by construction (the trunk advanced
+            // past it while it buffers rows) and has no payload representation
+            // for its buffered rows, so `prefix_snapshot_eligible` fences it
+            // out and a restore replays instead.
+            let mtp_cursor_payload: Option<Arc<[u8]>> = if prefix_len == state.cache.seq_len()
+                && state.flash_next_mtp.prefix_snapshot_eligible()
+            {
                 let parts = state
                     .flash_next_mtp
                     .cursor
@@ -8627,6 +8840,11 @@ impl MlxRunner {
         is_greedy: bool,
         options: DecodeOneOptions<'_>,
     ) -> Vec<u32> {
+        // Every decode step counts toward the cost controller's cycle window,
+        // including the fallback / think-window / direct routes below that
+        // never reach its decision site: the window between two decisions is
+        // only a clean depth-cost sample when exactly one step ran in it.
+        state.mtp_cost_steps_since_decision = state.mtp_cost_steps_since_decision.saturating_add(1);
         // Think soft-close arming (ds4-style rank probe): refreshed every
         // step from the budget controller inputs. While armed, this step
         // bypasses speculative/direct routing and rank-probes the think
@@ -8843,7 +9061,20 @@ impl MlxRunner {
                 is_greedy || sampling.temperature <= 0.0,
                 self.mtp_requested,
             );
+        // Greedy Flash Next fallback: a step the cursor cannot serve (it was
+        // dropped, or it is paused) decodes on the same double buffer
+        // pure-direct sessions use instead of spending the request on the
+        // n-gram route. The latch is set by every recorded fallback, so the
+        // step that blocked already takes this route; see
+        // `FlashNextMtpRequestState::blocked_direct`.
+        let flash_next_blocked_greedy = !state.think_soft_close_armed
+            && !think_hard_close_due
+            && (is_greedy || sampling.temperature <= 0.0)
+            && !sampling.uses_logits_processors()
+            && state.flash_next_mtp.blocked_direct
+            && self.flash_next_mtp_session();
         let direct_pipeline = pure_direct_pipeline
+            || flash_next_blocked_greedy
             || (!state.think_soft_close_armed
                 && !think_hard_close_due
                 && should_use_session_direct_pipeline(
@@ -8987,25 +9218,43 @@ impl MlxRunner {
         let primary = state
             .next_model_last_token
             .or_else(|| input_tokens.last().copied());
-        let cursor_aligned = primary.is_some()
-            && !state.mtp_bypassed
-            && !state.mtp_suspended_for_batched_decode
-            && state.cache.mrope_position_delta() == 0
-            && state.cache.rope_offset == 0
-            && match (&state.flash_next_mtp.cursor, &state.cache.qwen4_exp) {
-                (Some(cursor), Some(trunk)) => {
-                    trunk.position() == state.cache.seq_len() && cursor.aligned(trunk)
-                }
-                _ => false,
-            };
-        let block = flash_next_mtp_decode_block(
-            ctx.is_some() && is_greedy && !sampling.uses_logits_processors(),
+        let strict_greedy = ctx.is_some() && is_greedy && !sampling.uses_logits_processors();
+        let mut cursor_aligned = self.flash_next_cursor_aligned(state, primary);
+        let mut block = flash_next_mtp_decode_block(
+            strict_greedy,
             state.think_soft_close_armed,
             think_budget_close_due,
             state.pending_direct.is_some(),
             remaining_budget as usize,
+            state.flash_next_mtp.paused.is_some(),
             cursor_aligned,
         );
+        if matches!(block, Some(FlashNextMtpDecodeBlock::CursorPaused)) {
+            // `CursorPaused` means every cursor-independent gate has cleared and
+            // the cursor is behind only because this request is paused. Catch the
+            // head up now so this same step can propose again; when the flush
+            // fails the cursor is already gone (fail closed) and the pause is
+            // over without a catch-up.
+            if !self.flush_flash_next_mtp_pause(state) {
+                return self.run_flash_next_mtp_paused_step(
+                    state,
+                    input_tokens,
+                    sampling,
+                    FlashNextMtpFallbackReason::CursorUnavailable,
+                    options,
+                );
+            }
+            cursor_aligned = self.flash_next_cursor_aligned(state, primary);
+            block = flash_next_mtp_decode_block(
+                strict_greedy,
+                state.think_soft_close_armed,
+                think_budget_close_due,
+                state.pending_direct.is_some(),
+                remaining_budget as usize,
+                false,
+                cursor_aligned,
+            );
+        }
         let (None, Some(primary), Some(trunk_weights), Some(head), Some(cursor), Some(trunk_state)) = (
             block,
             primary,
@@ -9014,15 +9263,8 @@ impl MlxRunner {
             state.flash_next_mtp.cursor.as_mut(),
             state.cache.qwen4_exp.as_ref(),
         ) else {
-            tracing::debug!(
-                target: "ax_engine_mlx::runner",
-                ?block,
-                cursor_present = state.flash_next_mtp.cursor.is_some(),
-                trunk_state_present = state.cache.qwen4_exp.is_some(),
-                "Flash Next MTP decode step blocked; falling back to direct decode"
-            );
-            self.record_flash_next_mtp_direct_fallback(
-                state,
+            let reason = block
+                .map(FlashNextMtpDecodeBlock::fallback_reason)
                 // `ComponentsUnavailable` is defensive: reaching the else with
                 // `block == None` requires the tuple destructure above to fail
                 // while `cursor_aligned` (which implies primary, cursor and
@@ -9030,10 +9272,41 @@ impl MlxRunner {
                 // `flash_next_mtp_session()` already guarantees both weight
                 // sets. The bucket is currently unreachable; keep it so a
                 // future session-gate change fails closed into a named reason.
-                block
-                    .map(FlashNextMtpFallbackReason::from)
-                    .unwrap_or(FlashNextMtpFallbackReason::ComponentsUnavailable),
+                .unwrap_or(FlashNextMtpFallbackReason::ComponentsUnavailable);
+            tracing::debug!(
+                target: "ax_engine_mlx::runner",
+                ?block,
+                cursor_present = state.flash_next_mtp.cursor.is_some(),
+                trunk_state_present = state.cache.qwen4_exp.is_some(),
+                "Flash Next MTP decode step blocked; falling back to direct decode"
             );
+            let disposition = flash_next_mtp_fallback_disposition(
+                reason,
+                crate::fastpath::flash_next_sticky_fallback_enabled(),
+            );
+            // A transient block with a usable cursor enters (or continues) the
+            // paused state: the cursor keeps its line, this step is served
+            // direct, and the stream rows of every token the trunk consumes are
+            // buffered for the catch-up.
+            if disposition == FlashNextMtpFallbackDisposition::RetainPaused
+                && (state.flash_next_mtp.paused.is_some() || cursor_aligned)
+            {
+                if state.flash_next_mtp.paused.is_none() {
+                    state.flash_next_mtp.paused = Some(FlashNextCursorPauseBuffer::default());
+                }
+                return self.run_flash_next_mtp_paused_step(
+                    state,
+                    input_tokens,
+                    sampling,
+                    reason,
+                    options,
+                );
+            }
+            // Terminal reason, missing or unusable cursor, or the legacy
+            // kill-switch policy: account the step and drop the draft history.
+            // `drop_cursor` is a counter no-op when nothing is live.
+            self.record_flash_next_mtp_direct_fallback(state, reason);
+            state.flash_next_mtp.drop_cursor();
             return None;
         };
 
@@ -9060,6 +9333,10 @@ impl MlxRunner {
                     state,
                     FlashNextMtpFallbackReason::StepError,
                 );
+                // The transaction contract publishes nothing on error, but a
+                // half-applied graph cannot be rolled back from here: drop on
+                // the first error instead of retrying through the pause.
+                state.flash_next_mtp.drop_cursor();
                 return None;
             }
         };
@@ -9140,17 +9417,186 @@ impl MlxRunner {
         ))
     }
 
+    /// Route accounting for one Flash Next step served direct. Pure metrics:
+    /// whether the cursor is dropped or kept pending is decided by the caller
+    /// through `flash_next_mtp_fallback_disposition`.
     fn record_flash_next_mtp_direct_fallback(
         &self,
         state: &mut RequestState,
         reason: FlashNextMtpFallbackReason,
     ) {
         state.mtp_telemetry.record_direct_fallback();
-        state.flash_next_mtp.drop_cursor();
+        state.flash_next_mtp.blocked_direct = true;
         let telemetry = &mut state.flash_next_mtp.telemetry;
         telemetry.direct_fallback_steps = telemetry.direct_fallback_steps.saturating_add(1);
         let slot = &mut telemetry.direct_fallback_by_reason[reason.index()];
         *slot = slot.saturating_add(1);
+    }
+
+    /// Whether the live cursor ends exactly at the trunk boundary, so this step
+    /// could verify against it.
+    fn flash_next_cursor_aligned(&self, state: &RequestState, primary: Option<u32>) -> bool {
+        primary.is_some()
+            && !state.mtp_bypassed
+            && !state.mtp_suspended_for_batched_decode
+            && state.cache.mrope_position_delta() == 0
+            && state.cache.rope_offset == 0
+            && match (&state.flash_next_mtp.cursor, &state.cache.qwen4_exp) {
+                (Some(cursor), Some(trunk)) => {
+                    trunk.position() == state.cache.seq_len() && cursor.aligned(trunk)
+                }
+                _ => false,
+            }
+    }
+
+    /// End a paused Flash Next catch-up.
+    ///
+    /// The buffered rows carry the head over every token the trunk consumed
+    /// while the cursor was paused, in order, so one `absorb` restores the
+    /// strict head/trunk alignment the cursor needs to propose again. An
+    /// `absorb` failure drops the cursor: a half-advanced head must never
+    /// propose. Returns `false` only when the cursor is gone afterwards.
+    fn flush_flash_next_mtp_pause(&self, state: &mut RequestState) -> bool {
+        let Some(parts) = state.flash_next_mtp.take_pause_absorb_parts() else {
+            // No buffered rows: the cursor never fell behind, or the pause ends
+            // empty.
+            state.flash_next_mtp.paused = None;
+            return state.flash_next_mtp.cursor.is_some();
+        };
+        let (tokens, rows) = match parts {
+            Ok(parts) => parts,
+            Err(error) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    %error,
+                    "Flash Next pause buffer is corrupt; dropping the cursor"
+                );
+                state.flash_next_mtp.drop_cursor();
+                return false;
+            }
+        };
+        let Some(head) = self.weights.qwen4_exp_mtp.as_deref() else {
+            state.flash_next_mtp.drop_cursor();
+            return false;
+        };
+        let Some(cursor) = state.flash_next_mtp.cursor.as_mut() else {
+            return false;
+        };
+        match cursor.absorb(head, &tokens, &rows) {
+            Ok(()) => {
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.cursor_resumed = telemetry.cursor_resumed.saturating_add(1);
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    %error,
+                    rows = tokens.len(),
+                    "Flash Next paused draft cursor failed to catch up; dropping it"
+                );
+                state.flash_next_mtp.drop_cursor();
+                false
+            }
+        }
+    }
+
+    /// One decode step served direct while the Flash Next cursor is paused.
+    ///
+    /// The cursor keeps its line and does not propose. The trunk advances on
+    /// the route the block reason dictates — a lazy direct token drains first, a
+    /// think-control step stays on single decode, anything else runs the greedy
+    /// direct double buffer — and the stream row of every token the trunk
+    /// consumes joins the catch-up buffer. A step whose capture comes back
+    /// empty drops the cursor: a gap in the row history would misalign the head.
+    fn run_flash_next_mtp_paused_step(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        sampling: MlxSamplingParams,
+        reason: FlashNextMtpFallbackReason,
+        options: &DecodeOneOptions<'_>,
+    ) -> Option<Vec<u32>> {
+        if !matches!(
+            reason,
+            FlashNextMtpFallbackReason::CursorUnavailable
+                | FlashNextMtpFallbackReason::ThinkControl
+                | FlashNextMtpFallbackReason::PendingDirect
+        ) {
+            // Only the pause-preserving reasons reach here; anything else drops
+            // in the caller.
+            self.record_flash_next_mtp_direct_fallback(state, reason);
+            state.flash_next_mtp.drop_cursor();
+            return None;
+        }
+        if state.flash_next_mtp.cursor.is_none() {
+            // The cursor went away (a failed catch-up, a step error, or an
+            // external drop): there is nothing to keep paused, so end the pause
+            // and serve the step on the generic route.
+            state.flash_next_mtp.paused = None;
+            self.record_flash_next_mtp_direct_fallback(state, reason);
+            return None;
+        }
+        self.record_flash_next_mtp_direct_fallback(state, reason);
+        let telemetry = &mut state.flash_next_mtp.telemetry;
+        telemetry.cursor_paused_steps = telemetry.cursor_paused_steps.saturating_add(1);
+
+        let last_token = state
+            .next_model_last_token
+            .or_else(|| input_tokens.last().copied())
+            .unwrap_or(0);
+        if reason == FlashNextMtpFallbackReason::PendingDirect {
+            // The lazy token already occupies the next position and its row was
+            // captured by the step that consumed it: materialize it and stop
+            // extending the double buffer so the next step can propose again.
+            if let DirectPipelineStep::FinishPending(pending) =
+                next_direct_pipeline_step(&mut state.pending_direct, true)
+            {
+                let tok = self.run_direct_pipeline_finish_pending(state, pending);
+                state.next_model_last_token = Some(tok);
+                return Some(vec![tok]);
+            }
+        }
+        let (tokens, consumed) = if reason == FlashNextMtpFallbackReason::ThinkControl {
+            // Think control needs materialized logits for its rank probe and
+            // commits nothing beyond the feed token, so it stays on single
+            // decode even while paused.
+            let (tokens, row) = self.run_single_decode_capturing(state, last_token, sampling);
+            (tokens, vec![(last_token, row)])
+        } else {
+            // Defensive arm: a paused greedy step normally ends through the
+            // catch-up flush, so only a cursor that cannot flush lands here.
+            let (tok, consumed) = self.run_direct_pipeline_decode_capturing(
+                state,
+                last_token,
+                options.final_by_max_output,
+            );
+            (vec![tok], consumed)
+        };
+        for (token, row) in consumed {
+            let Some(row) = row else {
+                // No stream row for a token the trunk just consumed: the head
+                // could never catch up across it, so the cursor goes now.
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    "Flash Next paused step has no trunk stream row; dropping the cursor"
+                );
+                self.record_flash_next_mtp_direct_fallback(
+                    state,
+                    FlashNextMtpFallbackReason::ComponentsUnavailable,
+                );
+                state.flash_next_mtp.drop_cursor();
+                return None;
+            };
+            if !state.flash_next_mtp.extend_pause(token, row) {
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    "Flash Next paused catch-up buffer overflowed; dropping the cursor"
+                );
+                return None;
+            }
+        }
+        Some(tokens)
     }
 
     /// Decode one deterministic token on the direct double-buffer pipeline.
@@ -9204,29 +9650,55 @@ impl MlxRunner {
         final_by_max_output: bool,
         feed_ngram: bool,
     ) -> u32 {
-        let tok = match next_direct_pipeline_step(&mut state.pending_direct, final_by_max_output) {
-            DirectPipelineStep::FinishPending(pending) => {
-                self.run_direct_pipeline_finish_pending(state, pending)
-            }
-            DirectPipelineStep::ContinuePending(bootstrap_token) => {
-                self.run_direct_pipeline_once(state, bootstrap_token)
-            }
-            DirectPipelineStep::BootstrapFinal => {
-                self.run_direct_pipeline_bootstrap_final(state, last_token)
-            }
-            DirectPipelineStep::Bootstrap => self.run_direct_pipeline_bootstrap(state, last_token),
-        };
+        let (tok, _consumed) =
+            self.run_direct_pipeline_decode_capturing(state, last_token, final_by_max_output);
         // The latch always wins over the scheduler feed, so it must track the
         // token this step emitted: a stale value from an earlier n-gram/MTP
         // step would be fed a second time by the next bootstrap.
-        state.next_model_last_token = Some(tok);
         if feed_ngram {
             state.ngram.feed(&[tok]);
         }
         tok
     }
 
-    fn run_direct_pipeline_bootstrap(&self, state: &mut RequestState, last_token: u32) -> u32 {
+    /// One direct-pipeline step that also reports the stream row of every token
+    /// the trunk consumed, in trunk order.
+    ///
+    /// The row is `None` when the model family has no packed residual stream;
+    /// only the Flash Next paused catch-up reads these, and it fails closed on a
+    /// missing row. Capture costs one array handle per consumed token: the row
+    /// is already part of the forward's output.
+    fn run_direct_pipeline_decode_capturing(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        final_by_max_output: bool,
+    ) -> (u32, Vec<(u32, Option<MlxArray>)>) {
+        let mut consumed: Vec<(u32, Option<MlxArray>)> = Vec::with_capacity(2);
+        let tok = match next_direct_pipeline_step(&mut state.pending_direct, final_by_max_output) {
+            DirectPipelineStep::FinishPending(pending) => {
+                self.run_direct_pipeline_finish_pending(state, pending)
+            }
+            DirectPipelineStep::ContinuePending(bootstrap_token) => {
+                self.run_direct_pipeline_once(state, bootstrap_token, &mut consumed)
+            }
+            DirectPipelineStep::BootstrapFinal => {
+                self.run_direct_pipeline_bootstrap_final(state, last_token, &mut consumed)
+            }
+            DirectPipelineStep::Bootstrap => {
+                self.run_direct_pipeline_bootstrap(state, last_token, &mut consumed)
+            }
+        };
+        state.next_model_last_token = Some(tok);
+        (tok, consumed)
+    }
+
+    fn run_direct_pipeline_bootstrap(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        consumed: &mut Vec<(u32, Option<MlxArray>)>,
+    ) -> u32 {
         // First generated token: single forward + eval only (TTFT path), then
         // re-enter Bootstrap once to establish the double-buffer
         // (start + advance) for the rest of the stream.
@@ -9242,8 +9714,9 @@ impl MlxRunner {
         // Exclusive single-model decode measured neutral either way (~146
         // tok/s p128), so first-token-single-forward is strictly better.
         let bootstrap_started = Instant::now();
-        let first_lazy =
-            start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut state.cache);
+        let (first_lazy, stream_row) =
+            start_direct_pipeline_capturing(&self.cfg, &self.weights, last_token, &mut state.cache);
+        consumed.push((last_token, stream_row));
         state
             .decode_telemetry
             .record_direct_bootstrap(elapsed_us(bootstrap_started));
@@ -9267,17 +9740,19 @@ impl MlxRunner {
             return tok;
         }
         // Second entry: catch up to double-buffer for the rest of the stream.
-        self.run_direct_pipeline_once(state, first_lazy)
+        self.run_direct_pipeline_once(state, first_lazy, consumed)
     }
 
     fn run_direct_pipeline_bootstrap_final(
         &self,
         state: &mut RequestState,
         last_token: u32,
+        consumed: &mut Vec<(u32, Option<MlxArray>)>,
     ) -> u32 {
         let bootstrap_started = Instant::now();
-        let bootstrap_token =
-            start_direct_pipeline(&self.cfg, &self.weights, last_token, &mut state.cache);
+        let (bootstrap_token, stream_row) =
+            start_direct_pipeline_capturing(&self.cfg, &self.weights, last_token, &mut state.cache);
+        consumed.push((last_token, stream_row));
         state
             .decode_telemetry
             .record_direct_bootstrap(elapsed_us(bootstrap_started));
@@ -9305,16 +9780,24 @@ impl MlxRunner {
         tok
     }
 
-    fn run_direct_pipeline_once(&self, state: &mut RequestState, bootstrap_token: MlxArray) -> u32 {
+    fn run_direct_pipeline_once(
+        &self,
+        state: &mut RequestState,
+        bootstrap_token: MlxArray,
+        consumed: &mut Vec<(u32, Option<MlxArray>)>,
+    ) -> u32 {
         let branch_started = Instant::now();
         let stage_profile = crate::generate::direct_pipeline_stage_profile_enabled();
         let op_count_before = stage_profile.then(mlx_sys::op_count_snapshot);
-        let advanced = advance_direct_pipeline_with_timings(
+        let (advanced, stream_row) = advance_direct_pipeline_capturing_with_timings(
             &self.cfg,
             &self.weights,
             &bootstrap_token,
             &mut state.cache,
         );
+        // This step's forward consumed the pending token and emitted it, so the
+        // captured row belongs to the token this step returns.
+        consumed.push((advanced.token, stream_row));
         state
             .decode_telemetry
             .record_direct_pipeline(elapsed_us(branch_started));
@@ -9533,6 +10016,20 @@ impl MlxRunner {
         last_token: u32,
         sampling: MlxSamplingParams,
     ) -> Vec<u32> {
+        self.run_single_decode_capturing(state, last_token, sampling)
+            .0
+    }
+
+    /// One single-decode step, reporting the stream row of the token it consumed
+    /// (`None` when the family has no packed residual stream). Only the Flash
+    /// Next paused catch-up reads the row; it is empty work for every other
+    /// family because the forward already materializes it.
+    fn run_single_decode_capturing(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        sampling: MlxSamplingParams,
+    ) -> (Vec<u32>, Option<MlxArray>) {
         let branch_started = Instant::now();
         let repetition_history = state.repetition_history(&[], sampling);
         let soft_close = if state.think_soft_close_armed {
@@ -9545,7 +10042,8 @@ impl MlxRunner {
         } else {
             None
         };
-        let result = single_decode_with_sampling_buffers(
+        let mut stream_row = None;
+        let result = single_decode_with_sampling_buffers_capturing(
             &self.cfg,
             &self.weights,
             &mut state.cache,
@@ -9558,6 +10056,7 @@ impl MlxRunner {
             &mut state.sampling_logits_buf,
             &mut state.sampling_candidates_buf,
             soft_close,
+            Some(&mut stream_row),
         );
         state
             .decode_telemetry
@@ -9568,7 +10067,7 @@ impl MlxRunner {
         if let Some(last) = result.last().copied() {
             state.next_model_last_token = Some(last);
         }
-        result
+        (result, stream_row)
     }
 
     fn gemma4_assistant_draft_token(
@@ -9869,7 +10368,16 @@ impl MlxRunner {
             return vec![tok];
         }
 
-        if state.mtp_profitability.should_probe_now() {
+        // Direct single-token reference for the cost-model depth controller.
+        // Deliberately not gated on a dense lm_head: it measures the same
+        // target pipeline the post-park direct route runs (quantized heads
+        // included). Mutually exclusive with the profitability probe by
+        // construction: the profitability policy is left ineligible whenever
+        // the controller owns the decision.
+        if state.mtp_cost_depth.wants_direct_probe() {
+            let probe_wall_us = self.measure_mtp_direct_probe(&state.cache, last_token);
+            state.mtp_cost_depth.record_direct_probe(probe_wall_us);
+        } else if state.mtp_profitability.should_probe_now() {
             let probe_wall_us = self.measure_mtp_direct_probe(&state.cache, last_token);
             state.mtp_profitability.record_direct_probe(probe_wall_us);
         }
@@ -9952,9 +10460,11 @@ impl MlxRunner {
             .as_ref()
             .map(|h| h.draft_sampling.temperature)
             .or_else(|| {
-                // GLM drafts follow the Qwen gate rule: with the confidence
-                // gate active the log-probs are written at T=1.0, so the
-                // accept path must rescale with the same T.
+                // GLM drafts follow the Qwen gate rule for the recorded T
+                // (gate-forced greedy writes 1.0 log-probs), but GLM always
+                // computes head-T log-probs, so it records the computed
+                // branch — the Qwen consumer rule that can skip them does not
+                // apply to this path.
                 self.weights.glm_mtp.as_ref().map(|h| {
                     let (glm_gate, _) = resolve_mtp_gate_from_env(
                         Some(sampling.temperature),
@@ -9962,10 +10472,9 @@ impl MlxRunner {
                         mtp_optimistic_draft_min_confidence_override(),
                         self.mtp_model_policy.glm_gate_default(),
                     );
-                    crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
+                    crate::mtp::glm_mtp_draft_log_prob_temperature_from_env(
                         h.draft_sampling.temperature,
                         glm_gate,
-                        false,
                     )
                 })
             })
@@ -10055,6 +10564,8 @@ impl MlxRunner {
             state.mtp_decode_count += added;
             state.mtp_pending_draft_log_probs = log_probs;
             // DI-QW-MTP: skip-state drafts use the same gated path as pure MTP.
+            // Match the post-verify draft write: a greedy window that computed
+            // no log-probs must not carry a temperature either.
             let skip_log_prob_t = self
                 .weights
                 .mtp
@@ -10063,11 +10574,13 @@ impl MlxRunner {
                     crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
                         head.draft_sampling.temperature,
                         gate,
-                        crate::fastpath::qwen_linear_mtp_exact_enabled(),
                     )
                 })
                 .unwrap_or(draft_log_prob_temperature_for_new_drafts);
-            state.mtp_pending_draft_log_prob_temperature = Some(skip_log_prob_t);
+            state.mtp_pending_draft_log_prob_temperature = pending_draft_log_prob_temperature_for(
+                &state.mtp_pending_draft_log_probs,
+                skip_log_prob_t,
+            );
             state.mtp_pending_draft_distributions.clear();
             state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; draft.len()];
             // Override pending so the verify/accept pipeline sees the new drafts.
@@ -10483,6 +10996,43 @@ impl MlxRunner {
                     .saturating_add(elapsed_us(target_softmax_started));
                 // Always compute argmax for the correction/bonus fallback.
                 let predicted_arr = Some(argmax(&logits_all, None));
+                // Opt-in device-side greedy acceptance: reduce the accept
+                // decision to a packed `[accept_count, correction]` pair
+                // evaluated with the verify batch, skipping the full
+                // `predicted` download. The async-draft window compares
+                // against the lazy device tokens because host `pending` still
+                // holds placeholders here.
+                let device_greedy_accept = mtp_device_greedy_accept_allowed(
+                    crate::fastpath::mtp_device_greedy_accept_enabled(),
+                    sampling.temperature,
+                    exact_linear_replay,
+                    pending.len(),
+                    &state.mtp_pending_draft_sources,
+                );
+                let device_accept_packed = if device_greedy_accept {
+                    let drafts_dev = if let Some(lazy) = deferred_lazy_draft.as_ref() {
+                        if lazy.tokens.len() == 1 {
+                            lazy.tokens[0].clone()
+                        } else {
+                            let parts: Vec<&MlxArray> = lazy.tokens.iter().collect();
+                            mlx_sys::concatenate(&parts, 0, None)
+                        }
+                    } else {
+                        MlxArray::from_raw_data(
+                            pending.as_ptr() as *const u8,
+                            pending.len().saturating_mul(4),
+                            &[i32::try_from(pending.len()).unwrap_or(0)],
+                            MlxDtype::Uint32,
+                        )
+                    };
+                    Some(crate::mtp::mtp_greedy_accept_lazy(
+                        predicted_arr.as_ref().unwrap(),
+                        &drafts_dev,
+                        pending.len(),
+                    ))
+                } else {
+                    None
+                };
                 let kv_refs = verify_cache.collect_eval_refs();
                 // Accept only needs predicted tokens (and optional target
                 // probs / lazy drafts). Materialising the full verify cache
@@ -10490,8 +11040,15 @@ impl MlxRunner {
                 // eval it after the decision.
                 let split_verify_hidden_eval =
                     crate::fastpath::mtp_split_verify_hidden_eval_enabled();
-                let mut accept_targets: Vec<&MlxArray> = Vec::with_capacity(4);
-                accept_targets.push(predicted_arr.as_ref().unwrap());
+                let mut accept_targets: Vec<&MlxArray> = Vec::with_capacity(5);
+                // With device greedy acceptance armed, the packed pair is a
+                // `predicted` consumer and its own top-level target forces the
+                // whole window's computation, so `predicted` is not pushed
+                // again: the host never downloads it in that arm (and a failed
+                // readback below finds it materialised by this same eval).
+                if device_accept_packed.is_none() {
+                    accept_targets.push(predicted_arr.as_ref().unwrap());
+                }
                 if !split_verify_hidden_eval {
                     accept_targets.push(&post_norm_all);
                 }
@@ -10502,6 +11059,9 @@ impl MlxRunner {
                     for tok in &lazy.tokens {
                         accept_targets.push(tok);
                     }
+                }
+                if let Some(ref packed) = device_accept_packed {
+                    accept_targets.push(packed);
                 }
                 let verify_eval_started = Instant::now();
                 if split_verify_hidden_eval {
@@ -10524,10 +11084,24 @@ impl MlxRunner {
                     pending = tokens;
                 }
                 let accept_started = Instant::now();
-                let mut predicted: Vec<u32> = predicted_arr
+                // Device greedy accept reads back only the packed pair and
+                // fails closed: a malformed or truncated readback (or a count
+                // outside the window) re-downloads `predicted` and takes the
+                // host acceptance path for this step. Nothing else in this arm
+                // consumes the host window: rollback, hidden slicing, refold,
+                // emission, and telemetry all key off `accept` plus the
+                // correction token.
+                let device_accept = device_accept_packed
                     .as_ref()
-                    .map(|arr| arr.data_u32().to_vec())
-                    .unwrap_or_default();
+                    .and_then(|packed| device_greedy_accept_pair(packed.data_u32(), pending.len()));
+                let mut predicted: Vec<u32> = if device_accept.is_some() {
+                    Vec::new()
+                } else {
+                    predicted_arr
+                        .as_ref()
+                        .map(|arr| arr.data_u32().to_vec())
+                        .unwrap_or_default()
+                };
                 let target_softmax_extract_started = Instant::now();
                 let target_probs_cpu = lazy_target_probs
                     .as_ref()
@@ -10537,20 +11111,36 @@ impl MlxRunner {
                     .saturating_add(elapsed_us(target_softmax_extract_started));
                 let target_distributions_cpu: Option<&[TokenDistribution]> = None;
 
-                let mut accept = mtp_accept_count(
-                    &pending,
-                    acceptance_log_probs,
-                    &state.mtp_pending_draft_distributions,
-                    &state.mtp_pending_draft_sources,
-                    target_probs_cpu,
-                    target_distributions_cpu,
-                    &predicted,
-                    &mut state.rng,
-                    draft_log_prob_temperature,
-                    sampling.temperature,
-                    model_acceptance_mode,
-                    mtp_ngram_acceptance_mode_from_env(),
-                );
+                let (mut accept, device_correction_tok) =
+                    if let Some((accept_count, correction_tok)) = device_accept {
+                        let all_accepted = accept_count == pending.len();
+                        (
+                            MtpAcceptOutcome {
+                                accept_count,
+                                all_accepted,
+                                rejection_correction: (!all_accepted).then_some(correction_tok),
+                            },
+                            Some(correction_tok),
+                        )
+                    } else {
+                        (
+                            mtp_accept_count(
+                                &pending,
+                                acceptance_log_probs,
+                                &state.mtp_pending_draft_distributions,
+                                &state.mtp_pending_draft_sources,
+                                target_probs_cpu,
+                                target_distributions_cpu,
+                                &predicted,
+                                &mut state.rng,
+                                draft_log_prob_temperature,
+                                sampling.temperature,
+                                model_acceptance_mode,
+                                mtp_ngram_acceptance_mode_from_env(),
+                            ),
+                            None,
+                        )
+                    };
                 let ac = accept.accept_count;
                 let all_accepted = accept.all_accepted;
                 let exact_rejection_correction = (!all_accepted
@@ -10725,7 +11315,11 @@ impl MlxRunner {
                 let all_accepted = accept.all_accepted;
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 mtp_refold_hidden = Some(post_norm_all.clone());
-                let verifier_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                // Device accept packs `predicted[ac]` as the correction token;
+                // `exact_linear_replay` (the only mutator of `accept` /
+                // `predicted`) is excluded by `mtp_device_greedy_accept_allowed`.
+                let verifier_argmax_tok = device_correction_tok
+                    .unwrap_or_else(|| predicted.get(ac).copied().unwrap_or(0));
                 let correction_token = select_linear_mtp_correction_token(
                     sampling.temperature,
                     recomputed_correction_argmax,
@@ -11441,6 +12035,18 @@ impl MlxRunner {
                 .mtp_pending_draft_sources
                 .iter()
                 .all(|source| *source == MtpDraftSource::Mtp);
+        // Same "meaningfully evaluated" contract as the profitability policy:
+        // an n-gram-stacked window never feeds the cost controller's
+        // per-position acceptance EMAs (cascade rejects there are n-gram's).
+        let pure_mtp_round = is_profitability_mtp_round(
+            pending.len(),
+            &state.mtp_pending_draft_sources,
+            self.mtp_max_depth(),
+        );
+        // Exactly one decode step ran since the controller's previous decision:
+        // a budget/EWMA bypass, think window, or n-gram fallback step in
+        // between would make the closed window span foreign work.
+        let cost_wall_valid = state.mtp_cost_steps_since_decision == 1;
         // The MTP cache owns the committed/speculative timeline. Do not infer
         // this rollback boundary from `mtp_decode_count`: confidence gating
         // and hybrid proposal paths can trim the cache independently.
@@ -11475,7 +12081,7 @@ impl MlxRunner {
                         state.mtp_draft_gate_x1000,
                     );
                 if combined_fold {
-                    let (next_depth, _) = mtp_next_adaptive_depth(
+                    let (legacy_depth, _) = mtp_next_adaptive_depth(
                         state.mtp_adaptive_max_depth,
                         self.mtp_max_depth(),
                         pending.len(),
@@ -11489,6 +12095,21 @@ impl MlxRunner {
                             pending.len(),
                             accept_count,
                         )),
+                    );
+                    // The async fold drafts before `record_step`, so preview
+                    // the cost controller's decision on a copy. Its decision
+                    // reads only measurements recorded by earlier cycles, so
+                    // the copy and the live controller below return the same
+                    // depth and the debug_assert holds.
+                    let mut preview = state.mtp_cost_depth;
+                    let next_depth = mtp_cost_depth_cycle_depth(
+                        &mut preview,
+                        legacy_depth,
+                        pending.len(),
+                        ewma_accept_count.unwrap_or(accept_count),
+                        pure_mtp_round,
+                        cost_wall_valid,
+                        crate::fastpath::mtp_fixed_draft_depth(),
                     );
                     committed_fold_depth = Some(next_depth);
                     let committed_hidden = slice(
@@ -11729,7 +12350,7 @@ impl MlxRunner {
         // Use true acceptance for adaptive depth so auto-optimistic's inflated
         // accept_count doesn't create a permanent depth-increase feedback loop.
         let adaptive_depth_accept = ewma_accept_count.unwrap_or(accept_count);
-        let (next_depth, conservative_depth) = mtp_next_adaptive_depth(
+        let (legacy_depth, conservative_depth) = mtp_next_adaptive_depth(
             state.mtp_adaptive_max_depth,
             mtp_max_depth,
             pending.len(),
@@ -11752,11 +12373,34 @@ impl MlxRunner {
                 state.mtp_telemetry.accepted_by_depth[1],
             )),
         );
-        state.mtp_adaptive_max_depth = next_depth;
+        let next_depth = mtp_cost_depth_cycle_depth(
+            &mut state.mtp_cost_depth,
+            legacy_depth,
+            pending.len(),
+            adaptive_depth_accept,
+            pure_mtp_round,
+            cost_wall_valid,
+            crate::fastpath::mtp_fixed_draft_depth(),
+        );
+        state.mtp_cost_steps_since_decision = 0;
+        if !state.mtp_cost_depth.parked() {
+            state.mtp_adaptive_max_depth = next_depth;
+        }
         if committed_fold_lazy.is_some() {
             debug_assert_eq!(committed_fold_depth, Some(next_depth));
         }
-        if conservative_depth {
+        // Park application: a parked controller latches the request onto direct
+        // decode, mirroring the profitability latch. Park (like the other
+        // bypasses) also suspends n-gram drafting for the remaining steps —
+        // `MtpRequestRoute::DirectFallback` owns them, not the n-gram route.
+        if state.mtp_cost_depth.parked() {
+            state.mtp_bypassed = true;
+            clear_pending_mtp_proposal(state);
+        }
+        // The controller's own depth decisions supersede the conservative
+        // policy; a legacy classification that was never applied is not a
+        // conservative-depth decision.
+        if conservative_depth && !state.mtp_cost_depth.enabled() {
             state.mtp_telemetry.conservative_depth_decisions = state
                 .mtp_telemetry
                 .conservative_depth_decisions
@@ -11846,7 +12490,10 @@ impl MlxRunner {
         // low acceptance — even when MTP-only acceptance is healthy.  Bypassing
         // MTP on the basis of n-gram quality incorrectly disables a beneficial
         // speculation source (observed as a uniform regression on 35B-A3B).
+        // The cost controller owns the bypass decision while it is enabled:
+        // its measured park latch replaces this acceptance-only stop-loss.
         if !state.mtp_bypassed
+            && !state.mtp_cost_depth.enabled()
             && mtp_ewma_bypass_enabled()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= mtp_bypass_min_samples()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma < mtp_bypass_threshold()
@@ -12196,13 +12843,12 @@ impl MlxRunner {
                             )
                         } else {
                             // DI-QW-MTP: lock accept T to the T used for Qwen
-                            // hybrid-tail log-probs (exact/gated greedy → 1.0).
+                            // hybrid-tail log-probs (gated greedy → 1.0).
                             if let Some(head) = self.weights.mtp.as_ref() {
                                 next_draft_log_prob_temperature =
                                     crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
                                         head.draft_sampling.temperature,
                                         hybrid_gate,
-                                        crate::fastpath::qwen_linear_mtp_exact_enabled(),
                                     );
                             }
                             mtp_draft_tokens_after_forced_prefix(
@@ -12310,13 +12956,12 @@ impl MlxRunner {
                         (Vec::new(), Vec::new(), Vec::new())
                     } else {
                         // DI-QW-MTP: accept must use the T at which gated drafts
-                        // recorded log-probs (exact/gated greedy → 1.0, not head 0.7).
+                        // recorded log-probs (gated greedy → 1.0, not head 0.7).
                         if let Some(head) = self.weights.mtp.as_ref() {
                             next_draft_log_prob_temperature =
                                 crate::mtp::qwen_mtp_draft_log_prob_temperature_from_env(
                                     head.draft_sampling.temperature,
                                     gate,
-                                    crate::fastpath::qwen_linear_mtp_exact_enabled(),
                                 );
                         }
                         let (draft, log_probs, distributions, added, _top2_margins) =
@@ -12420,15 +13065,16 @@ impl MlxRunner {
             state.mtp_pending_draft = new_draft;
             state.mtp_pending_draft_log_probs = new_log_probs;
             state.mtp_pending_draft_sources = new_sources;
+            // Lock accept rescale to the T used when these log-probs were
+            // written (DeepSeek post-result think T, or the Qwen gated draft
+            // log-prob T — see next_draft_log_prob_temperature); a draft that
+            // wrote none clears the temperature with the vector.
+            state.mtp_pending_draft_log_prob_temperature = pending_draft_log_prob_temperature_for(
+                &state.mtp_pending_draft_log_probs,
+                next_draft_log_prob_temperature,
+            );
             if state.mtp_pending_draft_log_probs.is_empty() {
                 state.mtp_pending_draft_distributions.clear();
-                state.mtp_pending_draft_log_prob_temperature = None;
-            } else {
-                // Lock accept rescale to the T used when these log-probs were
-                // written (DeepSeek post-result think T, or Qwen exact/gated
-                // draft log-prob T — see next_draft_log_prob_temperature).
-                state.mtp_pending_draft_log_prob_temperature =
-                    Some(next_draft_log_prob_temperature);
             }
             if state.mtp_pending_draft.is_empty() {
                 state.mtp_pending_draft_sources.clear();
@@ -12488,6 +13134,9 @@ impl MlxRunner {
         state
             .mtp_telemetry
             .record_profitability_snapshot(state.mtp_profitability.snapshot());
+        state
+            .mtp_telemetry
+            .record_cost_depth_snapshot(state.mtp_cost_depth.snapshot());
         let gemma4_assistant_submitted = state
             .mtp_pending_draft_sources
             .iter()
@@ -12598,6 +13247,20 @@ impl MlxRunner {
         state.mtp_decode_count = 0;
         state.mtp_bypassed = false;
         state.mtp_suspended_for_batched_decode = false;
+        // Cost-model depth controller: opt-in, Qwen linear MTP head only. The
+        // fixed-depth harness contract preempts it outright, and every other
+        // head keeps the legacy streak controller.
+        let cost_depth_config = mtp_cost_depth_config_from_env();
+        let cost_depth_enabled = cost_depth_config.enabled
+            && has_linear_attention
+            && self.weights.mtp.is_some()
+            && crate::fastpath::mtp_fixed_draft_depth().is_none();
+        state.mtp_cost_depth.reset(
+            cost_depth_enabled,
+            cost_depth_config,
+            mtp_cost_depth_width(qwen_linear_max_verify_drafts(), self.mtp_max_depth()),
+        );
+        state.mtp_cost_steps_since_decision = 0;
         let profitability_config = mtp_profitability_config_from_env();
         let profitability_max_tokens_per_round =
             if crate::fastpath::mtp_profitability_throughput_enabled()
@@ -12641,7 +13304,11 @@ impl MlxRunner {
                 profitability_max_tokens_per_round,
             ),
         }
-        .eligible();
+        .eligible()
+            // While the cost controller owns depth decisions it also owns the
+            // direct probe and the bypass decision; suppress the profitability
+            // policy at the call site so the two never probe twice.
+            && !cost_depth_enabled;
         state
             .mtp_profitability
             .reset(profitability_eligible, profitability_config);
@@ -13704,6 +14371,19 @@ fn update_ngram_think_state(cfg: &ModelConfig, in_think: &mut bool, token: u32) 
     }
 }
 
+/// Temperature to carry with a freshly drafted log-prob vector.
+///
+/// A draft path that wrote no temperature-scaled log-probs must not record a
+/// temperature: the accept path would then rescale a cached T against an empty
+/// vector. Both fresh-draft writes (skip-state and post-verify) share this
+/// rule.
+fn pending_draft_log_prob_temperature_for(
+    draft_log_probs: &[f32],
+    computed_temperature: f32,
+) -> Option<f32> {
+    (!draft_log_probs.is_empty()).then_some(computed_temperature)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn mtp_next_adaptive_depth(
     current_depth: usize,
@@ -14594,6 +15274,40 @@ fn linear_mtp_projected_replay_allowed(
         && !replay_kill_switch
         && !model_force_replay
         && (1..=qwen_linear_max_verify_drafts()).contains(&pending_len)
+}
+
+/// Device-side greedy acceptance (`AX_MLX_MTP_DEVICE_GREEDY_ACCEPT`) applies
+/// only when the accept decision is a pure argmax prefix match: greedy
+/// request, non-optimistic linear arm without singleton replay, and an
+/// all-MTP draft window (n-gram / hybrid / assistant sources keep the host
+/// path, as does any sources/pending misalignment).
+fn mtp_device_greedy_accept_allowed(
+    flag_enabled: bool,
+    target_temperature: f32,
+    exact_linear_replay: bool,
+    pending_len: usize,
+    sources: &[MtpDraftSource],
+) -> bool {
+    flag_enabled
+        && target_temperature <= 0.0
+        && !exact_linear_replay
+        && pending_len > 0
+        && sources.len() == pending_len
+        && sources.iter().all(|source| *source == MtpDraftSource::Mtp)
+}
+
+/// Validate a device greedy-accept readback. The packed `[accept_count,
+/// correction_token]` pair is only trusted when it has exactly the two expected
+/// elements and a count that fits the verified window; anything else (a
+/// truncated or malformed array, or an out-of-range count) fails closed to the
+/// host acceptance path for that step instead of committing a bogus accept
+/// prefix.
+fn device_greedy_accept_pair(pair: &[u32], pending_len: usize) -> Option<(usize, u32)> {
+    let [accept_count, correction_token] = pair else {
+        return None;
+    };
+    let accept_count = usize::try_from(*accept_count).ok()?;
+    (accept_count <= pending_len).then_some((accept_count, *correction_token))
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
@@ -16579,6 +17293,210 @@ mod tests {
     }
 
     #[test]
+    fn device_greedy_accept_matches_host_accept_step() {
+        // Guard matrix for the opt-in device path
+        // (`AX_MLX_MTP_DEVICE_GREEDY_ACCEPT`, default OFF).
+        assert!(mtp_device_greedy_accept_allowed(
+            true,
+            0.0,
+            false,
+            2,
+            &[MtpDraftSource::Mtp; 2]
+        ));
+        assert!(!mtp_device_greedy_accept_allowed(
+            false,
+            0.0,
+            false,
+            2,
+            &[MtpDraftSource::Mtp; 2]
+        ));
+        assert!(!mtp_device_greedy_accept_allowed(
+            true,
+            0.7,
+            false,
+            2,
+            &[MtpDraftSource::Mtp; 2]
+        ));
+        assert!(!mtp_device_greedy_accept_allowed(
+            true,
+            0.0,
+            true,
+            2,
+            &[MtpDraftSource::Mtp; 2]
+        ));
+        // Empty pending: the helper is never called; the guard refuses it.
+        assert!(!mtp_device_greedy_accept_allowed(true, 0.0, false, 0, &[]));
+        // N-gram / hybrid / assistant sources keep the host path, as does a
+        // sources/pending length misalignment.
+        assert!(!mtp_device_greedy_accept_allowed(
+            true,
+            0.0,
+            false,
+            2,
+            &[MtpDraftSource::Ngram, MtpDraftSource::Mtp]
+        ));
+        assert!(!mtp_device_greedy_accept_allowed(
+            true,
+            0.0,
+            false,
+            2,
+            &[MtpDraftSource::Mtp, MtpDraftSource::HybridMtp]
+        ));
+        assert!(!mtp_device_greedy_accept_allowed(
+            true,
+            0.0,
+            false,
+            1,
+            &[MtpDraftSource::Gemma4Assistant]
+        ));
+        assert!(!mtp_device_greedy_accept_allowed(
+            true,
+            0.0,
+            false,
+            2,
+            &[MtpDraftSource::Mtp]
+        ));
+
+        let _exact = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
+        let _target = crate::fastpath::scoped_qwen_linear_mtp_target_verify(false);
+        let _relaxed = crate::fastpath::scoped_qwen_linear_mtp_relaxed_session(false);
+        let (cfg, weights) = forced_replay_test_model();
+        let mut base = MlxKVCache::new_contiguous(1);
+        assert_eq!(
+            recompute_committed_prefix_with_argmax(&cfg, &weights, &mut base, 4, &[5], 0),
+            1
+        );
+        // This dense fixture exercises acceptance and real, input-dependent
+        // KV; the batched verifier argmax windows are scripted, so host and
+        // device acceptance must agree position-by-position.
+        for (label, pending, batched) in [
+            ("mismatch at depth 0", vec![2, 1, 1], vec![9, 1, 1, 1]),
+            ("mismatch at depth 1", vec![1, 2, 1], vec![1, 5, 1, 1]),
+            ("mismatch at depth 2", vec![1, 1, 2], vec![1, 1, 9, 4]),
+            ("full accept", vec![1, 1, 1], vec![1, 1, 1, 7]),
+            ("single full accept", vec![1], vec![1, 3]),
+            ("single mismatch", vec![2], vec![1, 3]),
+        ] {
+            let n = pending.len();
+            let sources = vec![MtpDraftSource::Mtp; n];
+            assert!(mtp_device_greedy_accept_allowed(
+                true, 0.0, false, n, &sources
+            ));
+
+            // Legacy host accept over the scripted window.
+            let mut rng = Xorshift64::new(7);
+            let accept_legacy = mtp_accept_count(
+                &pending,
+                &[],
+                &[],
+                &sources,
+                None,
+                None,
+                &batched,
+                &mut rng,
+                0.0,
+                0.0,
+                MtpModelAcceptanceMode::Greedy,
+                MtpNgramAcceptanceMode::Greedy,
+            );
+            let verifier_argmax_legacy = batched[accept_legacy.accept_count];
+
+            // Device accept over the same window.
+            let predicted_arr = MlxArray::from_raw_data(
+                batched.as_ptr() as *const u8,
+                std::mem::size_of_val(batched.as_slice()),
+                &[batched.len() as i32],
+                MlxDtype::Uint32,
+            );
+            let drafts_dev = MlxArray::from_raw_data(
+                pending.as_ptr() as *const u8,
+                std::mem::size_of_val(pending.as_slice()),
+                &[n as i32],
+                MlxDtype::Uint32,
+            );
+            let packed = crate::mtp::mtp_greedy_accept_lazy(&predicted_arr, &drafts_dev, n);
+            eval(&[&packed]);
+            assert_eq!(packed.shape(), vec![2], "{label}");
+            let pair = packed.data_u32();
+            let ac_device = usize::try_from(pair[0]).unwrap_or(0);
+            let correction_device = pair[1];
+            let accept_device = MtpAcceptOutcome {
+                accept_count: ac_device,
+                all_accepted: ac_device == n,
+                rejection_correction: (ac_device != n).then_some(correction_device),
+            };
+            assert_eq!(accept_legacy, accept_device, "{label}");
+            assert_eq!(correction_device, verifier_argmax_legacy, "{label}");
+
+            // Non-replay rollback (recompute fallback) on the derived accept
+            // count, then greedy correction selection: both paths must emit
+            // identical tokens and leave identical caches.
+            let mut cache_legacy = base.clone();
+            let mut cache_device = base.clone();
+            let recomputed_legacy = recompute_committed_prefix_with_argmax(
+                &cfg,
+                &weights,
+                &mut cache_legacy,
+                3,
+                &pending[..accept_legacy.accept_count],
+                2,
+            );
+            let recomputed_device = recompute_committed_prefix_with_argmax(
+                &cfg,
+                &weights,
+                &mut cache_device,
+                3,
+                &pending[..accept_device.accept_count],
+                2,
+            );
+            assert_eq!(recomputed_legacy, recomputed_device, "{label}");
+            let token_legacy = select_linear_mtp_correction_token(
+                0.0,
+                Some(recomputed_legacy),
+                None,
+                accept_legacy.rejection_correction,
+                verifier_argmax_legacy,
+            );
+            let token_device = select_linear_mtp_correction_token(
+                0.0,
+                Some(recomputed_device),
+                None,
+                accept_device.rejection_correction,
+                correction_device,
+            );
+            assert_eq!(token_legacy, token_device, "{label}");
+            let mut emitted_legacy = pending[..accept_legacy.accept_count].to_vec();
+            emitted_legacy.push(token_legacy);
+            let mut emitted_device = pending[..accept_device.accept_count].to_vec();
+            emitted_device.push(token_device);
+            assert_eq!(emitted_legacy, emitted_device, "{label}");
+            assert_eq!(cache_legacy.seq_len(), cache_device.seq_len(), "{label}");
+            let (k_legacy, v_legacy) = cache_legacy.logical_layer_kv(0).expect("legacy KV");
+            let (k_device, v_device) = cache_device.logical_layer_kv(0).expect("device KV");
+            eval(&[&k_legacy, &v_legacy, &k_device, &v_device]);
+            assert_eq!(k_legacy.data_f32(), k_device.data_f32(), "{label}");
+            assert_eq!(v_legacy.data_f32(), v_device.data_f32(), "{label}");
+
+            // MTP draft-cache trim contract: rollback removes the rejected
+            // tail by count (the runner's non-refold fallback).
+            let drafted_len = base.seq_len() + n;
+            let mut mtp_cache_legacy = MlxKVCache::new_contiguous(1);
+            let mut mtp_cache_device = MlxKVCache::new_contiguous(1);
+            mtp_cache_legacy.advance(drafted_len);
+            mtp_cache_device.advance(drafted_len);
+            let rejected_legacy = n - accept_legacy.accept_count;
+            let rejected_device = n - accept_device.accept_count;
+            assert!(mtp_cache_legacy.trim_to(drafted_len - rejected_legacy));
+            assert!(mtp_cache_device.trim_to(drafted_len - rejected_device));
+            assert_eq!(
+                mtp_cache_legacy.seq_len(),
+                mtp_cache_device.seq_len(),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn ngram_greedy_revalidation_commits_production_token() {
         // Finding D: the n-gram accelerator's batched multi-token verifier can
         // diverge from singleton production on near-ties. At temperature 0 the
@@ -18042,6 +18960,171 @@ mod tests {
                 "n-gram pseudo log-prob must not be rescaled (seed={seed})"
             );
         }
+    }
+
+    #[test]
+    fn mtp_cost_depth_preview_matches_the_committed_decision() {
+        let mut controller = MtpCostDepthController::default();
+        controller.reset(
+            true,
+            MtpCostDepthConfig {
+                enabled: true,
+                ..MtpCostDepthConfig::default()
+            },
+            3,
+        );
+        // Warmup sweep, then the warmup-context probes, so both call sites
+        // replay the steady-state scoring path.
+        for _ in 0..3 {
+            controller.observe_and_decide(3, 3, true, true);
+        }
+        controller.record_direct_probe(9_000);
+        controller.record_direct_probe(9_500);
+        // Acceptance stays a full prefix acceptance pattern so the expected
+        // token count is strictly increasing in depth and the decision cannot
+        // sit on a score tie.
+        for (used, accepted) in [(3, 3), (3, 3), (3, 2), (3, 1), (2, 2), (3, 3)] {
+            let mut preview = controller;
+            let preview_depth =
+                mtp_cost_depth_cycle_depth(&mut preview, 0, used, accepted, true, true, None);
+            let committed_depth =
+                mtp_cost_depth_cycle_depth(&mut controller, 0, used, accepted, true, true, None);
+            assert_eq!(
+                preview_depth, committed_depth,
+                "fold preview and committed decision must agree (used={used}, accepted={accepted})"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_cost_controller_keeps_legacy_depth_decisions() {
+        let mut controller = MtpCostDepthController::default();
+        let policy = MtpAdaptiveDepthPolicy {
+            fixed_depth: None,
+            conservative_depth: false,
+            depth3_miss_backoff: true,
+            depth3_hysteresis: true,
+        };
+        for (current, pending, accepted, misses) in [
+            (3, 3, 0, 0),
+            (2, 3, 2, 0),
+            (3, 3, 3, 0),
+            (1, 3, 1, 0),
+            (2, 3, 0, 1),
+        ] {
+            let legacy = mtp_next_adaptive_depth_with_policy(
+                current, 3, pending, accepted, misses, false, policy,
+            );
+            let resolved = mtp_cost_depth_cycle_depth(
+                &mut controller,
+                legacy,
+                pending,
+                accepted,
+                true,
+                true,
+                None,
+            );
+            assert_eq!(resolved, legacy);
+        }
+        assert!(!controller.enabled());
+        assert!(!controller.wants_direct_probe());
+        assert!(!controller.parked());
+        assert_eq!(controller.observe_and_decide(3, 3, true, true), 0);
+    }
+
+    #[test]
+    fn fixed_draft_depth_preempts_the_cost_controller() {
+        let mut controller = MtpCostDepthController::default();
+        controller.reset(
+            true,
+            MtpCostDepthConfig {
+                enabled: true,
+                ..MtpCostDepthConfig::default()
+            },
+            3,
+        );
+        assert_eq!(controller.observe_and_decide(0, 0, false, true), 3);
+        for _ in 0..6 {
+            assert_eq!(
+                mtp_cost_depth_cycle_depth(&mut controller, 2, 3, 3, true, true, Some(2)),
+                2
+            );
+        }
+        // The preempted calls never reached the controller: the warmup sweep
+        // resumes exactly where it stopped.
+        assert_eq!(controller.observe_and_decide(0, 0, false, true), 2);
+    }
+
+    #[test]
+    fn parked_cost_controller_routes_direct_fallback() {
+        let mut controller = MtpCostDepthController::default();
+        controller.reset(
+            true,
+            MtpCostDepthConfig {
+                enabled: true,
+                park_streak: 2,
+                ..MtpCostDepthConfig::default()
+            },
+            3,
+        );
+        assert_eq!(controller.observe_and_decide(0, 0, false, true), 3);
+        assert_eq!(controller.observe_and_decide(0, 0, false, true), 2);
+        assert_eq!(controller.observe_and_decide(0, 0, false, true), 1);
+        // Slow, missing speculative cycles against a settled 1 µs direct
+        // baseline: the warmup probes do not arm park, the settling probe
+        // (requested only after PARK_BASELINE_PROBE_DELAY_CYCLES) does.
+        let mut parked = false;
+        for _ in 0..70 {
+            if controller.wants_direct_probe() {
+                controller.record_direct_probe(1);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            // The round verifies the draft generated at the decided depth;
+            // anything else is not a clean depth-cost sample by construction.
+            let used = controller.current_depth();
+            if controller.observe_and_decide(used, 0, true, true) == 0 {
+                parked = true;
+                break;
+            }
+        }
+        assert!(parked && controller.parked());
+        // Park sets `state.mtp_bypassed`, which is the route's direct-only flag.
+        assert_eq!(
+            mtp_request_route(true, true, true, false, controller.parked(), false),
+            MtpRequestRoute::DirectFallback
+        );
+    }
+
+    #[test]
+    fn fresh_draft_log_probs_carry_temperature_only_when_written() {
+        // Skip-state and post-verify fresh-draft writes share one rule: a
+        // greedy window that computed no temperature-scaled log-probs records
+        // no temperature, so the accept path cannot rescale a stale T against
+        // an empty vector.
+        assert_eq!(pending_draft_log_prob_temperature_for(&[], 0.7), None);
+        assert_eq!(pending_draft_log_prob_temperature_for(&[], 1.0), None);
+        assert_eq!(
+            pending_draft_log_prob_temperature_for(&[-0.5, -1.5], 0.7),
+            Some(0.7)
+        );
+        assert_eq!(
+            pending_draft_log_prob_temperature_for(&[-0.25], 1.0),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn device_greedy_accept_pair_fails_closed_on_bad_readbacks() {
+        // The packed pair is trusted only at exactly two elements and a count
+        // that fits the verified window.
+        assert_eq!(device_greedy_accept_pair(&[2, 7], 3), Some((2, 7)));
+        assert_eq!(device_greedy_accept_pair(&[0, 7], 3), Some((0, 7)));
+        assert_eq!(device_greedy_accept_pair(&[3, 7], 3), Some((3, 7)));
+        assert_eq!(device_greedy_accept_pair(&[], 3), None);
+        assert_eq!(device_greedy_accept_pair(&[1], 3), None);
+        assert_eq!(device_greedy_accept_pair(&[1, 2, 3], 3), None);
+        assert_eq!(device_greedy_accept_pair(&[4, 7], 3), None);
+        assert_eq!(device_greedy_accept_pair(&[u32::MAX, 7], 3), None);
     }
 
     #[test]
@@ -23581,3 +24664,6 @@ mod tests {
 
 #[cfg(test)]
 mod flash_next_tests;
+
+#[cfg(test)]
+mod flash_next_pause_tests;

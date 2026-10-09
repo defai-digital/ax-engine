@@ -774,6 +774,75 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_MTP_COST_MODEL_DEPTH` — hand the Qwen linear MTP draft depth to
+    /// the measured cost-model controller (`runner/mtp_depth_controller.rs`)
+    /// instead of the streak controller: per-position acceptance EMAs,
+    /// per-depth cycle-wall EMAs, a measured direct-step baseline, staleness
+    /// probes, and a park latch when every speculative depth loses to direct
+    /// decode.
+    ///
+    /// **Default: OFF** (v1 opt-in). `AX_MLX_MTP_BYPASS_THRESHOLD=0` (force
+    /// MTP) freezes the controller at the verify width with no probes and no
+    /// park, so MTP-P evidence binds to a fixed mechanism;
+    /// `AX_MLX_MTP_FIXED_DRAFT_DEPTH` still preempts the controller outright.
+    mtp_cost_model_depth_enabled,
+    "AX_MLX_MTP_COST_MODEL_DEPTH"
+);
+
+env_flag!(
+    /// `AX_MLX_FLASH_NEXT_STICKY_FALLBACK` — restore the legacy Flash Next
+    /// draft-cursor policy: any transient block or step error drops the cursor,
+    /// so the request decodes direct for the rest of its generation.
+    ///
+    /// **Default: OFF.** Off, a blocked step keeps the cursor (ThinkControl /
+    /// PendingDirect) or drops it (no budget, wrong sampling, step error), and
+    /// a paused cursor catches up when the block clears. On, every block drops
+    /// the cursor and no step ever pauses.
+    flash_next_sticky_fallback_env_enabled,
+    "AX_MLX_FLASH_NEXT_STICKY_FALLBACK"
+);
+
+thread_local! {
+    /// Test-scoped kill-switch override. `None` reads the process environment,
+    /// which is the only path production uses.
+    static FLASH_NEXT_STICKY_FALLBACK_SCOPE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Restores the previous sticky-fallback selection on drop.
+#[cfg(test)]
+#[must_use]
+pub(crate) struct FlashNextStickyFallbackScope {
+    previous: Option<bool>,
+}
+
+#[cfg(test)]
+impl Drop for FlashNextStickyFallbackScope {
+    fn drop(&mut self) {
+        FLASH_NEXT_STICKY_FALLBACK_SCOPE.with(|current| current.set(self.previous));
+    }
+}
+
+/// Select the legacy drop-on-block policy for one test scope. The kill switch
+/// itself is a `OnceLock`-cached env read, so a test that has to flip it needs
+/// this hook instead of mutating process state.
+#[cfg(test)]
+pub(crate) fn scoped_flash_next_sticky_fallback(enabled: bool) -> FlashNextStickyFallbackScope {
+    let previous = FLASH_NEXT_STICKY_FALLBACK_SCOPE.with(|current| {
+        let previous = current.get();
+        current.set(Some(enabled));
+        previous
+    });
+    FlashNextStickyFallbackScope { previous }
+}
+
+/// Whether a blocked Flash Next decode step drops the draft cursor.
+pub fn flash_next_sticky_fallback_enabled() -> bool {
+    FLASH_NEXT_STICKY_FALLBACK_SCOPE
+        .with(Cell::get)
+        .unwrap_or_else(flash_next_sticky_fallback_env_enabled)
+}
+
+env_flag!(
     /// `AX_MLX_MTP_NATIVE_GREEDY_VERIFY_LOGITS` — build greedy target-verifier
     /// logits with the native greedy post-norm path instead of the sampled
     /// softmax contract.
@@ -1112,6 +1181,20 @@ env_flag!(
 pub fn mtp_lazy_adopt_state_enabled() -> bool {
     mtp_lazy_adopt_state_env() || qwen_linear_throughput_mtp_enabled()
 }
+
+env_flag!(
+    /// `AX_MLX_MTP_DEVICE_GREEDY_ACCEPT` — compute the greedy MTP acceptance
+    /// prefix match on device (`mtp_greedy_accept_lazy`) and read back a
+    /// packed `[accept_count, correction_token]` pair instead of downloading
+    /// the full verifier argmax window. Applies only to greedy
+    /// (`temperature <= 0`), non-optimistic, non-singleton-replay
+    /// linear-attention steps whose draft window is entirely MTP-sourced;
+    /// every other case keeps the host-side `mtp_accept_count` path.
+    ///
+    /// **Default: OFF** (experimental).
+    mtp_device_greedy_accept_enabled,
+    "AX_MLX_MTP_DEVICE_GREEDY_ACCEPT"
+);
 
 env_flag_default_on!(
     /// `AX_MLX_MTP_REBIND_VERIFY_FA` — after a relaxed Qwen verifier has
@@ -5243,9 +5326,25 @@ env_flag_default_on!(
     /// single-query steps (decode, singleton verification) on the device instead
     /// of reading the scores back to the host, so one token's layers evaluate in
     /// one graph. Default ON; set `=0` to restore the host selection. Multi-query
-    /// chunks always select on the host.
+    /// chunks follow `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` below.
     flash_next_qsa_device_select_enabled,
     "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT"
+);
+
+/// Short multi-query verifier windows (at most this many rows) may select on
+/// the device when `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` is on; longer
+/// chunks (prefill) always select on the host.
+pub(crate) const QSA_DEVICE_SELECT_MULTI_MAX_QUERIES: i32 = 4;
+
+env_flag_default_on!(
+    /// `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI` — choose QSA blocks on the
+    /// device for short multi-query verifier windows (the block/batched MTP
+    /// verifier), removing the per-layer score read-back stall. Selection order
+    /// is the same stable score-descending, lower-block-index-on-ties order as
+    /// the host path and the singleton device path. Default ON; set `=0` to
+    /// restore host selection for multi-query chunks.
+    flash_next_qsa_device_select_multi_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT_MULTI"
 );
 
 env_flag_default_on!(
@@ -10315,6 +10414,10 @@ mod per_call_env_accessor_tests {
             "mtp_ngram_confidence_threshold",
         ),
         ("src/runner/mtp_ngram_gates.rs", "mtp_ngram_min_context_len"),
+        (
+            "src/runner/mtp_depth_controller.rs",
+            "mtp_cost_depth_config_from_env",
+        ),
         ("src/runner/mtp_profitability.rs", "env_u32"),
         ("src/runner/mtp_profitability.rs", "env_f64"),
         (
