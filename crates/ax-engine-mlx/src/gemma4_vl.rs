@@ -116,10 +116,6 @@ pub fn has_vision_tower(weights: &ModelWeights) -> bool {
     weights.gemma4_vl_vision.is_some() || weights.gemma4_unified_vision.is_some()
 }
 
-pub fn has_audio_tower(weights: &ModelWeights) -> bool {
-    weights.gemma4_unified_audio.is_some()
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gemma4VlVisionConfig {
     pub depth: usize,

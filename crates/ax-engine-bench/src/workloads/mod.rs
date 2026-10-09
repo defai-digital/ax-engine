@@ -6,11 +6,13 @@
 //! is not available, mirroring the existing bench convention for
 //! `AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use ax_engine_sdk::GenerateSampling;
 use serde_json::{Value, json};
 
 use crate::harness::WorkloadReport;
+use crate::inference_args::InferenceArgs;
 
 pub(crate) mod cancellation_during_prefill;
 pub(crate) mod concurrent_short_inserts;
@@ -91,6 +93,18 @@ impl WorkloadOutcome {
 pub(crate) trait Workload {
     fn name(&self) -> &'static str;
     fn run(&self, ctx: &WorkloadContext) -> WorkloadOutcome;
+}
+
+/// Shared deterministic MLX inference args for the serving-stress fixtures.
+pub(crate) fn workload_inference_args(model_id: &str, dir: &Path) -> InferenceArgs {
+    InferenceArgs {
+        model_id: model_id.to_string(),
+        mlx: true,
+        mlx_model_artifacts_dir: Some(dir.to_path_buf()),
+        deterministic: true,
+        sampling: GenerateSampling::default(),
+        ..InferenceArgs::default()
+    }
 }
 
 #[cfg(test)]

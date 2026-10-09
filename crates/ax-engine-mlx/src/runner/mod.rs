@@ -1604,23 +1604,6 @@ static COMPILE_CACHE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 static COMPILE_CACHE_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static COMPILE_FALLBACK_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Global compiled-closure telemetry counters.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CompileCacheCounters {
-    pub hits: u64,
-    pub misses: u64,
-    pub fallbacks: u64,
-}
-
-/// Returns compiled-closure cache telemetry counters.
-pub fn compile_cache_counters() -> CompileCacheCounters {
-    CompileCacheCounters {
-        hits: COMPILE_CACHE_HITS.load(std::sync::atomic::Ordering::Relaxed),
-        misses: COMPILE_CACHE_MISSES.load(std::sync::atomic::Ordering::Relaxed),
-        fallbacks: COMPILE_FALLBACK_COUNT.load(std::sync::atomic::Ordering::Relaxed),
-    }
-}
-
 fn default_mlx_cache_limit(wired_cap: usize) -> usize {
     wired_cap.saturating_add(wired_cap / 2)
 }
@@ -2185,21 +2168,6 @@ impl MlxRunner {
             None,
             None,
             None,
-        )
-    }
-
-    pub fn from_artifacts_with_prefix_cache(
-        artifacts: &NativeModelArtifacts,
-        prefill_chunk: usize,
-        disable_ngram_acceleration: bool,
-        prefix_cache_store: MlxPrefixCacheStore,
-    ) -> Result<Self, MlxRunnerError> {
-        Self::from_artifacts_with_prefix_cache_and_mtp_options(
-            artifacts,
-            prefill_chunk,
-            disable_ngram_acceleration,
-            mtp_disable_ngram_stacking_from_env(),
-            prefix_cache_store,
         )
     }
 

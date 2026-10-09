@@ -4125,7 +4125,7 @@ fn derive_model_bound_direct_decode_result_from_prepared_group(
 }
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn derive_model_bound_decode_tokens(
     input: &RunnerInput,
@@ -5251,34 +5251,7 @@ fn resolved_ffn_intermediate_dim(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn project_ffn_gate_up(
-    ffn_gate_up: &MetalFfnGateUpBindings,
-    buffers: &MetalNativeModelBufferBindings,
-    intermediate_dim: usize,
-    input: &[f32],
-    bringup: Option<&MetalRuntimeBringup>,
-) -> Option<(Vec<f32>, Vec<f32>)> {
-    let projections = ffn_gate_up_projection_bindings(ffn_gate_up, buffers, intermediate_dim)?;
-    let gate = project_matrix_rows(
-        projections.gate,
-        projections.gate_row_offset,
-        intermediate_dim,
-        input,
-        bringup,
-    )?;
-    let up = project_matrix_rows(
-        projections.up,
-        projections.up_row_offset,
-        intermediate_dim,
-        input,
-        bringup,
-    )?;
-    Some((gate, up))
-}
-
-#[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn project_ffn_gate_up_with_coverage(
     ffn_gate_up: &MetalFfnGateUpBindings,
     buffers: &MetalNativeModelBufferBindings,
@@ -5303,7 +5276,7 @@ fn project_ffn_gate_up_with_coverage(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
+#[cfg(test)]
 fn project_ffn_gate_up_with_coverage_and_retry_policy(
     ffn_gate_up: &MetalFfnGateUpBindings,
     buffers: &MetalNativeModelBufferBindings,
@@ -6586,7 +6559,7 @@ fn apply_ffn_continuation_rows_with_tally(
     Some((next_hidden_rows, tally, any_nontrivial))
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn apply_direct_decode_logits_to_runner_output(
     output: &mut RunnerOutput,
     logits_outputs: &[RequestLogitsOutput],
@@ -8533,27 +8506,6 @@ fn resolved_model_stage_dims_for_input_width(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn project_attention_qkv(
-    artifacts: &NativeModelArtifacts,
-    attention_qkv: &MetalAttentionQkvBindings,
-    buffers: &MetalNativeModelBufferBindings,
-    input: &[f32],
-    stage_dims: ModelStageDims,
-    bringup: Option<&MetalRuntimeBringup>,
-) -> Option<(Vec<f32>, Vec<f32>, Vec<f32>)> {
-    project_attention_qkv_with_dims_and_tally(
-        artifacts,
-        attention_qkv,
-        buffers,
-        input,
-        stage_dims,
-        bringup,
-    )
-    .map(|(query, key, value, _)| (query, key, value))
-}
-
-#[cfg(target_os = "macos")]
 fn apply_model_stage_rope_cpu(
     artifacts: &NativeModelArtifacts,
     query: &mut [f32],
@@ -10074,27 +10026,6 @@ fn advance_hidden_states_ffn_only(
     let continuation_tokens = u32::try_from(next_hidden_states.len()).unwrap_or(u32::MAX);
     tally = tally.record_layer_continuation_tokens(continuation_tokens);
     Some((next_hidden_states, tally))
-}
-
-/// Resolve FFN dimensions without requiring attention_o binding.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn resolved_ffn_only_layer_dims(
-    ffn_norm: &MetalNativeTensorBufferBinding,
-    ffn_gate_up: &MetalFfnGateUpBindings,
-    buffers: &MetalNativeModelBufferBindings,
-    ffn_down: &MetalNativeTensorBufferBinding,
-    hidden_width: usize,
-) -> Option<(usize, usize)> {
-    let ffn_norm_len = tensor_element_count(&ffn_norm.meta.spec)?;
-    let ffn_gate_up_input_cols = ffn_gate_up_input_cols(ffn_gate_up, buffers)?;
-    let (ffn_down_rows, ffn_down_cols) = tensor_matrix_dimensions(&ffn_down.meta.spec)?;
-    let hidden_dim = hidden_width
-        .min(ffn_norm_len)
-        .min(ffn_gate_up_input_cols)
-        .min(ffn_down_rows);
-    let intermediate_dim = resolved_ffn_intermediate_dim(ffn_gate_up, buffers, ffn_down_cols)?;
-    (hidden_dim > 0 && intermediate_dim > 0).then_some((hidden_dim, intermediate_dim))
 }
 
 #[cfg(target_os = "macos")]

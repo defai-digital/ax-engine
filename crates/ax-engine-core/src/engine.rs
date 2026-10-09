@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -9,7 +8,6 @@ use crate::ids::{CacheGroupId, RequestId, StepId};
 use crate::kv::{
     AllocationStatus, FreeResult, KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
-use crate::metal::{MetalBringupRunner, MetalBringupSampler, MetalRuntimeError};
 use crate::request::RequestRecord;
 use crate::request::RequestState;
 use crate::request::RequestSubmission;
@@ -137,29 +135,6 @@ impl EngineCore {
 
     pub fn with_kv_config(kv_config: KvManagerConfig) -> Self {
         Self::with_runtime_components(kv_config, DeterministicRunner, DeterministicSampler)
-    }
-
-    pub fn with_metal_bringup_runner(
-        kv_config: KvManagerConfig,
-        build_dir: impl AsRef<Path>,
-    ) -> Result<Self, MetalRuntimeError> {
-        Self::with_metal_bringup_runner_and_model_artifacts(kv_config, build_dir, None)
-    }
-
-    pub fn with_metal_bringup_runner_and_model_artifacts(
-        kv_config: KvManagerConfig,
-        build_dir: impl AsRef<Path>,
-        model_artifacts_dir: Option<&Path>,
-    ) -> Result<Self, MetalRuntimeError> {
-        let build_dir = build_dir.as_ref();
-        let runner =
-            MetalBringupRunner::from_build_dir_and_model_artifacts(build_dir, model_artifacts_dir)?;
-        let sampler = MetalBringupSampler::from_build_dir(build_dir)?;
-        runner
-            .bringup()
-            .assets()
-            .validate_block_size_tokens(kv_config.block_size_tokens)?;
-        Ok(Self::with_runtime_components(kv_config, runner, sampler))
     }
 
     pub fn with_runtime_components<R, S>(kv_config: KvManagerConfig, runner: R, sampler: S) -> Self

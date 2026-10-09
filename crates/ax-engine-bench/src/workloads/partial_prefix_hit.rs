@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{GenerateRequest, GenerateSampling, GenerateStreamEvent};
 
-use super::{Workload, WorkloadContext, WorkloadOutcome};
+use super::{Workload, WorkloadContext, WorkloadOutcome, workload_inference_args};
 use crate::harness::WorkloadReport;
 use crate::harness::metrics::LatencySamples;
 use crate::inference_args::{InferenceArgs, build_inference_session};
@@ -70,14 +70,7 @@ impl Workload for PartialPrefixHit {
 
 impl PartialPrefixHit {
     fn build_inference_args(&self, artifacts_dir: &Path) -> InferenceArgs {
-        InferenceArgs {
-            model_id: self.model_id.clone(),
-            mlx: true,
-            mlx_model_artifacts_dir: Some(artifacts_dir.to_path_buf()),
-            deterministic: true,
-            sampling: GenerateSampling::default(),
-            ..InferenceArgs::default()
-        }
+        workload_inference_args(&self.model_id, artifacts_dir)
     }
 
     fn build_request(&self, seed: u64, ordinal: u32) -> GenerateRequest {
@@ -156,7 +149,7 @@ impl PartialPrefixHit {
         Ok(report)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn report_skeleton(&self) -> WorkloadReport {
         let mut report = WorkloadReport::new(self.name());
         report.add_note(format!(

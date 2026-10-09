@@ -828,14 +828,6 @@ impl Gemma4UnifiedProcessorConfig {
         Ok(tokens)
     }
 
-    pub fn video_replacement_tokens(
-        &self,
-        video: Gemma4UnifiedVideoInput,
-    ) -> Result<Vec<u32>, Gemma4UnifiedError> {
-        self.video_replacement_tokens_with_ranges(video)
-            .map(|(tokens, _)| tokens)
-    }
-
     pub fn video_replacement_tokens_with_ranges(
         &self,
         video: Gemma4UnifiedVideoInput,

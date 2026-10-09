@@ -490,61 +490,56 @@ pub(super) fn record_linear_attention_profile_stage(
     *target = target.saturating_add(wall_us);
 }
 
+/// Selector for the shared decode/prefill wall-us field table. The two profile
+/// snapshots carry identical field names but are distinct types, so the table
+/// lives in one macro shared by both recorders.
+macro_rules! profile_stage_wall_us {
+    ($profile:expr, $stage:expr) => {
+        match $stage {
+            DecodeProfileStage::PerLayerInput => &mut $profile.per_layer_input_wall_us,
+            DecodeProfileStage::PreSdpa => &mut $profile.pre_sdpa_wall_us,
+            DecodeProfileStage::PreSdpaQkvProj => &mut $profile.pre_sdpa_qkv_proj_wall_us,
+            DecodeProfileStage::PreSdpaQkNorm => &mut $profile.pre_sdpa_qk_norm_wall_us,
+            DecodeProfileStage::PreSdpaRopeKv => &mut $profile.pre_sdpa_rope_kv_wall_us,
+            DecodeProfileStage::Sdpa => &mut $profile.sdpa_wall_us,
+            DecodeProfileStage::PostAttn => &mut $profile.post_attn_wall_us,
+            DecodeProfileStage::PostAttnFfn => &mut $profile.post_attn_ffn_wall_us,
+            DecodeProfileStage::PostAttnFfnGateUp => &mut $profile.post_attn_ffn_gate_up_wall_us,
+            DecodeProfileStage::PostAttnFfnActivation => {
+                &mut $profile.post_attn_ffn_activation_wall_us
+            }
+            DecodeProfileStage::PostAttnFfnDown => &mut $profile.post_attn_ffn_down_wall_us,
+            DecodeProfileStage::PostAttnOutputProj => &mut $profile.post_attn_output_proj_wall_us,
+            DecodeProfileStage::PostAttnResidualNorm => {
+                &mut $profile.post_attn_residual_norm_wall_us
+            }
+            DecodeProfileStage::PostAttnResidualGate => {
+                &mut $profile.post_attn_residual_gate_wall_us
+            }
+            DecodeProfileStage::LmHead => &mut $profile.lm_head_wall_us,
+            DecodeProfileStage::MoeRouter => &mut $profile.moe_router_wall_us,
+            DecodeProfileStage::MoeExpertGateUp => &mut $profile.moe_expert_gate_up_wall_us,
+            DecodeProfileStage::MoeExpertActivation => &mut $profile.moe_expert_activation_wall_us,
+            DecodeProfileStage::MoeExpertDown => &mut $profile.moe_expert_down_wall_us,
+            DecodeProfileStage::MoeExpertWeightedSum => {
+                &mut $profile.moe_expert_weighted_sum_wall_us
+            }
+            DecodeProfileStage::MoeSharedExpert => &mut $profile.moe_shared_expert_wall_us,
+        }
+    };
+}
+
 pub(super) fn record_prefill_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
     let mut profile = lock_profile(prefill_profile());
     profile.enabled = 1;
-    let target = match stage {
-        DecodeProfileStage::PerLayerInput => &mut profile.per_layer_input_wall_us,
-        DecodeProfileStage::PreSdpa => &mut profile.pre_sdpa_wall_us,
-        DecodeProfileStage::PreSdpaQkvProj => &mut profile.pre_sdpa_qkv_proj_wall_us,
-        DecodeProfileStage::PreSdpaQkNorm => &mut profile.pre_sdpa_qk_norm_wall_us,
-        DecodeProfileStage::PreSdpaRopeKv => &mut profile.pre_sdpa_rope_kv_wall_us,
-        DecodeProfileStage::Sdpa => &mut profile.sdpa_wall_us,
-        DecodeProfileStage::PostAttn => &mut profile.post_attn_wall_us,
-        DecodeProfileStage::PostAttnFfn => &mut profile.post_attn_ffn_wall_us,
-        DecodeProfileStage::PostAttnFfnGateUp => &mut profile.post_attn_ffn_gate_up_wall_us,
-        DecodeProfileStage::PostAttnFfnActivation => &mut profile.post_attn_ffn_activation_wall_us,
-        DecodeProfileStage::PostAttnFfnDown => &mut profile.post_attn_ffn_down_wall_us,
-        DecodeProfileStage::PostAttnOutputProj => &mut profile.post_attn_output_proj_wall_us,
-        DecodeProfileStage::PostAttnResidualNorm => &mut profile.post_attn_residual_norm_wall_us,
-        DecodeProfileStage::PostAttnResidualGate => &mut profile.post_attn_residual_gate_wall_us,
-        DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
-        DecodeProfileStage::MoeRouter => &mut profile.moe_router_wall_us,
-        DecodeProfileStage::MoeExpertGateUp => &mut profile.moe_expert_gate_up_wall_us,
-        DecodeProfileStage::MoeExpertActivation => &mut profile.moe_expert_activation_wall_us,
-        DecodeProfileStage::MoeExpertDown => &mut profile.moe_expert_down_wall_us,
-        DecodeProfileStage::MoeExpertWeightedSum => &mut profile.moe_expert_weighted_sum_wall_us,
-        DecodeProfileStage::MoeSharedExpert => &mut profile.moe_shared_expert_wall_us,
-    };
+    let target = profile_stage_wall_us!(profile, stage);
     *target = target.saturating_add(wall_us);
 }
 
 pub(super) fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u32) {
     let mut profile = lock_profile(decode_profile());
     profile.enabled = 1;
-    let target = match stage {
-        DecodeProfileStage::PerLayerInput => &mut profile.per_layer_input_wall_us,
-        DecodeProfileStage::PreSdpa => &mut profile.pre_sdpa_wall_us,
-        DecodeProfileStage::PreSdpaQkvProj => &mut profile.pre_sdpa_qkv_proj_wall_us,
-        DecodeProfileStage::PreSdpaQkNorm => &mut profile.pre_sdpa_qk_norm_wall_us,
-        DecodeProfileStage::PreSdpaRopeKv => &mut profile.pre_sdpa_rope_kv_wall_us,
-        DecodeProfileStage::Sdpa => &mut profile.sdpa_wall_us,
-        DecodeProfileStage::PostAttn => &mut profile.post_attn_wall_us,
-        DecodeProfileStage::PostAttnFfn => &mut profile.post_attn_ffn_wall_us,
-        DecodeProfileStage::PostAttnFfnGateUp => &mut profile.post_attn_ffn_gate_up_wall_us,
-        DecodeProfileStage::PostAttnFfnActivation => &mut profile.post_attn_ffn_activation_wall_us,
-        DecodeProfileStage::PostAttnFfnDown => &mut profile.post_attn_ffn_down_wall_us,
-        DecodeProfileStage::PostAttnOutputProj => &mut profile.post_attn_output_proj_wall_us,
-        DecodeProfileStage::PostAttnResidualNorm => &mut profile.post_attn_residual_norm_wall_us,
-        DecodeProfileStage::PostAttnResidualGate => &mut profile.post_attn_residual_gate_wall_us,
-        DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
-        DecodeProfileStage::MoeRouter => &mut profile.moe_router_wall_us,
-        DecodeProfileStage::MoeExpertGateUp => &mut profile.moe_expert_gate_up_wall_us,
-        DecodeProfileStage::MoeExpertActivation => &mut profile.moe_expert_activation_wall_us,
-        DecodeProfileStage::MoeExpertDown => &mut profile.moe_expert_down_wall_us,
-        DecodeProfileStage::MoeExpertWeightedSum => &mut profile.moe_expert_weighted_sum_wall_us,
-        DecodeProfileStage::MoeSharedExpert => &mut profile.moe_shared_expert_wall_us,
-    };
+    let target = profile_stage_wall_us!(profile, stage);
     *target = target.saturating_add(wall_us);
 }
 
@@ -564,13 +559,14 @@ pub(super) fn record_decode_profile_step(layers: u32) {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub(crate) enum MoeProfileStage {
+    #[allow(dead_code)]
     Router,
     ExpertGateUp,
     ExpertActivation,
     ExpertDown,
     WeightedSum,
+    #[allow(dead_code)]
     SharedExpert,
 }
 

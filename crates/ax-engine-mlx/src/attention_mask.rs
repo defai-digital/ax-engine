@@ -59,7 +59,6 @@ pub fn create_causal_mask(seq_len: usize, offset: usize, window_size: Option<usi
 /// (NaN), so it is rejected rather than silently produced.
 // Not yet called from the decode path: it is wired into the batched runner in
 // Phase 2. Exercised now only by the token-exact SDPA oracle in tests.
-#[allow(dead_code)]
 pub fn batched_decode_validity_mask(valid_lengths: &[usize], key_len: usize) -> MlxArray {
     batched_decode_validity_mask_with_window(valid_lengths, key_len, None)
 }

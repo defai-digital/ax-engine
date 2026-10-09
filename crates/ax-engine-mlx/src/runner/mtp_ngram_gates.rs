@@ -150,7 +150,6 @@ pub(super) fn mtp_ngram_utility_gate(
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum SpeculativeSafetyReason {
     #[default]

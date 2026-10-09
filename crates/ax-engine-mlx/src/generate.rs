@@ -665,35 +665,6 @@ pub fn chunked_prefill_with_sampling_buffers(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    prompt_tokens: &[u32],
-    cache: &mut MlxKVCache,
-    inputs: &Gemma4UnifiedRuntimeInputs,
-    sampling_request: MlxSamplingRequest<'_>,
-    rng: &mut Xorshift64,
-    sampling_probs_buf: &mut Vec<f32>,
-    sampling_logits_buf: &mut Vec<f32>,
-    sampling_candidates_buf: &mut Vec<(usize, f32)>,
-) -> Result<u32, String> {
-    let (tok, _, _) = chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
-        cfg,
-        weights,
-        prompt_tokens,
-        cache,
-        inputs,
-        sampling_request,
-        rng,
-        sampling_probs_buf,
-        sampling_logits_buf,
-        sampling_candidates_buf,
-        false,
-    )?;
-    Ok(tok)
-}
-
 /// Gemma4 unified multimodal prefill with optional MTP post-norm capture (WS-M5).
 ///
 /// When `capture_mtp_history` is true (and MTP weights exist), returns post-norm
@@ -788,6 +759,42 @@ pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
     Ok((tok, mtp_hidden, history_tokens))
 }
 
+/// Shared tail for the vision-prefill wrappers: commit the prompt to the cache,
+/// sample the first decode token, and release per-prefill transients.
+#[allow(clippy::too_many_arguments)]
+fn finish_prefill_sampling(
+    logits: &MlxArray,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Result<u32, String> {
+    cache.advance(prompt_tokens.len());
+
+    let sampling = sampling_request.params;
+    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
+        sample_prefill_token_gpu_first(
+            logits,
+            sampling,
+            sampling_request.repetition_tokens,
+            rng,
+            || eval_with_kv_refs(logits, cache),
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        )
+    } else {
+        let token_arr = argmax(logits, None);
+        eval_with_kv_refs(&token_arr, cache);
+        token_arr.first_u32_unchecked()
+    };
+    clear_cache();
+    Ok(tok)
+}
+
 /// Prefill Qwen3-VL with portable ViT soft tokens scattered into the text
 /// residual stream (ADR-038). Fail-closes when images are present without a
 /// mapped vision tower (`qwen3_vl_vision`).
@@ -804,31 +811,20 @@ pub fn chunked_prefill_qwen3_vl_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
-    let sampling = sampling_request.params;
     let prepared =
         crate::qwen3_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
             .map_err(|error| error.to_string())?;
     let logits = forward_qwen_visual_prefill(cfg, weights, prompt_tokens, prepared, cache)?;
-    cache.advance(prompt_tokens.len());
-
-    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
-        sample_prefill_token_gpu_first(
-            &logits,
-            sampling,
-            sampling_request.repetition_tokens,
-            rng,
-            || eval_with_kv_refs(&logits, cache),
-            sampling_probs_buf,
-            sampling_logits_buf,
-            sampling_candidates_buf,
-        )
-    } else {
-        let token_arr = argmax(&logits, None);
-        eval_with_kv_refs(&token_arr, cache);
-        token_arr.first_u32_unchecked()
-    };
-    clear_cache();
-    Ok(tok)
+    finish_prefill_sampling(
+        &logits,
+        prompt_tokens,
+        cache,
+        sampling_request,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+    )
 }
 
 /// Prefill MiniCPM-V 4.6 with SigLIP/VitMerger features replacing the
@@ -846,7 +842,6 @@ pub fn chunked_prefill_minicpm_v46_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
-    let sampling = sampling_request.params;
     let hidden = crate::minicpm_v::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
         .map_err(|error| error.to_string())?;
     let logits = forward_with_initial_hidden_and_media_ranges(
@@ -859,26 +854,16 @@ pub fn chunked_prefill_minicpm_v46_with_sampling_buffers(
         0,
         FinalLogitsMode::Full,
     );
-    cache.advance(prompt_tokens.len());
-
-    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
-        sample_prefill_token_gpu_first(
-            &logits,
-            sampling,
-            sampling_request.repetition_tokens,
-            rng,
-            || eval_with_kv_refs(&logits, cache),
-            sampling_probs_buf,
-            sampling_logits_buf,
-            sampling_candidates_buf,
-        )
-    } else {
-        let token_arr = argmax(&logits, None);
-        eval_with_kv_refs(&token_arr, cache);
-        token_arr.first_u32_unchecked()
-    };
-    clear_cache();
-    Ok(tok)
+    finish_prefill_sampling(
+        &logits,
+        prompt_tokens,
+        cache,
+        sampling_request,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+    )
 }
 
 /// Prefill Nemotron H Nano Omni with RADIO/Parakeet features replacing the
@@ -896,7 +881,6 @@ pub fn chunked_prefill_nemotron_omni_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
-    let sampling = sampling_request.params;
     let hidden =
         crate::nemotron_omni::build_omni_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
             .map_err(|error| error.to_string())?;
@@ -910,26 +894,16 @@ pub fn chunked_prefill_nemotron_omni_with_sampling_buffers(
         0,
         FinalLogitsMode::Full,
     );
-    cache.advance(prompt_tokens.len());
-
-    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
-        sample_prefill_token_gpu_first(
-            &logits,
-            sampling,
-            sampling_request.repetition_tokens,
-            rng,
-            || eval_with_kv_refs(&logits, cache),
-            sampling_probs_buf,
-            sampling_logits_buf,
-            sampling_candidates_buf,
-        )
-    } else {
-        let token_arr = argmax(&logits, None);
-        eval_with_kv_refs(&token_arr, cache);
-        token_arr.first_u32_unchecked()
-    };
-    clear_cache();
-    Ok(tok)
+    finish_prefill_sampling(
+        &logits,
+        prompt_tokens,
+        cache,
+        sampling_request,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+    )
 }
 
 /// Prefill Unlimited-OCR with dual-vision image features injected at `<image>`
@@ -949,7 +923,6 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
-    let sampling = sampling_request.params;
     let hidden =
         build_embeddings_with_image(cfg, weights, prompt_tokens, image_views, image_token_id)
             .map_err(|e| e.to_string())?;
@@ -968,26 +941,16 @@ pub fn chunked_prefill_unlimited_ocr_with_sampling_buffers(
         0,
         FinalLogitsMode::Full,
     );
-    cache.advance(prompt_tokens.len());
-
-    let tok = if sampling.temperature > 0.0 || sampling.uses_logits_processors() {
-        sample_prefill_token_gpu_first(
-            &logits,
-            sampling,
-            sampling_request.repetition_tokens,
-            rng,
-            || eval_with_kv_refs(&logits, cache),
-            sampling_probs_buf,
-            sampling_logits_buf,
-            sampling_candidates_buf,
-        )
-    } else {
-        let token_arr = argmax(&logits, None);
-        eval_with_kv_refs(&token_arr, cache);
-        token_arr.first_u32_unchecked()
-    };
-    clear_cache();
-    Ok(tok)
+    finish_prefill_sampling(
+        &logits,
+        prompt_tokens,
+        cache,
+        sampling_request,
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+    )
 }
 
 /// Like `chunked_prefill` but also returns the pre-norm hidden at the last

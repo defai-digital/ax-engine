@@ -142,7 +142,7 @@ pub(super) enum MetalOptionalKernelFeedbackKey {
     },
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn optional_kernel_name_feedback_key(
     kernel_name: &'static str,
 ) -> MetalOptionalKernelFeedbackKey {

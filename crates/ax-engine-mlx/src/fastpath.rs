@@ -1317,11 +1317,6 @@ pub fn mtp_last_committed_query_enabled() -> bool {
     mtp_last_committed_query_env() || qwen_linear_throughput_mtp_enabled()
 }
 
-/// Widest sequence shape the exact verifier contract covers: S=1 singleton
-/// replay plus S=2..=4 verify (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS` = 3
-/// drafts + bonus token).
-pub const QWEN_LINEAR_MTP_EXACT_MAX_EXACT_SEQ: i32 = 4;
-
 /// Exact-contract check scoped to the decode shapes the verify/replay
 /// invariant actually constrains. The invariant is between the S=2..=4
 /// verify forward and the S=1 in-session singleton replay — both consume the

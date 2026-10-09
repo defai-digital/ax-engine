@@ -254,66 +254,6 @@ pub(crate) fn linear_attention_forward(
     )
 }
 
-/// Same as [`linear_attention_forward`] but stops after the portable RMS+SiLU
-/// gate, returning `[1, seq, value_dim]` so the caller can compile `out_proj`
-/// together with residual+FFN.
-///
-/// Unhooked from the factory verify path: folding `out_proj` into the
-/// residual+FFN compile reproduced `f4b5490d`.
-#[allow(dead_code)]
-pub(crate) fn linear_attention_forward_pre_out_proj(
-    cfg: &ModelConfig,
-    w: &LayerWeights,
-    x: &MlxArray,
-    cache: &mut MlxKVCache,
-    layer_idx: usize,
-    skip_out_proj: bool,
-    last_token_out_proj: bool,
-) -> MlxArray {
-    linear_attention_forward_inner(
-        cfg,
-        w,
-        x,
-        cache,
-        layer_idx,
-        skip_out_proj,
-        last_token_out_proj,
-        true,
-        false,
-    )
-}
-
-/// Run LA through GatedDelta and last-token slice; return `(gd_out, z)`
-/// so exact S=2 can compile portable gate + o_proj + residual + FFN as
-/// one closure (one eval of hidden+gd+z).
-/// Factory `19bc8f95` ON=`f4b5490d`; unhooked.
-#[allow(dead_code)]
-pub(crate) fn linear_attention_forward_pre_gate(
-    cfg: &ModelConfig,
-    w: &LayerWeights,
-    x: &MlxArray,
-    cache: &mut MlxKVCache,
-    layer_idx: usize,
-    skip_out_proj: bool,
-    last_token_out_proj: bool,
-) -> (MlxArray, MlxArray) {
-    let gd = linear_attention_forward_inner(
-        cfg,
-        w,
-        x,
-        cache,
-        layer_idx,
-        skip_out_proj,
-        last_token_out_proj,
-        false,
-        true,
-    );
-    let z = LA_PRE_GATE_Z
-        .with(|slot| slot.borrow_mut().take())
-        .expect("pre-gate forward must stash z");
-    (gd, z)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn linear_attention_forward_inner(
     cfg: &ModelConfig,

@@ -34,6 +34,7 @@ use crate::openai::chat_requests::{
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
+use crate::openai::validation::{openai_tool_choice_enables_tool_call, openai_value_is_present};
 use crate::tasks::{BlockingTaskControl, MediaPreprocessor};
 
 pub(crate) struct OpenAiBuiltRequest {
@@ -1302,20 +1303,6 @@ fn reject_gemma4_tools_when_ax_cannot_render_them(
     ))
 }
 
-fn openai_tool_choice_enables_tool_call(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::String(value) => {
-            let value = value.trim().to_ascii_lowercase();
-            !matches!(value.as_str(), "" | "auto" | "none" | "false" | "off")
-        }
-        Value::Array(values) => !values.is_empty(),
-        Value::Object(object) => !object.is_empty(),
-        Value::Number(value) => json_number_is_nonzero(value),
-    }
-}
-
 fn openai_response_format_is_structured(response_format: Option<&Value>) -> bool {
     let Some(response_format) = response_format else {
         return false;
@@ -1351,26 +1338,6 @@ fn openai_response_format_is_json_object(response_format: Option<&Value>) -> boo
             .unwrap_or(false),
         _ => false,
     }
-}
-
-fn openai_value_is_present(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::String(value) => !value.trim().is_empty(),
-        Value::Array(values) => !values.is_empty(),
-        Value::Object(object) => !object.is_empty(),
-        Value::Number(value) => json_number_is_nonzero(value),
-    }
-}
-
-fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
-    value
-        .as_i64()
-        .map(|value| value != 0)
-        .or_else(|| value.as_u64().map(|value| value != 0))
-        .or_else(|| value.as_f64().map(|value| value != 0.0))
-        .unwrap_or(true)
 }
 
 /// OpenAI sampling params AX does not implement. Non-default values fail

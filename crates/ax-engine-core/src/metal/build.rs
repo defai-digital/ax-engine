@@ -524,12 +524,6 @@ impl MetalKernelAssets {
         &self.manifest.supported_block_size_tokens
     }
 
-    pub fn supports_block_size_tokens(&self, block_size_tokens: u32) -> bool {
-        self.manifest
-            .supported_block_size_tokens
-            .contains(&block_size_tokens)
-    }
-
     pub fn validate_block_size_tokens(
         &self,
         block_size_tokens: u32,

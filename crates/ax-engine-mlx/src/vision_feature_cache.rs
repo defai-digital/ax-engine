@@ -6,16 +6,12 @@
 //! persisted.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ax_engine_core::media_digest;
 
 /// Default entry cap (spec: 64).
 pub const DEFAULT_ENTRY_CAP: usize = 64;
-
-/// Default byte budget when env is unset (~256 MiB).
-pub const DEFAULT_BYTE_BUDGET: u64 = 256 * 1024 * 1024;
 
 pub const ENV_VISION_FEATURE_CACHE_MB: &str = "AX_MLX_VISION_FEATURE_CACHE_MB";
 pub const ENV_VISION_FEATURE_CACHE: &str = "AX_MLX_VISION_FEATURE_CACHE";
@@ -140,13 +136,6 @@ impl VisionFeatureCache {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-}
-
-/// Process-global cache guarded by a mutex (per-process, never persisted).
-pub fn global_vision_feature_cache() -> &'static Mutex<Option<VisionFeatureCache>> {
-    static CACHE: std::sync::OnceLock<Mutex<Option<VisionFeatureCache>>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(VisionFeatureCache::from_env()))
 }
 
 fn env_cache_enabled() -> bool {

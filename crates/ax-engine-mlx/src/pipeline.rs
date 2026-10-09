@@ -277,10 +277,6 @@ impl PipelineRankExecutor {
         self.ledger.close(request_id);
     }
 
-    pub fn active_requests(&self) -> usize {
-        self.caches.len()
-    }
-
     /// Diagnostic used by correctness tests and rank health reporting.
     pub fn request_cache_has_layer(&self, request_id: u64, global_layer: usize) -> bool {
         self.caches

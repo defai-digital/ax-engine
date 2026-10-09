@@ -372,6 +372,7 @@ pub(super) fn rope_style_dispatch_value(rope_style: ModelStageRopeStyle) -> u32 
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 #[allow(clippy::type_complexity)]
 pub(super) fn project_attention_qkv_with_dims_and_tally(
     artifacts: &NativeModelArtifacts,
@@ -1101,25 +1102,6 @@ pub(super) fn apply_rms_norm_without_weights_with_optional_native_path(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub(super) fn apply_rms_norm_with_binding_in_place(
-    values: &mut [f32],
-    weight_binding: &MetalNativeTensorBufferBinding,
-    epsilon: f32,
-    weight_offset: f32,
-    bringup: Option<&MetalRuntimeBringup>,
-) -> Option<()> {
-    apply_rms_norm_with_binding_in_place_with_path(
-        values,
-        weight_binding,
-        epsilon,
-        weight_offset,
-        bringup,
-    )
-    .map(|_| ())
-}
-
-#[cfg(target_os = "macos")]
 pub(super) fn apply_rms_norm_with_binding_in_place_with_path(
     values: &mut [f32],
     weight_binding: &MetalNativeTensorBufferBinding,
@@ -1226,29 +1208,7 @@ pub(super) fn apply_rms_norm_with_optional_native_path(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub(super) fn apply_per_head_rms_norm_with_binding_in_place(
-    values: &mut [f32],
-    head_count: usize,
-    head_dim: usize,
-    weight_binding: &MetalNativeTensorBufferBinding,
-    epsilon: f32,
-    weight_offset: f32,
-    bringup: Option<&MetalRuntimeBringup>,
-) -> Option<()> {
-    apply_per_head_rms_norm_with_binding_in_place_with_tally(
-        values,
-        head_count,
-        head_dim,
-        weight_binding,
-        epsilon,
-        weight_offset,
-        bringup,
-    )
-    .map(|_| ())
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(test)]
 pub(super) fn apply_per_head_rms_norm_with_binding_in_place_with_tally(
     values: &mut [f32],
     head_count: usize,

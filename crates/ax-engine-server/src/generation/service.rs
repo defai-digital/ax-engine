@@ -86,7 +86,7 @@ impl ModelExecutionArbiter {
         }
     }
 
-    #[allow(dead_code)] // retained for concurrent-mode diagnostics / future policy
+    #[cfg(test)] // retained for concurrent-mode diagnostics / future policy
     pub(crate) fn max_concurrent(&self) -> usize {
         self.max_concurrent
     }
@@ -434,7 +434,7 @@ pub(crate) fn resolve_adaptive_prefill_latency_tokens(raw: Option<&str>) -> u32 
 /// Using rate (us/tok) instead of binary grow/shrink keeps mid-prefill quanta
 /// large enough for S1 thr while still respecting the 50 ms gap SLO as
 /// attention cost grows with position.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn adjust_adaptive_prefill_tokens(current_tokens: u32, last_runner_time_us: u64) -> u32 {
     adjust_adaptive_prefill_tokens_with_work(current_tokens, last_runner_time_us, current_tokens)
 }

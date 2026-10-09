@@ -152,16 +152,6 @@ pub fn text_only_decode_family(model_family: &str) -> Option<&'static str> {
     }
 }
 
-pub fn require_vision_for_images(
-    has_image_inputs: bool,
-    has_vision_weights: bool,
-) -> Result<(), Qwen3VlError> {
-    if has_image_inputs && !has_vision_weights {
-        return Err(Qwen3VlError::MissingVisionWeights);
-    }
-    Ok(())
-}
-
 pub fn has_vision_tower(weights: &ModelWeights) -> bool {
     weights.qwen3_vl_vision.is_some()
 }

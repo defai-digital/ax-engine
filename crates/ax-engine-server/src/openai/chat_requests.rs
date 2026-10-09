@@ -22,6 +22,7 @@ use crate::multimodal::{
 };
 use crate::openai::schema::{OpenAiChatContent, OpenAiChatContentPart, OpenAiChatMessage};
 use crate::openai::tool_names;
+use crate::openai::validation::{openai_tool_choice_enables_tool_call, openai_value_is_present};
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 type ChatMessagePairs = Vec<(String, String)>;
@@ -2227,20 +2228,6 @@ fn normalize_tool_arguments(value: Option<&Value>) -> Value {
     }
 }
 
-fn tool_choice_forces_tool_call(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::String(value) => {
-            let value = value.trim().to_ascii_lowercase();
-            !matches!(value.as_str(), "" | "auto" | "none" | "false" | "off")
-        }
-        Value::Array(values) => !values.is_empty(),
-        Value::Object(object) => !object.is_empty(),
-        Value::Number(value) => json_number_is_nonzero(value),
-    }
-}
-
 pub(crate) fn openai_tool_choice_disables_tools(value: &Value) -> bool {
     match value {
         Value::Bool(false) => true,
@@ -2260,31 +2247,11 @@ fn append_tool_choice_instruction(message: &mut String, tool_choice: Option<&Val
         message.push_str("\nThe current tool_choice requires calling the function `");
         message.push_str(name);
         message.push_str("`.");
-    } else if tool_choice_forces_tool_call(choice) {
+    } else if openai_tool_choice_enables_tool_call(choice) {
         message.push_str(
             "\nThe current tool_choice requires using a tool when a matching function is available.",
         );
     }
-}
-
-fn openai_value_is_present(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::String(value) => !value.trim().is_empty(),
-        Value::Array(values) => !values.is_empty(),
-        Value::Object(object) => !object.is_empty(),
-        Value::Number(value) => json_number_is_nonzero(value),
-    }
-}
-
-fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
-    value
-        .as_i64()
-        .map(|value| value != 0)
-        .or_else(|| value.as_u64().map(|value| value != 0))
-        .or_else(|| value.as_f64().map(|value| value != 0.0))
-        .unwrap_or(true)
 }
 
 fn compact_json(value: &Value) -> String {
@@ -3462,18 +3429,16 @@ fn nemotron_omni_per_image_patch_budget(
         .max(config.min_num_patches))
 }
 
-fn preprocess_nemotron_omni_image(
-    bytes: &[u8],
-    config: &NemotronOmniProcessorConfig,
-    patch_budget: u32,
-) -> Result<NemotronOmniProcessedImage, HttpErrorResponse> {
+/// Probe and decode image bytes to RGB, failing closed as `invalid_request`
+/// on probe or decode errors. `label` names the image in the error text.
+fn probe_and_decode_rgb(bytes: &[u8], label: &str) -> Result<image::RgbImage, HttpErrorResponse> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| {
             error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
-                format!("failed to probe Nemotron H Nano Omni image: {error}"),
+                format!("failed to probe {label}: {error}"),
             )
         })?;
     reader.limits({
@@ -3488,10 +3453,19 @@ fn preprocess_nemotron_omni_image(
             error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
-                format!("failed to decode Nemotron H Nano Omni image: {error}"),
+                format!("failed to decode {label}: {error}"),
             )
         })?
         .to_rgb8();
+    Ok(rgb)
+}
+
+fn preprocess_nemotron_omni_image(
+    bytes: &[u8],
+    config: &NemotronOmniProcessorConfig,
+    patch_budget: u32,
+) -> Result<NemotronOmniProcessedImage, HttpErrorResponse> {
+    let rgb = probe_and_decode_rgb(bytes, "Nemotron H Nano Omni image")?;
     let (patch_w, patch_h) = nemotron_omni_target_patches(
         rgb.width(),
         rgb.height(),
@@ -3746,31 +3720,7 @@ fn preprocess_minicpm_v46_image(
     bytes: &[u8],
     config: &MiniCpmV46ProcessorConfig,
 ) -> Result<MiniCpmV46ProcessedImage, HttpErrorResponse> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| {
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                format!("failed to probe MiniCPM-V 4.6 image: {error}"),
-            )
-        })?;
-    reader.limits({
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(8192);
-        limits.max_image_height = Some(8192);
-        limits
-    });
-    let rgb = reader
-        .decode()
-        .map_err(|error| {
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                format!("failed to decode MiniCPM-V 4.6 image: {error}"),
-            )
-        })?
-        .to_rgb8();
+    let rgb = probe_and_decode_rgb(bytes, "MiniCPM-V 4.6 image")?;
     let (width, height) = minicpm_v46_best_resize(rgb.width(), rgb.height(), config)?;
     let resized = if width == rgb.width() && height == rgb.height() {
         rgb
@@ -4036,31 +3986,7 @@ fn patchify_qwen3_vl_image(
     bytes: &[u8],
     config: &Qwen3VlProcessorConfig,
 ) -> Result<(Qwen3VlPatches, Qwen3VlGeom), HttpErrorResponse> {
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| {
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                format!("failed to probe image: {error}"),
-            )
-        })?;
-    reader.limits({
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(8192);
-        limits.max_image_height = Some(8192);
-        limits
-    });
-    let rgb = reader
-        .decode()
-        .map_err(|error| {
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                format!("failed to decode image: {error}"),
-            )
-        })?
-        .to_rgb8();
+    let rgb = probe_and_decode_rgb(bytes, "image")?;
 
     let patch = config.patch_size;
     let temporal = config.temporal_patch_size;
@@ -4828,10 +4754,10 @@ mod media_tests {
     fn openai_tool_presence_treats_numeric_zero_as_false() {
         assert!(!openai_value_is_present(&json!(0)));
         assert!(!openai_value_is_present(&json!(0.0)));
-        assert!(!tool_choice_forces_tool_call(&json!(0)));
-        assert!(!tool_choice_forces_tool_call(&json!(0.0)));
+        assert!(!openai_tool_choice_enables_tool_call(&json!(0)));
+        assert!(!openai_tool_choice_enables_tool_call(&json!(0.0)));
         assert!(openai_value_is_present(&json!(-1)));
-        assert!(tool_choice_forces_tool_call(&json!(0.5)));
+        assert!(openai_tool_choice_enables_tool_call(&json!(0.5)));
     }
 
     #[test]

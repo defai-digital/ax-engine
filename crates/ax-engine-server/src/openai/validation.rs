@@ -1,6 +1,9 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use ax_engine_sdk::SelectedBackend;
 use axum::Json;
 use axum::http::StatusCode;
+use serde_json::Value;
 
 use crate::app_state::{AppState, LiveState};
 use crate::errors::{ErrorResponse, error_response};
@@ -81,4 +84,45 @@ pub(crate) fn validate_model(
     }
 
     Ok(())
+}
+
+pub(crate) fn openai_value_is_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Number(value) => json_number_is_nonzero(value),
+    }
+}
+
+pub(crate) fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
+    value
+        .as_i64()
+        .map(|value| value != 0)
+        .or_else(|| value.as_u64().map(|value| value != 0))
+        .or_else(|| value.as_f64().map(|value| value != 0.0))
+        .unwrap_or(true)
+}
+
+pub(crate) fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+pub(crate) fn openai_tool_choice_enables_tool_call(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "auto" | "none" | "false" | "off")
+        }
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Number(value) => json_number_is_nonzero(value),
+    }
 }

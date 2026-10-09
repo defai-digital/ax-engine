@@ -463,6 +463,7 @@ pub fn apply_per_layer_input_gate_decode(
 /// `leading_elements` (product of all dims except the last). MLX's shapeless
 /// compile is not correct across different sequence lengths for quantized
 /// matmul graphs, so each prompt length gets its own compiled graph.
+#[allow(dead_code)]
 pub fn apply_layer_dense_ffn_prefill(
     model_identity: u64,
     layer_index: usize,

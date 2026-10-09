@@ -1467,24 +1467,20 @@ const QWEN3_MOE_WEIGHTED_SUM_WITH_SHARED_KERNEL_SOURCE: &str = r#"
     out[idx] = static_cast<OutT>(acc);
 "#;
 
-fn qwen3_moe_weighted_sum_metal(
+/// Shared geometry for the MoE weighted-sum Metal kernels: validates the
+/// down/weights shape contract, derives the output shape and element count, and
+/// builds the common template-argument list.
+struct MoeWeightedSumGeometry {
+    out_shape: Vec<i32>,
+    template_args: [KernelTemplateArg<'static>; 4],
+    element_count: i32,
+}
+
+fn moe_weighted_sum_geometry(
     down_out: &MlxArray,
     top_k_weights: &MlxArray,
     output_dtype: MlxDtype,
-) -> Option<MlxArray> {
-    if !matches!(
-        down_out.dtype(),
-        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
-    ) || !matches!(
-        top_k_weights.dtype(),
-        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
-    ) || !matches!(
-        output_dtype,
-        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
-    ) {
-        return None;
-    }
-
+) -> Option<MoeWeightedSumGeometry> {
     let down_shape = down_out.shape();
     let weights_shape = top_k_weights.shape();
     if down_shape.len() != weights_shape.len() + 1 || weights_shape.is_empty() {
@@ -1506,23 +1502,9 @@ fn qwen3_moe_weighted_sum_metal(
         .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
     let element_count = i32::try_from(element_count).ok()?;
 
-    let kernel = QWEN3_MOE_WEIGHTED_SUM_KERNEL.get_or_init(|| {
-        MlxMetalKernel::new(
-            "ax_qwen3_moe_weighted_sum_v1",
-            &["down_out", "top_k_weights"],
-            &["out"],
-            QWEN3_MOE_WEIGHTED_SUM_KERNEL_SOURCE,
-            "",
-            true,
-        )
-    });
-    let mut outputs = kernel.apply_with_template(
-        &[down_out, top_k_weights],
-        &[KernelOutputSpec {
-            shape: out_shape,
-            dtype: output_dtype,
-        }],
-        &[
+    Some(MoeWeightedSumGeometry {
+        out_shape,
+        template_args: [
             KernelTemplateArg::Dtype {
                 name: "OutT",
                 dtype: output_dtype,
@@ -1540,7 +1522,48 @@ fn qwen3_moe_weighted_sum_metal(
                 value: element_count,
             },
         ],
-        (element_count, 1, 1),
+        element_count,
+    })
+}
+
+fn qwen3_moe_weighted_sum_metal(
+    down_out: &MlxArray,
+    top_k_weights: &MlxArray,
+    output_dtype: MlxDtype,
+) -> Option<MlxArray> {
+    if !matches!(
+        down_out.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        top_k_weights.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        output_dtype,
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+
+    let geometry = moe_weighted_sum_geometry(down_out, top_k_weights, output_dtype)?;
+
+    let kernel = QWEN3_MOE_WEIGHTED_SUM_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen3_moe_weighted_sum_v1",
+            &["down_out", "top_k_weights"],
+            &["out"],
+            QWEN3_MOE_WEIGHTED_SUM_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[down_out, top_k_weights],
+        &[KernelOutputSpec {
+            shape: geometry.out_shape,
+            dtype: output_dtype,
+        }],
+        &geometry.template_args,
+        (geometry.element_count, 1, 1),
         (256, 1, 1),
         None,
     );
@@ -1572,34 +1595,11 @@ fn qwen3_moe_weighted_sum_with_shared_metal(
         return None;
     }
 
-    let down_shape = down_out.shape();
-    let weights_shape = top_k_weights.shape();
-    let shared_shape = shared_out.shape();
-    if down_shape.len() != weights_shape.len() + 1 || weights_shape.is_empty() {
-        return None;
-    }
-    let hidden_dim = *down_shape.last()?;
-    let top_k = *weights_shape.last()?;
-    if top_k <= 0 || hidden_dim <= 0 {
-        return None;
-    }
-    if down_shape[..down_shape.len() - 1] != weights_shape[..] {
-        return None;
-    }
+    let geometry = moe_weighted_sum_geometry(down_out, top_k_weights, output_dtype)?;
     // shared_out must match the output shape [.., hidden_dim] (weights minus top_k dim).
-    let expected_shared_shape = &weights_shape[..weights_shape.len() - 1];
-    let mut expected_shared_with_hidden = expected_shared_shape.to_vec();
-    expected_shared_with_hidden.push(hidden_dim);
-    if shared_shape != expected_shared_with_hidden {
+    if shared_out.shape() != geometry.out_shape {
         return None;
     }
-
-    let mut out_shape = weights_shape[..weights_shape.len() - 1].to_vec();
-    out_shape.push(hidden_dim);
-    let element_count = out_shape
-        .iter()
-        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
-    let element_count = i32::try_from(element_count).ok()?;
 
     let kernel = QWEN3_MOE_WEIGHTED_SUM_WITH_SHARED_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
@@ -1614,28 +1614,11 @@ fn qwen3_moe_weighted_sum_with_shared_metal(
     let mut outputs = kernel.apply_with_template(
         &[down_out, top_k_weights, shared_out],
         &[KernelOutputSpec {
-            shape: out_shape,
+            shape: geometry.out_shape,
             dtype: output_dtype,
         }],
-        &[
-            KernelTemplateArg::Dtype {
-                name: "OutT",
-                dtype: output_dtype,
-            },
-            KernelTemplateArg::Int {
-                name: "TopK",
-                value: top_k,
-            },
-            KernelTemplateArg::Int {
-                name: "HiddenDim",
-                value: hidden_dim,
-            },
-            KernelTemplateArg::Int {
-                name: "ElementCount",
-                value: element_count,
-            },
-        ],
-        (element_count, 1, 1),
+        &geometry.template_args,
+        (geometry.element_count, 1, 1),
         (256, 1, 1),
         None,
     );
@@ -2753,26 +2736,7 @@ fn gemma4_moe_weighted_sum_metal(
         return None;
     }
 
-    let down_shape = down_out.shape();
-    let weights_shape = top_k_weights.shape();
-    if down_shape.len() != weights_shape.len() + 1 || weights_shape.is_empty() {
-        return None;
-    }
-    let hidden_dim = *down_shape.last()?;
-    let top_k = *weights_shape.last()?;
-    if top_k <= 0 || hidden_dim <= 0 {
-        return None;
-    }
-    if down_shape[..down_shape.len() - 1] != weights_shape[..] {
-        return None;
-    }
-
-    let mut out_shape = weights_shape[..weights_shape.len() - 1].to_vec();
-    out_shape.push(hidden_dim);
-    let element_count = out_shape
-        .iter()
-        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
-    let element_count = i32::try_from(element_count).ok()?;
+    let geometry = moe_weighted_sum_geometry(down_out, top_k_weights, output_dtype)?;
 
     let kernel = GEMMA4_MOE_WEIGHTED_SUM_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
@@ -2787,28 +2751,11 @@ fn gemma4_moe_weighted_sum_metal(
     let mut outputs = kernel.apply_with_template(
         &[down_out, top_k_weights],
         &[KernelOutputSpec {
-            shape: out_shape,
+            shape: geometry.out_shape,
             dtype: output_dtype,
         }],
-        &[
-            KernelTemplateArg::Dtype {
-                name: "OutT",
-                dtype: output_dtype,
-            },
-            KernelTemplateArg::Int {
-                name: "TopK",
-                value: top_k,
-            },
-            KernelTemplateArg::Int {
-                name: "HiddenDim",
-                value: hidden_dim,
-            },
-            KernelTemplateArg::Int {
-                name: "ElementCount",
-                value: element_count,
-            },
-        ],
-        (element_count, 1, 1),
+        &geometry.template_args,
+        (geometry.element_count, 1, 1),
         (256, 1, 1),
         None,
     );
@@ -2841,30 +2788,11 @@ fn gemma4_moe_weighted_scaled_sum_metal(
         return None;
     }
 
-    let down_shape = down_out.shape();
     let weights_shape = top_k_weights.shape();
-    if weights_shape != top_k_indices.shape()
-        || down_shape.len() != weights_shape.len() + 1
-        || weights_shape.is_empty()
-        || expert_scale.shape().len() != 1
-    {
+    if weights_shape != top_k_indices.shape() || expert_scale.shape().len() != 1 {
         return None;
     }
-    let hidden_dim = *down_shape.last()?;
-    let top_k = *weights_shape.last()?;
-    if top_k <= 0 || hidden_dim <= 0 {
-        return None;
-    }
-    if down_shape[..down_shape.len() - 1] != weights_shape[..] {
-        return None;
-    }
-
-    let mut out_shape = weights_shape[..weights_shape.len() - 1].to_vec();
-    out_shape.push(hidden_dim);
-    let element_count = out_shape
-        .iter()
-        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
-    let element_count = i32::try_from(element_count).ok()?;
+    let geometry = moe_weighted_sum_geometry(down_out, top_k_weights, output_dtype)?;
 
     let kernel = GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
@@ -2879,28 +2807,11 @@ fn gemma4_moe_weighted_scaled_sum_metal(
     let mut outputs = kernel.apply_with_template(
         &[down_out, top_k_weights, top_k_indices, expert_scale],
         &[KernelOutputSpec {
-            shape: out_shape,
+            shape: geometry.out_shape,
             dtype: output_dtype,
         }],
-        &[
-            KernelTemplateArg::Dtype {
-                name: "OutT",
-                dtype: output_dtype,
-            },
-            KernelTemplateArg::Int {
-                name: "TopK",
-                value: top_k,
-            },
-            KernelTemplateArg::Int {
-                name: "HiddenDim",
-                value: hidden_dim,
-            },
-            KernelTemplateArg::Int {
-                name: "ElementCount",
-                value: element_count,
-            },
-        ],
-        (element_count, 1, 1),
+        &geometry.template_args,
+        (geometry.element_count, 1, 1),
         (256, 1, 1),
         None,
     );
@@ -7267,15 +7178,16 @@ impl CompiledGemma4DualPathSchema {
 // ---------------------------------------------------------------------------
 
 /// Per-expert token assignment for parallel MoE dispatch.
-#[allow(dead_code)]
 struct ExpertBinPlan {
     /// Number of tokens assigned to each expert.
+    #[allow(dead_code)]
     bin_sizes: Vec<usize>,
     /// Maximum tokens assigned to any single expert.
     max_bin_size: usize,
     /// Mean tokens per active expert (total_assignments / active_experts).
     mean_bin_size: f64,
     /// Number of experts that received at least one token.
+    #[allow(dead_code)]
     active_experts: usize,
 }
 
