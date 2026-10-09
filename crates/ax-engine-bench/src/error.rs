@@ -1,6 +1,5 @@
 use thiserror::Error;
 
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub(crate) enum CliError {
     #[error("{0}")]
@@ -11,6 +10,8 @@ pub(crate) enum CliError {
     Contract(String),
     #[error("{0}")]
     Correctness(String),
+    /// Reserved for the documented exit-code 4 (see docs/BENCH-DESIGN.md).
+    #[allow(dead_code)]
     #[error("{0}")]
     Performance(String),
 }

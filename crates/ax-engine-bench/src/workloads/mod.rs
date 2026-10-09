@@ -61,7 +61,7 @@ impl WorkloadOutcome {
     /// Stable status label used by tests and (future) Phase 5 aggregation.
     /// Not consumed by the current CLI handler, which serializes the full
     /// JSON envelope.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn name(&self) -> &'static str {
         match self {
             WorkloadOutcome::Skipped { .. } => "skipped",

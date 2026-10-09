@@ -88,7 +88,7 @@ pub(crate) fn run_inference_generate(args: &InferenceArgs) -> Result<GenerateRes
         .map_err(|error| CliError::Runtime(format!("generate request failed: {error}")))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn collect_inference_stream_events(
     args: &InferenceArgs,
 ) -> Result<Vec<GenerateStreamEvent>, CliError> {

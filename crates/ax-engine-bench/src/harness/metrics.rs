@@ -29,7 +29,6 @@ impl LatencySamples {
 
     /// Pre-allocated constructor used by Phase 5 fixtures that know their
     /// sample count up front (concurrent_short_inserts, partial_prefix_hit).
-    #[allow(dead_code)]
     pub(crate) fn with_capacity(name: impl Into<String>, capacity: usize) -> Self {
         Self {
             name: name.into(),
@@ -50,15 +49,13 @@ impl LatencySamples {
         self.record_us(micros);
     }
 
-    /// Sample count. Not consumed by the current Phase 1 driver; used by
-    /// PRD Phase 5 aggregation and by unit tests.
-    #[allow(dead_code)]
+    /// Sample count; used by unit tests.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.values_us.len()
     }
 
-    /// Mirror of [`Self::len`] for ergonomic emptiness checks.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.values_us.is_empty()
     }
@@ -201,12 +198,6 @@ impl WorkloadReport {
         }
     }
 
-    /// Read accessor; consumed by Phase 5 aggregation and tests.
-    #[allow(dead_code)]
-    pub(crate) fn workload(&self) -> &str {
-        &self.workload
-    }
-
     pub(crate) fn record_elapsed(&mut self, elapsed: Duration) {
         self.elapsed_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
     }
@@ -222,14 +213,12 @@ impl WorkloadReport {
     /// Attach an auxiliary latency channel to the report. Used by Phase 5
     /// fixtures (e.g. partial_prefix_hit) that report bespoke samples
     /// alongside the standard TTFT/ITL/cancellation/short-insert channels.
-    #[allow(dead_code)]
     pub(crate) fn add_extra_samples(&mut self, samples: LatencySamples) {
         self.extra_samples.push(samples);
     }
 
     /// Mutable view into post-restart cache counters. Used by Phase 2
     /// `post_restart_cache_safety` fixture.
-    #[allow(dead_code)]
     pub(crate) fn post_restart_cache_mut(&mut self) -> &mut PostRestartCacheCounts {
         &mut self.post_restart_cache
     }
@@ -287,7 +276,6 @@ impl PostRestartCacheCounts {
     /// Sum of all rejection counters. Used by PRD Phase 2 post-restart cache
     /// safety fixtures and by unit tests; not consumed by the current
     /// `long_prefill_vs_decode` driver.
-    #[allow(dead_code)]
     pub(crate) fn total_rejections(&self) -> u64 {
         self.rejected_model_mismatch
             + self.rejected_policy_mismatch
@@ -308,7 +296,6 @@ pub(crate) fn cmp_u64(a: &u64, b: &u64) -> Ordering {
 
 // Keep a non-test reference to silence unused import warnings on Ordering when
 // the cfg(test) helper is not compiled in.
-#[allow(dead_code)]
 fn _ordering_marker() -> Ordering {
     Ordering::Equal
 }

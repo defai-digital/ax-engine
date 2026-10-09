@@ -28,7 +28,7 @@ consistent across the workspace.
   no Linux engine or server artifact
 - `ax-engine-py`: Python binding surface over the SDK contract
 - `ax-engine-bench`: workload-contract CLI, replay harness, reporting,
-  bounded autotune, readiness, and bring-up checks
+  readiness, and bring-up checks
 - `ax-engine-microbench`: isolated microbenchmarks and kernel dispatch probes
   (RMSNorm, MoE, diffusion, MLA, disk-prefix-cache); depends on
   `ax-engine-core`, `ax-engine-mlx`, and `mlx-sys` only

@@ -77,13 +77,6 @@ pub(crate) fn optional_route_label(value: Option<&str>) -> &str {
     value.unwrap_or("none")
 }
 
-#[cfg(test)]
-pub(crate) fn optional_u32_label(value: Option<u32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string())
-}
-
 pub(crate) fn stop_reason_from_generate_finish_reason(
     finish_reason: Option<GenerateFinishReason>,
 ) -> Option<StopReason> {

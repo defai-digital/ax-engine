@@ -24,60 +24,6 @@ where
     })
 }
 
-pub(crate) fn parse_u32_list(value: &str, name: &str) -> Result<Vec<u32>, CliError> {
-    let parts = split_list_parts(value);
-    if parts.is_empty() {
-        return Err(CliError::Usage(format!(
-            "{name} expects a comma- or space-separated list"
-        )));
-    }
-    Ok(unique_sorted_u32(
-        parts
-            .into_iter()
-            .map(|part| parse_flag_value::<u32>(part, name))
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
-}
-
-pub(crate) fn parse_optional_u32_list(
-    value: &str,
-    name: &str,
-) -> Result<Vec<Option<u32>>, CliError> {
-    let parts = split_list_parts(value);
-    if parts.is_empty() {
-        return Err(CliError::Usage(format!(
-            "{name} expects a comma- or space-separated list"
-        )));
-    }
-    Ok(unique_sorted_option_u32(
-        parts
-            .into_iter()
-            .map(|part| {
-                if part.eq_ignore_ascii_case("none") {
-                    Ok(None)
-                } else {
-                    Ok(Some(parse_flag_value::<u32>(part, name)?))
-                }
-            })
-            .collect::<Result<Vec<_>, CliError>>()?,
-    ))
-}
-
-pub(crate) fn parse_bool_list(value: &str, name: &str) -> Result<Vec<bool>, CliError> {
-    let parts = split_list_parts(value);
-    if parts.is_empty() {
-        return Err(CliError::Usage(format!(
-            "{name} expects a comma- or space-separated list"
-        )));
-    }
-    Ok(unique_sorted_bool(
-        parts
-            .into_iter()
-            .map(|part| parse_flag_value::<bool>(part, name))
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
-}
-
 pub(crate) fn split_list_parts(value: &str) -> Vec<&str> {
     value
         .split(|character: char| character == ',' || character.is_whitespace())
@@ -96,27 +42,6 @@ pub(crate) fn parse_token_list(value: &str) -> Result<Vec<u32>, CliError> {
             })
         })
         .collect()
-}
-
-pub(crate) fn unique_sorted_u32(values: Vec<u32>) -> Vec<u32> {
-    let mut values = values;
-    values.sort_unstable();
-    values.dedup();
-    values
-}
-
-pub(crate) fn unique_sorted_option_u32(values: Vec<Option<u32>>) -> Vec<Option<u32>> {
-    let mut values = values;
-    values.sort_by_key(|value| value.unwrap_or(0));
-    values.dedup();
-    values
-}
-
-pub(crate) fn unique_sorted_bool(values: Vec<bool>) -> Vec<bool> {
-    let mut values = values;
-    values.sort_unstable();
-    values.dedup();
-    values
 }
 
 pub(crate) fn required_flag(args: &[String], name: &str) -> Result<PathBuf, CliError> {
