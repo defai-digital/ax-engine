@@ -373,7 +373,11 @@ impl MtpCostDepthController {
         let probe_cycle = self.cycle_probe;
         let homogeneous = wall_valid && !probe_cycle;
         let steady_depth_switch = !warmup_cycle && used != window_depth;
-        let depth = self.decide_depth(homogeneous);
+        // Exploratory and mixed-depth windows must not latch permanent direct
+        // fallback. Keep their measurements for ranking, but only advance the
+        // shutdown streak after a homogeneous production window.
+        let park_eligible = homogeneous && !steady_depth_switch && self.probe_burst_remaining == 0;
+        let depth = self.decide_depth(park_eligible);
         self.record_measurements(
             used,
             accepted,
@@ -384,7 +388,7 @@ impl MtpCostDepthController {
         depth
     }
 
-    fn decide_depth(&mut self, homogeneous: bool) -> usize {
+    fn decide_depth(&mut self, park_eligible: bool) -> usize {
         if !self.enabled() || self.parked {
             return 0;
         }
@@ -396,7 +400,7 @@ impl MtpCostDepthController {
             self.current = self.width;
             return self.width;
         }
-        if self.update_park_streak(homogeneous) {
+        if self.update_park_streak(park_eligible) {
             return 0;
         }
         if self.warmup_remaining > 0 {
@@ -730,11 +734,12 @@ impl MtpCostDepthController {
     /// Park bookkeeping.
     ///
     /// Only homogeneous production cycles count: a window that spanned a
-    /// foreign step or a direct probe neither extends nor resets the streak.
+    /// foreign step, direct probe, depth mismatch, or staleness probe neither
+    /// extends nor resets the streak.
     /// Park never arms on an estimated baseline, and only post-warmup probes
     /// (see [`PARK_BASELINE_PROBE_DELAY_CYCLES`]) arm the comparison.
-    fn update_park_streak(&mut self, homogeneous: bool) -> bool {
-        if !homogeneous {
+    fn update_park_streak(&mut self, park_eligible: bool) -> bool {
+        if !park_eligible {
             return false;
         }
         if !self.warmup_done() || self.park_baseline_us.is_none() {
@@ -1033,10 +1038,44 @@ mod tests {
         drive_to_armed_park_baseline(&mut controller);
         // The settling probe is armed but the streak starts from this decision.
         assert!(!controller.parked());
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 1);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 1);
         assert!(!controller.parked());
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 0);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 0);
         assert!(controller.parked());
+    }
+
+    #[test]
+    fn mismatched_depth_windows_do_not_count_toward_park() {
+        let mut controller = fresh_controller(2);
+        controller.warmup_remaining = 0;
+        controller.current = 2;
+        controller.park_baseline_us = Some(1_000);
+        controller.park_streak = controller.config.park_streak - 1;
+        controller.p_accept = [Some(0.0); MTP_COST_MAX_DEPTH];
+        controller.t_cycle_us = [Some(500_000.0); MTP_COST_MAX_DEPTH];
+
+        assert_ne!(controller.observe_and_decide(1, 0, true, true), 0);
+        assert!(!controller.parked());
+        assert_eq!(controller.park_streak, controller.config.park_streak - 1);
+    }
+
+    #[test]
+    fn staleness_probe_windows_do_not_count_toward_park() {
+        let mut controller = fresh_controller(2);
+        controller.warmup_remaining = 0;
+        controller.current = 2;
+        controller.probe_depth = 2;
+        controller.probe_burst_remaining = 1;
+        controller.park_baseline_us = Some(1_000);
+        controller.park_streak = controller.config.park_streak - 1;
+        controller.p_accept = [Some(0.0); MTP_COST_MAX_DEPTH];
+        controller.t_cycle_us = [Some(500_000.0); MTP_COST_MAX_DEPTH];
+
+        assert_ne!(controller.observe_and_decide(2, 0, true, true), 0);
+        assert!(!controller.parked());
+        assert_eq!(controller.park_streak, controller.config.park_streak - 1);
+        assert_eq!(controller.probe_burst_remaining, 0);
+        assert_eq!(controller.probe_cycles, 1);
     }
 
     #[test]
@@ -1126,16 +1165,16 @@ mod tests {
         assert_eq!(controller.park_streak, 0);
         // Window contained the probe.
         controller.record_direct_probe(1_000);
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 1);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 1);
         assert_eq!(controller.park_streak, 0);
         // Clean windows count, and a contaminated one in between neither
         // extends nor resets the streak.
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 1);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 1);
         assert_eq!(controller.park_streak, 1);
         assert_eq!(controller.observe_and_decide(0, 0, false, false), 1);
         assert_eq!(controller.park_streak, 1);
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 1);
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 0);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 1);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 0);
         assert!(controller.parked());
     }
 
@@ -1153,12 +1192,12 @@ mod tests {
         drive_to_armed_park_baseline(&mut controller);
         controller.p_accept = [Some(0.0); MTP_COST_MAX_DEPTH];
         controller.t_cycle_us = [Some(500_000.0); MTP_COST_MAX_DEPTH];
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 1);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 1);
         assert!(!controller.parked());
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 0);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 0);
         assert!(controller.parked());
         // Latched for the rest of the request.
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 0);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 0);
 
         // AX_MLX_MTP_BYPASS_THRESHOLD=0 (force MTP) freezes the depth at the
         // width, skips probes, and never parks: MTP-P evidence must bind to a
@@ -1176,7 +1215,7 @@ mod tests {
         controller.p_accept = [Some(0.0); MTP_COST_MAX_DEPTH];
         controller.t_cycle_us = [Some(500_000.0); MTP_COST_MAX_DEPTH];
         for _ in 0..50 {
-            assert_eq!(controller.observe_and_decide(0, 0, false, true), 3);
+            assert_eq!(controller.observe_and_decide(1, 0, true, true), 3);
         }
         assert!(!controller.parked());
         assert!(!controller.wants_direct_probe());
@@ -1198,7 +1237,7 @@ mod tests {
         drive_to_armed_park_baseline(&mut controller);
         controller.p_accept = [Some(0.0); MTP_COST_MAX_DEPTH];
         controller.t_cycle_us = [Some(500_000.0); MTP_COST_MAX_DEPTH];
-        assert_eq!(controller.observe_and_decide(0, 0, false, true), 0);
+        assert_eq!(controller.observe_and_decide(1, 0, true, true), 0);
         assert!(controller.parked());
 
         controller.reset(true, config(), 3);
