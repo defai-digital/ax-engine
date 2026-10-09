@@ -47,13 +47,13 @@ pub(super) struct Job {
 }
 
 impl Job {
-    pub fn spawn(cmd: Command, watch_dir: Option<PathBuf>) -> io::Result<Job> {
+    pub(crate) fn spawn(cmd: Command, watch_dir: Option<PathBuf>) -> io::Result<Job> {
         Self::spawn_with_stdin(cmd, None, watch_dir)
     }
 
     /// Spawn with an optional payload written to the child's stdin from a
     /// helper thread (the pipe is closed afterwards so the child sees EOF).
-    pub fn spawn_with_stdin(
+    pub(crate) fn spawn_with_stdin(
         mut cmd: Command,
         stdin_payload: Option<String>,
         watch_dir: Option<PathBuf>,
@@ -116,7 +116,7 @@ impl Job {
     }
 
     /// A finished, processless job that just surfaces a launch error.
-    pub fn failed(message: String) -> Job {
+    pub(crate) fn failed(message: String) -> Job {
         let (_tx, rx) = mpsc::channel();
         Job {
             rx,
@@ -135,7 +135,7 @@ impl Job {
 
     /// A still-running, processless job carrying a fixed log (test-only).
     #[cfg(test)]
-    pub fn running_with_log(log: Vec<String>) -> Job {
+    pub(crate) fn running_with_log(log: Vec<String>) -> Job {
         let (_tx, rx) = mpsc::channel();
         Job {
             rx,
@@ -154,7 +154,7 @@ impl Job {
 
     /// A finished, processless job with a fixed exit code (test-only).
     #[cfg(test)]
-    pub fn exited(code: i32) -> Job {
+    pub(crate) fn exited(code: i32) -> Job {
         let (_tx, rx) = mpsc::channel();
         Job {
             rx,
@@ -178,7 +178,7 @@ impl Job {
     /// `material` is true when anything a non-spinner UI cares about changed
     /// (new lines, exit status, or a byte resample) — spinner alone does not
     /// count, so off-screen jobs do not force 10 Hz full-frame repaints.
-    pub fn tick(&mut self) -> JobTick {
+    pub(crate) fn tick(&mut self) -> JobTick {
         let mut fresh = Vec::new();
         let mut material = false;
         while let Ok(JobMsg::Line(line)) = self.rx.try_recv() {
@@ -234,11 +234,11 @@ impl Job {
         JobTick { fresh, material }
     }
 
-    pub fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         self.done.is_none() && self.child.is_some()
     }
 
-    pub fn cancel(&mut self) {
+    pub(crate) fn cancel(&mut self) {
         if self.done.is_none()
             && let Some(child) = &mut self.child
         {
@@ -329,7 +329,7 @@ pub(super) fn parse_progress_event(line: &str) -> Option<(u64, u64, String)> {
 impl DownloadTask {
     /// Keep the operator-facing failure short; the complete child output
     /// remains available in the log, including structured terminal records.
-    pub fn failure_summary(&self) -> Option<String> {
+    pub(crate) fn failure_summary(&self) -> Option<String> {
         if !self.is_failed() {
             return None;
         }
@@ -362,7 +362,7 @@ impl DownloadTask {
     }
 
     /// Lifecycle state derived from the cancel flag + child exit code.
-    pub fn status(&self) -> DownloadStatus {
+    pub(crate) fn status(&self) -> DownloadStatus {
         if self.cancelled {
             return DownloadStatus::Cancelled;
         }
@@ -375,7 +375,7 @@ impl DownloadTask {
     }
 
     /// Queue label for the status word; failures carry the exit code.
-    pub fn status_label(&self) -> String {
+    pub(crate) fn status_label(&self) -> String {
         match self.status() {
             DownloadStatus::Queued => "queued".into(),
             DownloadStatus::Running => "running".into(),
@@ -388,7 +388,7 @@ impl DownloadTask {
         }
     }
 
-    pub fn output_path(&self) -> Option<PathBuf> {
+    pub(crate) fn output_path(&self) -> Option<PathBuf> {
         if let Some(path) = &self.resolved_path {
             return Some(path.clone());
         }
@@ -400,19 +400,19 @@ impl DownloadTask {
             .and_then(|job| parse_output_path_from_log(&job.log))
     }
 
-    pub fn is_queued(&self) -> bool {
+    pub(crate) fn is_queued(&self) -> bool {
         !self.cancelled && self.job.is_none()
     }
 
-    pub fn is_running(&self) -> bool {
+    pub(crate) fn is_running(&self) -> bool {
         self.job.as_ref().is_some_and(|job| job.done.is_none())
     }
 
-    pub fn is_ready(&self) -> bool {
+    pub(crate) fn is_ready(&self) -> bool {
         self.job.as_ref().is_some_and(|job| job.done == Some(0))
     }
 
-    pub fn is_failed(&self) -> bool {
+    pub(crate) fn is_failed(&self) -> bool {
         !self.cancelled
             && self
                 .job
@@ -422,12 +422,12 @@ impl DownloadTask {
     }
 
     /// Finished, failed, or cancelled — safe to remove from the queue list.
-    pub fn is_done(&self) -> bool {
+    pub(crate) fn is_done(&self) -> bool {
         self.cancelled || self.job.as_ref().is_some_and(|job| job.done.is_some())
     }
 
     /// Reset a failed/cancelled task so it can be spawned again.
-    pub fn requeue(&mut self) {
+    pub(crate) fn requeue(&mut self) {
         self.cancelled = false;
         self.job = None;
         self.phase = None;
@@ -435,7 +435,7 @@ impl DownloadTask {
     }
 
     /// Fraction complete (0..=1) from watched bytes vs. the static total.
-    pub fn progress_ratio(&self) -> Option<f64> {
+    pub(crate) fn progress_ratio(&self) -> Option<f64> {
         let total = self.total_bytes?;
         if total == 0 {
             return None;
@@ -445,7 +445,7 @@ impl DownloadTask {
     }
 
     /// Seconds until done at the current speed, when both are known.
-    pub fn eta_seconds(&self) -> Option<u64> {
+    pub(crate) fn eta_seconds(&self) -> Option<u64> {
         let total = self.total_bytes?;
         let job = self.job.as_ref()?;
         if job.speed <= 0.0 {
@@ -454,7 +454,7 @@ impl DownloadTask {
         Some((total.saturating_sub(job.bytes) as f64 / job.speed) as u64)
     }
 
-    pub fn spawn(&mut self) {
+    pub(crate) fn spawn(&mut self) {
         if !self.is_queued() {
             return;
         }
@@ -474,7 +474,7 @@ impl DownloadTask {
 
     /// Advance the child job; reports the edge when it just finished or failed
     /// and whether anything visible (besides the spinner) changed.
-    pub fn tick(&mut self) -> (DownloadOutcome, bool) {
+    pub(crate) fn tick(&mut self) -> (DownloadOutcome, bool) {
         let Some(job) = &mut self.job else {
             return (DownloadOutcome::Pending, false);
         };
@@ -501,7 +501,7 @@ impl DownloadTask {
         (outcome, changed)
     }
 
-    pub fn cancel(&mut self) {
+    pub(crate) fn cancel(&mut self) {
         match &mut self.job {
             // Running: kill the child and mark it user-cancelled so the queue
             // label reads "cancelled" instead of "failed (-130)".

@@ -70,7 +70,7 @@ pub enum PromotionDecision {
 
 impl PromotionDecision {
     /// Stable status label for artifact embedding.
-    pub fn status(&self) -> &'static str {
+    pub(crate) fn status(&self) -> &'static str {
         match self {
             PromotionDecision::Promoted => "promoted",
             PromotionDecision::IdentityMismatch { .. } => "identity_mismatch",
@@ -79,11 +79,11 @@ impl PromotionDecision {
         }
     }
 
-    pub fn is_promoted(&self) -> bool {
+    pub(crate) fn is_promoted(&self) -> bool {
         matches!(self, PromotionDecision::Promoted)
     }
 
-    pub fn to_artifact_json(&self) -> Value {
+    pub(crate) fn to_artifact_json(&self) -> Value {
         match self {
             PromotionDecision::Promoted => json!({
                 "outcome": "promoted",
@@ -131,7 +131,7 @@ fn first_mismatch(baseline: &[u32], candidate: &[u32]) -> usize {
 /// short-circuits the gate when either row was produced under
 /// `temperature > 0`, `top_p < 1.0`, `top_k > 0`, or `repetition_penalty != 1.0`
 /// — see PRD §7.2.
-pub fn evaluate_greedy_promotion(
+pub(crate) fn evaluate_greedy_promotion(
     baseline_identity: &RowIdentity,
     baseline_tokens: &[u32],
     candidate_identity: &RowIdentity,

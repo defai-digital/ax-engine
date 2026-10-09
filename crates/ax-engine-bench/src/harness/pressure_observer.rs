@@ -74,7 +74,7 @@ impl PlatformProbes {
     /// is sufficient to force MLX's Metal context to come up. If Metal
     /// is genuinely unavailable (no GPU, CPU-only target), the stream
     /// creation is harmless and the probe returns None as before.
-    pub fn from_metal_runtime() -> Option<Self> {
+    pub(crate) fn from_metal_runtime() -> Option<Self> {
         // Drop the stream immediately; we don't need to keep it around,
         // we just need MLX to have queried the device once.
         let _bootstrap = mlx_sys::MlxStream::default_gpu();

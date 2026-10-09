@@ -5,7 +5,7 @@ use ax_engine_core::{
     SequenceNo,
 };
 
-use crate::backend::{ResolvedBackend, RuntimeReport, SelectedBackend};
+use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::generate::{
     GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateStreamEvent,
     GenerateStreamRequestEvent, GenerateStreamResponseEvent, GenerateStreamStepEvent,
@@ -127,10 +127,6 @@ impl StatelessGenerateContext {
             #[cfg(feature = "mlx-native")]
             native_mlx_shared_weights,
         })
-    }
-
-    pub fn config(&self) -> &EngineSessionConfig {
-        &self.config
     }
 
     pub fn supports_stateless_streaming(&self) -> bool {
@@ -594,20 +590,12 @@ impl EngineSession {
         }
     }
 
-    #[cfg(feature = "mlx-native")]
-    pub fn new_with_shared_mlx_prefix_cache(
-        config: EngineSessionConfig,
-        prefix_cache_store: ax_engine_mlx::MlxPrefixCacheStore,
-    ) -> Result<Self, EngineSessionError> {
-        Self::new_with_shared_mlx_runtime(config, Some(prefix_cache_store), None)
-    }
-
     /// Build a session that reuses cross-session native-MLX state: an optional
     /// prefix snapshot store and an optional shared-weights cell (see
     /// `MlxSharedWeightsCell`). Request KV state remains private to the
     /// session either way.
     #[cfg(feature = "mlx-native")]
-    pub fn new_with_shared_mlx_runtime(
+    pub(crate) fn new_with_shared_mlx_runtime(
         config: EngineSessionConfig,
         prefix_cache_store: Option<ax_engine_mlx::MlxPrefixCacheStore>,
         shared_weights: Option<&ax_engine_mlx::MlxSharedWeightsCell>,
@@ -640,47 +628,6 @@ impl EngineSession {
         })
     }
 
-    pub fn generate_stateless_with_request_id(
-        config: EngineSessionConfig,
-        request_id: u64,
-        request: GenerateRequest,
-    ) -> Result<GenerateResponse, EngineSessionError> {
-        if config.resolved_backend.selected_backend.is_mlx() {
-            let mut session = Self::new(config)?;
-            return session.generate_with_request_id(request_id, request);
-        }
-
-        Self::generate_stateless_with_config(&config, request_id, request)
-    }
-
-    pub fn generate_stateless_with_config(
-        config: &EngineSessionConfig,
-        request_id: u64,
-        request: GenerateRequest,
-    ) -> Result<GenerateResponse, EngineSessionError> {
-        if config.resolved_backend.selected_backend.is_mlx() {
-            let mut session = Self::new(config.clone())?;
-            return session.generate_with_request_id(request_id, request);
-        }
-
-        Self::validate_generate_request_for_backend(
-            config.resolved_backend.selected_backend,
-            config.max_batch_tokens,
-            request_id,
-            &request,
-        )?;
-        config.validate()?;
-        run_delegated_generate_with_config(config, request_id, &request)
-    }
-
-    pub fn config(&self) -> &EngineSessionConfig {
-        &self.config
-    }
-
-    pub fn resolved_backend(&self) -> &ResolvedBackend {
-        &self.config.resolved_backend
-    }
-
     pub fn runtime_report(&self) -> RuntimeReport {
         self.runtime.clone()
     }
@@ -692,10 +639,6 @@ impl EngineSession {
 
     pub fn core(&self) -> &EngineCore {
         &self.core
-    }
-
-    pub fn core_mut(&mut self) -> &mut EngineCore {
-        &mut self.core
     }
 
     pub fn submit(
@@ -929,7 +872,7 @@ impl EngineSession {
         Some(report)
     }
 
-    pub fn stream_request(
+    pub(crate) fn stream_request(
         &mut self,
         request_id: u64,
     ) -> Result<GenerateStream<'_>, EngineSessionError> {
@@ -1056,7 +999,7 @@ impl EngineSession {
         Ok(GenerateStream::new(self, state))
     }
 
-    pub fn run_to_completion(
+    pub(crate) fn run_to_completion(
         &mut self,
         request_id: u64,
     ) -> Result<GenerateResponse, EngineSessionError> {
@@ -1150,7 +1093,10 @@ impl EngineSession {
             .map_err(|message| EngineSessionError::EmbeddingFailed { message })
     }
 
-    pub fn stream_state(&self, request_id: u64) -> Result<GenerateStreamState, EngineSessionError> {
+    pub(crate) fn stream_state(
+        &self,
+        request_id: u64,
+    ) -> Result<GenerateStreamState, EngineSessionError> {
         let current_report = self
             .request_report(request_id)
             .ok_or(EngineSessionError::MissingRequestSnapshot { request_id })?;

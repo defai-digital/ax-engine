@@ -177,50 +177,6 @@ impl PipelineChainClient {
         }
     }
 
-    /// Greedy autoregressive generation over repeated ordered chain steps.
-    pub async fn generate_greedy(
-        &self,
-        request_id: u64,
-        prompt_tokens: &[u32],
-        maximum_output_tokens: usize,
-        stop_token_ids: &[u32],
-    ) -> Result<Vec<u32>, PipelineClientError> {
-        if prompt_tokens.is_empty() {
-            return Err(PipelineClientError::EmptyTokenStep);
-        }
-        let mut output = Vec::with_capacity(maximum_output_tokens);
-        let mut sequence = 1_u64;
-        let mut token_offset = 0_u64;
-        let mut input = prompt_tokens.to_vec();
-        while output.len() < maximum_output_tokens {
-            let token = self
-                .step(TokenStepRequest {
-                    request_id,
-                    request_sequence: sequence,
-                    token_offset,
-                    token_ids: input,
-                })
-                .await?
-                .token_id;
-            output.push(token);
-            if stop_token_ids.contains(&token) {
-                break;
-            }
-            token_offset = token_offset
-                .checked_add(if sequence == 1 {
-                    prompt_tokens.len() as u64
-                } else {
-                    1
-                })
-                .ok_or(PipelineClientError::TokenOffsetOverflow)?;
-            sequence = sequence
-                .checked_add(1)
-                .ok_or(PipelineClientError::TokenOffsetOverflow)?;
-            input = vec![token];
-        }
-        Ok(output)
-    }
-
     /// Best-effort close on every rank; returns the first failure after trying all.
     pub async fn close_request(&self, request_id: u64) -> Result<(), PipelineClientError> {
         let mut first_error = None;

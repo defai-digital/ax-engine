@@ -125,7 +125,7 @@ impl App {
     const MIN_TERM_WIDTH: u16 = 60;
     const MIN_TERM_HEIGHT: u16 = 15;
 
-    pub fn draw(&self, frame: &mut Frame) {
+    pub(crate) fn draw(&self, frame: &mut Frame) {
         let term = frame.area();
         if term.width < Self::MIN_TERM_WIDTH || term.height < Self::MIN_TERM_HEIGHT {
             let popup = widgets::centered_rect(44.min(term.width), 4.min(term.height), term);

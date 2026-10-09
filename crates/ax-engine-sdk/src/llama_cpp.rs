@@ -32,7 +32,7 @@ impl LlamaCppConfig {
         Self::cli(cli_path, model_path)
     }
 
-    pub fn cli(cli_path: impl Into<PathBuf>, model_path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn cli(cli_path: impl Into<PathBuf>, model_path: impl Into<PathBuf>) -> Self {
         Self::Cli(LlamaCppCliConfig::new(cli_path, model_path))
     }
 
@@ -77,11 +77,11 @@ impl LlamaCppServerCompletionConfig {
         self
     }
 
-    pub fn completion_url(&self) -> String {
+    pub(crate) fn completion_url(&self) -> String {
         format!("{}/completion", self.base_url)
     }
 
-    pub fn chat_completions_url(&self) -> String {
+    pub(crate) fn chat_completions_url(&self) -> String {
         format!("{}/v1/chat/completions", self.base_url)
     }
 }
@@ -347,7 +347,7 @@ pub enum LlamaCppBackendError {
     StreamingNotSupported { selected_backend: SelectedBackend },
 }
 
-pub fn run_blocking_generate(
+pub(crate) fn run_blocking_generate(
     request_id: u64,
     runtime: &RuntimeReport,
     config: &LlamaCppConfig,

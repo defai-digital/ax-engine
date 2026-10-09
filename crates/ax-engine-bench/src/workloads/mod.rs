@@ -33,7 +33,7 @@ pub(crate) struct WorkloadContext {
 
 impl WorkloadContext {
     #[cfg(test)]
-    pub fn synthetic() -> Self {
+    pub(crate) fn synthetic() -> Self {
         Self {
             mlx_model_artifacts_dir: None,
             seed: 0,
@@ -62,7 +62,7 @@ impl WorkloadOutcome {
     /// Not consumed by the current CLI handler, which serializes the full
     /// JSON envelope.
     #[allow(dead_code)]
-    pub fn name(&self) -> &'static str {
+    pub(crate) fn name(&self) -> &'static str {
         match self {
             WorkloadOutcome::Skipped { .. } => "skipped",
             WorkloadOutcome::Completed { .. } => "completed",
@@ -70,7 +70,7 @@ impl WorkloadOutcome {
         }
     }
 
-    pub fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         match self {
             WorkloadOutcome::Skipped { reason } => json!({
                 "status": "skipped",

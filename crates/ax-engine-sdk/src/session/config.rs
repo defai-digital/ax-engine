@@ -293,38 +293,18 @@ impl EngineSessionConfig {
         self
     }
 
+    #[cfg(test)]
     /// Disables n-gram speculation without changing MTP admission.
-    pub fn without_ngram_acceleration(mut self) -> Self {
+    pub(crate) fn without_ngram_acceleration(mut self) -> Self {
         self.mlx_disable_ngram_acceleration = true;
         self
     }
 
-    /// Sets the native MLX MTP admission policy independently from n-gram.
-    pub fn with_mtp_policy(mut self, policy: MlxMtpPolicy) -> Self {
-        self.mlx_mtp_policy = policy;
-        self
-    }
-
+    #[cfg(test)]
     /// Disables both MTP and n-gram speculation for a direct-decode baseline.
-    pub fn without_speculative_acceleration(mut self) -> Self {
+    pub(crate) fn without_speculative_acceleration(mut self) -> Self {
         self.mlx_mtp_policy = MlxMtpPolicy::Disabled;
         self.mlx_disable_ngram_acceleration = true;
-        self
-    }
-
-    /// Keeps MTP speculation enabled but disables the n-gram-first draft source
-    /// inside the MTP verify loop. This is the default after the Gemma 4 12B
-    /// Phase 4 sweep; call [`Self::with_mtp_ngram_stacking`] to opt in.
-    pub fn without_mtp_ngram_stacking(mut self) -> Self {
-        self.mlx_mtp_disable_ngram_stacking = true;
-        self
-    }
-
-    /// Enables n-gram-first drafting inside the MTP verify loop. This is an
-    /// opt-in for workloads where benchmark evidence shows stacking beats pure
-    /// MTP.
-    pub fn with_mtp_ngram_stacking(mut self) -> Self {
-        self.mlx_mtp_disable_ngram_stacking = false;
         self
     }
 
@@ -410,18 +390,6 @@ impl EngineSessionConfig {
         Self::default_mlx_runtime_artifacts_selection().map(|selection| selection.dir)
     }
 
-    pub fn default_mlx_runtime_artifacts_source() -> Option<NativeRuntimeArtifactsSource> {
-        Self::default_mlx_runtime_artifacts_selection().map(|selection| selection.source)
-    }
-
-    pub fn default_mlx_model_artifacts_dir() -> Option<PathBuf> {
-        Self::default_mlx_model_artifacts_selection().map(|selection| selection.dir)
-    }
-
-    pub fn default_mlx_model_artifacts_source() -> Option<NativeModelArtifactsSource> {
-        Self::default_mlx_model_artifacts_selection().map(|selection| selection.source)
-    }
-
     pub fn from_resolved_request(
         request: ResolvedSessionConfigRequest,
     ) -> Result<Self, KvManagerError> {
@@ -471,7 +439,7 @@ impl EngineSessionConfig {
             })
     }
 
-    pub fn validate(&self) -> Result<(), EngineSessionError> {
+    pub(crate) fn validate(&self) -> Result<(), EngineSessionError> {
         self.resolved_backend
             .validate_against(&self.backend_policy)?;
 
@@ -510,7 +478,7 @@ impl EngineSessionConfig {
         Ok(())
     }
 
-    pub fn runtime_report(&self) -> RuntimeReport {
+    pub(crate) fn runtime_report(&self) -> RuntimeReport {
         let mut runtime =
             RuntimeReport::from_resolution(&self.backend_policy, &self.resolved_backend)
                 .with_mlx_runtime(self.mlx_runtime_report());
@@ -523,7 +491,7 @@ impl EngineSessionConfig {
         runtime
     }
 
-    pub fn mlx_runtime_artifacts_dir(&self) -> Option<&Path> {
+    pub(crate) fn mlx_runtime_artifacts_dir(&self) -> Option<&Path> {
         self.mlx_runtime_artifacts_dir.as_deref()
     }
 
@@ -531,17 +499,6 @@ impl EngineSessionConfig {
         self.mlx_runtime_artifacts_source
     }
 
-    pub fn llama_runtime_report(
-        &self,
-        llama_backend: &LlamaCppConfig,
-        fallback_reason: impl Into<String>,
-    ) -> RuntimeReport {
-        let resolved_backend =
-            ResolvedBackend::llama_cpp(SelectedBackend::LlamaCpp, fallback_reason);
-        let mut runtime = RuntimeReport::from_resolution(&self.backend_policy, &resolved_backend);
-        runtime.capabilities = CapabilityReport::for_llama_cpp_backend(llama_backend);
-        runtime
-    }
     fn mlx_runtime_report(&self) -> Option<NativeRuntimeReport> {
         if self.resolved_backend.selected_backend != SelectedBackend::Mlx {
             return None;

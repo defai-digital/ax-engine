@@ -36,28 +36,28 @@ pub(super) struct Toast {
 }
 
 impl Toast {
-    pub fn info(text: String) -> Self {
+    pub(crate) fn info(text: String) -> Self {
         Self {
             text,
             at: Instant::now(),
             level: ToastLevel::Info,
         }
     }
-    pub fn success(text: String) -> Self {
+    pub(crate) fn success(text: String) -> Self {
         Self {
             text,
             at: Instant::now(),
             level: ToastLevel::Success,
         }
     }
-    pub fn warning(text: String) -> Self {
+    pub(crate) fn warning(text: String) -> Self {
         Self {
             text,
             at: Instant::now(),
             level: ToastLevel::Warning,
         }
     }
-    pub fn error(text: String) -> Self {
+    pub(crate) fn error(text: String) -> Self {
         Self {
             text,
             at: Instant::now(),
@@ -742,7 +742,7 @@ pub(super) struct DirectoryPicker {
 }
 
 impl DirectoryPicker {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut picker = Self {
             current: nearest_existing_dir(&crate::default_hf_cache_root()),
             entries: Vec::new(),
@@ -753,13 +753,13 @@ impl DirectoryPicker {
         picker
     }
 
-    pub fn set_current(&mut self, path: PathBuf) {
+    pub(crate) fn set_current(&mut self, path: PathBuf) {
         self.current = nearest_existing_dir(&path);
         self.selected = 0;
         self.refresh();
     }
 
-    pub fn refresh(&mut self) {
+    pub(crate) fn refresh(&mut self) {
         self.entries.clear();
         self.error = None;
         if let Some(parent) = self.current.parent() {
@@ -796,13 +796,13 @@ impl DirectoryPicker {
         }
     }
 
-    pub fn selected_path(&self) -> Option<PathBuf> {
+    pub(crate) fn selected_path(&self) -> Option<PathBuf> {
         self.entries
             .get(self.selected)
             .map(|entry| entry.path.clone())
     }
 
-    pub fn enter_selected(&mut self) {
+    pub(crate) fn enter_selected(&mut self) {
         if let Some(path) = self.selected_path() {
             self.set_current(path);
         }

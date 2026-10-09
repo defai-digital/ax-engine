@@ -20,7 +20,7 @@ pub struct LatencySamples {
 }
 
 impl LatencySamples {
-    pub fn new(name: impl Into<String>) -> Self {
+    pub(crate) fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             values_us: Vec::new(),
@@ -30,22 +30,22 @@ impl LatencySamples {
     /// Pre-allocated constructor used by Phase 5 fixtures that know their
     /// sample count up front (concurrent_short_inserts, partial_prefix_hit).
     #[allow(dead_code)]
-    pub fn with_capacity(name: impl Into<String>, capacity: usize) -> Self {
+    pub(crate) fn with_capacity(name: impl Into<String>, capacity: usize) -> Self {
         Self {
             name: name.into(),
             values_us: Vec::with_capacity(capacity),
         }
     }
 
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         &self.name
     }
 
-    pub fn record_us(&mut self, value: u64) {
+    pub(crate) fn record_us(&mut self, value: u64) {
         self.values_us.push(value);
     }
 
-    pub fn record_duration(&mut self, duration: Duration) {
+    pub(crate) fn record_duration(&mut self, duration: Duration) {
         let micros = duration.as_micros().min(u128::from(u64::MAX)) as u64;
         self.record_us(micros);
     }
@@ -53,25 +53,25 @@ impl LatencySamples {
     /// Sample count. Not consumed by the current Phase 1 driver; used by
     /// PRD Phase 5 aggregation and by unit tests.
     #[allow(dead_code)]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.values_us.len()
     }
 
     /// Mirror of [`Self::len`] for ergonomic emptiness checks.
     #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.values_us.is_empty()
     }
 
-    pub fn min_us(&self) -> Option<u64> {
+    pub(crate) fn min_us(&self) -> Option<u64> {
         self.values_us.iter().copied().min()
     }
 
-    pub fn max_us(&self) -> Option<u64> {
+    pub(crate) fn max_us(&self) -> Option<u64> {
         self.values_us.iter().copied().max()
     }
 
-    pub fn mean_us(&self) -> Option<f64> {
+    pub(crate) fn mean_us(&self) -> Option<f64> {
         if self.values_us.is_empty() {
             return None;
         }
@@ -80,7 +80,7 @@ impl LatencySamples {
     }
 
     /// Nearest-rank percentile in microseconds. `quantile` is clamped to `[0.0, 1.0]`.
-    pub fn percentile_us(&self, quantile: f64) -> Option<u64> {
+    pub(crate) fn percentile_us(&self, quantile: f64) -> Option<u64> {
         if self.values_us.is_empty() {
             return None;
         }
@@ -92,21 +92,21 @@ impl LatencySamples {
         sorted.get(index).copied()
     }
 
-    pub fn p50_us(&self) -> Option<u64> {
+    pub(crate) fn p50_us(&self) -> Option<u64> {
         self.percentile_us(0.50)
     }
 
-    pub fn p95_us(&self) -> Option<u64> {
+    pub(crate) fn p95_us(&self) -> Option<u64> {
         self.percentile_us(0.95)
     }
 
-    pub fn p99_us(&self) -> Option<u64> {
+    pub(crate) fn p99_us(&self) -> Option<u64> {
         self.percentile_us(0.99)
     }
 
     /// Serialize a summary view (counts + key percentiles) suitable for artifact JSON.
     /// The raw sample vector is omitted from the summary to keep artifact size bounded.
-    pub fn to_summary_json(&self) -> Value {
+    pub(crate) fn to_summary_json(&self) -> Value {
         let mut map = Map::new();
         map.insert("name".to_string(), Value::String(self.name.clone()));
         map.insert("count".to_string(), json!(self.values_us.len()));
@@ -151,7 +151,7 @@ pub enum LatencyChannel {
 }
 
 impl LatencyChannel {
-    pub fn channel_name(self) -> &'static str {
+    pub(crate) fn channel_name(self) -> &'static str {
         match self {
             LatencyChannel::ForegroundTtft => "foreground_ttft",
             LatencyChannel::ForegroundItl => "foreground_itl",
@@ -178,7 +178,7 @@ pub struct WorkloadReport {
 }
 
 impl WorkloadReport {
-    pub fn new(workload: impl Into<String>) -> Self {
+    pub(crate) fn new(workload: impl Into<String>) -> Self {
         let started_at_unix_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -203,19 +203,19 @@ impl WorkloadReport {
 
     /// Read accessor; consumed by Phase 5 aggregation and tests.
     #[allow(dead_code)]
-    pub fn workload(&self) -> &str {
+    pub(crate) fn workload(&self) -> &str {
         &self.workload
     }
 
-    pub fn record_elapsed(&mut self, elapsed: Duration) {
+    pub(crate) fn record_elapsed(&mut self, elapsed: Duration) {
         self.elapsed_us = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
     }
 
-    pub fn add_note(&mut self, note: impl Into<String>) {
+    pub(crate) fn add_note(&mut self, note: impl Into<String>) {
         self.notes.push(note.into());
     }
 
-    pub fn add_decision(&mut self, key: impl Into<String>, value: u64) {
+    pub(crate) fn add_decision(&mut self, key: impl Into<String>, value: u64) {
         self.decisions.push((key.into(), value));
     }
 
@@ -223,18 +223,18 @@ impl WorkloadReport {
     /// fixtures (e.g. partial_prefix_hit) that report bespoke samples
     /// alongside the standard TTFT/ITL/cancellation/short-insert channels.
     #[allow(dead_code)]
-    pub fn add_extra_samples(&mut self, samples: LatencySamples) {
+    pub(crate) fn add_extra_samples(&mut self, samples: LatencySamples) {
         self.extra_samples.push(samples);
     }
 
     /// Mutable view into post-restart cache counters. Used by Phase 2
     /// `post_restart_cache_safety` fixture.
     #[allow(dead_code)]
-    pub fn post_restart_cache_mut(&mut self) -> &mut PostRestartCacheCounts {
+    pub(crate) fn post_restart_cache_mut(&mut self) -> &mut PostRestartCacheCounts {
         &mut self.post_restart_cache
     }
 
-    pub fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         let mut extras = Map::new();
         for sample in &self.extra_samples {
             extras.insert(sample.name().to_string(), sample.to_summary_json());
@@ -280,7 +280,7 @@ pub struct PostRestartCacheCounts {
 }
 
 impl PostRestartCacheCounts {
-    pub fn to_json(&self) -> Value {
+    pub(crate) fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
     }
 
@@ -288,7 +288,7 @@ impl PostRestartCacheCounts {
     /// safety fixtures and by unit tests; not consumed by the current
     /// `long_prefill_vs_decode` driver.
     #[allow(dead_code)]
-    pub fn total_rejections(&self) -> u64 {
+    pub(crate) fn total_rejections(&self) -> u64 {
         self.rejected_model_mismatch
             + self.rejected_policy_mismatch
             + self.rejected_layout_mismatch

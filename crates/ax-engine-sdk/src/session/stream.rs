@@ -158,7 +158,7 @@ impl<'a> GenerateStream<'a> {
         }
     }
 
-    pub fn next_event(&mut self) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
+    pub(crate) fn next_event(&mut self) -> Result<Option<GenerateStreamEvent>, EngineSessionError> {
         let mut event = self.session.next_stream_event(&mut self.state)?;
         if let Some(event) = event.as_mut() {
             self.observe_performance(event);
@@ -286,7 +286,7 @@ impl<'a> GenerateStream<'a> {
         }
     }
 
-    pub fn into_response(mut self) -> Result<GenerateResponse, EngineSessionError> {
+    pub(crate) fn into_response(mut self) -> Result<GenerateResponse, EngineSessionError> {
         let mut observed_event_count = 0_u64;
         while let Some(event) = self.next_event()? {
             observed_event_count = observed_event_count.saturating_add(1);

@@ -54,17 +54,6 @@ impl RankBootstrapPlan {
         serde_json::from_slice::<Self>(&bytes).map_err(ArtifactVerificationError::ParsePlan)
     }
 
-    pub fn load_and_verify(
-        path: &Path,
-        model_root: &Path,
-        topology: &PipelineTopology,
-        expected_rank: u16,
-    ) -> Result<Self, ArtifactVerificationError> {
-        let plan = Self::load(path)?;
-        plan.verify(model_root, topology, expected_rank)?;
-        Ok(plan)
-    }
-
     /// Download only artifacts explicitly assigned by the integrity-bound rank
     /// plan, then verify the complete local subset before returning.
     pub async fn prepare_from_base_url(
