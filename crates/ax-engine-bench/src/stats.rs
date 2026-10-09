@@ -1,29 +1,5 @@
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
-pub(crate) fn percentile_f64(values: &[f64], quantile: f64) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut values = values.to_vec();
-    values.sort_by(f64::total_cmp);
-    let quantile = quantile.clamp(0.0, 1.0);
-    let index = ((values.len() - 1) as f64 * quantile).round() as usize;
-    values.get(index).copied()
-}
-
-#[cfg(test)]
-pub(crate) fn percentile_u64(values: &[u64], quantile: f64) -> Option<u64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut values = values.to_vec();
-    values.sort_unstable();
-    let quantile = quantile.clamp(0.0, 1.0);
-    let index = ((values.len() - 1) as f64 * quantile).round() as usize;
-    values.get(index).copied()
-}
-
 /// Percentage change from `baseline` to `candidate`. `None` when the change
 /// is undefined (zero baseline, non-zero candidate): serde_json would
 /// otherwise silently turn the infinite value into `null`, so the artifact

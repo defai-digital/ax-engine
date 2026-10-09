@@ -68,7 +68,6 @@ repo-owned MLX throughput claims; the two evidence types are separate.
 | `compare` | Diff two execution artifact dirs; emit comparison artifacts |
 | `matrix-compare` | Diff two matrix artifact dirs; emit roll-up comparison |
 | `baseline` | Promote a successful artifact dir to a named trusted baseline |
-| `autotune` | Bounded knob search over a frozen manifest |
 | `doctor` | Inspect local host readiness for repo-owned MLX benchmarking |
 | `metal-build` | Compile custom Metal kernels from `metal/phase1-kernels.json` |
 | `generate` | One-shot inference (development utility, not for benchmark evidence) |
@@ -158,8 +157,7 @@ like-for-like. The MLX runner auto-clamps this per model family:
 | MLA (GLM 4 Flash MLA) | 16 | `MLA_DEFAULT_PREFILL_CHUNK` warm-extend alignment |
 
 Override on the CLI with `--prefill-chunk N` when a specific comparison
-needs a different size (for example, sweeping prefill geometry under
-`autotune`). The previous default (512 for all models) caused dense-model
+needs a different size (for example, sweeping prefill geometry). The previous default (512 for all models) caused dense-model
 bench numbers to read ~4× slower than `mlx_lm.benchmark` purely from chunk
 asymmetry, not from runtime cost; the 2048 default closes that gap.
 
@@ -357,7 +355,6 @@ timing.
 |---|---|---|
 | `bench_mlx_inference_stack.py` with `mlx_lm.benchmark` baseline | Repo-owned MLX tok/s ratios against a named MLX reference | Workload correctness or determinism |
 | `ax-engine-bench scenario/replay` | Route identity, correctness, determinism, prefix-reuse provenance, regression against baseline | Direct upstream MLX throughput comparison |
-| `ax-engine-bench autotune` | Candidate evidence for bounded manifest knobs | Architecture decisions or cross-runtime ranking |
 | `ax-engine-bench compare/matrix-compare` | Regression evidence within the same manifest and runtime family | Cross-runtime ranking or throughput claims |
 | llama.cpp delegated artifacts | Delegated route-contract and backend prompt-cache behavior | Repo-owned MLX throughput |
 | `mlx_lm_delegated` artifacts | AX surface compatibility with upstream `mlx_lm.server` | Repo-owned MLX throughput or token/KV accounting |

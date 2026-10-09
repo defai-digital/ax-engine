@@ -535,19 +535,6 @@ or optional `mlx-swift-lm` row is compared against the matching
 JSON. Do not use the retired SwiftLM application-server benchmark as a current
 AX Engine baseline.
 
-To run a bounded autotune pass over explicit manifest knobs:
-
-```text
-ax-engine-bench autotune \
-  --manifest benchmarks/manifests/scenario/chat_qwen_short.json \
-  --output-root benchmarks/results \
-  --iterations 8
-```
-
-Autotune output is candidate evidence. It still needs the normal
-scenario/replay/compare gates before it influences architecture or release
-decisions.
-
 To validate checked-in MLX dense Qwen and Gemma scenario manifests
 through one repo-owned smoke command:
 

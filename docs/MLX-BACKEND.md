@@ -321,9 +321,9 @@ application server measurements are retired and should not be used as a
 baseline for this backend.
 
 Use `ax-engine-bench scenario`, `replay`, `matrix`, `compare`, `matrix-compare`,
-`baseline`, and `autotune` for workload-contract evidence: route identity,
-determinism, prefix reuse, trace shape, regression comparison, trusted baseline
-snapshots, and bounded manifest-knob exploration.
+and `baseline` for workload-contract evidence: route identity, determinism,
+prefix reuse, trace shape, regression comparison, and trusted baseline
+snapshots.
 
 `ax-engine-bench doctor` also emits structured `performance_advice`. This advice
 does not replace benchmark rows; it turns the current MLX contract into local

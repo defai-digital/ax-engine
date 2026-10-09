@@ -54,7 +54,6 @@ charts to imply a different model source.
 | Did a checked-in workload still pass route, correctness, determinism, replay, or regression gates? | `ax-engine-bench` | Workload-contract artifacts under `benchmarks/results` |
 | How does AX behave as an online serving endpoint over a prompt mix? | `scripts/bench_ax_serving.py` | `ax.serving_benchmark.v1` artifacts with client-observed TTFT, TPOT, streaming step intervals, E2E latency, queue delay, throughput, category summaries, and SLO goodput |
 | Is the local host ready for repo-owned MLX benchmarking? | `ax-engine-bench doctor` | Human or JSON readiness report |
-| Did a bounded runtime knob improve a frozen workload? | `ax-engine-bench autotune` | Autotune trial artifacts and warm-start history |
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
@@ -1113,27 +1112,6 @@ Use this surface for:
 - replay and churn validation
 - matrix roll-ups
 - matrix-to-matrix regression review
-- bounded autotune trials over frozen manifests
-
-## Bounded Autotune
-
-`ax-engine-bench autotune` is part of the workload-contract surface, not a broad
-architecture search system:
-
-```text
-ax-engine-bench autotune \
-  --manifest benchmarks/manifests/scenario/chat_qwen_short.json \
-  --output-root benchmarks/results \
-  --iterations 8 \
-  --max-batch-token-options 2048,4096,8192 \
-  --kv-total-block-options 256,512 \
-  --prefix-cache-options true,false
-```
-
-Autotune may explore bounded knobs already represented in manifests. It must not
-turn runtime-family selection, backend ownership, or scheduler architecture into
-implicit search dimensions. Treat the output as candidate evidence that still
-needs the normal scenario/replay/compare gates.
 
 ## Delegated llama.cpp Checks
 
@@ -1267,7 +1245,6 @@ bash scripts/check-bench-matrix-compare.sh
 |---|---|---|
 | `bench_mlx_inference_stack.py` rows with matching `mlx_lm.benchmark` baseline | Repo-owned MLX model-inference performance claims against named MLX references | Scheduler/replay correctness claims |
 | `ax-engine-bench scenario` / `replay` MLX artifacts | Workload-contract, route, correctness, determinism, replay, and regression claims | Direct upstream MLX comparison unless the MLX stack harness was also run |
-| `ax-engine-bench autotune` artifacts | Candidate evidence for bounded manifest knobs | Architecture selection or cross-runtime ranking |
 | `mlx_lm_delegated` artifacts | Upstream mlx-lm text compatibility through AX surfaces | Repo-owned MLX throughput claims or visual/multimodal support |
 | llama.cpp delegated artifacts | Non-MLX route-contract and backend prompt-cache claims | Repo-owned MLX throughput claims |
 | `ax-engine-bench compare` / `matrix-compare` | Regression evidence inside the same manifest/runtime family | Cross-runtime ranking without matching reference contract |

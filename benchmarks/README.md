@@ -235,5 +235,5 @@ Successful scenario and replay runs emit:
 - `summary.md`
 
 Contract failures emit `contract_failure.json` plus `summary.md` instead of
-synthetic metrics. Compare, matrix, matrix-compare, baseline, and autotune
+synthetic metrics. Compare, matrix, matrix-compare, and baseline
 commands emit command-specific structured artifacts.

@@ -6,7 +6,7 @@ AX Engine currently exposes four command surfaces:
   package prep (`serve`, `download`, `download-mtp`, `tui`, `doctor`)
 - `ax-engine-server` — low-level HTTP/gRPC server when you need explicit runtime
   flags
-- `ax-engine-bench` — workload contracts, readiness, bounded autotune, Metal
+- `ax-engine-bench` — workload contracts, readiness, Metal
   build checks, and thin direct SDK inference helpers
 - `scripts/bench_mlx_inference_stack.py` — repo-owned MLX model-inference
   comparison against MLX-family references
@@ -346,7 +346,6 @@ Current command surface:
 
 - `ax-engine-bench scenario`
 - `ax-engine-bench replay`
-- `ax-engine-bench autotune`
 - `ax-engine-bench compare`
 - `ax-engine-bench matrix-compare`
 - `ax-engine-bench baseline`
@@ -367,7 +366,6 @@ ax-engine-bench matrix --manifest benchmarks/manifests/matrix/mlx_dense_phase7.j
 ax-engine-bench compare --baseline benchmarks/results/<baseline> --candidate benchmarks/results/<candidate> --output-root benchmarks/results
 ax-engine-bench matrix-compare --baseline benchmarks/results/<baseline-matrix> --candidate benchmarks/results/<candidate-matrix> --output-root benchmarks/results
 ax-engine-bench baseline --source benchmarks/results/<run> --name "Dense Qwen Trusted" --output-root benchmarks/baselines
-ax-engine-bench autotune --manifest benchmarks/manifests/scenario/chat_qwen_short.json --output-root benchmarks/results --iterations 8
 ax-engine-bench doctor --json
 ax-engine-bench metal-build
 ```
@@ -411,8 +409,8 @@ Successful scenario and replay runs emit `manifest.json`, `environment.json`,
 `metrics.json`, `routes.json`, `trace.json`, and `summary.md`. Contract failures
 emit `contract_failure.json` plus `summary.md` instead of synthetic metrics.
 
-`baseline`, `compare`, `matrix`, `matrix-compare`, and `autotune` build on
-those artifacts. They should only compare or tune results inside the same
+`baseline`, `compare`, `matrix`, and `matrix-compare` build on
+those artifacts. They should only compare results inside the same
 manifest/runtime family.
 
 ## MLX Inference Stack
@@ -541,7 +539,6 @@ The CLI exists to support:
 - replay workload validation
 - regression comparison
 - frozen matrix execution and roll-up reporting
-- bounded autotune over explicit manifest knobs
 - local readiness diagnosis before benchmark or kernel bring-up work
 - local transport-layer integration against the SDK contract
 

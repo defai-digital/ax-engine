@@ -1,6 +1,4 @@
 mod artifacts;
-#[cfg(test)]
-mod autotune;
 mod baseline;
 mod config;
 mod execution;
@@ -11,8 +9,6 @@ mod util;
 
 use super::*;
 pub(crate) use artifacts::*;
-#[cfg(test)]
-pub(crate) use autotune::*;
 pub(crate) use baseline::*;
 pub(crate) use config::*;
 pub(crate) use execution::*;
@@ -33,7 +29,6 @@ pub(crate) fn run() -> Result<(), CliError> {
         "stream" => handle_stream(&remaining),
         "scenario" => handle_scenario(&remaining),
         "replay" => handle_replay(&remaining),
-        "autotune" => handle_autotune(&remaining),
         "compare" => handle_compare(&remaining),
         "matrix-compare" => handle_matrix_compare(&remaining),
         "baseline" => handle_baseline(&remaining),
@@ -183,106 +178,6 @@ pub(crate) fn handle_replay(args: &[String]) -> Result<(), CliError> {
     print_benchmark_artifact_summary(&summary, json)?;
 
     enforce_runtime_gates(&execution)
-}
-
-pub(crate) fn handle_autotune(args: &[String]) -> Result<(), CliError> {
-    let _ = parse_autotune_args(args)?;
-    Err(CliError::Contract(
-        "autotune is not yet available; use explicit scenario or matrix benchmark runs".to_string(),
-    ))
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AutotuneArgs {
-    pub(crate) manifest_path: PathBuf,
-    pub(crate) output_root: PathBuf,
-    pub(crate) iterations: usize,
-    pub(crate) exploration_weight: f64,
-    pub(crate) max_batch_token_options: Option<Vec<u32>>,
-    pub(crate) kv_total_block_options: Option<Vec<Option<u32>>>,
-    pub(crate) prefix_cache_options: Option<Vec<bool>>,
-    pub(crate) disable_history: bool,
-}
-
-pub(crate) fn parse_autotune_args(args: &[String]) -> Result<AutotuneArgs, CliError> {
-    let manifest_path = required_flag(args, "--manifest")?;
-    let output_root = required_flag(args, "--output-root")?;
-    let mut iterations = 8_usize;
-    let mut exploration_weight = 0.5_f64;
-    let mut max_batch_token_options = None;
-    let mut kv_total_block_options = None;
-    let mut prefix_cache_options = None;
-    let mut disable_history = false;
-
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--manifest" | "--output-root" => {
-                let _ = next_flag_value(&mut iter, arg)?;
-            }
-            "--iterations" => {
-                iterations = parse_flag_value::<usize>(
-                    next_flag_value(&mut iter, "--iterations")?,
-                    "--iterations",
-                )?;
-            }
-            "--exploration-weight" => {
-                exploration_weight = parse_flag_value::<f64>(
-                    next_flag_value(&mut iter, "--exploration-weight")?,
-                    "--exploration-weight",
-                )?;
-            }
-            "--max-batch-token-options" => {
-                max_batch_token_options = Some(parse_u32_list(
-                    next_flag_value(&mut iter, "--max-batch-token-options")?,
-                    "--max-batch-token-options",
-                )?);
-            }
-            "--kv-total-block-options" => {
-                kv_total_block_options = Some(parse_optional_u32_list(
-                    next_flag_value(&mut iter, "--kv-total-block-options")?,
-                    "--kv-total-block-options",
-                )?);
-            }
-            "--prefix-cache-options" => {
-                prefix_cache_options = Some(parse_bool_list(
-                    next_flag_value(&mut iter, "--prefix-cache-options")?,
-                    "--prefix-cache-options",
-                )?);
-            }
-            "--disable-history" => {
-                disable_history = true;
-            }
-            other => {
-                return Err(CliError::Usage(format!(
-                    "unknown flag for autotune: {other}\n\n{}",
-                    usage()
-                )));
-            }
-        }
-    }
-
-    if iterations == 0 {
-        return Err(CliError::Usage(
-            "--iterations must be greater than zero".to_string(),
-        ));
-    }
-    if !exploration_weight.is_finite() || exploration_weight < 0.0 {
-        return Err(CliError::Usage(
-            "--exploration-weight must be a finite non-negative number".to_string(),
-        ));
-    }
-
-    Ok(AutotuneArgs {
-        manifest_path,
-        output_root,
-        iterations,
-        exploration_weight,
-        max_batch_token_options,
-        kv_total_block_options,
-        prefix_cache_options,
-        disable_history,
-    })
 }
 
 pub(crate) fn handle_compare(args: &[String]) -> Result<(), CliError> {

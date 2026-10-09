@@ -36,8 +36,8 @@ use ax_engine_core::{
 };
 use ax_engine_sdk::{
     BackendPolicy, EngineSession, EngineSessionConfig, EngineStepReport, GenerateRequest,
-    GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus, GenerateStreamEvent,
-    LlamaCppConfig, NativeModelArtifactsSource, NativeModelReport, NativeRuntimeArtifactsSource,
+    GenerateResponse, GenerateRouteReport, GenerateSampling, GenerateStatus, LlamaCppConfig,
+    NativeModelArtifactsSource, NativeModelReport, NativeRuntimeArtifactsSource,
     NativeRuntimeReport, ResolutionPolicy, ResolvedBackend, ResolvedSessionConfigRequest,
     RuntimeReport, SelectedBackend, SessionRequestReport, SessionRequestState, SupportTier,
     current_host_report, current_metal_toolchain_report,
@@ -54,8 +54,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::args::{
-    ensure_output_root, has_flag, next_flag_value, parse_bool_list, parse_flag_value,
-    parse_optional_u32_list, parse_u32_list, require_existing_dir, require_existing_file,
+    ensure_output_root, has_flag, require_existing_dir, require_existing_file,
     require_existing_path, required_flag, required_string_flag,
 };
 use crate::artifact_files::{
@@ -120,8 +119,6 @@ use crate::synthetic::{
 use crate::token_sources::{output_token_count_source, prompt_token_count_source};
 
 #[cfg(test)]
-use crate::args::{unique_sorted_option_u32, unique_sorted_u32};
-#[cfg(test)]
 use crate::artifact_files::unique_run_suffix;
 #[cfg(test)]
 use crate::artifact_summary::render_benchmark_artifact_summary;
@@ -143,21 +140,13 @@ use crate::generate_manifest::{
     GenerateManifestValidationSummary, parse_generate_manifest_args,
 };
 #[cfg(test)]
-use crate::labels::optional_u32_label;
-#[cfg(test)]
-use crate::labels::selected_backend_label;
-#[cfg(test)]
 use crate::path_utils::path_string;
 #[cfg(test)]
 use crate::route_json::route_execution_semantics_from_json;
 #[cfg(test)]
-use crate::route_metadata::{
-    route_prefix_cpu_reference_dispatch_count, route_prefix_native_dispatch_count,
-};
-#[cfg(test)]
 use crate::route_readiness::NATIVE_DENSE_DEQUANTIZED_SOURCE_BLOCKER;
 #[cfg(test)]
-use crate::stats::{percentile_f64, percentile_u64};
+use ax_engine_sdk::GenerateStreamEvent;
 #[cfg(test)]
 use ax_engine_sdk::{HostReport, MetalToolchainReport, ToolStatusReport};
 
