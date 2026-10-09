@@ -11,8 +11,6 @@
 //! Cache updates are staged locally. The caller publishes the returned next
 //! state only after the rest of the step succeeds.
 
-#![allow(dead_code)]
-
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, astype, concatenate, contiguous,
     greater_equal, maximum, multiply, reshape, rms_norm, scaled_dot_product_attention,
@@ -88,6 +86,7 @@ pub(crate) struct Qwen4ExpAttentionConfig {
     kv_heads: i32,
     head_dim: i32,
     rotary_dim: i32,
+    #[allow(dead_code)]
     groups: i32,
     query_width: i32,
     kv_width: i32,
@@ -158,10 +157,6 @@ impl Qwen4ExpAttentionConfig {
 
     pub(crate) fn hidden_size(self) -> usize {
         self.hidden_size as usize
-    }
-
-    pub(crate) fn query_heads(self) -> usize {
-        self.query_heads as usize
     }
 
     pub(crate) fn kv_heads(self) -> usize {
@@ -236,6 +231,7 @@ impl Qwen4ExpAttentionCache {
     }
 
     /// Independent copy for a forked request. Array clones are refcount bumps.
+    #[cfg(test)]
     pub(crate) fn fork(&self) -> Self {
         self.clone()
     }
@@ -324,6 +320,7 @@ impl Qwen4ExpAttentionOutput {
         &self.delta
     }
 
+    #[cfg(test)]
     pub(crate) fn next_state(&self) -> &Qwen4ExpAttentionCache {
         &self.next_state
     }

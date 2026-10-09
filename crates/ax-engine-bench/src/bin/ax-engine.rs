@@ -217,11 +217,6 @@ enum MtpDownloadKind {
         assistant_model_id: &'static str,
         max_depth: u32,
     },
-    /// Fallback for models where no MTP sidecar or assistant packager is available.
-    #[allow(dead_code)]
-    DirectOnly {
-        reason: &'static str,
-    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3242,29 +3237,6 @@ fn run_download_mtp(args: &DownloadMtpArgs) -> Result<u8, String> {
         MtpDownloadKind::GemmaAssistant { .. } => {
             run_download_gemma_assistant_mtp(target, args, &base_dir, target.kind, download_summary)
         }
-        MtpDownloadKind::DirectOnly { reason } => {
-            let terminal = json!({
-                "schema_version": "ax.download_mtp.v1",
-                "command": "download-mtp",
-                "status": "direct_only",
-                "base_model": &args.model,
-                "repo_id": target.repo_id,
-                "output_dir": base_dir,
-                "reason": reason,
-                "download": download_summary,
-            });
-            if args.progress {
-                print_download_mtp_progress_terminal(&terminal)?;
-            } else if args.json {
-                print_json(&terminal)?;
-            } else {
-                println!("MTP status: direct-only");
-                println!("{reason}");
-                println!("Next:");
-                println!("  ax-engine serve {base_dir}");
-            }
-            Ok(0)
-        }
     }
 }
 
@@ -3311,6 +3283,43 @@ fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
     })
 }
 
+/// Shared `--quantize` / `--mtp-depth-max` / `--group-size` /
+/// `--fair-base-only` / `--json` handling for `download-mtp` and
+/// `convert-mtplx`. Returns `true` when `args[index]` was consumed.
+fn parse_shared_mtp_convert_flag(
+    args: &[OsString],
+    index: &mut usize,
+    quantize: &mut Option<String>,
+    mtp_depth_max: &mut Option<String>,
+    group_size: &mut String,
+    fair_base_only: &mut bool,
+    json: &mut bool,
+) -> Result<bool, String> {
+    let flag = args[*index].to_string_lossy();
+    match flag.as_ref() {
+        "--quantize" => {
+            *index += 1;
+            let value = require_value(args, *index, "--quantize")?;
+            if value != "4" && value != "8" {
+                return Err("--quantize must be 4 or 8".into());
+            }
+            *quantize = Some(value);
+        }
+        "--mtp-depth-max" => {
+            *index += 1;
+            *mtp_depth_max = Some(require_value(args, *index, "--mtp-depth-max")?);
+        }
+        "--group-size" => {
+            *index += 1;
+            *group_size = require_value(args, *index, "--group-size")?;
+        }
+        "--fair-base-only" => *fair_base_only = true,
+        "--json" => *json = true,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
 fn parse_download_mtp_args(args: &[OsString]) -> Result<DownloadMtpArgs, String> {
     let mut model = None;
     let mut output = None;
@@ -3323,6 +3332,18 @@ fn parse_download_mtp_args(args: &[OsString]) -> Result<DownloadMtpArgs, String>
     let mut progress = false;
     let mut index = 0;
     while index < args.len() {
+        if parse_shared_mtp_convert_flag(
+            args,
+            &mut index,
+            &mut quantize,
+            &mut mtp_depth_max,
+            &mut group_size,
+            &mut fair_base_only,
+            &mut json,
+        )? {
+            index += 1;
+            continue;
+        }
         let arg = args[index].to_string_lossy();
         match arg.as_ref() {
             "--output" => {
@@ -3330,24 +3351,6 @@ fn parse_download_mtp_args(args: &[OsString]) -> Result<DownloadMtpArgs, String>
                 output = Some(require_value(args, index, "--output")?);
             }
             "--force" => force = true,
-            "--quantize" => {
-                index += 1;
-                let value = require_value(args, index, "--quantize")?;
-                if value != "4" && value != "8" {
-                    return Err("--quantize must be 4 or 8".into());
-                }
-                quantize = Some(value);
-            }
-            "--mtp-depth-max" => {
-                index += 1;
-                mtp_depth_max = Some(require_value(args, index, "--mtp-depth-max")?);
-            }
-            "--group-size" => {
-                index += 1;
-                group_size = require_value(args, index, "--group-size")?;
-            }
-            "--fair-base-only" => fair_base_only = true,
-            "--json" => json = true,
             "--progress-json" => progress = true,
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown download-mtp option: {flag}"));
@@ -3863,6 +3866,18 @@ fn parse_convert_args(args: &[OsString]) -> Result<ConvertArgs, String> {
     let mut json = false;
     let mut index = 0;
     while index < args.len() {
+        if parse_shared_mtp_convert_flag(
+            args,
+            &mut index,
+            &mut quantize,
+            &mut mtp_depth_max,
+            &mut group_size,
+            &mut fair_base_only,
+            &mut json,
+        )? {
+            index += 1;
+            continue;
+        }
         let arg = args[index].to_string_lossy();
         match arg.as_ref() {
             "--mtp-source" => {
@@ -3873,24 +3888,6 @@ fn parse_convert_args(args: &[OsString]) -> Result<ConvertArgs, String> {
                 index += 1;
                 output = Some(require_value(args, index, "--output")?);
             }
-            "--quantize" => {
-                index += 1;
-                let value = require_value(args, index, "--quantize")?;
-                if value != "4" && value != "8" {
-                    return Err("--quantize must be 4 or 8".into());
-                }
-                quantize = Some(value);
-            }
-            "--mtp-depth-max" => {
-                index += 1;
-                mtp_depth_max = Some(require_value(args, index, "--mtp-depth-max")?);
-            }
-            "--group-size" => {
-                index += 1;
-                group_size = require_value(args, index, "--group-size")?;
-            }
-            "--fair-base-only" => fair_base_only = true,
-            "--json" => json = true,
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown convert-mtplx option: {flag}"));
             }
@@ -3977,7 +3974,6 @@ fn format_download_mtp_targets() -> String {
         let kind = match target.kind {
             MtpDownloadKind::QwenSidecar { .. } => "qwen-sidecar-mtp",
             MtpDownloadKind::GemmaAssistant { .. } => "gemma-assistant-mtp",
-            MtpDownloadKind::DirectOnly { .. } => "direct-only",
         };
         lines.push(format!(
             "  - {} -> {} ({kind}; aliases: {})",
@@ -4492,11 +4488,6 @@ fn exec_or_status(program: PathBuf, args: &[OsString]) -> Result<u8, String> {
         .status()
         .map_err(|err| format!("failed to run {}: {err}", program.display()))?;
     Ok(status.code().unwrap_or(1).try_into().unwrap_or(1))
-}
-
-#[allow(dead_code)]
-fn _os_str(value: &str) -> &OsStr {
-    OsStr::new(value)
 }
 
 #[cfg(test)]

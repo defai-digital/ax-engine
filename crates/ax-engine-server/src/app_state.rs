@@ -1681,27 +1681,6 @@ pub(crate) fn s1_gemma_long_prefill_text() -> String {
     text
 }
 
-/// First-load progressive long-prefill shapes (geometry compile tax).
-///
-/// Prefer [`run_exact_s1_gemma_long_prefill_warmup`] after multi-model publish
-/// for formal S1 — dummy tokens alone left concurrent thr ~0.74×.
-#[allow(dead_code)]
-pub(crate) fn run_long_prefill_production_warmup(
-    generation_service: &NativeGenerationService,
-    model_id: &str,
-) {
-    run_production_path_warmup_shapes(
-        generation_service,
-        model_id,
-        &[
-            (10_u64, 1536_usize, 1_u32),
-            (11, 4096, 1),
-            (12, 8192, 1),
-            (13, 13_826, 1),
-        ],
-    );
-}
-
 /// Run the **exact** S1 Gemma long prefill on the production generate path
 /// (tokenize real text → greedy max_tokens=1).
 ///
@@ -1740,11 +1719,45 @@ pub(crate) fn run_exact_s1_gemma_long_prefill_warmup(
     if input_tokens.is_empty() {
         return;
     }
+    let _ = run_warmup_generate_request(generation_service, model_id, input_tokens, 1, 20);
+}
+
+fn run_production_path_warmup_shapes(
+    generation_service: &NativeGenerationService,
+    model_id: &str,
+    shapes: &[(u64, usize, u32)],
+) {
+    for &(offset, prompt_len, max_out) in shapes {
+        // Varied token ids (not all-1s): all-identical prompts under-exercise
+        // attention/embedding paths that real S1 text hits, leaving formal
+        // concurrent cold despite a long dummy warm.
+        let input_tokens: Vec<u32> = (0..prompt_len)
+            .map(|i| (i as u32 % 997).saturating_add(1))
+            .collect();
+        if !run_warmup_generate_request(generation_service, model_id, input_tokens, max_out, offset)
+        {
+            return;
+        }
+    }
+}
+
+/// Submit one greedy warmup generate request on the worker thread and wait for
+/// the result. Returns `false` when the worker queue is already closed so
+/// callers can stop warming without failing start-up.
+fn run_warmup_generate_request(
+    generation_service: &NativeGenerationService,
+    model_id: &str,
+    input_tokens: Vec<u32>,
+    max_output_tokens: u32,
+    offset: u64,
+) -> bool {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let model_id = model_id.to_string();
+    // Unique request ids per call (wall-time mix) so post-publish rewarm
+    // does not collide with first-load warm ids in the same process.
     let nonce = unix_now_secs().wrapping_mul(1_000) % 50_000;
     let request_id = PRODUCTION_PATH_WARMUP_REQUEST_ID
-        .saturating_add(20)
+        .saturating_add(offset)
         .saturating_add(nonce);
     if generation_service
         .submit(move |session| {
@@ -1754,7 +1767,7 @@ pub(crate) fn run_exact_s1_gemma_long_prefill_warmup(
                 // Cleared after tokenize (parity with OpenAI native MLX path).
                 input_text: None,
                 multimodal_inputs: Default::default(),
-                max_output_tokens: 1,
+                max_output_tokens,
                 sampling: GenerateSampling {
                     ignore_eos: true,
                     ..GenerateSampling::default()
@@ -1769,57 +1782,10 @@ pub(crate) fn run_exact_s1_gemma_long_prefill_warmup(
         })
         .is_err()
     {
-        return;
+        return false;
     }
     let _ = rx.recv();
-}
-
-fn run_production_path_warmup_shapes(
-    generation_service: &NativeGenerationService,
-    model_id: &str,
-    shapes: &[(u64, usize, u32)],
-) {
-    for &(offset, prompt_len, max_out) in shapes {
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let model_id = model_id.to_string();
-        // Unique request ids per call (wall-time mix) so post-publish rewarm
-        // does not collide with first-load warm ids in the same process.
-        let nonce = unix_now_secs().wrapping_mul(1_000) % 50_000;
-        let request_id = PRODUCTION_PATH_WARMUP_REQUEST_ID
-            .saturating_add(offset)
-            .saturating_add(nonce);
-        // Varied token ids (not all-1s): all-identical prompts under-exercise
-        // attention/embedding paths that real S1 text hits, leaving formal
-        // concurrent cold despite a long dummy warm.
-        let input_tokens: Vec<u32> = (0..prompt_len)
-            .map(|i| (i as u32 % 997).saturating_add(1))
-            .collect();
-        if generation_service
-            .submit(move |session| {
-                let request = GenerateRequest {
-                    model_id,
-                    input_tokens,
-                    input_text: None,
-                    multimodal_inputs: Default::default(),
-                    max_output_tokens: max_out,
-                    sampling: GenerateSampling {
-                        ignore_eos: true,
-                        ..GenerateSampling::default()
-                    },
-                    stop_sequences: Vec::new(),
-                    metadata: None,
-                };
-                let result = session
-                    .generate_with_request_id(request_id, request)
-                    .map(|_| ());
-                let _ = tx.send(result);
-            })
-            .is_err()
-        {
-            return;
-        }
-        let _ = rx.recv();
-    }
+    true
 }
 
 pub(crate) fn unix_now_secs() -> u64 {

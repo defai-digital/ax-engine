@@ -10,8 +10,10 @@
 //! [`PressureProbes`] trait so unit tests can drive synthetic snapshots
 //! without touching the host or device.
 
+#[cfg(test)]
+use ax_engine_core::PressureLevel;
 use ax_engine_core::{
-    DeviceResidentSnapshot, HostRssSnapshot, PressureLevel, PressureObservation, PressureThresholds,
+    DeviceResidentSnapshot, HostRssSnapshot, PressureObservation, PressureThresholds,
 };
 use mlx_sys::{device_active_bytes, device_recommended_working_set_bytes, host_resident_bytes};
 
@@ -49,8 +51,7 @@ impl PressureProbes for StaticProbes {
 /// `host_budget_bytes` and `device_budget_bytes` are stored at construction
 /// so the classifier can compare against a stable budget for the entire
 /// fixture run. The host budget defaults to the device budget (Apple
-/// Silicon unified memory) and can be overridden via the constructor when
-/// a deployment has a separate per-process RSS ceiling.
+/// Silicon unified memory).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlatformProbes {
     host_budget_bytes: u64,
@@ -82,16 +83,6 @@ impl PlatformProbes {
             host_budget_bytes: device_budget_bytes,
             device_budget_bytes,
         })
-    }
-
-    /// Construct a probe pair with an explicit host budget. Useful when a
-    /// deployment caps per-process RSS below the device working-set size.
-    #[allow(dead_code)]
-    pub fn with_host_budget(host_budget_bytes: u64, device_budget_bytes: u64) -> Self {
-        Self {
-            host_budget_bytes,
-            device_budget_bytes,
-        }
     }
 }
 
@@ -168,24 +159,16 @@ fn record_decisions(observation: &PressureObservation, report: &mut WorkloadRepo
 /// Convenience: an `empty` observation that callers can drop into a report
 /// when no probes are wired (for example, when the fixture runs on a CI host
 /// without Metal). Records `Normal` for all three levels.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn record_empty(report: &mut WorkloadReport) -> PressureObservation {
     let observation = PressureObservation::empty();
     record_decisions(&observation, report);
     observation
 }
 
-/// Default thresholds re-exported so fixtures can construct an observation
-/// without depending on `ax_engine_core::PressureThresholds` directly.
-#[allow(dead_code)]
-pub(crate) fn default_thresholds() -> PressureThresholds {
-    PressureThresholds::default()
-}
-
-/// Helper used by tests and by the run-serving-stress driver: classify a raw
-/// `(host, device)` pair without going through a `PressureProbes` instance.
-/// Returns the combined level only.
-#[allow(dead_code)]
+/// Test helper: classify a raw `(host, device)` pair without going through a
+/// `PressureProbes` instance. Returns the combined level only.
+#[cfg(test)]
 pub(crate) fn classify_pair(
     host: Option<HostRssSnapshot>,
     device: Option<DeviceResidentSnapshot>,

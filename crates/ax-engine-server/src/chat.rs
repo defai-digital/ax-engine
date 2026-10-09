@@ -1222,8 +1222,8 @@ fn render_prompt_internal(
                 prompt.push_str(content);
                 prompt.push('\n');
             }
-            ChatPromptTemplate::Unsupported(_) => {
-                unreachable!("unsupported templates are rejected before rendering")
+            ChatPromptTemplate::Unsupported(family) => {
+                return Err(format!("unsupported chat template: {}", family.label()));
             }
         }
     }
@@ -1306,8 +1306,8 @@ fn render_prompt_internal(
             });
         }
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
-        ChatPromptTemplate::Unsupported(_) => {
-            unreachable!("unsupported templates are rejected before rendering")
+        ChatPromptTemplate::Unsupported(family) => {
+            return Err(format!("unsupported chat template: {}", family.label()));
         }
     }
     Ok(prompt)

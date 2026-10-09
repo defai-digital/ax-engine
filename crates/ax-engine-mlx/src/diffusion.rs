@@ -910,16 +910,21 @@ pub(crate) struct DiffusionBlockWorkspace {
 /// unit tests even when the runner only consumes `commit_ready` /
 /// `steps_total`.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub(crate) struct DiffusionAdvanceProgress {
+    #[allow(dead_code)]
     pub steps_this_call: u32,
     pub steps_total: u32,
+    #[allow(dead_code)]
     pub converged: bool,
     /// True when denoise is finished and the block may be committed.
     pub commit_ready: bool,
+    #[allow(dead_code)]
     pub acceptance_rate: f32,
+    #[allow(dead_code)]
     pub min_entropy: f32,
+    #[allow(dead_code)]
     pub min_acceptance_rate: f32,
+    #[allow(dead_code)]
     pub last_signals: ConvergenceSignals,
 }
 
@@ -1310,15 +1315,6 @@ fn elapsed_us(started: Instant) -> u32 {
 // `EmbeddingCache::needs_refresh` is consulted.
 static EMBEDDING_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static EMBEDDING_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
-
-/// Returns `(hits, misses)` for the DiffusionGemma embedding cache.
-#[allow(dead_code)]
-pub fn embedding_cache_counters() -> (u64, u64) {
-    (
-        EMBEDDING_CACHE_HITS.load(Ordering::Relaxed),
-        EMBEDDING_CACHE_MISSES.load(Ordering::Relaxed),
-    )
-}
 
 // Per-layer embedding cache for DiffusionGemma denoiser.
 //

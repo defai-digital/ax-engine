@@ -6,7 +6,7 @@ use mlx_sys::{
 };
 
 use crate::kv_block_pool::{
-    FaBlockPoolConfig, FaBlockPoolError, FaBlockPoolSnapshot, PhysicalBlockId, SharedFaBlockPool,
+    FaBlockPoolConfig, FaBlockPoolError, PhysicalBlockId, SharedFaBlockPool,
     default_fa_block_pool_config, fa_kv_block_pool_enabled,
 };
 use crate::paged_attention::PagedAttentionView;
@@ -1533,30 +1533,7 @@ impl MlxKVCache {
     /// Contiguous FA path (historical default). Used when the block-pool flag
     /// is off and by deserialize (wire format is always dense).
     pub fn new_contiguous(num_layers: usize) -> Self {
-        Self {
-            qwen4_exp: None,
-            layers: (0..num_layers).map(|_| None).collect(),
-            glm_mla_layers: (0..num_layers).map(|_| None).collect(),
-            deepseek_v4_layers: (0..num_layers).map(|_| None).collect(),
-            linear_layers: (0..num_layers)
-                .map(|_| LinearLayerState::default())
-                .collect(),
-            linear_prefix_capture_after: None,
-            seq_len: 0,
-            rope_offset: 0,
-            mrope_position_delta: 0,
-            growth_count: 0,
-            use_rotating_sliding_decode: false,
-            rotating_slack: 0,
-            fa_pool: None,
-            paged_materialize_us: 0,
-            paged_pool_exhaustion_fallbacks: 0,
-            paged_cow_copies: 0,
-            paged_attention_calls: 0,
-            paged_attention_fallbacks: 0,
-            hard_cap_exhausted: false,
-            kv_quant: None,
-        }
+        Self::new_with_fa_pool(num_layers, None)
     }
 
     /// FA private block-pool path (PR4). Pure FA appends use paged storage and
@@ -1569,6 +1546,10 @@ impl MlxKVCache {
 
     /// Build a paged cache backed by a runner-owned synchronized FA pool.
     pub fn new_with_shared_fa_block_pool(num_layers: usize, fa_pool: SharedFaBlockPool) -> Self {
+        Self::new_with_fa_pool(num_layers, Some(fa_pool))
+    }
+
+    fn new_with_fa_pool(num_layers: usize, fa_pool: Option<SharedFaBlockPool>) -> Self {
         Self {
             qwen4_exp: None,
             layers: (0..num_layers).map(|_| None).collect(),
@@ -1584,7 +1565,7 @@ impl MlxKVCache {
             growth_count: 0,
             use_rotating_sliding_decode: false,
             rotating_slack: 0,
-            fa_pool: Some(fa_pool),
+            fa_pool,
             paged_materialize_us: 0,
             paged_pool_exhaustion_fallbacks: 0,
             paged_cow_copies: 0,
@@ -1730,10 +1711,6 @@ impl MlxKVCache {
         self.fa_pool
             .as_ref()
             .map(|pool| pool.snapshot().available_blocks)
-    }
-
-    pub fn fa_block_pool_snapshot(&self) -> Option<FaBlockPoolSnapshot> {
-        self.fa_pool.as_ref().map(SharedFaBlockPool::snapshot)
     }
 
     pub fn shares_fa_block_pool_with(&self, other: &Self) -> bool {

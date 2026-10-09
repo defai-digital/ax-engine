@@ -58,12 +58,6 @@ pub(crate) use mlp::{
     shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
-// Staged for the qwen4_exp forward integration.
-#[allow(unused_imports)]
-pub(crate) use qwen4_exp_residual::{
-    Qwen4ExpGatedResidual, Qwen4ExpGatedResidualWeights, Qwen4ExpResidualError,
-    Qwen4ExpResidualRead, Qwen4ExpStreamLayout, qwen4_exp_grouped_rms_norm,
-};
 pub(super) use rope::{build_llama3_rope_freqs, build_yarn_rope_freqs};
 pub(crate) use utils::Gemma4PrefillSkipLastFfnPackedGuard;
 pub(crate) use utils::scale_hidden_pub;

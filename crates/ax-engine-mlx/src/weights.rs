@@ -5037,71 +5037,90 @@ fn full_attention_projection_layout(
     }
 }
 
+fn has_any_role(
+    specs: &[NativeTensorSpec],
+    layer_index: Option<u32>,
+    roles: &[NativeTensorRole],
+) -> bool {
+    roles
+        .iter()
+        .copied()
+        .any(|role| has_role(specs, role, layer_index))
+}
+
 fn has_full_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>) -> bool {
-    [
-        NativeTensorRole::AttentionO,
-        NativeTensorRole::AttentionQ,
-        NativeTensorRole::AttentionK,
-        NativeTensorRole::AttentionV,
-        NativeTensorRole::AttentionQkvPacked,
-        NativeTensorRole::AttentionQa,
-        NativeTensorRole::AttentionQaNorm,
-        NativeTensorRole::AttentionQb,
-        NativeTensorRole::AttentionKvA,
-        NativeTensorRole::AttentionKvB,
-        NativeTensorRole::AttentionKvANorm,
-        NativeTensorRole::AttentionEmbedQ,
-        NativeTensorRole::AttentionUnembedOut,
-    ]
-    .into_iter()
-    .any(|role| has_role(specs, role, layer_index))
+    has_any_role(
+        specs,
+        layer_index,
+        &[
+            NativeTensorRole::AttentionO,
+            NativeTensorRole::AttentionQ,
+            NativeTensorRole::AttentionK,
+            NativeTensorRole::AttentionV,
+            NativeTensorRole::AttentionQkvPacked,
+            NativeTensorRole::AttentionQa,
+            NativeTensorRole::AttentionQaNorm,
+            NativeTensorRole::AttentionQb,
+            NativeTensorRole::AttentionKvA,
+            NativeTensorRole::AttentionKvB,
+            NativeTensorRole::AttentionKvANorm,
+            NativeTensorRole::AttentionEmbedQ,
+            NativeTensorRole::AttentionUnembedOut,
+        ],
+    )
 }
 
 fn has_standard_full_attention_projection_role(
     specs: &[NativeTensorSpec],
     layer_index: Option<u32>,
 ) -> bool {
-    [
-        NativeTensorRole::AttentionQ,
-        NativeTensorRole::AttentionK,
-        NativeTensorRole::AttentionV,
-        NativeTensorRole::AttentionQkvPacked,
-    ]
-    .into_iter()
-    .any(|role| has_role(specs, role, layer_index))
+    has_any_role(
+        specs,
+        layer_index,
+        &[
+            NativeTensorRole::AttentionQ,
+            NativeTensorRole::AttentionK,
+            NativeTensorRole::AttentionV,
+            NativeTensorRole::AttentionQkvPacked,
+        ],
+    )
 }
 
 fn has_glm_mla_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>) -> bool {
-    [
-        NativeTensorRole::AttentionQa,
-        NativeTensorRole::AttentionQaNorm,
-        NativeTensorRole::AttentionQb,
-        NativeTensorRole::AttentionKvA,
-        NativeTensorRole::AttentionKvB,
-        NativeTensorRole::AttentionKvANorm,
-        NativeTensorRole::AttentionEmbedQ,
-        NativeTensorRole::AttentionUnembedOut,
-    ]
-    .into_iter()
-    .any(|role| has_role(specs, role, layer_index))
+    has_any_role(
+        specs,
+        layer_index,
+        &[
+            NativeTensorRole::AttentionQa,
+            NativeTensorRole::AttentionQaNorm,
+            NativeTensorRole::AttentionQb,
+            NativeTensorRole::AttentionKvA,
+            NativeTensorRole::AttentionKvB,
+            NativeTensorRole::AttentionKvANorm,
+            NativeTensorRole::AttentionEmbedQ,
+            NativeTensorRole::AttentionUnembedOut,
+        ],
+    )
 }
 
 fn has_linear_attention_role(specs: &[NativeTensorSpec], layer_index: Option<u32>) -> bool {
-    [
-        NativeTensorRole::LinearAttentionInProjQkv,
-        NativeTensorRole::LinearAttentionInProjQkvz,
-        NativeTensorRole::LinearAttentionInProjZ,
-        NativeTensorRole::LinearAttentionInProjA,
-        NativeTensorRole::LinearAttentionInProjB,
-        NativeTensorRole::LinearAttentionInProjBa,
-        NativeTensorRole::LinearAttentionConv1d,
-        NativeTensorRole::LinearAttentionDtBias,
-        NativeTensorRole::LinearAttentionALog,
-        NativeTensorRole::LinearAttentionNorm,
-        NativeTensorRole::LinearAttentionOutProj,
-    ]
-    .into_iter()
-    .any(|role| has_role(specs, role, layer_index))
+    has_any_role(
+        specs,
+        layer_index,
+        &[
+            NativeTensorRole::LinearAttentionInProjQkv,
+            NativeTensorRole::LinearAttentionInProjQkvz,
+            NativeTensorRole::LinearAttentionInProjZ,
+            NativeTensorRole::LinearAttentionInProjA,
+            NativeTensorRole::LinearAttentionInProjB,
+            NativeTensorRole::LinearAttentionInProjBa,
+            NativeTensorRole::LinearAttentionConv1d,
+            NativeTensorRole::LinearAttentionDtBias,
+            NativeTensorRole::LinearAttentionALog,
+            NativeTensorRole::LinearAttentionNorm,
+            NativeTensorRole::LinearAttentionOutProj,
+        ],
+    )
 }
 
 fn load_linear_attention_weights(

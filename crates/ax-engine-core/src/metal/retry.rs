@@ -6,10 +6,11 @@ use super::feedback::{
     rms_norm_feedback_key, rope_feedback_key, vector_add_feedback_key,
 };
 use super::tensor::tensor_matrix_dimensions;
+#[cfg(test)]
+use super::{MetalFfnGateUpBindings, MetalNativeModelBufferBindings};
 use super::{
-    MetalFfnGateUpBindings, MetalNativeModelBufferBindings, MetalNativeTensorBufferBinding,
-    MetalRuntimeBringup, ModelBoundDecodeDims, ModelFfnActivation, ModelStageDims,
-    ModelStageRopeStyle,
+    MetalNativeTensorBufferBinding, MetalRuntimeBringup, ModelBoundDecodeDims, ModelFfnActivation,
+    ModelStageDims, ModelStageRopeStyle,
 };
 
 pub(super) fn batched_projection_split_retry_worthwhile(
@@ -347,13 +348,13 @@ pub(super) fn single_attention_output_gate_retry_worthwhile(
 }
 
 #[derive(Clone, Copy, Default)]
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) struct SingleFfnGateUpProjectionNativeRetryPolicy<'a> {
     pub(super) gate_projection: Option<&'a MetalRuntimeBringup>,
     pub(super) up_projection: Option<&'a MetalRuntimeBringup>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn single_ffn_gate_up_projection_retry_policy<'a>(
     ffn_gate_up: &MetalFfnGateUpBindings,
     buffers: &MetalNativeModelBufferBindings,

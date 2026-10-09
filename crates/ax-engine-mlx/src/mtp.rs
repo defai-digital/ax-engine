@@ -992,19 +992,6 @@ fn mtp_head_forward_inner(
     h
 }
 
-/// Apply `rms_norm(hidden, mtp_norm) @ draft_lm_head` to produce draft logits.
-///
-/// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
-pub fn mtp_hidden_to_logits(
-    hidden: &MlxArray,
-    head: &MtpWeights,
-    weights: &ModelWeights,
-    cfg: &ModelConfig,
-) -> MlxArray {
-    let normed = mtp_hidden_post_norm(hidden, head, cfg);
-    mtp_post_norm_to_logits(&normed, head, weights, cfg)
-}
-
 fn mtp_hidden_post_norm(hidden: &MlxArray, head: &MtpWeights, cfg: &ModelConfig) -> MlxArray {
     rms_norm(hidden, Some(&head.mtp_norm), cfg.rms_norm_eps, None)
 }

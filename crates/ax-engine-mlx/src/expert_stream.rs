@@ -452,13 +452,6 @@ pub fn set_stream_experts_mode(mode: StreamExpertsMode) {
     STREAM_EXPERTS_OVERRIDE.with(|latch| latch.set(mode_to_u8(mode)));
 }
 
-/// Backward-compatible latch: `true` is On, `false` leaves Auto (env/default).
-pub fn set_stream_experts_override(enabled: bool) {
-    if enabled {
-        set_stream_experts_mode(StreamExpertsMode::On);
-    }
-}
-
 /// Effective mode: CLI/SDK override, else `AX_STREAM_EXPERTS`, else Auto. An
 /// explicit override wins and the environment is not parsed at all, so an
 /// operator's explicit `--stream-experts auto` is never rejected because of an
@@ -481,11 +474,6 @@ pub fn stream_experts_mode_checked() -> Result<StreamExpertsMode, ExpertStreamEr
 /// [`stream_experts_mode_checked`] so an invalid value fails closed.
 pub fn stream_experts_mode() -> StreamExpertsMode {
     stream_experts_mode_checked().unwrap_or(StreamExpertsMode::Auto)
-}
-
-/// Whether the current mode force-enables streaming.
-pub fn stream_experts_requested() -> bool {
-    matches!(stream_experts_mode(), StreamExpertsMode::On)
 }
 
 /// Host unified-memory size (`hw.memsize` on macOS). `None` when unknown.

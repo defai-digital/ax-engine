@@ -100,75 +100,7 @@ pub fn support_tier_for_manifest(manifest: &NativeModelManifest) -> ModelSupport
 mod tests {
     use super::*;
     use crate::architecture_registry::ARCHITECTURE_REGISTRY;
-    use crate::model::{
-        AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeDiffusionConfig,
-        NativeLinearAttentionConfig, NativeMoeConfig, NativeRuntimeStatus, NativeTensorFormat,
-        WeightSanitize,
-    };
-
-    fn base_manifest(family: &str) -> NativeModelManifest {
-        NativeModelManifest {
-            schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-            model_family: family.to_string(),
-            tensor_format: NativeTensorFormat::Safetensors,
-            source_quantization: None,
-            runtime_status: NativeRuntimeStatus::default(),
-            layer_count: 4,
-            hidden_size: 128,
-            intermediate_size: 256,
-            attention_head_count: 4,
-            attention_head_dim: 32,
-            kv_head_count: 2,
-            vocab_size: 1000,
-            tie_word_embeddings: false,
-            rope_theta: None,
-            rope_theta_swa: None,
-            rope_scaling_type: None,
-            rope_scaling_factor: None,
-            rope_low_freq_factor: None,
-            rope_high_freq_factor: None,
-            rope_original_context_len: None,
-            rope_beta_fast: None,
-            rope_beta_slow: None,
-            no_rope_layer_interval: 0,
-            attn_temperature_floor: None,
-            attn_temperature_scale: None,
-            intermediate_size_mlp: 0,
-            query_pre_attn_scalar: None,
-            attention_logit_softcap: None,
-            attn_output_gate: false,
-            partial_rotary_factor: None,
-            rms_norm_eps: None,
-            attention_value_from_key_layers: Vec::new(),
-            attention_v_norm_no_scale_layers: Vec::new(),
-            global_head_dim: None,
-            global_kv_head_count: None,
-            sliding_window_size: None,
-            layer_types: Vec::new(),
-            kv_shared_source_layers: Default::default(),
-            final_logit_softcapping: None,
-            final_logits_scale: None,
-            attention_scale_multiplier: None,
-            post_norm_eps: None,
-            hidden_states_scale: None,
-            moe_norm_topk_prob: false,
-            hidden_size_per_layer_input: 0,
-            vocab_size_per_layer_input: None,
-            linear_attention: NativeLinearAttentionConfig::default(),
-            mla_attention: Default::default(),
-            moe: NativeMoeConfig::default(),
-            glm_router: Default::default(),
-            deepseek_v4: Default::default(),
-            qwen4_exp: Default::default(),
-            weight_sanitize: WeightSanitize::default(),
-            think_start_token_id: None,
-            think_end_token_id: None,
-            diffusion: NativeDiffusionConfig::default(),
-            dropped_tensors: Default::default(),
-            kv_cache_quantization: None,
-            tensors: Vec::new(),
-        }
-    }
+    use crate::model::{NativeDiffusionConfig, base_manifest};
 
     /// Expected tier for every statically registered family. Keep in sync
     /// with the `support_tier` field on each registry row; the test below
@@ -287,7 +219,7 @@ mod tests {
 
     #[test]
     fn manifest_forcing_diffusion_is_experimental_regardless_of_family() {
-        let mut manifest = base_manifest("gemma4");
+        let mut manifest = base_manifest("gemma4", 4);
         assert_eq!(
             support_tier_for_manifest(&manifest),
             ModelSupportTier::Certified
@@ -302,7 +234,7 @@ mod tests {
             "diffusion structural signals must force the experimental path"
         );
         // The feature-gated family label itself resolves to Experimental too.
-        let diffusion = base_manifest("diffusion_gemma");
+        let diffusion = base_manifest("diffusion_gemma", 4);
         assert_eq!(
             support_tier_for_manifest(&diffusion),
             ModelSupportTier::Experimental

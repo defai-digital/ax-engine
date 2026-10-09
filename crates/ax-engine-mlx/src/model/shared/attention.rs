@@ -103,7 +103,6 @@ pub(crate) fn gemma4_prefill_maybe_async_first_kv_for(k: &MlxArray, v: &MlxArray
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn bhsd_view_from_proj(
     qw_out: &MlxArray,
     n_heads: usize,

@@ -1,11 +1,12 @@
 use ax_engine_sdk::GenerateFinishReason;
 
-use crate::openai::responses::{openai_finish_reason, unix_timestamp_secs};
+use crate::openai::responses::openai_finish_reason;
 use crate::openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatDelta,
     OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiFunctionCallDelta, OpenAiStreamKind,
     OpenAiStreamUsageChunk, OpenAiToolCall, OpenAiToolCallDelta, OpenAiUsage,
 };
+use crate::openai::validation::unix_timestamp_secs;
 
 pub(crate) fn stream_usage_chunk(
     request_id: u64,

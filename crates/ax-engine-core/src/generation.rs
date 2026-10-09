@@ -220,79 +220,11 @@ pub(crate) fn is_block_diffusion_manifest(manifest: &NativeModelManifest) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeDiffusionConfig,
-        NativeLinearAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
-        NativeTensorFormat, WeightSanitize,
-    };
-
-    fn base_manifest(family: &str) -> NativeModelManifest {
-        NativeModelManifest {
-            schema_version: AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
-            model_family: family.to_string(),
-            tensor_format: NativeTensorFormat::Safetensors,
-            source_quantization: None,
-            runtime_status: NativeRuntimeStatus::default(),
-            layer_count: 2,
-            hidden_size: 128,
-            intermediate_size: 256,
-            attention_head_count: 4,
-            attention_head_dim: 32,
-            kv_head_count: 2,
-            vocab_size: 1000,
-            tie_word_embeddings: false,
-            rope_theta: None,
-            rope_theta_swa: None,
-            rope_scaling_type: None,
-            rope_scaling_factor: None,
-            rope_low_freq_factor: None,
-            rope_high_freq_factor: None,
-            rope_original_context_len: None,
-            rope_beta_fast: None,
-            rope_beta_slow: None,
-            no_rope_layer_interval: 0,
-            attn_temperature_floor: None,
-            attn_temperature_scale: None,
-            intermediate_size_mlp: 0,
-            query_pre_attn_scalar: None,
-            attention_logit_softcap: None,
-            attn_output_gate: false,
-            partial_rotary_factor: None,
-            rms_norm_eps: None,
-            attention_value_from_key_layers: Vec::new(),
-            attention_v_norm_no_scale_layers: Vec::new(),
-            global_head_dim: None,
-            global_kv_head_count: None,
-            sliding_window_size: None,
-            layer_types: Vec::new(),
-            kv_shared_source_layers: Default::default(),
-            final_logit_softcapping: None,
-            final_logits_scale: None,
-            attention_scale_multiplier: None,
-            post_norm_eps: None,
-            hidden_states_scale: None,
-            moe_norm_topk_prob: false,
-            hidden_size_per_layer_input: 0,
-            vocab_size_per_layer_input: None,
-            linear_attention: NativeLinearAttentionConfig::default(),
-            mla_attention: Default::default(),
-            moe: NativeMoeConfig::default(),
-            glm_router: Default::default(),
-            deepseek_v4: Default::default(),
-            qwen4_exp: Default::default(),
-            weight_sanitize: WeightSanitize::default(),
-            think_start_token_id: None,
-            think_end_token_id: None,
-            diffusion: NativeDiffusionConfig::default(),
-            dropped_tensors: Default::default(),
-            kv_cache_quantization: None,
-            tensors: Vec::new(),
-        }
-    }
+    use crate::model::{NativeDiffusionConfig, base_manifest};
 
     #[test]
     fn generation_kind_qwen_is_autoregressive() {
-        let m = base_manifest("qwen3");
+        let m = base_manifest("qwen3", 2);
         assert_eq!(
             GenerationKind::from_manifest(&m),
             GenerationKind::Autoregressive
@@ -305,13 +237,13 @@ mod tests {
 
     #[test]
     fn generation_kind_diffusion_from_config_or_family() {
-        let by_family = base_manifest("diffusion_gemma");
+        let by_family = base_manifest("diffusion_gemma", 2);
         assert_eq!(
             GenerationKind::from_manifest(&by_family),
             GenerationKind::BlockDiffusion
         );
 
-        let mut by_config = base_manifest("gemma4");
+        let mut by_config = base_manifest("gemma4", 2);
         by_config.diffusion = NativeDiffusionConfig {
             canvas_size: Some(256),
             ..Default::default()
@@ -328,7 +260,7 @@ mod tests {
 
     #[test]
     fn generation_kind_embedding() {
-        let m = base_manifest("embeddinggemma");
+        let m = base_manifest("embeddinggemma", 2);
         assert_eq!(
             GenerationKind::from_manifest(&m),
             GenerationKind::EncoderEmbed
@@ -337,7 +269,7 @@ mod tests {
             GenerationStrategyDescriptor::from_manifest(&m).first_visible,
             FirstVisibleEventKind::Embedding
         );
-        let nemo = base_manifest("nemotron_embed");
+        let nemo = base_manifest("nemotron_embed", 2);
         assert_eq!(
             GenerationKind::from_manifest(&nemo),
             GenerationKind::EncoderEmbed
@@ -439,7 +371,7 @@ mod tests {
     #[test]
     fn runtime_classification_uses_generation_kind_not_family_alone() {
         // A gemma4 family label with diffusion config is BlockDiffusion.
-        let mut m = base_manifest("gemma4");
+        let mut m = base_manifest("gemma4", 2);
         m.diffusion.canvas_size = Some(256);
         let kind = GenerationKind::from_manifest(&m);
         assert_eq!(kind, GenerationKind::BlockDiffusion);

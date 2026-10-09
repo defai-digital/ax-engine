@@ -358,16 +358,6 @@ impl PostRestartCacheSafety {
         report.record_elapsed(started_at.elapsed());
         Ok(report)
     }
-
-    #[allow(dead_code)]
-    pub fn report_skeleton(&self) -> WorkloadReport {
-        let mut report = WorkloadReport::new(self.name());
-        report.add_note(format!(
-            "configured baseline_model_id={}, baseline_token_count={}",
-            self.baseline_model_id, self.baseline_token_count
-        ));
-        report
-    }
 }
 
 fn make_temp_dir(prefix: &str) -> std::io::Result<PathBuf> {

@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_sdk::{
     EngineSessionError, EngineTokenizer, GenerateResponse, GenerateStreamEvent, SelectedBackend,
@@ -47,6 +46,7 @@ use crate::openai::schema::{
 };
 use crate::openai::streaming::{ChatChannelStreamFilter, IncrementalDecoder};
 use crate::openai::validation::select_openai_model;
+use crate::openai::validation::{json_number_is_nonzero, unix_timestamp_secs};
 use crate::tasks::run_blocking_session_task;
 
 #[derive(Debug, Deserialize)]
@@ -1282,15 +1282,6 @@ fn ollama_value_is_present(value: Option<&Value>) -> bool {
     }
 }
 
-fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
-    value
-        .as_i64()
-        .map(|value| value != 0)
-        .or_else(|| value.as_u64().map(|value| value != 0))
-        .or_else(|| value.as_f64().map(|value| value != 0.0))
-        .unwrap_or(true)
-}
-
 fn ollama_message_to_openai_message(
     message: OllamaMessage,
 ) -> Result<OpenAiChatMessage, (StatusCode, Json<ErrorResponse>)> {
@@ -1944,13 +1935,6 @@ fn default_ollama_stream() -> bool {
 
 fn rfc3339_now() -> String {
     rfc3339_from_unix(unix_timestamp_secs())
-}
-
-fn unix_timestamp_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 fn rfc3339_from_unix(timestamp: u64) -> String {

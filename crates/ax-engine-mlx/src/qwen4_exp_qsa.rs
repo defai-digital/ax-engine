@@ -16,8 +16,6 @@
 //! Cache updates are staged locally and published only when selection
 //! succeeds. The input cache is never mutated.
 
-#![allow(dead_code)]
-
 #[cfg(test)]
 use mlx_sys::eval;
 use mlx_sys::{

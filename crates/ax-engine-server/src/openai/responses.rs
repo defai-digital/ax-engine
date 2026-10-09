@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use ax_engine_sdk::{EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateRouteReport};
 use axum::Json;
 use axum::response::IntoResponse;
@@ -13,6 +11,7 @@ use super::schema::{
     OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiToolCall, OpenAiUsage,
 };
 use super::tool_names;
+use super::validation::unix_timestamp_secs;
 use crate::app_state::LiveState;
 
 impl OpenAiStreamKind {
@@ -994,13 +993,6 @@ pub(crate) fn finish_reason_from_llama_cpp_chat(
         Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
         Some(_) | None => None,
     }
-}
-
-pub(crate) fn unix_timestamp_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

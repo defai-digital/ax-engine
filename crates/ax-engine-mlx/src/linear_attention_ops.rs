@@ -8,7 +8,7 @@ use mlx_sys::{
     rms_norm_silu_mul_normed, silu_mul, slice, slice_last_dim, zeros,
 };
 #[cfg(test)]
-use mlx_sys::{add, exp, less, log1p, negative, sigmoid, where_cond};
+use mlx_sys::{add, exp, less, log1p, negative, where_cond};
 
 use crate::attention_mask::scalar_i32;
 use crate::fastpath;
@@ -119,20 +119,6 @@ pub(crate) fn compute_gated_delta_g(
     let g = exp(&negative(&decay, None), None);
     // Keep g in float32 for the recurrent state update (matches mlx_lm).
     astype(&g, MlxDtype::Float32, None)
-}
-
-/// `beta = sigmoid(b)` with the bf16/activation rounding contract used by the
-/// fused Metal kernel: compute in float, cast through the activation dtype,
-/// then promote back to float32 for the recurrent update.
-///
-/// Kept for unit/oracle comparisons; production prefill fuses beta inside the
-/// streaming Metal kernel.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn compute_gated_delta_beta(b_raw: &MlxArray) -> MlxArray {
-    let beta = sigmoid(b_raw, None);
-    let beta_act = astype(&beta, b_raw.dtype(), None);
-    astype(&beta_act, MlxDtype::Float32, None)
 }
 
 /// Compile the linear-attention Metal kernel specializations a decode

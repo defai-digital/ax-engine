@@ -585,17 +585,6 @@ pub fn sample_indexed_categorical_with_logprob(
     distribution.sample_with_logprob(rng)
 }
 
-pub fn sample_indexed_categorical_with_logprob_and_distribution(
-    logits: &[f32],
-    indices: &[u32],
-    sampling: MlxSamplingParams,
-    rng: &mut Xorshift64,
-) -> Option<(u32, f32, TokenDistribution)> {
-    let distribution = indexed_token_distribution(logits, indices, sampling)?;
-    let (token, log_prob) = distribution.sample_with_logprob(rng)?;
-    Some((token, log_prob, distribution))
-}
-
 pub fn indexed_token_distribution(
     logits: &[f32],
     indices: &[u32],

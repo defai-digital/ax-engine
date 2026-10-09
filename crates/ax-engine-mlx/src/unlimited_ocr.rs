@@ -728,44 +728,6 @@ pub fn preprocess_document_rgb_u8(
     })
 }
 
-/// Global-only compatibility wrapper used by diagnostics and small images.
-pub fn preprocess_rgb_u8(
-    rgb: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<MlxArray, UnlimitedOcrError> {
-    Ok(preprocess_document_rgb_u8(rgb, width, height, false)?.global_nhwc)
-}
-
-/// Build NHWC BF16 pixels from planar CHW f32 already normalized (mean/std 0.5).
-pub fn pixels_from_chw_f32(chw: &[f32]) -> Result<MlxArray, UnlimitedOcrError> {
-    let expected = (3 * IMAGE_SIZE * IMAGE_SIZE) as usize;
-    if chw.len() != expected {
-        return Err(UnlimitedOcrError::BadPixelValues);
-    }
-    // CHW → NHWC
-    let mut nhwc = vec![0f32; expected];
-    let hw = (IMAGE_SIZE * IMAGE_SIZE) as usize;
-    for y in 0..IMAGE_SIZE as usize {
-        for x in 0..IMAGE_SIZE as usize {
-            let spatial = y * IMAGE_SIZE as usize + x;
-            for c in 0..3 {
-                nhwc[spatial * 3 + c] = chw[c * hw + spatial];
-            }
-        }
-    }
-    let arr = MlxArray::from_raw_data(
-        nhwc.as_ptr().cast(),
-        std::mem::size_of_val(nhwc.as_slice()),
-        &[1, IMAGE_SIZE, IMAGE_SIZE, 3],
-        MlxDtype::Float32,
-    );
-    let out = astype(&arr, MlxDtype::Bfloat16, None);
-    mlx_sys::eval(&[&out]);
-    drop(nhwc);
-    Ok(out)
-}
-
 // ---------------------------------------------------------------------------
 // SAM forward
 // ---------------------------------------------------------------------------

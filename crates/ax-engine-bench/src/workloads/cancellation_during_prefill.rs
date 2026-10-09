@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{GenerateRequest, GenerateSampling, GenerateStreamEvent};
 
-use super::{Workload, WorkloadContext, WorkloadOutcome};
+use super::{Workload, WorkloadContext, WorkloadOutcome, workload_inference_args};
 use crate::harness::WorkloadReport;
 use crate::inference_args::{InferenceArgs, build_inference_session};
 use crate::synthetic::synthetic_prompt_tokens;
@@ -72,14 +72,7 @@ impl Workload for CancellationDuringPrefill {
 
 impl CancellationDuringPrefill {
     fn build_inference_args(&self, artifacts_dir: &Path) -> InferenceArgs {
-        InferenceArgs {
-            model_id: self.model_id.clone(),
-            mlx: true,
-            mlx_model_artifacts_dir: Some(artifacts_dir.to_path_buf()),
-            deterministic: true,
-            sampling: GenerateSampling::default(),
-            ..InferenceArgs::default()
-        }
+        workload_inference_args(&self.model_id, artifacts_dir)
     }
 
     fn build_request(&self, seed: u64) -> GenerateRequest {
@@ -173,16 +166,6 @@ impl CancellationDuringPrefill {
 
         report.record_elapsed(started_at.elapsed());
         Ok(report)
-    }
-
-    #[allow(dead_code)]
-    pub fn report_skeleton(&self) -> WorkloadReport {
-        let mut report = WorkloadReport::new(self.name());
-        report.add_note(format!(
-            "configured prefill_tokens={}, decode_tokens={}",
-            self.prefill_tokens, self.decode_tokens
-        ));
-        report
     }
 }
 

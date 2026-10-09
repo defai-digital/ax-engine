@@ -19,9 +19,6 @@
 //! grouped norm runs in f32 and is cast back to the residual dtype; gates and
 //! projections run in the residual dtype.
 
-// Staged: consumed once the qwen4_exp forward is integrated.
-#![allow(dead_code)]
-
 use mlx_sys::ops::{cached_scalar, silu};
 use mlx_sys::{
     MlxArray, MlxDtype, add, astype, broadcast_to, divide, multiply, reshape, rms_norm, sigmoid,
@@ -245,10 +242,7 @@ impl Qwen4ExpGatedResidual {
         })
     }
 
-    pub(crate) fn layout(&self) -> Qwen4ExpStreamLayout {
-        self.layout
-    }
-
+    #[cfg(test)]
     pub(crate) fn is_final_mixer(&self) -> bool {
         self.write_inject.is_none()
     }
@@ -373,11 +367,13 @@ impl Qwen4ExpResidualRead {
     }
 
     /// `[batch, seq, C]` per-stream write gate.
+    #[cfg(test)]
     pub(crate) fn write_gate(&self) -> &MlxArray {
         &self.write_gate
     }
 
     /// The retained packed residual, the same array the read consumed.
+    #[cfg(test)]
     pub(crate) fn residual(&self) -> &MlxArray {
         &self.residual
     }
