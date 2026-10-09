@@ -19,7 +19,7 @@ pub const DEFAULT_DELEGATED_HTTP_IO_TIMEOUT_SECS: u64 = 300;
 /// generation longer than 300 s. One hour by default; configure a longer one
 /// by raising `read` in [`DelegatedHttpTimeouts`] (the blocking floor is only
 /// ever raised, never lowered, by [`DelegatedHttpTimeouts::for_blocking_generation`]).
-pub const DEFAULT_DELEGATED_HTTP_BLOCKING_READ_TIMEOUT_SECS: u64 = 3600;
+pub(crate) const DEFAULT_DELEGATED_HTTP_BLOCKING_READ_TIMEOUT_SECS: u64 = 3600;
 const DELEGATED_HTTP_TRANSPORT_MAX_ATTEMPTS: usize = 2;
 const DELEGATED_HTTP_TRANSPORT_RETRY_BACKOFF: Duration = Duration::from_millis(25);
 
@@ -56,7 +56,7 @@ impl DelegatedHttpTimeouts {
     /// generation sends no response bytes until it finishes, so a streaming
     /// I/O-scale read deadline would abort long generations. The floor only
     /// raises a configured `read`; a value above it is preserved as-is.
-    pub fn for_blocking_generation(self) -> Self {
+    pub(crate) fn for_blocking_generation(self) -> Self {
         Self {
             read: self.read.max(Duration::from_secs(
                 DEFAULT_DELEGATED_HTTP_BLOCKING_READ_TIMEOUT_SECS,

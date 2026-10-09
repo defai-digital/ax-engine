@@ -244,7 +244,7 @@ impl App {
     /// once the log confirms the bind, and back off if the process has since
     /// exited so Chat stops accepting input. External (probe-only) readiness
     /// is handled by [`Self::tick_server_health_probe`].
-    pub fn update_server_ready(&mut self) {
+    pub(crate) fn update_server_ready(&mut self) {
         let Some(job) = &self.server else {
             return;
         };
@@ -407,7 +407,7 @@ impl App {
 
     /// Most recent non-empty server log line, surfaced when startup fails.
     /// Prefer real startup failures over trailing MLX kernel noise (`mlx error:`).
-    pub fn server_error_line(&self) -> Option<String> {
+    pub(crate) fn server_error_line(&self) -> Option<String> {
         let job = self.server.as_ref()?;
         job.done?;
         let is_hard_error = |line: &str| {
@@ -437,7 +437,7 @@ impl App {
 
     // -- download queue ---------------------------------------------------------
 
-    pub fn start_next_queued_download(&mut self) {
+    pub(crate) fn start_next_queued_download(&mut self) {
         if self.downloads.iter().any(DownloadTask::is_running) {
             return;
         }

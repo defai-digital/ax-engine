@@ -117,7 +117,7 @@ pub(super) struct LiveMetrics {
 }
 
 impl LiveMetrics {
-    pub fn new(total_ram_bytes: Option<u64>) -> Self {
+    pub(crate) fn new(total_ram_bytes: Option<u64>) -> Self {
         // Cheap sysctls only at construction — subprocess probes are deferred
         // to the first background sample so App::new stays snappy.
         LiveMetrics {
@@ -134,7 +134,7 @@ impl LiveMetrics {
     }
 
     #[cfg(test)]
-    pub fn for_tests() -> Self {
+    pub(crate) fn for_tests() -> Self {
         let mut m = LiveMetrics {
             total_ram_bytes: Some(64 * 1024 * 1024 * 1024),
             used_ram_bytes: Some(24 * 1024 * 1024 * 1024),
@@ -185,7 +185,7 @@ impl LiveMetrics {
         m
     }
 
-    pub fn mem_ratio(&self) -> Option<f64> {
+    pub(crate) fn mem_ratio(&self) -> Option<f64> {
         let used = self.used_ram_bytes?;
         let total = self.total_ram_bytes?;
         if total == 0 {
@@ -194,15 +194,15 @@ impl LiveMetrics {
         Some((used as f64 / total as f64).clamp(0.0, 1.0))
     }
 
-    pub fn cpu_ratio(&self) -> Option<f64> {
+    pub(crate) fn cpu_ratio(&self) -> Option<f64> {
         self.cpu_percent.map(|p| (p / 100.0).clamp(0.0, 1.0))
     }
 
-    pub fn gpu_ratio(&self) -> Option<f64> {
+    pub(crate) fn gpu_ratio(&self) -> Option<f64> {
         self.gpu_percent.map(|p| (p / 100.0).clamp(0.0, 1.0))
     }
 
-    pub fn models_ratio(&self) -> Option<f64> {
+    pub(crate) fn models_ratio(&self) -> Option<f64> {
         let total = self.total_ram_bytes?;
         if total == 0 {
             return None;
@@ -211,7 +211,7 @@ impl LiveMetrics {
     }
 
     /// Pressure band from a 0–1 ratio (green / yellow / red gauges).
-    pub fn pressure_band(ratio: f64) -> PressureBand {
+    pub(crate) fn pressure_band(ratio: f64) -> PressureBand {
         if ratio >= 0.85 {
             PressureBand::High
         } else if ratio >= 0.55 {
@@ -225,7 +225,7 @@ impl LiveMetrics {
     /// (the TUI repaints on that signal, not on every poll cycle).
     ///
     /// Never blocks: subprocess probes run on a helper thread.
-    pub fn tick(&mut self, models_bytes: u64, cache_root: &Path) -> bool {
+    pub(crate) fn tick(&mut self, models_bytes: u64, cache_root: &Path) -> bool {
         self.models_bytes = models_bytes;
 
         // Apply a finished sample first (non-blocking).

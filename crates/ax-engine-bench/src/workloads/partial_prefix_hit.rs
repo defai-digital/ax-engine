@@ -150,7 +150,7 @@ impl PartialPrefixHit {
     }
 
     #[cfg(test)]
-    pub fn report_skeleton(&self) -> WorkloadReport {
+    pub(crate) fn report_skeleton(&self) -> WorkloadReport {
         let mut report = WorkloadReport::new(self.name());
         report.add_note(format!(
             "configured shared_prefix_tokens={}, variant_suffix_tokens={}, decode_tokens={}",

@@ -121,7 +121,7 @@ pub(super) fn scan_local_models(cache_root: &Path) -> LocalScan {
 }
 
 impl Variant {
-    pub fn precision(&self) -> String {
+    pub(crate) fn precision(&self) -> String {
         let lower = self.model.repo_id.to_ascii_lowercase();
         if lower.contains("mxfp8") {
             return "MXFP8".into();
@@ -161,7 +161,7 @@ impl Variant {
 
     /// Best size estimate for display: real on-disk bytes when installed,
     /// otherwise the static catalog estimate.
-    pub fn size_estimate(&self) -> Option<u64> {
+    pub(crate) fn size_estimate(&self) -> Option<u64> {
         if self.installed {
             Some(self.size)
         } else {
@@ -177,23 +177,23 @@ pub(super) struct Family {
 }
 
 impl Family {
-    pub fn has_mtp(&self) -> bool {
+    pub(crate) fn has_mtp(&self) -> bool {
         self.variants.iter().any(|v| v.mtp_included)
     }
 
     /// Human-readable family name for UI (alias `key` stays for filter/CLI).
-    pub fn display_name(&self) -> String {
+    pub(crate) fn display_name(&self) -> String {
         family_display_name(&self.key)
     }
 
     /// Primary productivity stack (Gemma, Qwen, GLM, EmbeddingGemma).
-    pub fn is_primary(&self) -> bool {
+    pub(crate) fn is_primary(&self) -> bool {
         is_primary_family_key(&self.key)
     }
 
     /// Three-tier quality grade for the registry family behind this catalog
     /// key (see `ax_engine_core::support_tier`).
-    pub fn support_tier(&self) -> ax_engine_core::ModelSupportTier {
+    pub(crate) fn support_tier(&self) -> ax_engine_core::ModelSupportTier {
         // Checkpoint-level AXQ candidates must not inherit architecture
         // certification until their quality/runtime/memory gates pass.
         if self.key == "ax-qwen3.6-27b-axq" || self.key == "ax-qwen3-vl-30b-a3b-axq" {
@@ -202,7 +202,7 @@ impl Family {
         ax_engine_core::support_tier_for_family(registry_family_label(&self.key))
     }
 
-    pub fn installed_count(&self) -> usize {
+    pub(crate) fn installed_count(&self) -> usize {
         self.variants.iter().filter(|v| v.installed).count()
     }
 }
@@ -896,7 +896,7 @@ pub(super) enum RamFit {
 
 impl RamFit {
     /// Short badge text for list rows (keep "fits" so scanners stay familiar).
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             RamFit::Fits => "fits",
             RamFit::Tight => "tight",
@@ -906,7 +906,7 @@ impl RamFit {
     }
 
     /// Plain-language outcome for home / confirm copy.
-    pub fn plain(self) -> &'static str {
+    pub(crate) fn plain(self) -> &'static str {
         match self {
             RamFit::Fits => "good for this Mac",
             RamFit::Tight => "may be slow under load",

@@ -19,7 +19,8 @@ pub enum MlxLmConfig {
 }
 
 impl MlxLmConfig {
-    pub fn server_completion(base_url: impl Into<String>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn server_completion(base_url: impl Into<String>) -> Self {
         Self::ServerCompletion(MlxLmServerCompletionConfig::new(base_url))
     }
 }
@@ -43,11 +44,11 @@ impl MlxLmServerCompletionConfig {
         self
     }
 
-    pub fn completions_url(&self) -> String {
+    pub(crate) fn completions_url(&self) -> String {
         format!("{}/v1/completions", self.base_url)
     }
 
-    pub fn chat_completions_url(&self) -> String {
+    pub(crate) fn chat_completions_url(&self) -> String {
         format!("{}/v1/chat/completions", self.base_url)
     }
 }
@@ -341,7 +342,7 @@ fn first_choice_for_completion<T>(endpoint: &str, choices: Vec<T>) -> Result<T, 
         })
 }
 
-pub fn run_blocking_generate(
+pub(crate) fn run_blocking_generate(
     request_id: u64,
     runtime: &RuntimeReport,
     config: &MlxLmConfig,

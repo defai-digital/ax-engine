@@ -44,7 +44,7 @@ pub enum SupportTier {
 }
 
 impl SupportTier {
-    pub const fn is_mlx(self) -> bool {
+    pub(crate) const fn is_mlx(self) -> bool {
         matches!(self, Self::MlxCertified | Self::MlxPreview)
     }
 }
@@ -64,7 +64,8 @@ impl BackendPolicy {
         Self::new(ResolutionPolicy::MlxOnly)
     }
 
-    pub const fn prefer_mlx() -> Self {
+    #[cfg(test)]
+    pub(crate) const fn prefer_mlx() -> Self {
         Self::new(ResolutionPolicy::PreferMlx)
     }
 
@@ -72,7 +73,7 @@ impl BackendPolicy {
         Self::new(ResolutionPolicy::AllowLlamaCpp)
     }
 
-    pub const fn allow_mlx_lm_delegated() -> Self {
+    pub(crate) const fn allow_mlx_lm_delegated() -> Self {
         Self::new(ResolutionPolicy::AllowMlxLmDelegated)
     }
 }
@@ -118,7 +119,7 @@ pub struct CapabilityReport {
 }
 
 impl CapabilityReport {
-    pub const fn mlx_certified() -> Self {
+    pub(crate) const fn mlx_certified() -> Self {
         Self {
             text_generation: true,
             token_streaming: true,
@@ -146,7 +147,7 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn llama_cpp_baseline() -> Self {
+    pub(crate) const fn llama_cpp_baseline() -> Self {
         Self {
             text_generation: true,
             token_streaming: true,
@@ -160,7 +161,7 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn mlx_lm_delegated_text() -> Self {
+    pub(crate) const fn mlx_lm_delegated_text() -> Self {
         Self {
             text_generation: true,
             token_streaming: true,
@@ -174,7 +175,7 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn llama_cpp_cli_baseline() -> Self {
+    pub(crate) const fn llama_cpp_cli_baseline() -> Self {
         Self {
             text_generation: true,
             token_streaming: false,
@@ -188,7 +189,7 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn unsupported() -> Self {
+    pub(crate) const fn unsupported() -> Self {
         Self {
             text_generation: false,
             token_streaming: false,
@@ -202,7 +203,7 @@ impl CapabilityReport {
         }
     }
 
-    pub const fn for_resolution(
+    pub(crate) const fn for_resolution(
         selected_backend: SelectedBackend,
         support_tier: SupportTier,
     ) -> Self {
@@ -218,14 +219,14 @@ impl CapabilityReport {
         }
     }
 
-    pub fn for_llama_cpp_backend(config: &LlamaCppConfig) -> Self {
+    pub(crate) fn for_llama_cpp_backend(config: &LlamaCppConfig) -> Self {
         match config {
             LlamaCppConfig::Cli(_) => Self::llama_cpp_cli_baseline(),
             LlamaCppConfig::ServerCompletion(_) => Self::llama_cpp_baseline(),
         }
     }
 
-    pub fn for_mlx_lm_backend(_config: &MlxLmConfig) -> Self {
+    pub(crate) fn for_mlx_lm_backend(_config: &MlxLmConfig) -> Self {
         Self::mlx_lm_delegated_text()
     }
 }
@@ -452,7 +453,7 @@ impl ResolvedBackend {
         Self::new(SelectedBackend::Mlx, SupportTier::MlxCertified, None)
     }
 
-    pub fn llama_cpp(
+    pub(crate) fn llama_cpp(
         selected_backend: SelectedBackend,
         fallback_reason: impl Into<String>,
     ) -> Self {
@@ -463,7 +464,7 @@ impl ResolvedBackend {
         )
     }
 
-    pub fn mlx_lm_delegated(reason: impl Into<String>) -> Self {
+    pub(crate) fn mlx_lm_delegated(reason: impl Into<String>) -> Self {
         Self::new(
             SelectedBackend::MlxLmDelegated,
             SupportTier::MlxLmDelegated,
@@ -565,13 +566,6 @@ impl Default for PreviewBackendRequest {
 }
 
 impl PreviewBackendRequest {
-    pub fn new(support_tier: SupportTier) -> Self {
-        Self {
-            support_tier,
-            ..Self::default()
-        }
-    }
-
     pub fn shipping_default_llama_cpp(
         llama_cli_path: impl Into<PathBuf>,
         llama_model_path: Option<PathBuf>,
@@ -780,7 +774,7 @@ pub struct RuntimeReport {
 }
 
 impl RuntimeReport {
-    pub fn from_resolution(
+    pub(crate) fn from_resolution(
         backend_policy: &BackendPolicy,
         resolved_backend: &ResolvedBackend,
     ) -> Self {
@@ -798,21 +792,13 @@ impl RuntimeReport {
         }
     }
 
-    pub fn with_mlx_runtime(mut self, native_runtime: Option<NativeRuntimeReport>) -> Self {
+    pub(crate) fn with_mlx_runtime(mut self, native_runtime: Option<NativeRuntimeReport>) -> Self {
         self.mlx_runtime = native_runtime;
         self
     }
 
-    pub fn with_mlx_model(mut self, native_model: Option<NativeModelReport>) -> Self {
+    pub(crate) fn with_mlx_model(mut self, native_model: Option<NativeModelReport>) -> Self {
         self.mlx_model = native_model;
-        self
-    }
-
-    pub fn with_delegated_runtime(
-        mut self,
-        delegated_runtime: Option<DelegatedRuntimeReport>,
-    ) -> Self {
-        self.delegated_runtime = delegated_runtime;
         self
     }
 }

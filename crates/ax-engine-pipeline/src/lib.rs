@@ -18,7 +18,7 @@ use mlx_sys::{argmax, eval};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const CLUSTER_WORKER_TOKEN_HEADER: &str = "x-ax-cluster-worker-token";
+pub(crate) const CLUSTER_WORKER_TOKEN_HEADER: &str = "x-ax-cluster-worker-token";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

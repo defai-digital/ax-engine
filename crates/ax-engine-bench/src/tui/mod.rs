@@ -186,30 +186,30 @@ impl LogScroll {
     /// Index of the first visible line for a `total`-line log in a
     /// `height`-row pane. Pinned shows the newest `height` lines; a scrolled
     /// anchor is clamped into range when the log shrinks or the pane grows.
-    pub fn first_visible(self, total: usize, height: usize) -> usize {
+    pub(crate) fn first_visible(self, total: usize, height: usize) -> usize {
         let bottom = total.saturating_sub(height);
         self.0.map_or(bottom, |first| first.min(bottom))
     }
 
     /// True while following the newest output (autoscroll).
-    pub fn is_pinned(self) -> bool {
+    pub(crate) fn is_pinned(self) -> bool {
         self.0.is_none()
     }
 
     /// Re-pin to the bottom; new lines follow again.
-    pub fn pin_to_bottom(&mut self) {
+    pub(crate) fn pin_to_bottom(&mut self) {
         self.0 = None;
     }
 
     /// True while the pane shows anything older than the newest page.
-    pub fn is_scrolled(self, total: usize, height: usize) -> bool {
+    pub(crate) fn is_scrolled(self, total: usize, height: usize) -> bool {
         self.0
             .is_some_and(|first| first < total.saturating_sub(height))
     }
 
     /// Scroll `n` lines toward older output, clamped at the oldest line.
     /// A log that fits the pane entirely cannot scroll.
-    pub fn scroll_up(&mut self, n: usize, total: usize, height: usize) {
+    pub(crate) fn scroll_up(&mut self, n: usize, total: usize, height: usize) {
         let bottom = total.saturating_sub(height);
         if bottom == 0 {
             return;
@@ -219,7 +219,7 @@ impl LogScroll {
     }
 
     /// Scroll `n` lines toward newer output; reaching the bottom re-pins.
-    pub fn scroll_down(&mut self, n: usize, total: usize, height: usize) {
+    pub(crate) fn scroll_down(&mut self, n: usize, total: usize, height: usize) {
         let Some(first) = self.0 else {
             return;
         };
@@ -230,7 +230,7 @@ impl LogScroll {
 
     /// One entry point for keys and wheel: `page` scrolls a full pane height,
     /// otherwise a short wheel step.
-    pub fn scroll(&mut self, up: bool, page: bool, total: usize, height: usize) {
+    pub(crate) fn scroll(&mut self, up: bool, page: bool, total: usize, height: usize) {
         if height == 0 {
             return;
         }
@@ -460,7 +460,7 @@ struct App {
 }
 
 impl App {
-    pub fn new() -> App {
+    pub(crate) fn new() -> App {
         let mut app = Self::with_hardware_and_families(HardwareInfo::probe(), Vec::new());
         app.catalog_loading = true;
         app.downloads_show_library = true;
@@ -579,7 +579,7 @@ impl App {
     /// Rescan install state off the UI thread; the result lands in a later
     /// `tick`. Until then the previous catalog stays on screen. After a live
     /// Hub load, the rescan keeps that membership.
-    pub fn reload_families(&mut self) {
+    pub(crate) fn reload_families(&mut self) {
         self.reload_local_models();
         if self.families_reload.is_some() {
             self.families_reload_again = true;
@@ -696,19 +696,19 @@ impl App {
         self.toasts.push(toast);
     }
 
-    pub fn toast(&mut self, text: impl Into<String>) {
+    pub(crate) fn toast(&mut self, text: impl Into<String>) {
         self.push_toast(widgets::Toast::info(text.into()));
     }
 
-    pub fn toast_success(&mut self, text: impl Into<String>) {
+    pub(crate) fn toast_success(&mut self, text: impl Into<String>) {
         self.push_toast(widgets::Toast::success(text.into()));
     }
 
-    pub fn toast_warn(&mut self, text: impl Into<String>) {
+    pub(crate) fn toast_warn(&mut self, text: impl Into<String>) {
         self.push_toast(widgets::Toast::warning(text.into()));
     }
 
-    pub fn toast_error(&mut self, text: impl Into<String>) {
+    pub(crate) fn toast_error(&mut self, text: impl Into<String>) {
         self.push_toast(widgets::Toast::error(text.into()));
     }
 
@@ -977,7 +977,7 @@ impl App {
 
     /// Validation message for the host field, if it holds non-empty text that
     /// is neither a hostname nor an IP literal (IPv4 or bracketed/plain IPv6).
-    pub fn host_error(&self) -> Option<&'static str> {
+    pub(crate) fn host_error(&self) -> Option<&'static str> {
         let trimmed = self.host.trim();
         if trimmed.is_empty() {
             return None;
@@ -993,7 +993,7 @@ impl App {
     }
 
     /// Validation message for the port field, if it holds non-empty, non-numeric, or out-of-range text.
-    pub fn port_error(&self) -> Option<&'static str> {
+    pub(crate) fn port_error(&self) -> Option<&'static str> {
         let trimmed = self.port.trim();
         if trimmed.is_empty() {
             return None;
@@ -1005,13 +1005,13 @@ impl App {
     }
 
     /// True when a managed child is still alive (not yet exited).
-    pub fn managed_server_alive(&self) -> bool {
+    pub(crate) fn managed_server_alive(&self) -> bool {
         self.server.as_ref().is_some_and(|j| j.done.is_none())
     }
 
     /// True when a server is in play: managed child still running, or an
     /// external listener discovered via `/health` on the configured host/port.
-    pub fn server_running(&self) -> bool {
+    pub(crate) fn server_running(&self) -> bool {
         self.managed_server_alive() || (self.external_server && self.server_ready)
     }
 

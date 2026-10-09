@@ -122,13 +122,13 @@ const MONO: Palette = Palette {
 static PALETTE: OnceLock<&'static Palette> = OnceLock::new();
 
 /// The active palette (dark unless [`init`] selected another).
-pub fn colors() -> &'static Palette {
+pub(crate) fn colors() -> &'static Palette {
     PALETTE.get().copied().unwrap_or(&DARK)
 }
 
 /// Resolve the palette + glyph set from the environment. Called once by the
 /// TUI entry point; repeats are harmless (the first call wins).
-pub fn init() {
+pub(crate) fn init() {
     let palette = if std::env::var_os("NO_COLOR").is_some() {
         &MONO
     } else {
@@ -154,7 +154,7 @@ pub fn init() {
 // ---------------------------------------------------------------------------
 
 /// Active list/cursor highlight: bold dark-on-amber (never sky-blue).
-pub fn highlight_active() -> Style {
+pub(crate) fn highlight_active() -> Style {
     Style::default()
         .bg(colors().select)
         .fg(colors().on_select)
@@ -162,56 +162,56 @@ pub fn highlight_active() -> Style {
 }
 
 /// Selection ghost in an unfocused panel: dim underline only (no blue wash).
-pub fn highlight_inactive() -> Style {
+pub(crate) fn highlight_inactive() -> Style {
     Style::default()
         .fg(colors().text)
         .add_modifier(Modifier::UNDERLINED | Modifier::DIM)
 }
 
 /// Bold accent title (panel headers, brand) — text only, never a filled chip.
-pub fn title() -> Style {
+pub(crate) fn title() -> Style {
     Style::default()
         .fg(colors().accent)
         .add_modifier(Modifier::BOLD)
 }
 
 /// Muted secondary label.
-pub fn label() -> Style {
+pub(crate) fn label() -> Style {
     Style::default().fg(colors().muted)
 }
 
 /// Primary body text.
-pub fn body() -> Style {
+pub(crate) fn body() -> Style {
     Style::default().fg(colors().text)
 }
 
 /// Dim body / path text.
-pub fn body_dim() -> Style {
+pub(crate) fn body_dim() -> Style {
     Style::default().fg(colors().dim)
 }
 
 /// Success emphasis.
-pub fn ok() -> Style {
+pub(crate) fn ok() -> Style {
     Style::default().fg(colors().ok)
 }
 
 /// Warning emphasis.
-pub fn warn() -> Style {
+pub(crate) fn warn() -> Style {
     Style::default().fg(colors().warn)
 }
 
 /// Danger emphasis.
-pub fn danger() -> Style {
+pub(crate) fn danger() -> Style {
     Style::default().fg(colors().danger)
 }
 
 /// Feature / MTP emphasis.
-pub fn feature() -> Style {
+pub(crate) fn feature() -> Style {
     Style::default().fg(colors().feature)
 }
 
 /// Primary CTA row (filled accent). Actions, not cursor position.
-pub fn cta() -> Style {
+pub(crate) fn cta() -> Style {
     Style::default()
         .fg(colors().on_accent)
         .bg(colors().accent)
@@ -220,7 +220,7 @@ pub fn cta() -> Style {
 
 /// Active tab for the current screen — underline + accent text only.
 /// Avoids a filled blue bar that competes with the amber selection cursor.
-pub fn tab_active() -> Style {
+pub(crate) fn tab_active() -> Style {
     Style::default()
         .fg(colors().accent)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
@@ -228,7 +228,7 @@ pub fn tab_active() -> Style {
 
 /// Tab bar owns keyboard focus (↑ from content): filled amber so it matches
 /// the selection language ("focus is here").
-pub fn tab_keyboard_focus() -> Style {
+pub(crate) fn tab_keyboard_focus() -> Style {
     Style::default()
         .fg(colors().on_select)
         .bg(colors().select)
@@ -236,17 +236,17 @@ pub fn tab_keyboard_focus() -> Style {
 }
 
 /// Inactive tab label.
-pub fn tab_inactive() -> Style {
+pub(crate) fn tab_inactive() -> Style {
     Style::default().fg(colors().dim)
 }
 
 /// Separator between key hints in footers.
-pub fn key_sep() -> Span<'static> {
+pub(crate) fn key_sep() -> Span<'static> {
     Span::styled(" · ", Style::default().fg(colors().muted))
 }
 
 /// A key hint span: bold key in white, no background chip.
-pub fn key_hint(key: &str) -> Span<'static> {
+pub(crate) fn key_hint(key: &str) -> Span<'static> {
     Span::styled(
         key.to_string(),
         Style::default()
@@ -256,12 +256,12 @@ pub fn key_hint(key: &str) -> Span<'static> {
 }
 
 /// A key hint label (the description after the key).
-pub fn key_label(label: &str) -> Span<'static> {
+pub(crate) fn key_label(label: &str) -> Span<'static> {
     Span::styled(label.to_string(), Style::default().fg(colors().dim))
 }
 
 /// A muted key chip for modal secondary actions.
-pub fn key_chip_dim(label: &str) -> Span<'static> {
+pub(crate) fn key_chip_dim(label: &str) -> Span<'static> {
     Span::styled(
         format!(" {label} "),
         Style::default().fg(colors().on_accent).bg(colors().dim),
@@ -269,7 +269,7 @@ pub fn key_chip_dim(label: &str) -> Span<'static> {
 }
 
 /// A danger key chip for destructive confirmations.
-pub fn key_chip_danger(label: &str) -> Span<'static> {
+pub(crate) fn key_chip_danger(label: &str) -> Span<'static> {
     Span::styled(
         format!(" {label} "),
         Style::default().fg(colors().text).bg(colors().danger),
@@ -277,7 +277,7 @@ pub fn key_chip_danger(label: &str) -> Span<'static> {
 }
 
 /// A primary key chip for modal primary actions.
-pub fn key_chip(label: &str) -> Span<'static> {
+pub(crate) fn key_chip(label: &str) -> Span<'static> {
     Span::styled(
         format!(" {label} "),
         Style::default().fg(colors().on_accent).bg(colors().accent),
@@ -331,31 +331,31 @@ pub mod icon {
         GLYPHS.get().copied().unwrap_or(&UNICODE)
     }
 
-    pub fn ok() -> &'static str {
+    pub(crate) fn ok() -> &'static str {
         g().ok
     }
-    pub fn running() -> &'static str {
+    pub(crate) fn running() -> &'static str {
         g().running
     }
-    pub fn queued() -> &'static str {
+    pub(crate) fn queued() -> &'static str {
         g().queued
     }
-    pub fn idle() -> &'static str {
+    pub(crate) fn idle() -> &'static str {
         g().idle
     }
-    pub fn error() -> &'static str {
+    pub(crate) fn error() -> &'static str {
         g().error
     }
-    pub fn warn() -> &'static str {
+    pub(crate) fn warn() -> &'static str {
         g().warn
     }
-    pub fn speed() -> &'static str {
+    pub(crate) fn speed() -> &'static str {
         g().speed
     }
-    pub fn select() -> &'static str {
+    pub(crate) fn select() -> &'static str {
         g().select
     }
-    pub fn star() -> &'static str {
+    pub(crate) fn star() -> &'static str {
         g().star
     }
 }

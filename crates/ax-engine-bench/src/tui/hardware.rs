@@ -13,7 +13,7 @@ pub(super) struct HardwareInfo {
 }
 
 impl HardwareInfo {
-    pub fn probe() -> Self {
+    pub(crate) fn probe() -> Self {
         let cache_root = crate::default_hf_cache_root();
         HardwareInfo {
             total_ram_bytes: sysctl_string("hw.memsize").and_then(|s| s.parse().ok()),
@@ -22,7 +22,7 @@ impl HardwareInfo {
     }
 
     #[cfg(test)]
-    pub fn for_tests() -> Self {
+    pub(crate) fn for_tests() -> Self {
         HardwareInfo {
             total_ram_bytes: Some(64 * 1024 * 1024 * 1024),
             free_disk_bytes: Some(500 * 1024 * 1024 * 1024),

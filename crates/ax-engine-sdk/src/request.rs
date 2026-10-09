@@ -272,7 +272,7 @@ impl EngineStepReport {
         }
     }
 
-    pub fn accumulate(&mut self, other: Self) {
+    pub(crate) fn accumulate(&mut self, other: Self) {
         if self.step_id.is_none() {
             self.step_id = other.step_id;
         }
@@ -317,7 +317,7 @@ impl EngineStepReport {
         self.runner_time_us += other.runner_time_us;
     }
 
-    pub fn from_native_outcome(
+    pub(crate) fn from_native_outcome(
         outcome: &EngineStepOutcome,
         metal_dispatch: Option<MetalDispatchStepReport>,
     ) -> Self {
@@ -334,7 +334,7 @@ impl EngineStepReport {
 
     /// Metrics-only step report for hot decode loops that already stored a
     /// route earlier in the request. Avoids cloning the large crossover map.
-    pub fn from_native_outcome_without_route(
+    pub(crate) fn from_native_outcome_without_route(
         outcome: &EngineStepOutcome,
         metal_dispatch: Option<MetalDispatchStepReport>,
     ) -> Self {
@@ -349,7 +349,7 @@ impl From<StepMetrics> for EngineStepReport {
 }
 
 impl MetalDispatchStepReport {
-    pub fn from_trace(trace: &MetalDispatchTrace) -> Self {
+    pub(crate) fn from_trace(trace: &MetalDispatchTrace) -> Self {
         Self {
             command_queue_label: trace.command_queue_label.clone(),
             command_buffer_label: trace.command_buffer_label.clone(),

@@ -341,7 +341,7 @@ impl LongPrefillVsDecode {
     /// shape even when the fixture itself short-circuits. The CLI handler
     /// does not use this; tests and Phase 1c baseline tooling may.
     #[cfg(test)]
-    pub fn report_skeleton(&self) -> WorkloadReport {
+    pub(crate) fn report_skeleton(&self) -> WorkloadReport {
         let mut report = WorkloadReport::new(self.name());
         report.add_note(format!(
             "configured prefill_tokens={}, decode_tokens={}, concurrent_short_requests={}",

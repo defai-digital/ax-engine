@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+use ax_engine_core::RequestSnapshot;
 use ax_engine_core::{
-    RequestMultimodalInputs, RequestSnapshot, RequestState, RouteMetadata, SamplingParams,
-    StopReason,
+    RequestMultimodalInputs, RequestState, RouteMetadata, SamplingParams, StopReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -125,7 +126,7 @@ impl GenerateRouteReport {
         }
     }
 
-    pub fn from_route(route: &RouteMetadata) -> Self {
+    pub(crate) fn from_route(route: &RouteMetadata) -> Self {
         let crossover_decisions = route
             .crossover_decisions
             .iter()
@@ -147,30 +148,16 @@ impl GenerateRouteReport {
         self.crossover_decisions.get(key).copied()
     }
 
-    /// Returns the KV cache capacity in KiB allocated for this request.
-    pub fn kv_capacity_kib(&self) -> Option<u32> {
-        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_CAPACITY_KIB)
-    }
-
-    /// Returns the number of linear-attention state layers for this request.
-    /// Non-zero only for hybrid linear/full-attention models (Qwen3.5, Qwen3-Next).
-    pub fn linear_state_layers(&self) -> Option<u32> {
-        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS)
-    }
-
+    #[cfg(test)]
     /// Returns the MLA latent KV dimension for this request, when reported by the MLX model route.
-    pub fn mla_kv_latent_dim(&self) -> Option<u32> {
+    pub(crate) fn mla_kv_latent_dim(&self) -> Option<u32> {
         self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_MODEL_MLA_KV_LATENT_DIM)
     }
 
+    #[cfg(test)]
     /// Returns the number of active MoE experts selected per token, when reported by the route.
-    pub fn moe_active_experts(&self) -> Option<u32> {
+    pub(crate) fn moe_active_experts(&self) -> Option<u32> {
         self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_MODEL_MOE_ACTIVE_EXPERTS)
-    }
-
-    /// Returns the number of KV growth events recorded for this request.
-    pub fn kv_growth_count(&self) -> Option<u32> {
-        self.decision(ax_engine_core::ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT)
     }
 }
 
@@ -186,7 +173,7 @@ pub struct GenerateMtpReport {
 }
 
 impl GenerateMtpReport {
-    pub fn from_route(route: &GenerateRouteReport) -> Self {
+    pub(crate) fn from_route(route: &GenerateRouteReport) -> Self {
         let decision = |key| route.decision(key).unwrap_or_default();
         let decode_steps = decision("ax_mtp_decode_steps");
         Self {
@@ -200,7 +187,8 @@ impl GenerateMtpReport {
         }
     }
 
-    pub fn acceptance_rate(&self) -> Option<f64> {
+    #[cfg(test)]
+    pub(crate) fn acceptance_rate(&self) -> Option<f64> {
         (self.draft_tokens != 0)
             .then(|| f64::from(self.accepted_tokens) / f64::from(self.draft_tokens))
     }
@@ -270,7 +258,8 @@ impl Default for GeneratePerformanceReport {
 }
 
 impl GeneratePerformanceReport {
-    pub fn generation_tokens_per_second(&self) -> Option<f64> {
+    #[cfg(test)]
+    pub(crate) fn generation_tokens_per_second(&self) -> Option<f64> {
         let (token_count, time_us) = match (self.model_eval_token_count, self.model_eval_time_us) {
             (Some(token_count), Some(time_us)) => (token_count, time_us),
             _ => (self.generation_token_count, self.generation_time_us?),
@@ -279,17 +268,19 @@ impl GeneratePerformanceReport {
             .then(|| f64::from(token_count) * 1_000_000.0 / time_us as f64)
     }
 
+    #[cfg(test)]
     /// End-to-end stream delivery speed after the first autoregressive output
     /// boundary (or over the full block-diffusion request). This includes
     /// consumer decoding, IPC, and backpressure between stream pulls.
-    pub fn delivery_tokens_per_second(&self) -> Option<f64> {
+    pub(crate) fn delivery_tokens_per_second(&self) -> Option<f64> {
         let generation_time_us = self.generation_time_us?;
         (generation_time_us != 0 && self.generation_token_count != 0).then(|| {
             f64::from(self.generation_token_count) * 1_000_000.0 / generation_time_us as f64
         })
     }
 
-    pub fn runner_tokens_per_second(&self) -> Option<f64> {
+    #[cfg(test)]
+    pub(crate) fn runner_tokens_per_second(&self) -> Option<f64> {
         let time_us = self.model_runner_time_us?;
         let token_count = self.model_eval_token_count?;
         (time_us != 0 && token_count != 0)
@@ -422,11 +413,11 @@ impl Default for GenerateSampling {
 }
 
 impl GenerateSampling {
-    pub fn effective_deterministic(&self, default_deterministic: bool) -> bool {
+    pub(crate) fn effective_deterministic(&self, default_deterministic: bool) -> bool {
         self.deterministic.unwrap_or(default_deterministic)
     }
 
-    pub fn into_core(self, default_deterministic: bool) -> SamplingParams {
+    pub(crate) fn into_core(self, default_deterministic: bool) -> SamplingParams {
         let deterministic = self.effective_deterministic(default_deterministic);
         SamplingParams {
             temperature: self.temperature,
@@ -486,13 +477,8 @@ impl GenerateResponse {
         self.known_prompt_token_count()
     }
 
-    /// Authoritative output token count. Prefers backend-reported counts (delegated backends)
-    /// over token array length (native MLX backend). Returns None only when neither is available.
-    pub fn output_tokens_generated(&self) -> Option<u32> {
-        self.known_output_token_count()
-    }
-
-    pub fn from_snapshot(
+    #[cfg(test)]
+    pub(crate) fn from_snapshot(
         snapshot: RequestSnapshot,
         step_count: u64,
         ttft_step: Option<u64>,
@@ -528,7 +514,7 @@ impl GenerateResponse {
         }
     }
 
-    pub fn from_report(
+    pub(crate) fn from_report(
         report: SessionRequestReport,
         step_count: u64,
         ttft_step: Option<u64>,
@@ -576,7 +562,8 @@ impl GenerateStreamEvent {
 }
 
 impl GenerateStatus {
-    pub fn from_request_state(state: RequestState) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_request_state(state: RequestState) -> Self {
         match state {
             RequestState::Finished => Self::Finished,
             RequestState::Cancelled => Self::Cancelled,
@@ -588,7 +575,7 @@ impl GenerateStatus {
         }
     }
 
-    pub fn from_session_state(state: SessionRequestState) -> Self {
+    pub(crate) fn from_session_state(state: SessionRequestState) -> Self {
         match state {
             SessionRequestState::Finished => Self::Finished,
             SessionRequestState::Cancelled => Self::Cancelled,
@@ -602,7 +589,7 @@ impl GenerateStatus {
 }
 
 impl GenerateFinishReason {
-    pub fn from_request_state(
+    pub(crate) fn from_request_state(
         state: RequestState,
         terminal_stop_reason: Option<StopReason>,
     ) -> Option<Self> {
@@ -622,7 +609,7 @@ impl GenerateFinishReason {
         }
     }
 
-    pub fn from_session_state(
+    pub(crate) fn from_session_state(
         state: SessionRequestState,
         terminal_stop_reason: Option<StopReason>,
     ) -> Option<Self> {

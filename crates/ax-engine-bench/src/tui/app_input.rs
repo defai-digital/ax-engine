@@ -47,7 +47,7 @@ impl App {
         }
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) {
+    pub(crate) fn on_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.request_quit();
             return;
@@ -653,7 +653,7 @@ impl App {
         }
     }
 
-    pub fn on_click(&mut self, col: u16, row: u16) {
+    pub(crate) fn on_click(&mut self, col: u16, row: u16) {
         let hits = self.toolbar_hits.take();
         let action = hits
             .iter()

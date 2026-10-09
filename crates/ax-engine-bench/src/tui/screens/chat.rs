@@ -111,7 +111,7 @@ pub(crate) struct TranscriptCache {
 }
 
 impl ChatState {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         ChatState {
             messages: Vec::new(),
             input: String::new(),
@@ -131,11 +131,11 @@ impl ChatState {
         }
     }
 
-    pub fn streaming(&self) -> bool {
+    pub(crate) fn streaming(&self) -> bool {
         self.job.as_ref().is_some_and(|job| job.done.is_none())
     }
 
-    pub fn cancel(&mut self) {
+    pub(crate) fn cancel(&mut self) {
         if let Some(job) = &mut self.job {
             job.cancel();
         }
@@ -144,7 +144,7 @@ impl ChatState {
 
     /// Drain streamed lines into the transcript; called every poll tick.
     /// Returns true when the transcript or stream status may have changed.
-    pub fn tick(&mut self) -> bool {
+    pub(crate) fn tick(&mut self) -> bool {
         let Some(job) = &mut self.job else {
             return false;
         };
