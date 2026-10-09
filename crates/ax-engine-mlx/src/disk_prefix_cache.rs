@@ -126,10 +126,11 @@ pub enum DiskAdmissionReason {
 }
 
 impl DiskAdmissionReason {
+    #[cfg(test)]
     /// Every variant, in stable code order. Route-decision export and the
     /// exhaustiveness tests iterate this so a new variant cannot be added
     /// without wiring its telemetry.
-    pub const ALL: &[Self] = &[
+    pub(crate) const ALL: &[Self] = &[
         Self::AdmittedAlways,
         Self::AdmittedPositiveValue,
         Self::Disabled,
@@ -142,7 +143,7 @@ impl DiskAdmissionReason {
     ];
 
     /// Stable numeric telemetry code (never a Rust discriminant).
-    pub fn code(self) -> u32 {
+    pub(crate) fn code(self) -> u32 {
         match self {
             Self::AdmittedAlways => 1,
             Self::AdmittedPositiveValue => 2,
@@ -156,8 +157,9 @@ impl DiskAdmissionReason {
         }
     }
 
+    #[cfg(test)]
     /// Stable snake_case telemetry label for per-reason counters.
-    pub fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::AdmittedAlways => "admitted_always",
             Self::AdmittedPositiveValue => "admitted_positive_value",
@@ -171,7 +173,7 @@ impl DiskAdmissionReason {
         }
     }
 
-    pub fn admitted(self) -> bool {
+    pub(crate) fn admitted(self) -> bool {
         matches!(self, Self::AdmittedAlways | Self::AdmittedPositiveValue)
     }
 }
@@ -261,7 +263,7 @@ impl DiskPrefixCachePolicy {
     /// An explicit `0` is preserved (not treated as unset): it means
     /// "disabled", matching the in-memory tier's env semantics, and is
     /// honored by [`Self::enabled`] at the open site.
-    pub fn from_env() -> Self {
+    pub(crate) fn from_env() -> Self {
         fn parsed<T: std::str::FromStr>(name: &str) -> Option<T> {
             let raw = std::env::var(name).ok()?;
             match raw.trim().parse::<T>() {
@@ -333,7 +335,7 @@ impl DiskPrefixCachePolicy {
     /// Whether this policy admits any entry at all. A zero byte or
     /// entry budget disables the disk tier, mirroring the in-memory
     /// `MlxPrefixCachePolicy::enabled` semantics.
-    pub fn enabled(&self) -> bool {
+    pub(crate) fn enabled(&self) -> bool {
         self.max_bytes > 0 && self.max_entries > 0
     }
 
@@ -355,7 +357,7 @@ impl DiskPrefixCachePolicy {
     /// `always` bypasses only the value model, never the size caps.
     /// `UnsupportedLayout` and `ArtifactIdentityUnavailable` are closed
     /// reasons emitted by callers outside this value model.
-    pub fn evaluate_admission(
+    pub(crate) fn evaluate_admission(
         &self,
         prefix_tokens: u32,
         entry_bytes: u64,
@@ -417,11 +419,11 @@ pub struct DiskThroughputSnapshot {
 }
 
 impl DiskThroughputSnapshot {
-    pub fn restore_us(&self, bytes: u64) -> u64 {
+    pub(crate) fn restore_us(&self, bytes: u64) -> u64 {
         estimate_us(bytes, self.restore_bytes_per_us)
     }
 
-    pub fn write_us(&self, bytes: u64) -> u64 {
+    pub(crate) fn write_us(&self, bytes: u64) -> u64 {
         estimate_us(bytes, self.write_bytes_per_us)
     }
 }
@@ -740,12 +742,12 @@ impl DiskPrefixCache {
     }
 
     /// Active eviction policy for this cache instance.
-    pub fn policy(&self) -> &DiskPrefixCachePolicy {
+    pub(crate) fn policy(&self) -> &DiskPrefixCachePolicy {
         &self.policy
     }
 
     /// Cache directory for inspection by callers / tests.
-    pub fn dir(&self) -> &Path {
+    pub(crate) fn dir(&self) -> &Path {
         &self.dir
     }
 
@@ -786,7 +788,7 @@ impl DiskPrefixCache {
     /// Materializes the full payload buffer (for tests and callers that
     /// need opaque bytes). Prefer [`Self::get_restored_timed`] on the
     /// request hot path.
-    pub fn get_timed(
+    pub(crate) fn get_timed(
         &self,
         key_bytes: &[u8],
     ) -> Result<Option<(DiskPrefixCacheEntry, DiskReadStageTimings)>, DiskPrefixCacheError> {
@@ -812,7 +814,7 @@ impl DiskPrefixCache {
     /// Validated L2 hit that streams the payload into a native
     /// [`crate::kv_cache::MlxKVCache`] without retaining a full intermediate
     /// payload `Vec` for tensor materialization (DTPC-007 / NFR-004).
-    pub fn get_restored_timed(
+    pub(crate) fn get_restored_timed(
         &self,
         key_bytes: &[u8],
     ) -> Result<Option<(DiskPrefixCacheRestored, DiskReadStageTimings)>, DiskPrefixCacheError> {
@@ -1266,7 +1268,7 @@ impl DiskPrefixCache {
     /// shared buffer (the runner's background writer passes the same
     /// `Arc<[u8]>` the in-memory snapshot holds) without materializing a
     /// `DiskPrefixCacheEntry`-owned copy first.
-    pub fn insert_parts(
+    pub(crate) fn insert_parts(
         &self,
         key_bytes: &[u8],
         payload: &[u8],
@@ -1440,7 +1442,7 @@ impl DiskPrefixCache {
     /// PRD §6 names this as the "after every insert" callback; calling
     /// it independently (e.g. on demand during a low-traffic window)
     /// is also safe.
-    pub fn evict_until_within_policy(&self) -> u32 {
+    pub(crate) fn evict_until_within_policy(&self) -> u32 {
         let Ok(_lock) = self.lock_exclusive() else {
             tracing::warn!(
                 target: "ax_engine_mlx::prefix_cache",

@@ -14,24 +14,28 @@ pub enum BatchedMoECertMode {
 }
 
 impl BatchedMoECertMode {
-    pub const DECISION_A: Self = Self::BitExactWithRowExactFallback;
+    #[cfg(test)]
+    pub(crate) const DECISION_A: Self = Self::BitExactWithRowExactFallback;
 
-    pub fn label(self) -> &'static str {
+    #[cfg(test)]
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::BitExactWithRowExactFallback => "bit_exact_row_exact_fallback",
         }
     }
 
+    #[cfg(test)]
     /// Required batch sizes for release certification (PRD M6).
-    pub fn required_batches(self) -> &'static [u32] {
+    pub(crate) fn required_batches(self) -> &'static [u32] {
         match self {
             Self::BitExactWithRowExactFallback => &[2, 4, 8],
         }
     }
 
+    #[cfg(test)]
     /// Whether an uncertified opt-in env may bypass the gate after Decision A.
     /// Always false for public claims; residual only via explicit bench tools.
-    pub fn allows_uncertified_public_default(self) -> bool {
+    pub(crate) fn allows_uncertified_public_default(self) -> bool {
         false
     }
 }
@@ -41,7 +45,7 @@ impl BatchedMoECertMode {
 /// is MoE (`has_moe`). Dense Qwen 3 is out of scope — HF `qwen3_moe` and
 /// dense `qwen3` share the manifest family label, so the MoE config
 /// disambiguates.
-pub fn family_requires_decision_a_cert(model_family: &str, has_moe: bool) -> bool {
+pub(crate) fn family_requires_decision_a_cert(model_family: &str, has_moe: bool) -> bool {
     if matches!(
         model_family,
         "qwen3_5" | "qwen3_next" | "qwen3.5" | "qwen3.6" | "qwen3_6"
@@ -51,22 +55,23 @@ pub fn family_requires_decision_a_cert(model_family: &str, has_moe: bool) -> boo
     has_moe && model_family == "qwen3"
 }
 
+#[cfg(test)]
 /// Expert accumulation order for deterministic batched MoE reduction.
 /// Fixed ascending expert-id order matches a common per-row reference when
 /// each row's active set is sorted identically before scatter.
-pub fn deterministic_expert_order(active_expert_ids: &mut [u32]) {
+pub(crate) fn deterministic_expert_order(active_expert_ids: &mut [u32]) {
     active_expert_ids.sort_unstable();
 }
 
 /// Env: `AX_MLX_BATCHED_MOE_ROW_EXACT` — when on (default for Decision A
 /// models), `ffn_batched` runs MoE per-row instead of shared `gather_qmm`.
 /// Opt out with `=0` for uncertified amortized throughput experiments.
-pub const ENV_BATCHED_MOE_ROW_EXACT: &str = "AX_MLX_BATCHED_MOE_ROW_EXACT";
+pub(crate) const ENV_BATCHED_MOE_ROW_EXACT: &str = "AX_MLX_BATCHED_MOE_ROW_EXACT";
 
 /// True when batched MoE must use per-row (RowExact) expert execution for
 /// bit-exact greedy parity (Decision A). `has_moe` comes from the model's
 /// MoE config (e.g. `ModelConfig::moe_expert_count > 0`).
-pub fn row_exact_moe_enabled(model_family: &str, has_moe: bool) -> bool {
+pub(crate) fn row_exact_moe_enabled(model_family: &str, has_moe: bool) -> bool {
     row_exact_moe_enabled_with_env(
         model_family,
         has_moe,

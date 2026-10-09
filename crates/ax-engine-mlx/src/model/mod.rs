@@ -90,6 +90,7 @@ impl Gemma4AssistantFrozenTargetKv {
         }
     }
 
+    #[cfg(test)]
     /// Whether the sliding binding carries a ring layout (SWA rotating path).
     fn sliding_uses_ring(&self) -> bool {
         self.sliding
@@ -162,21 +163,6 @@ pub(crate) enum FinalLogitsMode {
     /// multiply-adds saved per non-final chunk). Reference: MTPLX
     /// `emit_logits=False`.
     Skip,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LazySingleTokenMode {
-    NormalizedFullLogits,
-    SingletonArgmaxOnly,
-}
-
-impl LazySingleTokenMode {
-    fn logits_mode(self) -> FinalLogitsMode {
-        match self {
-            Self::NormalizedFullLogits => FinalLogitsMode::Full,
-            Self::SingletonArgmaxOnly => FinalLogitsMode::ArgmaxOnly,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -510,7 +496,7 @@ pub fn embed_tokens(
 ///
 /// # Panics
 /// If `token_ids` is empty.
-pub fn embed_decode_tokens_batched(
+pub(crate) fn embed_decode_tokens_batched(
     token_ids: &[u32],
     embedding: &QuantizedWeight,
     hidden_size: usize,
@@ -643,7 +629,7 @@ pub fn decode_batched_forward(
 /// sliding-window or KV-shared layers, MoE layers, per-layer-input gating
 /// (Gemma 2B/4B), and models with an MTP head (whose prefill must capture
 /// MTP history on a different path).
-pub fn supports_batched_prefill(cfg: &ModelConfig, weights: &ModelWeights) -> bool {
+pub(crate) fn supports_batched_prefill(cfg: &ModelConfig, weights: &ModelWeights) -> bool {
     if cfg.is_block_diffusion()
         || cfg.model_family == "qwen4_exp"
         || cfg.linear_attention.is_some()
@@ -684,7 +670,7 @@ pub struct BatchedPrefillRows {
 /// batch. The caller is responsible for gating on
 /// [`supports_batched_prefill`] and for the `rows * max_len` admission cap
 /// that bounds the `[B, L, L]` mask transient.
-pub fn prefill_batched_forward(
+pub(crate) fn prefill_batched_forward(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompts: &[&[u32]],
@@ -846,7 +832,7 @@ pub fn forward(
 /// `stream_row` receives the row of the last input token's position when the
 /// family owns one (Flash Next). Every other family leaves the sink untouched,
 /// which callers treat as "no capture available" and fail closed on.
-pub fn forward_capturing(
+pub(crate) fn forward_capturing(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
@@ -885,7 +871,7 @@ pub fn forward_argmax(
 }
 
 /// [`forward_argmax`] with the trunk's post-norm stream row captured.
-pub fn forward_argmax_capturing(
+pub(crate) fn forward_argmax_capturing(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
@@ -912,7 +898,7 @@ pub fn forward_argmax_capturing(
 /// Intended for non-final prefill chunks / mlx-lm-style cache-only prefix
 /// where residual and logits are discarded. On Qwen3.6 27B this saves the
 /// last-layer FFN plus ~543M multiply-adds of lm_head per chunk.
-pub fn forward_cache_only(
+pub(crate) fn forward_cache_only(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
@@ -944,7 +930,7 @@ pub enum PipelineStageInput<'a> {
 /// last-position logits `[vocab_size]`. KV entries retain global layer indexes,
 /// so each rank may allocate a cache sized to the complete model while only
 /// materializing its assigned entries.
-pub fn forward_pipeline_stage(
+pub(crate) fn forward_pipeline_stage(
     cfg: &ModelConfig,
     weights: &PipelineStageWeights,
     input: PipelineStageInput<'_>,
@@ -1642,20 +1628,19 @@ fn deepseek_v4_forward_and_logits_mode(
     reshape(&logits, &[cfg.vocab_size as i32], None)
 }
 
-/// V4 counterpart of [`forward_lazy_single_and_logits_mode`]: single-token
+/// V4 counterpart of [`forward_lazy_single_argmax_impl`]: single-token
 /// forward from a (possibly lazy) token array, returning `[1, 1, vocab]`.
-fn deepseek_v4_forward_lazy_single_and_logits_mode(
+fn deepseek_v4_forward_lazy_single_argmax(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_arr: &MlxArray,
     cache: &mut MlxKVCache,
     token_offset: usize,
-    lazy_mode: LazySingleTokenMode,
 ) -> MlxArray {
     let hidden = deepseek_v4_forward_hidden(cfg, weights, token_arr, 1, cache, token_offset);
     let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
-    finalize_lm_head_logits(cfg, &logits, lazy_mode.logits_mode())
+    finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::ArgmaxOnly)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2284,7 +2269,7 @@ pub fn forward_all_positions_with_post_norm(
 /// head's GPU forward completes, so graph construction overlaps GPU execution
 /// instead of serializing behind a host extraction. The arithmetic is
 /// identical — the embedding gather consumes the same index values.
-pub fn forward_all_positions_with_post_norm_ids(
+pub(crate) fn forward_all_positions_with_post_norm_ids(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     ids_1d: &MlxArray,
@@ -2448,7 +2433,7 @@ pub fn forward_all_positions_with_post_norm_ids(
 /// warmup seeding.
 /// Multimodal MTP warmup path: full-seq residual through every layer with
 /// media-aware masks, post-norm on all positions, lm_head on last only (WS-M5).
-pub fn forward_with_initial_hidden_media_post_norm_last_lm_head(
+pub(crate) fn forward_with_initial_hidden_media_post_norm_last_lm_head(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
@@ -2511,7 +2496,7 @@ pub fn forward_with_initial_hidden_media_post_norm_last_lm_head(
     (last_logits, normed)
 }
 
-pub fn forward_all_positions_post_norm_last_lm_head(
+pub(crate) fn forward_all_positions_post_norm_last_lm_head(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
@@ -2610,7 +2595,7 @@ pub fn forward_all_positions_post_norm_last_lm_head(
 /// [`forward_all_positions_with_post_norm`]: the MTP draft head consumes the
 /// packed stream, not the post-norm E-wide hidden, so the runner slices draft
 /// rows from the second return with width `hc_mult * hidden_size`.
-pub fn deepseek_v4_forward_all_positions_with_packed(
+pub(crate) fn deepseek_v4_forward_all_positions_with_packed(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
@@ -2638,35 +2623,12 @@ pub fn deepseek_v4_forward_all_positions_with_packed(
     (logits_out, packed)
 }
 
-/// Forward all positions, returning both per-position logits `[seq, vocab]` and
-/// the post-final-norm hidden state at the final position `[1, 1, hidden_size]`.
-pub fn forward_all_positions_with_final_hidden(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    token_ids: &[u32],
-    cache: &mut MlxKVCache,
-    token_offset: usize,
-) -> (MlxArray, MlxArray) {
-    let (logits, post_norm) =
-        forward_all_positions_with_post_norm(cfg, weights, token_ids, cache, token_offset);
-    let last = (token_ids.len() - 1) as i32;
-    let hs = cfg.hidden_size as i32;
-    let last_post_norm = slice(
-        &post_norm,
-        &[0, last, 0],
-        &[1, last + 1, hs],
-        &[1, 1, 1],
-        None,
-    );
-    (logits, last_post_norm)
-}
-
 /// Whether a greedy assistant draft position should be kept under confidence gates.
 ///
 /// Depth 0 uses `first_gate`; deeper positions use `deep_gate` (tighter by default).
 /// Pure helper — used by the multi-depth draft loop and unit-tested without weights.
 #[inline]
-pub fn gemma4_assistant_draft_position_accepted(
+pub(crate) fn gemma4_assistant_draft_position_accepted(
     depth: usize,
     confidence: f32,
     first_gate: f32,
@@ -2676,8 +2638,9 @@ pub fn gemma4_assistant_draft_position_accepted(
     confidence >= gate
 }
 
+#[cfg(test)]
 /// How many leading confidences pass the position gates (stops at first miss).
-pub fn gemma4_assistant_accepted_draft_depth(
+pub(crate) fn gemma4_assistant_accepted_draft_depth(
     confidences: &[f32],
     first_gate: f32,
     deep_gate: f32,
@@ -2888,7 +2851,7 @@ pub struct Gemma4AssistantDraftSession<'a> {
 
 impl<'a> Gemma4AssistantDraftSession<'a> {
     /// Validate model families and projection weights once for a draft loop.
-    pub fn open(
+    pub(crate) fn open(
         assistant_cfg: &'a ModelConfig,
         assistant_weights: &'a ModelWeights,
         target_cfg: &'a ModelConfig,
@@ -2924,7 +2887,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
     /// Peek shared full/sliding target K/V (+ ring layout) once for this draft
     /// attempt. Target cache is read-only for the assistant, so multi-depth
     /// steps reuse the same arrays without re-peeking.
-    pub fn bind_target_cache(
+    pub(crate) fn bind_target_cache(
         &mut self,
         target_cache: &MlxKVCache,
     ) -> Result<(), Gemma4AssistantForwardError> {
@@ -2939,18 +2902,20 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
     /// Whether the frozen sliding binding uses a rotating ring layout.
     ///
     /// Useful for SWA pilot / multi-depth telemetry: ring-aware drafts must
     /// keep the slot-validity mask derived from the frozen write_start.
-    pub fn frozen_sliding_uses_ring(&self) -> bool {
+    pub(crate) fn frozen_sliding_uses_ring(&self) -> bool {
         self.frozen_target_kv
             .as_ref()
             .is_some_and(Gemma4AssistantFrozenTargetKv::sliding_uses_ring)
     }
 
+    #[cfg(test)]
     /// Whether target KV has been frozen via [`Self::bind_target_cache`].
-    pub fn has_frozen_target_kv(&self) -> bool {
+    pub(crate) fn has_frozen_target_kv(&self) -> bool {
         self.frozen_target_kv.is_some()
     }
 
@@ -2959,7 +2924,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
     /// Requires [`Self::bind_target_cache`] first. RoPE offset is passed as an
     /// array (via [`gemma4_assistant_rope_offset_array`]) so multi-depth steps
     /// share a compile-ready graph shape with frozen target K/V.
-    pub fn forward_one(
+    pub(crate) fn forward_one(
         &self,
         last_token: u32,
         last_backbone_hidden: &MlxArray,
@@ -2978,7 +2943,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
     /// Like [`Self::forward_one`], but accepts a lazy `[1]` uint32 token id
     /// array so multi-depth drafting can chain unevaluated argmax outputs
     /// into the next step's embedding without a host sync.
-    pub fn forward_one_from_token_arr(
+    pub(crate) fn forward_one_from_token_arr(
         &self,
         last_token_ids: &MlxArray,
         last_backbone_hidden: &MlxArray,
@@ -3030,6 +2995,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
     }
 }
 
+#[cfg(test)]
 /// Apply the Gemma4 assistant MTP forward via the "compile" entry point.
 ///
 /// Returns `None` when the compile flag is disabled (caller uses imperative /
@@ -3037,7 +3003,7 @@ impl<'a> Gemma4AssistantDraftSession<'a> {
 /// [`gemma4_assistant_forward_one`] (no non-compiled MlxClosure wrapper).
 /// Pure-graph `mlx_compile` remains a follow-on once KV/RoPE are array inputs.
 #[allow(clippy::too_many_arguments)]
-pub fn gemma4_assistant_forward_one_compiled(
+pub(crate) fn gemma4_assistant_forward_one_compiled(
     assistant_cfg: &ModelConfig,
     assistant_weights: &ModelWeights,
     target_cfg: &ModelConfig,
@@ -3383,7 +3349,7 @@ fn layer_forward_dense_embed(
 ///
 /// No KV cache is consulted or updated — embeddings are always computed from
 /// scratch in a single forward pass.
-pub fn forward_for_embedding(
+pub(crate) fn forward_for_embedding(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],
@@ -3499,7 +3465,7 @@ fn forward_for_embedding_body(
 /// dispatch cost across the ~28 ops/layer × N layers of the forward pass.
 /// DI-W2-002: families that must not use the causal dense embed compiled body.
 /// Returns a stable error string when the dense closure is forbidden.
-pub fn dense_embed_closure_forbidden_reason(model_family: &str) -> Option<&'static str> {
+pub(crate) fn dense_embed_closure_forbidden_reason(model_family: &str) -> Option<&'static str> {
     if model_family == "embeddinggemma" {
         Some("embeddinggemma must use gemma3 bidirectional embed path, not dense embed closure")
     } else {
@@ -3507,7 +3473,7 @@ pub fn dense_embed_closure_forbidden_reason(model_family: &str) -> Option<&'stat
     }
 }
 
-pub fn build_embedding_forward_closure(
+pub(crate) fn build_embedding_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     target_position: Option<usize>,
@@ -4003,7 +3969,7 @@ fn l2_normalize_probe(x: &MlxArray) -> MlxArray {
 /// Cache key: `(batch_size, max_len, actual_lens)` — the mask is fully
 /// determined by these, so same-shape batches with the same real lengths
 /// hit the cache.
-pub fn build_embedding_gemma3_batch_forward_closure(
+pub(crate) fn build_embedding_gemma3_batch_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     bidir_mask: Option<MlxArray>,
@@ -4023,7 +3989,7 @@ pub fn build_embedding_gemma3_batch_forward_closure(
 /// Build an `mlx_compile`-wrapped EmbeddingGemma closure that returns the final
 /// sentence embedding tensor `[B, H]` instead of the full `[B, max_seq, H]`
 /// encoder output.
-pub fn build_embedding_gemma3_pooled_batch_forward_closure(
+pub(crate) fn build_embedding_gemma3_pooled_batch_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     bidir_mask: Option<MlxArray>,
@@ -4302,7 +4268,7 @@ fn forward_for_embedding_batch_body(
 /// When `has_dense_head` is true, the Dense head projection is fused into
 /// the compiled graph so the runner can skip the separate post-closure
 /// dispatch (Last/Cls paths only — mean-pool keeps Dense head outside).
-pub fn build_embedding_batch_forward_closure(
+pub(crate) fn build_embedding_batch_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     target_positions: Option<Vec<usize>>,
@@ -4378,7 +4344,7 @@ fn forward_for_embedding_mean_pool_body(
 /// The closure takes the pre-embedded `[B, max_seq, H]` hidden state and
 /// returns the final norm output `[B, max_seq, H]` (f32). The caller applies
 /// masked mean-pooling post-closure.
-pub fn build_embedding_mean_pool_forward_closure(
+pub(crate) fn build_embedding_mean_pool_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
 ) -> Result<MlxClosure, String> {
@@ -4540,61 +4506,10 @@ pub(crate) fn embed_length_split_enabled() -> bool {
     })
 }
 
-/// Single-token forward pass accepting a lazy token `MlxArray`.
-///
-/// Functionally equivalent to `forward(cfg, weights, &[tok], cache, offset)`,
-/// but takes the token as an unevaluated MLX array so the caller can build the
-/// next step's compute graph *before* the current step's GPU work completes.
-/// This enables double-buffer pipelining (see `start_direct_pipeline` /
-/// `advance_direct_pipeline` in `generate.rs`):
-///
-/// ```text
-/// GPU: [step N ....][step N+1 (submitted before N finishes) ....]
-/// CPU:              [build N+1 graph][submit async][eval N][return N's token]
-/// ```
-///
-/// `token_arr` must be a scalar or `[1]` shaped `u32` array.
-pub fn forward_lazy_single(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    token_arr: &MlxArray, // scalar or [1] u32; may be unevaluated (lazy)
-    cache: &mut MlxKVCache,
-    token_offset: usize,
-) -> MlxArray {
-    forward_lazy_single_and_logits_mode(
-        cfg,
-        weights,
-        token_arr,
-        cache,
-        token_offset,
-        LazySingleTokenMode::NormalizedFullLogits,
-        None,
-    )
-}
-
-pub fn forward_lazy_single_argmax(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    token_arr: &MlxArray, // singleton u32 array from argmax; may be unevaluated (lazy)
-    cache: &mut MlxKVCache,
-    token_offset: usize,
-) -> MlxArray {
-    // Match forward_argmax / multi-token MoE invariant (double-buffer path).
-    forward_lazy_single_and_logits_mode(
-        cfg,
-        weights,
-        token_arr,
-        cache,
-        token_offset,
-        LazySingleTokenMode::SingletonArgmaxOnly,
-        None,
-    )
-}
-
 /// [`forward_lazy_single_argmax`] with the trunk's post-norm stream row
 /// captured for the caller. `stream_row` is filled by families that own a
 /// packed residual stream (Flash Next); others leave it untouched.
-pub fn forward_lazy_single_argmax_capturing(
+pub(crate) fn forward_lazy_single_argmax_capturing(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_arr: &MlxArray,
@@ -4602,24 +4517,22 @@ pub fn forward_lazy_single_argmax_capturing(
     token_offset: usize,
     stream_row: &mut Option<MlxArray>,
 ) -> MlxArray {
-    forward_lazy_single_and_logits_mode(
+    forward_lazy_single_argmax_impl(
         cfg,
         weights,
         token_arr,
         cache,
         token_offset,
-        LazySingleTokenMode::SingletonArgmaxOnly,
         Some(stream_row),
     )
 }
 
-fn forward_lazy_single_and_logits_mode(
+fn forward_lazy_single_argmax_impl(
     cfg: &ModelConfig,
     weights: &ModelWeights,
-    token_arr: &MlxArray, // scalar, [1], or singleton argmax array; may be lazy
+    token_arr: &MlxArray, // singleton argmax array; may be lazy
     cache: &mut MlxKVCache,
     token_offset: usize,
-    lazy_mode: LazySingleTokenMode,
     stream_row: Option<&mut Option<MlxArray>>,
 ) -> MlxArray {
     if cfg.model_family == "qwen4_exp" {
@@ -4645,32 +4558,20 @@ fn forward_lazy_single_and_logits_mode(
     // DeepSeek V4 owns its packed hyper-connection residual; the lazy token
     // array doubles as the hash-routing tid2eid index source.
     if cfg.deepseek_v4.is_some() {
-        return deepseek_v4_forward_lazy_single_and_logits_mode(
+        return deepseek_v4_forward_lazy_single_argmax(
             cfg,
             weights,
             token_arr,
             cache,
             token_offset,
-            lazy_mode,
         );
     }
     let profile_decode = decode_profile_enabled();
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
 
-    // The generic lazy path accepts scalar or vector token arrays and keeps the
-    // historical normalization. The direct-pipeline argmax path already passes
-    // a singleton `[1, 1]` array, so it can avoid one reshape graph node per
-    // generated token.
-    let tok_1d_storage;
-    let token_ids = match lazy_mode {
-        LazySingleTokenMode::NormalizedFullLogits => {
-            tok_1d_storage = reshape(token_arr, &[1_i32], None);
-            &tok_1d_storage
-        }
-        LazySingleTokenMode::SingletonArgmaxOnly => token_arr,
-    };
-
-    let mut hidden = embed_tokens_arr(token_ids, &weights.token_embedding, cfg.hidden_size);
+    // The direct-pipeline argmax path already passes a singleton `[1, 1]`
+    // array, so no reshape graph node is needed per generated token.
+    let mut hidden = embed_tokens_arr(token_arr, &weights.token_embedding, cfg.hidden_size);
     if hidden.dtype() != MlxDtype::Bfloat16 {
         hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     }
@@ -4689,7 +4590,7 @@ fn forward_lazy_single_and_logits_mode(
     });
 
     let per_layer_started = profile_decode.then(Instant::now);
-    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, token_arr, &hidden);
     if let (Some(started), Some(inputs)) = (per_layer_started, per_layer_inputs.as_ref()) {
         // Force materialization of the per-layer-input tensors to attribute their
         // graph-build + dispatch cost to this stage. Models without per-layer input
@@ -4741,7 +4642,7 @@ fn forward_lazy_single_and_logits_mode(
     let lm_head_started = profile_decode.then(Instant::now);
     let normed = rms_norm(&hidden, Some(weights.final_norm()), cfg.rms_norm_eps, None);
     let logits = qw(&normed, &weights.lm_head);
-    let logits = finalize_lm_head_logits(cfg, &logits, lazy_mode.logits_mode());
+    let logits = finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::ArgmaxOnly);
     if let Some(started) = lm_head_started {
         decode_profile_eval_elapsed(
             profile_decode,

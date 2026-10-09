@@ -321,7 +321,7 @@ impl MlxSharedWeightsCell {
     }
 
     /// True once a build has published loaded weights into this cell.
-    pub fn is_loaded(&self) -> bool {
+    pub(crate) fn is_loaded(&self) -> bool {
         self.0.get().is_some()
     }
 
@@ -1858,7 +1858,7 @@ fn reclaim_native_prefix_entries(
 impl MlxRunner {
     /// Whether the loaded target has a validated Qwen/GLM/DeepSeek-V4 MTP head
     /// or Gemma assistant drafter attached.
-    pub fn has_mtp(&self) -> bool {
+    pub(crate) fn has_mtp(&self) -> bool {
         self.mtp_model_policy.has_attached_drafter()
     }
 
@@ -2090,6 +2090,7 @@ impl MlxRunner {
         }
     }
 
+    #[cfg(test)]
     /// Build with every cross-session share available: an optional prefix
     /// snapshot store and an optional shared-weights cell (Option A of the
     /// session/weight-reuse design). The first build through an empty cell
@@ -2097,7 +2098,7 @@ impl MlxRunner {
     /// `Arc<ModelWeights>` and skip both the safetensors read and the JIT
     /// warmup forwards.
     #[allow(clippy::too_many_arguments)]
-    pub fn from_artifacts_with_runtime_shares(
+    pub(crate) fn from_artifacts_with_runtime_shares(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
@@ -2154,7 +2155,7 @@ impl MlxRunner {
         )
     }
 
-    pub fn from_artifacts_with_mtp_options(
+    pub(crate) fn from_artifacts_with_mtp_options(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
         disable_ngram_acceleration: bool,
@@ -2166,24 +2167,6 @@ impl MlxRunner {
             disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
             None,
-            None,
-            None,
-        )
-    }
-
-    pub fn from_artifacts_with_prefix_cache_and_mtp_options(
-        artifacts: &NativeModelArtifacts,
-        prefill_chunk: usize,
-        disable_ngram_acceleration: bool,
-        disable_mtp_ngram_stacking: bool,
-        prefix_cache_store: MlxPrefixCacheStore,
-    ) -> Result<Self, MlxRunnerError> {
-        Self::from_artifacts_inner(
-            artifacts,
-            prefill_chunk,
-            disable_ngram_acceleration,
-            disable_mtp_ngram_stacking,
-            Some(prefix_cache_store),
             None,
             None,
         )
@@ -2799,35 +2782,6 @@ impl MlxRunner {
             embed_mean_pool_compile_cache: Mutex::new(HashMap::new()),
             embed_compile_stats: Mutex::new(EmbedCompileStats::default()),
         })
-    }
-
-    /// Snapshot the embedding compile-cache hit / miss / size counters.
-    /// Use this to diagnose fragmentation: a healthy ingest workload
-    /// has `single_hits + batched_hits` dominating the misses, and the
-    /// cache sizes stable. A growing cache with a low hit rate signals
-    /// the workload's shape distribution is too wide; consider length-
-    /// bucketing batches before submitting them.
-    pub fn embed_compile_cache_stats(&self) -> EmbedCompileCacheStats {
-        // Snapshot hit/miss counters and cache sizes under the stats lock first
-        // so a concurrent embed() that updates counters between size reads
-        // cannot produce a half-updated counter view. Cache lengths are still
-        // read under their own locks (they change independently of counters).
-        let stats = *self.embed_compile_stats.lock();
-        let single_len = self.embed_compile_cache.lock().len();
-        let batched_len = self.embed_batch_compile_cache.lock().len()
-            + self.embed_gemma_batch_compile_cache.lock().len();
-        let mean_pool_len = self.embed_mean_pool_compile_cache.lock().len();
-        EmbedCompileCacheStats {
-            single_hits: stats.single_hits,
-            single_misses: stats.single_misses,
-            single_len,
-            batched_hits: stats.batched_hits,
-            batched_misses: stats.batched_misses,
-            batched_len,
-            mean_pool_hits: stats.mean_pool_hits,
-            mean_pool_misses: stats.mean_pool_misses,
-            mean_pool_len,
-        }
     }
 }
 

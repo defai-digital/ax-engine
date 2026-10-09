@@ -10,7 +10,7 @@ use mlx_sys::{
 static GATES_KERNEL: OnceLock<Result<MlxMetalKernel, String>> = OnceLock::new();
 
 /// Release-specific Metal dispatch guard. Avoid MLX's per-token graph fallback.
-pub fn mlx_gated_delta_prefill_supported(q: &[i32], v: &[i32], dtype: MlxDtype) -> bool {
+pub(crate) fn mlx_gated_delta_prefill_supported(q: &[i32], v: &[i32], dtype: MlxDtype) -> bool {
     if q.len() != 4 || v.len() != 4 || q[0] <= 0 || v[..2] != q[..2] {
         return false;
     }

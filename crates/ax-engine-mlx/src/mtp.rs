@@ -39,7 +39,7 @@ pub enum MtpDraftMode {
 /// Returns the current MTP draft mode, cached via `OnceLock`.
 ///
 /// Priority: `AX_MLX_MTP_DRAFT_MODE` env → default `Greedy`.
-pub fn mtp_draft_mode_from_env() -> MtpDraftMode {
+pub(crate) fn mtp_draft_mode_from_env() -> MtpDraftMode {
     static CACHED: OnceLock<MtpDraftMode> = OnceLock::new();
     *CACHED.get_or_init(|| {
         match std::env::var("AX_MLX_MTP_DRAFT_MODE")
@@ -71,7 +71,7 @@ pub fn mtp_draft_mode_from_env() -> MtpDraftMode {
 /// Read from `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`; valid range `[0.0, 1.0)`.
 /// Defaults to [`DEFAULT_MTP_DRAFT_MIN_CONFIDENCE`] (gate on); set the variable
 /// to `0` to disable the gate and restore the prior full-depth draft behavior.
-pub fn mtp_draft_min_confidence_from_env() -> f32 {
+pub(crate) fn mtp_draft_min_confidence_from_env() -> f32 {
     static CACHED: OnceLock<f32> = OnceLock::new();
     *CACHED.get_or_init(|| match std::env::var("AX_MLX_MTP_DRAFT_MIN_CONFIDENCE") {
         Ok(raw) => raw
@@ -87,7 +87,7 @@ pub fn mtp_draft_min_confidence_from_env() -> f32 {
 /// `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` parsed to `Some(value)` only when set and
 /// valid; `None` when unset, so speculation-profile resolution can supply a
 /// preset instead.
-pub fn mtp_draft_min_confidence_env_value() -> Option<f32> {
+pub(crate) fn mtp_draft_min_confidence_env_value() -> Option<f32> {
     mtp_draft_min_confidence_explicit()
 }
 
@@ -115,7 +115,7 @@ fn mtp_draft_min_confidence_explicit() -> Option<f32> {
 /// `auto` defer (the former 0.99 diversity pin was a throughput regression —
 /// −6..−26% MTP decode in the 2026-07-28 6-bit refresh — with nothing to
 /// protect on an exact path). `temperature` drives `auto`.
-pub fn resolve_mtp_draft_min_confidence(
+pub(crate) fn resolve_mtp_draft_min_confidence(
     profile: crate::speculation_profile::SpeculationProfile,
     temperature: Option<f32>,
 ) -> f32 {
@@ -147,7 +147,7 @@ pub fn resolve_mtp_draft_min_confidence(
 /// does lower the reported *accept rate* (more drafts proposed); that is a speed
 /// knob, not a quality change. Override with `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`;
 /// set 0.98 to restore the accept-rate-maximizing behavior, or 0 to disable.
-pub const DEFAULT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.90;
+pub(crate) const DEFAULT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.90;
 
 /// Truncate a draft to the longest leading run whose per-depth head confidence
 /// stays at or above `min_confidence` (probability, not log-prob).
@@ -375,7 +375,7 @@ impl MtpKvStep<'_> {
     }
 }
 
-pub fn mtp_head_forward(
+pub(crate) fn mtp_head_forward(
     head: &MtpWeights,
     main_hidden: &MlxArray,
     prev_token_arr: &MlxArray,
@@ -397,7 +397,7 @@ pub fn mtp_head_forward(
     )
 }
 
-pub fn mtp_warmup_cache_kv_batched(
+pub(crate) fn mtp_warmup_cache_kv_batched(
     head: &MtpWeights,
     main_hidden: &MlxArray,
     prev_tokens: &[u32],
@@ -473,7 +473,7 @@ pub fn mtp_warmup_cache_kv_batched(
 /// head-chained draft entries. Accepted drafts are then rebuilt from the target
 /// backbone hidden rows before the next correction/bonus token is appended by
 /// the normal draft call.
-pub fn mtp_refold_accepted_cache_kv_batched(
+pub(crate) fn mtp_refold_accepted_cache_kv_batched(
     head: &MtpWeights,
     main_hidden: &MlxArray,
     accepted_tokens: &[u32],
@@ -528,7 +528,7 @@ pub fn mtp_refold_accepted_cache_kv_batched(
 /// trimmed to `retain_len` before the fold and ends with committed history plus
 /// the speculative K/V entries for draft depths `1..max_depth-1`.
 #[allow(clippy::too_many_arguments)]
-pub fn mtp_refold_committed_draft_greedy_async(
+pub(crate) fn mtp_refold_committed_draft_greedy_async(
     weights: &ModelWeights,
     cfg: &ModelConfig,
     main_hidden: &MlxArray,
@@ -1449,7 +1449,7 @@ fn greedy_draft_needs_temperature_log_probs_from_env(
 /// consume them. Recording sites call this instead of re-deriving the recorded
 /// temperature from profile flags: the recorded T must describe what the draft
 /// path actually wrote.
-pub fn qwen_greedy_temperature_log_probs_computed(
+pub(crate) fn qwen_greedy_temperature_log_probs_computed(
     draft_head_temperature: f32,
     min_confidence: f32,
 ) -> bool {
@@ -1473,7 +1473,7 @@ pub fn qwen_greedy_temperature_log_probs_computed(
 /// - confidence gate force-greedy → log-probs at **1.0**
 /// - stochastic mode → head draft temperature (or 1.0 if unset)
 /// - greedy mode with temperature log-probs → head draft temperature
-pub fn qwen_mtp_draft_log_prob_temperature(
+pub(crate) fn qwen_mtp_draft_log_prob_temperature(
     mode: MtpDraftMode,
     draft_head_temperature: f32,
     min_confidence: f32,
@@ -1494,7 +1494,7 @@ pub fn qwen_mtp_draft_log_prob_temperature(
 /// Process-env draft mode + head T / gate → recorded log-prob T for the Qwen
 /// draft path, with the computed flag taken from the same consumer rule
 /// [`mtp_draft_tokens_gated`] applies.
-pub fn qwen_mtp_draft_log_prob_temperature_from_env(
+pub(crate) fn qwen_mtp_draft_log_prob_temperature_from_env(
     draft_head_temperature: f32,
     min_confidence: f32,
 ) -> f32 {
@@ -1512,7 +1512,7 @@ pub fn qwen_mtp_draft_log_prob_temperature_from_env(
 /// Qwen consumer rule that can skip them never applies here. Do not call the
 /// Qwen accessor for GLM: it would record 1.0 against genuinely computed head-T
 /// log-probs.
-pub fn glm_mtp_draft_log_prob_temperature(
+pub(crate) fn glm_mtp_draft_log_prob_temperature(
     mode: MtpDraftMode,
     draft_head_temperature: f32,
     min_confidence: f32,
@@ -1526,7 +1526,7 @@ pub fn glm_mtp_draft_log_prob_temperature(
 }
 
 /// Process-env wrapper over [`glm_mtp_draft_log_prob_temperature`].
-pub fn glm_mtp_draft_log_prob_temperature_from_env(
+pub(crate) fn glm_mtp_draft_log_prob_temperature_from_env(
     draft_head_temperature: f32,
     min_confidence: f32,
 ) -> f32 {
@@ -1675,7 +1675,7 @@ pub fn mtp_draft_tokens_gated(
 /// and sampled/greedy tail forwards so cache rollback can trim by rejected draft
 /// count.
 #[allow(clippy::too_many_arguments)]
-pub fn mtp_draft_tokens_after_forced_prefix(
+pub(crate) fn mtp_draft_tokens_after_forced_prefix(
     weights: &ModelWeights,
     cfg: &ModelConfig,
     first_hidden: &MlxArray,
@@ -1793,7 +1793,7 @@ pub struct MtpLazyDraft {
 /// evaluated, only the synchronization point moves — and is only legal in the
 /// regime where the synchronous greedy path computes no log-probs or
 /// distributions (confidence gate disabled, non-stochastic drafting).
-pub fn mtp_draft_tokens_greedy_async(
+pub(crate) fn mtp_draft_tokens_greedy_async(
     weights: &ModelWeights,
     cfg: &ModelConfig,
     first_hidden: &MlxArray,
@@ -1842,7 +1842,7 @@ pub fn mtp_draft_tokens_greedy_async(
 /// Extract host token values from an async-scheduled draft.
 ///
 /// Blocks only if the scheduled GPU work has not yet completed.
-pub fn mtp_lazy_draft_extract(lazy: &MtpLazyDraft) -> Vec<u32> {
+pub(crate) fn mtp_lazy_draft_extract(lazy: &MtpLazyDraft) -> Vec<u32> {
     let refs: Vec<&MlxArray> = lazy.tokens.iter().collect();
     eval(&refs);
     lazy.tokens.iter().map(|a| a.data_u32()[0]).collect()
@@ -2160,7 +2160,7 @@ fn mtp_draft_tokens_stochastic(
 /// * `cache`          — 1-layer GLM MLA KV cache for this head.
 /// * `cfg`            — main model config (provides rms_norm_eps, rope_theta, mla_attention, etc.).
 /// * `rope_offset_override` — explicit RoPE offset (capped warmup); `None` to use `cache.seq_len()`.
-pub fn glm_mtp_head_forward(
+pub(crate) fn glm_mtp_head_forward(
     head: &GlmMtpWeights,
     main_hidden: &MlxArray,
     prev_token_arr: &MlxArray,
@@ -2221,7 +2221,7 @@ pub fn glm_mtp_head_forward(
 /// Apply `shared_head.head(rms_norm(hidden, shared_head_norm))` to produce draft logits.
 ///
 /// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
-pub fn glm_mtp_hidden_to_logits(
+pub(crate) fn glm_mtp_hidden_to_logits(
     hidden: &MlxArray,
     head: &GlmMtpWeights,
     cfg: &ModelConfig,
@@ -2231,36 +2231,6 @@ pub fn glm_mtp_hidden_to_logits(
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     // [1, 1, vocab] → [vocab]
     reshape(&logits_f32, &[cfg.vocab_size as i32], None)
-}
-
-/// Draft up to `head.max_depth` tokens using the GLM MTP head.
-///
-/// Returns `(draft_tokens, draft_log_probs, draft_distributions, added, top2_margins)`.
-/// Mirrors `mtp_draft_tokens` but calls `glm_mtp_head_forward` + `glm_mtp_hidden_to_logits`.
-/// Returns empty when `weights.glm_mtp` is `None`.
-#[allow(clippy::too_many_arguments)]
-pub fn glm_mtp_draft_tokens(
-    weights: &ModelWeights,
-    cfg: &ModelConfig,
-    first_hidden: &MlxArray,
-    first_token: u32,
-    cache: &mut MlxKVCache,
-    max_depth_cap: Option<usize>,
-    rng: &mut Xorshift64,
-) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
-    glm_mtp_draft_tokens_gated(
-        weights,
-        cfg,
-        first_hidden,
-        first_token,
-        cache,
-        max_depth_cap,
-        rng,
-        resolve_mtp_draft_min_confidence(
-            crate::speculation_profile::speculation_profile_from_env(),
-            None,
-        ),
-    )
 }
 
 /// Like [`glm_mtp_draft_tokens`], but first threads the GLM MTP head through
@@ -2273,7 +2243,7 @@ pub fn glm_mtp_draft_tokens(
 /// under-accounting to over-trim `state.mtp_cache` on partial n-gram-prefix
 /// rejection).
 #[allow(clippy::too_many_arguments)]
-pub fn glm_mtp_draft_tokens_after_forced_prefix(
+pub(crate) fn glm_mtp_draft_tokens_after_forced_prefix(
     weights: &ModelWeights,
     cfg: &ModelConfig,
     first_hidden: &MlxArray,
@@ -2367,7 +2337,7 @@ pub fn glm_mtp_draft_tokens_after_forced_prefix(
 
 /// Like [`glm_mtp_draft_tokens`] but with an explicit draft-confidence gate.
 #[allow(clippy::too_many_arguments)]
-pub fn glm_mtp_draft_tokens_gated(
+pub(crate) fn glm_mtp_draft_tokens_gated(
     weights: &ModelWeights,
     cfg: &ModelConfig,
     first_hidden: &MlxArray,
@@ -2589,14 +2559,17 @@ fn glm_mtp_draft_tokens_stochastic(
 /// Default draft temperature for the V4 nextn head's stochastic path — the
 /// AXQ artifact carries no runtime sampler config, so this matches the GLM
 /// sidecar default.
-pub const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
+pub(crate) const DEEPSEEK_V4_MTP_DRAFT_TEMPERATURE: f32 = 0.7;
 
 /// Think-aware V4 draft temperature. Inside an open think block the target
 /// model usually samples at temperature 1.0 (DeepSeek thinking defaults), so
 /// a 0.7 draft is systematically sharper than the target and loses
 /// acceptance; match the target there. Outside think (or for sharper target
 /// sampling) keep the tuned default.
-pub fn deepseek_v4_mtp_effective_draft_temperature(in_think: bool, target_temperature: f32) -> f32 {
+pub(crate) fn deepseek_v4_mtp_effective_draft_temperature(
+    in_think: bool,
+    target_temperature: f32,
+) -> f32 {
     if in_think && target_temperature >= 1.0 {
         target_temperature.min(1.0)
     } else {
@@ -2614,7 +2587,7 @@ pub fn deepseek_v4_mtp_effective_draft_temperature(in_think: bool, target_temper
 ///
 /// DI-DS-MTP: accept rescale previously used mode-only 0.7 while stochastic
 /// think drafts sampled at 1.0, breaking rejection-sampling exactness.
-pub fn deepseek_v4_mtp_sample_and_log_temperature(
+pub(crate) fn deepseek_v4_mtp_sample_and_log_temperature(
     mode: MtpDraftMode,
     in_think: bool,
     target_temperature: f32,
@@ -2628,7 +2601,7 @@ pub fn deepseek_v4_mtp_sample_and_log_temperature(
 }
 
 /// Process-env draft mode + request think/target → sample/log temperature.
-pub fn deepseek_v4_mtp_sample_and_log_temperature_from_env(
+pub(crate) fn deepseek_v4_mtp_sample_and_log_temperature_from_env(
     in_think: bool,
     target_temperature: f32,
 ) -> f32 {
@@ -2643,7 +2616,7 @@ pub fn deepseek_v4_mtp_sample_and_log_temperature_from_env(
 /// MTP block at `il = n_layer + nextn_layer_offset`, so the block appends its
 /// raw-path latent K at slot `layer_count` and the cache needs one slot past
 /// the main stack.
-pub fn deepseek_v4_mtp_cache_layer_count(cfg: &ModelConfig) -> usize {
+pub(crate) fn deepseek_v4_mtp_cache_layer_count(cfg: &ModelConfig) -> usize {
     cfg.layer_count + 1
 }
 
@@ -2688,7 +2661,7 @@ fn deepseek_v4_mtp_max_depth(cfg: &ModelConfig) -> usize {
 /// * `cfg`            — main model config.
 /// * `rope_offset_override` — explicit RoPE offset (capped warmup); `None` to
 ///   use `cache.seq_len() + cache.rope_offset` (the GLM head's convention).
-pub fn deepseek_v4_mtp_head_forward(
+pub(crate) fn deepseek_v4_mtp_head_forward(
     nextn: &DeepseekV4NextnWeights,
     packed_hidden: &MlxArray,
     prev_token_arr: &MlxArray,
@@ -2786,7 +2759,7 @@ pub fn deepseek_v4_mtp_head_forward(
 /// only for legacy packs that omit it.
 ///
 /// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
-pub fn deepseek_v4_mtp_hidden_to_logits(
+pub(crate) fn deepseek_v4_mtp_hidden_to_logits(
     packed_hidden: &MlxArray,
     nextn: &DeepseekV4NextnWeights,
     weights: &ModelWeights,
@@ -2816,6 +2789,7 @@ pub fn deepseek_v4_mtp_hidden_to_logits(
     reshape(&logits_f32, &[cfg.vocab_size as i32], None)
 }
 
+#[cfg(test)]
 /// Draft up to `max_depth` (≤ `num_nextn_predict_layers` = 1) tokens using the
 /// DeepSeek V4 nextn block.
 ///
@@ -2823,7 +2797,7 @@ pub fn deepseek_v4_mtp_hidden_to_logits(
 /// Mirrors [`glm_mtp_draft_tokens`]; returns empty when
 /// `weights.deepseek_v4_nextn` is `None` or the block layer is absent.
 #[allow(clippy::too_many_arguments)]
-pub fn deepseek_v4_mtp_draft_tokens(
+pub(crate) fn deepseek_v4_mtp_draft_tokens(
     weights: &ModelWeights,
     cfg: &ModelConfig,
     first_hidden: &MlxArray,
@@ -2860,7 +2834,7 @@ pub fn deepseek_v4_mtp_draft_tokens(
 /// `draft_temperature` must match the temperature used for accept-path
 /// log-prob rescale (see [`deepseek_v4_mtp_sample_and_log_temperature`]).
 #[allow(clippy::too_many_arguments)]
-pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
+pub(crate) fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
     weights: &ModelWeights,
     cfg: &ModelConfig,
     first_hidden: &MlxArray,
@@ -2959,7 +2933,7 @@ pub fn deepseek_v4_mtp_draft_tokens_after_forced_prefix(
 
 /// Like [`deepseek_v4_mtp_draft_tokens`] but with an explicit draft-confidence gate.
 #[allow(clippy::too_many_arguments)]
-pub fn deepseek_v4_mtp_draft_tokens_gated(
+pub(crate) fn deepseek_v4_mtp_draft_tokens_gated(
     weights: &ModelWeights,
     cfg: &ModelConfig,
     first_hidden: &MlxArray,
@@ -3472,7 +3446,7 @@ pub struct SequentialGreedyDeepseekV4MtpVerify {
 ///
 /// On entry `cache.seq_len()` must equal `token_offset`. On exit the cache has
 /// advanced by `1 + accept_count`.
-pub fn sequential_greedy_deepseek_v4_mtp_verify(
+pub(crate) fn sequential_greedy_deepseek_v4_mtp_verify(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
@@ -3578,7 +3552,7 @@ fn reshape_singleton_vocab_logits(logits: &MlxArray, vocab_size: usize) -> MlxAr
 /// nextn attention starts decode with almost no prompt history and acceptance
 /// collapses. `packed_hidden_seq` is `[1, seq, hc*hidden]` aligned with
 /// `prev_tokens` (token that *follows* each packed row, same contract as Qwen).
-pub fn deepseek_v4_mtp_warmup_cache(
+pub(crate) fn deepseek_v4_mtp_warmup_cache(
     nextn: &DeepseekV4NextnWeights,
     packed_hidden_seq: &MlxArray,
     prev_tokens: &[u32],

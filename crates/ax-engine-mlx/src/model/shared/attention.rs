@@ -1402,7 +1402,7 @@ pub(crate) struct KVConcatBuffer {
 }
 
 impl KVConcatBuffer {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             full_k: None,
             full_v: None,

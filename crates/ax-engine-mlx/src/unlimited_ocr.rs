@@ -209,7 +209,11 @@ pub struct UnlimitedOcrImageViews {
 ///
 /// `num_queries = ceil((image_size / patch_size) / downsample_ratio)`
 /// tokens = `(num_queries + 1) * num_queries + 1`  (grid + per-row newline + separator)
-pub fn base_soft_token_count(image_size: i32, patch_size: i32, downsample_ratio: i32) -> usize {
+pub(crate) fn base_soft_token_count(
+    image_size: i32,
+    patch_size: i32,
+    downsample_ratio: i32,
+) -> usize {
     let grid = (image_size / patch_size) as f32 / downsample_ratio as f32;
     let num_queries = grid.ceil() as usize;
     (num_queries + 1) * num_queries + 1
@@ -523,7 +527,7 @@ fn load_clip(map: &mut HashMap<String, MlxArray>) -> Result<ClipVision, Unlimite
 }
 
 /// Load dual vision from leftover name_map keys + manifest projector roles.
-pub fn load_unlimited_ocr_vision_weights(
+pub(crate) fn load_unlimited_ocr_vision_weights(
     specs: &[ax_engine_core::NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
 ) -> Result<Option<UnlimitedOcrVisionWeights>, crate::weights::WeightLoadError> {
@@ -1026,7 +1030,7 @@ fn clip_forward(clip: &ClipVision, patch_embeds: &MlxArray) -> MlxArray {
 /// Run SAM+CLIP+projector for a single base-resolution image (NHWC BF16).
 ///
 /// Returns `[n_soft, hidden]` embeddings ready to inject into image-token slots.
-pub fn encode_base_image(
+pub(crate) fn encode_base_image(
     vision: &UnlimitedOcrVisionWeights,
     image_nhwc: &MlxArray,
 ) -> Result<MlxArray, UnlimitedOcrError> {
@@ -1078,7 +1082,7 @@ pub fn encode_base_image(
 
 /// Encode the global view and, when present, reassemble local tiles into the
 /// same two-dimensional feature canvas used by the released processor.
-pub fn encode_document_image(
+pub(crate) fn encode_document_image(
     vision: &UnlimitedOcrVisionWeights,
     views: &UnlimitedOcrImageViews,
 ) -> Result<MlxArray, UnlimitedOcrError> {
@@ -1201,7 +1205,7 @@ fn overwrite_image_token_positions(
 }
 
 /// Embed prompt tokens and overwrite image-token slots with vision features.
-pub fn build_embeddings_with_image(
+pub(crate) fn build_embeddings_with_image(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &[u32],

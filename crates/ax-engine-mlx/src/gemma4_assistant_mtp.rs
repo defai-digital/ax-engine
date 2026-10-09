@@ -5,8 +5,8 @@ use std::sync::OnceLock;
 use ax_engine_core::NativeModelManifest;
 use serde_json::Value;
 
-pub const GEMMA4_ASSISTANT_MTP_CONTRACT_FILE: &str = "ax_gemma4_assistant_mtp.json";
-pub const GEMMA4_ASSISTANT_MTP_SCHEMA_VERSION: &str = "ax.gemma4_assistant_mtp.v1";
+pub(crate) const GEMMA4_ASSISTANT_MTP_CONTRACT_FILE: &str = "ax_gemma4_assistant_mtp.json";
+pub(crate) const GEMMA4_ASSISTANT_MTP_SCHEMA_VERSION: &str = "ax.gemma4_assistant_mtp.v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Gemma4AssistantMtpDisableReason {
@@ -25,7 +25,7 @@ pub enum Gemma4AssistantMtpDisableReason {
 }
 
 impl Gemma4AssistantMtpDisableReason {
-    pub fn route_code(self) -> u32 {
+    pub(crate) fn route_code(self) -> u32 {
         match self {
             Self::None => 0,
             Self::NotGemma4Target => 1,
@@ -399,7 +399,7 @@ fn gemma4_assistant_mtp_env_enabled() -> bool {
 /// greedy probe), so 2 is the constrained optimum. Probe + methodology:
 /// `crates/ax-engine-mlx/src/bin/gemma_depth_probe.rs`,
 /// `docs/mtp/gemma4-assistant-multi-depth.md`.
-pub const DEFAULT_GEMMA4_ASSISTANT_MTP_MAX_DEPTH: usize = 2;
+pub(crate) const DEFAULT_GEMMA4_ASSISTANT_MTP_MAX_DEPTH: usize = 2;
 
 /// Runtime ceiling on the assistant draft depth, from
 /// `AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH` (default
@@ -407,7 +407,7 @@ pub const DEFAULT_GEMMA4_ASSISTANT_MTP_MAX_DEPTH: usize = 2;
 /// contract's `max_depth` (historically 1): recurrent drafting is a runtime
 /// capability of the same weights, not a property of the bundle. Set to 1 to
 /// restore single-token drafting.
-pub fn gemma4_assistant_mtp_max_depth_cap() -> usize {
+pub(crate) fn gemma4_assistant_mtp_max_depth_cap() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH")
@@ -427,7 +427,7 @@ fn gemma4_assistant_mtp_require_exact_pair() -> bool {
     })
 }
 
-pub fn gemma4_assistant_mtp_debug_enabled() -> bool {
+pub(crate) fn gemma4_assistant_mtp_debug_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_DEBUG")
@@ -451,26 +451,7 @@ pub fn gemma4_assistant_mtp_debug_enabled() -> bool {
 /// confidence preserves code-suite assistant accept at roughly 93-96% while
 /// raising depth-2 decode to about 99-105 tok/s. The deep-position gate stays
 /// tight at 0.999 because wrong deep drafts still pay a larger recompute cost.
-pub const DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.85;
-
-/// Read the assistant draft confidence gate from
-/// `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`; valid range `[0.0, 1.0)`.
-/// Defaults to [`DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`]; set `0` to
-/// disable the gate and verify every proposed draft.
-pub fn gemma4_assistant_mtp_draft_min_confidence() -> f32 {
-    static CACHED: OnceLock<f32> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        match std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE") {
-            Ok(raw) => raw
-                .trim()
-                .parse::<f32>()
-                .ok()
-                .filter(|value| value.is_finite() && *value >= 0.0 && *value < 1.0)
-                .unwrap_or(DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE),
-            Err(_) => DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE,
-        }
-    })
-}
+pub(crate) const DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.85;
 
 /// Default draft confidence gate for the assistant's DEEP draft positions
 /// (the 2nd token and beyond). Exposed separately from the first-position gate
@@ -487,26 +468,7 @@ pub fn gemma4_assistant_mtp_draft_min_confidence() -> f32 {
 /// 0.977-0.983 (all above 97%) at 1.10-1.20x decode. Depth-3 cannot hold 97% on
 /// the hardest suite, so depth-2 @ 0.999 is the constrained optimum. Ungated deep
 /// drafts are net-negative (recompute storm).
-pub const DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE: f32 = 0.999;
-
-/// Read the deep-position (depth >= 2) draft confidence gate from
-/// `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE`; valid range
-/// `[0.0, 1.0)`. Defaults to
-/// [`DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE`].
-pub fn gemma4_assistant_mtp_deep_draft_min_confidence() -> f32 {
-    static CACHED: OnceLock<f32> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        match std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE") {
-            Ok(raw) => raw
-                .trim()
-                .parse::<f32>()
-                .ok()
-                .filter(|value| value.is_finite() && *value >= 0.0 && *value < 1.0)
-                .unwrap_or(DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE),
-            Err(_) => DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE,
-        }
-    })
-}
+pub(crate) const DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE: f32 = 0.999;
 
 /// Parse a gate env var to `Some(value)` only when set and valid (`[0.0, 1.0)`);
 /// `None` when unset/invalid, so speculation-profile resolution can supply a
@@ -534,7 +496,7 @@ fn gemma_deep_gate_env_explicit() -> Option<f32> {
 /// Resolve the assistant FIRST-position gate with speculation-profile
 /// precedence: explicit env > profile preset > built-in default. `temperature`
 /// drives the `auto` profile. Returns the value and how it was chosen.
-pub fn resolve_gemma4_assistant_mtp_first_gate(
+pub(crate) fn resolve_gemma4_assistant_mtp_first_gate(
     profile: crate::speculation_profile::SpeculationProfile,
     temperature: Option<f32>,
 ) -> (f32, crate::speculation_profile::ResolutionSource) {
@@ -546,7 +508,7 @@ pub fn resolve_gemma4_assistant_mtp_first_gate(
 }
 
 /// Resolve the assistant DEEP-position gate with the same precedence.
-pub fn resolve_gemma4_assistant_mtp_deep_gate(
+pub(crate) fn resolve_gemma4_assistant_mtp_deep_gate(
     profile: crate::speculation_profile::SpeculationProfile,
     temperature: Option<f32>,
 ) -> (f32, crate::speculation_profile::ResolutionSource) {

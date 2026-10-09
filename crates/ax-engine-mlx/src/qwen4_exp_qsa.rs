@@ -99,7 +99,7 @@ pub struct QsaConfig {
 
 impl QsaConfig {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         query_heads: usize,
         key_heads: usize,
         head_dim: usize,
@@ -161,31 +161,23 @@ impl QsaConfig {
         })
     }
 
-    pub fn query_heads(self) -> usize {
-        self.query_heads as usize
-    }
-
-    pub fn head_dim(self) -> usize {
+    pub(crate) fn head_dim(self) -> usize {
         self.head_dim as usize
     }
 
-    pub fn rotary_dim(self) -> usize {
+    pub(crate) fn rotary_dim(self) -> usize {
         self.rotary_dim as usize
     }
 
-    pub fn compress_ratio(self) -> usize {
+    pub(crate) fn compress_ratio(self) -> usize {
         self.compress_ratio as usize
     }
 
-    pub fn token_budget(self) -> usize {
-        self.token_budget as usize
-    }
-
-    pub fn block_topk(self) -> usize {
+    pub(crate) fn block_topk(self) -> usize {
         self.block_topk as usize
     }
 
-    pub fn hidden_size(self) -> usize {
+    pub(crate) fn hidden_size(self) -> usize {
         self.hidden_size as usize
     }
 
@@ -204,7 +196,7 @@ impl QsaConfig {
     /// Longest context for which every query keeps every visible token: block
     /// `i` is complete once `4 * (i + 1)` tokens are visible, so up to
     /// `block_topk` complete blocks plus a partial tail always fit the budget.
-    pub fn dense_context_limit(self) -> usize {
+    pub(crate) fn dense_context_limit(self) -> usize {
         self.max_keep()
     }
 }
@@ -223,7 +215,7 @@ pub struct QsaIndexKeyCache {
 }
 
 impl QsaIndexKeyCache {
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self { keys: None }
     }
 
@@ -235,11 +227,11 @@ impl QsaIndexKeyCache {
         Self { keys }
     }
 
-    pub fn keys(&self) -> Option<&MlxArray> {
+    pub(crate) fn keys(&self) -> Option<&MlxArray> {
         self.keys.as_ref()
     }
 
-    pub fn token_count(&self) -> Result<usize> {
+    pub(crate) fn token_count(&self) -> Result<usize> {
         let Some(keys) = &self.keys else {
             return Ok(0);
         };
@@ -263,6 +255,7 @@ impl QsaIndexKeyCache {
 /// host-known length and no read-back, and therefore no pipeline stall, is
 /// needed. Test builds materialize host tokens from it on demand.
 pub struct QsaSelection {
+    #[cfg(test)]
     gather_indices: MlxArray,
     tokens: Vec<Vec<Vec<i32>>>,
     device_tokens: Option<MlxArray>,
@@ -281,9 +274,10 @@ pub struct QsaSelection {
 }
 
 impl QsaSelection {
+    #[cfg(test)]
     /// Host selections: `[batch, queries, token_budget + ratio - 1]` int32
     /// indices, `-1` padded. Device selections: `[batch, 1, kept]` exact length.
-    pub fn gather_indices(&self) -> &MlxArray {
+    pub(crate) fn gather_indices(&self) -> &MlxArray {
         &self.gather_indices
     }
 
@@ -336,7 +330,7 @@ impl QsaSelection {
         Some(reshape(&joined, &[kept], None))
     }
 
-    pub fn tokens_for_query(&self, batch: usize, query: usize) -> &[i32] {
+    pub(crate) fn tokens_for_query(&self, batch: usize, query: usize) -> &[i32] {
         #[cfg(test)]
         if self.device_tokens.is_some() {
             return &self.test_host_tokens.get_or_init(|| {
@@ -361,11 +355,12 @@ impl QsaSelection {
             .map_or(&[], Vec::as_slice)
     }
 
-    pub fn next_cache(&self) -> &QsaIndexKeyCache {
+    #[cfg(test)]
+    pub(crate) fn next_cache(&self) -> &QsaIndexKeyCache {
         &self.next_cache
     }
 
-    pub fn into_next_cache(self) -> QsaIndexKeyCache {
+    pub(crate) fn into_next_cache(self) -> QsaIndexKeyCache {
         self.next_cache
     }
 }
@@ -378,7 +373,7 @@ pub struct QsaIndexer {
 }
 
 impl QsaIndexer {
-    pub fn new(config: QsaConfig, weights: QsaIndexerWeights) -> Result<Self> {
+    pub(crate) fn new(config: QsaConfig, weights: QsaIndexerWeights) -> Result<Self> {
         validate_projection(
             "index_qk_proj",
             &weights.qk_proj,
@@ -395,7 +390,7 @@ impl QsaIndexer {
         })
     }
 
-    pub fn config(&self) -> QsaConfig {
+    pub(crate) fn config(&self) -> QsaConfig {
         self.config
     }
 
@@ -453,7 +448,7 @@ impl QsaIndexer {
     /// Project the new hidden chunk, append raw keys, and return gather indices
     /// for every new query. `cache` is not modified; adopt [`QsaSelection::next_cache`]
     /// only after the rest of the step succeeds.
-    pub fn select(
+    pub(crate) fn select(
         &self,
         hidden: &MlxArray,
         cache: &QsaIndexKeyCache,
@@ -562,6 +557,7 @@ impl QsaIndexer {
                 let device_tokens =
                     select_tokens_device(cfg, batch, position_offset, n_complete, scores.as_ref())?;
                 return Ok(QsaSelection {
+                    #[cfg(test)]
                     gather_indices: device_tokens.clone(),
                     tokens: Vec::new(),
                     device_tokens: Some(device_tokens),
@@ -586,6 +582,7 @@ impl QsaIndexer {
                     scores.as_ref(),
                 )?;
                 return Ok(QsaSelection {
+                    #[cfg(test)]
                     gather_indices: device_tokens.clone(),
                     tokens: Vec::new(),
                     device_tokens: Some(device_tokens),
@@ -625,6 +622,7 @@ impl QsaIndexer {
         })?;
 
         Ok(QsaSelection {
+            #[cfg(test)]
             gather_indices,
             tokens,
             device_tokens: None,

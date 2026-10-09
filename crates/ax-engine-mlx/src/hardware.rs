@@ -36,12 +36,12 @@ pub struct HardwareCapabilities {
 impl HardwareCapabilities {
     /// Both the SoC and the running OS can drive NAX kernels.
     #[inline]
-    pub fn neural_accelerator_active(self) -> bool {
+    pub(crate) fn neural_accelerator_active(self) -> bool {
         self.has_neural_accelerator && self.macos_supports_na
     }
 
     #[cfg(test)]
-    pub fn m5_na() -> Self {
+    pub(crate) fn m5_na() -> Self {
         Self {
             silicon_generation: Some(5),
             macos_major: Some(26),
@@ -52,7 +52,7 @@ impl HardwareCapabilities {
     }
 
     #[cfg(test)]
-    pub fn m4() -> Self {
+    pub(crate) fn m4() -> Self {
         Self {
             silicon_generation: Some(4),
             macos_major: Some(26),
@@ -63,7 +63,7 @@ impl HardwareCapabilities {
     }
 
     #[cfg(test)]
-    pub fn m5_old_macos() -> Self {
+    pub(crate) fn m5_old_macos() -> Self {
         Self {
             silicon_generation: Some(5),
             macos_major: Some(26),
@@ -82,7 +82,7 @@ thread_local! {
 }
 
 /// Process-cached hardware snapshot, or the current thread's test override.
-pub fn current() -> HardwareCapabilities {
+pub(crate) fn current() -> HardwareCapabilities {
     #[cfg(test)]
     if let Some(hw) = OVERRIDE.with(|slot| slot.get()) {
         return hw;
@@ -92,7 +92,7 @@ pub fn current() -> HardwareCapabilities {
 
 /// True on M5+ running macOS 26.2+.
 #[inline]
-pub fn neural_accelerator_active() -> bool {
+pub(crate) fn neural_accelerator_active() -> bool {
     current().neural_accelerator_active()
 }
 
@@ -111,7 +111,7 @@ impl Drop for HardwareOverrideGuard {
 
 /// Override detected hardware for the rest of this thread (tests).
 #[cfg(test)]
-pub fn override_hardware(hw: HardwareCapabilities) -> HardwareOverrideGuard {
+pub(crate) fn override_hardware(hw: HardwareCapabilities) -> HardwareOverrideGuard {
     let previous = OVERRIDE.with(|slot| {
         let previous = slot.get();
         slot.set(Some(hw));

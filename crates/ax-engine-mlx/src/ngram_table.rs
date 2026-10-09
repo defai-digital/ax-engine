@@ -520,7 +520,7 @@ fn check_dense_spec(name: &str, spec: &NativeTensorSpec) -> Result<MlxDtype, Ngr
 }
 
 impl NgramTable {
-    pub fn open(
+    pub(crate) fn open(
         root: &Path,
         specs: &[NativeTensorSpec],
         layer: u32,
@@ -806,11 +806,12 @@ impl NgramTable {
         })
     }
 
-    pub fn rows(&self) -> u64 {
+    pub(crate) fn rows(&self) -> u64 {
         self.total_rows
     }
 
-    pub fn payload_bytes_read(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn payload_bytes_read(&self) -> u64 {
         let mut total: u64 = 0;
         for reader in self.readers.values() {
             total = total.saturating_add(reader.payload_bytes_read());
@@ -858,7 +859,7 @@ impl NgramTable {
         Ok(idx)
     }
 
-    pub fn gather(&self, row_ids: &[u64]) -> Result<MlxArray, String> {
+    pub(crate) fn gather(&self, row_ids: &[u64]) -> Result<MlxArray, String> {
         self.gather_inner(row_ids).map_err(|e| e.to_string())
     }
 

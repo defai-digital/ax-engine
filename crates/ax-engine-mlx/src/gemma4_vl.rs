@@ -14,6 +14,7 @@ use ax_engine_core::NativeTensorSpec;
 use ax_engine_core::gemma4_unified::{
     Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedRuntimeInputs, Gemma4UnifiedVideoRuntimeInput,
 };
+#[cfg(test)]
 use ax_engine_core::vl_geometry::{scatter_merge_indices, vit_soft_token_count};
 use mlx_sys::{
     MlxArray, MlxDtype, add, astype, clip, concatenate, divide, gelu_approx, multiply, negative,
@@ -67,7 +68,8 @@ pub struct Gemma4VlImageGeometry {
 }
 
 impl Gemma4VlImageGeometry {
-    pub fn soft_token_count(self) -> Result<u32, Gemma4VlError> {
+    #[cfg(test)]
+    pub(crate) fn soft_token_count(self) -> Result<u32, Gemma4VlError> {
         vit_soft_token_count(
             self.height,
             self.width,
@@ -84,8 +86,9 @@ impl Gemma4VlImageGeometry {
     }
 }
 
+#[cfg(test)]
 /// Plan soft-token scatter positions for one or more images in a prompt.
-pub fn plan_image_scatter(
+pub(crate) fn plan_image_scatter(
     placeholder_positions: &[usize],
     geometries: &[Gemma4VlImageGeometry],
 ) -> Result<Vec<usize>, Gemma4VlError> {
@@ -103,17 +106,14 @@ pub fn plan_image_scatter(
     scatter_merge_indices(placeholder_positions, &counts).map_err(Gemma4VlError::Scatter)
 }
 
-pub fn is_gemma4_vl_family(model_family: &str) -> bool {
+pub(crate) fn is_gemma4_vl_family(model_family: &str) -> bool {
     model_family == "gemma4_vl"
 }
 
+#[cfg(test)]
 /// Text-only decode on a VL checkpoint reuses the standard Gemma 4 graph.
-pub fn text_only_uses_standard_gemma4_path(model_family: &str, has_media: bool) -> bool {
+pub(crate) fn text_only_uses_standard_gemma4_path(model_family: &str, has_media: bool) -> bool {
     is_gemma4_vl_family(model_family) && !has_media
-}
-
-pub fn has_vision_tower(weights: &ModelWeights) -> bool {
-    weights.gemma4_vl_vision.is_some() || weights.gemma4_unified_vision.is_some()
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -194,7 +194,7 @@ pub struct Gemma4VlVisionWeights {
     embedding_projection: QuantizedWeight,
 }
 
-pub fn load_gemma4_vl_vision_weights(
+pub(crate) fn load_gemma4_vl_vision_weights(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
     config_json: Option<&Value>,
@@ -1052,8 +1052,9 @@ fn u32_array(values: &[u32]) -> MlxArray {
     )
 }
 
+#[cfg(test)]
 /// Validate a single image tensor against its declared soft-token geometry.
-pub fn validate_image_soft_tokens(
+pub(crate) fn validate_image_soft_tokens(
     image: &Gemma4UnifiedImageRuntimeInput,
     geometry: Gemma4VlImageGeometry,
 ) -> Result<(), Gemma4VlError> {

@@ -100,7 +100,7 @@ fn mtp_multirow_batch_setting(raw: Option<&str>) -> bool {
 /// a scheduler deferral writes the row back to its private cache before the
 /// remaining cohort advances. Requests that never join a multirow cohort
 /// retain singleton MTP.
-pub fn mtp_multirow_batch_enabled() -> bool {
+pub(crate) fn mtp_multirow_batch_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         mtp_multirow_batch_setting(std::env::var("AX_MLX_MTP_MULTIROW_BATCH").ok().as_deref())
@@ -390,12 +390,12 @@ impl BatchedDecodeSession {
     }
 
     /// Max concurrent requests.
-    pub fn capacity(&self) -> usize {
+    pub(crate) fn capacity(&self) -> usize {
         self.cache.capacity()
     }
 
     /// Request ids currently decoding, in slot order.
-    pub fn active_ids(&self) -> &[u64] {
+    pub(crate) fn active_ids(&self) -> &[u64] {
         &self.slot_req
     }
 
@@ -409,7 +409,7 @@ impl BatchedDecodeSession {
     /// delta: [`crate::model::decode_batched_forward`] advances rows by
     /// physical `row_len` only and does not apply `mrope_decode_position`, so
     /// seeding a visual-prefilled cache would desync rope offsets.
-    pub fn can_seed(&self, prefill: &MlxKVCache) -> bool {
+    pub(crate) fn can_seed(&self, prefill: &MlxKVCache) -> bool {
         if prefill.mrope_position_delta() != 0 {
             return false;
         }
@@ -440,7 +440,7 @@ impl BatchedDecodeSession {
     /// doubling it. Normal cold joins and direct-pipeline handoffs keep
     /// `first_token` outside the cache, so they pass `None` and transfer every
     /// committed cache position.
-    pub fn add_with_seed_len(
+    pub(crate) fn add_with_seed_len(
         &mut self,
         id: u64,
         prefill: &MlxKVCache,
@@ -564,7 +564,7 @@ impl BatchedDecodeSession {
     /// every active row, so an omitted resident must be written back and
     /// removed before the remaining cohort steps. Full-attention KV and hybrid
     /// linear-attention recurrent state are both preserved.
-    pub fn writeback_remove(&mut self, id: u64) -> Option<MlxKVCache> {
+    pub(crate) fn writeback_remove(&mut self, id: u64) -> Option<MlxKVCache> {
         let slot = self
             .slot_req
             .iter()
@@ -604,7 +604,7 @@ impl BatchedDecodeSession {
     /// Override the token that will be fed for request `id` on the next
     /// [`Self::step`] — the engine's scheduler is the source of truth for which
     /// token each request decodes. Returns `false` if `id` is not active.
-    pub fn set_current(&mut self, id: u64, token: u32) -> bool {
+    pub(crate) fn set_current(&mut self, id: u64, token: u32) -> bool {
         match self.slot_req.iter().position(|&x| x == id) {
             Some(slot) => {
                 self.cur[slot] = token;
@@ -647,7 +647,7 @@ impl BatchedDecodeSession {
     /// the source of truth for each request's next fed token and calls
     /// [`Self::set_current`] before the next step. Feeding the cohort therefore
     /// stays identical whether a step goes through `step` or `step_logits`.
-    pub fn step_logits(
+    pub(crate) fn step_logits(
         &mut self,
         cfg: &ModelConfig,
         weights: &ModelWeights,

@@ -84,15 +84,15 @@ impl LinearAttentionConfig {
         !(layer_idx + 1).is_multiple_of(self.full_attention_interval)
     }
 
-    pub fn key_dim(&self) -> usize {
+    pub(crate) fn key_dim(&self) -> usize {
         self.num_key_heads * self.key_head_dim
     }
 
-    pub fn value_dim(&self) -> usize {
+    pub(crate) fn value_dim(&self) -> usize {
         self.num_value_heads * self.value_head_dim
     }
 
-    pub fn conv_dim(&self) -> usize {
+    pub(crate) fn conv_dim(&self) -> usize {
         self.key_dim() * 2 + self.value_dim()
     }
 }
@@ -147,11 +147,13 @@ impl MlaAttentionConfig {
         })
     }
 
-    pub fn latent_kv_cache_width(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn latent_kv_cache_width(&self) -> usize {
         self.kv_lora_rank
     }
 
-    pub fn rope_key_cache_width(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn rope_key_cache_width(&self) -> usize {
         self.qk_rope_head_dim
     }
 }
@@ -288,13 +290,8 @@ impl DeepseekV4Config {
     }
 
     /// Compressor ratio for a layer (0 = uncompressed).
-    pub fn compress_ratio(&self, layer_idx: usize) -> u32 {
+    pub(crate) fn compress_ratio(&self, layer_idx: usize) -> u32 {
         self.compress_ratios.get(layer_idx).copied().unwrap_or(0)
-    }
-
-    /// Whether a MoE layer routes via the `tid2eid` hash table.
-    pub fn is_hash_routed_layer(&self, layer_idx: usize) -> bool {
-        layer_idx < self.num_hash_layers
     }
 }
 
@@ -329,7 +326,8 @@ impl GlmRouterConfig {
         })
     }
 
-    pub fn is_moe_layer(&self, layer_idx: usize) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_moe_layer(&self, layer_idx: usize) -> bool {
         layer_idx >= self.first_dense_layer_count
     }
 }
@@ -806,11 +804,11 @@ impl ModelConfig {
 
     /// True when this model uses block-diffusion generation (ADR-038).
     #[inline]
-    pub fn is_block_diffusion(&self) -> bool {
+    pub(crate) fn is_block_diffusion(&self) -> bool {
         matches!(self.generation_kind, GenerationKind::BlockDiffusion) || self.diffusion.is_some()
     }
 
-    pub fn is_linear_attention_layer(&self, layer_idx: usize) -> bool {
+    pub(crate) fn is_linear_attention_layer(&self, layer_idx: usize) -> bool {
         self.linear_attention
             .as_ref()
             .is_some_and(|linear| linear.is_linear_layer(layer_idx))
@@ -818,14 +816,15 @@ impl ModelConfig {
 
     /// True when the layer is a MoE layer for DeepSeek V3:
     /// `layer_idx >= first_dense_layers && layer_idx % moe_layer_freq == 0`.
-    pub fn is_deepseek_moe_layer(&self, layer_idx: usize) -> bool {
+    pub(crate) fn is_deepseek_moe_layer(&self, layer_idx: usize) -> bool {
         self.moe_expert_count > 0
             && self.moe_layer_freq > 0
             && layer_idx >= self.moe_first_dense_layers
             && layer_idx.is_multiple_of(self.moe_layer_freq)
     }
 
-    pub fn is_glm_moe_layer(&self, layer_idx: usize) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_glm_moe_layer(&self, layer_idx: usize) -> bool {
         self.glm_router
             .as_ref()
             .is_some_and(|router| router.is_moe_layer(layer_idx))

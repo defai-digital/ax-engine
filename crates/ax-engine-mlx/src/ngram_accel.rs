@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use mlx_sys::{MlxArray, MlxDtype, argmax, eval, multiply, reshape, slice, softmax, take};
 
 use crate::sampling::{
-    MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
-    sample_categorical_into, sample_categorical_with_topk_gpu, sample_categorical_with_topp_gpu,
+    MlxSamplingParams, Xorshift64, sample_categorical_gpu, sample_categorical_into,
+    sample_categorical_with_topk_gpu, sample_categorical_with_topp_gpu,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -17,12 +17,13 @@ use crate::weights::ModelWeights;
 /// Default number of draft tokens to attempt per n-gram acceleration step.
 pub const DEFAULT_DRAFT_LEN: usize = 4;
 
+#[cfg(test)]
 /// Prompt class route codes. Stored as u32 because the route decision sink is
 /// `BTreeMap<String, u32>`. Ordered so `max()` merge promotes the louder signal:
 /// `UNSET < NON_REPEATING < REPEATING`.
-pub const PROMPT_CLASS_UNSET: u32 = 0;
-pub const PROMPT_CLASS_NON_REPEATING: u32 = 1;
-pub const PROMPT_CLASS_REPEATING: u32 = 2;
+pub(crate) const PROMPT_CLASS_UNSET: u32 = 0;
+pub(crate) const PROMPT_CLASS_NON_REPEATING: u32 = 1;
+pub(crate) const PROMPT_CLASS_REPEATING: u32 = 2;
 
 /// Classify a prompt by structural repetition.
 ///
@@ -34,7 +35,7 @@ pub const PROMPT_CLASS_REPEATING: u32 = 2;
 ///
 /// Prompts with fewer than 4 tokens are classified as non-repeating (no
 /// 4-gram structure to measure).
-pub fn classify_prompt_class(tokens: &[u32]) -> u32 {
+pub(crate) fn classify_prompt_class(tokens: &[u32]) -> u32 {
     if tokens.len() < 4 {
         return PROMPT_CLASS_NON_REPEATING;
     }
@@ -62,19 +63,19 @@ pub const MAX_DRAFT_LEN: usize = 6;
 /// A prediction with confidence below this threshold stops the draft chain.
 /// Calibration: conf=0.4 filters contexts where at most 2 out of 5 observed
 /// continuations matched the current best — reliable enough to attempt.
-pub const DRAFT_CONFIDENCE_THRESHOLD: f32 = 0.4;
+pub(crate) const DRAFT_CONFIDENCE_THRESHOLD: f32 = 0.4;
 
 /// Environment variable that overrides `DRAFT_CONFIDENCE_THRESHOLD` at runtime.
 /// Lets per-family tuning be observed against `ax.bw_profile.v1` artifacts
 /// without recompilation.
-pub const DRAFT_CONFIDENCE_THRESHOLD_ENV: &str = "AX_NGRAM_CONFIDENCE_THRESHOLD";
+pub(crate) const DRAFT_CONFIDENCE_THRESHOLD_ENV: &str = "AX_NGRAM_CONFIDENCE_THRESHOLD";
 
 /// Parse a candidate confidence threshold. Returns the default when `raw` is
 /// `None`; invalid syntax or out-of-range values warn and fall back to the
 /// default instead of crashing a serving process on first draft. Split out
 /// from the env-reading wrapper so the validation logic can be unit-tested
 /// without process-global env state.
-pub fn parse_confidence_threshold(raw: Option<&str>) -> f32 {
+pub(crate) fn parse_confidence_threshold(raw: Option<&str>) -> f32 {
     let Some(value) = raw else {
         return DRAFT_CONFIDENCE_THRESHOLD;
     };
@@ -93,7 +94,7 @@ pub fn parse_confidence_threshold(raw: Option<&str>) -> f32 {
 /// Resolve the effective draft confidence threshold for the current process.
 /// Reads `AX_NGRAM_CONFIDENCE_THRESHOLD` once and caches the result. Invalid
 /// values warn and fall back to the compiled default.
-pub fn effective_draft_confidence_threshold() -> f32 {
+pub(crate) fn effective_draft_confidence_threshold() -> f32 {
     use std::sync::OnceLock;
     static CACHED: OnceLock<f32> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -111,12 +112,13 @@ pub fn effective_draft_confidence_threshold() -> f32 {
 ///
 /// Set to 0.0 to disable (pure argmax comparison, original behaviour).
 /// Default 0.30: accept if draft token holds at least 30% probability mass.
-pub const NGRAM_SPECULATIVE_ACCEPT_THRESHOLD: f32 = 0.30;
+pub(crate) const NGRAM_SPECULATIVE_ACCEPT_THRESHOLD: f32 = 0.30;
 
 /// Environment variable that overrides `NGRAM_SPECULATIVE_ACCEPT_THRESHOLD`.
-pub const NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV: &str = "AX_NGRAM_SPECULATIVE_ACCEPT_THRESHOLD";
+pub(crate) const NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV: &str =
+    "AX_NGRAM_SPECULATIVE_ACCEPT_THRESHOLD";
 
-pub fn parse_speculative_accept_threshold(raw: Option<&str>) -> f32 {
+pub(crate) fn parse_speculative_accept_threshold(raw: Option<&str>) -> f32 {
     let Some(value) = raw else {
         return NGRAM_SPECULATIVE_ACCEPT_THRESHOLD;
     };
@@ -133,7 +135,7 @@ pub fn parse_speculative_accept_threshold(raw: Option<&str>) -> f32 {
 }
 
 /// Resolve the effective speculative accept threshold for the current process.
-pub fn effective_speculative_accept_threshold() -> f32 {
+pub(crate) fn effective_speculative_accept_threshold() -> f32 {
     use std::sync::OnceLock;
     static CACHED: OnceLock<f32> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -148,7 +150,7 @@ pub fn effective_speculative_accept_threshold() -> f32 {
 /// Linear-attention draft verification is expensive on partial reject
 /// because recurrent state is not O(1)-trimmable. Require repeated n-gram
 /// evidence before probing that path.
-pub const LINEAR_MIN_NGRAM_SUPPORT: u32 = 2;
+pub(crate) const LINEAR_MIN_NGRAM_SUPPORT: u32 = 2;
 
 /// Maximum number of context keys to retain per n-gram order.
 ///
@@ -364,7 +366,7 @@ pub enum NgramPolicyVariant {
 }
 
 impl NgramPolicyVariant {
-    pub fn route_code(self) -> u32 {
+    pub(crate) fn route_code(self) -> u32 {
         match self {
             Self::MajorityRecency => 1,
             Self::LlamaMapLatest => 2,
@@ -488,14 +490,15 @@ impl NgramTable {
     /// with a single observation, enabling linear-attention models to draft
     /// immediately on the first decode step for repeating real-workload prompts
     /// without waiting for two output-derived observations.
-    pub fn feed_from_prompt(&mut self, tokens: &[u32]) {
+    pub(crate) fn feed_from_prompt(&mut self, tokens: &[u32]) {
         for &t in tokens {
             self.observe(t, true);
         }
     }
 
+    #[cfg(test)]
     /// Return aggregate table pressure and verifier-feedback counters.
-    pub fn stats(&self) -> NgramTableStats {
+    pub(crate) fn stats(&self) -> NgramTableStats {
         let bigram_stats = ngram_prediction_map_stats(&self.bigrams);
         let trigram_stats = ngram_prediction_map_stats(&self.trigrams);
         let fourgram_stats = ngram_prediction_map_stats(&self.fourgrams);
@@ -581,10 +584,11 @@ impl NgramTable {
         self.predict_with_confidence(max_len, 1, 0.0)
     }
 
+    #[cfg(test)]
     /// Predict only from n-grams that have observed the same continuation at
     /// least `min_support` times. Useful for expensive verification policies
     /// where one-off prompt n-grams are more likely to be harmful probes.
-    pub fn predict_with_min_support(&self, max_len: usize, min_support: u32) -> Vec<u32> {
+    pub(crate) fn predict_with_min_support(&self, max_len: usize, min_support: u32) -> Vec<u32> {
         self.predict_with_confidence(max_len, min_support, 0.0)
     }
 
@@ -597,7 +601,7 @@ impl NgramTable {
     /// useful fallback when a longer context is sparse or contested.
     ///
     /// `conf_threshold = 0.0` makes this equivalent to `predict_with_min_support`.
-    pub fn predict_with_confidence(
+    pub(crate) fn predict_with_confidence(
         &self,
         max_len: usize,
         min_support: u32,
@@ -611,7 +615,7 @@ impl NgramTable {
         .draft
     }
 
-    pub fn predict_with_policy(&self, policy: NgramDraftPolicy) -> NgramDraftOutcome {
+    pub(crate) fn predict_with_policy(&self, policy: NgramDraftPolicy) -> NgramDraftOutcome {
         let mut draft = Vec::with_capacity(policy.max_len);
         let mut confidence = Vec::with_capacity(policy.max_len);
         // Fixed-size ring; self.tail has at most 4 elements.
@@ -920,6 +924,7 @@ fn push_prediction_context_token(buf: &mut [u32; 4], len: &mut usize, token: u32
     }
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct NgramPredictionMapStats {
     continuations: usize,
@@ -927,6 +932,7 @@ struct NgramPredictionMapStats {
     rejected_feedback: u64,
 }
 
+#[cfg(test)]
 fn ngram_prediction_map_stats<K>(map: &HashMap<K, NgramPrediction>) -> NgramPredictionMapStats {
     let mut stats = NgramPredictionMapStats::default();
     for prediction in map.values() {
@@ -1070,7 +1076,7 @@ pub fn ngram_accel_decode_step(
 /// `NgramTable::record_draft_feedback`); it is replayed verbatim to attribute
 /// verifier feedback to the same context/candidate that was actually drafted.
 #[allow(clippy::too_many_arguments)]
-pub fn ngram_accel_decode_step_with_sampling_buffers(
+pub(crate) fn ngram_accel_decode_step_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
@@ -1538,7 +1544,7 @@ pub(crate) fn revalidate_greedy_prefix_with_argmax(
 /// the fail-closed contract: a multi-token verifier that would accept a wrong
 /// draft must be rejected when the sequential (or oracle) target prediction
 /// disagrees at that index.
-pub fn greedy_draft_target_accept_count(drafts: &[u32], target_preds: &[u32]) -> usize {
+pub(crate) fn greedy_draft_target_accept_count(drafts: &[u32], target_preds: &[u32]) -> usize {
     drafts
         .iter()
         .zip(target_preds.iter())
@@ -1699,7 +1705,7 @@ pub(crate) fn sample_logit_row(
 }
 
 /// ds4 soft-close rank threshold (`soft_limit_think_close_rank = 3`).
-pub const THINK_SOFT_CLOSE_PROBE_RANK: usize = 3;
+pub(crate) const THINK_SOFT_CLOSE_PROBE_RANK: usize = 3;
 
 /// Rank probe for the think soft-close: while inside the soft window of an
 /// open think block, single decode materializes logits and emits the
@@ -1746,39 +1752,8 @@ pub(crate) fn think_soft_close_in_top_k(
     top.iter().any(|(idx, _)| *idx == target)
 }
 
-/// Single-token decode fallback (used when n-gram table has no prediction).
-///
-/// Respects `temperature`: 0.0 → argmax, > 0.0 → categorical sampling.
-pub fn single_decode(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    cache: &mut MlxKVCache,
-    ngram: &mut NgramTable,
-    last_token: u32,
-    sampling_request: MlxSamplingRequest<'_>,
-    rng: &mut Xorshift64,
-) -> Vec<u32> {
-    let mut probs_buf = Vec::new();
-    let mut logits_buf = Vec::new();
-    let mut candidates_buf = Vec::new();
-    single_decode_with_sampling_buffers(
-        cfg,
-        weights,
-        cache,
-        ngram,
-        last_token,
-        sampling_request.params,
-        sampling_request.repetition_tokens,
-        rng,
-        &mut probs_buf,
-        &mut logits_buf,
-        &mut candidates_buf,
-        None,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
-pub fn single_decode_with_sampling_buffers(
+pub(crate) fn single_decode_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,
@@ -1814,7 +1789,7 @@ pub fn single_decode_with_sampling_buffers(
 /// families that own a packed residual stream (Flash Next); others leave it
 /// untouched.
 #[allow(clippy::too_many_arguments)]
-pub fn single_decode_with_sampling_buffers_capturing(
+pub(crate) fn single_decode_with_sampling_buffers_capturing(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     cache: &mut MlxKVCache,

@@ -348,7 +348,7 @@ impl NemotronOmniWeights {
     }
 }
 
-pub fn load_nemotron_omni_weights(
+pub(crate) fn load_nemotron_omni_weights(
     name_map: &mut HashMap<String, MlxArray>,
     config_json: Option<&Value>,
 ) -> Result<Option<NemotronOmniWeights>, WeightLoadError> {

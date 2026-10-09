@@ -213,6 +213,7 @@ impl SelectedExpertRows {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn payload_bytes_read(&self) -> u64 {
         self.readers
             .iter()

@@ -10,9 +10,8 @@
 use std::collections::HashMap;
 
 use ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs;
-use ax_engine_core::vl_geometry::{
-    MropeSections, deepstack_injection_layers, mrope_position_ids, scatter_merge_indices,
-};
+#[cfg(test)]
+use ax_engine_core::vl_geometry::{MropeSections, deepstack_injection_layers, mrope_position_ids};
 use ax_engine_core::{NativeTensorRole, NativeTensorSpec};
 use mlx_sys::{
     MlxArray, MlxDtype, add, astype, concatenate, gelu, gelu_approx, layer_norm, matmul, multiply,
@@ -44,7 +43,8 @@ pub struct Qwen3VlImageGeometry {
 }
 
 impl Qwen3VlImageGeometry {
-    pub fn grid_hw(self) -> Result<(u32, u32), Qwen3VlError> {
+    #[cfg(test)]
+    pub(crate) fn grid_hw(self) -> Result<(u32, u32), Qwen3VlError> {
         if self.patch_size == 0 || self.spatial_merge_size == 0 {
             return Err(Qwen3VlError::InvalidGeometry(
                 "patch_size and spatial_merge_size must be > 0".into(),
@@ -61,7 +61,8 @@ impl Qwen3VlImageGeometry {
         Ok((gh, gw))
     }
 
-    pub fn soft_token_count(self) -> Result<u32, Qwen3VlError> {
+    #[cfg(test)]
+    pub(crate) fn soft_token_count(self) -> Result<u32, Qwen3VlError> {
         // Qwen3-VL spatial merge emits one soft token per merged grid cell
         // `(h/p/merge)×(w/p/merge)`, matching MRoPE `grid_hw` and the runtime
         // check in `qwen_mrope_position_axes`. Do not use the Gemma pooling
@@ -84,31 +85,15 @@ impl Qwen3VlImageGeometry {
         Ok(count)
     }
 
-    pub fn mrope_sections(self) -> Result<MropeSections, Qwen3VlError> {
+    #[cfg(test)]
+    pub(crate) fn mrope_sections(self) -> Result<MropeSections, Qwen3VlError> {
         let (height, width) = self.grid_hw()?;
         Ok(MropeSections::for_image(height, width))
     }
 }
 
-pub fn plan_image_scatter(
-    placeholder_positions: &[usize],
-    geometries: &[Qwen3VlImageGeometry],
-) -> Result<Vec<usize>, Qwen3VlError> {
-    if placeholder_positions.len() != geometries.len() {
-        return Err(Qwen3VlError::Scatter(format!(
-            "placeholders {} != images {}",
-            placeholder_positions.len(),
-            geometries.len()
-        )));
-    }
-    let counts = geometries
-        .iter()
-        .map(|geometry| geometry.soft_token_count())
-        .collect::<Result<Vec<_>, _>>()?;
-    scatter_merge_indices(placeholder_positions, &counts).map_err(Qwen3VlError::Scatter)
-}
-
-pub fn plan_mrope_for_images(
+#[cfg(test)]
+pub(crate) fn plan_mrope_for_images(
     geometries: &[Qwen3VlImageGeometry],
 ) -> Result<Vec<u32>, Qwen3VlError> {
     let mut result = Vec::new();
@@ -123,11 +108,13 @@ pub fn plan_mrope_for_images(
     Ok(result)
 }
 
-pub fn deepstack_layers(num_feature_maps: usize, language_layers: u32) -> Vec<u32> {
+#[cfg(test)]
+pub(crate) fn deepstack_layers(num_feature_maps: usize, language_layers: u32) -> Vec<u32> {
     deepstack_injection_layers(num_feature_maps, language_layers)
 }
 
-pub fn is_qwen3_vl_family(model_family: &str) -> bool {
+#[cfg(test)]
+pub(crate) fn is_qwen3_vl_family(model_family: &str) -> bool {
     // Dense/MoE VL packs, plus hybrid text families that may carry a vision
     // tower (Qwen3.5 / Qwen3.6 packs sharing the portable ViT path).
     matches!(
@@ -143,7 +130,8 @@ pub fn is_qwen3_vl_family(model_family: &str) -> bool {
     )
 }
 
-pub fn text_only_decode_family(model_family: &str) -> Option<&'static str> {
+#[cfg(test)]
+pub(crate) fn text_only_decode_family(model_family: &str) -> Option<&'static str> {
     match model_family {
         "qwen3_vl" | "qwen3_vl_moe" => Some("qwen3"),
         "qwen3_5" | "qwen3.5" | "qwen3_5_moe" => Some("qwen3_5"),
@@ -152,11 +140,12 @@ pub fn text_only_decode_family(model_family: &str) -> Option<&'static str> {
     }
 }
 
-pub fn has_vision_tower(weights: &ModelWeights) -> bool {
+pub(crate) fn has_vision_tower(weights: &ModelWeights) -> bool {
     weights.qwen3_vl_vision.is_some()
 }
 
-pub fn select_decode_route(
+#[cfg(test)]
+pub(crate) fn select_decode_route(
     model_family: &str,
     has_media: bool,
 ) -> Result<&'static str, Qwen3VlError> {
@@ -536,7 +525,7 @@ pub struct Qwen3VlVisionWeights {
     pub mrope_section: Vec<usize>,
 }
 
-pub fn load_qwen3_vl_vision_weights(
+pub(crate) fn load_qwen3_vl_vision_weights(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
     config_json: Option<&Value>,
@@ -806,7 +795,7 @@ fn normalize_patch_embed_weight(
     Ok(reshape(&reordered, &[out, input], None))
 }
 
-pub fn vision_encoder_forward(
+pub(crate) fn vision_encoder_forward(
     weights: &Qwen3VlVisionWeights,
     patches: &MlxArray,
     grid_thw: (u32, u32, u32),
@@ -1225,7 +1214,7 @@ fn rotate_half(input: &MlxArray) -> MlxArray {
     concatenate(&[&negative(&second, None), &first], -1, None)
 }
 
-pub fn scatter_vision_into_text(
+pub(crate) fn scatter_vision_into_text(
     text_hidden: &MlxArray,
     vision: &MlxArray,
     positions: &[usize],

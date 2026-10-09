@@ -21,7 +21,7 @@ pub(crate) const KV_CHUNK_TOKENS: usize = 256;
 /// Env kill-switch for KV-cache quantization: set to `0` to disable KV-cache
 /// quantization even when the model manifest declares a `kv_cache_quantization`
 /// table. Read by the runtime quantization path (Phase 3b).
-pub const AX_KV_QUANT_ENV: &str = "AX_KV_QUANT";
+pub(crate) const AX_KV_QUANT_ENV: &str = "AX_KV_QUANT";
 
 /// Env kill-switch check for KV-cache quantization (Phase 3b). Honored inside
 /// [`MlxKVCache::set_kv_quant_table`] — the single place the gate is read — so
@@ -1397,7 +1397,7 @@ impl SlidingRingLayout {
     /// Whether SDPA needs an explicit slot-validity mask over the ring.
     /// Pure rings (`capacity == window`) are exactly full for single-token
     /// decode, so every slot is live and mask-free SDPA is correct.
-    pub fn needs_mask(&self, seq: usize) -> bool {
+    pub(crate) fn needs_mask(&self, seq: usize) -> bool {
         self.capacity > self.window || seq > 1
     }
 }
@@ -1511,7 +1511,7 @@ impl MlxKVCache {
     /// Private KV wire-format version, exposed for the durable prefix
     /// cache's canonical key (schema v3 commits to the payload version so a
     /// format bump cleanly invalidates older disk entries).
-    pub const fn serialize_version() -> u32 {
+    pub(crate) const fn serialize_version() -> u32 {
         Self::SERIALIZE_VERSION
     }
     const LAYER_KIND_EMPTY: u8 = 0;
@@ -1532,20 +1532,23 @@ impl MlxKVCache {
 
     /// Contiguous FA path (historical default). Used when the block-pool flag
     /// is off and by deserialize (wire format is always dense).
-    pub fn new_contiguous(num_layers: usize) -> Self {
+    pub(crate) fn new_contiguous(num_layers: usize) -> Self {
         Self::new_with_fa_pool(num_layers, None)
     }
 
     /// FA private block-pool path (PR4). Pure FA appends use paged storage and
     /// materialize dense K/V for SDPA; sliding/rotating layers stay contiguous.
-    pub fn new_with_fa_block_pool(num_layers: usize, config: FaBlockPoolConfig) -> Self {
+    pub(crate) fn new_with_fa_block_pool(num_layers: usize, config: FaBlockPoolConfig) -> Self {
         let fa_pool =
             SharedFaBlockPool::new(config).expect("FA block pool config must be non-zero");
         Self::new_with_shared_fa_block_pool(num_layers, fa_pool)
     }
 
     /// Build a paged cache backed by a runner-owned synchronized FA pool.
-    pub fn new_with_shared_fa_block_pool(num_layers: usize, fa_pool: SharedFaBlockPool) -> Self {
+    pub(crate) fn new_with_shared_fa_block_pool(
+        num_layers: usize,
+        fa_pool: SharedFaBlockPool,
+    ) -> Self {
         Self::new_with_fa_pool(num_layers, Some(fa_pool))
     }
 
@@ -1576,8 +1579,9 @@ impl MlxKVCache {
         }
     }
 
+    #[cfg(test)]
     /// Whether this cache has an FA block pool (private or runner-shared).
-    pub fn fa_block_pool_enabled(&self) -> bool {
+    pub(crate) fn fa_block_pool_enabled(&self) -> bool {
         self.fa_pool.is_some()
     }
 
@@ -1592,7 +1596,7 @@ impl MlxKVCache {
     /// - Specs outside the validated set (bits 4/6/8, group sizes 32/64/128)
     ///   or targeting a layer that has already become a rotating /
     ///   protected-prefix ring are rejected per layer (warn + full precision).
-    pub fn set_kv_quant_table(&mut self, table: Vec<Option<KvQuantSpec>>) {
+    pub(crate) fn set_kv_quant_table(&mut self, table: Vec<Option<KvQuantSpec>>) {
         if table.len() != self.layers.len() {
             tracing::warn!(
                 target: "ax_engine_mlx::kv_cache",
@@ -1682,17 +1686,19 @@ impl MlxKVCache {
             .flatten()
     }
 
+    #[cfg(test)]
     /// Test/introspection hook: whether `layer` currently holds quantized
     /// storage.
-    pub fn layer_is_quantized(&self, layer: usize) -> bool {
+    pub(crate) fn layer_is_quantized(&self, layer: usize) -> bool {
         self.layers
             .get(layer)
             .and_then(Option::as_ref)
             .is_some_and(|fa| fa.as_quantized().is_some())
     }
 
+    #[cfg(test)]
     /// Whether any layer holds quantized storage (telemetry/tests).
-    pub fn has_quantized_layers(&self) -> bool {
+    pub(crate) fn has_quantized_layers(&self) -> bool {
         self.layers
             .iter()
             .flatten()
@@ -1702,25 +1708,27 @@ impl MlxKVCache {
     /// Set once a production `hard_cap` pool has exhausted. The caller must
     /// fail the owning request instead of treating this forward as
     /// successful — see `MlxRunner::run_item`.
-    pub fn hard_cap_exhausted(&self) -> bool {
+    pub(crate) fn hard_cap_exhausted(&self) -> bool {
         self.hard_cap_exhausted
     }
 
+    #[cfg(test)]
     /// Blocks available in the owning FA pool, if paged mode is active.
-    pub fn fa_block_pool_available(&self) -> Option<u32> {
+    pub(crate) fn fa_block_pool_available(&self) -> Option<u32> {
         self.fa_pool
             .as_ref()
             .map(|pool| pool.snapshot().available_blocks)
     }
 
-    pub fn shares_fa_block_pool_with(&self, other: &Self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn shares_fa_block_pool_with(&self, other: &Self) -> bool {
         match (&self.fa_pool, &other.fa_pool) {
             (Some(left), Some(right)) => left.same_pool(right),
             _ => false,
         }
     }
 
-    pub fn uses_fa_block_pool(&self, pool: &SharedFaBlockPool) -> bool {
+    pub(crate) fn uses_fa_block_pool(&self, pool: &SharedFaBlockPool) -> bool {
         self.fa_pool
             .as_ref()
             .is_some_and(|owned| owned.same_pool(pool))
@@ -1732,7 +1740,7 @@ impl MlxKVCache {
     /// speculative paths can replace a paged layer with dense storage at
     /// runtime. Native L1 only promises physical-page adoption, so every
     /// layer must still be a structurally valid paged FA layer.
-    pub fn is_native_fa_shareable(&self) -> bool {
+    pub(crate) fn is_native_fa_shareable(&self) -> bool {
         let slab_pool = self
             .fa_pool
             .as_ref()
@@ -1765,7 +1773,7 @@ impl MlxKVCache {
 
     /// Validate a dense standard-FA snapshot and return the layer-block slots
     /// required to rebuild it in `pool` without changing the wire format.
-    pub fn fa_blocks_required_for_repage(
+    pub(crate) fn fa_blocks_required_for_repage(
         &self,
         pool: &SharedFaBlockPool,
     ) -> Result<u32, FaBlockPoolError> {
@@ -1836,7 +1844,7 @@ impl MlxKVCache {
     /// Clone a dense serialized standard-FA snapshot into the runner's shared
     /// paged representation. Allocation is one transaction; failure leaves
     /// both the source cache and pool ownership unchanged.
-    pub fn clone_repage_into_shared_fa_pool(
+    pub(crate) fn clone_repage_into_shared_fa_pool(
         &self,
         pool: SharedFaBlockPool,
     ) -> Result<Self, FaBlockPoolError> {
@@ -1981,7 +1989,7 @@ impl MlxKVCache {
     /// Conservative physical-block demand for appending `new_tokens` to a
     /// pure-FA cache. Callers gate this to layouts where every empty layer will
     /// become paged FA; hybrid layouts intentionally do not use the estimate.
-    pub fn additional_fa_blocks_for_append(&self, new_tokens: usize) -> Option<u32> {
+    pub(crate) fn additional_fa_blocks_for_append(&self, new_tokens: usize) -> Option<u32> {
         let pool = self.fa_pool.as_ref()?;
         if new_tokens == 0 {
             return Some(0);
@@ -2055,7 +2063,7 @@ impl MlxKVCache {
     /// [`Self::advance`] after forwards; this is for seeding a cache at a
     /// known position (prefill restore, warmup, tests). For rollback use
     /// [`Self::trim_to`], which also validates ring residency.
-    pub fn set_seq_len(&mut self, n: usize) {
+    pub(crate) fn set_seq_len(&mut self, n: usize) {
         if let Some(state) = &self.qwen4_exp {
             assert_eq!(
                 state.position(),
@@ -2067,17 +2075,17 @@ impl MlxKVCache {
     }
 
     /// Install the signed position compression computed by a visual prefill.
-    pub fn set_mrope_position_delta(&mut self, delta: i32) {
+    pub(crate) fn set_mrope_position_delta(&mut self, delta: i32) {
         self.mrope_position_delta = delta;
     }
 
-    pub fn mrope_position_delta(&self) -> i32 {
+    pub(crate) fn mrope_position_delta(&self) -> i32 {
         self.mrope_position_delta
     }
 
     /// Convert a physical token offset to the shared T/H/W position used for
     /// post-prefill decode, clamping only malformed negative positions.
-    pub fn mrope_decode_position(&self, token_offset: usize) -> usize {
+    pub(crate) fn mrope_decode_position(&self, token_offset: usize) -> usize {
         let position = (token_offset as i128) + i128::from(self.mrope_position_delta);
         usize::try_from(position.max(0)).unwrap_or(usize::MAX)
     }
@@ -2093,7 +2101,7 @@ impl MlxKVCache {
         self.rotating_slack = slack;
     }
 
-    pub fn rotating_sliding_slack(&self) -> usize {
+    pub(crate) fn rotating_sliding_slack(&self) -> usize {
         self.rotating_slack
     }
 
@@ -2107,7 +2115,7 @@ impl MlxKVCache {
     /// slack, which also bounds the deepest `trim_to` rollback the ring can
     /// absorb (rolled-back tokens rewrite into their own `t % capacity`
     /// slots, so rollback itself is free).
-    pub fn sliding_ring_layout(
+    pub(crate) fn sliding_ring_layout(
         &self,
         window: Option<usize>,
         seq: usize,
@@ -2388,11 +2396,11 @@ impl MlxKVCache {
     /// Whether this cache holds state the wire format cannot carry (DeepSeek
     /// V4 compressor layers): storing it would produce a snapshot that
     /// claims tokens but restores as empty.
-    pub fn has_unserializable_layers(&self) -> bool {
+    pub(crate) fn has_unserializable_layers(&self) -> bool {
         self.deepseek_v4_layers.iter().any(Option::is_some)
     }
 
-    pub fn serialize_to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn serialize_to_bytes(&self) -> Vec<u8> {
         // Fail closed before writing anything: DeepSeek V4 compressor layers
         // cannot round-trip, and this infallible signature would otherwise
         // encode them as EMPTY layers that claim tokens but restore empty.
@@ -2522,7 +2530,9 @@ impl MlxKVCache {
     /// `serialize_to_bytes`. Returns an error on magic / version
     /// mismatch, truncated data, unknown dtype tags, or shape errors —
     /// never silently degrades.
-    pub fn try_deserialize_from_bytes(bytes: &[u8]) -> Result<Self, MlxKVCacheSerializeError> {
+    pub(crate) fn try_deserialize_from_bytes(
+        bytes: &[u8],
+    ) -> Result<Self, MlxKVCacheSerializeError> {
         let mut cursor = std::io::Cursor::new(bytes);
         Self::try_deserialize_from_reader(&mut cursor)
     }
@@ -2531,7 +2541,7 @@ impl MlxKVCache {
     /// Each tensor is read directly into its final owned buffer while the
     /// caller updates integrity state (e.g. entry SHA-256). Prefer this
     /// over materializing a full payload `Vec` then copying again.
-    pub fn try_deserialize_from_reader(
+    pub(crate) fn try_deserialize_from_reader(
         reader: &mut dyn std::io::Read,
     ) -> Result<Self, MlxKVCacheSerializeError> {
         let mut magic = [0u8; 4];
@@ -2792,7 +2802,7 @@ impl MlxKVCache {
     ///   kinds cannot be derived from config alone (weight-driven
     ///   classification), where MLP/MoE layers legitimately serialize
     ///   as `EMPTY`.
-    pub fn verify_restored_snapshot(
+    pub(crate) fn verify_restored_snapshot(
         &self,
         expected_layer_count: usize,
         expected_tokens: usize,
@@ -2852,7 +2862,7 @@ impl MlxKVCache {
     /// `new_k` / `new_v` shape: `[1, n_kv_heads, new_tokens, head_dim]`
     ///
     /// Returns **owned** arrays sliced to `[1, n_kv_heads, seq_len + new_tokens, head_dim]`.
-    pub fn append(
+    pub(crate) fn append(
         &mut self,
         layer: usize,
         new_k: MlxArray,
@@ -2871,7 +2881,7 @@ impl MlxKVCache {
     /// shorter view.
     ///
     /// `window = None` preserves the full-view behavior of `append`.
-    pub fn append_with_retained_window(
+    pub(crate) fn append_with_retained_window(
         &mut self,
         layer: usize,
         new_k: MlxArray,
@@ -3914,7 +3924,7 @@ impl MlxKVCache {
     /// `new_k_pe`: `[1, 1, new_tokens, qk_rope_head_dim]`
     ///
     /// This cache stores the compressed MLA representation, not expanded K/V.
-    pub fn append_glm_mla(
+    pub(crate) fn append_glm_mla(
         &mut self,
         layer: usize,
         new_kv_latent: MlxArray,
@@ -4070,7 +4080,7 @@ impl MlxKVCache {
     /// Phase-3 compressor state (compressed-K rows, indexer rows, buffered
     /// per-token states) lives alongside this buffer on
     /// `DeepseekV4LayerCache`; this method stays the raw-K append.
-    pub fn append_deepseek_v4(&mut self, layer: usize, new_k_latent: MlxArray) -> MlxArray {
+    pub(crate) fn append_deepseek_v4(&mut self, layer: usize, new_k_latent: MlxArray) -> MlxArray {
         let append =
             validate_deepseek_v4_append_inputs(layer, self.deepseek_v4_layers.len(), &new_k_latent);
         let new_tokens = append.new_tokens;
@@ -4162,6 +4172,7 @@ impl MlxKVCache {
         )
     }
 
+    #[cfg(test)]
     /// Read back the latent K window for a DeepSeek V4 layer: the last
     /// `sliding_window` entries of the logical cache, or the full logical
     /// cache when `sliding_window` is 0 (uncompressed layers attend the full
@@ -4170,7 +4181,11 @@ impl MlxKVCache {
     ///
     /// Returns `None` when the layer has no V4 cache; otherwise
     /// `[1, 1, min(window, seq_len), head_dim]`.
-    pub fn deepseek_v4_k_window(&self, layer: usize, sliding_window: usize) -> Option<MlxArray> {
+    pub(crate) fn deepseek_v4_k_window(
+        &self,
+        layer: usize,
+        sliding_window: usize,
+    ) -> Option<MlxArray> {
         let cache = self.deepseek_v4_layers.get(layer)?.as_ref()?;
         let len = self.seq_len;
         let window = if sliding_window == 0 {
@@ -4188,11 +4203,15 @@ impl MlxKVCache {
         ))
     }
 
+    #[cfg(test)]
     /// Read-only access to a single DeepSeek V4 layer's cached latent K array
     /// plus its inner dim. Mirrors [`Self::glm_mla_layer_state`] for debug
     /// tooling. The array is over-allocated to capacity; slice to
     /// `[0..self.seq_len]` for the valid region.
-    pub fn deepseek_v4_layer_state(&self, layer: usize) -> Option<DeepseekV4LayerStateView<'_>> {
+    pub(crate) fn deepseek_v4_layer_state(
+        &self,
+        layer: usize,
+    ) -> Option<DeepseekV4LayerStateView<'_>> {
         let entry = self.deepseek_v4_layers.get(layer)?.as_ref()?;
         Some(DeepseekV4LayerStateView {
             k_latent: &entry.k_latent,
@@ -4231,7 +4250,7 @@ impl MlxKVCache {
     /// `overlap` are recorded on creation for block-boundary bookkeeping on
     /// `trim_to`. No-op when the layer has no V4 cache yet — the compressor
     /// update runs after the raw append, which creates the entry.
-    pub fn deepseek_v4_comp_ensure(
+    pub(crate) fn deepseek_v4_comp_ensure(
         &mut self,
         layer: usize,
         indexer: bool,
@@ -4266,7 +4285,7 @@ impl MlxKVCache {
 
     /// Number of committed compressed-K rows (== completed blocks) for one
     /// compressor pipeline. `0` when the pipeline does not exist.
-    pub fn deepseek_v4_comp_committed(&self, layer: usize, indexer: bool) -> usize {
+    pub(crate) fn deepseek_v4_comp_committed(&self, layer: usize, indexer: bool) -> usize {
         self.deepseek_v4_comp_ref(layer, indexer)
             .map_or(0, |comp| comp.committed)
     }
@@ -4274,7 +4293,7 @@ impl MlxKVCache {
     /// Buffered F32 per-token compressor states: `(state_base, kv, score)`
     /// with `kv`/`score` `[rows, state_width]` covering positions
     /// `[state_base, state_base + rows)`. `None` when the buffer is empty.
-    pub fn deepseek_v4_comp_states(
+    pub(crate) fn deepseek_v4_comp_states(
         &self,
         layer: usize,
         indexer: bool,
@@ -4289,7 +4308,7 @@ impl MlxKVCache {
     /// Replace the buffered per-token compressor states after a forward
     /// (the compressor module slices the partial-window tail itself).
     /// `None`/`None` clears the buffer (positions restart at `state_base`).
-    pub fn deepseek_v4_comp_replace_states(
+    pub(crate) fn deepseek_v4_comp_replace_states(
         &mut self,
         layer: usize,
         indexer: bool,
@@ -4315,7 +4334,7 @@ impl MlxKVCache {
     /// re-compression simply overwrites the rejected rows.
     ///
     /// Returns `[1, 1, committed, row_dim]`.
-    pub fn append_deepseek_v4_comp_rows(
+    pub(crate) fn append_deepseek_v4_comp_rows(
         &mut self,
         layer: usize,
         indexer: bool,
@@ -4420,7 +4439,7 @@ impl MlxKVCache {
 
     /// Read back the committed compressed-K rows for one compressor pipeline:
     /// `[1, 1, committed, row_dim]`, or `None` when no rows are committed.
-    pub fn deepseek_v4_comp_k(&self, layer: usize, indexer: bool) -> Option<MlxArray> {
+    pub(crate) fn deepseek_v4_comp_k(&self, layer: usize, indexer: bool) -> Option<MlxArray> {
         let comp = self.deepseek_v4_comp_ref(layer, indexer)?;
         let comp_k = comp.comp_k.as_ref()?;
         if comp.committed == 0 {
@@ -4650,7 +4669,13 @@ impl MlxKVCache {
     /// the next imperative `append` sees `write_end > capacity` and grows via
     /// its normal chunk path, copying this buffer forward.  Replacing the layer
     /// entry also drops any stale views.
-    pub fn set_layer_kv_logical(&mut self, layer: usize, k: MlxArray, v: MlxArray, seq_len: usize) {
+    pub(crate) fn set_layer_kv_logical(
+        &mut self,
+        layer: usize,
+        k: MlxArray,
+        v: MlxArray,
+        seq_len: usize,
+    ) {
         let shape = k.shape();
         debug_assert_eq!(shape.len(), 4, "set_layer_kv_logical expects a 4D K array");
         let n_kv_heads = shape[1];
@@ -4783,11 +4808,11 @@ impl MlxKVCache {
         })
     }
 
-    pub fn usage_snapshot(&self) -> MlxKVCacheUsage {
+    pub(crate) fn usage_snapshot(&self) -> MlxKVCacheUsage {
         self.usage_snapshot_with_layer_windows(&[])
     }
 
-    pub fn usage_snapshot_with_layer_windows(
+    pub(crate) fn usage_snapshot_with_layer_windows(
         &self,
         layer_windows: &[Option<usize>],
     ) -> MlxKVCacheUsage {
@@ -4947,7 +4972,7 @@ impl MlxKVCache {
     }
 
     /// Store the gated-delta states for a Qwen3.5 linear-attention layer.
-    pub fn set_linear_state(
+    pub(crate) fn set_linear_state(
         &mut self,
         layer: usize,
         conv_state: MlxArray,
@@ -5152,7 +5177,7 @@ impl MlxKVCache {
     }
 
     /// Drop a transient verifier checkpoint after the final state is committed.
-    pub fn clear_linear_prefix_checkpoint(&mut self) {
+    pub(crate) fn clear_linear_prefix_checkpoint(&mut self) {
         for state in &mut self.linear_layers {
             state.prefix_conv_state = None;
             state.prefix_recurrent_state = None;
@@ -5180,7 +5205,11 @@ impl MlxKVCache {
     ///
     /// `new_tokens` is retained for the panic check that validates the source layer
     /// was updated in the current forward pass.
-    pub fn peek_source_kv(&self, source_layer: usize, new_tokens: usize) -> (MlxArray, MlxArray) {
+    pub(crate) fn peek_source_kv(
+        &self,
+        source_layer: usize,
+        new_tokens: usize,
+    ) -> (MlxArray, MlxArray) {
         let fa = self.layers[source_layer]
             .as_ref()
             .expect("KV-shared source layer has no cached KV — source layer must appear earlier");
@@ -5333,7 +5362,7 @@ impl MlxKVCache {
     /// and automatically excludes slots holding rolled-back drafts (their
     /// resident-token index decodes below `seq_len - window` under the
     /// post-trim end).
-    pub fn layer_sliding_ring(&self, layer: usize) -> Option<SlidingRingLayout> {
+    pub(crate) fn layer_sliding_ring(&self, layer: usize) -> Option<SlidingRingLayout> {
         let lkv = self.layers.get(layer)?.as_ref()?.as_contiguous()?;
         let window = lkv.rotating_window?;
         Some(SlidingRingLayout {
@@ -5349,7 +5378,7 @@ impl MlxKVCache {
     /// from the most recent append. Diffusion denoising attends against the
     /// committed prompt prefix, so its bidirectional mask must match exactly
     /// `self.seq_len` cached keys.
-    pub fn peek_layer_full_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
+    pub(crate) fn peek_layer_full_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
         let fa = self.layers.get(layer)?.as_ref()?;
         match fa {
             FaLayerStorage::Contiguous(lkv) => {
@@ -5397,7 +5426,7 @@ impl MlxKVCache {
     ///
     /// On the paged FA path this forces the layer back to contiguous storage
     /// (compiled decode returns dense K/V).
-    pub fn replace_layer_kv(&mut self, layer: usize, new_k: MlxArray, new_v: MlxArray) {
+    pub(crate) fn replace_layer_kv(&mut self, layer: usize, new_k: MlxArray, new_v: MlxArray) {
         let shape = new_k.shape();
         if shape.len() != 4 {
             return;
@@ -5430,7 +5459,7 @@ impl MlxKVCache {
     }
 
     /// Reset cache entirely (e.g., between requests).
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.qwen4_exp = None;
         if let Some(pool) = self.fa_pool.as_ref() {
             for entry in self.layers.iter_mut().flatten() {

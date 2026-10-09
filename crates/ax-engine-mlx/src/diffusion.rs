@@ -769,7 +769,7 @@ pub struct DenoiseStageProfile {
 
 /// Read and zero denoise stage profile counters (test / tooling).
 #[allow(dead_code)]
-pub fn take_denoise_stage_profile() -> DenoiseStageProfile {
+pub(crate) fn take_denoise_stage_profile() -> DenoiseStageProfile {
     DenoiseStageProfile {
         forward_us: DENOISE_STAGE_FORWARD_US.swap(0, Ordering::Relaxed),
         sample_us: DENOISE_STAGE_SAMPLE_US.swap(0, Ordering::Relaxed),
@@ -929,7 +929,7 @@ pub(crate) struct DiffusionAdvanceProgress {
 }
 
 impl DiffusionAdvanceProgress {
-    pub fn schedule_update(self) -> DiffusionScheduleUpdate {
+    pub(crate) fn schedule_update(self) -> DiffusionScheduleUpdate {
         schedule_update_from_progress(self.steps_total, self.commit_ready, false)
     }
 }

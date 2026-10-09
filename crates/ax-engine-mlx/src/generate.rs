@@ -494,7 +494,7 @@ fn mtp_time_elapsed_us(started: &Option<std::time::Instant>) -> u128 {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn chunked_prefill_with_sampling_buffers(
+pub(crate) fn chunked_prefill_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
@@ -671,7 +671,7 @@ pub fn chunked_prefill_with_sampling_buffers(
 /// hidden for every prompt position so `initialize_generation_state` can warm
 /// the MTP head. When false, still uses the full-seq path for consistent numerics.
 #[allow(clippy::too_many_arguments)]
-pub fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
+pub(crate) fn chunked_prefill_gemma4_unified_with_mtp_history_and_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
@@ -799,7 +799,7 @@ fn finish_prefill_sampling(
 /// residual stream (ADR-038). Fail-closes when images are present without a
 /// mapped vision tower (`qwen3_vl_vision`).
 #[allow(clippy::too_many_arguments)]
-pub fn chunked_prefill_qwen3_vl_with_sampling_buffers(
+pub(crate) fn chunked_prefill_qwen3_vl_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
@@ -830,7 +830,7 @@ pub fn chunked_prefill_qwen3_vl_with_sampling_buffers(
 /// Prefill MiniCPM-V 4.6 with SigLIP/VitMerger features replacing the
 /// `<image><unk>…</image>` placeholder spans.
 #[allow(clippy::too_many_arguments)]
-pub fn chunked_prefill_minicpm_v46_with_sampling_buffers(
+pub(crate) fn chunked_prefill_minicpm_v46_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
@@ -869,7 +869,7 @@ pub fn chunked_prefill_minicpm_v46_with_sampling_buffers(
 /// Prefill Nemotron H Nano Omni with RADIO/Parakeet features replacing the
 /// checkpoint's repeated media-context token spans.
 #[allow(clippy::too_many_arguments)]
-pub fn chunked_prefill_nemotron_omni_with_sampling_buffers(
+pub(crate) fn chunked_prefill_nemotron_omni_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
@@ -985,7 +985,7 @@ pub fn chunked_prefill_with_final_hidden(
 /// hidden sequence for the final prefill chunk plus the committed token IDs
 /// that each hidden row predicts. MTP uses this to seed its recurrent cache
 /// with prompt/history transitions instead of only the final prefill token.
-pub fn chunked_prefill_with_mtp_history(
+pub(crate) fn chunked_prefill_with_mtp_history(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
@@ -1012,7 +1012,7 @@ pub fn chunked_prefill_with_mtp_history(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
+pub(crate) fn chunked_prefill_with_mtp_history_and_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
@@ -1261,7 +1261,7 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
 /// warmup. Unlike [`chunked_prefill_with_mtp_history_and_sampling_buffers`]
 /// (Qwen post-norm rows), the second return is `[1, seq, hc*hidden]`.
 #[allow(clippy::too_many_arguments)]
-pub fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
+pub(crate) fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt_tokens: &[u32],
@@ -1470,7 +1470,7 @@ pub fn start_direct_pipeline(
 /// token, materialized by the forward before this returns. `None` means the
 /// family has no stream row, and callers must fail closed instead of pairing a
 /// missing row with a committed token.
-pub fn start_direct_pipeline_capturing(
+pub(crate) fn start_direct_pipeline_capturing(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     last_token: u32,
@@ -1525,7 +1525,7 @@ pub fn advance_direct_pipeline_with_timings(
 /// [`advance_direct_pipeline_with_timings`] with the trunk's post-norm stream
 /// row for the token this step consumed — the token it returns. `None` means
 /// the family has no stream row, and callers must fail closed.
-pub fn advance_direct_pipeline_capturing_with_timings(
+pub(crate) fn advance_direct_pipeline_capturing_with_timings(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     pending: &MlxArray, // lazy token from previous `start_direct_pipeline` / `advance_direct_pipeline`
@@ -1578,7 +1578,7 @@ pub fn advance_direct_pipeline_capturing_with_timings(
 /// submission and one completion barrier.  The cache is advanced exactly as in
 /// the ordinary direct pipeline; callers must either retain
 /// `next_pending` for the next step or discard the entire request state.
-pub fn prepare_direct_pipeline_advance(
+pub(crate) fn prepare_direct_pipeline_advance(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     pending: &MlxArray,
@@ -1589,7 +1589,7 @@ pub fn prepare_direct_pipeline_advance(
 
 /// [`prepare_direct_pipeline_advance`] with the trunk's post-norm stream row
 /// for the token this graph consumes, captured for the caller.
-pub fn prepare_direct_pipeline_advance_capturing(
+pub(crate) fn prepare_direct_pipeline_advance_capturing(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     pending: &MlxArray,
@@ -1688,7 +1688,7 @@ pub fn decode_step(
 /// The deterministic branch differs only in skipping `forward_argmax`'s
 /// softcap-free logits: the softcap is monotonic, so the argmax winner is
 /// identical.
-pub fn sample_token_from_prefill_logits(
+pub(crate) fn sample_token_from_prefill_logits(
     logits: &MlxArray,
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
@@ -1758,7 +1758,7 @@ pub fn sample_token_from_prefill_logits(
 // Hot-path decode reuses three scratch buffers to avoid per-token allocs; the
 // arity is intentional and shared with the non-buffered wrapper above.
 #[allow(clippy::too_many_arguments)]
-pub fn decode_step_with_sampling_buffers(
+pub(crate) fn decode_step_with_sampling_buffers(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     last_token: u32,

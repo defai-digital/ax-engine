@@ -14,7 +14,7 @@ pub struct NgramLayout {
 }
 
 impl NgramLayout {
-    pub fn new(
+    pub(crate) fn new(
         vocabulary: u32,
         eos: u32,
         multipliers: Vec<u64>,
@@ -63,7 +63,7 @@ impl NgramLayout {
         })
     }
 
-    pub fn initial_history(&self) -> NgramHistory {
+    pub(crate) fn initial_history(&self) -> NgramHistory {
         NgramHistory {
             recent: vec![self.eos; self.multipliers.len() - 1],
         }
@@ -87,7 +87,11 @@ impl NgramLayout {
 
     /// Return token-major row IDs and the history to adopt after a successful
     /// forward. `history` remains valid if any subsequent IO or graph fails.
-    pub fn plan(&self, history: &NgramHistory, tokens: &[u32]) -> Result<NgramLookup, String> {
+    pub(crate) fn plan(
+        &self,
+        history: &NgramHistory,
+        tokens: &[u32],
+    ) -> Result<NgramLookup, String> {
         if history.recent.len() + 1 != self.multipliers.len()
             || history.recent.iter().any(|token| *token >= self.vocabulary)
             || tokens.iter().any(|token| *token >= self.vocabulary)

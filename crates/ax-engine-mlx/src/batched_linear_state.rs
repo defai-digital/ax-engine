@@ -68,7 +68,7 @@ fn slice_rows(a: &MlxArray, start: i32, end: i32) -> MlxArray {
 
 impl BatchedLinearState {
     /// A store for `num_layers` layers, up to `max_batch` rows, starting empty.
-    pub fn with_capacity(num_layers: usize, max_batch: usize) -> Self {
+    pub(crate) fn with_capacity(num_layers: usize, max_batch: usize) -> Self {
         Self {
             layers: (0..num_layers)
                 .map(|_| BatchedLinearLayer::default())
@@ -78,27 +78,20 @@ impl BatchedLinearState {
         }
     }
 
-    pub fn num_layers(&self) -> usize {
+    pub(crate) fn num_layers(&self) -> usize {
         self.layers.len()
     }
 
-    pub fn batch(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn batch(&self) -> usize {
         self.batch
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.batch == 0
     }
 
     /// Append one row seeded from a per-row (`[1, ...]`) state for every layer.
     /// `conv[l]` / `recurrent[l]` are the single-row states for layer `l`, in
     /// layer order. Returns the new row's slot index. Panics if full or if the
     /// per-layer state count does not match `num_layers`.
-    pub fn add_row(&mut self, conv: &[MlxArray], recurrent: &[MlxArray]) -> usize {
+    pub(crate) fn add_row(&mut self, conv: &[MlxArray], recurrent: &[MlxArray]) -> usize {
         assert!(self.batch < self.capacity, "batched linear state full");
         assert_eq!(conv.len(), self.layers.len(), "one conv state per layer");
         assert_eq!(
@@ -135,7 +128,7 @@ impl BatchedLinearState {
     /// the batch shrinks by one — mirroring `Vec::swap_remove`, so the caller's
     /// `slot → request` mapping stays a compact prefix. No-op returning `false`
     /// if `slot` is out of range.
-    pub fn remove_row(&mut self, slot: usize) -> bool {
+    pub(crate) fn remove_row(&mut self, slot: usize) -> bool {
         if slot >= self.batch {
             return false;
         }
@@ -161,14 +154,14 @@ impl BatchedLinearState {
 
     /// The full `[batch, ...]` conv/recurrent state for `layer`, for feeding the
     /// batched gated-delta kernel. `None` if no rows are active.
-    pub fn layer_state(&self, layer: usize) -> Option<(&MlxArray, &MlxArray)> {
+    pub(crate) fn layer_state(&self, layer: usize) -> Option<(&MlxArray, &MlxArray)> {
         let l = self.layers.get(layer)?;
         Some((l.conv.as_ref()?, l.recurrent.as_ref()?))
     }
 
     /// Replace `layer`'s conv/recurrent with the kernel's updated `[batch, ...]`
     /// outputs. Panics if the leading dim does not match the active batch.
-    pub fn update_layer(&mut self, layer: usize, conv: MlxArray, recurrent: MlxArray) {
+    pub(crate) fn update_layer(&mut self, layer: usize, conv: MlxArray, recurrent: MlxArray) {
         assert_eq!(
             axis0_len(&conv) as usize,
             self.batch,
@@ -186,7 +179,7 @@ impl BatchedLinearState {
 
     /// Read row `row` of `layer` back as a single-row `[1, ...]` state — the
     /// inverse of `add_row`'s seed, used by the oracle test and any writeback.
-    pub fn row_state(&self, layer: usize, row: usize) -> Option<(MlxArray, MlxArray)> {
+    pub(crate) fn row_state(&self, layer: usize, row: usize) -> Option<(MlxArray, MlxArray)> {
         if row >= self.batch {
             return None;
         }

@@ -33,7 +33,7 @@ pub struct ActivationRoute<'a> {
 pub type ActivationPacket = ActivationFrame;
 
 /// Materialize and frame a stage output for the immediately following rank.
-pub fn encode_activation(
+pub(crate) fn encode_activation(
     hidden: &MlxArray,
     route: ActivationRoute<'_>,
 ) -> Result<ActivationPacket, PipelineActivationError> {
@@ -101,7 +101,7 @@ pub fn encode_activation(
 }
 
 /// Reconstruct a receiver-owned MLX activation after all fences pass.
-pub fn decode_activation(
+pub(crate) fn decode_activation(
     packet: &ActivationPacket,
     topology: &PipelineTopology,
     destination_rank: u16,
@@ -277,8 +277,9 @@ impl PipelineRankExecutor {
         self.ledger.close(request_id);
     }
 
+    #[cfg(test)]
     /// Diagnostic used by correctness tests and rank health reporting.
-    pub fn request_cache_has_layer(&self, request_id: u64, global_layer: usize) -> bool {
+    pub(crate) fn request_cache_has_layer(&self, request_id: u64, global_layer: usize) -> bool {
         self.caches
             .get(&request_id)
             .and_then(|cache| cache.logical_layer_kv(global_layer))

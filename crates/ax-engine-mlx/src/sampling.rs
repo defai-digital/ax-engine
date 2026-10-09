@@ -31,19 +31,19 @@ impl Xorshift64 {
     /// Same state mixing as [`Xorshift64::new`] but marked unseeded, so the
     /// pure-temperature sampler may keep using MLX's global GPU RNG instead of
     /// this stream. Use for requests that do not need seed reproducibility.
-    pub fn new_unseeded(seed: u64) -> Self {
+    pub(crate) fn new_unseeded(seed: u64) -> Self {
         let mut rng = Self::new(seed);
         rng.seeded = false;
         rng
     }
 
     /// Whether this stream carries a reproducible request seed.
-    pub fn is_seeded(&self) -> bool {
+    pub(crate) fn is_seeded(&self) -> bool {
         self.seeded
     }
 
     /// Generate next random u64.
-    pub fn next_u64(&mut self) -> u64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.state ^= self.state << 13;
         self.state ^= self.state >> 7;
         self.state ^= self.state << 17;
@@ -56,7 +56,7 @@ impl Xorshift64 {
     /// top ~2^28 values; clamp to the largest float below 1.0 so the
     /// documented half-open range holds and every consumer's `cumsum >=
     /// u * sum` scan can terminate inside the support.
-    pub fn next_f32(&mut self) -> f32 {
+    pub(crate) fn next_f32(&mut self) -> f32 {
         let value = (self.next_u64() >> 11) as f32 * (1.0 / (1u64 << 53) as f32);
         value.min(f32::from_bits(0x3f7f_ffff))
     }
@@ -66,7 +66,7 @@ impl Xorshift64 {
 /// key. `Some(seed)` yields a seeded, reproducible stream (routing pure-
 /// temperature sampling through the host path); `None` yields an unseeded
 /// stream so the GPU `random_categorical` fast path stays reachable.
-pub fn request_rng(explicit_seed: Option<u64>, fallback_seed: u64) -> Xorshift64 {
+pub(crate) fn request_rng(explicit_seed: Option<u64>, fallback_seed: u64) -> Xorshift64 {
     match explicit_seed {
         Some(seed) => Xorshift64::new(seed),
         None => Xorshift64::new_unseeded(fallback_seed),
@@ -92,7 +92,7 @@ pub struct MlxSamplingParams {
 }
 
 impl MlxSamplingParams {
-    pub const fn new(temperature: f32, top_p: f32, top_k: u32) -> Self {
+    pub(crate) const fn new(temperature: f32, top_p: f32, top_k: u32) -> Self {
         Self {
             temperature,
             top_p,
@@ -110,19 +110,20 @@ impl MlxSamplingParams {
         Self::new(0.0, 1.0, 0)
     }
 
-    pub const fn with_seed(mut self, seed: Option<u64>) -> Self {
+    pub(crate) const fn with_seed(mut self, seed: Option<u64>) -> Self {
         self.seed = seed;
         self
     }
 
+    #[cfg(test)]
     /// Build the per-request RNG for these sampling params. `seed == Some(..)`
     /// yields a reproducible seeded stream; `seed == None` yields an unseeded
     /// stream (pure-temperature sampling keeps the GPU fast path).
-    pub fn request_rng(&self, fallback_seed: u64) -> Xorshift64 {
+    pub(crate) fn request_rng(&self, fallback_seed: u64) -> Xorshift64 {
         request_rng(self.seed, fallback_seed)
     }
 
-    pub const fn with_repetition_penalty(
+    pub(crate) const fn with_repetition_penalty(
         mut self,
         repetition_penalty: f32,
         repetition_context_size: Option<u32>,
@@ -132,23 +133,23 @@ impl MlxSamplingParams {
         self
     }
 
-    pub const fn with_min_p(mut self, min_p: Option<f32>) -> Self {
+    pub(crate) const fn with_min_p(mut self, min_p: Option<f32>) -> Self {
         self.min_p = min_p;
         self
     }
 
-    pub fn uses_min_p(self) -> bool {
+    pub(crate) fn uses_min_p(self) -> bool {
         self.min_p
             .is_some_and(|min_p| min_p.is_finite() && min_p > 0.0)
     }
 
-    pub fn uses_repetition_penalty(self) -> bool {
+    pub(crate) fn uses_repetition_penalty(self) -> bool {
         self.repetition_penalty.is_finite()
             && self.repetition_penalty > 0.0
             && self.repetition_penalty != 1.0
     }
 
-    pub const fn with_no_repeat_ngram(
+    pub(crate) const fn with_no_repeat_ngram(
         mut self,
         no_repeat_ngram_size: u32,
         ngram_window: u32,
@@ -158,11 +159,11 @@ impl MlxSamplingParams {
         self
     }
 
-    pub const fn uses_no_repeat_ngram(self) -> bool {
+    pub(crate) const fn uses_no_repeat_ngram(self) -> bool {
         self.no_repeat_ngram_size > 0
     }
 
-    pub fn uses_logits_processors(self) -> bool {
+    pub(crate) fn uses_logits_processors(self) -> bool {
         self.uses_repetition_penalty() || self.uses_no_repeat_ngram()
     }
 }
@@ -179,7 +180,7 @@ pub struct TokenDistribution {
 }
 
 impl TokenDistribution {
-    pub fn new(mut entries: Vec<(u32, f32)>) -> Option<Self> {
+    pub(crate) fn new(mut entries: Vec<(u32, f32)>) -> Option<Self> {
         entries.retain(|(_, probability)| *probability > 0.0 && probability.is_finite());
         if entries.is_empty() {
             return None;
@@ -196,18 +197,18 @@ impl TokenDistribution {
         })
     }
 
-    pub fn entries(&self) -> &[(u32, f32)] {
+    pub(crate) fn entries(&self) -> &[(u32, f32)] {
         &self.entries
     }
 
-    pub fn probability(&self, token: u32) -> f32 {
+    pub(crate) fn probability(&self, token: u32) -> f32 {
         self.entries
             .iter()
             .find(|(candidate, _)| *candidate == token)
             .map_or(0.0, |(_, prob)| *prob)
     }
 
-    pub fn sample_with_logprob(&self, rng: &mut Xorshift64) -> Option<(u32, f32)> {
+    pub(crate) fn sample_with_logprob(&self, rng: &mut Xorshift64) -> Option<(u32, f32)> {
         let token = sample_from_token_distribution(self, rng)?;
         let prob = self.probability(token);
         Some((token, prob.max(1e-37_f32).ln().max(-30.0)))
@@ -229,13 +230,14 @@ impl Default for MlxSamplingParams {
     }
 }
 
+#[cfg(test)]
 /// Sample one token index from logits with temperature scaling.
 ///
 /// When `temperature` is 0.0 or logits is empty, falls back to argmax.
 /// Uses a numerically stable softmax (shift by max before exp).
 ///
 /// Does not require GPU — caller must have already eval'd logits to CPU.
-pub fn sample_categorical(
+pub(crate) fn sample_categorical(
     logits: &[f32],
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
@@ -255,7 +257,7 @@ pub fn sample_categorical(
     )
 }
 
-pub fn sample_categorical_into(
+pub(crate) fn sample_categorical_into(
     logits: &[f32],
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
@@ -371,7 +373,7 @@ pub fn sample_categorical_into(
         .unwrap_or(0)
 }
 
-pub fn sample_categorical_with_topk_gpu(
+pub(crate) fn sample_categorical_with_topk_gpu(
     logits: &MlxArray,
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
@@ -412,7 +414,7 @@ const GPU_TOPP_CANDIDATE_COUNT: i32 = 512;
 /// as long as the candidate set covers the nucleus (guarded below) the kept
 /// prefix is identical to the CPU path's. Returns `None` (caller falls back
 /// to the exact CPU path) when the nucleus may extend beyond the candidates.
-pub fn sample_categorical_with_topp_gpu(
+pub(crate) fn sample_categorical_with_topp_gpu(
     logits: &MlxArray,
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
@@ -511,12 +513,13 @@ fn gpu_top_candidates(
     Some((top_indices, top_probs))
 }
 
+#[cfg(test)]
 /// Sample from a pre-filtered set of `(token_id, logit)` candidates.
 ///
 /// This preserves the same temperature/top-p behavior as `sample_categorical`
 /// for callers that have already selected the top-k candidates on GPU and only
 /// want to transfer that small candidate set to CPU.
-pub fn sample_indexed_categorical(
+pub(crate) fn sample_indexed_categorical(
     logits: &[f32],
     indices: &[u32],
     sampling: MlxSamplingParams,
@@ -567,6 +570,7 @@ pub fn sample_indexed_categorical(
         .map(|(idx, _)| idx as u32)
 }
 
+#[cfg(test)]
 /// Sample from a pre-filtered top-k candidate set and return `(token, log_prob)`.
 ///
 /// Combines sampling and log-probability calculation in a single pass over the
@@ -575,7 +579,7 @@ pub fn sample_indexed_categorical(
 /// so the rejection-sampling acceptance check has an accurate `q_draft(d)`.
 ///
 /// Returns `None` when the candidate set is empty or malformed.
-pub fn sample_indexed_categorical_with_logprob(
+pub(crate) fn sample_indexed_categorical_with_logprob(
     logits: &[f32],
     indices: &[u32],
     sampling: MlxSamplingParams,
@@ -585,7 +589,8 @@ pub fn sample_indexed_categorical_with_logprob(
     distribution.sample_with_logprob(rng)
 }
 
-pub fn indexed_token_distribution(
+#[cfg(test)]
+pub(crate) fn indexed_token_distribution(
     logits: &[f32],
     indices: &[u32],
     sampling: MlxSamplingParams,
@@ -647,12 +652,13 @@ pub fn indexed_token_distribution(
     )
 }
 
+#[cfg(test)]
 /// Return the log-probability of `token` within a pre-filtered candidate set.
 ///
 /// The candidate set is treated like the post-top-k set used by
 /// `sample_indexed_categorical`; top-p is applied over that set before
 /// normalisation.
-pub fn indexed_token_logprob(
+pub(crate) fn indexed_token_logprob(
     logits: &[f32],
     indices: &[u32],
     token: u32,
@@ -691,7 +697,7 @@ pub fn indexed_token_logprob(
 
 /// Sample one token with temperature / top-k / top-p filtering; also return its
 /// log-probability and the full filtered distribution.
-pub fn sample_categorical_with_logprob_and_distribution(
+pub(crate) fn sample_categorical_with_logprob_and_distribution(
     logits: &[f32],
     sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
@@ -705,7 +711,7 @@ pub fn sample_categorical_with_logprob_and_distribution(
     (token, log_prob, Some(distribution))
 }
 
-pub fn token_distribution(
+pub(crate) fn token_distribution(
     logits: &[f32],
     sampling: MlxSamplingParams,
 ) -> Option<TokenDistribution> {
@@ -767,7 +773,7 @@ pub fn token_distribution(
     )
 }
 
-pub fn sample_from_token_distribution(
+pub(crate) fn sample_from_token_distribution(
     distribution: &TokenDistribution,
     rng: &mut Xorshift64,
 ) -> Option<u32> {
@@ -791,7 +797,7 @@ pub fn sample_from_token_distribution(
         .map(|(token, _)| token)
 }
 
-pub fn sample_residual_token_distribution(
+pub(crate) fn sample_residual_token_distribution(
     target: &TokenDistribution,
     draft: &TokenDistribution,
     rng: &mut Xorshift64,
@@ -810,41 +816,6 @@ pub fn sample_residual_token_distribution(
         .collect();
     let distribution = TokenDistribution::new(residual_entries).unwrap_or_else(|| target.clone());
     sample_from_token_distribution(&distribution, rng)
-}
-
-/// Compute the full-vocabulary log-probability of `token` under temperature scaling.
-///
-/// MTP rejection sampling requires `p_draft` and `p_target` to be in the same
-/// normalization domain (full-vocab softmax).  Using a top-k/top-p filtered
-/// log-prob inflates `p_draft` relative to `p_target`, causing systematic
-/// over-rejection.  This function computes the correct full-vocab log-prob
-/// regardless of what sampler filters were used to choose the token.
-pub fn full_vocab_token_logprob(logits: &[f32], token: u32, temperature: f32) -> f32 {
-    let token_idx = token as usize;
-    if logits.is_empty() || token_idx >= logits.len() {
-        return -30.0;
-    }
-    if temperature <= 0.0 {
-        return if argmax_f32(logits) == token {
-            0.0
-        } else {
-            f32::NEG_INFINITY
-        };
-    }
-    let inv_temp = 1.0 / temperature;
-    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let unnorm = ((logits[token_idx] - max_l) * inv_temp).exp();
-    let sum: f32 = logits
-        .iter()
-        .map(|&l| {
-            let p = ((l - max_l) * inv_temp).exp();
-            if p.is_finite() { p } else { 0.0 }
-        })
-        .sum();
-    if sum <= 0.0 || !sum.is_finite() {
-        return -30.0;
-    }
-    (unnorm / sum).max(1e-37_f32).ln().max(-30.0)
 }
 
 /// GPU-side categorical sampling from logits.
@@ -866,7 +837,7 @@ pub fn full_vocab_token_logprob(logits: &[f32], token: u32, temperature: f32) ->
 /// route requests that carry a seeded per-request `rng` through
 /// [`sample_categorical_into`] instead and reserve this path for unseeded
 /// requests.
-pub fn sample_categorical_gpu(logits: &MlxArray, temperature: f32) -> u32 {
+pub(crate) fn sample_categorical_gpu(logits: &MlxArray, temperature: f32) -> u32 {
     // Scale logits by 1/temperature on GPU, then sample.
     let inv_temp = 1.0 / temperature;
     let inv_temp_arr = MlxArray::from_f32(inv_temp);

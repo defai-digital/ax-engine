@@ -161,7 +161,7 @@ static LAYER_GEMMA4_DUAL_PATH_PREFILL_CACHE: OnceLock<Gemma4DualPathPrefillCache
 /// the Gemma dual-path closure measured neutral, so the flag stays opt-in).
 /// Returns `None` when the flag is off, compilation fails, or the closure
 /// cannot be applied.
-pub fn apply_layer_moe_decode(
+pub(crate) fn apply_layer_moe_decode(
     model_identity: u64,
     layer_index: usize,
     inputs: &[&MlxArray],
@@ -258,7 +258,7 @@ pub fn apply_layer_moe_decode(
 /// Gated by `AX_MLX_DENSE_FFN_COMPILE` (default ON, kill-switch). Returns
 /// `None` when the flag is off, compilation fails, or the closure cannot be
 /// applied.
-pub fn apply_layer_dense_ffn_decode(
+pub(crate) fn apply_layer_dense_ffn_decode(
     model_identity: u64,
     layer_index: usize,
     inputs: &[&MlxArray],
@@ -376,7 +376,7 @@ pub fn apply_layer_dense_ffn_decode(
 }
 
 /// Clear the per-layer dense FFN decode closure cache.
-pub fn clear_layer_dense_ffn_decode_cache() {
+pub(crate) fn clear_layer_dense_ffn_decode_cache() {
     if let Some(cache) = LAYER_DENSE_FFN_DECODE_CACHE.get()
         && let Ok(mut guard) = cache.lock()
     {
@@ -390,7 +390,7 @@ pub fn clear_layer_dense_ffn_decode_cache() {
 }
 
 /// Clear the fixed-shape Gemma4 per-layer-input gate closure cache.
-pub fn clear_per_layer_input_gate_decode_cache() {
+pub(crate) fn clear_per_layer_input_gate_decode_cache() {
     if let Some(cache) = PER_LAYER_INPUT_GATE_DECODE_CACHE.get()
         && let Ok(mut guard) = cache.lock()
     {
@@ -404,7 +404,7 @@ pub fn clear_per_layer_input_gate_decode_cache() {
 /// `shapeless=false`. Gemma4 decode always uses `[1, 1, D]`, avoiding the
 /// shapeless GEGLU stream failure observed on older MLX releases. Returns
 /// `None` when compile or apply fails so the caller retains the direct shim.
-pub fn apply_per_layer_input_gate_decode(
+pub(crate) fn apply_per_layer_input_gate_decode(
     model_identity: u64,
     gate: &MlxArray,
     per_layer_input: &MlxArray,
@@ -464,7 +464,7 @@ pub fn apply_per_layer_input_gate_decode(
 /// compile is not correct across different sequence lengths for quantized
 /// matmul graphs, so each prompt length gets its own compiled graph.
 #[allow(dead_code)]
-pub fn apply_layer_dense_ffn_prefill(
+pub(crate) fn apply_layer_dense_ffn_prefill(
     model_identity: u64,
     layer_index: usize,
     leading_elements: i64,
@@ -483,7 +483,7 @@ pub fn apply_layer_dense_ffn_prefill(
 
 /// Like [`apply_layer_dense_ffn_prefill`] with a caller-chosen min leading
 /// (Qwen split prefill uses 128 so contract p128 amortizes).
-pub fn apply_layer_dense_ffn_prefill_min(
+pub(crate) fn apply_layer_dense_ffn_prefill_min(
     model_identity: u64,
     layer_index: usize,
     leading_elements: i64,
@@ -583,7 +583,7 @@ pub fn apply_layer_dense_ffn_prefill_min(
 }
 
 /// Clear the per-layer MoE decode closure cache.
-pub fn clear_layer_moe_decode_cache() {
+pub(crate) fn clear_layer_moe_decode_cache() {
     if let Some(cache) = LAYER_MOE_DECODE_CACHE.get()
         && let Ok(mut guard) = cache.lock()
     {
@@ -604,7 +604,7 @@ pub fn clear_layer_moe_decode_cache() {
 /// Gated by `AX_MLX_MOE_LAYER_COMPILE` (reuses the MoE compile flag since the
 /// optimization is analogous). Returns `None` when the flag is off, compilation
 /// fails, or the closure cannot be applied.
-pub fn apply_layer_gemma4_dual_path_decode(
+pub(crate) fn apply_layer_gemma4_dual_path_decode(
     model_identity: u64,
     layer_index: usize,
     inputs: &[&MlxArray],
@@ -673,7 +673,7 @@ pub fn apply_layer_gemma4_dual_path_decode(
 }
 
 /// Clear the per-layer Gemma4 dual-path decode closure cache.
-pub fn clear_layer_gemma4_dual_path_cache() {
+pub(crate) fn clear_layer_gemma4_dual_path_cache() {
     if let Some(cache) = LAYER_GEMMA4_DUAL_PATH_CACHE.get()
         && let Ok(mut guard) = cache.lock()
     {
@@ -688,7 +688,7 @@ pub fn clear_layer_gemma4_dual_path_cache() {
 /// graph once per `(layer, leading_elements)` cuts async_eval encoding cost on
 /// flip S1 13.8k Gemma shapes. Gated by `AX_MLX_MOE_LAYER_COMPILE` (same opt-in
 /// as decode dual-path). Falls closed to `None` on compile/apply failure.
-pub fn apply_layer_gemma4_dual_path_prefill(
+pub(crate) fn apply_layer_gemma4_dual_path_prefill(
     model_identity: u64,
     layer_index: usize,
     leading_elements: i64,
@@ -784,7 +784,7 @@ pub fn apply_layer_gemma4_dual_path_prefill(
 }
 
 /// Clear fixed-shape Gemma4 dual-path prefill caches (model unload / swap).
-pub fn clear_layer_gemma4_dual_path_prefill_cache() {
+pub(crate) fn clear_layer_gemma4_dual_path_prefill_cache() {
     if let Some(cache) = LAYER_GEMMA4_DUAL_PATH_PREFILL_CACHE.get()
         && let Ok(mut guard) = cache.lock()
     {
@@ -793,7 +793,7 @@ pub fn clear_layer_gemma4_dual_path_prefill_cache() {
 }
 
 /// Clear every compiled per-layer decode closure before a drained model swap.
-pub fn clear_all_layer_decode_caches() {
+pub(crate) fn clear_all_layer_decode_caches() {
     clear_layer_moe_decode_cache();
     clear_layer_dense_ffn_decode_cache();
     clear_per_layer_input_gate_decode_cache();
