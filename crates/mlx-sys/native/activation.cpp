@@ -1364,8 +1364,8 @@ bool compiled_qgelu_prefill_shaped_enabled() {
 
 // Opt-in for AXQ 4-bit (group_size != 64) contract p128. Default OFF after
 // the Gemma 4 AXQ p128 unused-work remasure classified the path as wash.
-// Mirrors `should_compiled_qgelu_axq_p128_for` in fastpath.rs (truthy
-// 1/true/on/yes). Read each call so unit tests can toggle without restarting.
+// Truthy values: 1/true/on/yes. Read each call so unit tests can toggle
+// without restarting.
 bool compiled_qgelu_axq_p128_enabled() {
   const char* v = std::getenv("AX_MLX_COMPILED_QGELU_AXQ_P128");
   if (!v) {

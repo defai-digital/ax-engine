@@ -24,7 +24,7 @@ use std::sync::OnceLock;
 /// head cache. `0` means unlimited. Keeping this reader beside the other
 /// process-cached fast-path knobs lets prefill capture and decode warmup share
 /// one value instead of independently interpreting the environment.
-pub fn mtp_warmup_cap() -> usize {
+pub(crate) fn mtp_warmup_cap() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_MTP_WARMUP_CAP")
@@ -37,7 +37,7 @@ pub fn mtp_warmup_cap() -> usize {
 /// Optional fixed MTP proposal depth used for controlled admission trials.
 /// Unset keeps the adaptive controller; positive values are clamped to the
 /// model head's advertised maximum.
-pub fn mtp_fixed_draft_depth() -> Option<usize> {
+pub(crate) fn mtp_fixed_draft_depth() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MTP_FIXED_DRAFT_DEPTH"))
 }
@@ -49,14 +49,14 @@ pub fn mtp_fixed_draft_depth() -> Option<usize> {
 /// prefix (at least one); a full window grows by one. Successful workloads
 /// retain the existing controller. Explicit fixed depth takes precedence.
 /// This does not enable MTP or alter target verification.
-pub fn mtp_conservative_depth_enabled() -> bool {
+pub(crate) fn mtp_conservative_depth_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| parse_bool_env("AX_MLX_MTP_CONSERVATIVE_DEPTH"))
 }
 
 /// `AX_MLX_MTP_DEPTH3_HYSTERESIS` — keep a three-token proposal window after
 /// accepting its first two drafts. Also engaged by throughput MTP.
-pub fn mtp_depth3_hysteresis_enabled() -> bool {
+pub(crate) fn mtp_depth3_hysteresis_enabled() -> bool {
     static ENV: OnceLock<bool> = OnceLock::new();
     *ENV.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_HYSTERESIS"))
         || qwen_linear_throughput_mtp_enabled()
@@ -65,7 +65,7 @@ pub fn mtp_depth3_hysteresis_enabled() -> bool {
 /// `AX_MLX_MTP_DEPTH3_MISS_BACKOFF` — for a three-token Qwen head, start deep
 /// and back off to two drafts only after a complete miss. Any accepted draft
 /// restores depth three on the next cycle. Also engaged by throughput MTP.
-pub fn mtp_depth3_miss_backoff_enabled() -> bool {
+pub(crate) fn mtp_depth3_miss_backoff_enabled() -> bool {
     static ENV: OnceLock<bool> = OnceLock::new();
     *ENV.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_MISS_BACKOFF"))
         || qwen_linear_throughput_mtp_enabled()
@@ -126,9 +126,16 @@ fn parse_nonnegative_f32(raw: &str) -> Option<f32> {
 }
 
 macro_rules! env_flag {
-    ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
+    ($(#[$meta:meta])* pub $fn_name:ident, $env_var:literal) => {
         $(#[$meta])*
         pub fn $fn_name() -> bool {
+            static CACHED: OnceLock<bool> = OnceLock::new();
+            *CACHED.get_or_init(|| parse_bool_env($env_var))
+        }
+    };
+    ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
+        $(#[$meta])*
+        pub(crate) fn $fn_name() -> bool {
             static CACHED: OnceLock<bool> = OnceLock::new();
             *CACHED.get_or_init(|| parse_bool_env($env_var))
         }
@@ -139,9 +146,16 @@ macro_rules! env_flag {
 /// paths that should run by default but need a documented kill switch
 /// reachable via env var (e.g. `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU=0`).
 macro_rules! env_flag_default_on {
-    ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
+    ($(#[$meta:meta])* pub $fn_name:ident, $env_var:literal) => {
         $(#[$meta])*
         pub fn $fn_name() -> bool {
+            static CACHED: OnceLock<bool> = OnceLock::new();
+            *CACHED.get_or_init(|| parse_bool_env_default_on($env_var))
+        }
+    };
+    ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
+        $(#[$meta])*
+        pub(crate) fn $fn_name() -> bool {
             static CACHED: OnceLock<bool> = OnceLock::new();
             *CACHED.get_or_init(|| parse_bool_env_default_on($env_var))
         }
@@ -199,7 +213,7 @@ env_flag!(
     /// pass `model::supports_batched_prefill`). **Default: OFF** —
     /// experimental: parity with the sequential path is tolerance-verified,
     /// not byte-exact certified (padded batching changes reduction shapes).
-    batched_prefill_enabled,
+    pub batched_prefill_enabled,
     "AX_MLX_BATCHED_PREFILL"
 );
 
@@ -207,7 +221,7 @@ env_flag!(
 /// budget (`rows * max_len` cap) for one batched prefill cohort. Unset uses
 /// `ax_engine_core::prefill_cohort::default_padded_token_budget` over the
 /// session prefill chunk and the rows cap. `0` disables the cap.
-pub fn batched_prefill_token_budget_override() -> Option<u32> {
+pub(crate) fn batched_prefill_token_budget_override() -> Option<u32> {
     static CACHED: OnceLock<Option<u32>> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_BATCHED_PREFILL_TOKENS")
@@ -251,7 +265,7 @@ pub fn batched_prefill_token_budget_override() -> Option<u32> {
 /// Measure absolute tok/s with the product buffer policy you already ship.
 ///
 /// Measured sweet spot on 35B-A3B AXQ: interval **8** (default remains off).
-pub fn mtp_verify_submit_layer_interval() -> usize {
+pub(crate) fn mtp_verify_submit_layer_interval() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_MTP_VERIFY_SUBMIT_LAYERS")
@@ -333,7 +347,7 @@ pub(crate) fn exact_short_verify_submit_interval(
 
 /// `AX_MLX_BATCHED_PREFILL_ROWS` — cap on rows per batched prefill cohort.
 /// Default 8; `0` disables the cap.
-pub fn batched_prefill_max_rows() -> u32 {
+pub(crate) fn batched_prefill_max_rows() -> u32 {
     static CACHED: OnceLock<u32> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_BATCHED_PREFILL_ROWS")
@@ -352,7 +366,7 @@ env_flag_default_on!(
     /// model still loads.
     ///
     /// **Default: ON** (kill-switch via `AX_MLX_LOAD_KERNEL_WARMUP=0`).
-    load_kernel_warmup_enabled,
+    pub load_kernel_warmup_enabled,
     "AX_MLX_LOAD_KERNEL_WARMUP"
 );
 
@@ -664,7 +678,7 @@ pub(crate) fn scoped_qwen_linear_mtp_exact(enabled: bool) -> QwenLinearMtpExactS
 /// Production runners install a per-model scope. Standalone diagnostic probes
 /// that do not install a scope retain the historical
 /// `AX_MLX_QWEN_LINEAR_MTP_EXACT=1` opt-in behavior.
-pub fn qwen_linear_mtp_exact_enabled() -> bool {
+pub(crate) fn qwen_linear_mtp_exact_enabled() -> bool {
     QWEN_LINEAR_MTP_EXACT_SCOPE.with(|current| {
         current
             .get()
@@ -702,14 +716,14 @@ pub(crate) fn scoped_qwen_linear_mtp_target_verify(
 /// verification now carries it independently so turning row-exact arithmetic
 /// off does not accidentally restore full-history f32 casts, array masks, and
 /// portable GDN preprocessing.
-pub fn qwen_linear_mtp_verify_fast_kernels_enabled() -> bool {
+pub(crate) fn qwen_linear_mtp_verify_fast_kernels_enabled() -> bool {
     qwen_linear_mtp_exact_enabled()
         || QWEN_LINEAR_MTP_TARGET_VERIFY_SCOPE.with(|current| current.get())
 }
 
 /// Whether the current model call is the relaxed Qwen linear-MTP target
 /// verifier rather than ordinary prefill/decode or row-exact replay.
-pub fn qwen_linear_mtp_target_verify_enabled() -> bool {
+pub(crate) fn qwen_linear_mtp_target_verify_enabled() -> bool {
     QWEN_LINEAR_MTP_TARGET_VERIFY_SCOPE.with(|current| current.get())
 }
 
@@ -723,7 +737,7 @@ env_flag!(
 );
 
 /// Relaxed-verifier layer closures. Also engaged by throughput MTP.
-pub fn mtp_target_layer_compile_enabled() -> bool {
+pub(crate) fn mtp_target_layer_compile_enabled() -> bool {
     mtp_target_layer_compile_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -738,12 +752,12 @@ env_flag!(
 );
 
 /// Packed verifier FFN. Also engaged by throughput MTP.
-pub fn mtp_packed_verify_ffn_enabled() -> bool {
+pub(crate) fn mtp_packed_verify_ffn_enabled() -> bool {
     mtp_packed_verify_ffn_env() || qwen_linear_throughput_mtp_enabled()
 }
 
 /// Whether fixed-shape Qwen verifier layer closures may engage.
-pub fn qwen_linear_mtp_layer_compile_enabled() -> bool {
+pub(crate) fn qwen_linear_mtp_layer_compile_enabled() -> bool {
     !qwen_linear_mtp_whole_verify_trace_enabled()
         && (qwen_linear_mtp_exact_enabled()
             || (qwen_linear_mtp_target_verify_enabled() && mtp_target_layer_compile_enabled()))
@@ -836,7 +850,7 @@ pub(crate) fn scoped_flash_next_sticky_fallback(enabled: bool) -> FlashNextStick
 }
 
 /// Whether a blocked Flash Next decode step drops the draft cursor.
-pub fn flash_next_sticky_fallback_enabled() -> bool {
+pub(crate) fn flash_next_sticky_fallback_enabled() -> bool {
     FLASH_NEXT_STICKY_FALLBACK_SCOPE
         .with(Cell::get)
         .unwrap_or_else(flash_next_sticky_fallback_env_enabled)
@@ -864,7 +878,7 @@ env_flag!(
 );
 
 /// Compiled gated-delta verifier layers. Also engaged by throughput MTP.
-pub fn mtp_linear_layer_compile_enabled() -> bool {
+pub(crate) fn mtp_linear_layer_compile_enabled() -> bool {
     mtp_linear_layer_compile_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -893,7 +907,7 @@ pub(crate) fn scoped_qwen_linear_mtp_whole_verify_trace(
 }
 
 /// Whether the current thread is tracing the enclosing whole verifier graph.
-pub fn qwen_linear_mtp_whole_verify_trace_enabled() -> bool {
+pub(crate) fn qwen_linear_mtp_whole_verify_trace_enabled() -> bool {
     QWEN_LINEAR_MTP_WHOLE_VERIFY_TRACE_SCOPE.with(|current| current.get())
 }
 
@@ -922,7 +936,7 @@ pub(crate) fn scoped_qwen_linear_mtp_relaxed_session(
 }
 
 /// Whether the current runner call belongs to a relaxed Qwen MTP request.
-pub fn qwen_linear_mtp_relaxed_session_enabled() -> bool {
+pub(crate) fn qwen_linear_mtp_relaxed_session_enabled() -> bool {
     QWEN_LINEAR_MTP_RELAXED_SESSION_SCOPE.with(|current| current.get())
 }
 
@@ -938,7 +952,7 @@ env_flag_default_on!(
 );
 
 /// Whether one short Qwen MTP FFN should co-submit gate/up qmm.
-pub fn should_mtp_async_dual_gate_up(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_mtp_async_dual_gate_up(model_family: &str, seq: i32) -> bool {
     should_mtp_async_dual_gate_up_for(
         mtp_async_dual_gate_up_enabled(),
         qwen_linear_mtp_relaxed_session_enabled(),
@@ -948,7 +962,7 @@ pub fn should_mtp_async_dual_gate_up(model_family: &str, seq: i32) -> bool {
 }
 
 /// Pure helper for [`should_mtp_async_dual_gate_up`].
-pub fn should_mtp_async_dual_gate_up_for(
+pub(crate) fn should_mtp_async_dual_gate_up_for(
     enabled: bool,
     relaxed_session: bool,
     model_family: &str,
@@ -977,12 +991,12 @@ env_flag_default_on!(
 /// Recurrent Qwen MTP draft width used when the pack sidecar publishes
 /// `mtp_depth_max=1` but the head is applied recurrently. Matches the
 /// existing exact-verifier window (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS`).
-pub const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH: usize = 3;
+pub(crate) const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH: usize = 3;
 
 /// Widest configurable throughput draft width: the verify QMM epilogue
 /// writes `4 * rows` accumulators from one 32-lane simdgroup, so the verify
 /// window (`depth + 1` rows) must stay at or below 8.
-pub const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH_MAX: usize = 7;
+pub(crate) const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH_MAX: usize = 7;
 
 /// Recurrent Qwen MTP draft width under the throughput profile.
 ///
@@ -990,13 +1004,13 @@ pub const QWEN_LINEAR_THROUGHPUT_MTP_DEPTH_MAX: usize = 7;
 /// [`QWEN_LINEAR_THROUGHPUT_MTP_DEPTH`]. Widths beyond 3 are experimental:
 /// the projected-replay rollback, the committed-fold async draft and every
 /// fixed-shape verify fusion follow the configured width through
-/// [`qwen_linear_mtp_max_verify_drafts`] / [`qwen_linear_mtp_verify_seq_window`],
+/// [`qwen_linear_mtp_max_verify_drafts`],
 /// the verifier still decides every token (MTP-S), and the depth-3
 /// controllers stay off. Measured 2026-09-22 on the M5 Max 6bit-MTP pack at
 /// depth 4: flappy 82.7 -> 90.5 tok/s with 7 of 8 greedy streams identical to
 /// depth 3 (one near-tie flip under the relaxed S=5 arithmetic). Invalid or
 /// out-of-range values keep the default; changes no default.
-pub fn qwen_linear_throughput_mtp_depth() -> usize {
+pub(crate) fn qwen_linear_throughput_mtp_depth() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH")
@@ -1010,7 +1024,7 @@ pub fn qwen_linear_throughput_mtp_depth() -> usize {
 /// Drafts the projected-replay / lazy-checkpoint verifier path serves: the
 /// certified 3 (`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS`) or the configured
 /// throughput width when it is wider.
-pub fn qwen_linear_mtp_max_verify_drafts() -> usize {
+pub(crate) fn qwen_linear_mtp_max_verify_drafts() -> usize {
     qwen_linear_mtp_max_verify_drafts_for(
         qwen_linear_throughput_mtp_enabled(),
         qwen_linear_throughput_mtp_depth(),
@@ -1021,7 +1035,7 @@ pub fn qwen_linear_mtp_max_verify_drafts() -> usize {
 /// follows the configured depth under the throughput profile: the exact
 /// (non-throughput) profile keeps its certified S=2..4 window whatever the
 /// process environment says.
-pub const fn qwen_linear_mtp_max_verify_drafts_for(
+pub(crate) const fn qwen_linear_mtp_max_verify_drafts_for(
     throughput_enabled: bool,
     throughput_depth: usize,
 ) -> usize {
@@ -1033,10 +1047,10 @@ pub const fn qwen_linear_mtp_max_verify_drafts_for(
 }
 
 /// Certified verifier width in drafts (three drafts plus the committed token).
-pub const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED: usize = 3;
+pub(crate) const QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED: usize = 3;
 
 /// Widest verify sequence (drafts + 1) the fixed-shape verify paths accept.
-pub fn qwen_linear_mtp_max_verify_seq() -> i32 {
+pub(crate) fn qwen_linear_mtp_max_verify_seq() -> i32 {
     qwen_linear_mtp_max_verify_seq_for(
         qwen_linear_throughput_mtp_enabled(),
         qwen_linear_throughput_mtp_depth(),
@@ -1044,21 +1058,15 @@ pub fn qwen_linear_mtp_max_verify_seq() -> i32 {
 }
 
 /// Pure helper for [`qwen_linear_mtp_max_verify_seq`].
-pub const fn qwen_linear_mtp_max_verify_seq_for(
+pub(crate) const fn qwen_linear_mtp_max_verify_seq_for(
     throughput_enabled: bool,
     throughput_depth: usize,
 ) -> i32 {
     qwen_linear_mtp_max_verify_drafts_for(throughput_enabled, throughput_depth) as i32 + 1
 }
 
-/// `2..=max_verify_seq`: the multi-token verify shapes the fixed-shape
-/// fusions, packed projections and compiled verify closures serve.
-pub fn qwen_linear_mtp_verify_seq_window() -> std::ops::RangeInclusive<i32> {
-    2..=qwen_linear_mtp_max_verify_seq()
-}
-
 /// Whether `seq` (any integer width) is a multi-token verify shape.
-pub fn qwen_linear_mtp_verify_seq_contains(seq: i64) -> bool {
+pub(crate) fn qwen_linear_mtp_verify_seq_contains(seq: i64) -> bool {
     (2..=i64::from(qwen_linear_mtp_max_verify_seq())).contains(&seq)
 }
 
@@ -1066,7 +1074,7 @@ pub fn qwen_linear_mtp_verify_seq_contains(seq: i64) -> bool {
 /// predicate `qwen_linear_attention_direct_cpp_default_family` uses). The
 /// widened verify window under `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH` only
 /// applies to these families; every other family keeps the certified width.
-pub fn qwen_linear_throughput_family(model_family: &str) -> bool {
+pub(crate) fn qwen_linear_throughput_family(model_family: &str) -> bool {
     matches!(model_family, "qwen3_5" | "qwen3_next")
 }
 
@@ -1076,7 +1084,7 @@ pub fn qwen_linear_throughput_family(model_family: &str) -> bool {
 /// [`QWEN_LINEAR_EXACT_MAX_VERIFY_DRAFTS_CERTIFIED`] whatever the configured
 /// throughput depth says, so a widened `AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH`
 /// cannot widen a Gemma (or any non-Qwen-linear) model's verify window.
-pub const fn qwen_linear_mtp_max_verify_drafts_for_family(
+pub(crate) const fn qwen_linear_mtp_max_verify_drafts_for_family(
     throughput_enabled: bool,
     throughput_depth: usize,
     throughput_family: bool,
@@ -1089,7 +1097,7 @@ pub const fn qwen_linear_mtp_max_verify_drafts_for_family(
 }
 
 /// Pure helper: widest verify sequence (drafts + 1) for one model family.
-pub const fn qwen_linear_mtp_max_verify_seq_for_family(
+pub(crate) const fn qwen_linear_mtp_max_verify_seq_for_family(
     throughput_enabled: bool,
     throughput_depth: usize,
     throughput_family: bool,
@@ -1104,7 +1112,7 @@ pub const fn qwen_linear_mtp_max_verify_seq_for_family(
 
 /// Whether `seq` is a multi-token verify shape for one model family (family-
 /// scoped [`qwen_linear_mtp_verify_seq_contains`]).
-pub fn qwen_linear_mtp_verify_seq_contains_for_family(
+pub(crate) fn qwen_linear_mtp_verify_seq_contains_for_family(
     seq: i64,
     throughput_enabled: bool,
     throughput_depth: usize,
@@ -1140,7 +1148,7 @@ env_flag!(
 );
 
 /// Projected-replay rollback for Qwen linear MTP.
-pub fn mtp_linear_projected_replay_enabled() -> bool {
+pub(crate) fn mtp_linear_projected_replay_enabled() -> bool {
     mtp_linear_projected_replay_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1153,7 +1161,7 @@ env_flag!(
 );
 
 /// Stock-arithmetic Qwen linear MTP target verifier.
-pub fn mtp_relaxed_target_verify_enabled() -> bool {
+pub(crate) fn mtp_relaxed_target_verify_enabled() -> bool {
     mtp_relaxed_target_verify_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1166,7 +1174,7 @@ env_flag!(
 );
 
 /// Split hidden/LM-head eval. Also engaged by throughput MTP.
-pub fn mtp_split_verify_hidden_eval_enabled() -> bool {
+pub(crate) fn mtp_split_verify_hidden_eval_enabled() -> bool {
     mtp_split_verify_hidden_eval_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1178,7 +1186,7 @@ env_flag!(
 );
 
 /// Lazy adopt of relaxed verifier cache. Also engaged by throughput MTP.
-pub fn mtp_lazy_adopt_state_enabled() -> bool {
+pub(crate) fn mtp_lazy_adopt_state_enabled() -> bool {
     mtp_lazy_adopt_state_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1220,7 +1228,7 @@ env_flag!(
 
 /// Linear-attention tape capture. Kept env-only: it disables the fused GDN
 /// verifier, which is the throughput-MTP default.
-pub fn mtp_linear_tape_capture_enabled() -> bool {
+pub(crate) fn mtp_linear_tape_capture_enabled() -> bool {
     mtp_linear_tape_capture_env()
 }
 
@@ -1246,7 +1254,7 @@ env_flag!(
 );
 
 /// Reuse processed GDN rows on rollback. Also engaged by throughput MTP.
-pub fn mtp_reuse_processed_gdn_enabled() -> bool {
+pub(crate) fn mtp_reuse_processed_gdn_enabled() -> bool {
     mtp_reuse_processed_gdn_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1269,7 +1277,7 @@ env_flag!(
 );
 
 /// Fused GDN verifier. Also engaged by throughput MTP.
-pub fn mtp_fused_gated_delta_verify_enabled() -> bool {
+pub(crate) fn mtp_fused_gated_delta_verify_enabled() -> bool {
     mtp_fused_gated_delta_verify_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1283,7 +1291,7 @@ env_flag!(
 );
 
 /// Rebuild MTP-head KV from target hidden rows. Also engaged by throughput MTP.
-pub fn mtp_refold_accepted_history_enabled() -> bool {
+pub(crate) fn mtp_refold_accepted_history_enabled() -> bool {
     mtp_refold_accepted_history_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1299,7 +1307,7 @@ env_flag!(
 );
 
 /// Batched committed-history MTP fold. Also engaged by throughput MTP.
-pub fn mtp_batched_committed_fold_enabled() -> bool {
+pub(crate) fn mtp_batched_committed_fold_enabled() -> bool {
     mtp_batched_committed_fold_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1313,7 +1321,7 @@ env_flag!(
 );
 
 /// Last-row query during committed-history fold. Also engaged by throughput MTP.
-pub fn mtp_last_committed_query_enabled() -> bool {
+pub(crate) fn mtp_last_committed_query_enabled() -> bool {
     mtp_last_committed_query_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1330,7 +1338,7 @@ pub fn mtp_last_committed_query_enabled() -> bool {
 /// the narrowed scope is a new configuration whose token stream may differ
 /// from the fully de-fused one — the verify/replay correctness mode is
 /// unaffected.
-pub fn qwen_linear_mtp_exact_for_seq(seq: i32) -> bool {
+pub(crate) fn qwen_linear_mtp_exact_for_seq(seq: i32) -> bool {
     qwen_linear_mtp_exact_enabled() && seq <= qwen_linear_mtp_max_verify_seq()
 }
 
@@ -1343,7 +1351,7 @@ pub fn qwen_linear_mtp_exact_for_seq(seq: i32) -> bool {
 /// Does not eval `hidden`, residual, or the portable gate output — those
 /// grouping changes reproduced factory trial-2 `f4b5490d`.
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn should_exact_verify_async_kernel_boundary(seq: i32) -> bool {
+pub(crate) fn should_exact_verify_async_kernel_boundary(seq: i32) -> bool {
     qwen_linear_mtp_exact_enabled() && qwen_linear_mtp_verify_seq_contains(seq as i64)
 }
 
@@ -1428,7 +1436,7 @@ env_flag_default_on!(
 /// accepts only `3` or `4`, and any other value falls back to the default.
 /// The explicit `AX_MLX_MTP_DRAFT_LM_HEAD_BITS`/`_GROUP_SIZE` override and the
 /// runtime spec still take precedence over this fallback.
-pub fn mtp_dense_head_draft_bits() -> i32 {
+pub(crate) fn mtp_dense_head_draft_bits() -> i32 {
     static CACHED: OnceLock<i32> = OnceLock::new();
     *CACHED.get_or_init(|| {
         mtp_dense_head_draft_bits_for(
@@ -1442,7 +1450,7 @@ pub fn mtp_dense_head_draft_bits() -> i32 {
 /// Pure parser for `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS`: `3` or `4`, defaulting
 /// to 3 for any other (including unset) value. Kept side-effect free so it can
 /// be unit-tested without touching the process environment.
-pub fn mtp_dense_head_draft_bits_for(raw: Option<&str>) -> i32 {
+pub(crate) fn mtp_dense_head_draft_bits_for(raw: Option<&str>) -> i32 {
     match raw.map(str::trim) {
         Some("3") => 3,
         Some("4") => 4,
@@ -1507,7 +1515,7 @@ env_flag!(
 );
 
 /// Overlap greedy MTP draft with host work. Also engaged by throughput MTP.
-pub fn mtp_async_draft_enabled() -> bool {
+pub(crate) fn mtp_async_draft_enabled() -> bool {
     mtp_async_draft_env() || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -1611,7 +1619,7 @@ env_flag!(
 
 /// Whether Qwen generate prefill should fuse post-FFN add into the next
 /// linear layer's attn RMSNorm.
-pub fn should_qwen_prefill_interlayer_add_rms(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_interlayer_add_rms(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_interlayer_add_rms_for(
         qwen_prefill_interlayer_add_rms_enabled(),
         model_family,
@@ -1620,7 +1628,7 @@ pub fn should_qwen_prefill_interlayer_add_rms(model_family: &str, seq: i32) -> b
 }
 
 /// Pure helper for [`should_qwen_prefill_interlayer_add_rms`].
-pub fn should_qwen_prefill_interlayer_add_rms_for(
+pub(crate) fn should_qwen_prefill_interlayer_add_rms_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -1634,7 +1642,7 @@ pub fn should_qwen_prefill_interlayer_add_rms_for(
 }
 
 /// Whether this linear layer should stash raw FFN for the next linear layer.
-pub fn should_defer_qwen_prefill_ffn_residual(
+pub(crate) fn should_defer_qwen_prefill_ffn_residual(
     model_family: &str,
     seq: i32,
     layer_idx: usize,
@@ -1650,7 +1658,7 @@ pub fn should_defer_qwen_prefill_ffn_residual(
 }
 
 /// Pure helper for [`should_defer_qwen_prefill_ffn_residual`].
-pub fn should_defer_qwen_prefill_ffn_residual_for(
+pub(crate) fn should_defer_qwen_prefill_ffn_residual_for(
     interlayer_enabled: bool,
     next_is_linear: bool,
     skip_post_attention_ffn: bool,
@@ -1660,7 +1668,7 @@ pub fn should_defer_qwen_prefill_ffn_residual_for(
 }
 
 /// Families whose full-attn prefill can use the fused causal chain.
-pub fn fused_prefill_attention_family_supported(model_family: &str) -> bool {
+pub(crate) fn fused_prefill_attention_family_supported(model_family: &str) -> bool {
     matches!(
         model_family,
         "gemma4" | "gemma4_vl" | "gemma3" | "qwen3_5" | "qwen3_next"
@@ -1680,7 +1688,7 @@ env_flag_default_on!(
 );
 
 /// Whether Gemma 4 contract p128 should attempt fused causal prefill attention.
-pub fn should_gemma4_fused_prefill_p128(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_fused_prefill_p128(model_family: &str, seq: i32) -> bool {
     should_gemma4_fused_prefill_p128_for(
         gemma4_fused_prefill_attention_p128_enabled(),
         model_family,
@@ -1689,7 +1697,11 @@ pub fn should_gemma4_fused_prefill_p128(model_family: &str, seq: i32) -> bool {
 }
 
 /// Pure helper for [`should_gemma4_fused_prefill_p128`].
-pub fn should_gemma4_fused_prefill_p128_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_fused_prefill_p128_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq == 128
         && matches!(
@@ -1700,7 +1712,7 @@ pub fn should_gemma4_fused_prefill_p128_for(enabled: bool, model_family: &str, s
 
 /// Fold Gemma sandwich `post_attention_layernorm` into the fused p128 C++
 /// call so the first-KV layer does not pay a second RMS FFI after o-proj.
-pub fn should_gemma4_fused_prefill_fold_post_norm(
+pub(crate) fn should_gemma4_fused_prefill_fold_post_norm(
     model_family: &str,
     seq: i32,
     has_post_norm: bool,
@@ -1714,7 +1726,7 @@ pub fn should_gemma4_fused_prefill_fold_post_norm(
 }
 
 /// Pure helper for [`should_gemma4_fused_prefill_fold_post_norm`].
-pub fn should_gemma4_fused_prefill_fold_post_norm_for(
+pub(crate) fn should_gemma4_fused_prefill_fold_post_norm_for(
     fused_p128_enabled: bool,
     model_family: &str,
     seq: i32,
@@ -1723,16 +1735,8 @@ pub fn should_gemma4_fused_prefill_fold_post_norm_for(
     has_post_norm && should_gemma4_fused_prefill_p128_for(fused_p128_enabled, model_family, seq)
 }
 
-/// Whether this family should attempt fused causal prefill attention.
-/// Qwen stays on its default-OFF flag. Gemma contract p128 uses
-/// [`should_gemma4_fused_prefill_p128`]; other Gemma shapes keep the global
-/// default-OFF probe.
-pub fn fused_prefill_attention_should_try(model_family: &str) -> bool {
-    fused_prefill_attention_should_try_for_seq(model_family, 0)
-}
-
 /// Sequence-aware entry used by the shipped layer forward.
-pub fn fused_prefill_attention_should_try_for_seq(model_family: &str, seq: i32) -> bool {
+pub(crate) fn fused_prefill_attention_should_try_for_seq(model_family: &str, seq: i32) -> bool {
     if !fused_prefill_attention_family_supported(model_family) {
         return false;
     }
@@ -1747,7 +1751,7 @@ pub fn fused_prefill_attention_should_try_for_seq(model_family: &str, seq: i32) 
 
 /// Qwen p2048's second 1024-token chunk crashed the offset fused
 /// `qkv_rope_split` + `sdpa_oproj` pair. Offset-0 one-shot fuse stays on.
-pub fn fused_prefill_qwen_skip_offset(model_family: &str, offset_chunk: bool) -> bool {
+pub(crate) fn fused_prefill_qwen_skip_offset(model_family: &str, offset_chunk: bool) -> bool {
     model_family.starts_with("qwen") && offset_chunk
 }
 
@@ -1763,7 +1767,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should omit the SDPA mask on a linear-attn layer.
-pub fn should_skip_linear_prefill_mask(model_family: &str, is_linear_layer: bool) -> bool {
+pub(crate) fn should_skip_linear_prefill_mask(model_family: &str, is_linear_layer: bool) -> bool {
     should_skip_linear_prefill_mask_for(
         qwen_skip_linear_prefill_mask_enabled(),
         model_family,
@@ -1772,7 +1776,7 @@ pub fn should_skip_linear_prefill_mask(model_family: &str, is_linear_layer: bool
 }
 
 /// Pure helper for [`should_skip_linear_prefill_mask`].
-pub fn should_skip_linear_prefill_mask_for(
+pub(crate) fn should_skip_linear_prefill_mask_for(
     enabled: bool,
     model_family: &str,
     is_linear_layer: bool,
@@ -1796,7 +1800,7 @@ env_flag!(
 );
 
 /// Whether an intermediate Qwen cache-only chunk should eval KV refs only.
-pub fn should_qwen_prefill_eval_kv_only(
+pub(crate) fn should_qwen_prefill_eval_kv_only(
     model_family: &str,
     is_final_chunk: bool,
     total_tokens: usize,
@@ -1810,7 +1814,7 @@ pub fn should_qwen_prefill_eval_kv_only(
 }
 
 /// Pure helper for [`should_qwen_prefill_eval_kv_only`].
-pub fn should_qwen_prefill_eval_kv_only_for(
+pub(crate) fn should_qwen_prefill_eval_kv_only_for(
     enabled: bool,
     model_family: &str,
     is_final_chunk: bool,
@@ -1840,12 +1844,12 @@ env_flag_default_on!(
 );
 
 /// Whether a fresh-layer first write should store the prompt-sized buffer.
-pub fn should_exact_size_first_kv(write_start: usize) -> bool {
+pub(crate) fn should_exact_size_first_kv(write_start: usize) -> bool {
     should_exact_size_first_kv_for(exact_size_first_kv_enabled(), write_start)
 }
 
 /// Pure helper for [`should_exact_size_first_kv`].
-pub fn should_exact_size_first_kv_for(enabled: bool, write_start: usize) -> bool {
+pub(crate) fn should_exact_size_first_kv_for(enabled: bool, write_start: usize) -> bool {
     enabled && write_start == 0
 }
 
@@ -1863,7 +1867,7 @@ env_flag!(
 );
 
 /// Whether a capacity-tight aligned grow should concatenate instead of zeros.
-pub fn should_exact_size_kv_grow(
+pub(crate) fn should_exact_size_kv_grow(
     write_start: usize,
     old_capacity: usize,
     write_end: usize,
@@ -1879,7 +1883,7 @@ pub fn should_exact_size_kv_grow(
 }
 
 /// Pure helper for [`should_exact_size_kv_grow`].
-pub fn should_exact_size_kv_grow_for(
+pub(crate) fn should_exact_size_kv_grow_for(
     enabled: bool,
     write_start: usize,
     old_capacity: usize,
@@ -1902,7 +1906,7 @@ env_flag!(
 );
 
 /// Whether a full-buffer FA view can skip the identity slice.
-pub fn should_skip_unused_full_kv_view_slice(
+pub(crate) fn should_skip_unused_full_kv_view_slice(
     view_start: usize,
     write_end: usize,
     capacity: usize,
@@ -1916,7 +1920,7 @@ pub fn should_skip_unused_full_kv_view_slice(
 }
 
 /// Pure helper for [`should_skip_unused_full_kv_view_slice`].
-pub fn should_skip_unused_full_kv_view_slice_for(
+pub(crate) fn should_skip_unused_full_kv_view_slice_for(
     enabled: bool,
     view_start: usize,
     write_end: usize,
@@ -1938,7 +1942,7 @@ env_flag!(
 );
 
 /// Whether LA `out_proj` can take `hidden` without a reshape.
-pub fn should_skip_unused_la_out_reshape(shape: &[i32], seq: i32, value_dim: i32) -> bool {
+pub(crate) fn should_skip_unused_la_out_reshape(shape: &[i32], seq: i32, value_dim: i32) -> bool {
     should_skip_unused_la_out_reshape_for(
         qwen_skip_unused_la_out_reshape_enabled(),
         shape,
@@ -1948,7 +1952,7 @@ pub fn should_skip_unused_la_out_reshape(shape: &[i32], seq: i32, value_dim: i32
 }
 
 /// Pure helper for [`should_skip_unused_la_out_reshape`].
-pub fn should_skip_unused_la_out_reshape_for(
+pub(crate) fn should_skip_unused_la_out_reshape_for(
     enabled: bool,
     shape: &[i32],
     seq: i32,
@@ -1972,12 +1976,12 @@ env_flag!(
 );
 
 /// Whether the initial recurrent state should reuse a zeros template.
-pub fn should_reuse_la_initial_state_zeros() -> bool {
+pub(crate) fn should_reuse_la_initial_state_zeros() -> bool {
     should_reuse_la_initial_state_zeros_for(qwen_la_reuse_initial_state_zeros_enabled())
 }
 
 /// Pure helper for [`should_reuse_la_initial_state_zeros`].
-pub fn should_reuse_la_initial_state_zeros_for(enabled: bool) -> bool {
+pub(crate) fn should_reuse_la_initial_state_zeros_for(enabled: bool) -> bool {
     enabled
 }
 
@@ -1997,7 +2001,7 @@ env_flag!(
 /// `AX_MLX_PREFILL_TIME_DEBUG=1` — shared gate for prefill timing/engagement
 /// diagnostics printed to stderr (see also the per-chunk build/eval split in
 /// `generate.rs`). Diagnostic only.
-pub fn prefill_time_debug_env() -> bool {
+pub(crate) fn prefill_time_debug_env() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| parse_bool_env("AX_MLX_PREFILL_TIME_DEBUG"))
 }
@@ -2030,7 +2034,7 @@ pub fn set_sibling_prefill_rotation(enabled: bool) {
 /// (and `=1|on|true` forces it on) regardless of the server hook, so
 /// A/B teardowns can isolate ring-rotated prefill storage. Unset keeps
 /// the hint-driven behavior unchanged.
-pub fn sibling_prefill_rotation() -> bool {
+pub(crate) fn sibling_prefill_rotation() -> bool {
     static OVERRIDE: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
     match OVERRIDE.get_or_init(|| {
         std::env::var("AX_MLX_SIBLING_PREFILL_ROTATION")
@@ -2058,7 +2062,7 @@ env_flag_default_on!(
     /// bounded window-sized backing store instead of a full-context buffer plus
     /// retained-window slice views. The runner only enables this for direct
     /// greedy decode, where no n-gram rollback or sampling replay is required.
-    rotating_sliding_decode_enabled,
+    pub rotating_sliding_decode_enabled,
     "AX_MLX_ROTATING_SLIDING_DECODE"
 );
 
@@ -2103,27 +2107,6 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
-    /// `AX_MLX_ROTATING_BOUNDED_MTP` — allow Gemma4 assistant-MTP requests
-    /// onto bounded-rollback rotating rings.
-    ///
-    /// **Default: ON** (kill-switch via `AX_MLX_ROTATING_BOUNDED_MTP=0`);
-    /// nested under `AX_MLX_ROTATING_BOUNDED_ROLLBACK` and
-    /// `AX_MLX_ROTATING_SLIDING_DECODE`.
-    ///
-    /// The assistant's verify rollback is a `state.cache.trim_to` bounded by
-    /// the pending draft (assistant depth + any stacked n-gram tokens), so
-    /// the request latches a widened slack of
-    /// `max(8, mtp_max_depth + MAX_DRAFT_LEN + 1)`. The drafter reads target
-    /// sliding K/V through `peek_layer_kv`, which returns the full ring with
-    /// a slot-validity mask once rotated. With this OFF, assistant-MTP
-    /// requests keep O(context) sliding buffers (the pre-extension
-    /// behavior); qwen/GLM MTP heads remain ring-excluded regardless (their
-    /// models have no sliding windows).
-    rotating_bounded_mtp_enabled,
-    "AX_MLX_ROTATING_BOUNDED_MTP"
-);
-
-env_flag_default_on!(
     /// `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS` — present sliding-window layers with a
     /// `window + seq - 1` retained K/V view on multi-token forwards (chunked
     /// prefill continuation chunks, n-gram verify, assistant-MTP verify)
@@ -2153,7 +2136,7 @@ env_flag_default_on!(
 /// Controlled by `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS` (default ON). Pure-direct
 /// rings and multi-token `window + seq - 1` views share geometry, so no
 /// request-local override is required for Gemma assistant-MTP exactness.
-pub fn multi_token_window_views_enabled() -> bool {
+pub(crate) fn multi_token_window_views_enabled() -> bool {
     multi_token_window_views_enabled_env()
 }
 
@@ -2233,7 +2216,7 @@ env_flag_default_on!(
 );
 
 /// Whether Gemma 4 contract prefill should skip the unused f32 SDPA upcast.
-pub fn should_gemma4_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) -> bool {
     should_gemma4_prefill_skip_unused_f32_sdpa_for(
         gemma4_prefill_skip_unused_f32_sdpa_enabled(),
         model_family,
@@ -2242,7 +2225,7 @@ pub fn should_gemma4_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) 
 }
 
 /// Pure helper for [`should_gemma4_prefill_skip_unused_f32_sdpa`].
-pub fn should_gemma4_prefill_skip_unused_f32_sdpa_for(
+pub(crate) fn should_gemma4_prefill_skip_unused_f32_sdpa_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -2296,7 +2279,7 @@ env_flag!(
 );
 
 /// Whether Gemma 4 last-only prefill should skip unused packed prefill FFN.
-pub fn should_gemma4_prefill_skip_unused_last_ffn_packed(
+pub(crate) fn should_gemma4_prefill_skip_unused_last_ffn_packed(
     model_family: &str,
     last_position_only: bool,
     seq: i32,
@@ -2310,7 +2293,7 @@ pub fn should_gemma4_prefill_skip_unused_last_ffn_packed(
 }
 
 /// Pure helper for [`should_gemma4_prefill_skip_unused_last_ffn_packed`].
-pub fn should_gemma4_prefill_skip_unused_last_ffn_packed_for(
+pub(crate) fn should_gemma4_prefill_skip_unused_last_ffn_packed_for(
     enabled: bool,
     model_family: &str,
     last_position_only: bool,
@@ -2326,7 +2309,7 @@ pub fn should_gemma4_prefill_skip_unused_last_ffn_packed_for(
 }
 
 /// Whether Gemma 4 last-only prefill should skip unused prefix residual add.
-pub fn should_gemma4_prefill_skip_unused_last_residual(
+pub(crate) fn should_gemma4_prefill_skip_unused_last_residual(
     model_family: &str,
     last_position_only: bool,
     seq: i32,
@@ -2340,7 +2323,7 @@ pub fn should_gemma4_prefill_skip_unused_last_residual(
 }
 
 /// Pure helper for [`should_gemma4_prefill_skip_unused_last_residual`].
-pub fn should_gemma4_prefill_skip_unused_last_residual_for(
+pub(crate) fn should_gemma4_prefill_skip_unused_last_residual_for(
     enabled: bool,
     model_family: &str,
     last_position_only: bool,
@@ -2369,12 +2352,16 @@ env_flag_default_on!(
 );
 
 /// Whether Gemma 4 contract prefill should dequant embeddings to BF16.
-pub fn should_gemma4_prefill_bf16_embed(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_prefill_bf16_embed(model_family: &str, seq: i32) -> bool {
     should_gemma4_prefill_bf16_embed_for(gemma4_prefill_bf16_embed_enabled(), model_family, seq)
 }
 
 /// Pure helper for [`should_gemma4_prefill_bf16_embed`].
-pub fn should_gemma4_prefill_bf16_embed_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_prefill_bf16_embed_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq >= 128
         && matches!(
@@ -2384,7 +2371,7 @@ pub fn should_gemma4_prefill_bf16_embed_for(enabled: bool, model_family: &str, s
 }
 
 /// Whether Gemma 4 contract prefill should skip the unused embed-id clip.
-pub fn should_gemma4_prefill_skip_unused_embed_clip(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_prefill_skip_unused_embed_clip(model_family: &str, seq: i32) -> bool {
     should_gemma4_prefill_skip_unused_embed_clip_for(
         gemma4_prefill_skip_unused_embed_clip_enabled(),
         model_family,
@@ -2393,7 +2380,7 @@ pub fn should_gemma4_prefill_skip_unused_embed_clip(model_family: &str, seq: i32
 }
 
 /// Pure helper for [`should_gemma4_prefill_skip_unused_embed_clip`].
-pub fn should_gemma4_prefill_skip_unused_embed_clip_for(
+pub(crate) fn should_gemma4_prefill_skip_unused_embed_clip_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -2421,7 +2408,7 @@ env_flag_default_on!(
 );
 
 /// Whether Gemma 4 contract prefill should skip the unused layer-mask hoist.
-pub fn should_gemma4_prefill_skip_unused_layer_masks(
+pub(crate) fn should_gemma4_prefill_skip_unused_layer_masks(
     model_family: &str,
     seq: i32,
     key_len: usize,
@@ -2439,7 +2426,7 @@ pub fn should_gemma4_prefill_skip_unused_layer_masks(
 }
 
 /// Pure helper for [`should_gemma4_prefill_skip_unused_layer_masks`].
-pub fn should_gemma4_prefill_skip_unused_layer_masks_for(
+pub(crate) fn should_gemma4_prefill_skip_unused_layer_masks_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -2494,7 +2481,7 @@ env_flag!(
 );
 
 /// Whether Gemma 4 last-only p128 should skip unused prefix Q / SDPA / o_proj.
-pub fn should_gemma4_prefill_last_query_p128(
+pub(crate) fn should_gemma4_prefill_last_query_p128(
     model_family: &str,
     last_position_only: bool,
     seq: i32,
@@ -2508,7 +2495,7 @@ pub fn should_gemma4_prefill_last_query_p128(
 }
 
 /// Pure helper for [`should_gemma4_prefill_last_query_p128`].
-pub fn should_gemma4_prefill_last_query_p128_for(
+pub(crate) fn should_gemma4_prefill_last_query_p128_for(
     enabled: bool,
     model_family: &str,
     last_position_only: bool,
@@ -2524,7 +2511,7 @@ pub fn should_gemma4_prefill_last_query_p128_for(
 }
 
 /// Whether Gemma 4 contract p128 should submit a per-layer pipeline hint.
-pub fn should_gemma4_prefill_pipeline_hint_p128(
+pub(crate) fn should_gemma4_prefill_pipeline_hint_p128(
     model_family: &str,
     seq: usize,
     layer_idx: usize,
@@ -2540,7 +2527,7 @@ pub fn should_gemma4_prefill_pipeline_hint_p128(
 }
 
 /// Pure helper for [`should_gemma4_prefill_pipeline_hint_p128`].
-pub fn should_gemma4_prefill_pipeline_hint_p128_for(
+pub(crate) fn should_gemma4_prefill_pipeline_hint_p128_for(
     enabled: bool,
     model_family: &str,
     seq: usize,
@@ -2631,7 +2618,7 @@ fn dense_long_mt_bf16_fold_enabled_for(
         })
 }
 
-pub fn dense_long_mt_bf16_fold_enabled() -> bool {
+pub(crate) fn dense_long_mt_bf16_fold_enabled() -> bool {
     dense_long_mt_bf16_fold_enabled_for(
         dense_long_mt_bf16_fold_enabled_env(),
         DENSE_LONG_MT_LAYER_SCOPE.with(Cell::get),
@@ -2727,16 +2714,7 @@ env_flag_default_on!(
 );
 
 /// Whether Gemma 4 contract p128 should fuse attn RMSNorm into packed QKV.
-pub fn should_gemma4_attn_norm_qkv_fuse_p128(model_family: &str, seq: i32) -> bool {
-    should_gemma4_attn_norm_qkv_fuse_p128_for(
-        gemma4_attn_norm_qkv_fuse_p128_enabled(),
-        model_family,
-        seq,
-    )
-}
-
-/// Pure helper for [`should_gemma4_attn_norm_qkv_fuse_p128`].
-pub fn should_gemma4_attn_norm_qkv_fuse_p128_for(
+pub(crate) fn should_gemma4_attn_norm_qkv_fuse_p128_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -2750,7 +2728,7 @@ pub fn should_gemma4_attn_norm_qkv_fuse_p128_for(
 }
 
 /// Whether this family should fuse attn RMSNorm into packed QKV qmm.
-pub fn should_attn_norm_qkv_fuse(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_attn_norm_qkv_fuse(model_family: &str, seq: i32) -> bool {
     should_attn_norm_qkv_fuse_for(
         qwen_attn_norm_qkv_fuse_enabled(),
         attn_norm_qkv_fuse_enabled(),
@@ -2761,7 +2739,7 @@ pub fn should_attn_norm_qkv_fuse(model_family: &str, seq: i32) -> bool {
 }
 
 /// Pure helper for [`should_attn_norm_qkv_fuse`].
-pub fn should_attn_norm_qkv_fuse_for(
+pub(crate) fn should_attn_norm_qkv_fuse_for(
     qwen_enabled: bool,
     global_enabled: bool,
     gemma4_p128_enabled: bool,
@@ -2779,7 +2757,7 @@ pub fn should_attn_norm_qkv_fuse_for(
 
 /// Whether the fused rms+QKV call will run. Exact / moe-mt identity skip
 /// the fuse and still need a standalone `attn_norm`.
-pub fn should_call_attn_norm_qkv_fuse(
+pub(crate) fn should_call_attn_norm_qkv_fuse(
     family_enabled: bool,
     packed_qkv: bool,
     has_kv_source: bool,
@@ -2804,50 +2782,6 @@ env_flag!(
     dual_qmm_geglu_enabled,
     "AX_MLX_DUAL_QMM_GEGLU"
 );
-
-env_flag!(
-    /// `AX_MLX_COMPILED_GEGLU_ACTIVATION` — use mlxcel's process-static
-    /// `mx::compile(shapeless=true)` GEGLU activation
-    /// (`compiled_geglu_approx_activation` in mlx_cxx_bridge.cpp; gemma4.rs
-    /// multi-token bits=8 FFN after dual qmm).
-    ///
-    /// **Default: OFF** (opt-in pure A/B). Production stays Metal GEGLU
-    /// (`AX_MLX_GEGLU_MUL_METAL`) until pure wall under cache_eval proves a
-    /// stable cut. When ON, takes precedence over Metal in `geglu()`.
-    compiled_geglu_activation_enabled,
-    "AX_MLX_COMPILED_GEGLU_ACTIVATION"
-);
-
-env_flag!(
-    /// `AX_MLX_COMPILED_QGELU_AXQ_P128` — shape-compile the split affine
-    /// GeGLU MLP (gate + up + gelu + down) for AXQ 4-bit (`group_size != 64`)
-    /// contract p128. Community 4-bit gs=64 already uses mlxcel #680 shapeless
-    /// compile; AXQ root 4/32 used to fall through to portable dual qmm.
-    /// Shape-specific (not shapeless) so prefill qmm is not the decode kernel
-    /// (#680 trap). p512 / p2048 stay portable.
-    ///
-    /// **Default: OFF**. Classified wash on `df-macbookpro-m5` during the
-    /// Gemma 4 AXQ p128 1.10× unused-work track. The C++ shim
-    /// `ax_mlx_compiled_gelu_approx_split_mlp` mirrors this predicate; keep
-    /// both in lockstep. Set `=1` to force the experimental compile.
-    compiled_qgelu_axq_p128_enabled,
-    "AX_MLX_COMPILED_QGELU_AXQ_P128"
-);
-
-/// Whether AXQ 4-bit contract p128 should take the shape-compiled split MLP.
-pub fn should_compiled_qgelu_axq_p128(group_size: i32, bits: i32, seq: i32) -> bool {
-    should_compiled_qgelu_axq_p128_for(compiled_qgelu_axq_p128_enabled(), group_size, bits, seq)
-}
-
-/// Pure helper for [`should_compiled_qgelu_axq_p128`].
-pub fn should_compiled_qgelu_axq_p128_for(
-    enabled: bool,
-    group_size: i32,
-    bits: i32,
-    seq: i32,
-) -> bool {
-    enabled && bits == 4 && group_size > 0 && group_size != 64 && seq == 128
-}
 
 env_flag!(
     /// `AX_MLX_ASYNC_DUAL_GATE_UP` — after multi-token dual gate/up qmm graphs
@@ -2880,7 +2814,7 @@ env_flag!(
 );
 
 /// Whether Gemma 4 contract p128 should async-submit split gate/up.
-pub fn should_gemma4_async_dual_gate_up_p128(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_async_dual_gate_up_p128(model_family: &str, seq: i32) -> bool {
     should_gemma4_async_dual_gate_up_p128_for(
         gemma4_async_dual_gate_up_p128_enabled(),
         model_family,
@@ -2889,7 +2823,7 @@ pub fn should_gemma4_async_dual_gate_up_p128(model_family: &str, seq: i32) -> bo
 }
 
 /// Pure helper for [`should_gemma4_async_dual_gate_up_p128`].
-pub fn should_gemma4_async_dual_gate_up_p128_for(
+pub(crate) fn should_gemma4_async_dual_gate_up_p128_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -2916,12 +2850,16 @@ env_flag!(
 );
 
 /// Whether Gemma 4 contract p128 should async-submit the first KV write.
-pub fn should_gemma4_async_first_kv_p128(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_async_first_kv_p128(model_family: &str, seq: i32) -> bool {
     should_gemma4_async_first_kv_p128_for(gemma4_async_first_kv_p128_enabled(), model_family, seq)
 }
 
 /// Pure helper for [`should_gemma4_async_first_kv_p128`].
-pub fn should_gemma4_async_first_kv_p128_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_async_first_kv_p128_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq == 128
         && matches!(
@@ -2929,36 +2867,6 @@ pub fn should_gemma4_async_first_kv_p128_for(enabled: bool, model_family: &str, 
             "gemma4" | "gemma4_unified"
         )
 }
-
-env_flag!(
-    /// `AX_MLX_DUAL_AFFINE_QMM` — multi-token split gate/up as **one C++ call**
-    /// returning `(gate, up)` without `mx::compile` and without GEGLU (Metal
-    /// GEGLU stays on). Collapses two Rust→C++ qmm FFIs for pure gate_up
-    /// residual (~3.26s). Unlike `AX_MLX_DUAL_QMM_GEGLU` (rejected 1.09×), this
-    /// keeps production Metal GEGLU.
-    ///
-    /// mlxcel multi-token bits=8: two `UnifiedLinear::forward` (each one FFI) +
-    /// activation (gemma4.rs ~917–920).
-    ///
-    /// **Default: OFF** (opt-in pure A/B under cache_eval). Pure 1.002× reject.
-    dual_affine_qmm_enabled,
-    "AX_MLX_DUAL_AFFINE_QMM"
-);
-
-env_flag!(
-    /// `AX_MLX_DUAL_STREAM_GATE_UP` — issue multi-token gate/up affine qmm on
-    /// two process-static GPU streams so independent matmuls can overlap on
-    /// M5 Max. Uses the same C++ entry as dual_affine_qmm (Metal GEGLU kept).
-    ///
-    /// Profile residual: pure Gemma gate_up ~3.26s is two sequential large
-    /// 8-bit qmms. Host-FFI dual alone was noise (1.002×); dual-stream targets
-    /// GPU concurrency. mlxcel still uses sequential UnifiedLinear; this is an
-    /// AX M5 Max experiment on the same residual.
-    ///
-    /// **Default: OFF** (opt-in pure A/B under cache_eval).
-    dual_stream_gate_up_enabled,
-    "AX_MLX_DUAL_STREAM_GATE_UP"
-);
 
 env_flag!(
     /// `AX_MLX_GEMMA4_DUAL_STREAM_GATE_UP_P128` — issue Gemma 4 split gate/up
@@ -2975,7 +2883,7 @@ env_flag!(
 );
 
 /// Whether Gemma 4 contract p128 should dual-stream split gate/up.
-pub fn should_gemma4_dual_stream_gate_up_p128(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_dual_stream_gate_up_p128(model_family: &str, seq: i32) -> bool {
     should_gemma4_dual_stream_gate_up_p128_for(
         gemma4_dual_stream_gate_up_p128_enabled(),
         model_family,
@@ -2984,7 +2892,7 @@ pub fn should_gemma4_dual_stream_gate_up_p128(model_family: &str, seq: i32) -> b
 }
 
 /// Pure helper for [`should_gemma4_dual_stream_gate_up_p128`].
-pub fn should_gemma4_dual_stream_gate_up_p128_for(
+pub(crate) fn should_gemma4_dual_stream_gate_up_p128_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -3038,7 +2946,7 @@ env_flag!(
 /// Intermediate chunks under both `CACHE_ONLY_CHUNK_EVAL` and
 /// `CACHE_ONLY_CHUNK_ASYNC_EVAL` async-submit; the final cache-only chunk
 /// always blocks so the subsequent decode step sees settled KV.
-pub fn cache_only_chunk_should_async_eval(is_final_cache_only_chunk: bool) -> bool {
+pub(crate) fn cache_only_chunk_should_async_eval(is_final_cache_only_chunk: bool) -> bool {
     cache_only_chunk_should_async_eval_for(
         cache_only_chunk_eval_enabled(),
         cache_only_chunk_async_eval_enabled(),
@@ -3047,7 +2955,7 @@ pub fn cache_only_chunk_should_async_eval(is_final_cache_only_chunk: bool) -> bo
 }
 
 /// Pure helper for [`cache_only_chunk_should_async_eval`] (unit-testable).
-pub fn cache_only_chunk_should_async_eval_for(
+pub(crate) fn cache_only_chunk_should_async_eval_for(
     chunk_eval_enabled: bool,
     async_eval_enabled: bool,
     is_final_cache_only_chunk: bool,
@@ -3076,7 +2984,7 @@ pub enum PipelineGranularity {
 }
 
 /// Parse `AX_MLX_PIPELINE_GRANULARITY` without caching (tests / diagnostics).
-pub fn parse_pipeline_granularity(raw: &str) -> PipelineGranularity {
+pub(crate) fn parse_pipeline_granularity(raw: &str) -> PipelineGranularity {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
         return PipelineGranularity::Off;
@@ -3095,7 +3003,7 @@ pub fn parse_pipeline_granularity(raw: &str) -> PipelineGranularity {
 }
 
 /// Process-cached pipeline granularity. Default OFF.
-pub fn pipeline_granularity() -> PipelineGranularity {
+pub(crate) fn pipeline_granularity() -> PipelineGranularity {
     static CACHED: OnceLock<PipelineGranularity> = OnceLock::new();
     *CACHED.get_or_init(|| match std::env::var("AX_MLX_PIPELINE_GRANULARITY") {
         Ok(raw) => parse_pipeline_granularity(&raw),
@@ -3105,7 +3013,7 @@ pub fn pipeline_granularity() -> PipelineGranularity {
 
 /// Qwen prefill fires an `async_eval` hint every this many layers when
 /// [`should_qwen_prefill_pipeline_block`] is on. mlxcel `block:N` analog.
-pub const QWEN_PREFILL_PIPELINE_BLOCK: usize = 8;
+pub(crate) const QWEN_PREFILL_PIPELINE_BLOCK: usize = 8;
 
 env_flag!(
     /// `AX_MLX_QWEN_PREFILL_PIPELINE_BLOCK` — after every 8 non-final Qwen
@@ -3120,7 +3028,7 @@ env_flag!(
 );
 
 /// Whether Qwen generate prefill should submit a layer-block pipeline hint.
-pub fn should_qwen_prefill_pipeline_block(
+pub(crate) fn should_qwen_prefill_pipeline_block(
     model_family: &str,
     seq: usize,
     layer_idx: usize,
@@ -3137,7 +3045,7 @@ pub fn should_qwen_prefill_pipeline_block(
 }
 
 /// Pure helper for [`should_qwen_prefill_pipeline_block`].
-pub fn should_qwen_prefill_pipeline_block_for(
+pub(crate) fn should_qwen_prefill_pipeline_block_for(
     enabled: bool,
     model_family: &str,
     seq: usize,
@@ -3159,7 +3067,7 @@ pub fn should_qwen_prefill_pipeline_block_for(
 
 /// Whether a layer-boundary pipeline hint should fire after `layer_idx`
 /// (0-based) of `total_layers`. Never fires after the final layer.
-pub fn pipeline_hint_should_fire(layer_idx: usize, total_layers: usize) -> bool {
+pub(crate) fn pipeline_hint_should_fire(layer_idx: usize, total_layers: usize) -> bool {
     if total_layers == 0 || layer_idx + 1 >= total_layers {
         return false;
     }
@@ -3198,7 +3106,7 @@ pub enum PipelineEvalGranularity {
 ///
 /// Malformed values fail closed to [`PipelineEvalGranularity::Off`] so a typo
 /// cannot introduce blocking barriers into the normal prefill path.
-pub fn parse_pipeline_eval_granularity(raw: &str) -> PipelineEvalGranularity {
+pub(crate) fn parse_pipeline_eval_granularity(raw: &str) -> PipelineEvalGranularity {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
         return PipelineEvalGranularity::Off;
@@ -3228,7 +3136,7 @@ pub fn parse_pipeline_eval_granularity(raw: &str) -> PipelineEvalGranularity {
 }
 
 /// Process-cached blocking prefill-eval granularity. Default OFF.
-pub fn pipeline_eval_granularity() -> PipelineEvalGranularity {
+pub(crate) fn pipeline_eval_granularity() -> PipelineEvalGranularity {
     static CACHED: OnceLock<PipelineEvalGranularity> = OnceLock::new();
     *CACHED.get_or_init(|| match std::env::var("AX_MLX_PIPELINE_EVAL_GRANULARITY") {
         Ok(raw) => parse_pipeline_eval_granularity(&raw),
@@ -3244,7 +3152,7 @@ pub fn pipeline_eval_granularity() -> PipelineEvalGranularity {
 ///
 /// Callers that fire must advance `last_fire_ns` to `now_ns` (see
 /// [`pipeline_eval_should_fire`]).
-pub fn pipeline_eval_yield_should_fire(
+pub(crate) fn pipeline_eval_yield_should_fire(
     last_fire_ns: Option<u64>,
     now_ns: u64,
     yield_ms: u64,
@@ -3288,7 +3196,7 @@ fn pipeline_eval_should_fire_for(
 /// thr-oriented base granularity (`block:8`) while the tail yields to a sibling
 /// decode process for stream-gap fairness. Default **0** (off). Malformed or
 /// empty values fail closed to **0**.
-pub fn parse_pipeline_eval_tail_layers(raw: &str) -> usize {
+pub(crate) fn parse_pipeline_eval_tail_layers(raw: &str) -> usize {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
         return 0;
@@ -3297,7 +3205,7 @@ pub fn parse_pipeline_eval_tail_layers(raw: &str) -> usize {
 }
 
 /// Process-cached tail-layer count. Default 0 (overlay off).
-pub fn pipeline_eval_tail_layers() -> usize {
+pub(crate) fn pipeline_eval_tail_layers() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| match std::env::var("AX_MLX_PIPELINE_EVAL_TAIL_LAYERS") {
         Ok(raw) => parse_pipeline_eval_tail_layers(&raw),
@@ -3311,7 +3219,11 @@ pub fn pipeline_eval_tail_layers() -> usize {
 /// Eligible layers are `0..total_layers-2` (final always exempt). Tail of size
 /// `N` is `[total-1-N, total-2]` clamped to zero. Used by the dual-stream
 /// concurrent residual so thr stacks can monopolize early layers then yield.
-pub fn pipeline_eval_layer_in_tail(layer_idx: usize, total_layers: usize, tail_n: usize) -> bool {
+pub(crate) fn pipeline_eval_layer_in_tail(
+    layer_idx: usize,
+    total_layers: usize,
+    tail_n: usize,
+) -> bool {
     if tail_n == 0 || total_layers < 2 || layer_idx + 1 >= total_layers {
         return false;
     }
@@ -3326,7 +3238,11 @@ pub fn pipeline_eval_layer_in_tail(layer_idx: usize, total_layers: usize, tail_n
 /// process concurrent thr stacks can cap GPU monopolization in wall time.
 /// When `AX_MLX_PIPELINE_EVAL_TAIL_LAYERS=N` is set, the last `N` multi-token
 /// layers force a layer-eval barrier regardless of the base granularity.
-pub fn pipeline_eval_should_fire(seq_len: usize, layer_idx: usize, total_layers: usize) -> bool {
+pub(crate) fn pipeline_eval_should_fire(
+    seq_len: usize,
+    layer_idx: usize,
+    total_layers: usize,
+) -> bool {
     if seq_len <= 1 || total_layers == 0 || layer_idx + 1 >= total_layers {
         return false;
     }
@@ -3377,7 +3293,7 @@ fn pipeline_sublayer_eval_should_fire_for(
 ///
 /// This exact family gate deliberately excludes decode, Gemma VL/unified,
 /// assistant, diffusion, and every non-Gemma target from the diagnostic probe.
-pub fn pipeline_sublayer_eval_should_fire(seq_len: usize, model_family: &str) -> bool {
+pub(crate) fn pipeline_sublayer_eval_should_fire(seq_len: usize, model_family: &str) -> bool {
     pipeline_sublayer_eval_should_fire_for(pipeline_eval_granularity(), seq_len, model_family)
 }
 
@@ -3475,12 +3391,12 @@ env_flag!(
 );
 
 /// Whether Qwen prefill FFN should flatten `[B,S,H] → [B*S,H]`.
-pub fn should_qwen_prefill_flat_ffn(model_family: &str, seq: i32, rank: usize) -> bool {
+pub(crate) fn should_qwen_prefill_flat_ffn(model_family: &str, seq: i32, rank: usize) -> bool {
     should_qwen_prefill_flat_ffn_for(qwen_prefill_flat_ffn_enabled(), model_family, seq, rank)
 }
 
 /// Pure helper for [`should_qwen_prefill_flat_ffn`].
-pub fn should_qwen_prefill_flat_ffn_for(
+pub(crate) fn should_qwen_prefill_flat_ffn_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -3501,7 +3417,11 @@ env_flag!(
 );
 
 /// Whether Qwen prefill FFN should `contiguous` the activation.
-pub fn should_qwen_prefill_contiguous_ffn(model_family: &str, seq: i32, rank: usize) -> bool {
+pub(crate) fn should_qwen_prefill_contiguous_ffn(
+    model_family: &str,
+    seq: i32,
+    rank: usize,
+) -> bool {
     should_qwen_prefill_contiguous_ffn_for(
         qwen_prefill_contiguous_ffn_enabled(),
         model_family,
@@ -3511,7 +3431,7 @@ pub fn should_qwen_prefill_contiguous_ffn(model_family: &str, seq: i32, rank: us
 }
 
 /// Pure helper for [`should_qwen_prefill_contiguous_ffn`].
-pub fn should_qwen_prefill_contiguous_ffn_for(
+pub(crate) fn should_qwen_prefill_contiguous_ffn_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -3533,7 +3453,7 @@ env_flag!(
 );
 
 /// Whether Qwen linear-attn prefill should fuse gated RMS into out_proj qmm.
-pub fn should_qwen_la_out_proj_silu_mul_qmm(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_la_out_proj_silu_mul_qmm(model_family: &str, seq: i32) -> bool {
     should_qwen_la_out_proj_silu_mul_qmm_for(
         qwen_la_out_proj_silu_mul_qmm_enabled()
             || (mtp_la_out_proj_silu_mul_qmm_enabled()
@@ -3544,7 +3464,7 @@ pub fn should_qwen_la_out_proj_silu_mul_qmm(model_family: &str, seq: i32) -> boo
 }
 
 /// Pure helper for [`should_qwen_la_out_proj_silu_mul_qmm`].
-pub fn should_qwen_la_out_proj_silu_mul_qmm_for(
+pub(crate) fn should_qwen_la_out_proj_silu_mul_qmm_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -3575,17 +3495,6 @@ env_flag_default_on!(
     /// decode op count on hybrid Qwen linear-attention models.
     qwen_direct_cpp_qk_norm_rope_enabled,
     "AX_MLX_QWEN_DIRECT_CPP_QK_NORM_ROPE"
-);
-
-env_flag!(
-    /// `AX_MLX_QWEN_COMPILED_QK_NORM_ROPE` — wrap the Qwen base-RoPE
-    /// `as_strided → rms_norm → rope(base)` C++ path in `mx::compile`.
-    ///
-    /// **Default: OFF**. Four-lane remasure (binary `41fd8313…`, 2026-08-13):
-    /// AXQ p2048 890.684/862.825=1.032288 (0.9996× q2only 891). Community
-    /// p2048 908.406/858.000=1.058749 (3d FAIL). Freqs compile stays OFF.
-    qwen_compiled_qk_norm_rope_enabled,
-    "AX_MLX_QWEN_COMPILED_QK_NORM_ROPE"
 );
 
 env_flag!(
@@ -3656,18 +3565,18 @@ env_flag!(
 );
 
 /// Whether GatedDelta prefill should use the compiled TG oneshot.
-pub fn should_qwen_compiled_gated_delta_prefill(seq: i32) -> bool {
+pub(crate) fn should_qwen_compiled_gated_delta_prefill(seq: i32) -> bool {
     should_qwen_compiled_gated_delta_prefill_for(qwen_compiled_gated_delta_prefill_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_compiled_gated_delta_prefill`].
-pub fn should_qwen_compiled_gated_delta_prefill_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_compiled_gated_delta_prefill_for(enabled: bool, seq: i32) -> bool {
     enabled && seq > 1
 }
 
 /// Minimum leading elements before Qwen packed FFN prefill compile engages.
 /// 512-token packed compile was slower; p2048 is two 1024 chunks (unmeasured).
-pub const QWEN_PACKED_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 1024;
+pub(crate) const QWEN_PACKED_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 1024;
 
 env_flag!(
     /// `AX_MLX_QWEN_PACKED_FFN_PREFILL_COMPILE` — let the dense packed FFN
@@ -3683,7 +3592,7 @@ env_flag!(
 );
 
 /// Whether Qwen packed FFN prefill should use the fixed-shape compile path.
-pub fn should_qwen_packed_ffn_prefill_compile(model_family: &str, leading: i64) -> bool {
+pub(crate) fn should_qwen_packed_ffn_prefill_compile(model_family: &str, leading: i64) -> bool {
     should_qwen_packed_ffn_prefill_compile_for(
         qwen_packed_ffn_prefill_compile_enabled(),
         model_family,
@@ -3692,7 +3601,7 @@ pub fn should_qwen_packed_ffn_prefill_compile(model_family: &str, leading: i64) 
 }
 
 /// Pure helper for [`should_qwen_packed_ffn_prefill_compile`].
-pub fn should_qwen_packed_ffn_prefill_compile_for(
+pub(crate) fn should_qwen_packed_ffn_prefill_compile_for(
     enabled: bool,
     model_family: &str,
     leading: i64,
@@ -3703,18 +3612,13 @@ pub fn should_qwen_packed_ffn_prefill_compile_for(
 }
 
 /// Whether Qwen split prefill should compile the standalone down qmm.
-pub fn should_qwen_prefill_down_compile(seq: i32, leading: i64) -> bool {
-    should_qwen_prefill_down_compile_for(qwen_prefill_down_compile_enabled(), seq, leading)
-}
-
-/// Pure helper for [`should_qwen_prefill_down_compile`].
-pub fn should_qwen_prefill_down_compile_for(enabled: bool, seq: i32, leading: i64) -> bool {
+pub(crate) fn should_qwen_prefill_down_compile_for(enabled: bool, seq: i32, leading: i64) -> bool {
     enabled && seq > 1 && leading >= QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING
 }
 
 /// Minimum sequence length before packed LA input compile engages.
 /// 512-token packed FFN compile was slower; p2048 is two 1024 chunks.
-pub const QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ: i32 = 1024;
+pub(crate) const QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ: i32 = 1024;
 
 env_flag!(
     /// `AX_MLX_QWEN_PACKED_LA_INPUTS_COMPILE` — compile packed QKVZ/BA
@@ -3728,12 +3632,12 @@ env_flag!(
 );
 
 /// Whether packed LA inputs should use the fixed-shape compile path.
-pub fn should_qwen_packed_la_inputs_compile(seq: i32) -> bool {
+pub(crate) fn should_qwen_packed_la_inputs_compile(seq: i32) -> bool {
     should_qwen_packed_la_inputs_compile_for(qwen_packed_la_inputs_compile_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_packed_la_inputs_compile`].
-pub fn should_qwen_packed_la_inputs_compile_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_packed_la_inputs_compile_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -3751,52 +3655,13 @@ env_flag!(
 );
 
 /// Whether LA post-input should use the fixed-shape compile path.
-pub fn should_qwen_la_post_input_compile(seq: i32) -> bool {
+pub(crate) fn should_qwen_la_post_input_compile(seq: i32) -> bool {
     should_qwen_la_post_input_compile_for(qwen_la_post_input_compile_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_la_post_input_compile`].
-pub fn should_qwen_la_post_input_compile_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_la_post_input_compile_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
-}
-
-env_flag!(
-    /// `AX_MLX_QWEN_LA_DUAL_STREAM_QKVZ_BA` — issue packed QKVZ and BA affine
-    /// qmm on two GPU streams so M5 Max can overlap the two independent
-    /// projections at `seq >= 1024`.
-    ///
-    /// **Default: OFF**. Remasured binary `f1d47194…` (2026-08-13): community
-    /// p2048 894.153/858=1.042137 (0.984× standing); AXQ p2048
-    /// 879.421/862.825=1.019234 (0.987× q2only). Regression. Same class as
-    /// closed FFN dual-stream.
-    qwen_la_dual_stream_qkvz_ba_enabled,
-    "AX_MLX_QWEN_LA_DUAL_STREAM_QKVZ_BA"
-);
-
-/// Whether packed LA QKVZ/BA should issue on two GPU streams.
-pub fn should_qwen_la_dual_stream_qkvz_ba(seq: i32) -> bool {
-    should_qwen_la_dual_stream_qkvz_ba_for(qwen_la_dual_stream_qkvz_ba_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_la_dual_stream_qkvz_ba`].
-pub fn should_qwen_la_dual_stream_qkvz_ba_for(enabled: bool, seq: i32) -> bool {
-    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
-}
-
-env_flag!(
-    /// `AX_MLX_QWEN_LA_FLAT_INPUTS` — reshape packed QKVZ/BA activations
-    /// `[B,S,H]→[B*S,H]` before the two affine qmm at `seq >= 1024`.
-    ///
-    /// **Default: OFF**. Remasured binary `07de1419…` (2026-08-14): community
-    /// p2048 904.487/858=1.054181; AXQ p2048 888.640/862.825=1.029919
-    /// (0.997× q2only). Wash. Not whole-FFN flatten, not dual-stream.
-    qwen_la_flat_inputs_enabled,
-    "AX_MLX_QWEN_LA_FLAT_INPUTS"
-);
-
-/// Whether packed LA inputs should flatten to 2-D before qmm.
-pub fn should_qwen_la_flat_inputs(seq: i32) -> bool {
-    should_qwen_la_flat_inputs_for(qwen_la_flat_inputs_enabled(), seq)
 }
 
 env_flag!(
@@ -3814,7 +3679,7 @@ env_flag!(
 );
 
 /// Whether LA prefill should `contiguous` the activation before QKVZ/BA qmm.
-pub fn should_qwen_prefill_contiguous_la_input(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_contiguous_la_input(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_contiguous_la_input_for(
         qwen_prefill_contiguous_la_input_enabled(),
         model_family,
@@ -3823,7 +3688,7 @@ pub fn should_qwen_prefill_contiguous_la_input(model_family: &str, seq: i32) -> 
 }
 
 /// Pure helper for [`should_qwen_prefill_contiguous_la_input`].
-pub fn should_qwen_prefill_contiguous_la_input_for(
+pub(crate) fn should_qwen_prefill_contiguous_la_input_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -3834,11 +3699,6 @@ pub fn should_qwen_prefill_contiguous_la_input_for(
             model_family.to_ascii_lowercase().as_str(),
             "qwen3_5" | "qwen3_next"
         )
-}
-
-/// Pure helper for [`should_qwen_la_flat_inputs`].
-pub fn should_qwen_la_flat_inputs_for(enabled: bool, seq: i32) -> bool {
-    enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
 env_flag!(
@@ -3853,12 +3713,12 @@ env_flag!(
 );
 
 /// Whether packed LA QKV should be materialized before post-input conv1d.
-pub fn should_qwen_la_contiguous_qkv(seq: i32) -> bool {
+pub(crate) fn should_qwen_la_contiguous_qkv(seq: i32) -> bool {
     should_qwen_la_contiguous_qkv_for(qwen_la_contiguous_qkv_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_la_contiguous_qkv`].
-pub fn should_qwen_la_contiguous_qkv_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_la_contiguous_qkv_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -3874,12 +3734,12 @@ env_flag!(
 );
 
 /// Whether packed LA prefill should use the 2-bit projection overlay.
-pub fn should_qwen_la_prefill_q2(seq: i32) -> bool {
+pub(crate) fn should_qwen_la_prefill_q2(seq: i32) -> bool {
     should_qwen_la_prefill_q2_for(qwen_la_prefill_q2_proj_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_la_prefill_q2`].
-pub fn should_qwen_la_prefill_q2_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_la_prefill_q2_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -3896,12 +3756,12 @@ env_flag!(
 );
 
 /// Whether Qwen split prefill should use a 2-bit down overlay.
-pub fn should_qwen_prefill_q2_down(seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_q2_down(seq: i32) -> bool {
     should_qwen_prefill_q2_down_for(qwen_prefill_q2_down_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_prefill_q2_down`].
-pub fn should_qwen_prefill_q2_down_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_q2_down_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -3918,12 +3778,12 @@ env_flag!(
 );
 
 /// Whether GatedDelta prefill should use the no-copy 256-token chunkwise path.
-pub fn should_qwen_gd_prefill_chunkwise(seq: i32) -> bool {
+pub(crate) fn should_qwen_gd_prefill_chunkwise(seq: i32) -> bool {
     should_qwen_gd_prefill_chunkwise_for(qwen_gd_prefill_chunkwise_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_gd_prefill_chunkwise`].
-pub fn should_qwen_gd_prefill_chunkwise_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_gd_prefill_chunkwise_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -3939,12 +3799,12 @@ env_flag!(
 );
 
 /// Whether Qwen split/packed prefill should use a gs64 FFN overlay.
-pub fn should_qwen_prefill_ffn_gs64(seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_ffn_gs64(seq: i32) -> bool {
     should_qwen_prefill_ffn_gs64_for(qwen_prefill_ffn_gs64_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_prefill_ffn_gs64`].
-pub fn should_qwen_prefill_ffn_gs64_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_ffn_gs64_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -3962,12 +3822,12 @@ env_flag!(
 );
 
 /// Whether Qwen split/packed prefill should use a 3-bit FFN overlay.
-pub fn should_qwen_prefill_q3_ffn(seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_q3_ffn(seq: i32) -> bool {
     should_qwen_prefill_q3_ffn_for(qwen_prefill_q3_ffn_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_prefill_q3_ffn`].
-pub fn should_qwen_prefill_q3_ffn_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_q3_ffn_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -3984,7 +3844,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should use contiguous FFN quantized tensors.
-pub fn should_qwen_prefill_contiguous_ffn_weights(seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_contiguous_ffn_weights(seq: i32) -> bool {
     should_qwen_prefill_contiguous_ffn_weights_for(
         qwen_prefill_contiguous_ffn_weights_enabled(),
         seq,
@@ -3992,7 +3852,7 @@ pub fn should_qwen_prefill_contiguous_ffn_weights(seq: i32) -> bool {
 }
 
 /// Pure helper for [`should_qwen_prefill_contiguous_ffn_weights`].
-pub fn should_qwen_prefill_contiguous_ffn_weights_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_contiguous_ffn_weights_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4010,12 +3870,12 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should async-submit gate/up before down.
-pub fn should_qwen_prefill_async_gate_up(seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_async_gate_up(seq: i32) -> bool {
     should_qwen_prefill_async_gate_up_for(qwen_prefill_async_gate_up_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_prefill_async_gate_up`].
-pub fn should_qwen_prefill_async_gate_up_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_async_gate_up_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4032,12 +3892,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill FFN should run qmm in Float32.
-pub fn should_qwen_prefill_ffn_f32_input(seq: i32) -> bool {
-    should_qwen_prefill_ffn_f32_input_for(qwen_prefill_ffn_f32_input_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_ffn_f32_input`].
-pub fn should_qwen_prefill_ffn_f32_input_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_ffn_f32_input_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4055,12 +3910,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill FFN should eval its input before qmm.
-pub fn should_qwen_prefill_eval_ffn_input(seq: i32) -> bool {
-    should_qwen_prefill_eval_ffn_input_for(qwen_prefill_eval_ffn_input_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_eval_ffn_input`].
-pub fn should_qwen_prefill_eval_ffn_input_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_eval_ffn_input_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4079,12 +3929,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill LA should eval its input before qmm.
-pub fn should_qwen_prefill_eval_la_input(seq: i32) -> bool {
-    should_qwen_prefill_eval_la_input_for(qwen_prefill_eval_la_input_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_eval_la_input`].
-pub fn should_qwen_prefill_eval_la_input_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_eval_la_input_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4103,12 +3948,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should async-submit packed LA outputs.
-pub fn should_qwen_prefill_async_la_outputs(seq: i32) -> bool {
-    should_qwen_prefill_async_la_outputs_for(qwen_prefill_async_la_outputs_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_async_la_outputs`].
-pub fn should_qwen_prefill_async_la_outputs_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_async_la_outputs_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4126,12 +3966,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should async-submit packed gate+up before SwiGLU.
-pub fn should_qwen_prefill_async_packed_gate_up(seq: i32) -> bool {
-    should_qwen_prefill_async_packed_gate_up_for(qwen_prefill_async_packed_gate_up_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_async_packed_gate_up`].
-pub fn should_qwen_prefill_async_packed_gate_up_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_async_packed_gate_up_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4149,12 +3984,12 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should use contiguous LA quantized tensors.
-pub fn should_qwen_prefill_contiguous_la_weights(seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_contiguous_la_weights(seq: i32) -> bool {
     should_qwen_prefill_contiguous_la_weights_for(qwen_prefill_contiguous_la_weights_enabled(), seq)
 }
 
 /// Pure helper for [`should_qwen_prefill_contiguous_la_weights`].
-pub fn should_qwen_prefill_contiguous_la_weights_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_contiguous_la_weights_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4172,16 +4007,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill attention should eval its input before qmm.
-pub fn should_qwen_prefill_eval_attn_input(model_family: &str, seq: i32) -> bool {
-    should_qwen_prefill_eval_attn_input_for(
-        qwen_prefill_eval_attn_input_enabled(),
-        model_family,
-        seq,
-    )
-}
-
-/// Pure helper for [`should_qwen_prefill_eval_attn_input`].
-pub fn should_qwen_prefill_eval_attn_input_for(
+pub(crate) fn should_qwen_prefill_eval_attn_input_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -4208,12 +4034,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill FFN should eval SwiGLU hidden before down qmm.
-pub fn should_qwen_prefill_eval_ffn_hidden(seq: i32) -> bool {
-    should_qwen_prefill_eval_ffn_hidden_for(qwen_prefill_eval_ffn_hidden_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_eval_ffn_hidden`].
-pub fn should_qwen_prefill_eval_ffn_hidden_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_eval_ffn_hidden_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4231,7 +4052,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should use contiguous attention quantized tensors.
-pub fn should_qwen_prefill_contiguous_attn_weights(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_contiguous_attn_weights(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_contiguous_attn_weights_for(
         qwen_prefill_contiguous_attn_weights_enabled(),
         model_family,
@@ -4240,7 +4061,7 @@ pub fn should_qwen_prefill_contiguous_attn_weights(model_family: &str, seq: i32)
 }
 
 /// Pure helper for [`should_qwen_prefill_contiguous_attn_weights`].
-pub fn should_qwen_prefill_contiguous_attn_weights_for(
+pub(crate) fn should_qwen_prefill_contiguous_attn_weights_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -4267,7 +4088,7 @@ env_flag!(
 );
 
 /// Whether Qwen cache-only last-layer prefill should skip unused LA out_proj.
-pub fn should_qwen_prefill_skip_unused_la_out(
+pub(crate) fn should_qwen_prefill_skip_unused_la_out(
     model_family: &str,
     skip_post_attention_ffn: bool,
     seq: i32,
@@ -4281,7 +4102,7 @@ pub fn should_qwen_prefill_skip_unused_la_out(
 }
 
 /// Pure helper for [`should_qwen_prefill_skip_unused_la_out`].
-pub fn should_qwen_prefill_skip_unused_la_out_for(
+pub(crate) fn should_qwen_prefill_skip_unused_la_out_for(
     enabled: bool,
     model_family: &str,
     skip_post_attention_ffn: bool,
@@ -4309,12 +4130,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should async-submit FFN down before residual.
-pub fn should_qwen_prefill_async_down(seq: i32) -> bool {
-    should_qwen_prefill_async_down_for(qwen_prefill_async_down_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_async_down`].
-pub fn should_qwen_prefill_async_down_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_async_down_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4348,12 +4164,16 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should reuse one cos/sin table across full-attn layers.
-pub fn should_qwen_prefill_reuse_rope(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_reuse_rope(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_reuse_rope_for(qwen_prefill_reuse_rope_enabled(), model_family, seq)
 }
 
 /// Pure helper for [`should_qwen_prefill_reuse_rope`].
-pub fn should_qwen_prefill_reuse_rope_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_reuse_rope_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -4363,7 +4183,7 @@ pub fn should_qwen_prefill_reuse_rope_for(enabled: bool, model_family: &str, seq
 }
 
 /// Whether Qwen last-only prefill should run o_proj on the last token only.
-pub fn should_qwen_prefill_last_token_o_proj(
+pub(crate) fn should_qwen_prefill_last_token_o_proj(
     model_family: &str,
     last_position_only: bool,
     seq: i32,
@@ -4393,7 +4213,7 @@ env_flag!(
 /// Whether Qwen last-only prefill should SDPA the last query only.
 /// Last-token Q proj and skip-unused-QK-norm already yield S=1 Q, so those
 /// flags imply this one.
-pub fn should_qwen_prefill_last_query_sdpa(
+pub(crate) fn should_qwen_prefill_last_query_sdpa(
     model_family: &str,
     last_position_only: bool,
     seq: i32,
@@ -4409,7 +4229,7 @@ pub fn should_qwen_prefill_last_query_sdpa(
 }
 
 /// Pure helper for [`should_qwen_prefill_last_query_sdpa`].
-pub fn should_qwen_prefill_last_query_sdpa_for(
+pub(crate) fn should_qwen_prefill_last_query_sdpa_for(
     enabled: bool,
     model_family: &str,
     last_position_only: bool,
@@ -4440,7 +4260,7 @@ env_flag!(
 );
 
 /// Whether Qwen last-only prefill should project Q on the last token only.
-pub fn should_qwen_prefill_last_query_q_proj(
+pub(crate) fn should_qwen_prefill_last_query_q_proj(
     model_family: &str,
     last_position_only: bool,
     seq: i32,
@@ -4454,7 +4274,7 @@ pub fn should_qwen_prefill_last_query_q_proj(
 }
 
 /// Pure helper for [`should_qwen_prefill_last_query_q_proj`].
-pub fn should_qwen_prefill_last_query_q_proj_for(
+pub(crate) fn should_qwen_prefill_last_query_q_proj_for(
     enabled: bool,
     model_family: &str,
     last_position_only: bool,
@@ -4486,7 +4306,7 @@ env_flag!(
 );
 
 /// Whether Qwen last-only prefill should skip unused prefix QK-norm.
-pub fn should_qwen_prefill_skip_unused_qk_norm(
+pub(crate) fn should_qwen_prefill_skip_unused_qk_norm(
     model_family: &str,
     last_position_only: bool,
     seq: i32,
@@ -4500,7 +4320,7 @@ pub fn should_qwen_prefill_skip_unused_qk_norm(
 }
 
 /// Pure helper for [`should_qwen_prefill_skip_unused_qk_norm`].
-pub fn should_qwen_prefill_skip_unused_qk_norm_for(
+pub(crate) fn should_qwen_prefill_skip_unused_qk_norm_for(
     enabled: bool,
     model_family: &str,
     last_position_only: bool,
@@ -4516,7 +4336,7 @@ pub fn should_qwen_prefill_skip_unused_qk_norm_for(
 }
 
 /// Pure helper for [`should_qwen_prefill_last_token_o_proj`].
-pub fn should_qwen_prefill_last_token_o_proj_for(
+pub(crate) fn should_qwen_prefill_last_token_o_proj_for(
     enabled: bool,
     model_family: &str,
     last_position_only: bool,
@@ -4545,12 +4365,11 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should async-submit SDPA before o_proj.
-pub fn should_qwen_prefill_async_sdpa(model_family: &str, seq: i32) -> bool {
-    should_qwen_prefill_async_sdpa_for(qwen_prefill_async_sdpa_enabled(), model_family, seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_async_sdpa`].
-pub fn should_qwen_prefill_async_sdpa_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_async_sdpa_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -4573,12 +4392,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should async-submit GatedDelta before LA out_proj.
-pub fn should_qwen_prefill_async_gd(seq: i32) -> bool {
-    should_qwen_prefill_async_gd_for(qwen_prefill_async_gd_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_async_gd`].
-pub fn should_qwen_prefill_async_gd_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_async_gd_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4596,12 +4410,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should eval GatedDelta before LA out_proj.
-pub fn should_qwen_prefill_eval_gd(seq: i32) -> bool {
-    should_qwen_prefill_eval_gd_for(qwen_prefill_eval_gd_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_eval_gd`].
-pub fn should_qwen_prefill_eval_gd_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_eval_gd_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4619,12 +4428,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should contiguous GatedDelta before LA out_proj.
-pub fn should_qwen_prefill_contiguous_gd(seq: i32) -> bool {
-    should_qwen_prefill_contiguous_gd_for(qwen_prefill_contiguous_gd_enabled(), seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_contiguous_gd`].
-pub fn should_qwen_prefill_contiguous_gd_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_contiguous_gd_for(enabled: bool, seq: i32) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
 }
 
@@ -4644,7 +4448,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should split packed gate/up into two qmms.
-pub fn should_qwen_prefill_split_packed(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_split_packed(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_split_packed_for(qwen_prefill_split_packed_enabled(), model_family, seq)
 }
 
@@ -4663,11 +4467,6 @@ env_flag!(
     "AX_MLX_QWEN_PREFILL_DEQUANT_DENSE"
 );
 
-/// Whether Qwen prefill should replace qmm with dequant + dense GEMM.
-pub fn should_qwen_prefill_dequant_dense(model_family: &str, seq: i32) -> bool {
-    should_qwen_prefill_dequant_dense_for(qwen_prefill_dequant_dense_enabled(), model_family, seq)
-}
-
 env_flag!(
     /// `AX_MLX_QWEN_LA_NORM_QKVZ_FUSE` — at `seq >= 1024`, fuse linear-attn
     /// `attn_norm` into packed QKVZ/BA `quantized_matmul` via
@@ -4682,7 +4481,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should fuse attn RMSNorm into LA QKVZ/BA qmm.
-pub fn should_qwen_la_norm_qkvz_fuse(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_la_norm_qkvz_fuse(model_family: &str, seq: i32) -> bool {
     should_qwen_la_norm_qkvz_fuse_for(qwen_la_norm_qkvz_fuse_enabled(), model_family, seq)
 }
 
@@ -4699,7 +4498,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should skip a no-op BF16 astype.
-pub fn should_qwen_prefill_skip_bf16_astype(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_skip_bf16_astype(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_skip_bf16_astype_for(
         qwen_prefill_skip_bf16_astype_enabled(),
         model_family,
@@ -4708,7 +4507,7 @@ pub fn should_qwen_prefill_skip_bf16_astype(model_family: &str, seq: i32) -> boo
 }
 
 /// Pure helper for [`should_qwen_prefill_skip_bf16_astype`].
-pub fn should_qwen_prefill_skip_bf16_astype_for(
+pub(crate) fn should_qwen_prefill_skip_bf16_astype_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -4737,12 +4536,7 @@ env_flag!(
 );
 
 /// Whether every Qwen prefill qmm should flatten to a 2-D leading dim.
-pub fn should_qwen_prefill_flat_qmm(seq: i32, rank: usize) -> bool {
-    should_qwen_prefill_flat_qmm_for(qwen_prefill_flat_qmm_enabled(), seq, rank)
-}
-
-/// Pure helper for [`should_qwen_prefill_flat_qmm`].
-pub fn should_qwen_prefill_flat_qmm_for(enabled: bool, seq: i32, rank: usize) -> bool {
+pub(crate) fn should_qwen_prefill_flat_qmm_for(enabled: bool, seq: i32, rank: usize) -> bool {
     enabled && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ && rank == 3
 }
 
@@ -4762,12 +4556,11 @@ env_flag!(
 );
 
 /// Whether Qwen prefill qmm should tile the sequence dim.
-pub fn should_qwen_prefill_tile_qmm(model_family: &str, seq: i32) -> bool {
-    should_qwen_prefill_tile_qmm_for(qwen_prefill_tile_qmm_enabled(), model_family, seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_tile_qmm`].
-pub fn should_qwen_prefill_tile_qmm_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_tile_qmm_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -4776,7 +4569,7 @@ pub fn should_qwen_prefill_tile_qmm_for(enabled: bool, model_family: &str, seq: 
         )
 }
 
-pub const QWEN_PREFILL_QMM_TILE: i32 = 512;
+pub(crate) const QWEN_PREFILL_QMM_TILE: i32 = 512;
 
 env_flag!(
     /// `AX_MLX_QWEN_PREFILL_DUAL_AFFINE_QMM` — one C++ call for Qwen split
@@ -4795,16 +4588,7 @@ env_flag!(
 );
 
 /// Whether Qwen split prefill should issue gate+up as one dual-affine qmm.
-pub fn should_qwen_prefill_dual_affine_qmm(model_family: &str, seq: i32) -> bool {
-    should_qwen_prefill_dual_affine_qmm_for(
-        qwen_prefill_dual_affine_qmm_enabled(),
-        model_family,
-        seq,
-    )
-}
-
-/// Pure helper for [`should_qwen_prefill_dual_affine_qmm`].
-pub fn should_qwen_prefill_dual_affine_qmm_for(
+pub(crate) fn should_qwen_prefill_dual_affine_qmm_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -4904,7 +4688,7 @@ env_flag_default_on!(
 );
 
 /// Hardware + kill-switch predicate for NAX attention policy.
-pub fn nax_attention_enabled() -> bool {
+pub(crate) fn nax_attention_enabled() -> bool {
     nax_attention_enabled_for(
         nax_attention_allowed(),
         crate::hardware::neural_accelerator_active(),
@@ -4912,12 +4696,12 @@ pub fn nax_attention_enabled() -> bool {
 }
 
 /// Pure helper for [`nax_attention_enabled`].
-pub fn nax_attention_enabled_for(allowed: bool, neural_accelerator_active: bool) -> bool {
+pub(crate) fn nax_attention_enabled_for(allowed: bool, neural_accelerator_active: bool) -> bool {
     allowed && neural_accelerator_active
 }
 
 /// Whether a model family may use native offset-causal SDPA on NAX hosts.
-pub fn nax_native_offset_causal_family(model_family: &str) -> bool {
+pub(crate) fn nax_native_offset_causal_family(model_family: &str) -> bool {
     matches!(
         model_family.to_ascii_lowercase().as_str(),
         "qwen3"
@@ -4953,7 +4737,7 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should skip the unused SwiGLU compile.
-pub fn should_qwen_prefill_skip_unused_swiglu_compile(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_skip_unused_swiglu_compile(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_skip_unused_swiglu_compile_for(
         qwen_prefill_skip_unused_swiglu_compile_enabled(),
         model_family,
@@ -4962,7 +4746,7 @@ pub fn should_qwen_prefill_skip_unused_swiglu_compile(model_family: &str, seq: i
 }
 
 /// Pure helper for [`should_qwen_prefill_skip_unused_swiglu_compile`].
-pub fn should_qwen_prefill_skip_unused_swiglu_compile_for(
+pub(crate) fn should_qwen_prefill_skip_unused_swiglu_compile_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -4976,16 +4760,7 @@ pub fn should_qwen_prefill_skip_unused_swiglu_compile_for(
 }
 
 /// Whether the Qwen env opt-in permits native offset-causal SDPA.
-pub fn should_qwen_prefill_native_offset_causal(model_family: &str, seq: i32) -> bool {
-    should_qwen_prefill_native_offset_causal_for(
-        qwen_prefill_native_offset_causal_enabled(),
-        model_family,
-        seq,
-    )
-}
-
-/// Pure helper for [`should_qwen_prefill_native_offset_causal`].
-pub fn should_qwen_prefill_native_offset_causal_for(
+pub(crate) fn should_qwen_prefill_native_offset_causal_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -5003,7 +4778,7 @@ pub fn should_qwen_prefill_native_offset_causal_for(
 /// The Qwen env opt-in is host-independent and Qwen-only. NAX hosts extend
 /// the route to the explicit full-attention family allowlist. Sliding-window
 /// layers continue to materialize their required masks.
-pub fn should_prefill_native_offset_causal(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_prefill_native_offset_causal(model_family: &str, seq: i32) -> bool {
     should_prefill_native_offset_causal_for(
         qwen_prefill_native_offset_causal_enabled(),
         nax_attention_enabled(),
@@ -5013,7 +4788,7 @@ pub fn should_prefill_native_offset_causal(model_family: &str, seq: i32) -> bool
 }
 
 /// Pure helper for [`should_prefill_native_offset_causal`].
-pub fn should_prefill_native_offset_causal_for(
+pub(crate) fn should_prefill_native_offset_causal_for(
     qwen_opt_in_enabled: bool,
     nax_enabled: bool,
     model_family: &str,
@@ -5026,7 +4801,7 @@ pub fn should_prefill_native_offset_causal_for(
 }
 
 /// Whether Qwen prefill should dequant embeddings directly to BF16.
-pub fn should_qwen_prefill_bf16_embed_dequant(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_bf16_embed_dequant(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_bf16_embed_dequant_for(
         qwen_prefill_bf16_embed_dequant_enabled(),
         model_family,
@@ -5035,7 +4810,7 @@ pub fn should_qwen_prefill_bf16_embed_dequant(model_family: &str, seq: i32) -> b
 }
 
 /// Pure helper for [`should_qwen_prefill_bf16_embed_dequant`].
-pub fn should_qwen_prefill_bf16_embed_dequant_for(
+pub(crate) fn should_qwen_prefill_bf16_embed_dequant_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -5049,7 +4824,7 @@ pub fn should_qwen_prefill_bf16_embed_dequant_for(
 }
 
 /// Whether Qwen prefill should skip the unused f32 SDPA upcast.
-pub fn should_qwen_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_skip_unused_f32_sdpa_for(
         qwen_prefill_skip_unused_f32_sdpa_enabled(),
         model_family,
@@ -5065,7 +4840,7 @@ pub fn should_qwen_prefill_skip_unused_f32_sdpa(model_family: &str, seq: i32) ->
 /// never arms the guard. The former `seq >= 1024` gate left every p128/p512
 /// full-attention layer paying a Q/K/V f32 round-trip that mlxcel never pays
 /// (PRD-M5-FLEET-AX-VS-MLXCEL short-prefill miss).
-pub fn should_qwen_prefill_skip_unused_f32_sdpa_for(
+pub(crate) fn should_qwen_prefill_skip_unused_f32_sdpa_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -5079,7 +4854,7 @@ pub fn should_qwen_prefill_skip_unused_f32_sdpa_for(
 }
 
 /// Whether Qwen prefill should skip the unused embed-id clip.
-pub fn should_qwen_prefill_skip_unused_embed_clip(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_skip_unused_embed_clip(model_family: &str, seq: i32) -> bool {
     should_qwen_prefill_skip_unused_embed_clip_for(
         qwen_prefill_skip_unused_embed_clip_enabled(),
         model_family,
@@ -5088,7 +4863,7 @@ pub fn should_qwen_prefill_skip_unused_embed_clip(model_family: &str, seq: i32) 
 }
 
 /// Pure helper for [`should_qwen_prefill_skip_unused_embed_clip`].
-pub fn should_qwen_prefill_skip_unused_embed_clip_for(
+pub(crate) fn should_qwen_prefill_skip_unused_embed_clip_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -5117,12 +4892,11 @@ env_flag!(
 );
 
 /// Whether Qwen prefill should async-submit the embedding gather.
-pub fn should_qwen_prefill_async_embed(model_family: &str, seq: i32) -> bool {
-    should_qwen_prefill_async_embed_for(qwen_prefill_async_embed_enabled(), model_family, seq)
-}
-
-/// Pure helper for [`should_qwen_prefill_async_embed`].
-pub fn should_qwen_prefill_async_embed_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_async_embed_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -5132,7 +4906,11 @@ pub fn should_qwen_prefill_async_embed_for(enabled: bool, model_family: &str, se
 }
 
 /// Pure helper for [`should_qwen_la_norm_qkvz_fuse`].
-pub fn should_qwen_la_norm_qkvz_fuse_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_la_norm_qkvz_fuse_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -5141,8 +4919,12 @@ pub fn should_qwen_la_norm_qkvz_fuse_for(enabled: bool, model_family: &str, seq:
         )
 }
 
-/// Pure helper for [`should_qwen_prefill_dequant_dense`].
-pub fn should_qwen_prefill_dequant_dense_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+/// Whether Qwen prefill should replace qmm with dequant + dense GEMM.
+pub(crate) fn should_qwen_prefill_dequant_dense_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -5152,7 +4934,11 @@ pub fn should_qwen_prefill_dequant_dense_for(enabled: bool, model_family: &str, 
 }
 
 /// Pure helper for [`should_qwen_prefill_split_packed`].
-pub fn should_qwen_prefill_split_packed_for(enabled: bool, model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_qwen_prefill_split_packed_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
     enabled
         && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
         && matches!(
@@ -5162,17 +4948,21 @@ pub fn should_qwen_prefill_split_packed_for(enabled: bool, model_family: &str, s
 }
 
 /// Whether Qwen prefill should merge matching-bit QKVZ/BA into one qmm.
-pub fn should_qwen_la_fused_qkvz_ba_qmm(seq: i32, same_quant: bool) -> bool {
+pub(crate) fn should_qwen_la_fused_qkvz_ba_qmm(seq: i32, same_quant: bool) -> bool {
     should_qwen_la_fused_qkvz_ba_qmm_for(qwen_la_fused_qkvz_ba_qmm_enabled(), seq, same_quant)
 }
 
 /// Pure helper for [`should_qwen_la_fused_qkvz_ba_qmm`].
-pub fn should_qwen_la_fused_qkvz_ba_qmm_for(enabled: bool, seq: i32, same_quant: bool) -> bool {
+pub(crate) fn should_qwen_la_fused_qkvz_ba_qmm_for(
+    enabled: bool,
+    seq: i32,
+    same_quant: bool,
+) -> bool {
     enabled && seq > 1 && same_quant
 }
 
 /// Whether GatedDelta prefill should materialize contiguous QKV/AB.
-pub fn should_qwen_gated_delta_prefill_contiguous(seq: i32) -> bool {
+pub(crate) fn should_qwen_gated_delta_prefill_contiguous(seq: i32) -> bool {
     should_qwen_gated_delta_prefill_contiguous_for(
         qwen_gated_delta_prefill_contiguous_enabled(),
         seq,
@@ -5180,7 +4970,7 @@ pub fn should_qwen_gated_delta_prefill_contiguous(seq: i32) -> bool {
 }
 
 /// Pure helper for [`should_qwen_gated_delta_prefill_contiguous`].
-pub fn should_qwen_gated_delta_prefill_contiguous_for(enabled: bool, seq: i32) -> bool {
+pub(crate) fn should_qwen_gated_delta_prefill_contiguous_for(enabled: bool, seq: i32) -> bool {
     enabled && seq > 1
 }
 
@@ -5296,12 +5086,12 @@ env_flag!(
     /// `AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX` — experimental MLX 0.32.3 GDN
     /// prefill on supported 128-dimensional heads, T=128..2048. Default OFF.
     /// Decode, short verifier windows, and dedicated Flash Next GDN are unchanged.
-    qwen_gated_delta_prefill_mlx_enabled,
+    pub qwen_gated_delta_prefill_mlx_enabled,
     "AX_MLX_QWEN_GATED_DELTA_PREFILL_MLX"
 );
 
 /// Keep short calls on AX: the M2 Ultra T=32 probe regressed with MLX.
-pub fn qwen_gated_delta_prefill_mlx_seq_eligible(seq: i32) -> bool {
+pub(crate) fn qwen_gated_delta_prefill_mlx_seq_eligible(seq: i32) -> bool {
     (128..=2048).contains(&seq)
 }
 
@@ -5312,7 +5102,7 @@ env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX=0` to restore the sequential AX
     /// recurrence. Singleton decode, short MTP verification and expert paging
     /// are unchanged.
-    flash_next_gdn_prefill_mlx_enabled,
+    pub flash_next_gdn_prefill_mlx_enabled,
     "AX_MLX_FLASH_NEXT_GDN_PREFILL_MLX"
 );
 
@@ -5476,20 +5266,6 @@ env_flag_default_on!(
 );
 
 env_flag!(
-    /// `AX_MLX_MOE_PROFILE` — family-neutral MoE sub-stage profiling.
-    ///
-    /// **Default: OFF** (opt-in diagnostic). When enabled, the MoE expert
-    /// forward path records per-sub-stage wall times (router, gate_up,
-    /// activation, down, weighted_sum, shared_expert) into a dedicated
-    /// `MoeProfileSnapshot`. Unlike `AX_MLX_DECODE_PROFILE` which forces
-    /// blocking `eval()` at every stage and disables decode pipelining,
-    /// this flag records lightweight wall-clock deltas without forcing
-    /// evaluation barriers. Use for MoE-specific hotspot diagnosis.
-    moe_profile_enabled,
-    "AX_MLX_MOE_PROFILE"
-);
-
-env_flag!(
     /// `AX_MLX_MOE_LAYER_COMPILE` — enable per-layer compiled MoE decode
     /// closure.
     ///
@@ -5534,7 +5310,7 @@ env_flag!(
 /// engages for `seq == 1` (decode) and SwiGLU activation families
 /// (GEGLU's `gelu_approx` tree is known to abort under MLX compilation).
 /// Falls back to the uncompiled path on compilation failure.
-pub fn dense_ffn_compile_enabled() -> bool {
+pub(crate) fn dense_ffn_compile_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let value = *CACHED.get_or_init(|| parse_bool_env_default_on("AX_MLX_DENSE_FFN_COMPILE"));
@@ -5595,18 +5371,18 @@ env_flag!(
 /// Minimum `batch * seq` before Qwen split FFN prefill compile engages.
 /// 128 covers every formal 27B contract shape; shorter prompts stay
 /// imperative so compile tax is not paid on decode-adjacent microbenches.
-pub const QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 128;
+pub(crate) const QWEN_SPLIT_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 128;
 
 /// Minimum leading element count (product of non-last dims) before dense FFN
 /// prefill compile engages. `batch * seq` for standard `[B,S,H]` layouts;
 /// 256 covers mid-length prompts; README 128-token rows stay uncompiled
 /// so short-prompt microbenches avoid compile tax.
-pub const DENSE_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 256;
+pub(crate) const DENSE_FFN_PREFILL_COMPILE_MIN_LEADING: i64 = 256;
 
 /// Gemma 4 contract p128 leading count. Packed prefill compile normally
 /// waits for [`DENSE_FFN_PREFILL_COMPILE_MIN_LEADING`]; this shape is the
 /// measured miss (`df-macbookpro-m5` skip-f32+fused residual).
-pub const GEMMA4_PACKED_FFN_COMPILE_P128_LEADING: i64 = 128;
+pub(crate) const GEMMA4_PACKED_FFN_COMPILE_P128_LEADING: i64 = 128;
 
 env_flag!(
     /// `AX_MLX_GEMMA4_PACKED_FFN_COMPILE_P128` — at contract p128, take the
@@ -5623,7 +5399,7 @@ env_flag!(
 );
 
 /// Whether Gemma 4 contract p128 should compile packed dense FFN.
-pub fn should_gemma4_packed_ffn_compile_p128(model_family: &str, seq: i32) -> bool {
+pub(crate) fn should_gemma4_packed_ffn_compile_p128(model_family: &str, seq: i32) -> bool {
     should_gemma4_packed_ffn_compile_p128_for(
         gemma4_packed_ffn_compile_p128_enabled(),
         model_family,
@@ -5632,7 +5408,7 @@ pub fn should_gemma4_packed_ffn_compile_p128(model_family: &str, seq: i32) -> bo
 }
 
 /// Pure helper for [`should_gemma4_packed_ffn_compile_p128`].
-pub fn should_gemma4_packed_ffn_compile_p128_for(
+pub(crate) fn should_gemma4_packed_ffn_compile_p128_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
@@ -5801,7 +5577,7 @@ env_flag_default_on!(
 
 /// Prefill seq ceiling for MoE packed GeGLU Metal. Above this, fall back to
 /// split activation (large gather tensors become bandwidth-bound).
-pub const MOE_PACKED_GEGLU_PREFILL_MAX_SEQ: usize = 512;
+pub(crate) const MOE_PACKED_GEGLU_PREFILL_MAX_SEQ: usize = 512;
 
 env_flag_default_on!(
     /// `AX_MLX_F32_PACK_BF16_NORMALIZE` — cast stray F32 floating tensors
@@ -5826,7 +5602,7 @@ env_flag_default_on!(
 /// +0.6%/+0.3% at p512 — a wash within session noise, so the shipped
 /// decode-only behavior stays. `AX_MLX_MOE_SWIGLU_PREFILL_MAX_SEQ=N`
 /// remains for future-host A/Bs; default 0.
-pub fn moe_packed_swiglu_prefill_max_seq() -> usize {
+pub(crate) fn moe_packed_swiglu_prefill_max_seq() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED
         .get_or_init(|| parse_positive_usize_env("AX_MLX_MOE_SWIGLU_PREFILL_MAX_SEQ").unwrap_or(0))
@@ -5838,7 +5614,7 @@ pub fn moe_packed_swiglu_prefill_max_seq() -> usize {
 /// bandwidth-bound and the fused kernel's extra input read costs more").
 /// `AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD=N` overrides for A/B on the
 /// 35B-A3B class contract shapes.
-pub fn moe_shared_fusion_seq_threshold(default_threshold: usize) -> usize {
+pub(crate) fn moe_shared_fusion_seq_threshold(default_threshold: usize) -> usize {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     CACHED
         .get_or_init(|| parse_positive_usize_env("AX_MLX_MOE_SHARED_FUSION_SEQ_THRESHOLD"))
@@ -5856,7 +5632,7 @@ pub fn moe_shared_fusion_seq_threshold(default_threshold: usize) -> usize {
 /// `AX_MLX_MLA_PREFILL_CHUNK=N` to override (larger N trades correctness
 /// margin for prefill throughput). Returns `None` when unset/invalid;
 /// callers supply their own MLA default.
-pub fn mla_prefill_chunk_override() -> Option<usize> {
+pub(crate) fn mla_prefill_chunk_override() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MLA_PREFILL_CHUNK"))
 }
@@ -5866,13 +5642,13 @@ pub fn mla_prefill_chunk_override() -> Option<usize> {
 /// block_size so the chunked_prefill loop produces the same SDPA shape
 /// sequence whether the prompt was processed cold or restored from a
 /// snapshot and extended.
-pub const MLA_DEFAULT_PREFILL_CHUNK: usize = 16;
+pub(crate) const MLA_DEFAULT_PREFILL_CHUNK: usize = 16;
 
 /// Resolve the effective prefill chunk before any caller performs prefill
 /// work. MLA models use the MLA-specific default/override; other models keep
 /// the caller-selected value. The result is always at least one token so the
 /// chunked-prefill loop cannot receive a zero-sized chunk.
-pub fn resolve_prefill_chunk(
+pub(crate) fn resolve_prefill_chunk(
     has_mla_attention: bool,
     requested_prefill_chunk: usize,
     mla_override: Option<usize>,
@@ -5892,7 +5668,7 @@ pub fn resolve_prefill_chunk(
 /// Setting this opt-in restores the historical dual-path cold throughput
 /// experiment and can re-open warm_extend token drift — use only with the
 /// equivalence harness.
-pub fn mla_cold_prefill_chunk_override() -> Option<usize> {
+pub(crate) fn mla_cold_prefill_chunk_override() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_MLX_MLA_COLD_PREFILL_CHUNK"))
 }
@@ -5902,7 +5678,7 @@ pub fn mla_cold_prefill_chunk_override() -> Option<usize> {
 /// - Default (R2): same as warm-extend `warm_prefill_chunk` so store + cold
 ///   baselines stay token-exact under warm_extend.
 /// - Opt-in large cold: `AX_MLX_MLA_COLD_PREFILL_CHUNK=N` (throughput only).
-pub fn resolve_mla_cold_prefill_chunk(
+pub(crate) fn resolve_mla_cold_prefill_chunk(
     warm_prefill_chunk: usize,
     cold_override: Option<usize>,
 ) -> usize {
@@ -5924,7 +5700,7 @@ pub enum PrefillChunkMode {
 /// Entry-point contract (design Track A / PR2 matrix): every path that runs
 /// chunked prefill must use this rule so cold and warm trails cannot silently
 /// swap fields. Returns `(chunk_tokens, mode)`.
-pub fn select_prefill_chunk_for_request(
+pub(crate) fn select_prefill_chunk_for_request(
     seq_len: usize,
     cold_prefill_chunk: usize,
     warm_prefill_chunk: usize,
@@ -5938,15 +5714,15 @@ pub fn select_prefill_chunk_for_request(
 
 /// Long-prompt Metal-friendly prefill chunk (M5 Max Gemma-12B 4-bit pure
 /// sweep 2026-07-24: 512 tok/s-best; 1536/2048 slower).
-pub const LONG_PROMPT_PREFILL_CHUNK: usize = 512;
+pub(crate) const LONG_PROMPT_PREFILL_CHUNK: usize = 512;
 /// Remaining-prompt threshold that engages [`long_prompt_prefill_chunk`].
-pub const LONG_PROMPT_PREFILL_THRESHOLD: usize = 2048;
+pub(crate) const LONG_PROMPT_PREFILL_THRESHOLD: usize = 2048;
 
 /// Cap applied to long remaining prompts. Default
 /// [`LONG_PROMPT_PREFILL_CHUNK`]; override with
 /// `AX_MLX_LONG_PROMPT_PREFILL_CHUNK=N` for pure / S1 thr A/B of intermediate
 /// sizes (e.g. 768) that the original 512-vs-1536/2048 sweep did not cover.
-pub fn long_prompt_prefill_chunk() -> usize {
+pub(crate) fn long_prompt_prefill_chunk() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| {
         parse_positive_usize_env("AX_MLX_LONG_PROMPT_PREFILL_CHUNK")
@@ -5965,21 +5741,11 @@ pub fn long_prompt_prefill_chunk() -> usize {
 /// window is 2048, so a 512-token clamp buys no SWA trimming below the
 /// window and only splits a 2048-token prefill into four evals. Other
 /// families keep the historical clamp.
-pub fn long_prompt_prefill_clamp_applies(model_family: &str) -> bool {
+pub(crate) fn long_prompt_prefill_clamp_applies(model_family: &str) -> bool {
     !(model_family.eq_ignore_ascii_case("qwen3_5")
         || model_family.eq_ignore_ascii_case("muse_glimmer")
         || model_family.eq_ignore_ascii_case("qwen3_vl_moe")
         || model_family.eq_ignore_ascii_case("qwen3_vl"))
-}
-
-/// Scale a base prefill chunk for the remaining prompt length.
-///
-/// Long remaining prompts clamp to [`long_prompt_prefill_chunk`] so formal S1
-/// thr keeps the pure envelope when the session base is larger (e.g. 1536).
-/// Short prompts keep `base_chunk` (S0 34-token prompts are a single chunk
-/// either way, so TTFT is dominated by warmup/host, not chunk size).
-pub fn scale_prefill_chunk_for_remaining(base_chunk: usize, remaining_tokens: usize) -> usize {
-    scale_prefill_chunk_for_remaining_in_family(base_chunk, remaining_tokens, "")
 }
 
 env_flag_default_on!(
@@ -6016,12 +5782,15 @@ env_flag!(
 
 /// Drop MLX's graph/buffer cache before a cold prefill so the previous
 /// request's decode residency does not inflate `eval_kv_refs` wall.
-pub fn should_clear_mlx_cache_before_cold_prefill(seq_len: usize) -> bool {
+pub(crate) fn should_clear_mlx_cache_before_cold_prefill(seq_len: usize) -> bool {
     should_clear_mlx_cache_before_cold_prefill_for(skip_cold_prefill_cache_clear_enabled(), seq_len)
 }
 
 /// Pure helper for [`should_clear_mlx_cache_before_cold_prefill`].
-pub fn should_clear_mlx_cache_before_cold_prefill_for(skip_enabled: bool, seq_len: usize) -> bool {
+pub(crate) fn should_clear_mlx_cache_before_cold_prefill_for(
+    skip_enabled: bool,
+    seq_len: usize,
+) -> bool {
     seq_len == 0 && !skip_enabled
 }
 
@@ -6034,7 +5803,7 @@ pub fn should_clear_mlx_cache_before_cold_prefill_for(skip_enabled: bool, seq_le
 /// `muse_glimmer` (dense standard route, SWA window 2048 ≥ every contract
 /// shape) joins the list for the Wave-2 AXQ lane: its split cost is the
 /// same two-forward shape, and its sliding window never trims below 2048.
-pub fn skip_cache_only_split_for_family(model_family: &str, total_tokens: usize) -> bool {
+pub(crate) fn skip_cache_only_split_for_family(model_family: &str, total_tokens: usize) -> bool {
     if !(1..=2048).contains(&total_tokens) {
         return false;
     }
@@ -6064,7 +5833,7 @@ env_flag!(
 );
 
 /// Whether a non-final Qwen prefill chunk should async-submit KV.
-pub fn should_async_eval_intermediate_qwen_prefill(
+pub(crate) fn should_async_eval_intermediate_qwen_prefill(
     model_family: &str,
     is_final_chunk: bool,
 ) -> bool {
@@ -6076,7 +5845,7 @@ pub fn should_async_eval_intermediate_qwen_prefill(
 }
 
 /// Pure helper for [`should_async_eval_intermediate_qwen_prefill`].
-pub fn should_async_eval_intermediate_qwen_prefill_for(
+pub(crate) fn should_async_eval_intermediate_qwen_prefill_for(
     enabled: bool,
     model_family: &str,
     is_final_chunk: bool,
@@ -6098,7 +5867,7 @@ env_flag!(
 );
 
 /// Whether a non-final Qwen `--ax-direct` chunk should stay lazy.
-pub fn should_keep_lazy_intermediate_qwen_prefill(
+pub(crate) fn should_keep_lazy_intermediate_qwen_prefill(
     model_family: &str,
     is_final_chunk: bool,
     total_tokens: usize,
@@ -6112,7 +5881,7 @@ pub fn should_keep_lazy_intermediate_qwen_prefill(
 }
 
 /// Pure helper for [`should_keep_lazy_intermediate_qwen_prefill`].
-pub fn should_keep_lazy_intermediate_qwen_prefill_for(
+pub(crate) fn should_keep_lazy_intermediate_qwen_prefill_for(
     enabled: bool,
     model_family: &str,
     is_final_chunk: bool,
@@ -6124,8 +5893,14 @@ pub fn should_keep_lazy_intermediate_qwen_prefill_for(
         && skip_cache_only_split_for_family(model_family, total_tokens)
 }
 
-/// Family-aware variant of [`scale_prefill_chunk_for_remaining`].
-pub fn scale_prefill_chunk_for_remaining_in_family(
+/// Scale a base prefill chunk for the remaining prompt length.
+///
+/// Long remaining prompts clamp to [`long_prompt_prefill_chunk`] so formal S1
+/// thr keeps the pure envelope when the session base is larger (e.g. 1536).
+/// Short prompts keep `base_chunk` (S0 34-token prompts are a single chunk
+/// either way, so TTFT is dominated by warmup/host, not chunk size). The clamp
+/// is skipped for families where [`long_prompt_prefill_clamp_applies`] is false.
+pub(crate) fn scale_prefill_chunk_for_remaining_in_family(
     base_chunk: usize,
     remaining_tokens: usize,
     model_family: &str,
@@ -6143,7 +5918,7 @@ pub fn scale_prefill_chunk_for_remaining_in_family(
 /// Token count for constructor JIT warm-up. Non-MLA models keep the historical
 /// small warm-up prompt. MLA models warm at least one full effective chunk so
 /// the compiled prefill graph matches the default chunk-aligned runtime path.
-pub fn prefill_warmup_token_count(
+pub(crate) fn prefill_warmup_token_count(
     has_mla_attention: bool,
     effective_prefill_chunk: usize,
 ) -> usize {
@@ -6159,7 +5934,7 @@ pub fn prefill_warmup_token_count(
 /// Always includes the historical lightweight warm-up plus short interactive
 /// prompt shapes (32/34/64). The flip S0 contract uses 34 prompt tokens; those
 /// graphs are shape-sensitive on hybrid Qwen3.5 (linear + full attention).
-pub fn prefill_warmup_token_lengths(
+pub(crate) fn prefill_warmup_token_lengths(
     has_mla_attention: bool,
     effective_prefill_chunk: usize,
 ) -> Vec<usize> {
@@ -6176,7 +5951,7 @@ pub fn prefill_warmup_token_lengths(
 /// directory and writes snapshots there alongside the in-memory L1
 /// store. Unset by default — the disk cache is **opt-in**.
 /// Cached at first read per the module-level OnceLock contract.
-pub fn prefix_cache_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn prefix_cache_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     static CACHED: OnceLock<Option<PathBuf>> = OnceLock::new();
     CACHED
@@ -6310,17 +6085,6 @@ env_flag!(
 // Legacy opt-in names kept so older bench scripts still force-enable (no-ops
 // when the new defaults already enable the path). Prefer the `NO_*` kill
 // switches for new work.
-env_flag!(
-    /// Legacy: `AX_DIFFUSION_EMBEDDING_CACHE=1` force-enable (redundant with default ON).
-    diffusion_embedding_cache_enabled,
-    "AX_DIFFUSION_EMBEDDING_CACHE"
-);
-
-env_flag!(
-    /// Legacy: `AX_DIFFUSION_KV_CONCAT_BUFFER=1` force-enable (redundant with default ON).
-    diffusion_kv_concat_buffer_enabled,
-    "AX_DIFFUSION_KV_CONCAT_BUFFER"
-);
 
 env_flag!(
     /// `AX_DIFFUSION_NO_FULL_PIPELINE` — opt-out of the full-pipeline compiled
@@ -6425,27 +6189,27 @@ env_flag_default_on!(
 
 /// Diffusion convergence: mean entropy threshold below which strict
 /// convergence triggers. Defaults to 0.005 when unset.
-pub fn diffusion_entropy_threshold() -> Option<f32> {
+pub(crate) fn diffusion_entropy_threshold() -> Option<f32> {
     static CACHED: OnceLock<Option<f32>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_ENTROPY_THRESHOLD"))
 }
 
 /// Diffusion convergence: update-rate threshold below which adaptive
 /// convergence triggers. Defaults to 0.075 (7.5%) when unset.
-pub fn diffusion_acceptance_rate_threshold() -> Option<f32> {
+pub(crate) fn diffusion_acceptance_rate_threshold() -> Option<f32> {
     static CACHED: OnceLock<Option<f32>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_ACCEPTANCE_RATE_THRESHOLD"))
 }
 
 /// Diffusion convergence: entropy plateau delta below which plateau
 /// convergence triggers (after step 16 warmup). Defaults to 0.001 when unset.
-pub fn diffusion_entropy_plateau_delta() -> Option<f32> {
+pub(crate) fn diffusion_entropy_plateau_delta() -> Option<f32> {
     static CACHED: OnceLock<Option<f32>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_ENTROPY_PLATEAU_DELTA"))
 }
 
 /// Diffusion: maximum denoise steps per block. Defaults to 48 when unset.
-pub fn diffusion_max_steps() -> Option<usize> {
+pub(crate) fn diffusion_max_steps() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_MAX_STEPS"))
 }
@@ -6453,7 +6217,7 @@ pub fn diffusion_max_steps() -> Option<usize> {
 /// Diffusion: max denoise steps to run per engine decode call when multi-step
 /// scheduling is enabled. `None` / unset means monoblock (run until
 /// convergence or `max_denoise_steps` inside one call).
-pub fn diffusion_steps_per_engine_step() -> Option<usize> {
+pub(crate) fn diffusion_steps_per_engine_step() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_STEPS_PER_ENGINE_STEP"))
 }
@@ -6462,7 +6226,7 @@ pub fn diffusion_steps_per_engine_step() -> Option<usize> {
 /// step). Larger values reduce per-step scalar evals (negligible — see A/B) but
 /// detect convergence on a coarser grid, overshooting the true convergence step
 /// and wasting denoise passes. Kept as an override for benchmarking only.
-pub fn diffusion_check_interval() -> Option<usize> {
+pub(crate) fn diffusion_check_interval() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_CHECK_INTERVAL"))
 }
@@ -6470,7 +6234,7 @@ pub fn diffusion_check_interval() -> Option<usize> {
 /// Diffusion sampler strategy override. Returns the raw env-var string when
 /// `AX_DIFFUSION_SAMPLER` is set (e.g. `"confidence_threshold"` or
 /// `"entropy_bound"`). The caller maps the string to `DiffusionSampler`.
-pub fn diffusion_sampler() -> Option<String> {
+pub(crate) fn diffusion_sampler() -> Option<String> {
     static CACHED: OnceLock<Option<String>> = OnceLock::new();
     CACHED
         .get_or_init(|| {
@@ -6483,7 +6247,7 @@ pub fn diffusion_sampler() -> Option<String> {
 
 /// Diffusion confidence-threshold sampler: accept positions whose peak
 /// softmax probability exceeds this value. Defaults to 0.9 when unset.
-pub fn diffusion_confidence_threshold() -> Option<f32> {
+pub(crate) fn diffusion_confidence_threshold() -> Option<f32> {
     static CACHED: OnceLock<Option<f32>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_CONFIDENCE_THRESHOLD"))
 }
@@ -6491,7 +6255,7 @@ pub fn diffusion_confidence_threshold() -> Option<f32> {
 /// Diffusion temperature schedule override. Returns the raw env-var string
 /// when `AX_DIFFUSION_TEMPERATURE_SCHEDULE` is set (e.g. `"exponential"` or
 /// `"linear"`). `None` keeps the manifest default (Linear).
-pub fn diffusion_temperature_schedule() -> Option<String> {
+pub(crate) fn diffusion_temperature_schedule() -> Option<String> {
     static CACHED: OnceLock<Option<String>> = OnceLock::new();
     CACHED
         .get_or_init(|| {
@@ -6506,7 +6270,7 @@ pub fn diffusion_temperature_schedule() -> Option<String> {
 /// rate exceeds this value, the expensive `prob × embed_table` matmul is
 /// skipped because the self-conditioning signal barely changes. Defaults to
 /// 0.95 when unset.
-pub fn diffusion_sc_skip_acceptance_rate() -> Option<f32> {
+pub(crate) fn diffusion_sc_skip_acceptance_rate() -> Option<f32> {
     static CACHED: OnceLock<Option<f32>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_SC_SKIP_ACCEPTANCE_RATE"))
 }
@@ -6516,7 +6280,7 @@ pub fn diffusion_sc_skip_acceptance_rate() -> Option<f32> {
 /// value (including unset or non-numeric) falls back to the historical default
 /// of `4`. The value is read without trimming, matching the original dispatch
 /// site's exact parse.
-pub fn gated_delta_verify_threadgroup_y_env() -> i32 {
+pub(crate) fn gated_delta_verify_threadgroup_y_env() -> i32 {
     static CACHED: OnceLock<i32> = OnceLock::new();
     *CACHED.get_or_init(|| {
         gated_delta_verify_threadgroup_y_env_for(
@@ -6526,7 +6290,7 @@ pub fn gated_delta_verify_threadgroup_y_env() -> i32 {
 }
 
 /// Pure parser for `AX_MLX_MTP_GDN_TGY`.
-pub fn gated_delta_verify_threadgroup_y_env_for(raw: Option<&str>) -> i32 {
+pub(crate) fn gated_delta_verify_threadgroup_y_env_for(raw: Option<&str>) -> i32 {
     raw.and_then(|value| value.parse::<i32>().ok())
         .filter(|value| matches!(value, 4 | 8 | 16 | 32))
         .unwrap_or(4)
@@ -6535,7 +6299,7 @@ pub fn gated_delta_verify_threadgroup_y_env_for(raw: Option<&str>) -> i32 {
 /// `AX_MLX_MULTIMODAL_PREFIX_REUSE` — process gate for multimodal prefix
 /// reuse (WS-M3 / R-M3). Default off; engaged by a case-insensitive
 /// `1` / `true` / `on` / `yes` after trimming ASCII whitespace.
-pub fn multimodal_prefix_reuse_enabled() -> bool {
+pub(crate) fn multimodal_prefix_reuse_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
         multimodal_prefix_reuse_for(
@@ -6549,7 +6313,7 @@ pub fn multimodal_prefix_reuse_enabled() -> bool {
 /// Pure parser for `AX_MLX_MULTIMODAL_PREFIX_REUSE`. Note this accepts `on`
 /// in addition to the shared `parse_bool_value` set (`1`/`true`/`yes`), so it
 /// keeps its own accepted set rather than reusing the common parser.
-pub fn multimodal_prefix_reuse_for(raw: Option<&str>) -> bool {
+pub(crate) fn multimodal_prefix_reuse_for(raw: Option<&str>) -> bool {
     raw.is_some_and(|value| {
         let value = value.trim().to_ascii_lowercase();
         value == "1" || value == "true" || value == "on" || value == "yes"
@@ -6559,9 +6323,9 @@ pub fn multimodal_prefix_reuse_for(raw: Option<&str>) -> bool {
 /// `AX_EMBED_MEAN_COMPILE_THRESHOLD` — minimum `batch_size * max_seq_len`
 /// before the mean-pool compiled embedding closure is attempted. Defaults to
 /// 512; read without trimming, matching the original dispatch site.
-pub const EMBED_MEAN_COMPILE_DEFAULT_THRESHOLD: usize = 512;
+pub(crate) const EMBED_MEAN_COMPILE_DEFAULT_THRESHOLD: usize = 512;
 
-pub fn embed_mean_compile_threshold() -> usize {
+pub(crate) fn embed_mean_compile_threshold() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| {
         embed_mean_compile_threshold_for(
@@ -6573,7 +6337,7 @@ pub fn embed_mean_compile_threshold() -> usize {
 }
 
 /// Pure parser for `AX_EMBED_MEAN_COMPILE_THRESHOLD`.
-pub fn embed_mean_compile_threshold_for(raw: Option<&str>) -> usize {
+pub(crate) fn embed_mean_compile_threshold_for(raw: Option<&str>) -> usize {
     raw.and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(EMBED_MEAN_COMPILE_DEFAULT_THRESHOLD)
 }
@@ -6582,7 +6346,7 @@ pub fn embed_mean_compile_threshold_for(raw: Option<&str>) -> usize {
 /// exact replay path. Default off; any value other than the exact byte string
 /// `"0"` engages the switch (no trimming), matching the original decode-step
 /// site.
-pub fn mtp_linear_exact_replay_enabled() -> bool {
+pub(crate) fn mtp_linear_exact_replay_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
         mtp_linear_exact_replay_for(
@@ -6594,14 +6358,14 @@ pub fn mtp_linear_exact_replay_enabled() -> bool {
 }
 
 /// Pure parser for `AX_MLX_MTP_LINEAR_EXACT_REPLAY`.
-pub fn mtp_linear_exact_replay_for(raw: Option<&str>) -> bool {
+pub(crate) fn mtp_linear_exact_replay_for(raw: Option<&str>) -> bool {
     raw.map(|value| value != "0").unwrap_or(false)
 }
 
 /// `AX_MLX_MTP_NGRAM_CACHE_POLICY` — whether an n-gram-filled draft window
 /// preserves (advances) the MTP cache instead of resetting it. Default true;
 /// only the exact byte string `"reset"` (no trimming) disables preservation.
-pub fn mtp_ngram_cache_preserved() -> bool {
+pub(crate) fn mtp_ngram_cache_preserved() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
         mtp_ngram_cache_preserved_for(
@@ -6613,7 +6377,7 @@ pub fn mtp_ngram_cache_preserved() -> bool {
 }
 
 /// Pure parser for `AX_MLX_MTP_NGRAM_CACHE_POLICY`.
-pub fn mtp_ngram_cache_preserved_for(raw: Option<&str>) -> bool {
+pub(crate) fn mtp_ngram_cache_preserved_for(raw: Option<&str>) -> bool {
     raw.map(|value| value != "reset").unwrap_or(true)
 }
 
@@ -6621,7 +6385,7 @@ pub fn mtp_ngram_cache_preserved_for(raw: Option<&str>) -> bool {
 /// multi-token path. Default off; engaged by the exact byte string `"1"` or a
 /// case-insensitive `"true"` (no trimming), matching the original forward
 /// site.
-pub fn gemma4_moe_long_mt_enabled() -> bool {
+pub(crate) fn gemma4_moe_long_mt_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
         gemma4_moe_long_mt_for(std::env::var("AX_MLX_GEMMA4_MOE_LONG_MT").ok().as_deref())
@@ -6629,7 +6393,7 @@ pub fn gemma4_moe_long_mt_enabled() -> bool {
 }
 
 /// Pure parser for `AX_MLX_GEMMA4_MOE_LONG_MT`.
-pub fn gemma4_moe_long_mt_for(raw: Option<&str>) -> bool {
+pub(crate) fn gemma4_moe_long_mt_for(raw: Option<&str>) -> bool {
     raw.map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
@@ -6645,7 +6409,7 @@ pub enum Gemma4LoopDetectionMode {
     Default,
 }
 
-pub fn gemma4_loop_detection_mode() -> Gemma4LoopDetectionMode {
+pub(crate) fn gemma4_loop_detection_mode() -> Gemma4LoopDetectionMode {
     static CACHED: OnceLock<Gemma4LoopDetectionMode> = OnceLock::new();
     *CACHED.get_or_init(|| {
         gemma4_loop_detection_mode_for(std::env::var("AX_GEMMA4_LOOP_DETECTION").ok().as_deref())
@@ -6653,7 +6417,7 @@ pub fn gemma4_loop_detection_mode() -> Gemma4LoopDetectionMode {
 }
 
 /// Pure parser for `AX_GEMMA4_LOOP_DETECTION`.
-pub fn gemma4_loop_detection_mode_for(raw: Option<&str>) -> Gemma4LoopDetectionMode {
+pub(crate) fn gemma4_loop_detection_mode_for(raw: Option<&str>) -> Gemma4LoopDetectionMode {
     let env = raw.unwrap_or("on").trim().to_ascii_lowercase();
     match env.as_str() {
         "off" | "0" | "false" | "no" => Gemma4LoopDetectionMode::Off,
@@ -7011,17 +6775,9 @@ mod tests {
         assert!(!super::fused_prefill_attention_family_supported(
             "glm4_moe_lite"
         ));
-        assert!(
-            !super::fused_prefill_attention_should_try("qwen3_5"),
-            "Qwen fused prefill stays default-OFF after 895 vs 891"
-        );
         assert!(!super::fused_prefill_qwen_skip_offset("qwen3_5", false));
         assert!(super::fused_prefill_qwen_skip_offset("qwen3_5", true));
         assert!(!super::fused_prefill_qwen_skip_offset("gemma4", true));
-        assert!(
-            !super::fused_prefill_attention_should_try("gemma4"),
-            "Gemma fused prefill without a seq stays default-OFF"
-        );
         assert!(
             !super::fused_prefill_attention_should_try_for_seq("gemma4", 512),
             "Gemma p512 fused prefill stays default-OFF"
@@ -7340,30 +7096,6 @@ mod tests {
         );
         assert!(!should_qwen_la_post_input_compile_for(true, 1));
         assert!(!should_qwen_la_post_input_compile_for(false, 1024));
-    }
-
-    #[test]
-    fn qwen_la_dual_stream_qkvz_ba_is_seq_gated() {
-        assert!(should_qwen_la_dual_stream_qkvz_ba_for(true, 1024));
-        assert!(should_qwen_la_dual_stream_qkvz_ba_for(true, 2048));
-        assert!(
-            !should_qwen_la_dual_stream_qkvz_ba_for(true, 512),
-            "512-token LA dual-stream stays closed"
-        );
-        assert!(!should_qwen_la_dual_stream_qkvz_ba_for(true, 1));
-        assert!(!should_qwen_la_dual_stream_qkvz_ba_for(false, 1024));
-    }
-
-    #[test]
-    fn qwen_la_flat_inputs_is_seq_gated() {
-        assert!(should_qwen_la_flat_inputs_for(true, 1024));
-        assert!(should_qwen_la_flat_inputs_for(true, 2048));
-        assert!(
-            !should_qwen_la_flat_inputs_for(true, 512),
-            "512-token LA flatten stays closed"
-        );
-        assert!(!should_qwen_la_flat_inputs_for(true, 1));
-        assert!(!should_qwen_la_flat_inputs_for(false, 1024));
     }
 
     #[test]
@@ -9698,23 +9430,6 @@ mod tests {
     }
 
     #[test]
-    fn scale_prefill_chunk_for_remaining_clamps_long_prompts_only() {
-        assert_eq!(scale_prefill_chunk_for_remaining(1536, 34), 1536);
-        assert_eq!(scale_prefill_chunk_for_remaining(512, 34), 512);
-        assert_eq!(scale_prefill_chunk_for_remaining(1024, 512), 1024);
-        assert_eq!(
-            scale_prefill_chunk_for_remaining(1536, LONG_PROMPT_PREFILL_THRESHOLD),
-            long_prompt_prefill_chunk()
-        );
-        assert_eq!(
-            scale_prefill_chunk_for_remaining(1536, 13_826),
-            long_prompt_prefill_chunk().min(1536)
-        );
-        assert_eq!(scale_prefill_chunk_for_remaining(256, 13_826), 256);
-        assert_eq!(scale_prefill_chunk_for_remaining(0, 100), 1);
-    }
-
-    #[test]
     fn long_prompt_prefill_clamp_skips_qwen3_5() {
         assert!(!long_prompt_prefill_clamp_applies("qwen3_5"));
         assert!(!long_prompt_prefill_clamp_applies("QWEN3_5"));
@@ -9905,24 +9620,6 @@ mod tests {
             "fresh-layer first write is the only exact-size site"
         );
         assert!(!should_exact_size_first_kv_for(true, 128));
-    }
-
-    #[test]
-    fn compiled_qgelu_axq_p128_is_layout_and_seq_gated() {
-        assert!(should_compiled_qgelu_axq_p128_for(true, 32, 4, 128));
-        assert!(
-            !should_compiled_qgelu_axq_p128_for(true, 64, 4, 128),
-            "community gs64/bits=4 stays on the shapeless #680 path"
-        );
-        assert!(
-            !should_compiled_qgelu_axq_p128_for(true, 32, 4, 512),
-            "p512 must stay portable so the p128 compile cannot regress longer cells"
-        );
-        assert!(!should_compiled_qgelu_axq_p128_for(true, 32, 4, 2048));
-        assert!(!should_compiled_qgelu_axq_p128_for(true, 32, 4, 1));
-        assert!(!should_compiled_qgelu_axq_p128_for(true, 32, 8, 128));
-        assert!(!should_compiled_qgelu_axq_p128_for(true, 0, 4, 128));
-        assert!(!should_compiled_qgelu_axq_p128_for(false, 32, 4, 128));
     }
 
     #[test]
