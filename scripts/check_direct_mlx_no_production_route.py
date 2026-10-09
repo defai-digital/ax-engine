@@ -19,6 +19,7 @@ BANNED_RE = re.compile(r"\b(" + "|".join(re.escape(symbol) for symbol in BANNED_
 DEFAULT_SCAN_ROOTS = (Path("crates"),)
 ALLOWED_PATHS = {
     Path("crates/mlx-sys/src/ops.rs"),
+    Path("crates/mlx-sys/src/ops/tests.rs"),
     Path("crates/mlx-sys/src/bin/direct-mlx-hotpath-probe.rs"),
 }
 ALLOWED_PREFIXES = (

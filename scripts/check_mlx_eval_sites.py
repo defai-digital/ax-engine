@@ -11,7 +11,9 @@ visible in review instead of silently growing the panic surface.
 Counting rules (kept deliberately simple and deterministic):
 - scope: ``crates/ax-engine-mlx/src/**/*.rs`` excluding ``bin/`` and
   ``decode_trace_main.rs`` (probe binaries are not serving paths);
-- lines inside ``#[cfg(test)] mod`` blocks are excluded via brace tracking;
+- lines inside ``#[cfg(test)] mod`` blocks are excluded via brace tracking, and
+  externalized test modules (``tests.rs``, ``*_tests.rs``, ``*_tests/``) are
+  skipped as whole files;
 - ``//`` comment lines and string-free doc lines are excluded;
 - matches ``\\b(async_eval|try_eval|eval_first_u32|eval)\\s*(\\(|::<)``.
   ``try_eval`` is counted separately: converting a bare ``eval`` site to
@@ -99,11 +101,17 @@ def count_file(path: pathlib.Path) -> dict[str, int]:
     return counts
 
 
+def is_test_file(rel: str) -> bool:
+    """Externalized test modules (`tests.rs`, `*_tests.rs`, `*_tests/`)."""
+    name = rel.rsplit("/", 1)[-1]
+    return name == "tests.rs" or name.endswith("_tests.rs") or "_tests/" in rel
+
+
 def scan() -> dict[str, dict[str, int]]:
     inventory: dict[str, dict[str, int]] = {}
     for path in sorted(SCAN_ROOT.rglob("*.rs")):
         rel = path.relative_to(ROOT).as_posix()
-        if "/bin/" in rel or rel.endswith("decode_trace_main.rs"):
+        if "/bin/" in rel or rel.endswith("decode_trace_main.rs") or is_test_file(rel):
             continue
         counts = count_file(path)
         if counts:
