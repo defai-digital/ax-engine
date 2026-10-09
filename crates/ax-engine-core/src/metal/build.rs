@@ -587,7 +587,7 @@ impl MetalKernelAssets {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetalKernelBinary {
+pub(crate) struct MetalKernelBinary {
     pub path: PathBuf,
     pub bytes: Vec<u8>,
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug)]
-pub struct MetalBringupSampler {
+pub(crate) struct MetalBringupSampler {
     bringup: MetalRuntimeBringup,
     // Pre-allocated fixed-size output buffers reused across sample calls (buffer(1) and buffer(2)
     // in sample_argmax_logprob_f32: argmax output u32, logprob output f32).

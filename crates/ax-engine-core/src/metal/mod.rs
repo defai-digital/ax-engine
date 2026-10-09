@@ -97,14 +97,14 @@ pub(crate) const PHASE1_NUMERIC_HEAD_DIM: u32 = 4;
 pub(crate) const PHASE1_NUMERIC_HEAD_SIZE: u32 =
     PHASE1_NUMERIC_HEAD_COUNT * PHASE1_NUMERIC_HEAD_DIM;
 pub(crate) const PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD: u32 = 3;
-pub const PHASE1_REQUIRED_METAL_KERNELS: &[&str] = &[
+pub(crate) const PHASE1_REQUIRED_METAL_KERNELS: &[&str] = &[
     "reshape_and_cache",
     "paged_decode_attention",
     "gather_kv_cache",
     "copy_blocks",
 ];
 pub(crate) const PHASE1_DEFERRED_METAL_KERNELS: &[&str] = &["swap_blocks"];
-pub const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
+pub(crate) const PHASE1_OPTIONAL_METAL_KERNELS: &[&str] = &[
     "kv_scale_update",
     "vector_add_f32",
     "row_scale_f32",
@@ -207,7 +207,7 @@ pub struct MetalThreadgroupSize {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct MetalDeviceInfo {
+pub(crate) struct MetalDeviceInfo {
     pub name: String,
     pub registry_id: u64,
     pub low_power: bool,
@@ -218,7 +218,7 @@ pub struct MetalDeviceInfo {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct MetalComputePipelineInfo {
+pub(crate) struct MetalComputePipelineInfo {
     pub function_name: String,
     pub thread_execution_width: u64,
     pub max_total_threads_per_threadgroup: u64,
@@ -245,7 +245,7 @@ pub struct MetalBinaryArchiveInfo {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct MetalRuntimeBringupReport {
+pub(crate) struct MetalRuntimeBringupReport {
     pub library_name: String,
     pub metallib_path: PathBuf,
     pub device: MetalDeviceInfo,
@@ -259,7 +259,7 @@ pub struct MetalRuntimeBringupReport {
     pub model: Option<NativeModelArtifactsSummary>,
 }
 
-pub struct MetalRuntimeBringup {
+pub(crate) struct MetalRuntimeBringup {
     assets: MetalKernelAssets,
     metallib: MetalKernelBinary,
     report: MetalRuntimeBringupReport,
@@ -2104,7 +2104,7 @@ impl MetalPersistentLayerKvCache {
     }
 }
 
-pub struct MetalBringupRunner {
+pub(crate) struct MetalBringupRunner {
     bringup: MetalRuntimeBringup,
     model_artifacts: Option<NativeModelArtifacts>,
     model_bindings: Option<MetalNativeModelBindings>,
@@ -2586,7 +2586,7 @@ impl ExecutionRunner for MetalBringupRunner {
 /// This surface intentionally validates manifests, metallib loading, and
 /// supported block sizes without presenting itself as an execution backend.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetalAssetValidator {
+pub(crate) struct MetalAssetValidator {
     assets: MetalKernelAssets,
     metallib: MetalKernelBinary,
     resolved_kernel_names: Vec<String>,
