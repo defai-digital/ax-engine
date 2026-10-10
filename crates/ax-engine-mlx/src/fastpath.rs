@@ -1,11 +1,13 @@
 //! Environment-backed optimization flags for ax-engine-mlx fast paths.
 //!
 //! Each accessor reads its environment variable once per process and caches
-//! the result in a `OnceLock`. For opt-in flags, the value is parsed
-//! case-insensitively after trimming ASCII whitespace; `1`, `true`, or `yes`
-//! (any casing) engages the flag. Any other value (including unset) leaves the
-//! flag disabled. Default-on flags use a separate parser and must document their
-//! kill-switch semantics at the accessor.
+//! the result in a `OnceLock`. Every flag is parsed by [`env_flag`] (opt-in)
+//! or [`env_flag_default_on`] (kill switch): the value is parsed
+//! case-insensitively after trimming ASCII whitespace and `1`, `true`, `yes`,
+//! or `on` (any casing) engages the flag. Any other value (including unset)
+//! leaves an opt-in flag disabled; a default-on flag stays enabled when unset
+//! and must be killed with an explicit non-truthy value. Default-on accessors
+//! document their kill-switch semantics at the accessor.
 //!
 //! The pattern intentionally mirrors DS4's `ds4_metal_get_*` shape-gated
 //! pipeline cache: every fast path declares an explicit predicate, a documented
@@ -51,14 +53,14 @@ pub(crate) fn mtp_fixed_draft_depth() -> Option<usize> {
 /// This does not enable MTP or alter target verification.
 pub(crate) fn mtp_conservative_depth_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| parse_bool_env("AX_MLX_MTP_CONSERVATIVE_DEPTH"))
+    *CACHED.get_or_init(|| env_flag("AX_MLX_MTP_CONSERVATIVE_DEPTH"))
 }
 
 /// `AX_MLX_MTP_DEPTH3_HYSTERESIS` — keep a three-token proposal window after
 /// accepting its first two drafts. Also engaged by throughput MTP.
 pub(crate) fn mtp_depth3_hysteresis_enabled() -> bool {
     static ENV: OnceLock<bool> = OnceLock::new();
-    *ENV.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_HYSTERESIS"))
+    *ENV.get_or_init(|| env_flag("AX_MLX_MTP_DEPTH3_HYSTERESIS"))
         || qwen_linear_throughput_mtp_enabled()
 }
 
@@ -67,46 +69,32 @@ pub(crate) fn mtp_depth3_hysteresis_enabled() -> bool {
 /// restores depth three on the next cycle. Also engaged by throughput MTP.
 pub(crate) fn mtp_depth3_miss_backoff_enabled() -> bool {
     static ENV: OnceLock<bool> = OnceLock::new();
-    *ENV.get_or_init(|| parse_bool_env("AX_MLX_MTP_DEPTH3_MISS_BACKOFF"))
+    *ENV.get_or_init(|| env_flag("AX_MLX_MTP_DEPTH3_MISS_BACKOFF"))
         || qwen_linear_throughput_mtp_enabled()
 }
 
+/// Truthy flag spellings: `1`, `true`, `yes`, `on` (ASCII case-insensitive,
+/// surrounding ASCII whitespace ignored). Every other value is falsy.
 fn parse_bool_value(raw: &str) -> bool {
-    let trimmed = raw.trim();
+    let trimmed = raw.trim_ascii();
     trimmed.eq_ignore_ascii_case("1")
         || trimmed.eq_ignore_ascii_case("true")
         || trimmed.eq_ignore_ascii_case("yes")
+        || trimmed.eq_ignore_ascii_case("on")
 }
 
-fn parse_bool_env(var: &str) -> bool {
-    let Ok(raw) = std::env::var(var) else {
-        return false;
-    };
-    parse_bool_value(&raw)
+/// Read `name` as an opt-in flag. Only the [`parse_bool_value`] truthy
+/// spellings engage it; unset or any other value (including junk and empty)
+/// is `false`.
+pub(crate) fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|raw| parse_bool_value(&raw))
 }
 
-/// Parse an env var as a kill switch. Returns `true` when unset or set to a
-/// truthy value (`1`/`true`/`yes`); returns `false` only when explicitly set
-/// to a falsy value (`0`/`false`/`no`). Used by accessors that default ON in
-/// production but expose an off-switch for safety.
-fn parse_bool_env_default_on(var: &str) -> bool {
-    let Ok(raw) = std::env::var(var) else {
-        return true;
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return true;
-    }
-    if trimmed.eq_ignore_ascii_case("0")
-        || trimmed.eq_ignore_ascii_case("false")
-        || trimmed.eq_ignore_ascii_case("no")
-        || trimmed.eq_ignore_ascii_case("off")
-    {
-        return false;
-    }
-    // Any non-empty / non-falsy value is treated as truthy. Matches the
-    // existing `parse_bool_env` semantics for the explicit-on case.
-    true
+/// Read `name` as a default-on kill switch: unset is `true`; a set value is
+/// parsed with the same [`parse_bool_value`] truthy set, so `0`, `false`,
+/// `off`, `no`, empty, and junk values all disable the flag.
+pub(crate) fn env_flag_default_on(name: &str) -> bool {
+    std::env::var(name).map_or(true, |raw| parse_bool_value(&raw))
 }
 
 fn parse_positive_usize_env(var: &str) -> Option<usize> {
@@ -130,14 +118,14 @@ macro_rules! env_flag {
         $(#[$meta])*
         pub fn $fn_name() -> bool {
             static CACHED: OnceLock<bool> = OnceLock::new();
-            *CACHED.get_or_init(|| parse_bool_env($env_var))
+            *CACHED.get_or_init(|| env_flag($env_var))
         }
     };
     ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
         $(#[$meta])*
         pub(crate) fn $fn_name() -> bool {
             static CACHED: OnceLock<bool> = OnceLock::new();
-            *CACHED.get_or_init(|| parse_bool_env($env_var))
+            *CACHED.get_or_init(|| env_flag($env_var))
         }
     };
 }
@@ -150,14 +138,14 @@ macro_rules! env_flag_default_on {
         $(#[$meta])*
         pub fn $fn_name() -> bool {
             static CACHED: OnceLock<bool> = OnceLock::new();
-            *CACHED.get_or_init(|| parse_bool_env_default_on($env_var))
+            *CACHED.get_or_init(|| env_flag_default_on($env_var))
         }
     };
     ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
         $(#[$meta])*
         pub(crate) fn $fn_name() -> bool {
             static CACHED: OnceLock<bool> = OnceLock::new();
-            *CACHED.get_or_init(|| parse_bool_env_default_on($env_var))
+            *CACHED.get_or_init(|| env_flag_default_on($env_var))
         }
     };
 }
@@ -2003,7 +1991,7 @@ env_flag!(
 /// `generate.rs`). Diagnostic only.
 pub(crate) fn prefill_time_debug_env() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| parse_bool_env("AX_MLX_PREFILL_TIME_DEBUG"))
+    *ENABLED.get_or_init(|| env_flag("AX_MLX_PREFILL_TIME_DEBUG"))
 }
 
 /// Multi-model (sibling-resident) prefill-rotation hint.
@@ -5313,7 +5301,7 @@ env_flag!(
 pub(crate) fn dense_ffn_compile_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let value = *CACHED.get_or_init(|| parse_bool_env_default_on("AX_MLX_DENSE_FFN_COMPILE"));
+    let value = *CACHED.get_or_init(|| env_flag_default_on("AX_MLX_DENSE_FFN_COMPILE"));
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         tracing::info!(
             target = "ax_engine_mlx",
@@ -6298,8 +6286,8 @@ pub(crate) fn gated_delta_verify_threadgroup_y_env_for(raw: Option<&str>) -> i32
 }
 
 /// `AX_MLX_MULTIMODAL_PREFIX_REUSE` — process gate for multimodal prefix
-/// reuse (WS-M3 / R-M3). Default off; engaged by a case-insensitive
-/// `1` / `true` / `on` / `yes` after trimming ASCII whitespace.
+/// reuse (WS-M3 / R-M3). Default off; engaged by the shared truthy spellings
+/// (`1` / `true` / `yes` / `on`, ASCII case-insensitive after trimming).
 pub(crate) fn multimodal_prefix_reuse_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -6311,14 +6299,10 @@ pub(crate) fn multimodal_prefix_reuse_enabled() -> bool {
     })
 }
 
-/// Pure parser for `AX_MLX_MULTIMODAL_PREFIX_REUSE`. Note this accepts `on`
-/// in addition to the shared `parse_bool_value` set (`1`/`true`/`yes`), so it
-/// keeps its own accepted set rather than reusing the common parser.
+/// Pure parser for `AX_MLX_MULTIMODAL_PREFIX_REUSE`; delegates to the shared
+/// [`parse_bool_value`] truthy set.
 pub(crate) fn multimodal_prefix_reuse_for(raw: Option<&str>) -> bool {
-    raw.is_some_and(|value| {
-        let value = value.trim().to_ascii_lowercase();
-        value == "1" || value == "true" || value == "on" || value == "yes"
-    })
+    raw.is_some_and(parse_bool_value)
 }
 
 /// `AX_EMBED_MEAN_COMPILE_THRESHOLD` — minimum `batch_size * max_seq_len`

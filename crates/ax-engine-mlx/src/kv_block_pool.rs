@@ -30,38 +30,25 @@ use mlx_sys::{
     MlxArray, MlxDtype, concatenate, reshape, slice, slice_update, take, transpose, zeros,
 };
 
-fn env_flag_enabled(raw: Option<&str>) -> bool {
-    raw.is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-}
-
 /// Opt-in flag for FA private block-pool path in [`crate::kv_cache::MlxKVCache`].
 /// Default: OFF.
 pub(crate) fn fa_kv_block_pool_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        let raw = std::env::var("AX_MLX_FA_KV_BLOCK_POOL").ok();
-        env_flag_enabled(raw.as_deref())
-    })
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_FA_KV_BLOCK_POOL"))
 }
 
 /// Second opt-in gate for one runner-wide FA pool plus native prefix sharing.
 /// The caller must also require [`fa_kv_block_pool_enabled`]. Default: OFF.
 pub(crate) fn fa_kv_block_sharing_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        let raw = std::env::var("AX_MLX_FA_KV_BLOCK_SHARING").ok();
-        env_flag_enabled(raw.as_deref())
-    })
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_FA_KV_BLOCK_SHARING"))
 }
 
 /// Third opt-in gate for the diagnostic native block-table kernel.
 /// The runner also requires the base pool and sharing flags. Default: OFF.
 pub(crate) fn fa_native_paged_attention_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        let raw = std::env::var("AX_MLX_FA_NATIVE_PAGED_ATTENTION").ok();
-        env_flag_enabled(raw.as_deref())
-    })
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_FA_NATIVE_PAGED_ATTENTION"))
 }
 
 /// Default private-pool geometry when the env flag is on.
@@ -1340,17 +1327,6 @@ mod tests {
             shape,
             MlxDtype::Float32,
         )
-    }
-
-    #[test]
-    fn env_flags_accept_only_documented_truthy_values() {
-        assert!(!env_flag_enabled(None));
-        assert!(!env_flag_enabled(Some("")));
-        assert!(!env_flag_enabled(Some("0")));
-        assert!(!env_flag_enabled(Some("yes")));
-        assert!(env_flag_enabled(Some("1")));
-        assert!(env_flag_enabled(Some("true")));
-        assert!(env_flag_enabled(Some("TRUE")));
     }
 
     #[test]

@@ -28,21 +28,16 @@ use crate::model::{ModelConfig, decode_batched_forward};
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 /// `AX_MLX_BATCHED_DECODE` — route certified eligible decode requests through a
-/// shared batched forward. **Default: ON**; `0`/`false`/`off`/`no` is the
-/// operator kill switch. Certification and structural gates remain fail-closed.
+/// shared batched forward. **Default: ON**; `0`/`false`/`off`/`no` (or any
+/// other non-truthy explicit value) is the operator kill switch. Certification
+/// and structural gates remain fail-closed.
 /// The batched path holds KV in the session rather than each request's
 /// `MlxKVCache`; the core keeps its logical block ledger, while runner state is
 /// released whenever a request is preempted or reaches a terminal state. A
 /// scheduler-deferred resident is first written back to its private cache.
 pub fn batched_decode_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| match std::env::var("AX_MLX_BATCHED_DECODE") {
-        Err(_) => true,
-        Ok(raw) => !matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "off" | "no"
-        ),
-    })
+    *ENABLED.get_or_init(|| crate::fastpath::env_flag_default_on("AX_MLX_BATCHED_DECODE"))
 }
 
 /// `AX_MLX_BATCHED_DECODE_SAMPLING` — additionally admit **host-sampled**
@@ -59,12 +54,7 @@ pub fn batched_decode_enabled() -> bool {
 /// Until it does, sampled batching stays behind an additional opt-in.
 pub fn batched_decode_sampling_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("AX_MLX_BATCHED_DECODE_SAMPLING").as_deref(),
-            Ok("1") | Ok("true") | Ok("yes")
-        )
-    })
+    *ENABLED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_BATCHED_DECODE_SAMPLING"))
 }
 
 /// `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED` — permit the experimental
@@ -72,21 +62,7 @@ pub fn batched_decode_sampling_enabled() -> bool {
 /// **Default: OFF.** This is a diagnostic override, not a production setting.
 pub fn batched_decode_allow_uncertified() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED").as_deref(),
-            Ok("1") | Ok("true") | Ok("yes")
-        )
-    })
-}
-
-fn mtp_multirow_batch_setting(raw: Option<&str>) -> bool {
-    raw.is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "on" | "yes"
-        )
-    })
+    *ENABLED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED"))
 }
 
 /// `AX_MLX_MTP_MULTIROW_BATCH` — suspend depth-one Qwen linear MTP when at
@@ -102,9 +78,7 @@ fn mtp_multirow_batch_setting(raw: Option<&str>) -> bool {
 /// retain singleton MTP.
 pub(crate) fn mtp_multirow_batch_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        mtp_multirow_batch_setting(std::env::var("AX_MLX_MTP_MULTIROW_BATCH").ok().as_deref())
-    })
+    *ENABLED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_MULTIROW_BATCH"))
 }
 
 /// Batch-size buckets for the batched decode forward (Phase 3 "B-buckets").
@@ -667,17 +641,6 @@ impl BatchedDecodeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mtp_multirow_batch_requires_explicit_opt_in() {
-        assert!(!mtp_multirow_batch_setting(None));
-        for enabled in ["1", "true", "on", "yes", " ON "] {
-            assert!(mtp_multirow_batch_setting(Some(enabled)), "{enabled}");
-        }
-        for disabled in ["0", "false", "off", "no", "default", "", "unexpected"] {
-            assert!(!mtp_multirow_batch_setting(Some(disabled)), "{disabled}");
-        }
-    }
 
     #[test]
     fn can_seed_rejects_visual_mrope_position_delta() {

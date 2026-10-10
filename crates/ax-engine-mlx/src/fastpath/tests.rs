@@ -6,7 +6,7 @@ fn probe(name: &str, value: &str) -> bool {
     unsafe {
         std::env::set_var(name, value);
     }
-    let observed = parse_bool_env(name);
+    let observed = env_flag(name);
     unsafe {
         std::env::remove_var(name);
     }
@@ -14,12 +14,14 @@ fn probe(name: &str, value: &str) -> bool {
 }
 
 #[test]
-fn parse_bool_env_treats_truthy_values_as_engaged() {
+fn env_flag_treats_documented_truthy_spellings_as_engaged() {
     // Exercises canonical casing, all-upper, mixed case, and surrounding
     // whitespace to lock in the parser contract documented at the module
-    // level.
+    // level. `on`/`yes` are the spellings the pre-unification local parsers
+    // silently read as off (e.g. `AX_MLX_FA_KV_BLOCK_POOL=on`).
     for value in [
-        "1", "true", "TRUE", "True", "tRuE", "yes", "YES", "Yes", " 1 ", "\ttrue\n",
+        "1", "true", "TRUE", "True", "tRuE", "yes", "YES", "Yes", "on", "ON", "On", " 1 ",
+        "\ttrue\n", " on ",
     ] {
         let name = format!("AX_FASTPATH_TEST_TRUTHY_{}", value.trim());
         assert!(probe(&name, value), "expected truthy for {value:?}");
@@ -27,16 +29,18 @@ fn parse_bool_env_treats_truthy_values_as_engaged() {
 }
 
 #[test]
-fn parse_bool_env_rejects_other_values() {
-    for value in ["0", "false", "no", "off", "on", "", "anything", "  "] {
+fn env_flag_rejects_falsy_junk_and_empty_values() {
+    for value in [
+        "0", "false", "no", "off", "", "anything", "banana", "2", "  ",
+    ] {
         let name = format!("AX_FASTPATH_TEST_FALSY_{}", value.trim());
         assert!(!probe(&name, value), "expected falsy for {value:?}");
     }
 }
 
 #[test]
-fn parse_bool_env_unset_is_false() {
-    assert!(!parse_bool_env("AX_FASTPATH_TEST_DEFINITELY_UNSET"));
+fn env_flag_unset_is_false() {
+    assert!(!env_flag("AX_FASTPATH_TEST_DEFINITELY_UNSET"));
 }
 
 #[test]
@@ -49,10 +53,7 @@ fn qwen_mtp_opt_in_gates_stay_off_when_unset() {
         unsafe {
             std::env::remove_var(var);
         }
-        assert!(
-            !parse_bool_env(var),
-            "{var} must stay default-off when unset"
-        );
+        assert!(!env_flag(var), "{var} must stay default-off when unset");
     }
 }
 
@@ -66,14 +67,11 @@ fn qwen_mtp_eager_gates_default_on_unless_kill_switched() {
         unsafe {
             std::env::remove_var(var);
         }
-        assert!(
-            parse_bool_env_default_on(var),
-            "{var} must default on when unset"
-        );
+        assert!(env_flag_default_on(var), "{var} must default on when unset");
         unsafe {
             std::env::set_var(var, "0");
         }
-        assert!(!parse_bool_env_default_on(var), "{var}=0 must kill-switch");
+        assert!(!env_flag_default_on(var), "{var}=0 must kill-switch");
         unsafe {
             std::env::remove_var(var);
         }
@@ -197,7 +195,7 @@ fn probe_default_on(name: &str, value: &str) -> bool {
     unsafe {
         std::env::set_var(name, value);
     }
-    let observed = parse_bool_env_default_on(name);
+    let observed = env_flag_default_on(name);
     unsafe {
         std::env::remove_var(name);
     }
@@ -205,34 +203,37 @@ fn probe_default_on(name: &str, value: &str) -> bool {
 }
 
 #[test]
-fn parse_bool_env_default_on_only_rejects_explicit_falsy_values() {
-    assert!(parse_bool_env_default_on(
-        "AX_FASTPATH_TEST_DEFAULT_ON_UNSET"
-    ));
-    for value in [
-        "0", "false", "FALSE", "False", "no", "NO", "No", "off", "OFF",
-    ] {
-        let name = format!("AX_FASTPATH_TEST_DEFAULT_ON_FALSY_{}", value.trim());
-        assert!(
-            !probe_default_on(&name, value),
-            "expected explicit falsy for {value:?}"
-        );
-    }
-    for value in ["", " ", "1", "true", "yes", "anything"] {
+fn env_flag_default_on_requires_a_truthy_spelling_when_set() {
+    assert!(env_flag_default_on("AX_FASTPATH_TEST_DEFAULT_ON_UNSET"));
+    for value in ["1", "true", "TRUE", "True", "yes", "YES", "on", "ON", " 1 "] {
         let name = format!(
             "AX_FASTPATH_TEST_DEFAULT_ON_TRUTHY_{}",
-            value.trim().replace(' ', "space")
+            value.trim().to_uppercase()
         );
         assert!(
             probe_default_on(&name, value),
-            "expected default-on truthy for {value:?}"
+            "expected truthy spelling for {value:?}"
+        );
+    }
+    // Any explicit non-truthy value — falsy spelling, empty, or junk —
+    // now disables a default-on flag instead of leaving it enabled.
+    for value in [
+        "0", "false", "FALSE", "False", "no", "NO", "No", "off", "OFF", "", " ", "anything",
+    ] {
+        let name = format!(
+            "AX_FASTPATH_TEST_DEFAULT_ON_FALSY_{}",
+            value.trim().to_uppercase()
+        );
+        assert!(
+            !probe_default_on(&name, value),
+            "expected default-on disabled for {value:?}"
         );
     }
 }
 
 #[test]
 fn linear_attention_projection_packing_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_LINEAR_ATTENTION_PACK_UNSET"
     ));
     assert!(!probe_default_on(
@@ -247,7 +248,7 @@ fn linear_attention_projection_packing_uses_default_on_kill_switch_contract() {
 
 #[test]
 fn direct_cpp_linear_attention_inputs_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_INPUTS_UNSET"
     ));
     assert!(!probe(
@@ -262,7 +263,7 @@ fn direct_cpp_linear_attention_inputs_uses_opt_in_contract() {
 
 #[test]
 fn qwen_direct_cpp_linear_attention_inputs_uses_default_on_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_INPUTS_UNSET"
     ));
     assert!(!probe_default_on(
@@ -277,7 +278,7 @@ fn qwen_direct_cpp_linear_attention_inputs_uses_default_on_contract() {
 
 #[test]
 fn direct_cpp_linear_attention_post_input_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_DIRECT_LINEAR_ATTENTION_POST_INPUT_UNSET"
     ));
     assert!(!probe(
@@ -292,7 +293,7 @@ fn direct_cpp_linear_attention_post_input_uses_opt_in_contract() {
 
 #[test]
 fn qwen_direct_cpp_linear_attention_post_input_uses_default_on_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_QWEN_DIRECT_LINEAR_ATTENTION_POST_INPUT_UNSET"
     ));
     assert!(!probe_default_on(
@@ -307,7 +308,7 @@ fn qwen_direct_cpp_linear_attention_post_input_uses_default_on_contract() {
 
 #[test]
 fn qwen_linear_attention_prefill_post_input_metal_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_PREFILL_POST_INPUT_METAL_UNSET"
     ));
     assert!(!probe(
@@ -322,7 +323,7 @@ fn qwen_linear_attention_prefill_post_input_metal_uses_opt_in_contract() {
 
 #[test]
 fn qwen_linear_attention_decode_post_input_metal_uses_default_on_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_UNSET"
     ));
     assert!(!probe_default_on(
@@ -352,7 +353,7 @@ fn fused_prefill_attention_qwen_is_family_scoped_and_default_on() {
         !super::fused_prefill_attention_should_try_for_seq("gemma4", 512),
         "Gemma p512 fused prefill stays default-OFF"
     );
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_FUSED_PREFILL_ATTENTION_UNSET"
     ));
     assert!(!probe(
@@ -516,7 +517,7 @@ fn gemma4_packed_ffn_compile_p128_is_seq_and_family_gated() {
 
 #[test]
 fn qwen_gated_delta_decode_metal_uses_default_on_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_QWEN_GATED_DELTA_DECODE_METAL_UNSET"
     ));
     assert!(!probe_default_on(
@@ -538,7 +539,7 @@ fn qwen_gated_delta_prefill_contiguous_is_seq_gated() {
         "decode already uses a contiguous row-0 path"
     );
     assert!(!should_qwen_gated_delta_prefill_contiguous_for(false, 1024));
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_CONTIGUOUS_UNSET"
     ));
     assert!(!probe(
@@ -561,7 +562,7 @@ fn qwen_la_fused_qkvz_ba_qmm_is_seq_and_quant_gated() {
     );
     assert!(!should_qwen_la_fused_qkvz_ba_qmm_for(true, 1024, false));
     assert!(!should_qwen_la_fused_qkvz_ba_qmm_for(false, 1024, true));
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_LA_FUSED_QKVZ_BA_QMM_UNSET"
     ));
     assert!(!probe(
@@ -581,7 +582,7 @@ fn qwen_prefill_down_compile_is_seq_and_leading_gated() {
     assert!(!should_qwen_prefill_down_compile_for(true, 1, 128));
     assert!(!should_qwen_prefill_down_compile_for(true, 1024, 64));
     assert!(!should_qwen_prefill_down_compile_for(false, 1024, 128));
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_PREFILL_DOWN_COMPILE_UNSET"
     ));
     assert!(!probe(
@@ -596,9 +597,7 @@ fn qwen_prefill_down_compile_is_seq_and_leading_gated() {
 
 #[test]
 fn qwen_prefill_chunk_1536_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1536_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1536_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_QWEN_PREFILL_CHUNK_1536_DISABLED",
         "0"
@@ -631,7 +630,7 @@ fn qwen_compiled_gated_delta_prefill_is_seq_gated() {
     assert!(should_qwen_compiled_gated_delta_prefill_for(true, 2));
     assert!(!should_qwen_compiled_gated_delta_prefill_for(true, 1));
     assert!(!should_qwen_compiled_gated_delta_prefill_for(false, 1024));
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_COMPILED_GATED_DELTA_PREFILL_UNSET"
     ));
     assert!(!probe(
@@ -1839,7 +1838,7 @@ fn qwen_packed_ffn_prefill_compile_is_leading_gated() {
 
 #[test]
 fn qwen_compiled_qk_norm_rope_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_COMPILED_QK_NORM_ROPE_UNSET"
     ));
     assert!(!probe(
@@ -1854,7 +1853,7 @@ fn qwen_compiled_qk_norm_rope_uses_opt_in_contract() {
 
 #[test]
 fn qwen_direct_cpp_qk_norm_rope_uses_default_on_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_QWEN_DIRECT_CPP_QK_NORM_ROPE_UNSET"
     ));
     assert!(!probe_default_on(
@@ -1869,7 +1868,7 @@ fn qwen_direct_cpp_qk_norm_rope_uses_default_on_contract() {
 
 #[test]
 fn gemma_direct_cpp_qk_norm_rope_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_GEMMA_DIRECT_CPP_QK_NORM_ROPE_UNSET"
     ));
     assert!(!probe(
@@ -1886,9 +1885,7 @@ fn gemma_direct_cpp_qk_norm_rope_uses_opt_in_contract() {
 fn gemma_dual_gate_up_metal_uses_opt_in_contract() {
     // Pure-wall A/B on mbp-m5 measured ~8.5× regression when default-on;
     // production remains opt-in only.
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_GEMMA_DUAL_GATE_UP_METAL_DISABLED",
         "0"
@@ -1901,9 +1898,7 @@ fn gemma_dual_gate_up_metal_uses_opt_in_contract() {
 
 #[test]
 fn o_proj_qmatmul_rms_norm_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_O_PROJ_QMATMUL_RMS_NORM_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_O_PROJ_QMATMUL_RMS_NORM_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_O_PROJ_QMATMUL_RMS_NORM_DISABLED",
         "0"
@@ -1916,7 +1911,7 @@ fn o_proj_qmatmul_rms_norm_uses_opt_in_contract() {
 
 #[test]
 fn attn_norm_qkv_fuse_uses_opt_in_contract() {
-    assert!(!parse_bool_env("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_UNSET"));
+    assert!(!env_flag("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_UNSET"));
     assert!(!probe("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_DISABLED", "0"));
     assert!(probe("AX_FASTPATH_TEST_ATTN_NORM_QKV_FUSE_ENABLED", "1"));
 }
@@ -1947,9 +1942,7 @@ fn qwen_attn_norm_qkv_fuse_is_family_scoped_and_opt_in() {
     );
     assert!(!should_call_attn_norm_qkv_fuse(true, false, false, false));
     assert!(!should_call_attn_norm_qkv_fuse(true, true, true, false));
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_QWEN_ATTN_NORM_QKV_FUSE_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_QWEN_ATTN_NORM_QKV_FUSE_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_QWEN_ATTN_NORM_QKV_FUSE_DISABLED",
         "0"
@@ -1996,9 +1989,7 @@ fn gemma4_attn_norm_qkv_fuse_p128_is_seq_and_family_gated() {
 
 #[test]
 fn native_offset_causal_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_NATIVE_OFFSET_CAUSAL_DISABLED",
         "0"
@@ -2008,16 +1999,14 @@ fn native_offset_causal_uses_opt_in_contract() {
 
 #[test]
 fn dual_qmm_geglu_uses_opt_in_contract() {
-    assert!(!parse_bool_env("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_UNSET"));
+    assert!(!env_flag("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_UNSET"));
     assert!(!probe("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_DISABLED", "0"));
     assert!(probe("AX_FASTPATH_TEST_DUAL_QMM_GEGLU_ENABLED", "1"));
 }
 
 #[test]
 fn cache_only_chunk_eval_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_CACHE_ONLY_CHUNK_EVAL_DISABLED",
         "0"
@@ -2039,7 +2028,7 @@ fn cache_only_chunk_async_eval_only_for_non_final_under_both_flags() {
 
 #[test]
 fn prefill_clear_cache_per_chunk_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_PREFILL_CLEAR_CACHE_PER_CHUNK_UNSET"
     ));
     assert!(!probe(
@@ -2278,7 +2267,7 @@ fn pipeline_sublayer_eval_is_limited_to_gemma4_multi_token_prefill() {
 
 #[test]
 fn direct_cpp_gemma4_post_attn_ffn_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_UNSET"
     ));
     assert!(!probe(
@@ -2293,7 +2282,7 @@ fn direct_cpp_gemma4_post_attn_ffn_uses_opt_in_contract() {
 
 #[test]
 fn dense_swiglu_packed_metal_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_DENSE_SWIGLU_PACKED_METAL_UNSET"
     ));
     assert!(!probe_default_on(
@@ -2308,7 +2297,7 @@ fn dense_swiglu_packed_metal_uses_default_on_kill_switch_contract() {
 
 #[test]
 fn qwen_gated_delta_prefill_streaming_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_STREAMING_UNSET"
     ));
     assert!(!probe(
@@ -2323,7 +2312,7 @@ fn qwen_gated_delta_prefill_streaming_uses_opt_in_contract() {
 
 #[test]
 fn qwen_gated_delta_prefill_tile_512_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_GATED_DELTA_PREFILL_TILE_512_UNSET"
     ));
     assert!(!probe(
@@ -2338,9 +2327,7 @@ fn qwen_gated_delta_prefill_tile_512_uses_opt_in_contract() {
 
 #[test]
 fn qwen_prefill_single_2048_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_QWEN_PREFILL_SINGLE_2048_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_QWEN_PREFILL_SINGLE_2048_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_QWEN_PREFILL_SINGLE_2048_DISABLED",
         "0"
@@ -2362,9 +2349,7 @@ fn qwen_prefill_flat_ffn_is_family_seq_and_rank_gated() {
     assert!(!should_qwen_prefill_flat_ffn_for(true, "qwen3_5", 1024, 2));
     assert!(!should_qwen_prefill_flat_ffn_for(false, "qwen3_5", 1024, 3));
     assert!(!should_qwen_prefill_flat_ffn_for(true, "gemma4", 1024, 3));
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_FFN_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_FFN_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_FFN_DISABLED",
         "0"
@@ -2393,7 +2378,7 @@ fn qwen_prefill_contiguous_ffn_is_family_seq_and_rank_gated() {
     assert!(!should_qwen_prefill_contiguous_ffn_for(
         true, "gemma4", 1024, 3
     ));
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_PREFILL_CONTIGUOUS_FFN_UNSET"
     ));
     assert!(!probe(
@@ -2424,7 +2409,7 @@ fn qwen_la_out_proj_silu_mul_qmm_is_family_and_seq_gated() {
     assert!(!should_qwen_la_out_proj_silu_mul_qmm_for(
         true, "gemma4", 1024
     ));
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_LA_OUT_PROJ_SILU_MUL_QMM_UNSET"
     ));
     assert!(!probe(
@@ -2439,7 +2424,7 @@ fn qwen_la_out_proj_silu_mul_qmm_is_family_and_seq_gated() {
 
 #[test]
 fn qwen_dense_ffn_gate_up_matvec_metal_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_UNSET"
     ));
     assert!(!probe_default_on(
@@ -2454,9 +2439,7 @@ fn qwen_dense_ffn_gate_up_matvec_metal_uses_default_on_kill_switch_contract() {
 
 #[test]
 fn qwen_linear_mtp_exact_env_override_uses_truthy_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_QWEN_LINEAR_MTP_EXACT_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_QWEN_LINEAR_MTP_EXACT_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_QWEN_LINEAR_MTP_EXACT_DISABLED",
         "0"
@@ -2466,9 +2449,7 @@ fn qwen_linear_mtp_exact_env_override_uses_truthy_contract() {
 
 #[test]
 fn invariant_mxfp4_qmv_fast_is_opt_in() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_INVARIANT_MXFP4_QMV_FAST_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_INVARIANT_MXFP4_QMV_FAST_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_INVARIANT_MXFP4_QMV_FAST_DISABLED",
         "0"
@@ -2481,7 +2462,7 @@ fn invariant_mxfp4_qmv_fast_is_opt_in() {
 
 #[test]
 fn dense_ffn_compile_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_UNSET"
     ));
     assert!(!probe_default_on(
@@ -2496,7 +2477,7 @@ fn dense_ffn_compile_uses_default_on_kill_switch_contract() {
 
 #[test]
 fn dense_ffn_compile_prefill_uses_default_on_with_min_leading() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_PREFILL_UNSET"
     ));
     assert!(!probe_default_on(
@@ -2513,7 +2494,7 @@ fn dense_ffn_compile_prefill_uses_default_on_with_min_leading() {
 
 #[test]
 fn qwen_compiled_dual_gate_up_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_COMPILED_DUAL_GATE_UP_UNSET"
     ));
     assert!(!probe(
@@ -2528,7 +2509,7 @@ fn qwen_compiled_dual_gate_up_uses_opt_in_contract() {
 
 #[test]
 fn qwen_split_ffn_prefill_compile_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_SPLIT_FFN_PREFILL_COMPILE_UNSET"
     ));
     assert!(!probe(
@@ -2544,9 +2525,7 @@ fn qwen_split_ffn_prefill_compile_uses_opt_in_contract() {
 
 #[test]
 fn qwen_linear_add_rms_norm_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_QWEN_LINEAR_ADD_RMS_NORM_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_QWEN_LINEAR_ADD_RMS_NORM_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_QWEN_LINEAR_ADD_RMS_NORM_DISABLED",
         "0"
@@ -2623,9 +2602,7 @@ fn qwen_prefill_interlayer_add_rms_is_family_and_seq_gated() {
 
 #[test]
 fn qwen_swiglu_down_fuse_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_QWEN_SWIGLU_DOWN_FUSE_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_QWEN_SWIGLU_DOWN_FUSE_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_QWEN_SWIGLU_DOWN_FUSE_DISABLED",
         "0"
@@ -2635,7 +2612,7 @@ fn qwen_swiglu_down_fuse_uses_opt_in_contract() {
 
 #[test]
 fn qwen_prefill_dual_qmm_swiglu_metal_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_PREFILL_DUAL_QMM_SWIGLU_METAL_UNSET"
     ));
     assert!(!probe(
@@ -2650,7 +2627,7 @@ fn qwen_prefill_dual_qmm_swiglu_metal_uses_opt_in_contract() {
 
 #[test]
 fn qwen_prefill_flat_down_qmm_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_PREFILL_FLAT_DOWN_QMM_UNSET"
     ));
     assert!(!probe(
@@ -2665,9 +2642,7 @@ fn qwen_prefill_flat_down_qmm_uses_opt_in_contract() {
 
 #[test]
 fn qwen_dual_qmm_swiglu_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_QWEN_DUAL_QMM_SWIGLU_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_QWEN_DUAL_QMM_SWIGLU_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_QWEN_DUAL_QMM_SWIGLU_DISABLED",
         "0"
@@ -2677,9 +2652,7 @@ fn qwen_dual_qmm_swiglu_uses_opt_in_contract() {
 
 #[test]
 fn gemma4_assistant_compile_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_DISABLED",
         "0"
@@ -2692,7 +2665,7 @@ fn gemma4_assistant_compile_uses_opt_in_contract() {
 
 #[test]
 fn gemma4_assistant_mtp_cycle_guard_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_MTP_CYCLE_GUARD_UNSET"
     ));
     assert!(!probe_default_on(
@@ -2707,7 +2680,7 @@ fn gemma4_assistant_mtp_cycle_guard_uses_default_on_kill_switch_contract() {
 
 #[test]
 fn gemma4_assistant_lazy_multi_depth_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_LAZY_MULTI_DEPTH_UNSET"
     ));
     assert!(!probe(
@@ -2722,7 +2695,7 @@ fn gemma4_assistant_lazy_multi_depth_uses_opt_in_contract() {
 
 #[test]
 fn gemma4_assistant_deep_needs_first_conf_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_DEEP_NEEDS_FIRST_CONF_UNSET"
     ));
     assert!(!probe_default_on(
@@ -2834,9 +2807,7 @@ fn exact_short_verify_uses_configured_interval_instead_of_zero() {
 
 #[test]
 fn moe_router_fused_metal_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
-        "AX_FASTPATH_TEST_MOE_ROUTER_FUSED_METAL_UNSET"
-    ));
+    assert!(!env_flag("AX_FASTPATH_TEST_MOE_ROUTER_FUSED_METAL_UNSET"));
     assert!(!probe(
         "AX_FASTPATH_TEST_MOE_ROUTER_FUSED_METAL_DISABLED",
         "0"
@@ -2849,7 +2820,7 @@ fn moe_router_fused_metal_uses_opt_in_contract() {
 
 #[test]
 fn linear_attention_whole_layer_metal_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_LINEAR_ATTENTION_WHOLE_LAYER_METAL_UNSET"
     ));
     assert!(!probe(
@@ -2864,7 +2835,7 @@ fn linear_attention_whole_layer_metal_uses_opt_in_contract() {
 
 #[test]
 fn moe_deep_expert_block_metal_uses_opt_in_contract() {
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_MOE_DEEP_EXPERT_BLOCK_METAL_UNSET"
     ));
     assert!(!probe(
@@ -2879,7 +2850,7 @@ fn moe_deep_expert_block_metal_uses_opt_in_contract() {
 
 #[test]
 fn geglu_mul_metal_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_GEGLU_MUL_METAL_UNSET"
     ));
     assert!(!probe_default_on(
@@ -2894,7 +2865,7 @@ fn geglu_mul_metal_uses_default_on_kill_switch_contract() {
 
 #[test]
 fn gemma4_per_layer_input_gate_compile_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_GEMMA4_PER_LAYER_INPUT_GATE_COMPILE_UNSET"
     ));
     assert!(!probe_default_on(
@@ -2909,7 +2880,7 @@ fn gemma4_per_layer_input_gate_compile_uses_default_on_kill_switch_contract() {
 
 #[test]
 fn linear_attention_rms_norm_gate_metal_uses_default_on_kill_switch_contract() {
-    assert!(parse_bool_env_default_on(
+    assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_LINEAR_ATTENTION_RMS_NORM_GATE_METAL_UNSET"
     ));
     assert!(!probe_default_on(
@@ -3090,7 +3061,7 @@ fn qwen_prefill_lazy_intermediate_is_family_total_and_chunk_gated() {
         false,
         2048
     ));
-    assert!(!parse_bool_env(
+    assert!(!env_flag(
         "AX_FASTPATH_TEST_QWEN_PREFILL_LAZY_INTERMEDIATE_UNSET"
     ));
     assert!(!probe(

@@ -5608,17 +5608,9 @@ fn prefer_split_dense_ffn_gate_up(
 
 fn gemma4_split_prefill_ffn_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        match std::env::var("AX_MLX_GEMMA4_SPLIT_PREFILL_FFN") {
-            Ok(raw) => {
-                let v = raw.trim();
-                !(v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
-            }
-            // Default ON: prior 128/512/2048 A/B preferred split gate/up for
-            // Gemma4 publication-shape prefill.
-            Err(_) => true,
-        }
-    })
+    // Default ON: prior 128/512/2048 A/B preferred split gate/up for
+    // Gemma4 publication-shape prefill.
+    *CACHED.get_or_init(|| fastpath::env_flag_default_on("AX_MLX_GEMMA4_SPLIT_PREFILL_FFN"))
 }
 
 fn dense_ffn_prefill_compile_supported(model_family: &str, leading_elements: i64) -> bool {

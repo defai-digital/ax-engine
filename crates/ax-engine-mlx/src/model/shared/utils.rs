@@ -1569,8 +1569,7 @@ fn trace_invariant_qmv_shape(
     dtype: MlxDtype,
 ) {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    if !*ENABLED.get_or_init(|| std::env::var("AX_MLX_INVARIANT_QMV_TRACE").is_ok_and(|v| v == "1"))
-    {
+    if !*ENABLED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_INVARIANT_QMV_TRACE")) {
         return;
     }
     type ShapeKey = (i32, i32, i32, i32, i32, MlxDtype);

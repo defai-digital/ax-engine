@@ -93,25 +93,15 @@ impl Default for NextGateConfig {
     }
 }
 
-fn truthy_env(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(v) => {
-            let t = v.trim().to_ascii_lowercase();
-            matches!(t.as_str(), "1" | "true" | "on" | "yes")
-        }
-        Err(_) => false,
-    }
-}
-
 /// Process flag: adaptive controller enabled (default OFF).
 pub(crate) fn adaptive_gate_enabled_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| truthy_env("AX_MLX_MTP_ADAPTIVE_GATE"))
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_ADAPTIVE_GATE"))
 }
 
 fn residual_enabled_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| truthy_env("AX_MLX_MTP_ADAPTIVE_GATE_RESIDUAL"))
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_ADAPTIVE_GATE_RESIDUAL"))
 }
 
 fn parse_f32_env(name: &str, default: f32, lo: f32, hi: f32) -> f32 {

@@ -381,11 +381,7 @@ fn model_id_leaf(model_id: &str) -> String {
 
 fn gemma4_assistant_mtp_env_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP")
-            .map(|v| v != "0")
-            .unwrap_or(true)
-    })
+    *CACHED.get_or_init(|| crate::fastpath::env_flag_default_on("AX_MLX_GEMMA4_ASSISTANT_MTP"))
 }
 
 /// Default assistant draft depth. The drafter is stateless per step (it re-reads
@@ -421,19 +417,13 @@ pub(crate) fn gemma4_assistant_mtp_max_depth_cap() -> usize {
 fn gemma4_assistant_mtp_require_exact_pair() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_REQUIRE_EXACT_PAIR")
-            .map(|v| v == "1")
-            .unwrap_or(true)
+        crate::fastpath::env_flag_default_on("AX_MLX_GEMMA4_ASSISTANT_MTP_REQUIRE_EXACT_PAIR")
     })
 }
 
 pub(crate) fn gemma4_assistant_mtp_debug_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_DEBUG")
-            .map(|v| v == "1")
-            .unwrap_or(false)
-    })
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_GEMMA4_ASSISTANT_MTP_DEBUG"))
 }
 
 /// Default draft confidence gate for the Gemma 4 assistant drafter.

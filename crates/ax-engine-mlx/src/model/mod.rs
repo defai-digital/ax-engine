@@ -4493,17 +4493,12 @@ pub(crate) fn embed_length_affinity_groups(
 }
 
 /// Whether multi-row embed batches should be split by length affinity.
-/// **Default ON.** Disable with `AX_EMBED_LENGTH_SPLIT=off`.
+/// **Default ON.** Disable with `AX_EMBED_LENGTH_SPLIT=off` (or any other
+/// non-truthy value).
 pub(crate) fn embed_length_split_enabled() -> bool {
     use std::sync::OnceLock;
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| match std::env::var("AX_EMBED_LENGTH_SPLIT") {
-        Err(_) => true, // default ON with calibrated buckets
-        Ok(raw) => {
-            let t = raw.trim().to_ascii_lowercase();
-            !matches!(t.as_str(), "0" | "false" | "off" | "no")
-        }
-    })
+    *CACHED.get_or_init(|| crate::fastpath::env_flag_default_on("AX_EMBED_LENGTH_SPLIT"))
 }
 
 /// [`forward_lazy_single_argmax`] with the trunk's post-norm stream row

@@ -1696,14 +1696,15 @@ fn prefix_snapshot_start_tokens(
 }
 
 /// ADR-016 demote-on-evict kill switch. Default ON;
-/// `AX_MLX_PREFIX_DEMOTE_ON_EVICT=0` restores the pre-change behavior of
+/// `AX_MLX_PREFIX_DEMOTE_ON_EVICT=0` (or any other non-truthy value)
+/// restores the pre-change behavior of
 /// dropping evicted native prefix snapshots instead of demoting them into
 /// the portable host-RAM store. Read live (like `AX_KV_QUANT`) so tests and
 /// A/B harnesses can toggle it without a process restart.
 pub(crate) const AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV: &str = "AX_MLX_PREFIX_DEMOTE_ON_EVICT";
 
 fn prefix_demote_on_evict_enabled() -> bool {
-    !std::env::var(AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV).is_ok_and(|value| value == "0")
+    crate::fastpath::env_flag_default_on(AX_MLX_PREFIX_DEMOTE_ON_EVICT_ENV)
 }
 
 /// ADR-016 demote-on-evict. Serialize an evicted native prefix snapshot into

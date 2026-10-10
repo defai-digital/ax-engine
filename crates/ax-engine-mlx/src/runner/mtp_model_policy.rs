@@ -18,20 +18,13 @@ const QWEN_LINEAR_CERTIFICATION_CANDIDATE_ENV: &str =
 const DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE_ENV: &str =
     "AX_MLX_DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE";
 
-fn truthy_opt_in(raw: &str) -> bool {
-    let value = raw.trim();
-    value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-}
-
 /// Explicitly expose the uncertified Qwen linear-MTP route to a formal test run.
 ///
 /// This switch cannot bypass the loaded-model exact-capability check and is
 /// intentionally separate from the exact-arithmetic selector: arithmetic
 /// eligibility is necessary, but it is not an end-to-end acceleration claim.
 pub(super) fn qwen_linear_mtp_certification_candidate_from_env() -> bool {
-    std::env::var(QWEN_LINEAR_CERTIFICATION_CANDIDATE_ENV)
-        .ok()
-        .is_some_and(|raw| truthy_opt_in(&raw))
+    crate::fastpath::env_flag(QWEN_LINEAR_CERTIFICATION_CANDIDATE_ENV)
 }
 
 /// Decide whether the loaded Qwen linear model may take the certified MTP
@@ -66,9 +59,7 @@ pub(super) fn should_capture_qwen_mtp_prefill_history(
 /// harness. Product default stays direct-fallback until Tier 2 evidence exists
 /// (docs: no MTP acceptance-rate claim).
 pub(super) fn deepseek_v4_mtp_certification_candidate_from_env() -> bool {
-    std::env::var(DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE_ENV)
-        .ok()
-        .is_some_and(|raw| truthy_opt_in(&raw))
+    crate::fastpath::env_flag(DEEPSEEK_V4_MTP_CERTIFICATION_CANDIDATE_ENV)
 }
 
 /// Stable route code describing the loaded model's MTP policy.
@@ -499,16 +490,6 @@ mod tests {
         assert!(!should_capture_qwen_mtp_prefill_history(true, false));
         assert!(!should_capture_qwen_mtp_prefill_history(false, false));
         assert!(should_capture_qwen_mtp_prefill_history(true, true));
-    }
-
-    #[test]
-    fn certification_candidate_opt_in_is_strictly_truthy() {
-        for enabled in ["1", "true", "TRUE", "yes", " Yes "] {
-            assert!(truthy_opt_in(enabled));
-        }
-        for disabled in ["", "0", "false", "no", "candidate", "2"] {
-            assert!(!truthy_opt_in(disabled));
-        }
     }
 
     fn policy(

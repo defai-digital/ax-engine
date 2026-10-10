@@ -279,12 +279,6 @@ impl DiskPrefixCachePolicy {
             }
         }
 
-        fn enabled(name: &str) -> bool {
-            std::env::var(name)
-                .ok()
-                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"))
-        }
-
         let max_bytes = parsed::<u64>("AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES")
             .unwrap_or(DEFAULT_DISK_CACHE_MAX_BYTES);
         let admission = match std::env::var("AX_MLX_PREFIX_CACHE_DISK_ADMISSION")
@@ -323,7 +317,7 @@ impl DiskPrefixCachePolicy {
                 .clamp(1, 8),
             shutdown_drain_ms: parsed::<u64>("AX_MLX_PREFIX_CACHE_DISK_SHUTDOWN_DRAIN_MS")
                 .unwrap_or(DEFAULT_DISK_SHUTDOWN_DRAIN_MS),
-            page_store: enabled("AX_MLX_PREFIX_CACHE_DISK_PAGE_STORE"),
+            page_store: crate::fastpath::env_flag("AX_MLX_PREFIX_CACHE_DISK_PAGE_STORE"),
             page_bytes: parsed::<usize>("AX_MLX_PREFIX_CACHE_DISK_PAGE_BYTES")
                 .unwrap_or(DEFAULT_DISK_PAGE_BYTES)
                 .clamp(64 * 1024, 16 * 1024 * 1024),

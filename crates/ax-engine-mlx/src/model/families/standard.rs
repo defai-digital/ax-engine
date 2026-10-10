@@ -21,12 +21,7 @@ pub(crate) mod batched_profile {
 
     pub(crate) fn enabled() -> bool {
         static E: OnceLock<bool> = OnceLock::new();
-        *E.get_or_init(|| {
-            matches!(
-                std::env::var("AX_MLX_BATCHED_PROFILE").as_deref(),
-                Ok("1") | Ok("true") | Ok("yes")
-            )
-        })
+        *E.get_or_init(|| crate::fastpath::env_flag("AX_MLX_BATCHED_PROFILE"))
     }
 
     pub(super) fn record(stage: usize, us: u128) {

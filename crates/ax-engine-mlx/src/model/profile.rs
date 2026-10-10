@@ -268,12 +268,7 @@ static DECODE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static MOE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 fn profile_env_enabled(cache: &'static OnceLock<bool>, name: &'static str) -> bool {
-    *cache.get_or_init(|| {
-        matches!(
-            std::env::var(name).as_deref(),
-            Ok("1") | Ok("true") | Ok("yes")
-        )
-    })
+    *cache.get_or_init(|| crate::fastpath::env_flag(name))
 }
 
 pub(super) fn gemma4_moe_profile_enabled() -> bool {

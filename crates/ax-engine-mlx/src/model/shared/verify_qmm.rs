@@ -50,11 +50,7 @@ fn min_route_n() -> i32 {
 
 fn msg_pad_m4_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_MTP_VERIFY_QMM_PAD_M4")
-            .ok()
-            .is_some_and(|raw| matches!(raw.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
-    })
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_VERIFY_QMM_PAD_M4"))
 }
 
 fn msg_simdgroups() -> i32 {
@@ -70,11 +66,7 @@ fn msg_simdgroups() -> i32 {
 
 fn split_k_huge_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("AX_MLX_MTP_VERIFY_QMM_SPLIT_K_HUGE")
-            .ok()
-            .is_some_and(|raw| matches!(raw.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
-    })
+    *CACHED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_MTP_VERIFY_QMM_SPLIT_K_HUGE"))
 }
 
 fn split_k_parts(n: i32) -> i32 {

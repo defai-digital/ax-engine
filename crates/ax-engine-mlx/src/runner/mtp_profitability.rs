@@ -289,16 +289,6 @@ fn saturating_u32(value: u64) -> u32 {
     value.min(u64::from(u32::MAX)) as u32
 }
 
-fn parse_bool_default_on(raw: Option<String>) -> bool {
-    raw.map(|value| {
-        !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "off" | "no"
-        )
-    })
-    .unwrap_or(true)
-}
-
 fn env_u32(name: &str, default: u32, min: u32, max: u32) -> u32 {
     std::env::var(name)
         .ok()
@@ -321,7 +311,7 @@ fn env_f64(name: &str, default: f64, min: f64, max: f64) -> f64 {
 pub(super) fn mtp_profitability_config_from_env() -> MtpProfitabilityConfig {
     static CACHED: OnceLock<MtpProfitabilityConfig> = OnceLock::new();
     *CACHED.get_or_init(|| MtpProfitabilityConfig {
-        enabled: parse_bool_default_on(std::env::var("AX_MLX_MTP_PROFITABILITY_GATE").ok()),
+        enabled: crate::fastpath::env_flag_default_on("AX_MLX_MTP_PROFITABILITY_GATE"),
         probe_rounds: env_u32(
             "AX_MLX_MTP_PROFITABILITY_PROBE_ROUNDS",
             2,

@@ -59,23 +59,6 @@ fn mmap_weights_env_requires_a_nonzero_nonempty_value() {
 }
 
 #[test]
-fn skip_vision_sidecar_from_env_is_opt_in() {
-    assert!(!skip_vision_sidecar_from_env(None));
-    assert!(!skip_vision_sidecar_from_env(Some("")));
-    assert!(!skip_vision_sidecar_from_env(Some("0")));
-    assert!(skip_vision_sidecar_from_env(Some("1")));
-    assert!(skip_vision_sidecar_from_env(Some("true")));
-}
-
-#[test]
-fn skip_mtp_sidecar_from_env_is_opt_in() {
-    assert!(!skip_mtp_sidecar_from_env(None));
-    assert!(!skip_mtp_sidecar_from_env(Some("0")));
-    assert!(skip_mtp_sidecar_from_env(Some("1")));
-    assert!(skip_mtp_sidecar_from_env(Some("TRUE")));
-}
-
-#[test]
 fn draft_lm_head_spec_matches_mlx_affine_contract() {
     for bits in [2, 3, 4, 5, 6, 8] {
         for group_size in [32, 64, 128] {

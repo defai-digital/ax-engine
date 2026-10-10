@@ -623,23 +623,23 @@ pub(crate) struct AffineQuantBitsTelemetry {
     pub(crate) affine_5bit_count: u32,
     pub(crate) affine_6bit_count: u32,
     pub(crate) affine_8bit_count: u32,
-    /// 1 when `AX_ENGINE_3BIT_EXPERIMENTAL=1` was set at load time, else 0.
+    /// 1 when `AX_ENGINE_3BIT_EXPERIMENTAL` was set to a truthy value at load
+    /// time, else 0.
     pub(crate) experimental_3bit_gate: u32,
-    /// 1 when `AX_ENGINE_2BIT_EXPERIMENTAL=1` was set at load time, else 0.
+    /// 1 when `AX_ENGINE_2BIT_EXPERIMENTAL` was set to a truthy value at load
+    /// time, else 0.
     pub(crate) experimental_2bit_gate: u32,
 }
 
 impl AffineQuantBitsTelemetry {
     pub(crate) fn from_specs(specs: &[ax_engine_core::NativeTensorSpec]) -> Self {
         let mut t = Self {
-            experimental_3bit_gate: u32::from(
-                std::env::var(ax_engine_core::AX_ENGINE_3BIT_EXPERIMENTAL_ENV).as_deref()
-                    == Ok("1"),
-            ),
-            experimental_2bit_gate: u32::from(
-                std::env::var(ax_engine_core::AX_ENGINE_2BIT_EXPERIMENTAL_ENV).as_deref()
-                    == Ok("1"),
-            ),
+            experimental_3bit_gate: u32::from(crate::fastpath::env_flag(
+                ax_engine_core::AX_ENGINE_3BIT_EXPERIMENTAL_ENV,
+            )),
+            experimental_2bit_gate: u32::from(crate::fastpath::env_flag(
+                ax_engine_core::AX_ENGINE_2BIT_EXPERIMENTAL_ENV,
+            )),
             ..Default::default()
         };
         for spec in specs {

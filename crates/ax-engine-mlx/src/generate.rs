@@ -172,21 +172,13 @@ static DIRECT_PIPELINE_BARRIER_ENABLED: OnceLock<bool> = OnceLock::new();
 static DIRECT_PIPELINE_STAGE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 pub(crate) fn direct_pipeline_barrier_enabled() -> bool {
-    *DIRECT_PIPELINE_BARRIER_ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("AX_MLX_DIRECT_PIPELINE_BARRIER").as_deref(),
-            Ok("1") | Ok("true") | Ok("yes")
-        )
-    })
+    *DIRECT_PIPELINE_BARRIER_ENABLED
+        .get_or_init(|| crate::fastpath::env_flag("AX_MLX_DIRECT_PIPELINE_BARRIER"))
 }
 
 pub(crate) fn direct_pipeline_stage_profile_enabled() -> bool {
-    *DIRECT_PIPELINE_STAGE_PROFILE_ENABLED.get_or_init(|| {
-        matches!(
-            std::env::var("AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE").as_deref(),
-            Ok("1") | Ok("true") | Ok("yes")
-        )
-    })
+    *DIRECT_PIPELINE_STAGE_PROFILE_ENABLED
+        .get_or_init(|| crate::fastpath::env_flag("AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE"))
 }
 
 /// Process the full prompt in chunks of `chunk_size` tokens.
@@ -463,7 +455,7 @@ pub(crate) fn chunked_prefill_flash_next_mtp(
 /// splits for the cache-only prefill path to stderr. Diagnostic only.
 fn prefill_time_debug_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("AX_MLX_PREFILL_TIME_DEBUG").as_deref() == Ok("1"))
+    *ENABLED.get_or_init(|| crate::fastpath::env_flag("AX_MLX_PREFILL_TIME_DEBUG"))
 }
 
 /// AX_MLX_PREFILL_TIME_DEBUG phase-mark helpers for the MTP-history prefill

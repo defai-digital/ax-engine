@@ -3241,24 +3241,16 @@ fn build_draft_lm_head(
 /// Text-only `--ax-direct` does not read the vision tower. Skipping the
 /// sidecar avoids eval-ing ~0.9 GB of unused buffers into the Metal
 /// residency set. Default off (load when present).
-pub(crate) fn skip_vision_sidecar_from_env(raw: Option<&str>) -> bool {
-    matches!(raw, Some(v) if v == "1" || v.eq_ignore_ascii_case("true"))
+fn skip_vision_sidecar() -> bool {
+    crate::fastpath::env_flag("AX_MLX_SKIP_VISION_SIDECAR")
 }
 
 /// `AX_MLX_SKIP_MTP_SIDECAR=1` — do not merge `mtp.safetensors`.
 ///
 /// `--ax-direct` does not run the MTP module. Skipping the sidecar avoids
 /// eval-ing ~0.85 GB of unused buffers. Default off so MTP lanes still load.
-pub(crate) fn skip_mtp_sidecar_from_env(raw: Option<&str>) -> bool {
-    matches!(raw, Some(v) if v == "1" || v.eq_ignore_ascii_case("true"))
-}
-
-fn skip_vision_sidecar() -> bool {
-    skip_vision_sidecar_from_env(std::env::var("AX_MLX_SKIP_VISION_SIDECAR").ok().as_deref())
-}
-
 fn skip_mtp_sidecar() -> bool {
-    skip_mtp_sidecar_from_env(std::env::var("AX_MLX_SKIP_MTP_SIDECAR").ok().as_deref())
+    crate::fastpath::env_flag("AX_MLX_SKIP_MTP_SIDECAR")
 }
 
 /// AXQuant protected vision sidecar file and provenance manifest names.

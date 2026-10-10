@@ -23,7 +23,7 @@ pub(crate) fn rms_norm_no_scale_bshd(
 
 pub(crate) fn use_flat_qk_norm_path() -> bool {
     static USE_FLAT: OnceLock<bool> = OnceLock::new();
-    *USE_FLAT.get_or_init(|| std::env::var("AX_MLX_QK_NORM_FLAT").as_deref() == Ok("1"))
+    *USE_FLAT.get_or_init(|| crate::fastpath::env_flag("AX_MLX_QK_NORM_FLAT"))
 }
 
 pub(crate) fn rms_norm_opt(x: &MlxArray, norm: Option<&MlxArray>, eps: f32) -> MlxArray {
