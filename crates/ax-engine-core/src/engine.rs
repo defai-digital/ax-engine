@@ -116,6 +116,11 @@ pub struct EngineCore {
     /// worker (a Metal/MLX state that keeps failing is not trustworthy
     /// enough to keep serving).
     consecutive_runner_panics: u32,
+    /// Evictions drained at a step boundary but not yet reported. A step that
+    /// evicts during KV resolution and then errors emits no metrics, so its
+    /// count is carried into the next emitted `StepMetrics.evictions` instead
+    /// of being dropped by the next step's drain.
+    pending_evictions: u32,
     // Per-step scratch buffers — cleared and reused each step to avoid heap churn.
     scratch_seen_request_ids: HashSet<RequestId>,
     scratch_update_index: HashMap<RequestId, usize>,
@@ -167,6 +172,7 @@ impl EngineCore {
             generation_kind: GenerationKind::Autoregressive,
             next_step_id: 0,
             consecutive_runner_panics: 0,
+            pending_evictions: 0,
             scratch_seen_request_ids: HashSet::with_capacity(32),
             scratch_update_index: HashMap::with_capacity(32),
             scratch_logits_index: HashMap::with_capacity(32),
@@ -298,7 +304,12 @@ impl EngineCore {
             deterministic_mode
         );
         let _step_entered = step_span.enter();
-        let _ = self.kv_manager.take_recent_evictions();
+        // Carry evictions recorded since the last emitted metrics forward: a
+        // step that fails after its KV resolution returns no metrics, and this
+        // drain must not swallow its count.
+        self.pending_evictions = self
+            .pending_evictions
+            .saturating_add(self.kv_manager.take_recent_evictions());
 
         // Allocate the step id before any request transitions: an overflow
         // must not admit or retry requests for a step that then fails.
@@ -368,6 +379,11 @@ impl EngineCore {
         let cpu_time_us = step_started.elapsed().as_micros() as u64;
         let kv_telemetry = self.kv_manager.telemetry();
         let request_telemetry = self.request_manager.retention_telemetry();
+        // This step's evictions plus anything carried from an errored step.
+        let evictions = self
+            .pending_evictions
+            .saturating_add(self.kv_manager.take_recent_evictions());
+        self.pending_evictions = 0;
         let metrics = StepMetrics {
             step_id: Some(step_id),
             scheduled_requests: schedule_plan.selected_requests.len() as u32,
@@ -409,7 +425,7 @@ impl EngineCore {
                     })
                     .count())
             .min(u32::MAX as usize) as u32,
-            evictions: self.kv_manager.take_recent_evictions(),
+            evictions,
             preempted_requests: preemption_metrics.preempted_requests,
             preempted_tokens: preemption_metrics.preempted_tokens,
             cpu_time_us,
@@ -2127,6 +2143,28 @@ mod tests {
         }
     }
 
+    /// Behaves like `DeterministicRunner` unless the dispatched batch contains
+    /// `target`, in which case it panics. Lets a test run an earlier request
+    /// normally and then force a step error on a later one.
+    #[derive(Debug)]
+    struct PanicOnRequestRunner {
+        target: RequestId,
+    }
+
+    impl ExecutionRunner for PanicOnRequestRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            if input
+                .execution_batch
+                .items
+                .iter()
+                .any(|item| item.request_id == self.target)
+            {
+                panic!("simulated MLX eval failure for request {}", self.target.0);
+            }
+            DeterministicRunner.run(input)
+        }
+    }
+
     #[derive(Debug)]
     struct PrefillWithOutputTokenRunner;
 
@@ -3785,6 +3823,48 @@ mod tests {
 
         assert_eq!(lookup.matched_token_count, 4);
         assert!(lookup.uses_retained_cache());
+    }
+
+    #[test]
+    fn step_error_carries_pending_evictions_into_the_next_metrics() {
+        // Retained-cache eviction happens during KV resolution for request 2's
+        // step; that step then errors at dispatch, so its metrics are never
+        // emitted. The count must survive into the next step's metrics instead
+        // of being discarded by the next step-start drain.
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 2),
+            PanicOnRequestRunner {
+                target: RequestId(2),
+            },
+            DeterministicSampler,
+        );
+
+        engine
+            .submit(make_submission_with_prompt(
+                1,
+                1,
+                vec![1, 2, 3, 4, 5, 6, 7, 8],
+                1,
+            ))
+            .unwrap();
+        engine.step(8, true).unwrap();
+        engine.cancel(RequestId(1)).unwrap();
+
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![9, 10, 11, 12], 1))
+            .unwrap();
+        let error = engine
+            .step(4, true)
+            .expect_err("the eviction step must surface the runner panic as a step error");
+        assert!(matches!(error, EngineCoreError::RunnerPanicked { .. }));
+
+        // Nothing is left to run, so the next step's metrics can only carry the
+        // evictions the errored step could not report.
+        let outcome = engine
+            .step(4, true)
+            .expect("engine must recover after an errored step");
+        assert!(outcome.schedule_plan.selected_requests.is_empty());
+        assert_eq!(outcome.metrics.evictions, 1);
     }
 
     #[test]
