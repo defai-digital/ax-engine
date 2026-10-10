@@ -3344,3 +3344,65 @@ fn prefill_warmup_token_lengths_cover_short_prompt_serving_shapes() {
     sorted.dedup();
     assert_eq!(lengths, sorted);
 }
+
+#[test]
+fn activation_dtype_policy_defaults_to_bf16_and_selects_fp16_only_on_request_or_pre_m3() {
+    use mlx_sys::MlxDtype;
+    let m2 = || Some(String::from("applegpu_g14d"));
+    let m5 = || Some(String::from("applegpu_g17s"));
+    let unknown = || None;
+    assert_eq!(activation_dtype_for(None, m5), MlxDtype::Bfloat16);
+    assert_eq!(
+        activation_dtype_for(Some("bfloat16"), m2),
+        MlxDtype::Bfloat16
+    );
+    assert_eq!(activation_dtype_for(Some("junk"), m2), MlxDtype::Bfloat16);
+    assert_eq!(
+        activation_dtype_for(Some(" Float16 "), m5),
+        MlxDtype::Float16
+    );
+    assert_eq!(activation_dtype_for(Some("fp16"), m5), MlxDtype::Float16);
+    assert_eq!(activation_dtype_for(Some("auto"), m2), MlxDtype::Float16);
+    assert_eq!(activation_dtype_for(Some("auto"), m5), MlxDtype::Bfloat16);
+    assert_eq!(
+        activation_dtype_for(Some("auto"), unknown),
+        MlxDtype::Bfloat16
+    );
+    assert_eq!(gpu_generation("applegpu_g14d"), Some(14));
+    assert_eq!(gpu_generation("applegpu_g17s"), Some(17));
+    assert_eq!(gpu_generation("applegpu_g13"), Some(13));
+    assert_eq!(gpu_generation("something_else"), None);
+}
+
+#[test]
+fn prefill_dequant_dense_mode_parses_transient_truthy_and_off() {
+    assert_eq!(
+        prefill_dequant_dense_mode_for(None),
+        PrefillDequantDenseMode::Off
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some("0")),
+        PrefillDequantDenseMode::Off
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some("1")),
+        PrefillDequantDenseMode::Cached
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some("on")),
+        PrefillDequantDenseMode::Cached
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some(" Transient ")),
+        PrefillDequantDenseMode::Transient
+    );
+    assert!(should_qwen_prefill_dequant_dense_for_min_seq(
+        true, "qwen3_5", 512, 512
+    ));
+    assert!(!should_qwen_prefill_dequant_dense_for_min_seq(
+        true, "qwen3_5", 511, 512
+    ));
+    assert!(!should_qwen_prefill_dequant_dense_for_min_seq(
+        true, "qwen3_5", 1, 1
+    ));
+}

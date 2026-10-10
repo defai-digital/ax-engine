@@ -2579,3 +2579,139 @@ fn add_then_multiply_scalar_metal_rejects_broadcast_vector_scale() {
         "only exact scalar layer-scale tensors are fused"
     );
 }
+
+#[test]
+fn invariant_projection_window_matches_row_by_row_bit_exact() {
+    // One `Leading`-invariant launch over a 2..=4-row verify window must
+    // reproduce the singleton launch of every row bit for bit, for the affine
+    // widths a quantized lm_head ships in (4/8-bit) and both activation dtypes.
+    let _exact = fastpath::scoped_qwen_linear_mtp_exact(true);
+    let input_dim = 1024;
+    let output_dim = 64;
+    let weight_data: Vec<f32> = (0..input_dim * output_dim)
+        .map(|index| ((index % 251) as f32 - 125.0) * 0.00390625)
+        .collect();
+    let source_weight = array_f32(&weight_data, &[output_dim, input_dim]);
+    for (bits, dtype) in [
+        (4, MlxDtype::Bfloat16),
+        (8, MlxDtype::Bfloat16),
+        (8, MlxDtype::Float16),
+    ] {
+        let quantized = quantize(
+            &source_weight,
+            Some(64),
+            Some(bits),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let weight = QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(astype(&quantized[1], dtype, None)),
+            biases: Some(astype(&quantized[2], dtype, None)),
+            group_size: 64,
+            bits,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+        };
+        for leading in 2..=4 {
+            let input_data: Vec<f32> = (0..leading * input_dim)
+                .map(|index| ((index % 89) as f32 - 44.0) * 0.015625 + (index % 7) as f32 * 0.001)
+                .collect();
+            let input = astype(
+                &array_f32(&input_data, &[1, leading, input_dim]),
+                dtype,
+                None,
+            );
+            let window = invariant_projection_window(&input, &weight)
+                .expect("invariant window projection should accept an affine head");
+            assert_eq!(window.shape(), vec![1, leading, output_dim]);
+            let window_f32 = astype(&window, MlxDtype::Float32, None);
+            eval(&[&window_f32]);
+            let wv = window_f32.data_f32();
+            for row in 0..leading {
+                let row_input = contiguous(
+                    &slice(
+                        &input,
+                        &[0, row, 0],
+                        &[1, row + 1, input_dim],
+                        &[1, 1, 1],
+                        None,
+                    ),
+                    None,
+                );
+                let singleton = invariant_projection_metal_impl(&row_input, &weight)
+                    .expect("singleton invariant projection");
+                let singleton_f32 = astype(&singleton, MlxDtype::Float32, None);
+                eval(&[&singleton_f32]);
+                let sv = singleton_f32.data_f32();
+                assert_eq!(sv.len(), output_dim as usize);
+                for (col, value) in sv.iter().enumerate() {
+                    let got = wv[row as usize * output_dim as usize + col];
+                    assert_eq!(
+                        got.to_bits(),
+                        value.to_bits(),
+                        "bits={bits} dtype={dtype:?} leading={leading} row={row} col={col}"
+                    );
+                }
+            }
+        }
+    }
+    // Outside the exact profile, and for non-affine weights, the window helper
+    // declines so callers keep their existing route.
+    let input = astype(
+        &array_f32(&vec![0.5; 2 * input_dim as usize], &[1, 2, input_dim]),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let mxfp4 = quantize(
+        &source_weight,
+        Some(32),
+        Some(4),
+        MlxQuantizationMode::Mxfp4,
+        None,
+        None,
+    );
+    let mxfp4_weight = QuantizedWeight {
+        weight: mxfp4[0].clone(),
+        scales: Some(mxfp4[1].clone()),
+        biases: None,
+        group_size: 32,
+        bits: 4,
+        mode: "mxfp4".to_string(),
+        linear_bias: None,
+        decode_weight_t: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
+    };
+    assert!(invariant_projection_window(&input, &mxfp4_weight).is_none());
+    drop(_exact);
+    let _off = fastpath::scoped_qwen_linear_mtp_exact(false);
+    let quantized = quantize(
+        &source_weight,
+        Some(64),
+        Some(8),
+        MlxQuantizationMode::Affine,
+        None,
+        None,
+    );
+    let affine = QuantizedWeight {
+        weight: quantized[0].clone(),
+        scales: Some(astype(&quantized[1], MlxDtype::Bfloat16, None)),
+        biases: Some(astype(&quantized[2], MlxDtype::Bfloat16, None)),
+        group_size: 64,
+        bits: 8,
+        mode: "affine".to_string(),
+        linear_bias: None,
+        decode_weight_t: None,
+        decode_q2_weight: None,
+        decode_q2_scales: None,
+        decode_q2_biases: None,
+    };
+    assert!(invariant_projection_window(&input, &affine).is_none());
+}

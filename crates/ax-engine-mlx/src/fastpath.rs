@@ -97,6 +97,64 @@ pub(crate) fn env_flag_default_on(name: &str) -> bool {
     std::env::var(name).map_or(true, |raw| parse_bool_value(&raw))
 }
 
+/// Activation dtype policy for the Qwen hybrid (`qwen3_5`) runtime,
+/// `AX_MLX_ACTIVATION_DTYPE`:
+///
+/// - `bfloat16` (default): the pack's native activation dtype.
+/// - `float16`: run the activation stream and every non-quantized tensor
+///   (norm weights, affine scales/biases, embeddings) in fp16. Quantized
+///   payloads are untouched.
+/// - `auto`: `float16` on GPUs before the Apple M3 generation, which have no
+///   native bfloat16 arithmetic (MLX converts per op), `bfloat16` otherwise.
+///
+/// Measured on an M2 Ultra with the 27B MXFP4 pack: MLX `quantized_matmul`
+/// at the prefill shapes (M=512..2048) runs 26-29% faster with fp16
+/// activations than with bf16, SDPA 20% faster; M=1 decode is unchanged.
+/// Resolved once per process; invalid values keep `bfloat16`.
+pub(crate) fn activation_dtype() -> mlx_sys::MlxDtype {
+    static CACHED: OnceLock<mlx_sys::MlxDtype> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        activation_dtype_for(
+            std::env::var("AX_MLX_ACTIVATION_DTYPE").ok().as_deref(),
+            || mlx_sys::gpu_device_architecture().ok(),
+        )
+    })
+}
+
+/// Pure policy behind [`activation_dtype`]. `architecture` is consulted only
+/// for `auto`; MLX names Apple GPUs `applegpu_g<gen>[size]` (M1 = 13,
+/// M2 = 14, M3 = 15, M4 = 16, M5 = 17) and generations below 15 lack native
+/// bfloat16.
+pub(crate) fn activation_dtype_for(
+    requested: Option<&str>,
+    architecture: impl FnOnce() -> Option<String>,
+) -> mlx_sys::MlxDtype {
+    match requested
+        .map(|raw| raw.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("float16" | "fp16" | "f16" | "half") => mlx_sys::MlxDtype::Float16,
+        Some("auto") => {
+            if architecture()
+                .is_some_and(|arch| gpu_generation(&arch).is_some_and(|generation| generation < 15))
+            {
+                mlx_sys::MlxDtype::Float16
+            } else {
+                mlx_sys::MlxDtype::Bfloat16
+            }
+        }
+        _ => mlx_sys::MlxDtype::Bfloat16,
+    }
+}
+
+/// Parse the generation number out of an MLX GPU architecture string such
+/// as `applegpu_g14d` (`Some(14)`); `None` when it has no `g<digits>` tag.
+pub(crate) fn gpu_generation(architecture: &str) -> Option<u32> {
+    let (_, tail) = architecture.rsplit_once('g')?;
+    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 fn parse_positive_usize_env(var: &str) -> Option<usize> {
     let raw = std::env::var(var).ok()?;
     let n: usize = raw.trim().parse().ok()?;
@@ -1363,6 +1421,22 @@ env_flag!(
     /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL`.
     qwen_dense_ffn_matvec_ext_bits_enabled,
     "AX_MLX_QWEN_DENSE_FFN_MATVEC_EXT_BITS"
+);
+
+env_flag!(
+    /// `AX_MLX_EXACT_LM_HEAD_WINDOW_INVARIANT` — under the exact MTP
+    /// profile, project a 2..=4-row verify window through a quantized affine
+    /// `lm_head` with one `Leading`-invariant qmv_fast launch instead of one
+    /// singleton launch per row. The invariant kernel keeps every row on the
+    /// singleton arithmetic (same lane assignment, K blocks and reduction
+    /// order whatever `Leading` is), so verify logits stay bit-identical to
+    /// the row-by-row loop while the head is read once per window instead of
+    /// once per row (an 8-bit 248k-vocab head is 1.3 GB; a depth-3 window
+    /// re-read it three extra times per verify cycle).
+    ///
+    /// **Default: OFF** pending the flappy MTP A/B on the 27B MXFP4 pack.
+    exact_lm_head_window_invariant_enabled,
+    "AX_MLX_EXACT_LM_HEAD_WINDOW_INVARIANT"
 );
 
 env_flag_default_on!(
@@ -4440,20 +4514,73 @@ pub(crate) fn should_qwen_prefill_split_packed(model_family: &str, seq: i32) -> 
     should_qwen_prefill_split_packed_for(qwen_prefill_split_packed_enabled(), model_family, seq)
 }
 
-env_flag!(
-    /// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE` — at `seq >= 1024`, dequantize
-    /// affine weights once and run steel dense `matmul` instead of
-    /// `quantized_matmul`. This changes the compute kernel (dense GEMM vs
-    /// fused dequant+MMA), not overlay/eval/async/contiguous/split/bit-width.
-    /// Not a Hub requant. Decode GEMV (seq=1) stays on steel qmm.
-    ///
-    /// **Default: OFF**. Remasured binary `81a35c6f…` (2026-08-14) with
-    /// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE=1`: 3b **0.998513** / 3d
-    /// **1.020320** regression (0.967× q2only). Dense GEMM is slower than
-    /// steel qmm at M=1024 on this 27B path.
-    qwen_prefill_dequant_dense_enabled,
-    "AX_MLX_QWEN_PREFILL_DEQUANT_DENSE"
-);
+/// How the Qwen prefill dequant-dense route holds the dense weight.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PrefillDequantDenseMode {
+    /// Route disabled (steel qmm).
+    Off,
+    /// Dequantize once per weight and keep the `[in, out]` dense copy
+    /// resident for the process (2 bytes per parameter: ~54 GB on the 27B).
+    Cached,
+    /// Dequantize inside the prefill graph on every call; the dense copy is
+    /// a transient that MLX frees after the matmul. Costs one extra
+    /// bandwidth pass per chunk, holds no resident copy.
+    Transient,
+}
+
+/// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE` — at `seq >= 1024`, dequantize
+/// affine weights once and run steel dense `matmul` instead of
+/// `quantized_matmul`. This changes the compute kernel (dense GEMM vs
+/// fused dequant+MMA), not overlay/eval/async/contiguous/split/bit-width.
+/// Not a Hub requant. Decode GEMV (seq=1) stays on steel qmm.
+///
+/// **Default: OFF**. Remasured binary `81a35c6f…` (2026-08-14) with
+/// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE=1`: 3b **0.998513** / 3d
+/// **1.020320** regression (0.967× q2only). Dense GEMM is slower than
+/// steel qmm at M=1024 on this 27B path on the M5 Max.
+///
+/// M2 Ultra (no NAX, no native bf16; 2026-10-10, 27B MXFP4): the same
+/// flag measured p2048 prefill 255.5 vs 215.3 tok/s (+19%), because
+/// steel dense GEMM beats the MXFP4 qmm there. The value `transient`
+/// selects [`qwen_prefill_dequant_dense_mode`]'s per-call dequant (no
+/// resident dense copy); truthy values keep the cached copy.
+///
+/// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE` as a mode: `transient` (ASCII
+/// case-insensitive, whitespace trimmed) selects the per-call dequant, any
+/// truthy spelling the cached copy, anything else is off.
+pub(crate) fn qwen_prefill_dequant_dense_mode() -> PrefillDequantDenseMode {
+    static CACHED: OnceLock<PrefillDequantDenseMode> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        prefill_dequant_dense_mode_for(
+            std::env::var("AX_MLX_QWEN_PREFILL_DEQUANT_DENSE")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// Pure parser behind [`qwen_prefill_dequant_dense_mode`].
+pub(crate) fn prefill_dequant_dense_mode_for(raw: Option<&str>) -> PrefillDequantDenseMode {
+    match raw {
+        Some(value) if value.trim_ascii().eq_ignore_ascii_case("transient") => {
+            PrefillDequantDenseMode::Transient
+        }
+        Some(value) if parse_bool_value(value) => PrefillDequantDenseMode::Cached,
+        _ => PrefillDequantDenseMode::Off,
+    }
+}
+
+/// Minimum prefill chunk length (tokens) for the dequant-dense route,
+/// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE_MIN_SEQ` (default 1024, the M5
+/// crossover). Lower it on hosts where dense GEMM wins at shorter M.
+pub(crate) fn qwen_prefill_dequant_dense_min_seq() -> i32 {
+    static CACHED: OnceLock<i32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_positive_usize_env("AX_MLX_QWEN_PREFILL_DEQUANT_DENSE_MIN_SEQ")
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or(QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ)
+    })
+}
 
 env_flag!(
     /// `AX_MLX_QWEN_LA_NORM_QKVZ_FUSE` — at `seq >= 1024`, fuse linear-attn
@@ -4908,13 +5035,29 @@ pub(crate) fn should_qwen_la_norm_qkvz_fuse_for(
 }
 
 /// Whether Qwen prefill should replace qmm with dequant + dense GEMM.
+#[cfg(test)]
 pub(crate) fn should_qwen_prefill_dequant_dense_for(
     enabled: bool,
     model_family: &str,
     seq: i32,
 ) -> bool {
+    should_qwen_prefill_dequant_dense_for_min_seq(
+        enabled,
+        model_family,
+        seq,
+        QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ,
+    )
+}
+
+/// [`should_qwen_prefill_dequant_dense_for`] with an explicit chunk floor.
+pub(crate) fn should_qwen_prefill_dequant_dense_for_min_seq(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+    min_seq: i32,
+) -> bool {
     enabled
-        && seq >= QWEN_PACKED_LA_INPUTS_COMPILE_MIN_SEQ
+        && seq >= min_seq.max(2)
         && matches!(
             model_family.to_ascii_lowercase().as_str(),
             "qwen3_5" | "qwen3_next"

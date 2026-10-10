@@ -2551,7 +2551,7 @@ impl MlxRunner {
                 let mut mtp_dummy_cache = MlxKVCache::new(1);
                 let dummy_hidden = mlx_sys::zeros(
                     &[1, 1, cfg.hidden_size as i32],
-                    mlx_sys::MlxDtype::Bfloat16,
+                    crate::fastpath::activation_dtype(),
                     None,
                 );
                 let _ = crate::mtp::mtp_draft_tokens(
@@ -5187,8 +5187,9 @@ impl MlxRunner {
             &self.weights.token_embedding,
             self.cfg.hidden_size,
         );
-        if hidden.dtype() != MlxDtype::Bfloat16 {
-            hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+        let activation_dtype = crate::fastpath::activation_dtype();
+        if hidden.dtype() != activation_dtype {
+            hidden = astype(&hidden, activation_dtype, None);
         }
         if let Some(scale) = self.cfg.hidden_states_scale {
             hidden = crate::model::scale_hidden_pub(&hidden, scale);
@@ -10203,7 +10204,7 @@ impl MlxRunner {
                 let hidden_size = self.cfg.hidden_size;
                 let draft_hidden = mlx_sys::zeros(
                     &[1_i32, 1, hidden_size as i32],
-                    mlx_sys::MlxDtype::Bfloat16,
+                    crate::fastpath::activation_dtype(),
                     None,
                 );
                 (tok, draft_hidden)
@@ -11436,7 +11437,7 @@ impl MlxRunner {
                     let hidden_size = self.cfg.hidden_size;
                     let draft_hidden = mlx_sys::zeros(
                         &[1_i32, 1, hidden_size as i32],
-                        mlx_sys::MlxDtype::Bfloat16,
+                        crate::fastpath::activation_dtype(),
                         None,
                     );
                     let logits_all =
