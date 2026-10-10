@@ -4917,6 +4917,38 @@ fn correctness_fails_finished_requests_with_zero_output_tokens() {
 }
 
 #[test]
+fn correctness_fails_any_finished_request_with_zero_output_tokens() {
+    // Per-request gate: request A produced tokens, request B finished without
+    // producing any. The global decode_tokens sum is non-zero, so the former
+    // "observation.decode_tokens == 0" check passed even though the gate's own
+    // message says one or more finished requests produced zero output tokens.
+    let manifest = llama_cpp_scenario_manifest("http://127.0.0.1:1");
+    let finished = |request_id: u64, generated_tokens: Vec<u32>| FinalRequestState {
+        external_id: format!("req-{request_id}"),
+        request_id: RequestId(request_id),
+        state: "Finished".to_string(),
+        processed_prompt_tokens: 32,
+        generated_tokens,
+        cancel_requested: false,
+        last_error: None,
+    };
+    let observation = RuntimeObservation {
+        final_requests: vec![finished(1, (1..=8).collect()), finished(2, Vec::new())],
+        decode_tokens: 8,
+        ..RuntimeObservation::default()
+    };
+
+    let status = evaluate_correctness(&manifest, &observation)
+        .expect("correctness evaluation should not fail structurally");
+
+    assert!(!status.passed);
+    assert_eq!(
+        status.reason.as_deref(),
+        Some("one or more finished requests produced zero output tokens")
+    );
+}
+
+#[test]
 fn llama_cpp_scenario_executes_through_server_completion_adapter() {
     let placeholder_manifest = llama_cpp_scenario_manifest("http://127.0.0.1:1");
     let expected_prompt = scenario_specs_from_manifest(&placeholder_manifest)

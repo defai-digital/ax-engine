@@ -823,11 +823,10 @@ pub(crate) fn evaluate_correctness(
     }
 
     if manifest_requests_output(manifest)
-        && observation.decode_tokens == 0
         && observation
             .final_requests
             .iter()
-            .any(|request| request.state == "Finished")
+            .any(|request| request.state == "Finished" && request.generated_tokens.is_empty())
     {
         return Ok(GateStatus::fail(
             "one or more finished requests produced zero output tokens",
