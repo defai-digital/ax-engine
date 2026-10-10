@@ -182,12 +182,17 @@ impl ToolCallStreamScanner {
                         self.span = None;
                         continue;
                     }
-                    // No closer parsed a complete stanza. Release through the
-                    // first closer as content (stopping at a later valid opener
-                    // so a restarted call can still be rescanned, as the XML
-                    // branch does at end of stream) instead of withholding the
-                    // whole stream until EOS. With no closer at all we keep
-                    // withholding and wait for more data.
+                    // No closer parsed a complete stanza. A still-open invoke
+                    // means the first closer sat inside the stanza (a literal
+                    // closer in a parameter value), so more data can still
+                    // complete it: keep withholding, like the XML branch, and
+                    // let end of stream (`finish`) own the final disposition.
+                    // Otherwise release through the first closer as content
+                    // (stopping at a later valid opener so a restarted call can
+                    // still be rescanned, as the XML branch does at end of
+                    // stream) instead of withholding the whole stream until
+                    // EOS. With no closer at all we keep withholding and wait
+                    // for more data.
                     let Some((_, first_close_end)) =
                         dsml::find_dsml_tool_calls_close(&self.buffer, 0)
                     else {
@@ -196,6 +201,9 @@ impl ToolCallStreamScanner {
                     let end = self
                         .next_opener_after_start(first_close_end)
                         .map_or(first_close_end, |inner| inner.min(first_close_end));
+                    if !at_end && dsml::window_has_unclosed_invoke(&self.buffer[..end]) {
+                        return events;
+                    }
                     let content = self.buffer[..end].to_string();
                     self.buffer.drain(..end);
                     self.note_visible(&content);
@@ -623,6 +631,16 @@ mod tests {
 
     const DSML_CALL: &str = "<｜DSML｜tool_calls><｜DSML｜invoke name=\"get_weather\"><｜DSML｜parameter name=\"city\" string=\"true\">Taipei</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>";
 
+    /// `echo` invoke whose `text` parameter value contains a literal
+    /// `</｜DSML｜tool_calls>` closer, built from `U+FF5C` escapes so the
+    /// stanza can only complete past that first closer.
+    fn dsml_stanza_with_embedded_closer() -> String {
+        let bar = "\u{FF5C}";
+        format!(
+            "<{bar}DSML{bar}tool_calls><{bar}DSML{bar}invoke name=\"echo\"><{bar}DSML{bar}parameter name=\"text\" string=\"true\">a</{bar}DSML{bar}tool_calls>b</{bar}DSML{bar}parameter></{bar}DSML{bar}invoke></{bar}DSML{bar}tool_calls>"
+        )
+    }
+
     #[test]
     fn dsml_stanza_streams_as_one_call_with_surrounding_content() {
         let mut scanner = scanner();
@@ -707,10 +725,7 @@ mod tests {
 
     #[test]
     fn dsml_closer_inside_argument_string_does_not_prematurely_complete() {
-        let bar = "\u{FF5C}";
-        let stanza = format!(
-            "<{bar}DSML{bar}tool_calls><{bar}DSML{bar}invoke name=\"echo\"><{bar}DSML{bar}parameter name=\"text\" string=\"true\">a</{bar}DSML{bar}tool_calls>b</{bar}DSML{bar}parameter></{bar}DSML{bar}invoke></{bar}DSML{bar}tool_calls>"
-        );
+        let stanza = dsml_stanza_with_embedded_closer();
         let mut scanner = scanner();
         let mut events = scanner.push(&stanza);
         events.extend(scanner.finish());
@@ -722,6 +737,74 @@ mod tests {
             "arguments should preserve the embedded closer: {}",
             calls[0].function.arguments
         );
+    }
+
+    #[test]
+    fn dsml_embedded_closer_split_across_pushes_keeps_the_call() {
+        // Per-token decode pushes the literal closer inside the parameter
+        // value long before the stanza-closing closer. The failed parse must
+        // keep withholding: releasing the prefix would leak the raw DSML
+        // markers as content and lose the call the non-streaming path
+        // extracts from the same tokens.
+        let text = dsml_stanza_with_embedded_closer();
+        let closer = "</\u{FF5C}DSML\u{FF5C}tool_calls>";
+        let split = text.find(closer).expect("embedded closer") + closer.len();
+
+        let mut scanner = scanner();
+        let first = scanner.push(&text[..split]);
+        assert!(calls(&first).is_empty());
+        assert!(
+            content(&first).is_empty(),
+            "the still-open stanza must stay withheld: {:?}",
+            content(&first)
+        );
+
+        let mut events = scanner.push(&text[split..]);
+        events.extend(scanner.finish());
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1, "content: {:?}", content(&events));
+        assert_eq!(calls[0].function.name, "echo");
+        let arguments: serde_json::Value =
+            serde_json::from_str(&calls[0].function.arguments).expect("json arguments");
+        assert_eq!(
+            arguments,
+            json!({"text": format!("a</\u{FF5C}DSML\u{FF5C}tool_calls>b")}),
+        );
+        assert!(
+            content(&events).is_empty(),
+            "content: {:?}",
+            content(&events)
+        );
+        assert_eq!(scanner.calls_emitted(), 1);
+    }
+
+    #[test]
+    fn dsml_embedded_closer_is_invariant_across_all_chunk_splits() {
+        let text = dsml_stanza_with_embedded_closer();
+        for split in 0..=text.len() {
+            if !text.is_char_boundary(split) {
+                continue;
+            }
+            let mut scanner = scanner();
+            let mut events = scanner.push(&text[..split]);
+            events.extend(scanner.push(&text[split..]));
+            events.extend(scanner.finish());
+            let calls = calls(&events);
+            assert_eq!(calls.len(), 1, "split {split}: {:?}", content(&events));
+            assert_eq!(calls[0].function.name, "echo", "split {split}");
+            let arguments: serde_json::Value =
+                serde_json::from_str(&calls[0].function.arguments).expect("json arguments");
+            assert_eq!(
+                arguments,
+                json!({"text": format!("a</\u{FF5C}DSML\u{FF5C}tool_calls>b")}),
+                "split {split}"
+            );
+            assert!(
+                content(&events).is_empty(),
+                "split {split}: {:?}",
+                content(&events)
+            );
+        }
     }
 
     #[test]

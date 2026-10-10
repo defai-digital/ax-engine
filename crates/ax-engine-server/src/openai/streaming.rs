@@ -345,6 +345,14 @@ impl OpenAiStreamDriver {
                 if !self.emit_gemma4_reasoning(tx, request_id, &model_id) {
                     return false;
                 }
+                // The reasoning decoder holds its own trailing codepoint; the
+                // per-step sweep above cannot flush it. Emit it ahead of the
+                // content tail and the final chunk so a stream that ends
+                // mid-codepoint inside the reasoning channel is not silently
+                // truncated from `delta.reasoning_content`.
+                if !self.finish_gemma4_reasoning(tx, request_id, &model_id) {
+                    return false;
+                }
                 // The model can leave its entire answer inside an unclosed
                 // thinking/final channel; serve that body before the final
                 // chunk rather than an empty message. In Gemma 4 reasoning
@@ -508,6 +516,29 @@ impl OpenAiStreamDriver {
                 false
             }
         }
+    }
+
+    /// End of stream: flush the trailing codepoint the reasoning decoder was
+    /// holding back for more tokens (the content decoder is finished
+    /// separately in the final path). The per-step capture sweep has already
+    /// drained the channel's tokens, so this only emits the held tail;
+    /// without it the tail is silently dropped from `reasoning_content` while
+    /// the non-stream decode of the same tokens still renders it.
+    fn finish_gemma4_reasoning(
+        &mut self,
+        tx: &StreamEventSender,
+        request_id: u64,
+        model_id: &str,
+    ) -> bool {
+        let Some(StreamReasoningMode::Gemma4Channel(decoder)) = self.reasoning.as_mut() else {
+            return true;
+        };
+        let tail = match map_stream_decode_result(decoder.finish(), tx) {
+            Ok(tail) => tail.unwrap_or_default(),
+            Err(()) => return false,
+        };
+        tail.is_empty()
+            || emit_reasoning_chunk(tx, request_id, model_id, &mut self.chat_role_emitted, tail)
     }
 
     /// Route decoded text through the tool scanner (chat only) and the stop
@@ -1535,6 +1566,41 @@ fn send_openai_llama_cpp_chat_final_chunk(
     send_openai_stream_chunk(tx, &chunk)
 }
 
+/// Byte-level test vocabulary where token 1 is the lead byte of `é` (0xC3)
+/// and token 2 its continuation (0xA9), so a lone token 1 decodes to an
+/// incomplete codepoint. Shared by the decoder and stream-driver tests.
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+fn byte_level_test_tokenizer(label: &str) -> EngineTokenizer {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-decoder-{label}-{unique}"));
+    std::fs::create_dir_all(&dir).expect("tokenizer dir");
+    std::fs::write(dir.join("config.json"), r#"{"eos_token_id":3}"#).expect("config");
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": false},
+  "post_processor": null,
+  "decoder": {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": false},
+  "model": {
+    "type": "WordLevel",
+    "vocab": {"[UNK]": 0, "\u00c3": 1, "\u00a9": 2, "<eos>": 3, "ok": 4},
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer json");
+    EngineTokenizer::from_model_dir(&dir).expect("byte-level fixture tokenizer loads")
+}
+
 #[cfg(test)]
 mod gemma4_channel_stream_filter_tests {
     use super::Gemma4ChannelStreamFilter;
@@ -1650,45 +1716,11 @@ mod gpt_oss_harmony_stream_filter_tests {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod incremental_decoder_tests {
-    use super::IncrementalDecoder;
-    use ax_engine_sdk::EngineTokenizer;
-
-    /// Byte-level vocabulary where token 1 is the lead byte of `é` (0xC3)
-    /// and token 2 its continuation (0xA9), so a lone token 1 decodes to an
-    /// incomplete codepoint.
-    fn byte_level_tokenizer(label: &str) -> EngineTokenizer {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("ax-engine-decoder-{label}-{unique}"));
-        std::fs::create_dir_all(&dir).expect("tokenizer dir");
-        std::fs::write(dir.join("config.json"), r#"{"eos_token_id":3}"#).expect("config");
-        std::fs::write(
-            dir.join("tokenizer.json"),
-            r#"{
-  "version": "1.0",
-  "truncation": null,
-  "padding": null,
-  "added_tokens": [],
-  "normalizer": null,
-  "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": false},
-  "post_processor": null,
-  "decoder": {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": false},
-  "model": {
-    "type": "WordLevel",
-    "vocab": {"[UNK]": 0, "\u00c3": 1, "\u00a9": 2, "<eos>": 3, "ok": 4},
-    "unk_token": "[UNK]"
-  }
-}"#,
-        )
-        .expect("tokenizer json");
-        EngineTokenizer::from_model_dir(&dir).expect("byte-level fixture tokenizer loads")
-    }
+    use super::{IncrementalDecoder, byte_level_test_tokenizer};
 
     #[test]
     fn finish_flushes_a_held_incomplete_codepoint() {
-        let mut decoder = IncrementalDecoder::new(byte_level_tokenizer("finish-held"));
+        let mut decoder = IncrementalDecoder::new(byte_level_test_tokenizer("finish-held"));
         assert_eq!(decoder.push(&[4]).expect("decode"), "ok");
         // The lead byte alone is an incomplete sequence: held, nothing emitted.
         assert_eq!(decoder.push(&[1]).expect("decode"), "");
@@ -1702,7 +1734,7 @@ mod incremental_decoder_tests {
 
     #[test]
     fn finish_is_empty_after_a_complete_emit() {
-        let mut decoder = IncrementalDecoder::new(byte_level_tokenizer("finish-complete"));
+        let mut decoder = IncrementalDecoder::new(byte_level_test_tokenizer("finish-complete"));
         assert_eq!(decoder.push(&[1]).expect("decode"), "");
         assert_eq!(decoder.push(&[2]).expect("decode"), "\u{e9}");
         assert_eq!(decoder.finish().expect("finish"), "");
@@ -1911,7 +1943,7 @@ mod stream_usage_tests {
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
-mod stop_tool_scanner_tests {
+mod openai_stream_driver_tests {
     use ax_engine_sdk::{
         CapabilityReport, GenerateFinishReason, GenerateResponse, GenerateRouteReport,
         GenerateStatus, GenerateStreamEvent, GenerateStreamResponseEvent, ResolutionPolicy,
@@ -1921,7 +1953,12 @@ mod stop_tool_scanner_tests {
     use serde_json::json;
     use tokio::sync::mpsc;
 
-    use super::{Event, OpenAiStreamDriver, OpenAiStreamKind, OpenAiStreamPipeline};
+    use super::{
+        ChatChannelStreamFilter, Event, Gemma4ChannelStreamFilter, IncrementalDecoder,
+        OpenAiStreamDriver, OpenAiStreamKind, OpenAiStreamPipeline, StreamReasoningMode,
+        byte_level_test_tokenizer,
+    };
+    use crate::chat::Gemma4ChannelIds;
     use crate::generation::streaming::StreamEvent;
     use crate::openai::stop::StopSequenceScanner;
     use crate::openai::tool_stream::ToolCallStreamScanner;
@@ -1982,31 +2019,46 @@ mod stop_tool_scanner_tests {
     /// Recover the JSON payload of a chunk `Event`. The SSE buffer is
     /// private, so the Debug representation (a byte-string literal) is
     /// unescaped back into the frame text and the `data: ` lines re-joined.
+    /// Byte-string Debug escapes every non-ASCII byte as `\xNN`, so the
+    /// unescape works on bytes and only converts back to text at the end.
     fn event_payload(event: &Event) -> String {
         let debug = format!("{event:?}");
         let start = debug.find("b\"").expect("debug renders the frame buffer") + 2;
         let end = debug[start..]
             .rfind("\", ")
             .map_or(debug.len() - 1, |at| start + at);
-        let mut frame = String::new();
+        let mut bytes = Vec::new();
         let mut chars = debug[start..end].chars();
         while let Some(ch) = chars.next() {
             if ch != '\\' {
-                frame.push(ch);
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
                 continue;
             }
             match chars.next() {
-                Some('n') => frame.push('\n'),
-                Some('"') => frame.push('"'),
-                Some('\\') => frame.push('\\'),
-                Some(other) => {
-                    frame.push('\\');
-                    frame.push(other);
+                Some('n') => bytes.push(b'\n'),
+                Some('r') => bytes.push(b'\r'),
+                Some('t') => bytes.push(b'\t'),
+                Some('"') => bytes.push(b'"'),
+                Some('\\') => bytes.push(b'\\'),
+                Some('x') => {
+                    let high = chars.next().and_then(|ch| ch.to_digit(16));
+                    let low = chars.next().and_then(|ch| ch.to_digit(16));
+                    match (high, low) {
+                        (Some(high), Some(low)) => bytes.push((high * 16 + low) as u8),
+                        _ => bytes.extend_from_slice(b"\\x"),
+                    }
                 }
-                None => frame.push('\\'),
+                Some(other) => {
+                    bytes.push(b'\\');
+                    let mut buf = [0u8; 4];
+                    bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+                }
+                None => bytes.push(b'\\'),
             }
         }
-        frame
+        String::from_utf8(bytes)
+            .expect("frame is UTF-8")
             .lines()
             .filter_map(|line| line.strip_prefix("data: "))
             .collect::<Vec<_>>()
@@ -2299,5 +2351,177 @@ mod stop_tool_scanner_tests {
             .collect();
         assert_eq!(content, "BB ");
         assert_eq!(finish_reasons, vec!["stop"]);
+    }
+
+    #[test]
+    fn dsml_embedded_closer_split_across_pushes_emits_the_call_and_finishes_tool_calls() {
+        // The literal `</｜DSML｜tool_calls>` inside the parameter value arrives
+        // in an earlier push than the stanza-closing closer, as per-token
+        // decode does. The stream must still deliver the echo call (mirroring
+        // the non-streaming extractor) with no raw DSML markers in content,
+        // and must finish `tool_calls`.
+        let bar = "\u{FF5C}";
+        let text = format!(
+            "<{bar}DSML{bar}tool_calls><{bar}DSML{bar}invoke name=\"echo\"><{bar}DSML{bar}parameter name=\"text\" string=\"true\">a</{bar}DSML{bar}tool_calls>b</{bar}DSML{bar}parameter></{bar}DSML{bar}invoke></{bar}DSML{bar}tool_calls>"
+        );
+        let closer = format!("</{bar}DSML{bar}tool_calls>");
+        let split = text.find(&closer).expect("embedded closer") + closer.len();
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut driver = chat_driver(&[]);
+        assert!(
+            driver.process_text(&tx, 1, "deepseek", text[..split].to_string()),
+            "the withheld stanza must not end the stream"
+        );
+        assert!(driver.process_text(&tx, 1, "deepseek", text[split..].to_string()));
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                response: sample_response(),
+            })
+        ));
+        drop(tx);
+
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+        let mut finish_reasons = Vec::new();
+        for choice in collect_chunk_payloads(&mut rx)
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+        {
+            if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                finish_reasons.push(reason.to_string());
+            }
+            let Some(delta) = choice.get("delta") else {
+                continue;
+            };
+            if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                content.push_str(text);
+            }
+            if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                tool_calls.extend(calls.iter().cloned());
+            }
+        }
+
+        assert!(
+            content.is_empty(),
+            "no raw DSML markers may leak as content: {content:?}"
+        );
+        assert_eq!(tool_calls.len(), 1, "tool_calls: {tool_calls:?}");
+        let function = tool_calls[0]
+            .get("function")
+            .expect("call carries function");
+        assert_eq!(function.get("name").and_then(Value::as_str), Some("echo"));
+        let arguments: Value = serde_json::from_str(
+            function
+                .get("arguments")
+                .and_then(Value::as_str)
+                .expect("arguments are a JSON string"),
+        )
+        .expect("arguments parse");
+        assert_eq!(
+            arguments,
+            json!({"text": format!("a</{bar}DSML{bar}tool_calls>b")})
+        );
+        assert_eq!(
+            finish_reasons,
+            vec!["tool_calls".to_string()],
+            "the stream must finish tool_calls, never stop"
+        );
+    }
+
+    #[test]
+    fn gemma4_reasoning_held_tail_is_flushed_at_end_of_stream() {
+        // The final reasoning push ends mid-multi-byte codepoint, so the
+        // reasoning decoder holds the tail back waiting for tokens that never
+        // come. End of stream must flush it as `delta.reasoning_content` (the
+        // non-stream decode renders the same tail) before the final chunk.
+        let mut channel_filter = ChatChannelStreamFilter::Gemma4(Gemma4ChannelStreamFilter::new(
+            Gemma4ChannelIds {
+                open: 100,
+                close: 101,
+            },
+            None,
+            Vec::new(),
+        ));
+        channel_filter.enable_reasoning_capture();
+        let mut driver = OpenAiStreamDriver {
+            stream_kind: OpenAiStreamKind::ChatCompletion,
+            chat_role_emitted: false,
+            decoder: None,
+            channel_filter: Some(channel_filter),
+            pipeline: OpenAiStreamPipeline {
+                tool_scanner: None,
+                stop_scanner: None,
+                include_usage: false,
+            },
+            reasoning: Some(StreamReasoningMode::Gemma4Channel(Box::new(
+                IncrementalDecoder::new(byte_level_test_tokenizer("reasoning-tail")),
+            ))),
+            calls_emitted: 0,
+            prompt_token_count: None,
+            output_token_count: None,
+            prefix_reused_tokens: None,
+        };
+        let (tx, mut rx) = mpsc::channel(16);
+
+        // Channel open, then "ok" plus the lead byte of `é`: the decoder holds
+        // the incomplete sequence back instead of emitting a replacement char.
+        let filtered = driver
+            .channel_filter
+            .as_mut()
+            .expect("channel filter")
+            .filter(&[100, 4, 1]);
+        assert!(filtered.is_empty(), "the channel body is not content");
+        assert!(
+            driver.emit_gemma4_reasoning(&tx, 1, "gemma4"),
+            "the reasoning sweep must not fail"
+        );
+
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                response: sample_response(),
+            })
+        ));
+        drop(tx);
+
+        let payloads = collect_chunk_payloads(&mut rx);
+        let mut reasoning = String::new();
+        let mut first_reasoning = None;
+        let mut finish_at = None;
+        for (index, choice) in payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .enumerate()
+        {
+            if choice
+                .get("finish_reason")
+                .and_then(Value::as_str)
+                .is_some()
+            {
+                finish_at = Some(index);
+            }
+            if let Some(text) = choice
+                .get("delta")
+                .and_then(|delta| delta.get("reasoning_content"))
+                .and_then(Value::as_str)
+            {
+                first_reasoning = first_reasoning.or(Some(index));
+                reasoning.push_str(text);
+            }
+        }
+        assert_eq!(
+            reasoning, "ok\u{FFFD}",
+            "the held tail must reach reasoning_content"
+        );
+        assert!(
+            first_reasoning.expect("a reasoning delta chunk") < finish_at.expect("a final chunk"),
+            "reasoning deltas stream before the final chunk"
+        );
     }
 }

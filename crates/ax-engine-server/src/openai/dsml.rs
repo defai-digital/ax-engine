@@ -148,6 +148,30 @@ pub(crate) fn find_dsml_tool_calls_close(text: &str, from: usize) -> Option<(usi
     find_dsml_tag(text, from, true, TAG_TOOL_CALLS)
 }
 
+/// Whether a withheld stanza window — the text a stream scanner would
+/// otherwise release as content — still holds an `invoke` open tag whose
+/// closing tag has not arrived.
+///
+/// A parameter value can contain a literal `</｜DSML｜tool_calls>`, so the
+/// first closer in the buffer may sit inside a stanza that is still growing;
+/// releasing through it would lose the call and leak the raw markers as
+/// content. A window with every invoke closed is structurally complete (the
+/// walk mirrors `parse_dsml_stanza`), so more input cannot complete it —
+/// only a later stanza can, which the scanner rescans separately.
+pub(crate) fn window_has_unclosed_invoke(text: &str) -> bool {
+    let Some((_, body_start)) = find_dsml_tag(text, 0, false, TAG_TOOL_CALLS) else {
+        return false;
+    };
+    let mut cursor = body_start;
+    while let Some((_, gt)) = find_dsml_open_tag(text, cursor, TAG_INVOKE) {
+        let Some((_, close_end)) = find_dsml_tag(text, gt + 1, true, TAG_INVOKE) else {
+            return true;
+        };
+        cursor = close_end;
+    }
+    false
+}
+
 /// Length of the longest buffer suffix that could still grow into a
 /// `<｜DSML｜tool_calls>` open tag (the stream scanner's holdback). Filler
 /// is tolerated at the same places the complete matcher tolerates it, so a
