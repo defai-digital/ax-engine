@@ -382,9 +382,7 @@ impl Session {
         let state = match py.detach(|| session.stream_generate_state(request)) {
             Ok(state) => state,
             Err(error) => {
-                if let Ok(mut slot) = self.inner.lock() {
-                    *slot = SessionSlot::Ready(Box::new(session));
-                }
+                store_slot(&self.inner, SessionSlot::Ready(Box::new(session)));
                 return Err(to_py_runtime_error(error));
             }
         };
@@ -601,10 +599,42 @@ fn sampling_from_params(
     }
 }
 
+/// Writes `slot` even when the mutex is poisoned. The slot holds plain state
+/// with no invariant a panicking holder could have broken halfway, so the
+/// guard inside the poison error is sound to use; skipping the write would
+/// strand a session in `Streaming` with no way back to `Ready`.
+fn store_slot(owner: &Mutex<SessionSlot>, slot: SessionSlot) {
+    let mut guard = owner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = slot;
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::panic)]
+    fn store_slot_writes_through_a_poisoned_mutex() {
+        let owner = Arc::new(Mutex::new(SessionSlot::Streaming));
+        let poisoner = Arc::clone(&owner);
+        let panicked = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("poison the session slot");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(owner.is_poisoned());
+
+        store_slot(&owner, SessionSlot::Closed);
+
+        let guard = owner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(matches!(*guard, SessionSlot::Closed));
+    }
 
     /// Compile-time guard: pyo3 requires non-`unsendable` pyclasses to be
     /// `Send + Sync` (the macro emits `assert_pyclass_send_sync`). If a field
