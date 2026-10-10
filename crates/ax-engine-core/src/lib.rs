@@ -107,6 +107,7 @@ pub use qwen3_vl::{Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputError, Qwen3VlRu
 pub use request::{
     RequestMultimodalInputError, RequestMultimodalInputs, RequestRecord, RequestSnapshot,
     RequestState, RequestSubmission, RequestWorkloadHints, StateTransitionError,
+    json_number_is_nonzero,
 };
 pub use request_manager::{RequestManager, RequestManagerError};
 pub use runner::{

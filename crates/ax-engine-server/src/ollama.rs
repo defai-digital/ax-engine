@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use ax_engine_core::json_number_is_nonzero;
 use ax_engine_sdk::{
     EngineSessionError, EngineTokenizer, GenerateResponse, GenerateStreamEvent, SelectedBackend,
 };
@@ -46,7 +47,7 @@ use crate::openai::schema::{
 };
 use crate::openai::streaming::{ChatChannelStreamFilter, IncrementalDecoder};
 use crate::openai::validation::select_openai_model;
-use crate::openai::validation::{json_number_is_nonzero, unix_timestamp_secs};
+use crate::openai::validation::unix_timestamp_secs;
 use crate::tasks::run_blocking_session_task;
 
 #[derive(Debug, Deserialize)]

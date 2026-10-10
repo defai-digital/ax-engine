@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ax_engine_core::json_number_is_nonzero;
 use ax_engine_sdk::SelectedBackend;
 use axum::Json;
 use axum::http::StatusCode;
@@ -95,15 +96,6 @@ pub(crate) fn openai_value_is_present(value: &Value) -> bool {
         Value::Object(object) => !object.is_empty(),
         Value::Number(value) => json_number_is_nonzero(value),
     }
-}
-
-pub(crate) fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
-    value
-        .as_i64()
-        .map(|value| value != 0)
-        .or_else(|| value.as_u64().map(|value| value != 0))
-        .or_else(|| value.as_f64().map(|value| value != 0.0))
-        .unwrap_or(true)
 }
 
 pub(crate) fn unix_timestamp_secs() -> u64 {

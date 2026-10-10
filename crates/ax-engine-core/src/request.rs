@@ -213,11 +213,6 @@ impl RequestWorkloadHints {
     fn merge_json_key_value(&mut self, key: &str, value: &serde_json::Value) {
         let key = normalize_workload_hint_token(key);
         let truthy = json_hint_truthy(value);
-        let structured_truthy = if key == "response_format" {
-            json_response_format_is_structured(value)
-        } else {
-            truthy
-        };
 
         if key == "ax_max_think_tokens"
             && let Some(number) = value.as_u64()
@@ -242,7 +237,7 @@ impl RequestWorkloadHints {
         {
             self.tool_call = true;
         }
-        if structured_truthy
+        if truthy
             && matches!(
                 key.as_str(),
                 "structured_output"
@@ -251,19 +246,12 @@ impl RequestWorkloadHints {
                     | "json_mode"
                     | "json_object"
                     | "strict_json"
-                    | "response_format"
-                    | "json_schema"
             )
         {
             self.structured_output = true;
         }
 
-        if matches!(key.as_str(), "workload" | "ax_workload" | "mode" | "task")
-            || matches!(
-                key.as_str(),
-                "response_format" | "tools" | "tool_choice" | "json_schema"
-            )
-        {
+        if matches!(key.as_str(), "workload" | "ax_workload" | "mode" | "task") {
             self.merge_json(value);
         }
     }
@@ -296,8 +284,6 @@ impl RequestWorkloadHints {
             || value.contains("json_mode")
             || value.contains("json_object")
             || value.contains("strict_json")
-            || value.contains("response_format")
-            || value.contains("json_schema")
         {
             self.structured_output = true;
         }
@@ -333,29 +319,14 @@ fn json_hint_truthy(value: &serde_json::Value) -> bool {
     }
 }
 
-fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
+/// Whether a JSON number is non-zero; numeric zero counts as absent.
+pub fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
     value
         .as_i64()
         .map(|value| value != 0)
         .or_else(|| value.as_u64().map(|value| value != 0))
         .or_else(|| value.as_f64().map(|value| value != 0.0))
         .unwrap_or(true)
-}
-
-fn json_response_format_is_structured(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Null => false,
-        serde_json::Value::String(value) => {
-            let value = normalize_workload_hint_token(value);
-            !matches!(value.as_str(), "" | "text" | "none" | "false" | "off" | "0")
-        }
-        serde_json::Value::Object(object) => object
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .map(|value| normalize_workload_hint_token(value) != "text")
-            .unwrap_or(!object.is_empty()),
-        value => json_hint_truthy(value),
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -673,7 +644,7 @@ mod tests {
     #[test]
     fn parses_request_workload_hints_from_metadata_json() {
         let hints = RequestWorkloadHints::from_metadata(Some(
-            r#"{"tool_call": true, "response_format": {"type": "json_object"}}"#,
+            r#"{"tool_call": true, "ax_speculative_structured_output": true}"#,
         ));
         assert!(hints.tool_call);
         assert!(hints.structured_output);
@@ -683,9 +654,26 @@ mod tests {
         ));
         assert_eq!(hints, RequestWorkloadHints::default());
 
+        // Raw OpenAI response_format objects are inert: the server decides
+        // structured output and injects the canonical hint key.
         let hints =
             RequestWorkloadHints::from_metadata(Some(r#"{"response_format":{"type":"text"}}"#));
         assert_eq!(hints, RequestWorkloadHints::default());
+
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            r#"{"response_format":{"type":"json_schema"}}"#,
+        ));
+        assert_eq!(hints, RequestWorkloadHints::default());
+
+        // Recursion still traverses workload-carrying keys.
+        let hints =
+            RequestWorkloadHints::from_metadata(Some(r#"{"workload":{"structured_output":true}}"#));
+        assert!(hints.structured_output);
+
+        let hints =
+            RequestWorkloadHints::from_metadata(Some(r#"{"tools": {"structured_output": true}}"#));
+        assert!(hints.tool_call);
+        assert!(!hints.structured_output);
     }
 
     #[test]
