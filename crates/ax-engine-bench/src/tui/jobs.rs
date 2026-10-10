@@ -25,6 +25,10 @@ pub(super) struct JobTick {
 }
 
 pub(super) const LOG_CAP: usize = 1000;
+/// Bound on queued child-output lines. Reader threads block on `send` when the
+/// UI has not caught up; the OS pipe buffers the rest, so a chatty child is
+/// slowed rather than the queue growing without bound.
+const OUTPUT_CHANNEL_CAP: usize = 1024;
 pub(super) const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SPEED_HISTORY_CAP: usize = 120;
 
@@ -77,7 +81,7 @@ impl Job {
                 let _ = stdin.write_all(payload.as_bytes());
             });
         }
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(OUTPUT_CHANNEL_CAP);
         for pipe in [
             child
                 .stdout

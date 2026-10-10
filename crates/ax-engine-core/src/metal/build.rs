@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::{
     MetalKernelSpec, MetalKernelTier, MetalRuntimeError, PHASE1_DEFAULT_BLOCK_SIZE_TOKENS,
@@ -1827,14 +1826,10 @@ fn file_sha256(path: &Path) -> Result<String, MetalRuntimeError> {
     Ok(sha256_hex(&bytes))
 }
 
-pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut text = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        text.push_str(&format!("{byte:02x}"));
-    }
-    text
-}
+// Single SHA-256 hex implementation (also used by pipeline framing in
+// `crate::distributed`); re-exported so existing `crate::metal` call sites and
+// tests keep resolving this name.
+pub(super) use crate::distributed::sha256_hex;
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]

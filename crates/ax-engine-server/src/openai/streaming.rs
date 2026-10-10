@@ -1222,7 +1222,6 @@ impl IncrementalDecoder {
                 .tokenizer
                 .decode(&self.tokens[self.prefix_offset..], true)?;
             if !whole.is_empty() && !whole.ends_with('\u{FFFD}') {
-                self.prefix_offset = self.read_offset;
                 self.read_offset = self.tokens.len();
                 // After a complete emit the held window is the tokens just
                 // finished; next push starts a fresh window at read_offset.

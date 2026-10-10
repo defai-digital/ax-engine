@@ -255,7 +255,7 @@ impl Gemma4UnifiedRuntimeInputs {
     /// Domain-separated by soft-token budget and `model_fingerprint` so a
     /// budget change or weight reload cannot hit stale KV.
     pub fn media_prefix_key(&self, model_fingerprint: &str) -> String {
-        use crate::media_digest::{media_digest_f32, ordered_media_digests_key};
+        use crate::media_digest::{media_digest_f32, ordered_media_digests_key_or_empty};
         let mut digests = Vec::new();
         for image in &self.images {
             digests.push(media_digest_f32(
@@ -278,11 +278,7 @@ impl Gemma4UnifiedRuntimeInputs {
                 model_fingerprint,
             ));
         }
-        if digests.is_empty() {
-            String::new()
-        } else {
-            ordered_media_digests_key(&digests)
-        }
+        ordered_media_digests_key_or_empty(&digests)
     }
 
     pub fn validate_for_prompt_len(

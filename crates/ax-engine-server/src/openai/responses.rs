@@ -522,30 +522,13 @@ pub(crate) fn extract_bare_gemma4_tool_call_payload_at(
     Some((OpenAiFunctionCall { name, arguments }, remaining))
 }
 
+/// One-shot form of [`scan_gemma4_object_body`]: `None` when the object never
+/// completes within `content` (including an unterminated `<|"|>` escape).
 fn find_matching_gemma4_object_end(content: &str, body_start: usize) -> Option<usize> {
-    let mut depth = 1usize;
-    let mut index = body_start;
-    while index < content.len() {
-        if content[index..].starts_with("<|\"|>") {
-            index += "<|\"|>".len();
-            let relative_end = content[index..].find("<|\"|>")?;
-            index += relative_end + "<|\"|>".len();
-            continue;
-        }
-        let ch = content[index..].chars().next()?;
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-        index += ch.len_utf8();
+    match scan_gemma4_object_body(content, body_start, 1) {
+        Gemma4ObjectScan::Complete(end) => Some(end),
+        Gemma4ObjectScan::Incomplete { .. } => None,
     }
-    None
 }
 
 /// Resumable result of brace-matching a bare Gemma4 object body.
@@ -558,9 +541,9 @@ pub(crate) enum Gemma4ObjectScan {
 }
 
 /// Incrementally brace-match a bare Gemma4 object body, resuming at byte
-/// offset `from` of `content` with the given brace `depth`. Mirrors
-/// `find_matching_gemma4_object_end` but can pause and resume across pushes
-/// instead of re-scanning the whole body from `body_start` every time.
+/// offset `from` of `content` with the given brace `depth`. This scanner owns
+/// the brace and `<|"|>` escape rules; the one-shot
+/// `find_matching_gemma4_object_end` is a thin wrapper over it.
 pub(crate) fn scan_gemma4_object_body(
     content: &str,
     mut from: usize,

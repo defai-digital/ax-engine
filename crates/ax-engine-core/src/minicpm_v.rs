@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::media_digest::{media_digest_f32, ordered_media_digests_key};
+use crate::media_digest::{media_digest_f32, ordered_media_digests_key_or_empty};
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum MiniCpmV46RuntimeInputError {
@@ -164,11 +164,7 @@ impl MiniCpmV46RuntimeInputs {
                 )
             })
             .collect();
-        if digests.is_empty() {
-            String::new()
-        } else {
-            ordered_media_digests_key(&digests)
-        }
+        ordered_media_digests_key_or_empty(&digests)
     }
 }
 

@@ -35,6 +35,16 @@ pub fn ordered_media_digests_key(digests: &[String]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Ordered multi-media digest for prefix-cache keys, or an empty string when
+/// there is no media (the "no media" cache-key sentinel).
+pub(crate) fn ordered_media_digests_key_or_empty(digests: &[String]) -> String {
+    if digests.is_empty() {
+        String::new()
+    } else {
+        ordered_media_digests_key(digests)
+    }
+}
+
 /// Digest f32 tensor bytes (little-endian) for runtime media identity.
 pub fn media_digest_f32(values: &[f32], soft_token_budget: u32, model_fingerprint: &str) -> String {
     let mut bytes = Vec::with_capacity(values.len().saturating_mul(4));

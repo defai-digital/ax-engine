@@ -30,6 +30,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::hardware::sysctl_string;
+
 /// Samples kept for chart history (~4 min at one sample / 2 s).
 pub(super) const HISTORY_LEN: usize = 120;
 
@@ -491,15 +493,6 @@ fn push_hist(hist: &mut VecDeque<u64>, value: u64) {
     while hist.len() > HISTORY_LEN {
         hist.pop_front();
     }
-}
-
-fn sysctl_string(key: &str) -> Option<String> {
-    let output = Command::new("sysctl").args(["-n", key]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
 }
 
 fn sysctl_u32(key: &str) -> Option<u32> {

@@ -30,7 +30,7 @@ impl HardwareInfo {
     }
 }
 
-fn sysctl_string(key: &str) -> Option<String> {
+pub(super) fn sysctl_string(key: &str) -> Option<String> {
     let output = Command::new("sysctl").args(["-n", key]).output().ok()?;
     if !output.status.success() {
         return None;
