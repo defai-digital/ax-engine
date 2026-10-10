@@ -15,8 +15,7 @@ pub(super) fn enabled() -> bool {
     if let Some(value) = TEST_MODE.with(std::cell::Cell::get) {
         return value;
     }
-    std::env::var("AX_MLX_FLASH_NEXT_GDN_METAL")
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+    crate::fastpath::env_flag("AX_MLX_FLASH_NEXT_GDN_METAL")
 }
 
 pub(super) fn singleton(

@@ -208,7 +208,6 @@ const ENV_VAR_ALLOWED_OWNERS: &[(&str, &str)] = &[
     ),
     ("src/model/shared/mlp.rs", "maybe_trace_moe_router"),
     ("src/model/shared/norm.rs", "use_flat_qk_norm_path"),
-    ("src/model/shared/qwen4_exp_gdn_metal.rs", "enabled"),
     (
         "src/model/shared/utils.rs",
         "dense_wide_gemv_vec8_max_leading",
@@ -238,7 +237,6 @@ const ENV_VAR_ALLOWED_OWNERS: &[(&str, &str)] = &[
         "src/per_layer_compile.rs",
         "COMPILE_CACHE_REFRESH_THRESHOLD",
     ),
-    ("src/runner/mod.rs", "EMBED_GPU_NORMALIZE"),
     ("src/runner/mod.rs", "EMBED_NO_COMPILE"),
     ("src/runner/mod.rs", "prefix_demote_on_evict_enabled"),
     (

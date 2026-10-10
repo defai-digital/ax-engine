@@ -1568,13 +1568,11 @@ where
     }
 }
 
-/// Cached flag: when `AX_EMBED_GPU_NORMALIZE=1`, L2 normalization runs on
-/// the GPU instead of the default CPU read-back path.
-static EMBED_GPU_NORMALIZE: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("AX_EMBED_GPU_NORMALIZE")
-        .map(|v| !(v == "0" || v.is_empty()))
-        .unwrap_or(false)
-});
+/// Cached flag: when `AX_EMBED_GPU_NORMALIZE` is truthy (`1`, `true`, `yes`,
+/// `on`, ASCII case-insensitive), L2 normalization runs on the GPU instead
+/// of the default CPU read-back path.
+static EMBED_GPU_NORMALIZE: LazyLock<bool> =
+    LazyLock::new(|| crate::fastpath::env_flag("AX_EMBED_GPU_NORMALIZE"));
 
 /// Cached flag: when set, disables compiled embedding closures for A/B
 /// benchmarking against the imperative forward path.
