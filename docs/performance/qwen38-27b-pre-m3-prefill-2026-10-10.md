@@ -118,6 +118,39 @@ tok/s; MTPLX 2.12.2 (sustained, depth 3) 37-41 tok/s on the flappy suite;
 OMLX 0.7.1.dev1 on an imported snapshot 12-23 tok/s (unstable). None of
 these numbers qualify anything; they locate AX relative to its peers here.
 
+## Final commit (`3c4065b0`) under its defaults, 3 reps + 2 warmups
+
+| host | p128 prefill / decode | p512 | p2048 | flappy MTP decode (273 / 374 / 432 / 264) | tokens vs the pre-change arm |
+| --- | ---: | ---: | ---: | --- | --- |
+| M2 Ultra 192 GB, before (fe13a04b) | 186 / 33.3 | 210 / 32.7 | 216 / 32.3 | 52.5 / 52.1 / 51.2 / 52.4 | — |
+| M2 Ultra 192 GB, after | 242 / 35.5 | 307 / 35.1 | 335 / 35.1 | 55.7 / 55.3 / 54.6 / 55.8 | MTP identical; direct identical to the fp16 A/B arm |
+| M5 Max 128 GB, after (defaults unchanged there) | 624 / 35.6 | 910 / 35.5 | 971 / 35.1 | 77.0 / 76.6 / 75.3 / 77.0 | identical to the M5 baseline (direct and MTP) |
+| M5 Max 128 GB, `mlx_lm` 0.31.3 reference | 437 / 34.6 | 777 / 34.5 | 920 / 34.0 | — | — |
+
+M2 Ultra net: prefill +31% (p128), +46% (p512), +56% (p2048); direct
+decode +7-9%; MTP decode +6-7%. The M5 Max keeps its path and its numbers
+(the p2048 prefill spread, 921-972 across runs, is within this host's
+run-to-run variation).
+
+## The same policies on Qwen 3.5 9B (community affine 4-bit, group 64)
+
+`mlx-community/Qwen3.5-9B-MLX-4bit` @ `938d8919` (`qwen3_5`, 32 layers,
+affine 4-bit g64, no MTP sidecar; `ax-engine-bench generate-manifest`
+added the manifest), Mac Studio M2 Ultra 192 GB, final commit, 3 reps +
+2 warmups, direct rows:
+
+| arm | p128 prefill / decode | p512 | p2048 | tokens vs before |
+| --- | ---: | ---: | ---: | --- |
+| before (bf16, qmm, row loop forced) | 639 / 96.4 | 762 / 94.8 | 792 / 93.0 | — |
+| `mlx_lm` 0.31.3 reference | 460 / 97.9 | 685 / 96.6 | 776 / 95.8 | — |
+| fp16 only | 847 / 105.8 | 1039 / 104.1 | 1093 / 102.3 | |
+| defaults (`auto`: fp16 + transient dense GEMM from 512) | 847 / 105.6 | 1036 / 104.0 | 1164 / 104.1 | p128 and p2048 identical; p512 diverges at token 75 (random-token prompt) |
+
+Net on the M2 Ultra for the 9B: prefill +33% / +36% / +47%, decode
++10-12%. The affine pack takes the same two policies (the dense GEMM also
+beats the affine qmm at M>=512 on this host); the lm_head window does not
+apply because the pack has no MTP head.
+
 ## Numerics and scope
 
 - fp16 has a narrower range than bf16 (max 65504). The RMS-normalized

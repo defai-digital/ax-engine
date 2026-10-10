@@ -31,3 +31,10 @@ M4 Pro 64 GB); nothing here qualifies anything.
 - `ab-direct-fp16.json`, `ab-direct-dequant-resident.json`,
   `ab-direct-dequant-transient.json`, `ab-mtp-window.json`,
   `ab-mtp-fp16.json`: single-flag arms, 2 reps + 1 warmup, token ids captured.
+
+## `qwen3_5-9b-m2-ultra-192gb/` (Mac Studio M2 Ultra 192 GB, final commit)
+
+`mlx-community/Qwen3.5-9B-MLX-4bit` @ `938d8919` (affine 4-bit g64, no MTP
+head), 3 reps + 2 warmups, token ids captured: `before-direct-with-mlx-lm.json`
+(bf16 / qmm / row loop forced by env, plus the `mlx_lm.benchmark` rows),
+`after-direct-defaults.json` (`auto` policies), `after-direct-fp16-only.json`.
