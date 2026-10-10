@@ -133,6 +133,20 @@ impl LlamaCppStreamHandle {
             source,
         })?;
 
+        // An HTTP-200 `{"error": ...}` object maps to an all-default chunk on
+        // both formats (unknown fields are ignored), which used to be
+        // indistinguishable from a legal keep-alive / role-only chunk and was
+        // silently dropped. Legal chunks always map at least one field, so an
+        // otherwise-empty chunk that names an error is a backend failure.
+        if chunk.is_all_default()
+            && let Some(message) = payload_error_message(&payload)
+        {
+            return Err(LlamaCppBackendError::StreamErrorObject {
+                endpoint: self.endpoint.clone(),
+                message,
+            });
+        }
+
         if self.format == LlamaCppStreamFormat::LlamaCppCompletion
             && !self.bos_space_stripped
             && !chunk.content.is_empty()
@@ -184,6 +198,40 @@ pub struct LlamaCppPromptProgress {
     pub cache: u32,
     #[serde(default)]
     pub processed: u32,
+}
+
+impl LlamaCppStreamChunk {
+    /// True when no mapped field carries a value. Legal keep-alive /
+    /// role-only stream chunks can look like this; so can an HTTP-200 error
+    /// object whose `error` field was ignored as unknown.
+    fn is_all_default(&self) -> bool {
+        self.content.is_empty()
+            && self.tokens.is_empty()
+            && !self.stop
+            && self.stop_type.is_none()
+            && self.prompt_progress.is_none()
+            && self.prompt_token_count.is_none()
+            && self.output_token_count.is_none()
+    }
+}
+
+/// Message from an HTTP-200 `{"error": ...}` payload, which llama.cpp and
+/// OpenAI both return with a success status on streaming endpoints. The value
+/// can be a string or an object carrying `message`; an explicit `null` is a
+/// serialized-absent optional field, not an error.
+fn payload_error_message(payload: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let error = value.get("error")?;
+    if error.is_null() {
+        return None;
+    }
+    if let Some(message) = error.as_str() {
+        return Some(message.to_string());
+    }
+    if let Some(message) = error.get("message").and_then(serde_json::Value::as_str) {
+        return Some(message.to_string());
+    }
+    Some(error.to_string())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -291,6 +339,8 @@ pub enum LlamaCppBackendError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("llama.cpp backend HTTP response from {endpoint} carried an error object: {message}")]
+    StreamErrorObject { endpoint: String, message: String },
     #[error("llama.cpp backend HTTP response from {endpoint} did not include a completion choice")]
     MissingCompletionChoice { endpoint: String },
     #[error(
@@ -1451,5 +1501,85 @@ mod tests {
             })
         );
         assert_eq!(stream.next_chunk().expect("done should parse"), None);
+    }
+
+    #[test]
+    fn native_completion_stream_surfaces_http_error_object() {
+        // A 200-status error body used to map to an all-default chunk and be
+        // dropped silently, hiding the backend failure from the caller.
+        let body = b"data: {\"error\":{\"message\":\"failed to load model\",\"code\":500}}\n\n";
+        let mut stream = LlamaCppStreamHandle::new(
+            "http://127.0.0.1:8081/completion".to_string(),
+            LlamaCppStreamFormat::LlamaCppCompletion,
+            Box::new(std::io::Cursor::new(body.to_vec())),
+        );
+        let error = stream
+            .next_chunk()
+            .expect_err("error object must surface instead of an empty chunk");
+        assert!(
+            error.to_string().contains("failed to load model"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("http://127.0.0.1:8081/completion"),
+            "error must name the endpoint: {error}"
+        );
+    }
+
+    #[test]
+    fn openai_chat_stream_surfaces_http_error_object() {
+        let body = b"data: {\"error\":\"model not found\"}\n\n";
+        let mut stream = LlamaCppStreamHandle::new(
+            "http://127.0.0.1:8081/v1/chat/completions".to_string(),
+            LlamaCppStreamFormat::OpenAiChatCompletion,
+            Box::new(std::io::Cursor::new(body.to_vec())),
+        );
+        let error = stream
+            .next_chunk()
+            .expect_err("error object must surface instead of an empty chunk");
+        assert!(
+            error.to_string().contains("model not found"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn legal_role_only_chunk_is_not_mistaken_for_an_error() {
+        let body = b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n";
+        let mut stream = LlamaCppStreamHandle::new(
+            "http://127.0.0.1:8081/v1/chat/completions".to_string(),
+            LlamaCppStreamFormat::OpenAiChatCompletion,
+            Box::new(std::io::Cursor::new(body.to_vec())),
+        );
+        let chunk = stream
+            .next_chunk()
+            .expect("role-only chunk must parse")
+            .expect("role-only chunk must be delivered");
+        assert!(chunk.content.is_empty());
+        assert!(!chunk.stop);
+        assert!(chunk.stop_type.is_none());
+    }
+
+    #[test]
+    fn payload_error_message_reads_string_and_object_shapes() {
+        assert_eq!(
+            payload_error_message(r#"{"error":"plain failure"}"#),
+            Some("plain failure".to_string())
+        );
+        assert_eq!(
+            payload_error_message(
+                r#"{"error":{"message":"nested failure","type":"server_error"}}"#
+            ),
+            Some("nested failure".to_string())
+        );
+        assert_eq!(payload_error_message(r#"{"content":"hi"}"#), None);
+        assert_eq!(
+            payload_error_message(r#"{"error":null}"#),
+            None,
+            "a serialized-absent optional error field is not an error"
+        );
+        assert_eq!(payload_error_message("not json"), None);
     }
 }

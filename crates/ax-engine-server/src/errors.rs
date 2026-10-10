@@ -131,6 +131,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpStatus { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpResponseRead { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::InvalidResponseJson { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamErrorObject { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::SerializeRequestJson { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpRequest { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })

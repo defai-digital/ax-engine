@@ -81,6 +81,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::HttpResponseRead { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::InvalidResponseJson { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::MissingCompletionChoice { .. })
+        | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamErrorObject { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::SerializeRequestJson { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpRequest { .. })
         | EngineSessionError::MlxLm(MlxLmBackendError::HttpStatus { .. })
