@@ -88,12 +88,6 @@ struct CachedBlockEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AppendMode {
-    ReuseCurrentPartialBlock,
-    AllocateNewBlocks,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AllocationStatus {
     Allocated,
     InsufficientCapacity,
@@ -104,7 +98,6 @@ pub enum AllocationStatus {
 pub struct AllocationPlan {
     pub request_id: RequestId,
     pub new_block_ids: Vec<BlockId>,
-    pub append_mode: AppendMode,
     pub allocation_status: AllocationStatus,
 }
 
@@ -549,7 +542,6 @@ impl KvManager {
             return Ok(AllocationPlan {
                 request_id,
                 new_block_ids: Vec::new(),
-                append_mode: AppendMode::ReuseCurrentPartialBlock,
                 allocation_status: AllocationStatus::Allocated,
             });
         }
@@ -568,7 +560,6 @@ impl KvManager {
             return Ok(AllocationPlan {
                 request_id,
                 new_block_ids: Vec::new(),
-                append_mode: AppendMode::AllocateNewBlocks,
                 allocation_status: AllocationStatus::InsufficientCapacity,
             });
         }
@@ -656,11 +647,6 @@ impl KvManager {
 
         Ok(AllocationPlan {
             request_id,
-            append_mode: if new_block_ids.is_empty() {
-                AppendMode::ReuseCurrentPartialBlock
-            } else {
-                AppendMode::AllocateNewBlocks
-            },
             new_block_ids,
             allocation_status: AllocationStatus::Allocated,
         })
@@ -1458,7 +1444,6 @@ mod tests {
         manager.allocate(RequestId(1), 3).unwrap();
         let reuse = manager.allocate(RequestId(1), 1).unwrap();
 
-        assert_eq!(reuse.append_mode, AppendMode::ReuseCurrentPartialBlock);
         assert!(reuse.new_block_ids.is_empty());
         assert_eq!(manager.used_block_count(), 1);
     }
@@ -1993,9 +1978,7 @@ mod tests {
         let reuse = manager.allocate(RequestId(2), 1).unwrap();
         let table = manager.block_tables.get(&RequestId(2)).unwrap();
 
-        assert_eq!(tail.append_mode, AppendMode::AllocateNewBlocks);
         assert_eq!(tail.new_block_ids, vec![BlockId(2)]);
-        assert_eq!(reuse.append_mode, AppendMode::ReuseCurrentPartialBlock);
         assert!(reuse.new_block_ids.is_empty());
         assert_eq!(table.block_ids, vec![BlockId(0), BlockId(1), BlockId(2)]);
         assert_eq!(table.logical_token_count, 11);

@@ -46,11 +46,7 @@
 
 use mlx_sys::{MlxArray, MlxDtype, contiguous, eval, slice, slice_update, zeros};
 
-use crate::kv_cache::{KV_CHUNK_TOKENS, MlxKVCache};
-
-fn chunk_ceiling(n: usize) -> usize {
-    n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
-}
+use crate::kv_cache::{MlxKVCache, chunk_ceiling};
 
 /// Per-layer batched backing buffers.
 #[derive(Clone)]
@@ -535,7 +531,7 @@ impl BatchedKvCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kv_cache::MlxKVCache;
+    use crate::kv_cache::{KV_CHUNK_TOKENS, MlxKVCache};
     use mlx_sys::{contiguous, eval};
 
     /// Materialize a (possibly strided) slice view into row-contiguous order so

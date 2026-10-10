@@ -30,7 +30,7 @@ fn kv_quant_env_disabled() -> bool {
     std::env::var(AX_KV_QUANT_ENV).is_ok_and(|value| value == "0")
 }
 
-fn chunk_ceiling(n: usize) -> usize {
+pub(crate) fn chunk_ceiling(n: usize) -> usize {
     n.div_ceil(KV_CHUNK_TOKENS) * KV_CHUNK_TOKENS
 }
 
@@ -1287,6 +1287,7 @@ pub struct GlmMlaLayerStateView<'a> {
 
 /// Borrowed view of a DeepSeek V4 layer's cached latent K state. Returned by
 /// [`MlxKVCache::deepseek_v4_layer_state`].
+#[cfg(test)]
 pub struct DeepseekV4LayerStateView<'a> {
     /// The full backing buffer for the latent K cache; shape
     /// `[1, 1, capacity, head_dim]`. Valid region is `[0..seq_len]`.
@@ -1499,13 +1500,7 @@ impl MlxKVCache {
     /// (`AXKB`) so a cursor payload can never be misread as a trunk KV-cache
     /// blob (or vice versa): a truncated or malformed cursor fails at the
     /// header check instead of being parsed as a trunk snapshot.
-    ///
-    /// Consumed by the draft-cursor codec and its tests; the codec is wired
-    /// into the prefix-cache store path by a follow-up change, so it is dead
-    /// in non-test builds for now.
-    #[cfg_attr(not(test), allow(dead_code))]
     const MTP_CURSOR_MAGIC: &'static [u8; 4] = b"AXMC";
-    #[cfg_attr(not(test), allow(dead_code))]
     const MTP_CURSOR_VERSION: u32 = 1;
 
     /// Private KV wire-format version, exposed for the durable prefix
@@ -2721,7 +2716,6 @@ impl MlxKVCache {
     /// The header magic is `AXMC`, distinct from the trunk's `AXKB`, so a
     /// trunk blob passed here (or a cursor blob passed to the trunk reader)
     /// fails at the header check instead of being misparsed.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn serialize_qwen4_exp_draft_cursor(
         state: &crate::model::qwen4_exp::Qwen4ExpState,
         stream_hidden: &MlxArray,
@@ -2746,7 +2740,6 @@ impl MlxKVCache {
     /// misread here) and never silently degrades on truncation: the layer
     /// assembly step validates structural completeness and returns a
     /// structured error instead.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn try_deserialize_qwen4_exp_draft_cursor(
         bytes: &[u8],
     ) -> Result<(crate::model::qwen4_exp::Qwen4ExpState, MlxArray), MlxKVCacheSerializeError> {

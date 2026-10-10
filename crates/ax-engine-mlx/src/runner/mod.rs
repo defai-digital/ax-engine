@@ -7082,17 +7082,6 @@ impl MlxRunner {
         }
     }
 
-    fn prefix_cache_supported(&self) -> bool {
-        // Every native-tier architecture (standard FA, linear, sliding-window,
-        // MLA) is now supported via the unified store-side restriction in
-        // `store_prompt_prefix_snapshots`: non-FA architectures store only
-        // the full-prompt snapshot when the prompt is exactly block-aligned.
-        // Lookups remain exact-match-safe via `MlxPrefixCache::get`'s
-        // token-equality check.
-        let _ = self; // architecture gating now happens inside the store path.
-        true
-    }
-
     fn native_fa_prefix_sharing_enabled(&self) -> bool {
         self.shared_fa_block_pool.is_some()
             && !self.has_mtp()
@@ -7339,16 +7328,26 @@ impl MlxRunner {
         input: &[u32],
         media_key: &str,
     ) -> Option<Vec<u32>> {
-        let requested_key =
+        let mut probe_key =
             self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
         let native_len = self
             .native_fa_prefix_sharing_enabled()
             .then(|| {
                 self.native_prefix_cache
                     .lock()
-                    .longest_prefix_len(&requested_key, input)
+                    .longest_prefix_len(&probe_key, input)
             })
             .flatten();
+        // One rolling pass over the prompt yields every block-aligned prefix
+        // hash; each candidate then costs a key field update plus the cache
+        // lookup instead of an O(prefix) re-hash and fresh key strings. The
+        // table stays empty for block_size == 0, which the walker below
+        // early-returns on before ever invoking the closure.
+        let block_hashes = if block_size_tokens > 0 {
+            block_aligned_prefix_hashes(input, block_size_tokens as usize)
+        } else {
+            Vec::new()
+        };
         // Re-acquire the L1 lock per candidate rather than holding it for
         // the whole walk: a long prompt with no L1 hit at any block-aligned
         // length can probe many candidates, each with an `fs::stat` disk
@@ -7357,17 +7356,17 @@ impl MlxRunner {
         // no correctness reason.
         let portable =
             Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
-                let key = self.prefix_cache_key_with_media(
-                    model_id,
-                    block_size_tokens,
-                    prefix,
-                    media_key,
-                );
-                if self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
+                probe_key.token_count = saturating_u32(prefix.len());
+                probe_key.token_hash = block_hashes[prefix.len() / block_size_tokens as usize - 1];
+                if self
+                    .prefix_cache
+                    .lock()
+                    .contains_exact_tokens(&probe_key, prefix)
+                {
                     return true;
                 }
                 if let Some(disk) = self.disk_prefix_cache.as_ref()
-                    && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, prefix)
+                    && let Some(key_bytes) = self.disk_prefix_key_bytes(&probe_key, prefix)
                     && disk.contains(&key_bytes)
                 {
                     return true;
@@ -7593,24 +7592,6 @@ impl MlxRunner {
         let capture_prefill_output =
             item.mode == ExecutionMode::Decode && ctx.is_some_and(|ctx| ctx.generated_len == 0);
         let defer_prefill_warmup = item.mode == ExecutionMode::Prefill;
-
-        if !self.prefix_cache_supported() {
-            telemetry.record_blocked_unsupported_layout();
-            if !defer_prefill_warmup {
-                self.warm_reused_prefix_without_cache(
-                    state,
-                    item.request_id,
-                    reused_tokens,
-                    sampling,
-                    capture_prefill_output,
-                    needs_flash_next_cursor,
-                );
-            }
-            telemetry.warmup_tokens = telemetry
-                .warmup_tokens
-                .saturating_add(saturating_u32(reused_tokens.len()));
-            return telemetry;
-        }
 
         if !self.prefix_cache.lock().enabled() {
             telemetry.record_blocked_policy_disabled();
@@ -8311,11 +8292,6 @@ impl MlxRunner {
             Self::pfx_dbg("store-skip", "media_identity");
             return telemetry;
         };
-        if !self.prefix_cache_supported() {
-            telemetry.record_blocked_unsupported_layout();
-            Self::pfx_dbg("store-skip", "unsupported_layout");
-            return telemetry;
-        }
         if !self.prefix_cache.lock().enabled() {
             telemetry.record_blocked_policy_disabled();
             Self::pfx_dbg("store-skip", "policy_disabled");
@@ -8424,10 +8400,26 @@ impl MlxRunner {
                 snapshot_start_tokens
             ),
         );
+        // Build the invariant key fields once and hash the prompt in a single
+        // rolling pass: deriving the full key per boundary previously re-ran
+        // the format! strings and an O(prefix_len) hash for every candidate.
+        let mut store_key = MlxPrefixCacheKey {
+            model_id: model_id.to_string(),
+            route_policy: self.prefix_cache_route_policy(),
+            layer_layout: format_prefix_layer_layout(&self.prefix_cache_layer_layout(), media_key),
+            block_size_tokens,
+            token_count: 0,
+            token_hash: 0,
+            media_key: media_key.to_string(),
+        };
+        let block_hashes = block_aligned_prefix_hashes(
+            &state.prompt_prefix_tokens[..full_block_tokens],
+            block_size,
+        );
         for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
-            let key =
-                self.prefix_cache_key_with_media(model_id, block_size_tokens, tokens, media_key);
+            store_key.token_count = saturating_u32(prefix_len);
+            store_key.token_hash = block_hashes[prefix_len / block_size - 1];
             let is_largest = prefix_len == full_block_tokens;
             let snapshot_prefill_output_token = (prefix_len == available_tokens)
                 .then_some(greedy_prefill_output_token)
@@ -8477,7 +8469,7 @@ impl MlxRunner {
             let l1_superseding = {
                 let cache = self.prefix_cache.lock();
                 let superseding = cache.contains_superseding_snapshot(
-                    &key,
+                    &store_key,
                     tokens,
                     snapshot_prefill_output_token,
                     mtp_cursor_payload.is_some(),
@@ -8491,10 +8483,10 @@ impl MlxRunner {
                 && !self
                     .native_prefix_cache
                     .lock()
-                    .contains_exact_tokens(&key, tokens);
+                    .contains_exact_tokens(&store_key, tokens);
             let disk_store_needed = is_largest
                 && self.disk_prefix_cache.as_ref().is_some_and(|disk| {
-                    self.disk_prefix_key_bytes(&key, tokens)
+                    self.disk_prefix_key_bytes(&store_key, tokens)
                         .is_some_and(|key_bytes| !disk.contains(&key_bytes))
                 });
             // A live standard-FA prefill boundary needs only a runner-local
@@ -8531,7 +8523,7 @@ impl MlxRunner {
                         telemetry.record_blocked_entry_too_large();
                     }
                     native.insert(
-                        key.clone(),
+                        store_key.clone(),
                         MlxNativePrefixSnapshot::new(
                             snapshot_cache.clone(),
                             tokens.to_vec(),
@@ -8636,16 +8628,16 @@ impl MlxRunner {
             } else {
                 None
             };
-            // Only clone the key when we'll need it again post-insert
-            // (i.e. when the disk path will fire). For the L1-only
-            // configuration the original `key` moves cleanly into
-            // `cache.insert`, no extra allocation.
-            let key_for_disk = disk_payload.as_ref().map(|_| key.clone());
+            // `store_key`'s identity fields are built once for the whole
+            // loop; each stored boundary clones it (the map entry owns its
+            // key), and the disk path clones once more only when a disk
+            // write will actually fire.
+            let key_for_disk = disk_payload.as_ref().map(|_| store_key.clone());
             let payload_len = payload.len();
             let outcome = {
                 let mut cache = self.prefix_cache.lock();
                 let outcome = cache.insert(
-                    key,
+                    store_key.clone(),
                     MlxPrefixSnapshot::from_shared_payload(
                         payload,
                         tokens.to_vec(),
@@ -15768,13 +15760,42 @@ fn media_key_for_fingerprint(
     }
 }
 
+const PREFIX_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const PREFIX_HASH_PRIME: u64 = 0x1000_0000_01b3;
+const PREFIX_HASH_LEN_MIX: u64 = 0x9e37_79b9_7f4a_7c15;
+
+fn prefix_hash_step(hash: u64, token: u32) -> u64 {
+    (hash ^ u64::from(token)).wrapping_mul(PREFIX_HASH_PRIME)
+}
+
+fn prefix_hash_finalize(hash: u64, len: usize) -> u64 {
+    hash ^ (len as u64).wrapping_mul(PREFIX_HASH_LEN_MIX)
+}
+
 fn hash_prefix_tokens(tokens: &[u32]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut hash = PREFIX_HASH_OFFSET;
     for token in tokens {
-        hash ^= u64::from(*token);
-        hash = hash.wrapping_mul(0x1000_0000_01b3);
+        hash = prefix_hash_step(hash, *token);
     }
-    hash ^ (tokens.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    prefix_hash_finalize(hash, tokens.len())
+}
+
+/// `hash_prefix_tokens` for every block-aligned prefix of `tokens` in one
+/// rolling pass: `hashes[n - 1]` covers the first `n * block_size` tokens.
+/// The prefix-cache probe and store walk every aligned boundary; hashing each
+/// candidate from scratch made a cold prompt O(L² / block_size) in hashing
+/// alone, so both paths index into this table instead.
+fn block_aligned_prefix_hashes(tokens: &[u32], block_size: usize) -> Vec<u64> {
+    debug_assert!(block_size > 0);
+    let mut hashes = Vec::with_capacity(tokens.len() / block_size);
+    let mut hash = PREFIX_HASH_OFFSET;
+    for (index, token) in tokens.iter().enumerate() {
+        hash = prefix_hash_step(hash, *token);
+        if (index + 1) % block_size == 0 {
+            hashes.push(prefix_hash_finalize(hash, index + 1));
+        }
+    }
+    hashes
 }
 
 /// Fold media digests into the prefix-cache layer layout string (WS-M3).

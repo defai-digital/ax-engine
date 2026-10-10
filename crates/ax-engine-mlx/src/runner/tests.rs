@@ -8287,3 +8287,21 @@ fn mtp_warmup_rope_uses_absolute_base_after_multi_chunk_prefill() {
     assert_eq!(mtp_warmup_absolute_rope_start(100, 100, 50), 50);
     assert_eq!(mtp_warmup_absolute_rope_start(50, 100, 0), 0); // clamp
 }
+
+#[test]
+fn block_aligned_prefix_hashes_match_full_rehash_per_boundary() {
+    let tokens: Vec<u32> = (0..40).map(|i| i * 7 + 1).collect();
+    let hashes = block_aligned_prefix_hashes(&tokens, 4);
+    assert_eq!(hashes.len(), 10);
+    for (index, hash) in hashes.iter().enumerate() {
+        let prefix_len = (index + 1) * 4;
+        assert_eq!(
+            *hash,
+            hash_prefix_tokens(&tokens[..prefix_len]),
+            "boundary {prefix_len} must match a from-scratch hash"
+        );
+    }
+    // Unaligned tails contribute no boundary; empty input has none.
+    assert_eq!(block_aligned_prefix_hashes(&tokens[..39], 4).len(), 9);
+    assert!(block_aligned_prefix_hashes(&[], 4).is_empty());
+}

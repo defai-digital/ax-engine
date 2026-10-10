@@ -64,8 +64,8 @@ pub use generation::{
 };
 pub use ids::{BlockId, CacheGroupId, ModelId, RequestId, SequenceNo, StepId};
 pub use kv::{
-    AllocationPlan, AllocationStatus, AppendMode, BlockTable, BlockTableView, FreeResult,
-    KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
+    AllocationPlan, AllocationStatus, BlockTable, BlockTableView, FreeResult, KvManager,
+    KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
 pub use loop_detection::{LoopDetectionConfig, detects_loop};
 pub use media_digest::{media_digest, media_digest_f32, ordered_media_digests_key};
