@@ -564,19 +564,22 @@ where
     }
 }
 
-/// Decode text with a trailing incomplete multi-byte codepoint stripped.
+/// Decode text with trailing incomplete multi-byte codepoints stripped.
 ///
 /// Byte-level BPE (Qwen/Gemma/etc.) can leave a partial UTF-8 sequence at the
-/// end of a token window; HuggingFace-style decode renders that as U+FFFD.
+/// end of a token window; HuggingFace-style decode renders that as U+FFFD. A
+/// codepoint split across several tokens (byte-fallback) leaves a whole run of
+/// them, so strip the run: leaving any behind leaks a bare U+FFFD and desyncs
+/// the streaming cursor.
 fn complete_decode_prefix(decoded: &str) -> &str {
-    decoded.strip_suffix('\u{FFFD}').unwrap_or(decoded)
+    decoded.trim_end_matches('\u{FFFD}')
 }
 
 /// Diff consecutive full-sequence decodes for streaming SSE deltas.
 ///
-/// Holds back a trailing U+FFFD (incomplete multi-byte codepoint) and never
-/// falls back to re-emitting the entire string when prefix strip fails — that
-/// fallback was the source of CJK/emoji corruption and full-text re-sends.
+/// Holds back a trailing run of U+FFFD (incomplete multi-byte codepoints) and
+/// never falls back to re-emitting the entire string when prefix strip fails —
+/// that fallback was the source of CJK/emoji corruption and full-text re-sends.
 fn stream_delta(already_emitted: &str, next_full_decode: &str) -> Option<String> {
     let complete = complete_decode_prefix(next_full_decode);
     if complete.len() <= already_emitted.len() {
@@ -894,11 +897,57 @@ mod tests {
     }
 
     #[test]
-    fn complete_decode_prefix_strips_only_trailing_replacement() {
+    fn complete_decode_prefix_strips_trailing_replacement_run() {
         assert_eq!(complete_decode_prefix("hello"), "hello");
         assert_eq!(complete_decode_prefix("hello\u{FFFD}"), "hello");
         assert_eq!(complete_decode_prefix("\u{FFFD}"), "");
+        // Consecutive replacements (a multi-byte codepoint split across tokens)
+        // strip as a run, not just the last one.
+        assert_eq!(complete_decode_prefix("\u{FFFD}\u{FFFD}"), "");
+        assert_eq!(complete_decode_prefix("叫\u{FFFD}\u{FFFD}"), "叫");
         // Mid-string replacement (corrupt data) is left alone.
         assert_eq!(complete_decode_prefix("a\u{FFFD}b"), "a\u{FFFD}b");
+    }
+
+    /// Replay the streaming cursor protocol used by `generate` over a sequence
+    /// of full-sequence decodes, returning the text a client would receive.
+    fn replay_stream_decodes(decodes: &[&str]) -> String {
+        let mut emitted = String::new();
+        let mut streamed = String::new();
+        for decode in decodes {
+            if let Some(delta) = stream_delta(&emitted, decode) {
+                // Mirrors the call site: the cursor advances only when a delta
+                // is produced, and only over complete text.
+                emitted = complete_decode_prefix(decode).to_string();
+                streamed.push_str(&delta);
+            }
+        }
+        streamed
+    }
+
+    #[test]
+    fn stream_delta_replays_byte_fallback_codepoint_split_across_tokens() {
+        // Byte-fallback tokenizers split one CJK codepoint across tokens; the
+        // decodes before the final byte end in a run of U+FFFD (one per pending
+        // byte). Stripping only one replacement leaked a bare U+FFFD into the
+        // stream, stored it as the cursor, and every later decode failed the
+        // prefix check — the rest of the stream was dropped.
+        assert_eq!(
+            replay_stream_decodes(&["\u{FFFD}", "\u{FFFD}\u{FFFD}", "叫"]),
+            "叫"
+        );
+        // The cursor stays usable for later codepoints, including a second
+        // split one.
+        assert_eq!(
+            replay_stream_decodes(&[
+                "\u{FFFD}",
+                "\u{FFFD}\u{FFFD}",
+                "叫",
+                "叫\u{FFFD}",
+                "叫\u{FFFD}\u{FFFD}",
+                "叫好",
+            ]),
+            "叫好"
+        );
     }
 }

@@ -67,19 +67,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .token_id;
             generated.push(token);
             let next_rendered = tokenizer.decode(&generated, true)?;
-            let complete = next_rendered
-                .strip_suffix('\u{FFFD}')
-                .unwrap_or(next_rendered.as_str());
-            if complete.len() > emitted.len()
-                && complete.starts_with(emitted.as_str())
-                && complete.is_char_boundary(emitted.len())
-            {
-                let delta = &complete[emitted.len()..];
-                if !delta.is_empty() {
-                    print!("{delta}");
-                    io::stdout().flush()?;
-                }
-                emitted = complete.to_string();
+            if let Some(delta) = decode_delta(&emitted, &next_rendered) {
+                print!("{delta}");
+                io::stdout().flush()?;
+                emitted = complete_decode_prefix(&next_rendered).to_string();
             }
             if args.stop_token_ids.contains(&token)
                 || tokenizer.eos_token_id().is_some_and(|eos| eos == token)
@@ -119,4 +110,62 @@ fn request_id() -> u64 {
         .map(|duration| duration.as_nanos())
         .unwrap_or(1);
     (nanos as u64).max(1)
+}
+
+/// Decode text with trailing incomplete multi-byte codepoints stripped.
+///
+/// Byte-fallback tokenizers split one codepoint across several tokens, so a
+/// decode can end in a run of U+FFFD (one per pending byte); the whole run is
+/// held back, not just the last one.
+fn complete_decode_prefix(decoded: &str) -> &str {
+    decoded.trim_end_matches('\u{FFFD}')
+}
+
+/// Diff consecutive full-sequence decodes for streaming.
+///
+/// Returns the printable delta when `next_full_decode` completes new codepoints
+/// past `already_emitted`, and `None` when there is nothing new (a prefix
+/// mismatch is skipped rather than re-printed, keeping the copy in step with
+/// the gateway's stream contract).
+fn decode_delta<'a>(already_emitted: &str, next_full_decode: &'a str) -> Option<&'a str> {
+    let complete = complete_decode_prefix(next_full_decode);
+    if complete.len() <= already_emitted.len()
+        || !complete.starts_with(already_emitted)
+        || !complete.is_char_boundary(already_emitted.len())
+    {
+        return None;
+    }
+    Some(&complete[already_emitted.len()..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_decode_prefix_strips_trailing_replacement_run() {
+        assert_eq!(complete_decode_prefix("hello"), "hello");
+        assert_eq!(complete_decode_prefix("hello\u{FFFD}"), "hello");
+        assert_eq!(complete_decode_prefix("\u{FFFD}\u{FFFD}"), "");
+        assert_eq!(complete_decode_prefix("叫\u{FFFD}\u{FFFD}"), "叫");
+        assert_eq!(complete_decode_prefix("a\u{FFFD}b"), "a\u{FFFD}b");
+    }
+
+    #[test]
+    fn decode_delta_replays_byte_fallback_codepoint_split_across_tokens() {
+        // Mirror of the gateway stream regression: a codepoint split across
+        // byte-fallback tokens must print exactly once, without leaking U+FFFD
+        // or dropping the rest of the stream.
+        let mut emitted = String::new();
+        let mut printed = String::new();
+        for decode in ["\u{FFFD}", "\u{FFFD}\u{FFFD}", "叫", "叫\u{FFFD}", "叫好"] {
+            if let Some(delta) = decode_delta(&emitted, decode) {
+                printed.push_str(delta);
+                emitted = complete_decode_prefix(decode).to_string();
+            }
+        }
+        assert_eq!(printed, "叫好");
+        assert_eq!(emitted, "叫好");
+        assert_eq!(decode_delta("ab\u{FFFD}", "ab你"), None);
+    }
 }
