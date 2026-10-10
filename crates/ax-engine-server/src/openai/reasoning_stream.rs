@@ -4,7 +4,9 @@
 //! scanner with the same holdback discipline as the stop/tool scanners: tag
 //! text is withheld until it can no longer become a tag, think-body text is
 //! routed to `delta.reasoning_content`, and everything else streams as
-//! ordinary content. Gemma 4 thinking is channel-token-framed and handled by
+//! ordinary content. Thinking-off DeepSeek chat has no reasoning stage but
+//! still needs a leaked `</think>` cut from content ([`DeepSeekThinkCutter`]).
+//! Gemma 4 thinking is channel-token-framed and handled by
 //! `Gemma4ChannelStreamFilter`'s reasoning capture instead.
 
 const THINK_OPEN: &str = "<think>";
@@ -156,6 +158,63 @@ fn longest_suffix_prefix_of(text: &str, tag: &str) -> usize {
     0
 }
 
+/// Streaming counterpart of `sanitize_deepseek_non_thinking_output`
+/// (`crate::chat`): DeepSeek chat with thinking off starts past the reasoning
+/// block (the prompt pre-fills `</think>`), but the model can still re-emit
+/// the marker — it rides id 128822, a non-special added token that
+/// `skip_special_tokens` does not filter — and the stream has no reasoning
+/// stage to carry it. Cut visible content at the first marker and drop
+/// everything after, matching the non-streaming truncation.
+///
+/// Unlike the non-streaming sanitize this needs no `<|eot|>` handling: the
+/// streaming decode skips special tokens, so only non-streaming sees them.
+pub(crate) struct DeepSeekThinkCutter {
+    /// Set on the first full marker match; all later text is dropped.
+    cut: bool,
+    /// Text withheld until it can no longer begin the marker.
+    buffer: String,
+}
+
+impl DeepSeekThinkCutter {
+    pub(crate) fn new() -> Self {
+        Self {
+            cut: false,
+            buffer: String::new(),
+        }
+    }
+
+    /// Content up to the first `</think>`, holding back the longest suffix
+    /// that is still a prefix of the marker; once cut, everything is dropped.
+    pub(crate) fn push(&mut self, text: &str) -> String {
+        if self.cut {
+            return String::new();
+        }
+        self.buffer.push_str(text);
+        if let Some(cut_at) = self.buffer.find(THINK_CLOSE) {
+            self.cut = true;
+            let content = self.buffer[..cut_at].to_string();
+            self.buffer.clear();
+            return content;
+        }
+        // Release all but the longest suffix that could still begin
+        // `</think>` (ASCII tag: char-boundary-safe).
+        let hold = longest_suffix_prefix_of(&self.buffer, THINK_CLOSE);
+        let release = self.buffer.len() - hold;
+        let content = self.buffer[..release].to_string();
+        self.buffer.drain(..release);
+        content
+    }
+
+    /// End of stream: a held prefix never completed into the marker, so it is
+    /// ordinary content and flushes like the think scanner's residual.
+    pub(crate) fn finish(&mut self) -> String {
+        if self.cut {
+            return String::new();
+        }
+        std::mem::take(&mut self.buffer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +328,47 @@ mod lead_or_inside_tests {
         let step = scanner.push("<think>plan</think>done");
         assert_eq!(step.reasoning, "plan");
         assert_eq!(step.content, "done");
+    }
+}
+
+#[cfg(test)]
+mod deepseek_think_cutter_tests {
+    use super::DeepSeekThinkCutter;
+
+    #[test]
+    fn single_push_cuts_at_marker_and_drops_everything_after() {
+        let mut cutter = DeepSeekThinkCutter::new();
+        assert_eq!(cutter.push("Paris.</think>Five"), "Paris.");
+        assert_eq!(cutter.push(" more"), "");
+        assert_eq!(cutter.finish(), "");
+    }
+
+    #[test]
+    fn marker_split_across_pushes_never_leaks() {
+        let mut cutter = DeepSeekThinkCutter::new();
+        let mut content = String::new();
+        for chunk in ["Par", "is.</thi", "nk>Five"] {
+            content.push_str(&cutter.push(chunk));
+        }
+        assert_eq!(content, "Paris.");
+        assert_eq!(cutter.push("Paris"), "");
+        assert_eq!(cutter.finish(), "");
+    }
+
+    #[test]
+    fn partial_marker_prefix_is_flushed_as_content_at_finish() {
+        let mut cutter = DeepSeekThinkCutter::new();
+        // The trailing `</thi` could still become the marker: hold it back.
+        assert_eq!(cutter.push("cold</thi"), "cold");
+        assert_eq!(cutter.finish(), "</thi");
+        assert_eq!(cutter.finish(), "");
+    }
+
+    #[test]
+    fn text_without_marker_passes_through() {
+        let mut cutter = DeepSeekThinkCutter::new();
+        assert_eq!(cutter.push("a plain answer"), "a plain answer");
+        assert_eq!(cutter.push(" more"), " more");
+        assert_eq!(cutter.finish(), "");
     }
 }

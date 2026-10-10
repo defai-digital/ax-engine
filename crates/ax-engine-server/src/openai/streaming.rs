@@ -14,7 +14,9 @@ use tokio::sync::mpsc;
 
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::chat::{Gemma4ChannelIds, GptOssHarmonyIds, strip_gemma4_channel_name_header};
+use crate::chat::{
+    ChatPromptTemplate, Gemma4ChannelIds, GptOssHarmonyIds, strip_gemma4_channel_name_header,
+};
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
 use crate::generation::streaming::{
     StreamCancelFlag, StreamEventSender, build_keep_alive_stream, build_stream_state,
@@ -25,7 +27,7 @@ use crate::openai::chunks::{
     chat_single_tool_call_delta_chunk, chat_tool_calls_final_chunk, completion_delta_chunk,
     completion_final_chunk, next_chat_delta_role, stream_usage_chunk,
 };
-use crate::openai::reasoning_stream::ThinkTagScanner;
+use crate::openai::reasoning_stream::{DeepSeekThinkCutter, ThinkTagScanner};
 use crate::openai::requests::OpenAiResponseOptions;
 use crate::openai::responses::{
     finish_reason_from_llama_cpp_chat, openai_usage, served_prefix_reused_tokens,
@@ -163,20 +165,50 @@ pub(crate) struct OpenAiStreamPipeline {
 }
 
 /// Which streaming-reasoning mechanism the request's model family uses.
-/// Computed at routing time; only native Qwen ChatML / Gemma 4 chat streams
-/// support reasoning output (others fail closed at request build).
-#[derive(Clone, Copy, Debug)]
+/// Computed at routing time; only native MLX Qwen ChatML / DeepSeek / Gemma 4
+/// chat streams have a text-reasoning mechanism (others fail closed at request
+/// build when reasoning is requested).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StreamReasoningFamily {
     /// Qwen `<think>…</think>` text tags.
     QwenThink,
     /// DeepSeek thinking: same tags, but generation starts inside the block.
     DeepSeekThink,
+    /// DeepSeek thinking off: no reasoning stage, but a leaked `</think>`
+    /// still has to be cut from content.
+    DeepSeekCut,
     /// Gemma 4 thinking-channel tokens (captured by the channel filter).
     Gemma4Channel,
 }
 
+impl StreamReasoningFamily {
+    /// Select the family mechanism for a stream. `include_reasoning` mirrors
+    /// the prompt's resolved thinking state. Thinking-off DeepSeek is selected
+    /// too: the prompt pre-fills `</think>`, but the model can re-emit the
+    /// marker and that leak has to be cut without a reasoning stage (mirrors
+    /// the non-streaming sanitize gate in `populate_native_mlx_output_text`).
+    pub(crate) fn resolve(
+        kind: OpenAiStreamKind,
+        template: ChatPromptTemplate,
+        include_reasoning: bool,
+        native_mlx: bool,
+    ) -> Option<Self> {
+        if !native_mlx || !matches!(kind, OpenAiStreamKind::ChatCompletion) {
+            return None;
+        }
+        match template {
+            ChatPromptTemplate::QwenChatMl if include_reasoning => Some(Self::QwenThink),
+            ChatPromptTemplate::DeepSeekChat if include_reasoning => Some(Self::DeepSeekThink),
+            ChatPromptTemplate::DeepSeekChat => Some(Self::DeepSeekCut),
+            ChatPromptTemplate::Gemma4 if include_reasoning => Some(Self::Gemma4Channel),
+            _ => None,
+        }
+    }
+}
+
 enum StreamReasoningMode {
     QwenThink(ThinkTagScanner),
+    DeepSeekCut(DeepSeekThinkCutter),
     Gemma4Channel(Box<IncrementalDecoder>),
 }
 
@@ -210,6 +242,9 @@ fn drive_openai_stream_state<N>(
         Some(StreamReasoningFamily::DeepSeekThink) => Some(StreamReasoningMode::QwenThink(
             ThinkTagScanner::new_inside_think(),
         )),
+        Some(StreamReasoningFamily::DeepSeekCut) => {
+            Some(StreamReasoningMode::DeepSeekCut(DeepSeekThinkCutter::new()))
+        }
         Some(StreamReasoningFamily::Gemma4Channel) => {
             if let Some(filter) = channel_filter.as_mut() {
                 filter.enable_reasoning_capture();
@@ -315,24 +350,26 @@ impl OpenAiStreamDriver {
                 {
                     filter.mark_kept_output();
                 }
-                let content_text = if let Some(StreamReasoningMode::QwenThink(scanner)) =
-                    self.reasoning.as_mut()
-                {
-                    let step = scanner.push(&delta_text);
-                    if !step.reasoning.is_empty()
-                        && !emit_reasoning_chunk(
-                            tx,
-                            request_id,
-                            &model_id,
-                            &mut self.chat_role_emitted,
-                            step.reasoning,
-                        )
-                    {
-                        return false;
+                let content_text = match self.reasoning.as_mut() {
+                    Some(StreamReasoningMode::QwenThink(scanner)) => {
+                        let step = scanner.push(&delta_text);
+                        if !step.reasoning.is_empty()
+                            && !emit_reasoning_chunk(
+                                tx,
+                                request_id,
+                                &model_id,
+                                &mut self.chat_role_emitted,
+                                step.reasoning,
+                            )
+                        {
+                            return false;
+                        }
+                        step.content
                     }
-                    step.content
-                } else {
-                    delta_text
+                    // Thinking off: no reasoning stage, but content stops at a
+                    // re-emitted `</think>` (empty text is dropped below).
+                    Some(StreamReasoningMode::DeepSeekCut(cutter)) => cutter.push(&delta_text),
+                    _ => delta_text,
                 };
                 if content_text.is_empty() {
                     return true;
@@ -398,6 +435,15 @@ impl OpenAiStreamDriver {
                     if !step.content.is_empty()
                         && !self.process_text(tx, request_id, &model_id, step.content)
                     {
+                        return false;
+                    }
+                }
+                // Thinking-off DeepSeek: a held `</think>` prefix that never
+                // completed is an ordinary content tail (the non-streaming
+                // sanitize keeps the same text).
+                if let Some(StreamReasoningMode::DeepSeekCut(cutter)) = self.reasoning.as_mut() {
+                    let tail = cutter.finish();
+                    if !tail.is_empty() && !self.process_text(tx, request_id, &model_id, tail) {
                         return false;
                     }
                 }
@@ -1942,21 +1988,117 @@ mod stream_usage_tests {
 }
 
 #[cfg(test)]
+mod stream_reasoning_family_tests {
+    use super::{OpenAiStreamKind, StreamReasoningFamily};
+    use crate::chat::ChatPromptTemplate;
+
+    #[test]
+    fn deepseek_thinking_off_selects_the_marker_cut() {
+        assert_eq!(
+            StreamReasoningFamily::resolve(
+                OpenAiStreamKind::ChatCompletion,
+                ChatPromptTemplate::DeepSeekChat,
+                false,
+                true,
+            ),
+            Some(StreamReasoningFamily::DeepSeekCut),
+            "thinking-off DeepSeek streams must cut a leaked `</think>`"
+        );
+    }
+
+    #[test]
+    fn deepseek_thinking_on_still_selects_the_think_scanner() {
+        assert_eq!(
+            StreamReasoningFamily::resolve(
+                OpenAiStreamKind::ChatCompletion,
+                ChatPromptTemplate::DeepSeekChat,
+                true,
+                true,
+            ),
+            Some(StreamReasoningFamily::DeepSeekThink)
+        );
+    }
+
+    #[test]
+    fn other_reasoning_families_keep_their_selection() {
+        for (template, expected) in [
+            (
+                ChatPromptTemplate::QwenChatMl,
+                Some(StreamReasoningFamily::QwenThink),
+            ),
+            (
+                ChatPromptTemplate::Gemma4,
+                Some(StreamReasoningFamily::Gemma4Channel),
+            ),
+        ] {
+            assert_eq!(
+                StreamReasoningFamily::resolve(
+                    OpenAiStreamKind::ChatCompletion,
+                    template,
+                    true,
+                    true,
+                ),
+                expected,
+                "thinking on: {template:?}"
+            );
+            assert_eq!(
+                StreamReasoningFamily::resolve(
+                    OpenAiStreamKind::ChatCompletion,
+                    template,
+                    false,
+                    true,
+                ),
+                None,
+                "thinking off has no reasoning stage for {template:?}"
+            );
+        }
+        assert_eq!(
+            StreamReasoningFamily::resolve(
+                OpenAiStreamKind::ChatCompletion,
+                ChatPromptTemplate::Glm47,
+                true,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn non_native_and_completion_streams_select_nothing() {
+        for (kind, native_mlx) in [
+            (OpenAiStreamKind::Completion, true),
+            (OpenAiStreamKind::ChatCompletion, false),
+        ] {
+            assert_eq!(
+                StreamReasoningFamily::resolve(
+                    kind,
+                    ChatPromptTemplate::DeepSeekChat,
+                    false,
+                    native_mlx,
+                ),
+                None
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used)]
 mod openai_stream_driver_tests {
     use ax_engine_sdk::{
         CapabilityReport, GenerateFinishReason, GenerateResponse, GenerateRouteReport,
-        GenerateStatus, GenerateStreamEvent, GenerateStreamResponseEvent, ResolutionPolicy,
-        RuntimeReport, SelectedBackend, SupportTier,
+        GenerateStatus, GenerateStreamEvent, GenerateStreamResponseEvent, GenerateStreamStepEvent,
+        ResolutionPolicy, RuntimeReport, SelectedBackend, SessionRequestReport,
+        SessionRequestState, SupportTier,
     };
     use serde_json::Value;
     use serde_json::json;
     use tokio::sync::mpsc;
 
     use super::{
-        ChatChannelStreamFilter, Event, Gemma4ChannelStreamFilter, IncrementalDecoder,
-        OpenAiStreamDriver, OpenAiStreamKind, OpenAiStreamPipeline, StreamReasoningMode,
-        byte_level_test_tokenizer,
+        ChatChannelStreamFilter, DeepSeekThinkCutter, Event, Gemma4ChannelStreamFilter,
+        IncrementalDecoder, OpenAiStreamDriver, OpenAiStreamKind, OpenAiStreamPipeline,
+        StreamReasoningMode, byte_level_test_tokenizer,
     };
     use crate::chat::Gemma4ChannelIds;
     use crate::generation::streaming::StreamEvent;
@@ -2523,5 +2665,126 @@ mod openai_stream_driver_tests {
             first_reasoning.expect("a reasoning delta chunk") < finish_at.expect("a final chunk"),
             "reasoning deltas stream before the final chunk"
         );
+    }
+
+    fn response_event() -> GenerateStreamEvent {
+        GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+            response: sample_response(),
+        })
+    }
+
+    fn step_with_delta_text(text: &str) -> GenerateStreamEvent {
+        GenerateStreamEvent::Step(GenerateStreamStepEvent {
+            request: SessionRequestReport {
+                request_id: 1,
+                model_id: "deepseek".to_string(),
+                state: SessionRequestState::Running,
+                prompt_tokens: vec![1],
+                processed_prompt_tokens: 1,
+                output_tokens: Vec::new(),
+                output_token_logprobs: Vec::new(),
+                prompt_len: 1,
+                output_len: 0,
+                max_output_tokens: 16,
+                cancel_requested: false,
+                execution_plan_ref: None,
+                route: GenerateRouteReport::default(),
+                finish_reason: None,
+                terminal_stop_reason: None,
+                last_error: None,
+            },
+            step: Default::default(),
+            delta_tokens: Vec::new(),
+            delta_token_logprobs: Vec::new(),
+            delta_text: Some(text.to_string()),
+        })
+    }
+
+    fn deepseek_thinking_off_driver() -> OpenAiStreamDriver {
+        OpenAiStreamDriver {
+            stream_kind: OpenAiStreamKind::ChatCompletion,
+            chat_role_emitted: false,
+            decoder: None,
+            channel_filter: None,
+            pipeline: OpenAiStreamPipeline {
+                tool_scanner: None,
+                stop_scanner: None,
+                include_usage: false,
+            },
+            reasoning: Some(StreamReasoningMode::DeepSeekCut(DeepSeekThinkCutter::new())),
+            calls_emitted: 0,
+            prompt_token_count: None,
+            output_token_count: None,
+            prefix_reused_tokens: None,
+        }
+    }
+
+    fn collect_content(payloads: &[Value]) -> String {
+        payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("delta"))
+            .filter_map(|delta| delta.get("content"))
+            .filter_map(Value::as_str)
+            .collect()
+    }
+
+    #[test]
+    fn deepseek_thinking_off_cuts_a_leaked_close_marker_from_content() {
+        // `Paris.</think>Five` is the reported thinking-off leak: the
+        // non-streaming surface returns `Paris.`, so the streamed content must
+        // match and nothing after the marker may surface.
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut driver = deepseek_thinking_off_driver();
+        assert!(driver.handle_event(&tx, step_with_delta_text("Paris.</think>Five")));
+        assert!(
+            driver.handle_event(&tx, step_with_delta_text(" after the marker")),
+            "post-marker text must not end the stream"
+        );
+        assert!(driver.handle_event(&tx, response_event()));
+        drop(tx);
+
+        let payloads = collect_chunk_payloads(&mut rx);
+        assert_eq!(collect_content(&payloads), "Paris.");
+        let finish_reasons: Vec<&str> = payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("finish_reason"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(finish_reasons, vec!["stop"]);
+    }
+
+    #[test]
+    fn deepseek_thinking_off_cuts_a_marker_split_across_steps() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut driver = deepseek_thinking_off_driver();
+        for chunk in ["Par", "is.</thi", "nk>Five"] {
+            assert!(driver.handle_event(&tx, step_with_delta_text(chunk)));
+        }
+        assert!(driver.handle_event(&tx, response_event()));
+        drop(tx);
+
+        let payloads = collect_chunk_payloads(&mut rx);
+        assert_eq!(collect_content(&payloads), "Paris.");
+    }
+
+    #[test]
+    fn deepseek_thinking_off_flushes_a_partial_marker_prefix_at_eos() {
+        // The stream ends mid-marker: the withheld prefix never became a
+        // `</think>`, so it is an ordinary content tail (the non-streaming
+        // decode keeps it too).
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut driver = deepseek_thinking_off_driver();
+        assert!(driver.handle_event(&tx, step_with_delta_text("Paris.</thi")));
+        assert!(driver.handle_event(&tx, response_event()));
+        drop(tx);
+
+        let payloads = collect_chunk_payloads(&mut rx);
+        assert_eq!(collect_content(&payloads), "Paris.</thi");
     }
 }

@@ -159,21 +159,15 @@ pub(crate) async fn run_openai_text_generation(
             .await;
         }
         // Streaming reasoning (M2): the request build already rejected
-        // reasoning+stream for families without a mechanism.
-        let reasoning_family = if response_options.include_reasoning
-            && matches!(kind, OpenAiStreamKind::ChatCompletion)
-            && live.runtime_report.selected_backend == SelectedBackend::Mlx
-        {
-            match crate::chat::resolve_chat_template(live.model_id.as_ref(), family_hint.as_deref())
-            {
-                ChatPromptTemplate::QwenChatMl => Some(StreamReasoningFamily::QwenThink),
-                ChatPromptTemplate::DeepSeekChat => Some(StreamReasoningFamily::DeepSeekThink),
-                ChatPromptTemplate::Gemma4 => Some(StreamReasoningFamily::Gemma4Channel),
-                _ => None,
-            }
-        } else {
-            None
-        };
+        // reasoning+stream for families without a mechanism. Thinking-off
+        // DeepSeek is selected too: the leaked `</think>` has to be cut from
+        // content even though the stream has no reasoning stage.
+        let reasoning_family = StreamReasoningFamily::resolve(
+            kind,
+            crate::chat::resolve_chat_template(live.model_id.as_ref(), family_hint.as_deref()),
+            response_options.include_reasoning,
+            live.runtime_report.selected_backend == SelectedBackend::Mlx,
+        );
         return stream_openai_request(
             state,
             live,
