@@ -70,13 +70,6 @@ pub enum TrunkStyle {
     DedicatedTrunk,
 }
 
-impl MlxRunnerAdmission {
-    /// Whether this registration is eligible for primary-runner validation.
-    pub(crate) const fn allows_primary(self) -> bool {
-        matches!(self, Self::Primary)
-    }
-}
-
 impl LayerForwardRoute {
     /// Stable telemetry code for route decisions.
     pub const fn telemetry_code(self) -> u32 {
@@ -579,34 +572,11 @@ pub fn mlx_runner_admission_for_family(family_label: &str) -> Option<MlxRunnerAd
     lookup_architecture(family_label).map(|entry| entry.mlx_runner_admission)
 }
 
-/// Return whether a registered family may enter primary MLX runner validation.
-///
-/// Unknown labels and registered auxiliary-only artifacts both fail closed.
-pub fn is_primary_mlx_runner_family(family_label: &str) -> bool {
-    mlx_runner_admission_for_family(family_label).is_some_and(MlxRunnerAdmission::allows_primary)
-}
-
 /// Resolve the layer-forward route for a family label.
 ///
 /// Prefer this over open-coding family string matches at dispatch sites.
 pub fn resolve_layer_forward_route(family_label: &str) -> Option<LayerForwardRoute> {
     lookup_architecture(family_label).map(|r| r.layer_forward_route)
-}
-
-/// Default generation from the registry when present; falls back to
-/// [`GenerationKind::from_manifest`] for unregistered labels.
-pub fn default_generation_for_family(
-    family_label: &str,
-    manifest_generation: GenerationKind,
-) -> GenerationKind {
-    // Manifest-derived kind wins when it already encodes diffusion/embed
-    // structural signals; registry only supplies defaults for AR labels.
-    if !matches!(manifest_generation, GenerationKind::Autoregressive) {
-        return manifest_generation;
-    }
-    lookup_architecture(family_label)
-        .map(|r| r.default_generation)
-        .unwrap_or(manifest_generation)
 }
 
 #[cfg(test)]
@@ -653,7 +623,7 @@ mod tests {
     fn primary_mlx_runner_admission_excludes_auxiliary_and_unknown_artifacts() {
         let auxiliary_families = ARCHITECTURE_REGISTRY
             .iter()
-            .filter(|entry| !entry.mlx_runner_admission.allows_primary())
+            .filter(|entry| !matches!(entry.mlx_runner_admission, MlxRunnerAdmission::Primary))
             .map(|entry| entry.family_label)
             .collect::<Vec<_>>();
 
@@ -663,11 +633,18 @@ mod tests {
             Some(MlxRunnerAdmission::AuxiliaryOnly)
         );
         assert_eq!(mlx_runner_admission_for_family("not_a_family"), None);
-        assert!(is_primary_mlx_runner_family("qwen3"));
-        assert!(is_primary_mlx_runner_family("deepseek_v4"));
-        assert!(is_primary_mlx_runner_family("qwen4_exp"));
-        assert!(!is_primary_mlx_runner_family("gemma4_assistant"));
-        assert!(!is_primary_mlx_runner_family("not_a_family"));
+        for family in ["qwen3", "deepseek_v4", "qwen4_exp"] {
+            assert!(matches!(
+                mlx_runner_admission_for_family(family),
+                Some(MlxRunnerAdmission::Primary)
+            ));
+        }
+        for family in ["gemma4_assistant", "not_a_family"] {
+            assert!(!matches!(
+                mlx_runner_admission_for_family(family),
+                Some(MlxRunnerAdmission::Primary)
+            ));
+        }
         assert_eq!(
             resolve_layer_forward_route("qwen4_exp"),
             Some(LayerForwardRoute::Qwen4Exp)
@@ -936,15 +913,6 @@ mod tests {
     fn qwen3_vl_text_only_rides_certified_qwen3_batch_candidate() {
         let q = lookup_architecture("qwen3_vl").unwrap();
         assert!(q.dense_batched_decode_candidate);
-    }
-
-    #[test]
-    fn registry_default_generation_defers_to_manifest_diffusion() {
-        let mut m = base_manifest("gemma4", 2);
-        m.diffusion.canvas_size = Some(256);
-        let derived = GenerationKind::from_manifest(&m);
-        let resolved = default_generation_for_family("gemma4", derived);
-        assert_eq!(resolved, GenerationKind::BlockDiffusion);
     }
 
     #[test]

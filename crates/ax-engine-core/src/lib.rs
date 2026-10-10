@@ -38,8 +38,8 @@ pub use architecture::{
 };
 pub use architecture_registry::{
     ARCHITECTURE_REGISTRY, ArchitectureRegistration, FamilyDescriptor, LayerForwardRoute,
-    MlxRunnerAdmission, TrunkStyle, default_generation_for_family, is_primary_mlx_runner_family,
-    lookup_architecture, mlx_runner_admission_for_family, resolve_layer_forward_route,
+    MlxRunnerAdmission, TrunkStyle, lookup_architecture, mlx_runner_admission_for_family,
+    resolve_layer_forward_route,
 };
 pub use chat_contract::{
     ChatContract, ChatOutputPolicy, ChatTemplateKind, chat_contract_for_family,

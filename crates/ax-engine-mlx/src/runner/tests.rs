@@ -6542,16 +6542,26 @@ fn primary_mlx_runner_registry_covers_secondary_catalog_and_gpt_oss() {
         "qwen3_vl_moe",
     ] {
         assert!(
-            ax_engine_core::is_primary_mlx_runner_family(family),
+            matches!(
+                ax_engine_core::mlx_runner_admission_for_family(family),
+                Some(ax_engine_core::MlxRunnerAdmission::Primary)
+            ),
             "{family} must be admitted by the primary MLX runner registry"
         );
     }
     // Assistant MTP draft artifacts are sidecars, not primary runners.
-    assert!(!ax_engine_core::is_primary_mlx_runner_family(
-        "gemma4_assistant"
+    assert!(!matches!(
+        ax_engine_core::mlx_runner_admission_for_family("gemma4_assistant"),
+        Some(ax_engine_core::MlxRunnerAdmission::Primary)
     ));
-    assert!(ax_engine_core::is_primary_mlx_runner_family("qwen4_exp"));
-    assert!(!ax_engine_core::is_primary_mlx_runner_family("gpt2"));
+    assert!(matches!(
+        ax_engine_core::mlx_runner_admission_for_family("qwen4_exp"),
+        Some(ax_engine_core::MlxRunnerAdmission::Primary)
+    ));
+    assert!(!matches!(
+        ax_engine_core::mlx_runner_admission_for_family("gpt2"),
+        Some(ax_engine_core::MlxRunnerAdmission::Primary)
+    ));
 }
 
 #[test]
@@ -7256,7 +7266,10 @@ fn mlx_manifest_validation_allows_gpt_oss_interleaved_attention() {
 
     validate_gemma4_interleaved_attention(&manifest)
         .expect("GPT-OSS alternating SWA/full attention is implemented");
-    assert!(ax_engine_core::is_primary_mlx_runner_family("gpt_oss"));
+    assert!(matches!(
+        ax_engine_core::mlx_runner_admission_for_family("gpt_oss"),
+        Some(ax_engine_core::MlxRunnerAdmission::Primary)
+    ));
 }
 
 #[test]
