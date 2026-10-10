@@ -813,14 +813,18 @@ def create_app(
             payload = await request.json()
         except ValueError:
             return openai_error(400, "request body must be valid JSON")
-        payload = drop_null_sampling_params(payload)
-        error = (
-            validate_payload_object(payload)
-            or validate_model(payload, model_id)
-            or require_max_tokens(payload)
-            or validate_sampling_params(payload)
-            or validate_metadata(payload)
-        )
+        # Object validation must precede drop_null_sampling_params: its
+        # `key in payload` membership checks raise TypeError (a 500) on
+        # scalar JSON bodies instead of the intended 400.
+        error = validate_payload_object(payload)
+        if error is None:
+            payload = drop_null_sampling_params(payload)
+            error = (
+                validate_model(payload, model_id)
+                or require_max_tokens(payload)
+                or validate_sampling_params(payload)
+                or validate_metadata(payload)
+            )
         if error is not None:
             return openai_error(*error)
 
@@ -874,14 +878,17 @@ def create_app(
             payload = await request.json()
         except ValueError:
             return openai_error(400, "request body must be valid JSON")
-        payload = drop_null_sampling_params(payload)
-        error = (
-            validate_payload_object(payload)
-            or validate_model(payload, model_id)
-            or require_max_tokens(payload)
-            or validate_sampling_params(payload)
-            or validate_metadata(payload)
-        )
+        # Object validation must precede drop_null_sampling_params; see the
+        # completions handler.
+        error = validate_payload_object(payload)
+        if error is None:
+            payload = drop_null_sampling_params(payload)
+            error = (
+                validate_model(payload, model_id)
+                or require_max_tokens(payload)
+                or validate_sampling_params(payload)
+                or validate_metadata(payload)
+            )
         if error is not None:
             return openai_error(*error)
 
@@ -922,6 +929,8 @@ def create_app(
                     result.request_id,
                     text,
                     buffered_finish,
+                    include_usage=stream_include_usage(payload),
+                    token_usage=usage(input_tokens, list(result.output_tokens)),
                 )
                 return StreamingResponse(events, media_type="text/event-stream")
             gated_events = serialized_stream(
@@ -974,17 +983,19 @@ def create_app(
             "usage": usage(input_tokens, list(result.output_tokens)),
         }
 
-    def openai_error(status: int, message: str) -> Any:
+    def openai_error(status: int, message: str, *, code: str = "invalid_request") -> Any:
         return JSONResponse(
             status_code=status,
-            content={"error": {"code": "invalid_request", "message": message}},
+            content={"error": {"code": code, "message": message}},
         )
 
     @app.exception_handler(Exception)
-    async def unhandled_exception(_request: Request, _exc: Exception) -> Any:
+    async def unhandled_exception(_request: Request, exc: Exception) -> Any:
         # Unexpected failures must surface as the OpenAI-style JSON error
-        # envelope instead of Starlette's plain-text 500.
-        return openai_error(500, "internal server error")
+        # envelope instead of Starlette's plain-text 500. The code is distinct
+        # from client 400s and the engine message is surfaced, mirroring the
+        # Rust server's server_error/engine_error responses.
+        return openai_error(500, str(exc), code="internal_error")
 
     return app
 
@@ -1026,14 +1037,27 @@ def validate_payload_object(payload: Any) -> tuple[int, str] | None:
     return None
 
 
+def requested_max_tokens(payload: dict[str, Any]) -> tuple[str, Any]:
+    """The effective output-token budget key and raw value.
+
+    ``max_completion_tokens`` takes precedence over the legacy ``max_tokens``
+    (docs/API-COMPATIBILITY.md; the Rust server resolves them in the same
+    order). The key is returned so validation errors name the field the
+    client actually set.
+    """
+    if payload.get("max_completion_tokens") is not None:
+        return "max_completion_tokens", payload["max_completion_tokens"]
+    return "max_tokens", payload.get("max_tokens")
+
+
 def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
-    max_tokens = payload.get("max_tokens")
+    key, max_tokens = requested_max_tokens(payload)
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
-        return 400, "OpenAI-compatible MLX shim requires max_tokens > 0"
+        return 400, f"OpenAI-compatible MLX shim requires {key} > 0"
     if max_tokens > MAX_OUTPUT_TOKENS_LIMIT:
         return (
             400,
-            f"OpenAI-compatible MLX shim requires max_tokens <= {MAX_OUTPUT_TOKENS_LIMIT}",
+            f"OpenAI-compatible MLX shim requires {key} <= {MAX_OUTPUT_TOKENS_LIMIT}",
         )
     return None
 
@@ -1083,12 +1107,15 @@ def session_generate_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     """Sampling kwargs shared by every generate/stream_generate call site.
 
     ``min_p`` is forwarded only when the client provided it so the shim keeps
-    working against sessions built before min_p existed.
+    working against sessions built before min_p existed. The output-token
+    budget resolves through :func:`requested_max_tokens` so
+    ``max_completion_tokens`` is honored as validated.
     """
     temperature = float(payload.get("temperature", 0.0))
     default_rp = 1.1 if temperature <= 0.0 else 1.0
+    _max_tokens_key, max_tokens = requested_max_tokens(payload)
     kwargs: dict[str, Any] = {
-        "max_output_tokens": int(payload["max_tokens"]),
+        "max_output_tokens": int(max_tokens),
         "temperature": temperature,
         "top_p": float(payload.get("top_p", 1.0)),
         "top_k": int(payload.get("top_k", 0)),
@@ -1100,6 +1127,16 @@ def session_generate_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("min_p") is not None:
         kwargs["min_p"] = float(payload["min_p"])
     return kwargs
+
+
+def stream_include_usage(payload: dict[str, Any]) -> bool:
+    """True when ``stream_options.include_usage`` asks for a final usage chunk.
+
+    The requested chunk carries an empty ``choices`` array, mirroring the Rust
+    server's ``stream_usage_chunk`` (docs/API-COMPATIBILITY.md).
+    """
+    options = payload.get("stream_options")
+    return isinstance(options, dict) and bool(options.get("include_usage"))
 
 
 def stream_completion_chunks(
@@ -1116,9 +1153,16 @@ def stream_completion_chunks(
     ``serialized_stream`` in ``create_app``): this generator must run inside
     the generation gate for its whole lifetime, so it never takes a lock
     itself.
+
+    The HTTP status is committed before this generator runs, so a session
+    failure cannot become an error status: it emits a final SSE
+    ``event: error`` frame carrying the OpenAI error envelope (the shape the
+    Rust server and the language SDKs parse) followed by ``data: [DONE]``,
+    keeping any partial content already streamed.
     """
     stream_id = f"{'chatcmpl' if kind == 'chat' else 'cmpl'}-{int(time.time() * 1000)}"
     created = int(time.time())
+    include_usage = stream_include_usage(payload)
     accumulated_tokens: list[int] = []
     prev_text_len = 0
     role_emitted = False
@@ -1127,108 +1171,119 @@ def stream_completion_chunks(
     held_text = ""
     stop_hit = False
     streamed_delta_text = False
-    generator = session.stream_generate(input_tokens, **session_generate_kwargs(payload))
-    for event in generator:
-        if event.event == "step" and event.delta_tokens:
-            accumulated_tokens.extend(event.delta_tokens)
-            # Prefer engine-provided delta_text: cumulative re-decode corrupts
-            # multi-token glyphs (ZWJ emoji) when a partial sequence yields
-            # U+FFFD that is then counted as "already sent".
-            if event.delta_text is not None:
-                streamed_delta_text = True
-                new_text = event.delta_text
-                if new_text:
-                    # Keep prev_text_len aligned for any residual flush path.
-                    prev_text_len += len(new_text)
-            else:
-                full_text = tokenizer.decode(accumulated_tokens)
-                new_text = full_text[prev_text_len:]
-                prev_text_len = len(full_text)
-            if new_text and stops:
-                # Client stop strings are enforced on the visible text:
-                # emit only up to the match, then finish with "stop". A stop
-                # split across two deltas must not leak its already-emitted
-                # prefix, so the longest suffix of the pending text that
-                # could still complete a stop is held back until the next
-                # delta disambiguates it.
-                candidate = emitted_text + held_text + new_text
-                truncated, stop_hit = truncate_at_stop(candidate, stops)
-                pending = truncated[len(emitted_text) :]
-                if stop_hit:
-                    new_text, held_text = pending, ""
+    try:
+        generator = session.stream_generate(input_tokens, **session_generate_kwargs(payload))
+        for event in generator:
+            if event.event == "step" and event.delta_tokens:
+                accumulated_tokens.extend(event.delta_tokens)
+                # Prefer engine-provided delta_text: cumulative re-decode corrupts
+                # multi-token glyphs (ZWJ emoji) when a partial sequence yields
+                # U+FFFD that is then counted as "already sent".
+                if event.delta_text is not None:
+                    streamed_delta_text = True
+                    new_text = event.delta_text
+                    if new_text:
+                        # Keep prev_text_len aligned for any residual flush path.
+                        prev_text_len += len(new_text)
                 else:
-                    new_text, held_text = split_held_stop_prefix(pending, stops)
-            if new_text:
-                emitted_text += new_text
-                emit_role = kind == "chat" and not role_emitted
-                role_emitted = role_emitted or emit_role
-                yield sse_chunk(
-                    stream_id,
-                    created,
-                    model_id,
-                    new_text,
-                    None,
-                    kind,
-                    emit_role=emit_role,
-                )
-            if stop_hit:
-                if kind == "chat" and not role_emitted:
-                    yield sse_chunk(stream_id, created, model_id, "", None, kind, emit_role=True)
-                yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
-                break
-        elif event.event == "response" and event.response is not None:
-            # No later delta can complete a stop: flush whatever prefix was
-            # held back against a stop split across deltas.
-            if held_text:
-                emit_role = kind == "chat" and not role_emitted
-                role_emitted = role_emitted or emit_role
-                yield sse_chunk(
-                    stream_id,
-                    created,
-                    model_id,
-                    held_text,
-                    None,
-                    kind,
-                    emit_role=emit_role,
-                )
-                emitted_text += held_text
-                held_text = ""
-            # Flush any remaining text from incomplete UTF-8 sequences when
-            # the stream path never supplied delta_text (legacy fallback).
-            # On a delta_text stream prev_text_len counts engine delta
-            # lengths, which can diverge from a cumulative re-decode (a
-            # max_tokens cut inside a multi-codepoint sequence decodes to a
-            # trailing U+FFFD the engine deliberately withheld), so the
-            # re-decode flush must be skipped there entirely; the
-            # delta_text-is-None check on this event cannot detect that.
-            if accumulated_tokens and not streamed_delta_text and event.delta_text is None:
-                final_text = tokenizer.decode(accumulated_tokens)
-                remaining = final_text[prev_text_len:]
-                if remaining:
+                    full_text = tokenizer.decode(accumulated_tokens)
+                    new_text = full_text[prev_text_len:]
+                    prev_text_len = len(full_text)
+                if new_text and stops:
+                    # Client stop strings are enforced on the visible text:
+                    # emit only up to the match, then finish with "stop". A stop
+                    # split across two deltas must not leak its already-emitted
+                    # prefix, so the longest suffix of the pending text that
+                    # could still complete a stop is held back until the next
+                    # delta disambiguates it.
+                    candidate = emitted_text + held_text + new_text
+                    truncated, stop_hit = truncate_at_stop(candidate, stops)
+                    pending = truncated[len(emitted_text) :]
+                    if stop_hit:
+                        new_text, held_text = pending, ""
+                    else:
+                        new_text, held_text = split_held_stop_prefix(pending, stops)
+                if new_text:
+                    emitted_text += new_text
                     emit_role = kind == "chat" and not role_emitted
                     role_emitted = role_emitted or emit_role
                     yield sse_chunk(
                         stream_id,
                         created,
                         model_id,
-                        remaining,
+                        new_text,
                         None,
                         kind,
                         emit_role=emit_role,
                     )
-            # OpenAI spec: the role must appear in at least one chunk. If no
-            # content chunks were emitted (0-token completion), emit a role-only
-            # chunk before the finish_reason chunk so clients can read the role.
-            if kind == "chat" and not role_emitted:
-                yield sse_chunk(stream_id, created, model_id, "", None, kind, emit_role=True)
-            yield sse_chunk(
-                stream_id,
-                created,
-                model_id,
-                "",
-                finish_reason(event.response.finish_reason),
-                kind,
-            )
+                if stop_hit:
+                    if kind == "chat" and not role_emitted:
+                        yield sse_chunk(
+                            stream_id, created, model_id, "", None, kind, emit_role=True
+                        )
+                    yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
+                    break
+            elif event.event == "response" and event.response is not None:
+                # No later delta can complete a stop: flush whatever prefix was
+                # held back against a stop split across deltas.
+                if held_text:
+                    emit_role = kind == "chat" and not role_emitted
+                    role_emitted = role_emitted or emit_role
+                    yield sse_chunk(
+                        stream_id,
+                        created,
+                        model_id,
+                        held_text,
+                        None,
+                        kind,
+                        emit_role=emit_role,
+                    )
+                    emitted_text += held_text
+                    held_text = ""
+                # Flush any remaining text from incomplete UTF-8 sequences when
+                # the stream path never supplied delta_text (legacy fallback).
+                # On a delta_text stream prev_text_len counts engine delta
+                # lengths, which can diverge from a cumulative re-decode (a
+                # max_tokens cut inside a multi-codepoint sequence decodes to a
+                # trailing U+FFFD the engine deliberately withheld), so the
+                # re-decode flush must be skipped there entirely; the
+                # delta_text-is-None check on this event cannot detect that.
+                if accumulated_tokens and not streamed_delta_text and event.delta_text is None:
+                    final_text = tokenizer.decode(accumulated_tokens)
+                    remaining = final_text[prev_text_len:]
+                    if remaining:
+                        emit_role = kind == "chat" and not role_emitted
+                        role_emitted = role_emitted or emit_role
+                        yield sse_chunk(
+                            stream_id,
+                            created,
+                            model_id,
+                            remaining,
+                            None,
+                            kind,
+                            emit_role=emit_role,
+                        )
+                # OpenAI spec: the role must appear in at least one chunk. If no
+                # content chunks were emitted (0-token completion), emit a role-only
+                # chunk before the finish_reason chunk so clients can read the role.
+                if kind == "chat" and not role_emitted:
+                    yield sse_chunk(stream_id, created, model_id, "", None, kind, emit_role=True)
+                yield sse_chunk(
+                    stream_id,
+                    created,
+                    model_id,
+                    "",
+                    finish_reason(event.response.finish_reason),
+                    kind,
+                )
+    except Exception as error:
+        yield sse_error_chunk(str(error))
+        yield "data: [DONE]\n\n"
+        return
+    if include_usage:
+        yield sse_usage_chunk(
+            stream_id, created, model_id, usage(input_tokens, accumulated_tokens), kind
+        )
     yield "data: [DONE]\n\n"
 
 
@@ -1265,11 +1320,45 @@ def sse_chunk(
     return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
+def sse_usage_chunk(
+    stream_id: str,
+    created: int,
+    model_id: str,
+    token_usage: dict[str, int],
+    kind: str,
+) -> str:
+    """Final chunk for ``stream_options.include_usage``: empty choices + usage."""
+    object_name = "chat.completion.chunk" if kind == "chat" else "text_completion.chunk"
+    payload = {
+        "id": stream_id,
+        "object": object_name,
+        "created": created,
+        "model": model_id,
+        "choices": [],
+        "usage": token_usage,
+    }
+    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+def sse_error_chunk(message: str, code: str = "internal_error") -> str:
+    """Terminal SSE error frame for failures after the response has started.
+
+    Mirrors the Rust server's stream error event: an ``event: error`` frame
+    whose data is the OpenAI error envelope the language SDKs parse. The
+    caller follows it with ``data: [DONE]``.
+    """
+    payload = {"error": {"code": code, "message": message}}
+    return f"event: error\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
 def stream_buffered_tool_chat_chunks(
     model_id: str,
     request_id: int,
     text: str,
     terminal_reason: str | None,
+    *,
+    include_usage: bool = False,
+    token_usage: dict[str, int] | None = None,
 ) -> Iterator[str]:
     stream_id = f"chatcmpl-{request_id}"
     created = int(time.time())
@@ -1312,6 +1401,8 @@ def stream_buffered_tool_chat_chunks(
             None,
         )
     yield chat_sse_payload(stream_id, created, model_id, {}, terminal_reason)
+    if include_usage and token_usage is not None:
+        yield sse_usage_chunk(stream_id, created, model_id, token_usage, "chat")
     yield "data: [DONE]\n\n"
 
 

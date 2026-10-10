@@ -769,6 +769,8 @@ class RecordingShimSession:
         self.stream_texts: tuple[str, ...] = ("hello", " stream")
         self.stream_delay = 0.0
         self.generate_error: Exception | None = None
+        self.stream_error: Exception | None = None
+        self.stream_error_after = 0
         self.generate_kwargs: list[dict[str, object]] = []
         self.stream_kwargs: list[dict[str, object]] = []
         self.timeline: list[tuple[str, int, str]] = []
@@ -795,6 +797,15 @@ class RecordingShimSession:
         self, input_tokens: list[int] | None = None, **kwargs: object
     ) -> Iterator[object]:
         self.stream_kwargs.append(kwargs)
+        if self.stream_error is not None:
+            for _ in range(self.stream_error_after):
+                yield types.SimpleNamespace(
+                    event="step",
+                    delta_tokens=[4],
+                    delta_text="partial",
+                    response=None,
+                )
+            raise self.stream_error
         call_id = next(self._next_call_id)
         self.timeline.append(("stream", call_id, "start"))
         try:
@@ -3085,6 +3096,39 @@ class WrapperContractTests(unittest.TestCase):
         self.assertIn('"finish_reason":"length"', response.text)
         self.assertTrue(response.text.endswith("data: [DONE]\n\n"))
 
+    def test_openai_mlx_shim_stream_failure_emits_error_frame(self) -> None:
+        # The StreamingResponse has already committed its 200 status when the
+        # session generator runs, so a failure cannot become an HTTP error:
+        # it must surface as a terminal SSE `event: error` frame carrying the
+        # OpenAI error envelope (the shape the Rust server and SDKs parse)
+        # followed by [DONE], keeping partial content.
+        for fail_after in (0, 1):
+            with self.subTest(fail_after=fail_after):
+                client, session = self._make_openai_shim_client()
+                session.stream_error = RuntimeError("native stream exploded")
+                session.stream_error_after = fail_after
+
+                response = client.post(
+                    "/v1/completions",
+                    json={
+                        "model": "qwen3_dense",
+                        "prompt": "x",
+                        "max_tokens": 4,
+                        "stream": True,
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200)
+                frames = [frame for frame in response.text.split("\n\n") if frame]
+                self.assertEqual(frames[-1], "data: [DONE]")
+                error_frame = frames[-2]
+                self.assertTrue(error_frame.startswith("event: error\n"))
+                error = json.loads(error_frame.split("data: ", 1)[1])
+                self.assertEqual(error["error"]["code"], "internal_error")
+                self.assertIn("native stream exploded", error["error"]["message"])
+                if fail_after:
+                    self.assertIn('"text":"partial"', response.text)
+
     def test_openai_mlx_shim_serializes_concurrent_generation_without_deadlock(self) -> None:
         # Regression test for the threading.Lock deadlock: with a lock held
         # across stream yields, handlers blocking a worker thread on
@@ -3341,6 +3385,115 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(boundary.status_code, 200)
         self.assertEqual(session.generate_kwargs[-1]["max_output_tokens"], 4294967295)
 
+    def test_openai_mlx_shim_accepts_max_completion_tokens_with_precedence(self) -> None:
+        # docs/API-COMPATIBILITY.md: max_completion_tokens takes precedence
+        # over legacy max_tokens (the Rust server resolves them the same way).
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        self.assertIsNone(openai_server.require_max_tokens({"max_completion_tokens": 4}))
+        self.assertIsNone(
+            openai_server.require_max_tokens({"max_completion_tokens": 4, "max_tokens": True})
+        )
+        self.assertEqual(
+            openai_server.require_max_tokens({"max_completion_tokens": 0}),
+            (400, "OpenAI-compatible MLX shim requires max_completion_tokens > 0"),
+        )
+        self.assertEqual(
+            openai_server.require_max_tokens({"max_completion_tokens": 4294967296}),
+            (400, "OpenAI-compatible MLX shim requires max_completion_tokens <= 4294967295"),
+        )
+
+        client, session = self._make_openai_shim_client()
+        response = client.post(
+            "/v1/completions",
+            json={"model": "qwen3_dense", "prompt": "x", "max_completion_tokens": 5},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session.generate_kwargs[-1]["max_output_tokens"], 5)
+
+        stream_response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3_dense",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 2,
+                "max_completion_tokens": 7,
+                "stream": True,
+            },
+        )
+        self.assertEqual(stream_response.status_code, 200)
+        self.assertEqual(session.stream_kwargs[-1]["max_output_tokens"], 7)
+
+    def test_openai_mlx_shim_stream_include_usage_emits_final_usage_chunk(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        self.assertTrue(
+            openai_server.stream_include_usage({"stream_options": {"include_usage": True}})
+        )
+        self.assertFalse(openai_server.stream_include_usage({"stream_options": None}))
+        self.assertFalse(openai_server.stream_include_usage({}))
+        self.assertFalse(
+            openai_server.stream_include_usage({"stream_options": {"include_usage": False}})
+        )
+
+        client, _session = self._make_openai_shim_client()
+        response = client.post(
+            "/v1/completions",
+            json={
+                "model": "qwen3_dense",
+                "prompt": "x",
+                "max_tokens": 4,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.text.endswith("data: [DONE]\n\n"))
+        payloads = _sse_data_payloads(response.text.split("\n\n"))
+        usage_chunks = [payload for payload in payloads if "usage" in payload]
+        self.assertEqual(len(usage_chunks), 1)
+        self.assertEqual(payloads[-1], usage_chunks[0])
+        self.assertEqual(usage_chunks[0]["choices"], [])
+        self.assertEqual(usage_chunks[0]["object"], "text_completion.chunk")
+        # "x" is one prompt token; the two streamed deltas carry two tokens.
+        self.assertEqual(
+            usage_chunks[0]["usage"],
+            {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        )
+
+        plain = client.post(
+            "/v1/completions",
+            json={"model": "qwen3_dense", "prompt": "x", "max_tokens": 4, "stream": True},
+        )
+        plain_payloads = _sse_data_payloads(plain.text.split("\n\n"))
+        self.assertNotIn("usage", plain_payloads[-1])
+        self.assertEqual(plain_payloads[-1]["choices"][0]["finish_reason"], "length")
+
+        # The buffered tool-call streaming path reports usage too.
+        tool_stream = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3_dense",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 4,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "lookup", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        )
+        self.assertEqual(tool_stream.status_code, 200)
+        tool_payloads = _sse_data_payloads(tool_stream.text.split("\n\n"))
+        self.assertEqual(tool_payloads[-1]["choices"], [])
+        self.assertEqual(tool_payloads[-1]["object"], "chat.completion.chunk")
+        self.assertEqual(tool_payloads[-1]["usage"]["completion_tokens"], 10)
+        self.assertEqual(
+            tool_payloads[-1]["usage"]["total_tokens"],
+            tool_payloads[-1]["usage"]["prompt_tokens"] + 10,
+        )
+
     def test_openai_mlx_shim_rejects_negative_top_k_and_seed(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
         self.assertEqual(
@@ -3373,6 +3526,21 @@ class WrapperContractTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json()["error"]["code"], "invalid_request")
+
+    def test_openai_mlx_shim_rejects_scalar_json_bodies_as_400(self) -> None:
+        # Non-object JSON must fail as a 400 before drop_null_sampling_params
+        # touches it: `key in payload` raises TypeError (a 500) on scalars.
+        client, _session = self._make_openai_shim_client()
+        for path in ("/v1/completions", "/v1/chat/completions"):
+            for body in (b"5", b"true", b'"just a string"', b"[]"):
+                with self.subTest(path=path, body=body):
+                    response = client.post(
+                        path,
+                        content=body,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    self.assertEqual(response.status_code, 400)
+                    self.assertEqual(response.json()["error"]["code"], "invalid_request")
 
     def test_openai_mlx_shim_rejects_non_string_metadata(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
@@ -3412,8 +3580,10 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertTrue(response.headers["content-type"].startswith("application/json"))
         error = response.json()["error"]
-        self.assertEqual(error["code"], "invalid_request")
-        self.assertNotIn("native binding exploded", error["message"])
+        # Server failures use a code distinct from client 400s and surface the
+        # engine message, mirroring the Rust server (engine_error).
+        self.assertEqual(error["code"], "internal_error")
+        self.assertIn("native binding exploded", error["message"])
 
     def test_openai_mlx_shim_forwards_min_p_to_generate_and_stream(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

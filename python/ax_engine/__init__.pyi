@@ -505,7 +505,7 @@ class Session:
     ) -> Iterator[GenerateStreamEvent]: ...
     # ------------------------------------------------------------------
     # Embedding API — only available when the runtime selects MLX-native
-    # (`mlx=True`). Calls raise `EngineSessionError` (`embedding_not_supported`)
+    # (`mlx=True`). Calls raise `EngineInferenceError` (`embedding_not_supported`)
     # when the runtime is `llama_cpp` or `mlx_lm_delegated`.
     # ------------------------------------------------------------------
     def embed(
