@@ -452,12 +452,42 @@ impl EngineSession {
             self.native_request_routes.insert(request_id, route);
         }
 
-        while self.native_route_report_order.len() > MAX_NATIVE_ROUTE_REPORTS {
+        self.prune_native_request_routes();
+    }
+
+    /// Bound `native_request_routes` at `MAX_NATIVE_ROUTE_REPORTS`, evicting
+    /// terminal requests in FIFO order. A non-terminal request's route must
+    /// never be evicted: a termination that runs no batch item (memory
+    /// starvation cleanup) does not re-store the route, so the terminal
+    /// report and terminal stream event would lose its route and counters.
+    /// Live entries are rotated to the back instead; when every entry is live
+    /// the cap is temporarily exceeded rather than dropping a live route.
+    fn prune_native_request_routes(&mut self) {
+        let mut scanned = 0;
+        while self.native_route_report_order.len() > MAX_NATIVE_ROUTE_REPORTS
+            && scanned < self.native_route_report_order.len()
+        {
+            scanned += 1;
             let Some(evicted_request_id) = self.native_route_report_order.pop_front() else {
                 break;
             };
-            self.native_request_routes.remove(&evicted_request_id);
+            if self.native_request_route_is_live(evicted_request_id) {
+                self.native_route_report_order.push_back(evicted_request_id);
+            } else {
+                self.native_request_routes.remove(&evicted_request_id);
+            }
         }
+    }
+
+    /// True while the request manager still holds a non-terminal record for
+    /// `request_id`. A record the manager no longer tracks (or never tracked,
+    /// e.g. fabricated llama.cpp ids) can never need its route again and is
+    /// safe to evict.
+    fn native_request_route_is_live(&self, request_id: u64) -> bool {
+        self.core
+            .request_manager()
+            .record(RequestId(request_id))
+            .is_some_and(|record| !record.state.is_terminal())
     }
 
     fn llama_cpp_submit_generate_with_request_id(

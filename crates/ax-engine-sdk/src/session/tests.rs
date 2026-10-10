@@ -1994,6 +1994,61 @@ fn shared_stream_reports_scheduled_completion_once() {
 }
 
 #[test]
+fn live_native_route_survives_eviction_pressure_and_reaches_terminal_report() {
+    let mut session = shared_stream_test_session(4);
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 4,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let _stream = session
+        .stream_generate_state_with_request_id(42, request)
+        .expect("live stream should start");
+    let mut live_route = GenerateRouteReport::with_execution_plan("live-route");
+    live_route
+        .crossover_decisions
+        .insert("live_marker".to_string(), 7);
+    session.store_native_request_route(42, live_route);
+
+    // Plain FIFO eviction would drop request 42 here: it was the first route
+    // stored, and each store beyond the cap evicts from the front.
+    for request_id in 1_000..1_000 + MAX_NATIVE_ROUTE_REPORTS as u64 + 16 {
+        session.store_native_request_route(
+            request_id,
+            GenerateRouteReport::with_execution_plan("flood-route"),
+        );
+    }
+
+    assert!(
+        session.native_request_routes.contains_key(&42),
+        "a live request's route must survive route-store eviction pressure"
+    );
+    assert!(
+        session.native_request_routes.len() <= MAX_NATIVE_ROUTE_REPORTS,
+        "terminal and untracked routes must still be evicted to hold the cap"
+    );
+
+    // Terminate without a batch item, like the memory-starvation cleanup
+    // path: the route must still reach the terminal report.
+    session
+        .cancel(RequestId(42))
+        .expect("cancel should terminate the request");
+    let report = session
+        .request_report(42)
+        .expect("terminal report should exist");
+    assert_eq!(
+        report.route.crossover_decisions.get("live_marker"),
+        Some(&7),
+        "the terminal report must keep the route through an unscheduled termination"
+    );
+}
+
+#[test]
 fn shared_native_step_advances_multiple_stream_states_once() {
     let core = EngineCore::with_runtime_components(
         KvManagerConfig::validated(CacheGroupId(0), 16, 64),
