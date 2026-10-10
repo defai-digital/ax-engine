@@ -73,14 +73,10 @@ struct Candidate {
 }
 
 /// Aggregate statistics for one decode arm.
-#[allow(dead_code)] // label/forwards/leaves retained for diagnostics
 struct ArmStats {
-    label: String,
     committed: Vec<u32>,
     steps: usize,
     accepted_drafts: usize, // accepted speculative tokens (excludes primary + bonus)
-    forwards: usize,        // target verify forwards actually executed
-    leaves: usize,          // candidate paths verified across the run
     wall_s: f64,
 }
 
@@ -271,7 +267,6 @@ fn commit_forward(
 /// given branch schedule, drafting via the real MTP head and verifying each
 /// candidate faithfully.
 fn run_arm(
-    label: &str,
     cfg: &ModelConfig,
     weights: &ModelWeights,
     prompt: &[u32],
@@ -295,8 +290,6 @@ fn run_arm(
     let mut committed: Vec<u32> = Vec::with_capacity(target_tokens + branch.len());
     let mut steps = 0usize;
     let mut accepted_drafts = 0usize;
-    let mut forwards = 0usize;
-    let mut leaves = 0usize;
 
     let t0 = Instant::now();
     while committed.len() < target_tokens {
@@ -310,8 +303,6 @@ fn run_arm(
         let mut best_tokens: &[u32] = &[];
         for cand in &candidates {
             let a = verify_candidate(cfg, weights, &cache, primary, &cand.tokens, token_offset);
-            forwards += 1;
-            leaves += 1;
             if best_tokens.is_empty() || a > best_accepted {
                 best_accepted = a;
                 best_tokens = &cand.tokens;
@@ -330,7 +321,6 @@ fn run_arm(
         //    attention-safe), seeding next step from the bonus token + its hidden.
         let (bonus, next_hidden) =
             commit_forward(cfg, weights, &mut cache, &committed_step, token_offset);
-        forwards += 1; // the commit forward (both arms pay it equally)
         primary = bonus;
         hidden = next_hidden;
     }
@@ -338,12 +328,9 @@ fn run_arm(
     clear_cache();
 
     ArmStats {
-        label: label.to_string(),
         committed,
         steps,
         accepted_drafts,
-        forwards,
-        leaves,
         wall_s,
     }
 }
@@ -940,20 +927,13 @@ fn run() -> Result<(), String> {
     println!("schedules={schedules:?}  linear depths={depths:?}\n");
 
     // Warm up JIT (not measured).
-    let _ = run_arm("warmup", &cfg, &weights, &prompt, 8, &[1usize]);
+    let _ = run_arm(&cfg, &weights, &prompt, 8, &[1usize]);
 
     // One linear baseline per distinct depth.
     let mut linear_by_depth: std::collections::HashMap<usize, ArmStats> =
         std::collections::HashMap::new();
     for &d in &depths {
-        let arm = run_arm(
-            &format!("linear-d{d}"),
-            &cfg,
-            &weights,
-            &prompt,
-            target_tokens,
-            &vec![1usize; d],
-        );
+        let arm = run_arm(&cfg, &weights, &prompt, target_tokens, &vec![1usize; d]);
         linear_by_depth.insert(d, arm);
     }
 
@@ -976,7 +956,7 @@ fn run() -> Result<(), String> {
     }
     for sched in &schedules {
         let leaves: usize = sched.iter().product();
-        let tree = run_arm("tree", &cfg, &weights, &prompt, target_tokens, sched);
+        let tree = run_arm(&cfg, &weights, &prompt, target_tokens, sched);
         let lin = &linear_by_depth[&sched.len()];
         let n = lin.committed.len().min(tree.committed.len());
         let identical = lin.committed[..n] == tree.committed[..n];

@@ -39,12 +39,6 @@ fn validation_enabled() -> bool {
     })
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum EngineEvent {
-    Submit(RequestId),
-    Cancel(RequestId),
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StepMetrics {
     pub step_id: Option<StepId>,

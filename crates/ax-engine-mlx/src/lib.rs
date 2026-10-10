@@ -62,7 +62,7 @@ pub mod diagnostics {
     };
 }
 
-pub use runner::{EmbedCompileCacheStats, MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell};
+pub use runner::{MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell};
 pub use whisper::{WhisperError, WhisperModel, WhisperTranscription};
 
 /// Clear process-global compiled graphs and MLX allocator caches.

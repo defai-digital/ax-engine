@@ -9,7 +9,6 @@ const DEFAULT_AUDIO_SEQ_LENGTH: u32 = 750;
 /// Per-request soft-token budget ladder for gemma4_unified (WS-M4 / R-M4).
 /// 1120 is the structural ceiling from the unified 2-D position table.
 pub const SOFT_TOKEN_BUDGET_LADDER: &[u32] = &[70, 140, 280, 560, 1120];
-pub const SOFT_TOKEN_BUDGET_CEILING: u32 = 1120;
 
 /// Standard encoder-ViT Gemma 4 packages (not encoder-free `gemma4_unified`).
 ///
@@ -95,7 +94,6 @@ pub fn resolve_soft_token_budget(
 /// `max_frames_for_atomic_budget(2048, 70, text_overhead)` leaves room for
 /// timestamps/text specials. Default video_max_frames is 24 (24×70=1680).
 pub const DEFAULT_VIDEO_MAX_FRAMES: u32 = 24;
-pub const DEFAULT_VIDEO_SOFT_TOKENS_PER_FRAME: u32 = 70;
 
 pub fn max_frames_for_atomic_budget(
     max_batch_tokens: u32,

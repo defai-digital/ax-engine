@@ -50,7 +50,6 @@ pub(crate) enum WorkloadOutcome {
     Completed {
         report: WorkloadReport,
     },
-    #[allow(dead_code)]
     Failed {
         error: String,
         partial: Option<WorkloadReport>,

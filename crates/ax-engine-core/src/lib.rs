@@ -49,13 +49,12 @@ pub use distributed::{
     PipelineContractError, PipelineLayerRange, PipelineRankAssignment, PipelineRequestLedger,
     PipelineTopology, sha256_hex,
 };
-pub use engine::{EngineCore, EngineCoreError, EngineEvent, EngineStepOutcome, StepMetrics};
+pub use engine::{EngineCore, EngineCoreError, EngineStepOutcome, StepMetrics};
 pub use execution_plan::{
     DeterministicExecutionPlanResolver, ExecutionPlanBinding, ExecutionPlanResolver,
 };
 pub use gemma4_unified::{
-    AudioWindow, DEFAULT_VIDEO_MAX_FRAMES, DEFAULT_VIDEO_SOFT_TOKENS_PER_FRAME,
-    Gemma4UnifiedRuntimeInputError, ImageDetail, SOFT_TOKEN_BUDGET_CEILING,
+    AudioWindow, DEFAULT_VIDEO_MAX_FRAMES, Gemma4UnifiedRuntimeInputError, ImageDetail,
     SOFT_TOKEN_BUDGET_LADDER, is_standard_gemma4_encoder_model_type, max_frames_for_atomic_budget,
     plan_audio_windows, resolve_soft_token_budget, validate_soft_token_budget,
 };
@@ -116,7 +115,6 @@ pub use runner::{
     RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable, RunnerInput, RunnerOutput,
     RunnerRequestMultimodalInput,
 };
-#[allow(deprecated)]
 pub use sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, StopReason,
     TokenSampler,

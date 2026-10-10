@@ -5,8 +5,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-mod fixtures;
-
 struct Phase1Fixture {
     root: PathBuf,
     build_dir: PathBuf,

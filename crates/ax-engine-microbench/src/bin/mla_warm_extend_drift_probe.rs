@@ -29,7 +29,7 @@
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -473,7 +473,3 @@ fn main() -> ExitCode {
     }
     ExitCode::SUCCESS
 }
-
-// Keep `Path` imported for clarity even if unused at function boundary.
-#[allow(dead_code)]
-fn _path_marker(_: &Path) {}

@@ -1530,26 +1530,8 @@ pub struct MlxRunner {
     embed_mean_pool_compile_cache: Mutex<HashMap<EmbedMeanPoolCompileKey, mlx_sys::MlxClosure>>,
     /// Cumulative hit / miss counters for the two embedding compile
     /// caches. Useful to confirm a workload is reusing compiled
-    /// closures vs trashing the cache with shape variation. Exported
-    /// via `MlxRunner::embed_compile_cache_stats()`.
+    /// closures vs trashing the cache with shape variation.
     embed_compile_stats: Mutex<EmbedCompileStats>,
-}
-
-/// Snapshot of the embedding compile-cache telemetry. `len()` is the
-/// current cache size (number of distinct compiled closures retained);
-/// `hits` / `misses` are cumulative since session creation.
-#[derive(Clone, Copy, Debug, Default)]
-#[non_exhaustive]
-pub struct EmbedCompileCacheStats {
-    pub single_hits: u64,
-    pub single_misses: u64,
-    pub single_len: usize,
-    pub batched_hits: u64,
-    pub batched_misses: u64,
-    pub batched_len: usize,
-    pub mean_pool_hits: u64,
-    pub mean_pool_misses: u64,
-    pub mean_pool_len: usize,
 }
 
 #[derive(Clone, Copy, Default)]
