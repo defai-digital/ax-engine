@@ -1,4 +1,5 @@
 import json
+import math
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ CHAT_COMPLETION_REQUEST_ERROR = "invalid chat completion request"
 # values outside those ranges must fail validation instead of overflowing.
 MAX_OUTPUT_TOKENS_LIMIT = 4294967295
 TOP_K_LIMIT = 4294967295
+MAX_SAMPLING_FLOAT = float.fromhex("0x1.fffffep+127")
 SEED_LIMIT = 18446744073709551615
 SAMPLING_PARAM_KEYS = ("temperature", "top_p", "top_k", "repetition_penalty", "seed", "min_p")
 
@@ -1080,8 +1082,19 @@ def drop_null_sampling_params(payload: dict[str, Any]) -> dict[str, Any]:
 def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
     for key in ("temperature", "top_p", "repetition_penalty", "min_p"):
         value = payload.get(key)
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return 400, f"OpenAI-compatible MLX shim requires {key} to be numeric"
+        # Python accepts unbounded integers and JSON exponent overflow. Reject
+        # values that overflow either float() or the native f32 binding before
+        # committing stream headers or calling the engine.
+        try:
+            numeric = float(value)
+        except OverflowError:
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be a finite float32"
+        if not math.isfinite(numeric) or abs(numeric) > MAX_SAMPLING_FLOAT:
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be a finite float32"
     for key, limit in (("top_k", TOP_K_LIMIT), ("seed", SEED_LIMIT)):
         value = payload.get(key)
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)):

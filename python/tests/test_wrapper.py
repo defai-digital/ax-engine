@@ -3494,6 +3494,26 @@ class WrapperContractTests(unittest.TestCase):
             tool_payloads[-1]["usage"]["prompt_tokens"] + 10,
         )
 
+    def test_openai_mlx_shim_rejects_sampling_float_overflow_before_generation(self) -> None:
+        client, session = self._make_openai_shim_client()
+        for key in ("temperature", "top_p", "repetition_penalty", "min_p"):
+            for value in ("1e999", "-1e999", "NaN", "1e39", str(10**400)):
+                for path in ("/v1/completions", "/v1/chat/completions"):
+                    for stream in (False, True):
+                        with self.subTest(key=key, value=value, path=path, stream=stream):
+                            payload = {
+                                "model": "qwen3_dense", "max_tokens": 4, "stream": stream,
+                                "prompt": "x", "messages": [{"role": "user", "content": "x"}],
+                            }
+                            body = json.dumps(payload)[:-1] + f', "{key}": {value}' + "}"
+                            response = client.post(
+                                path, content=body, headers={"Content-Type": "application/json"}
+                            )
+                            self.assertEqual(response.status_code, 400)
+                            self.assertEqual(response.json()["error"]["code"], "invalid_request")
+        self.assertEqual(session.generate_kwargs, [])
+        self.assertEqual(session.stream_kwargs, [])
+
     def test_openai_mlx_shim_rejects_negative_top_k_and_seed(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
         self.assertEqual(

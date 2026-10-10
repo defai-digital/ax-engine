@@ -314,6 +314,7 @@ impl<R: Read> DelegatedSseReader<R> {
             };
 
             if value == "[DONE]" {
+                self.done_seen = true;
                 if payload.is_empty() {
                     return Ok(None);
                 }
@@ -323,7 +324,6 @@ impl<R: Read> DelegatedSseReader<R> {
                 // and report the stream end on the next call instead of
                 // discarding it (which lost the terminal chunk and made
                 // the stream end look like a premature disconnect).
-                self.done_seen = true;
                 break;
             }
 
@@ -390,6 +390,17 @@ mod tests {
     };
     use std::thread;
     use std::time::Instant;
+
+    #[test]
+    fn sse_done_is_terminal_even_when_more_data_follows() {
+        for multiline in [false, true] {
+            let mut reader =
+                DelegatedSseReader::new(&b"data: [DONE]\n\ndata: unexpected\n\n"[..], multiline);
+            for _ in 0..3 {
+                assert_eq!(reader.next_payload(|error| error).unwrap(), None);
+            }
+        }
+    }
 
     #[test]
     fn delegated_http_timeouts_reuses_cached_agent_for_same_timeouts_and_accept() {
