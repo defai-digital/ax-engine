@@ -8,7 +8,7 @@
 //! progressively higher acceptance counts.
 //!
 //! The fixture records:
-//! - aggregate ITL across all decode steps as `foreground_itl`
+//! - aggregate ITL across output-bearing steps as `foreground_itl`
 //! - per-iteration TTFT as `foreground_ttft`
 //! - n-gram draft/accept counters via route decisions
 //!
@@ -19,7 +19,10 @@ use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{GenerateRequest, GenerateSampling, GenerateStreamEvent};
 
-use super::{Workload, WorkloadContext, WorkloadOutcome, workload_inference_args};
+use super::{
+    OutputSample, OutputTiming, Workload, WorkloadContext, WorkloadOutcome, step_produced_output,
+    workload_inference_args,
+};
 use crate::harness::WorkloadReport;
 use crate::inference_args::{InferenceArgs, build_inference_session};
 use crate::synthetic::synthetic_prompt_tokens;
@@ -127,8 +130,10 @@ impl ToolOutputRepetition {
                 .stream_generate_state_with_request_id(request_id, request)
                 .map_err(|e| format!("submit iteration {iteration} failed: {e}"))?;
 
-            let mut first_step_at: Option<Instant> = None;
-            let mut last_step_at: Option<Instant> = None;
+            // Per-iteration TTFT/ITL chain: only steps that produced output
+            // count, so chunked-prefill Step events neither record TTFT nor
+            // anchor an ITL gap (shared fixture semantics: `OutputTiming`).
+            let mut timing = OutputTiming::default();
             let mut iter_count: u64 = 0;
             loop {
                 iter_count += 1;
@@ -136,15 +141,17 @@ impl ToolOutputRepetition {
                     return Err(format!("iteration {iteration} exceeded poll cap"));
                 }
                 match session.next_stream_event(&mut state) {
-                    Ok(Some(GenerateStreamEvent::Step(_))) => {
-                        let now = Instant::now();
-                        if first_step_at.is_none() {
-                            first_step_at = Some(now);
-                            report.foreground_ttft.record_duration(now - submit_at);
-                        } else if let Some(prev) = last_step_at {
-                            report.foreground_itl.record_duration(now - prev);
+                    Ok(Some(GenerateStreamEvent::Step(step))) => {
+                        match timing.observe(submit_at, step_produced_output(&step), Instant::now())
+                        {
+                            Some(OutputSample::TimeToFirstOutput(ttft)) => {
+                                report.foreground_ttft.record_duration(ttft);
+                            }
+                            Some(OutputSample::InterToken(itl)) => {
+                                report.foreground_itl.record_duration(itl);
+                            }
+                            None => {}
                         }
-                        last_step_at = Some(now);
                     }
                     Ok(Some(GenerateStreamEvent::Response(response))) => {
                         // Aggregate n-gram counters across iterations so the

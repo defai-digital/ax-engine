@@ -6,7 +6,9 @@
 //! request's TTFT on the [`ConcurrentShortInsertDelta`] channel as the
 //! degradation versus a near-zero baseline (the first short request's TTFT
 //! is captured before further short submissions, then subsequent inserts
-//! report `(this_ttft - baseline_short_ttft)`).
+//! report `(this_ttft - baseline_short_ttft)`). TTFT anchors on each short
+//! request's first output-bearing Step event; a request that completes
+//! without producing output contributes no sample.
 //!
 //! [`ConcurrentShortInsertDelta`]: crate::harness::metrics::LatencyChannel::ConcurrentShortInsertDelta
 //!
@@ -17,7 +19,10 @@ use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{GenerateRequest, GenerateSampling, GenerateStreamEvent, GenerateStreamState};
 
-use super::{Workload, WorkloadContext, WorkloadOutcome, workload_inference_args};
+use super::{
+    OutputSample, OutputTiming, Workload, WorkloadContext, WorkloadOutcome, step_produced_output,
+    workload_inference_args,
+};
 use crate::harness::WorkloadReport;
 use crate::inference_args::{InferenceArgs, build_inference_session};
 use crate::synthetic::synthetic_prompt_tokens;
@@ -144,7 +149,9 @@ impl ConcurrentShortInserts {
 
         // Drive the long request until its first Step event lands. After
         // that point we know the engine has prefill work in flight and the
-        // short inserts will compete for batching attention.
+        // short inserts will compete for batching attention. This is a
+        // control-flow gate, not a timing anchor: no metric is recorded here,
+        // and the long request's own TTFT is not measured.
         wait_for_first_step(&mut session, &mut long_state)?;
 
         let mut baseline_short_ttft_us: Option<u64> = None;
@@ -163,22 +170,10 @@ impl ConcurrentShortInserts {
                 )
                 .map_err(|e| format!("submit short_{ordinal} failed: {e}"))?;
 
-            let first_step_at = drive_to_first_step(&mut session, &mut short_state)
-                .map_err(|e| format!("drive short_{ordinal} to first step: {e}"))?;
-            let ttft_us = (first_step_at - submit_at)
-                .as_micros()
-                .min(u128::from(u64::MAX)) as u64;
-            report.foreground_ttft.record_us(ttft_us);
+            let ttft = drive_to_first_output(&mut session, &mut short_state, submit_at)
+                .map_err(|e| format!("drive short_{ordinal} to first output: {e}"))?;
+            record_short_ttft(&mut report, &mut baseline_short_ttft_us, ttft);
 
-            match baseline_short_ttft_us {
-                None => {
-                    baseline_short_ttft_us = Some(ttft_us);
-                }
-                Some(baseline) => {
-                    let delta = ttft_us.saturating_sub(baseline);
-                    report.concurrent_short_insert_delta.record_us(delta);
-                }
-            }
             // Drain the short request to completion so the next iteration
             // sees a clean scheduler state for its insert.
             drain_to_response(&mut session, &mut short_state)
@@ -196,6 +191,9 @@ impl ConcurrentShortInserts {
     }
 }
 
+/// Control-flow gate: drive the long request until its first `Step` event so
+/// the short inserts arrive while prefill is in flight. Deliberately the bare
+/// first `Step` (not an output anchor) — no metric is recorded here.
 fn wait_for_first_step(
     session: &mut ax_engine_sdk::EngineSession,
     state: &mut GenerateStreamState,
@@ -216,26 +214,56 @@ fn wait_for_first_step(
     }
 }
 
-fn drive_to_first_step(
+/// Drive a short request to its first output-bearing `Step` event and return
+/// the TTFT sample measured from `submitted_at`. Empty prefill-chunk steps do
+/// not count; `None` means the stream completed without producing output, so
+/// the request contributes no TTFT sample.
+fn drive_to_first_output(
     session: &mut ax_engine_sdk::EngineSession,
     state: &mut GenerateStreamState,
-) -> Result<Instant, String> {
+    submitted_at: Instant,
+) -> Result<Option<Duration>, String> {
+    let mut timing = OutputTiming::default();
     let mut iteration: u64 = 0;
     loop {
         iteration += 1;
         if iteration > POLL_ITERATION_CAP {
-            return Err("drive_to_first_step exceeded poll cap".to_string());
+            return Err("drive_to_first_output exceeded poll cap".to_string());
         }
         match session.next_stream_event(state) {
-            Ok(Some(GenerateStreamEvent::Step(_))) => return Ok(Instant::now()),
-            Ok(Some(GenerateStreamEvent::Response(_))) => {
-                // Completed without a Step event — treat completion timestamp
-                // as the first-step proxy so the channel still gets a sample.
-                return Ok(Instant::now());
+            Ok(Some(GenerateStreamEvent::Step(step))) => {
+                if let Some(OutputSample::TimeToFirstOutput(ttft)) =
+                    timing.observe(submitted_at, step_produced_output(&step), Instant::now())
+                {
+                    return Ok(Some(ttft));
+                }
             }
+            Ok(Some(GenerateStreamEvent::Response(_))) => return Ok(None),
             Ok(Some(GenerateStreamEvent::Request(_))) => continue,
-            Ok(None) => return Err("stream ended before first step".to_string()),
+            Ok(None) => return Err("stream ended before the first output token".to_string()),
             Err(e) => return Err(format!("stream advance: {e}")),
+        }
+    }
+}
+
+/// Record one short request's TTFT and its degradation versus the running
+/// baseline. `None` (no output produced) records nothing and leaves the
+/// baseline untouched.
+fn record_short_ttft(
+    report: &mut WorkloadReport,
+    baseline_short_ttft_us: &mut Option<u64>,
+    ttft: Option<Duration>,
+) {
+    let Some(ttft) = ttft else {
+        return;
+    };
+    let ttft_us = ttft.as_micros().min(u128::from(u64::MAX)) as u64;
+    report.foreground_ttft.record_us(ttft_us);
+    match baseline_short_ttft_us {
+        None => *baseline_short_ttft_us = Some(ttft_us),
+        Some(baseline) => {
+            let delta = ttft_us.saturating_sub(*baseline);
+            report.concurrent_short_insert_delta.record_us(delta);
         }
     }
 }
@@ -296,5 +324,29 @@ mod tests {
         let f = ConcurrentShortInserts::default();
         let req = f.build_long_request(0);
         assert_eq!(req.input_tokens.len() as u32, f.long_prefill_tokens);
+    }
+
+    #[test]
+    fn record_short_ttft_skips_requests_without_output() {
+        // A short request that completed without producing output must not
+        // fabricate a TTFT sample nor seed the degradation baseline.
+        let mut report = WorkloadReport::new("concurrent_short_inserts");
+        let mut baseline = None;
+        record_short_ttft(&mut report, &mut baseline, None);
+        assert_eq!(baseline, None);
+        assert!(report.foreground_ttft.is_empty());
+        assert!(report.concurrent_short_insert_delta.is_empty());
+    }
+
+    #[test]
+    fn record_short_ttft_seeds_baseline_then_reports_delta() {
+        let mut report = WorkloadReport::new("concurrent_short_inserts");
+        let mut baseline = None;
+        record_short_ttft(&mut report, &mut baseline, Some(Duration::from_micros(100)));
+        assert_eq!(baseline, Some(100));
+        record_short_ttft(&mut report, &mut baseline, Some(Duration::from_micros(250)));
+        assert_eq!(report.foreground_ttft.len(), 2);
+        assert_eq!(report.concurrent_short_insert_delta.raw_values(), &[150]);
+        assert_eq!(baseline, Some(100));
     }
 }

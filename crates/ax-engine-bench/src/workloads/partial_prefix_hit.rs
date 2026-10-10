@@ -17,7 +17,10 @@ use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{GenerateRequest, GenerateSampling, GenerateStreamEvent};
 
-use super::{Workload, WorkloadContext, WorkloadOutcome, workload_inference_args};
+use super::{
+    OutputSample, OutputTiming, Workload, WorkloadContext, WorkloadOutcome, step_produced_output,
+    workload_inference_args,
+};
 use crate::harness::WorkloadReport;
 use crate::harness::metrics::LatencySamples;
 use crate::inference_args::{InferenceArgs, build_inference_session};
@@ -160,8 +163,9 @@ impl PartialPrefixHit {
     }
 }
 
-/// Drive a single request to its first Step event, returning TTFT in microseconds.
-/// Drains the rest of the stream so the engine is ready for the next request.
+/// Drive a single request to its first output-bearing Step event, returning TTFT
+/// in microseconds. Drains the rest of the stream so the engine is ready for the
+/// next request.
 fn run_single_request(
     session: &mut ax_engine_sdk::EngineSession,
     request: GenerateRequest,
@@ -171,7 +175,11 @@ fn run_single_request(
     let mut state = session
         .stream_generate_state_with_request_id(request_id, request)
         .map_err(|e| format!("submit failed: {e}"))?;
-    let mut first_step_at: Option<Instant> = None;
+    // Chunked prefill emits Step events with empty delta_tokens before the
+    // first token; TTFT must land on the first event that actually produced
+    // output, not on the first Step.
+    let mut timing = OutputTiming::default();
+    let mut ttft_us: Option<u64> = None;
     let mut iteration: u64 = 0;
     loop {
         iteration += 1;
@@ -179,9 +187,11 @@ fn run_single_request(
             return Err("poll iteration cap exceeded".to_string());
         }
         match session.next_stream_event(&mut state) {
-            Ok(Some(GenerateStreamEvent::Step(_))) => {
-                if first_step_at.is_none() {
-                    first_step_at = Some(Instant::now());
+            Ok(Some(GenerateStreamEvent::Step(step))) => {
+                if let Some(OutputSample::TimeToFirstOutput(ttft)) =
+                    timing.observe(submit_at, step_produced_output(&step), Instant::now())
+                {
+                    ttft_us = Some(ttft.as_micros().min(u128::from(u64::MAX)) as u64);
                 }
             }
             Ok(Some(GenerateStreamEvent::Response(_))) => break,
@@ -190,10 +200,7 @@ fn run_single_request(
             Err(e) => return Err(format!("stream advance failed: {e}")),
         }
     }
-    let ttft = first_step_at
-        .ok_or_else(|| "stream finished before first Step event".to_string())?
-        .duration_since(submit_at);
-    Ok(ttft.as_micros().min(u128::from(u64::MAX)) as u64)
+    ttft_us.ok_or_else(|| "stream finished before the first output token".to_string())
 }
 
 #[cfg(test)]

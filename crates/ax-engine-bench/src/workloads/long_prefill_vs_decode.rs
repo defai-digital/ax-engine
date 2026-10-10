@@ -20,7 +20,10 @@ use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{GenerateRequest, GenerateSampling, GenerateStreamEvent, GenerateStreamState};
 
-use super::{Workload, WorkloadContext, WorkloadOutcome, workload_inference_args};
+use super::{
+    OutputSample, OutputTiming, Workload, WorkloadContext, WorkloadOutcome, step_produced_output,
+    workload_inference_args,
+};
 use crate::harness::WorkloadReport;
 use crate::inference_args::{InferenceArgs, build_inference_session};
 use crate::synthetic::synthetic_prompt_tokens;
@@ -220,9 +223,8 @@ impl LongPrefillVsDecode {
                 request_id,
                 state,
                 submit_at,
-                last_step_at: None,
+                timing: OutputTiming::default(),
                 active: true,
-                first_step_seen: false,
             });
         }
 
@@ -287,17 +289,23 @@ impl LongPrefillVsDecode {
                     continue;
                 }
                 match session.next_stream_event(&mut handle.state) {
-                    Ok(Some(GenerateStreamEvent::Step(_))) => {
-                        let now = Instant::now();
-                        if !handle.first_step_seen {
-                            let ttft = now - handle.submit_at;
-                            report.foreground_ttft.record_duration(ttft);
-                            handle.first_step_seen = true;
-                        } else if let Some(prev) = handle.last_step_at {
-                            let itl = now - prev;
-                            report.foreground_itl.record_duration(itl);
+                    Ok(Some(GenerateStreamEvent::Step(step))) => {
+                        // Foreground TTFT/ITL chain: only steps that produced
+                        // output count, so prefill chunks in the shared step
+                        // neither record TTFT nor anchor the first ITL gap.
+                        match handle.timing.observe(
+                            handle.submit_at,
+                            step_produced_output(&step),
+                            Instant::now(),
+                        ) {
+                            Some(OutputSample::TimeToFirstOutput(ttft)) => {
+                                report.foreground_ttft.record_duration(ttft);
+                            }
+                            Some(OutputSample::InterToken(itl)) => {
+                                report.foreground_itl.record_duration(itl);
+                            }
+                            None => {}
                         }
-                        handle.last_step_at = Some(now);
                     }
                     Ok(Some(GenerateStreamEvent::Response(response))) => {
                         handle.active = false;
@@ -355,9 +363,8 @@ struct ShortHandle {
     request_id: u64,
     state: GenerateStreamState,
     submit_at: Instant,
-    last_step_at: Option<Instant>,
+    timing: OutputTiming,
     active: bool,
-    first_step_seen: bool,
 }
 
 fn finalize_report(
