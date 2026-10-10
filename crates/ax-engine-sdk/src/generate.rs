@@ -353,6 +353,36 @@ pub(crate) fn finish_reason_from_stop_type(
     }
 }
 
+/// Map a terminal OpenAI-style `finish_reason` string onto the SDK finish
+/// reason. One shared mapping serves the delegated compatibility adapters
+/// (llama.cpp server chat completions, mlx-lm); `adapter` names the caller in
+/// the unknown-reason warning. An empty or absent reason is a non-terminal
+/// chunk, tool-call terminations are clean stops, and an unknown non-empty
+/// reason (for example `abort`) is a reported error rather than a clean finish
+/// with no reason.
+pub(crate) fn finish_reason_from_openai_reason(
+    value: Option<&str>,
+    adapter: &str,
+) -> Option<GenerateFinishReason> {
+    match value {
+        Some("stop") => Some(GenerateFinishReason::Stop),
+        Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
+        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
+        // A tool-call or function-call terminal is a normal stop, mirroring the
+        // OpenAI chat completion stream adapter, not an unknown reason.
+        Some("tool_calls" | "function_call") => Some(GenerateFinishReason::Stop),
+        Some("") | None => None,
+        Some(unknown) => {
+            tracing::warn!(
+                adapter,
+                finish_reason = unknown,
+                "delegated adapter returned unknown OpenAI finish_reason; reporting error finish reason"
+            );
+            Some(GenerateFinishReason::Error)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GenerateSampling {
     #[serde(default)]

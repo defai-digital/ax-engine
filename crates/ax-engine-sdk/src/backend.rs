@@ -852,7 +852,6 @@ pub enum BackendContractError {
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
 

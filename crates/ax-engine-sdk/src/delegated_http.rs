@@ -1,5 +1,6 @@
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -196,6 +197,148 @@ where
     F: FnOnce(serde_json::Error) -> E,
 {
     serde_json::from_reader(response.into_reader()).map_err(map_error)
+}
+
+/// Error constructors implemented by the delegated compatibility adapters
+/// (llama.cpp, mlx-lm) for the shared JSON POST plumbing below. Each adapter
+/// maps a serialization, transport, status or response-parse failure onto its
+/// own error enum, so the request/response mechanics live once here while the
+/// error type and its message text stay adapter-owned.
+pub(crate) trait DelegatedAdapterError: Sized {
+    fn serialize_request_json(endpoint: String, source: serde_json::Error) -> Self;
+    fn http_request(endpoint: String, source: Box<ureq::Error>) -> Self;
+    fn http_status(endpoint: String, status: u16, body: String) -> Self;
+    fn invalid_response_json(endpoint: String, source: serde_json::Error) -> Self;
+}
+
+pub(crate) fn send_adapter_json_post_request<T, E>(
+    endpoint: &str,
+    payload: &T,
+    accept: Option<&str>,
+    timeouts: DelegatedHttpTimeouts,
+) -> Result<ureq::Response, E>
+where
+    T: Serialize + ?Sized,
+    E: DelegatedAdapterError,
+{
+    send_json_post_request(endpoint, payload, accept, timeouts, |error| match error {
+        DelegatedHttpPostError::Serialize(source) => {
+            E::serialize_request_json(endpoint.to_string(), source)
+        }
+        DelegatedHttpPostError::Status { status, body } => {
+            E::http_status(endpoint.to_string(), status, body)
+        }
+        DelegatedHttpPostError::Request(source) => E::http_request(endpoint.to_string(), source),
+    })
+}
+
+pub(crate) fn parse_adapter_json_response<T, E>(
+    response: ureq::Response,
+    endpoint: &str,
+) -> Result<T, E>
+where
+    T: DeserializeOwned,
+    E: DelegatedAdapterError,
+{
+    parse_json_response(response, |source| {
+        E::invalid_response_json(endpoint.to_string(), source)
+    })
+}
+
+/// Incremental Server-Sent Events `data:` reader shared by the delegated
+/// compatibility adapters. Reads until one payload is complete: at a blank
+/// line, at EOF, or at `data: [DONE]`.
+pub(crate) struct DelegatedSseReader<R> {
+    reader: BufReader<R>,
+    join_multiline_data: bool,
+    done_seen: bool,
+}
+
+impl<R: Read> DelegatedSseReader<R> {
+    /// `join_multiline_data` selects the payload shape: `true` joins
+    /// consecutive `data:` lines into one payload (llama.cpp native
+    /// `/completion`), `false` treats every `data:` line as one payload
+    /// (OpenAI-compatible servers, mlx-lm).
+    pub(crate) fn new(reader: R, join_multiline_data: bool) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            join_multiline_data,
+            done_seen: false,
+        }
+    }
+
+    /// Return the next payload, or `None` when the stream ended (`data:
+    /// [DONE]`, EOF, or the call after a `[DONE]` that carried a pending
+    /// payload). `map_read_error` wraps a failed read in the adapter's own
+    /// error type so its message keeps the adapter endpoint.
+    pub(crate) fn next_payload<E, F>(&mut self, mut map_read_error: F) -> Result<Option<String>, E>
+    where
+        F: FnMut(std::io::Error) -> E,
+    {
+        // A [DONE] line that arrived with a still-pending payload reports the
+        // end only on this later call; see the [DONE] handling below.
+        if self.done_seen {
+            return Ok(None);
+        }
+
+        let mut payload = String::new();
+
+        loop {
+            let mut line = String::new();
+            let bytes_read = self
+                .reader
+                .read_line(&mut line)
+                .map_err(&mut map_read_error)?;
+
+            if bytes_read == 0 {
+                if payload.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                if !payload.is_empty() {
+                    break;
+                }
+                continue;
+            }
+
+            // SSE allows optional whitespace after the colon (`data:` or `data: `).
+            let Some(value) = line
+                .strip_prefix("data:")
+                .map(|s| s.strip_prefix(' ').unwrap_or(s))
+            else {
+                continue;
+            };
+
+            if value == "[DONE]" {
+                if payload.is_empty() {
+                    return Ok(None);
+                }
+                // Some servers send `data: [DONE]` immediately after the
+                // final payload without the blank-line separator. The
+                // pending payload is the terminal chunk: deliver it now
+                // and report the stream end on the next call instead of
+                // discarding it (which lost the terminal chunk and made
+                // the stream end look like a premature disconnect).
+                self.done_seen = true;
+                break;
+            }
+
+            if !self.join_multiline_data {
+                return Ok(Some(value.to_string()));
+            }
+
+            if !payload.is_empty() {
+                payload.push('\n');
+            }
+            payload.push_str(value);
+        }
+
+        Ok(Some(payload))
+    }
 }
 
 pub(crate) fn normalize_base_url(mut value: String) -> String {

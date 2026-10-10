@@ -1,16 +1,16 @@
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::delegated_http::{
-    DelegatedHttpPostError, DelegatedHttpTimeouts, normalize_base_url, parse_json_response,
-    send_json_post_request,
+    DelegatedAdapterError, DelegatedHttpTimeouts, DelegatedSseReader, normalize_base_url,
+    parse_adapter_json_response, send_adapter_json_post_request,
 };
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport,
-    generate_status_from_finish_reason,
+    finish_reason_from_openai_reason, generate_status_from_finish_reason,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,6 +106,28 @@ pub enum MlxLmBackendError {
     MissingStreamChoice { endpoint: String },
 }
 
+impl DelegatedAdapterError for MlxLmBackendError {
+    fn serialize_request_json(endpoint: String, source: serde_json::Error) -> Self {
+        Self::SerializeRequestJson { endpoint, source }
+    }
+
+    fn http_request(endpoint: String, source: Box<ureq::Error>) -> Self {
+        Self::HttpRequest { endpoint, source }
+    }
+
+    fn http_status(endpoint: String, status: u16, body: String) -> Self {
+        Self::HttpStatus {
+            endpoint,
+            status,
+            body,
+        }
+    }
+
+    fn invalid_response_json(endpoint: String, source: serde_json::Error) -> Self {
+        Self::InvalidResponseJson { endpoint, source }
+    }
+}
+
 #[derive(Debug)]
 pub struct MlxLmStreamChunkResult {
     pub text: String,
@@ -116,73 +138,51 @@ pub struct MlxLmStreamChunkResult {
 
 pub struct MlxLmStreamHandle {
     endpoint: String,
-    reader: BufReader<Box<dyn Read + Send>>,
+    sse: DelegatedSseReader<Box<dyn Read + Send>>,
 }
 
 impl MlxLmStreamHandle {
     pub(crate) fn new(endpoint: String, reader: Box<dyn Read + Send>) -> Self {
         Self {
             endpoint,
-            reader: BufReader::new(reader),
+            sse: DelegatedSseReader::new(reader, false),
         }
     }
 
     pub fn next_chunk(&mut self) -> Result<Option<MlxLmStreamChunkResult>, MlxLmBackendError> {
-        loop {
-            let mut line = String::new();
-            let bytes_read =
-                self.reader
-                    .read_line(&mut line)
-                    .map_err(|source| MlxLmBackendError::SseRead {
-                        endpoint: self.endpoint.clone(),
-                        source,
-                    })?;
+        let Some(payload) = self.sse.next_payload(|source| MlxLmBackendError::SseRead {
+            endpoint: self.endpoint.clone(),
+            source,
+        })?
+        else {
+            return Ok(None);
+        };
 
-            if bytes_read == 0 {
-                return Ok(None);
+        let chunk: MlxLmStreamChunk = serde_json::from_str(&payload).map_err(|source| {
+            MlxLmBackendError::InvalidStreamChunk {
+                endpoint: self.endpoint.clone(),
+                source,
             }
+        })?;
 
-            let line = line.trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                continue;
-            }
-
-            // SSE allows optional whitespace after the colon (`data:` or `data: `).
-            let data = match line.strip_prefix("data:") {
-                Some(rest) => rest.strip_prefix(' ').unwrap_or(rest),
-                None => continue,
-            };
-
-            if data == "[DONE]" {
-                return Ok(None);
-            }
-
-            let chunk: MlxLmStreamChunk = serde_json::from_str(data).map_err(|source| {
-                MlxLmBackendError::InvalidStreamChunk {
-                    endpoint: self.endpoint.clone(),
-                    source,
-                }
-            })?;
-
-            let has_usage = chunk.usage.is_some();
-            let choice = chunk.choices.into_iter().next();
-            if choice.is_none() && !has_usage {
-                return Err(MlxLmBackendError::MissingStreamChoice {
-                    endpoint: self.endpoint.clone(),
-                });
-            }
-            let choice = choice.unwrap_or_default();
-
-            return Ok(Some(MlxLmStreamChunkResult {
-                text: choice
-                    .delta
-                    .and_then(|delta| delta.content)
-                    .unwrap_or(choice.text),
-                finish_reason: choice.finish_reason,
-                prompt_token_count: chunk.usage.as_ref().map(|u| u.prompt_tokens),
-                output_token_count: chunk.usage.as_ref().map(|u| u.completion_tokens),
-            }));
+        let has_usage = chunk.usage.is_some();
+        let choice = chunk.choices.into_iter().next();
+        if choice.is_none() && !has_usage {
+            return Err(MlxLmBackendError::MissingStreamChoice {
+                endpoint: self.endpoint.clone(),
+            });
         }
+        let choice = choice.unwrap_or_default();
+
+        Ok(Some(MlxLmStreamChunkResult {
+            text: choice
+                .delta
+                .and_then(|delta| delta.content)
+                .unwrap_or(choice.text),
+            finish_reason: choice.finish_reason,
+            prompt_token_count: chunk.usage.as_ref().map(|u| u.prompt_tokens),
+            output_token_count: chunk.usage.as_ref().map(|u| u.completion_tokens),
+        }))
     }
 }
 
@@ -256,7 +256,7 @@ fn start_mlx_lm_server_completion_stream(
     let prompt = completion_prompt_text(request)?;
     let payload = build_mlx_lm_completion_request(request, &prompt, true);
 
-    let response = send_mlx_lm_json_post_request(
+    let response = send_adapter_json_post_request(
         &endpoint,
         &payload,
         Some("text/event-stream"),
@@ -284,7 +284,7 @@ fn start_mlx_lm_server_chat_completion_stream(
     let endpoint = config.chat_completions_url();
     let payload = build_mlx_lm_chat_completion_request(request, true);
 
-    let response = send_mlx_lm_json_post_request(
+    let response = send_adapter_json_post_request(
         &endpoint,
         &payload,
         Some("text/event-stream"),
@@ -292,45 +292,6 @@ fn start_mlx_lm_server_chat_completion_stream(
     )?;
     let reader: Box<dyn Read + Send> = Box::new(response.into_reader());
     Ok(MlxLmStreamHandle::new(endpoint, reader))
-}
-
-fn send_mlx_lm_json_post_request<T>(
-    endpoint: &str,
-    payload: &T,
-    accept: Option<&str>,
-    timeouts: DelegatedHttpTimeouts,
-) -> Result<ureq::Response, MlxLmBackendError>
-where
-    T: Serialize + ?Sized,
-{
-    send_json_post_request(endpoint, payload, accept, timeouts, |error| match error {
-        DelegatedHttpPostError::Serialize(source) => MlxLmBackendError::SerializeRequestJson {
-            endpoint: endpoint.to_string(),
-            source,
-        },
-        DelegatedHttpPostError::Status { status, body } => MlxLmBackendError::HttpStatus {
-            endpoint: endpoint.to_string(),
-            status,
-            body,
-        },
-        DelegatedHttpPostError::Request(source) => MlxLmBackendError::HttpRequest {
-            endpoint: endpoint.to_string(),
-            source,
-        },
-    })
-}
-
-fn parse_mlx_lm_json_response<T>(
-    response: ureq::Response,
-    endpoint: &str,
-) -> Result<T, MlxLmBackendError>
-where
-    T: DeserializeOwned,
-{
-    parse_json_response(response, |source| MlxLmBackendError::InvalidResponseJson {
-        endpoint: endpoint.to_string(),
-        source,
-    })
 }
 
 fn first_choice_for_completion<T>(endpoint: &str, choices: Vec<T>) -> Result<T, MlxLmBackendError> {
@@ -382,13 +343,13 @@ fn run_mlx_lm_server_completion_generate(
     let prompt = completion_prompt_text(request)?;
     let payload = build_mlx_lm_completion_request(request, &prompt, false);
 
-    let response = send_mlx_lm_json_post_request(
+    let response = send_adapter_json_post_request(
         &endpoint,
         &payload,
         None,
         config.timeouts.for_blocking_generation(),
     )?;
-    let response: MlxLmCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
+    let response: MlxLmCompletionResponse = parse_adapter_json_response(response, &endpoint)?;
     let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
     Ok(build_mlx_lm_delegated_response(
@@ -413,13 +374,13 @@ fn run_mlx_lm_server_chat_completion_generate(
     let endpoint = config.chat_completions_url();
     let payload = build_mlx_lm_chat_completion_request(request, false);
 
-    let response = send_mlx_lm_json_post_request(
+    let response = send_adapter_json_post_request(
         &endpoint,
         &payload,
         None,
         config.timeouts.for_blocking_generation(),
     )?;
-    let response: MlxLmChatCompletionResponse = parse_mlx_lm_json_response(response, &endpoint)?;
+    let response: MlxLmChatCompletionResponse = parse_adapter_json_response(response, &endpoint)?;
     let choice = first_choice_for_completion(&endpoint, response.choices)?;
 
     Ok(build_mlx_lm_delegated_response(
@@ -525,27 +486,14 @@ fn build_mlx_lm_chat_completion_request(
     }
 }
 
-/// Map an mlx-lm finish reason onto the SDK finish reason, mirroring the
-/// llama.cpp `finish_reason_from_stop_type` table. An empty or absent reason
-/// is a non-terminal chunk, tool-call terminations are clean stops, and an
-/// unknown non-empty reason (for example `abort`) is a reported error rather
-/// than a clean finish with no reason; otherwise the stream would complete
-/// successfully while the backend actually failed.
+/// Map an mlx-lm finish reason onto the SDK finish reason via the shared
+/// OpenAI-style table. An empty or absent reason is a non-terminal chunk,
+/// tool-call terminations are clean stops, and an unknown non-empty reason
+/// (for example `abort`) is a reported error rather than a clean finish with
+/// no reason; otherwise the stream would complete successfully while the
+/// backend actually failed.
 pub fn finish_reason_from_mlx_lm(value: Option<&str>) -> Option<GenerateFinishReason> {
-    match value {
-        Some("stop") => Some(GenerateFinishReason::Stop),
-        Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
-        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
-        Some("tool_calls" | "function_call") => Some(GenerateFinishReason::Stop),
-        Some("") | None => None,
-        Some(unknown) => {
-            tracing::warn!(
-                finish_reason = unknown,
-                "mlx-lm delegated backend returned unknown finish_reason; reporting error finish reason"
-            );
-            Some(GenerateFinishReason::Error)
-        }
-    }
+    finish_reason_from_openai_reason(value, "mlx-lm delegated backend")
 }
 
 #[derive(Debug, Deserialize, Default)]

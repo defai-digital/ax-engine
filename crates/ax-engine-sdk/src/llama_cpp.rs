@@ -1,22 +1,23 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use wait_timeout::ChildExt;
 
 use crate::backend::{RuntimeReport, SelectedBackend};
 use crate::delegated_http::{
-    DelegatedHttpPostError, DelegatedHttpTimeouts, normalize_base_url, parse_json_response,
-    send_json_post_request,
+    DelegatedAdapterError, DelegatedHttpTimeouts, DelegatedSseReader, normalize_base_url,
+    parse_adapter_json_response, send_adapter_json_post_request,
 };
 use crate::generate::{
     GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateRouteReport, GenerateSampling,
-    finish_reason_from_stop_type, generate_status_from_finish_reason,
+    finish_reason_from_openai_reason, finish_reason_from_stop_type,
+    generate_status_from_finish_reason,
 };
 
 const LLAMA_CPP_CLI_TIMEOUT: Duration = Duration::from_secs(300);
@@ -95,9 +96,8 @@ enum LlamaCppStreamFormat {
 pub struct LlamaCppStreamHandle {
     endpoint: String,
     format: LlamaCppStreamFormat,
-    reader: BufReader<Box<dyn Read + Send>>,
+    sse: DelegatedSseReader<Box<dyn Read + Send>>,
     bos_space_stripped: bool,
-    done_seen: bool,
 }
 
 impl LlamaCppStreamHandle {
@@ -105,69 +105,21 @@ impl LlamaCppStreamHandle {
         Self {
             endpoint,
             format,
-            reader: BufReader::new(reader),
+            sse: DelegatedSseReader::new(reader, true),
             bos_space_stripped: false,
-            done_seen: false,
         }
     }
 
     pub fn next_chunk(&mut self) -> Result<Option<LlamaCppStreamChunk>, LlamaCppBackendError> {
-        // A [DONE] line that arrived with a still-pending payload reports the
-        // end only on this later call; see the [DONE] handling below.
-        if self.done_seen {
-            return Ok(None);
-        }
-
-        let mut payload = String::new();
-
-        loop {
-            let mut line = String::new();
-            let bytes_read = self.reader.read_line(&mut line).map_err(|source| {
-                LlamaCppBackendError::HttpResponseRead {
+        let Some(payload) =
+            self.sse
+                .next_payload(|source| LlamaCppBackendError::HttpResponseRead {
                     endpoint: self.endpoint.clone(),
                     source,
-                }
-            })?;
-
-            if bytes_read == 0 {
-                if payload.is_empty() {
-                    return Ok(None);
-                }
-                break;
-            }
-
-            let line = line.trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                if !payload.is_empty() {
-                    break;
-                }
-                continue;
-            }
-
-            // SSE allows optional whitespace after the colon (`data:` or `data: `).
-            if let Some(value) = line
-                .strip_prefix("data:")
-                .map(|s| s.strip_prefix(' ').unwrap_or(s))
-            {
-                if value == "[DONE]" {
-                    if payload.is_empty() {
-                        return Ok(None);
-                    }
-                    // Some servers send `data: [DONE]` immediately after the
-                    // final payload without the blank-line separator. The
-                    // pending payload is the terminal chunk: deliver it now
-                    // and report the stream end on the next call instead of
-                    // discarding it (which lost the terminal chunk and made
-                    // the stream end look like a premature disconnect).
-                    self.done_seen = true;
-                    break;
-                }
-                if !payload.is_empty() {
-                    payload.push('\n');
-                }
-                payload.push_str(value);
-            }
-        }
+                })?
+        else {
+            return Ok(None);
+        };
 
         let mut chunk: LlamaCppStreamChunk = match self.format {
             LlamaCppStreamFormat::LlamaCppCompletion => serde_json::from_str(&payload),
@@ -345,6 +297,28 @@ pub enum LlamaCppBackendError {
         "llama.cpp backend {selected_backend:?} does not support streaming generate in this preview contract"
     )]
     StreamingNotSupported { selected_backend: SelectedBackend },
+}
+
+impl DelegatedAdapterError for LlamaCppBackendError {
+    fn serialize_request_json(endpoint: String, source: serde_json::Error) -> Self {
+        Self::SerializeRequestJson { endpoint, source }
+    }
+
+    fn http_request(endpoint: String, source: Box<ureq::Error>) -> Self {
+        Self::HttpRequest { endpoint, source }
+    }
+
+    fn http_status(endpoint: String, status: u16, body: String) -> Self {
+        Self::HttpStatus {
+            endpoint,
+            status,
+            body,
+        }
+    }
+
+    fn invalid_response_json(endpoint: String, source: serde_json::Error) -> Self {
+        Self::InvalidResponseJson { endpoint, source }
+    }
 }
 
 pub(crate) fn run_blocking_generate(
@@ -597,13 +571,13 @@ fn run_llama_cpp_server_completion_generate(
     let endpoint = config.completion_url();
     let payload = build_llama_cpp_completion_request(prompt, request, false, false);
 
-    let response = send_llama_cpp_json_post_request(
+    let response = send_adapter_json_post_request(
         &endpoint,
         &payload,
         None,
         config.timeouts.for_blocking_generation(),
     )?;
-    let response: LlamaCppCompletionResponse = parse_llama_cpp_json_response(response, &endpoint)?;
+    let response: LlamaCppCompletionResponse = parse_adapter_json_response(response, &endpoint)?;
 
     let output_tokens = response.tokens;
     let output_token_logprobs = vec![None; output_tokens.len()];
@@ -638,14 +612,14 @@ fn run_llama_cpp_server_chat_completion_generate(
     let endpoint = config.chat_completions_url();
     let payload = build_llama_cpp_chat_completion_request(request, false);
 
-    let response = send_llama_cpp_json_post_request(
+    let response = send_adapter_json_post_request(
         &endpoint,
         &payload,
         None,
         config.timeouts.for_blocking_generation(),
     )?;
     let response: LlamaCppChatCompletionResponse =
-        parse_llama_cpp_json_response(response, &endpoint)?;
+        parse_adapter_json_response(response, &endpoint)?;
     let choice = response.choices.into_iter().next().ok_or_else(|| {
         LlamaCppBackendError::MissingCompletionChoice {
             endpoint: endpoint.clone(),
@@ -663,7 +637,7 @@ fn run_llama_cpp_server_chat_completion_generate(
         choice.message.content,
         response.usage.as_ref().map(|usage| usage.prompt_tokens),
         response.usage.as_ref().map(|usage| usage.completion_tokens),
-        finish_reason_from_openai_finish_reason(choice.finish_reason.as_deref()),
+        finish_reason_from_openai_reason(choice.finish_reason.as_deref(), "llama.cpp server"),
         GenerateRouteReport::with_execution_plan("llama_cpp.server_chat_completion"),
     ))
 }
@@ -710,7 +684,7 @@ fn start_llama_cpp_server_completion_stream(
     let endpoint = config.completion_url();
     let payload = build_llama_cpp_completion_request(prompt, request, true, true);
 
-    let response = send_llama_cpp_json_post_request(
+    let response = send_adapter_json_post_request(
         &endpoint,
         &payload,
         Some("text/event-stream"),
@@ -732,7 +706,7 @@ fn start_llama_cpp_server_chat_completion_stream(
     let endpoint = config.chat_completions_url();
     let payload = build_llama_cpp_chat_completion_request(request, true);
 
-    let response = send_llama_cpp_json_post_request(
+    let response = send_adapter_json_post_request(
         &endpoint,
         &payload,
         Some("text/event-stream"),
@@ -745,47 +719,6 @@ fn start_llama_cpp_server_chat_completion_stream(
         LlamaCppStreamFormat::OpenAiChatCompletion,
         reader,
     ))
-}
-
-fn send_llama_cpp_json_post_request<T>(
-    endpoint: &str,
-    payload: &T,
-    accept: Option<&str>,
-    timeouts: DelegatedHttpTimeouts,
-) -> Result<ureq::Response, LlamaCppBackendError>
-where
-    T: Serialize + ?Sized,
-{
-    send_json_post_request(endpoint, payload, accept, timeouts, |error| match error {
-        DelegatedHttpPostError::Serialize(source) => LlamaCppBackendError::SerializeRequestJson {
-            endpoint: endpoint.to_string(),
-            source,
-        },
-        DelegatedHttpPostError::Status { status, body } => LlamaCppBackendError::HttpStatus {
-            endpoint: endpoint.to_string(),
-            status,
-            body,
-        },
-        DelegatedHttpPostError::Request(source) => LlamaCppBackendError::HttpRequest {
-            endpoint: endpoint.to_string(),
-            source,
-        },
-    })
-}
-
-fn parse_llama_cpp_json_response<T>(
-    response: ureq::Response,
-    endpoint: &str,
-) -> Result<T, LlamaCppBackendError>
-where
-    T: DeserializeOwned,
-{
-    parse_json_response(response, |source| {
-        LlamaCppBackendError::InvalidResponseJson {
-            endpoint: endpoint.to_string(),
-            source,
-        }
-    })
 }
 
 fn build_llama_cpp_completion_request<'a>(
@@ -850,25 +783,6 @@ fn build_llama_cpp_prompt(
         (true, None) => Err(LlamaCppBackendError::MissingPromptInput {
             selected_backend: SelectedBackend::LlamaCpp,
         }),
-    }
-}
-
-fn finish_reason_from_openai_finish_reason(value: Option<&str>) -> Option<GenerateFinishReason> {
-    match value {
-        Some("stop") => Some(GenerateFinishReason::Stop),
-        Some("length") => Some(GenerateFinishReason::MaxOutputTokens),
-        Some("content_filter") => Some(GenerateFinishReason::ContentFilter),
-        // A tool-call or function-call terminal is a normal stop, mirroring the
-        // OpenAI chat completion stream adapter, not an unknown reason.
-        Some("tool_calls" | "function_call") => Some(GenerateFinishReason::Stop),
-        Some("") | None => None,
-        Some(unknown) => {
-            tracing::warn!(
-                finish_reason = unknown,
-                "llama.cpp server returned unknown OpenAI finish_reason; reporting error finish reason"
-            );
-            Some(GenerateFinishReason::Error)
-        }
     }
 }
 
@@ -1283,41 +1197,47 @@ mod tests {
     }
 
     #[test]
-    fn finish_reason_from_openai_finish_reason_maps_unknown_reasons_to_error() {
+    fn finish_reason_from_openai_reason_maps_unknown_reasons_to_error() {
         // Regression: an unknown non-empty OpenAI finish_reason (for example
         // "abort") used to map to None, so the blocking chat response reported
         // a clean completion with no finish reason while the backend actually
         // failed. It must map to Error, mirroring the stream adapter.
         assert_eq!(
-            finish_reason_from_openai_finish_reason(Some("abort")),
+            finish_reason_from_openai_reason(Some("abort"), "llama.cpp server"),
             Some(GenerateFinishReason::Error)
         );
         assert_eq!(
-            finish_reason_from_openai_finish_reason(Some("backend_error")),
+            finish_reason_from_openai_reason(Some("backend_error"), "llama.cpp server"),
             Some(GenerateFinishReason::Error)
         );
         assert_eq!(
-            finish_reason_from_openai_finish_reason(Some("stop")),
+            finish_reason_from_openai_reason(Some("stop"), "llama.cpp server"),
             Some(GenerateFinishReason::Stop)
         );
         assert_eq!(
-            finish_reason_from_openai_finish_reason(Some("length")),
+            finish_reason_from_openai_reason(Some("length"), "llama.cpp server"),
             Some(GenerateFinishReason::MaxOutputTokens)
         );
         assert_eq!(
-            finish_reason_from_openai_finish_reason(Some("content_filter")),
+            finish_reason_from_openai_reason(Some("content_filter"), "llama.cpp server"),
             Some(GenerateFinishReason::ContentFilter)
         );
         assert_eq!(
-            finish_reason_from_openai_finish_reason(Some("tool_calls")),
+            finish_reason_from_openai_reason(Some("tool_calls"), "llama.cpp server"),
             Some(GenerateFinishReason::Stop)
         );
         assert_eq!(
-            finish_reason_from_openai_finish_reason(Some("function_call")),
+            finish_reason_from_openai_reason(Some("function_call"), "llama.cpp server"),
             Some(GenerateFinishReason::Stop)
         );
-        assert_eq!(finish_reason_from_openai_finish_reason(Some("")), None);
-        assert_eq!(finish_reason_from_openai_finish_reason(None), None);
+        assert_eq!(
+            finish_reason_from_openai_reason(Some(""), "llama.cpp server"),
+            None
+        );
+        assert_eq!(
+            finish_reason_from_openai_reason(None, "llama.cpp server"),
+            None
+        );
     }
 
     #[test]
@@ -1347,7 +1267,7 @@ mod tests {
             choice.message.content,
             parsed.usage.as_ref().map(|usage| usage.prompt_tokens),
             parsed.usage.as_ref().map(|usage| usage.completion_tokens),
-            finish_reason_from_openai_finish_reason(choice.finish_reason.as_deref()),
+            finish_reason_from_openai_reason(choice.finish_reason.as_deref(), "llama.cpp server"),
             GenerateRouteReport::with_execution_plan("llama_cpp.server_chat_completion"),
         );
 
