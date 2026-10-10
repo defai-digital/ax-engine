@@ -67,11 +67,7 @@ impl PipelineChainClient {
         for (index, endpoint) in self.endpoints.iter().enumerate() {
             let response = self
                 .client
-                .get(
-                    endpoint
-                        .join("health")
-                        .map_err(|_| PipelineClientError::InvalidEndpoint)?,
-                )
+                .get(join_endpoint(endpoint, "health")?)
                 .header(CLUSTER_WORKER_TOKEN_HEADER, &self.worker_token)
                 .timeout(Duration::from_secs(10))
                 .send()
@@ -126,11 +122,10 @@ impl PipelineChainClient {
             .map_err(|_| PipelineClientError::SchedulerClosed)?;
         let response = self
             .client
-            .post(
-                self.endpoints[0]
-                    .join("internal/pipeline/tokens")
-                    .map_err(|_| PipelineClientError::InvalidEndpoint)?,
-            )
+            .post(join_endpoint(
+                &self.endpoints[0],
+                "internal/pipeline/tokens",
+            )?)
             .header(CLUSTER_WORKER_TOKEN_HEADER, &self.worker_token)
             .json(&request)
             .send()
@@ -154,11 +149,7 @@ impl PipelineChainClient {
             let encoded = frame.encode(&self.topology)?;
             let response = self
                 .client
-                .post(
-                    endpoint
-                        .join("internal/pipeline/activation")
-                        .map_err(|_| PipelineClientError::InvalidEndpoint)?,
-                )
+                .post(join_endpoint(endpoint, "internal/pipeline/activation")?)
                 .header(CLUSTER_WORKER_TOKEN_HEADER, &self.worker_token)
                 .header(CONTENT_TYPE, ACTIVATION_CONTENT_TYPE)
                 .body(encoded)
@@ -191,11 +182,10 @@ impl PipelineChainClient {
         for endpoint in &self.endpoints {
             let result = self
                 .client
-                .post(
-                    endpoint
-                        .join(&format!("internal/pipeline/requests/{request_id}/close"))
-                        .map_err(|_| PipelineClientError::InvalidEndpoint)?,
-                )
+                .post(join_endpoint(
+                    endpoint,
+                    &format!("internal/pipeline/requests/{request_id}/close"),
+                )?)
                 .header(CLUSTER_WORKER_TOKEN_HEADER, &self.worker_token)
                 .send()
                 .await;
@@ -303,6 +293,14 @@ fn parse_worker_endpoint(value: &str) -> Result<reqwest::Url, PipelineClientErro
             .push("");
     }
     Ok(url)
+}
+
+/// Join a fixed worker path onto an allowlisted endpoint URL; an unresolvable
+/// join is an endpoint configuration error, not a request error.
+fn join_endpoint(endpoint: &reqwest::Url, path: &str) -> Result<reqwest::Url, PipelineClientError> {
+    endpoint
+        .join(path)
+        .map_err(|_| PipelineClientError::InvalidEndpoint)
 }
 
 async fn read_bounded(

@@ -3,6 +3,7 @@
 pub mod artifacts;
 pub mod client;
 pub mod gateway;
+pub mod text_stream;
 
 use std::sync::{Arc, Mutex};
 
@@ -259,7 +260,7 @@ fn authorized(headers: &HeaderMap, expected: &str) -> bool {
     constant_time_eq(provided, expected)
 }
 
-fn constant_time_eq(left: &str, right: &str) -> bool {
+pub(crate) fn constant_time_eq(left: &str, right: &str) -> bool {
     if left.len() != right.len() {
         return false;
     }
