@@ -1251,6 +1251,11 @@ impl NativeModelManifest {
 }
 
 impl NativeModelArtifacts {
+    #[cfg(test)]
+    pub(crate) fn moe_config(&self) -> Option<&NativeMoeConfig> {
+        self.manifest.moe.is_enabled().then_some(&self.manifest.moe)
+    }
+
     /// Whether validated artifacts use the existing audited Flash Next MXFP4
     /// envelope. This is format classification, not numerical qualification.
     pub fn audited_qwen4_exp_mxfp4(&self) -> bool {
@@ -1407,44 +1412,6 @@ model certification remains separate."
                 .is_enabled()
                 .then_some(self.manifest.moe.experts_per_token)
                 .flatten(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn layer_uses_attention_value_from_key(&self, layer_index: u32) -> bool {
-        self.manifest
-            .attention_value_from_key_layers
-            .contains(&layer_index)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn layer_uses_attention_v_norm_no_scale(&self, layer_index: u32) -> bool {
-        self.manifest
-            .attention_v_norm_no_scale_layers
-            .contains(&layer_index)
-    }
-
-    pub(crate) fn linear_attention_config(&self) -> Option<&NativeLinearAttentionConfig> {
-        self.manifest
-            .linear_attention
-            .is_enabled()
-            .then_some(&self.manifest.linear_attention)
-    }
-
-    pub(crate) fn moe_config(&self) -> Option<&NativeMoeConfig> {
-        self.manifest.moe.is_enabled().then_some(&self.manifest.moe)
-    }
-
-    /// Returns the number of head dimensions that receive rotary embedding.
-    /// When `partial_rotary_factor` is set, only a fraction of head_dim is rotated.
-    pub(crate) fn rotary_dim(&self) -> usize {
-        let head_dim = self.manifest.attention_head_dim as usize;
-        if let Some(factor) = self.manifest.partial_rotary_factor {
-            let dim = (head_dim as f32 * factor) as usize;
-            // Rotary dim must be even; round down to nearest even
-            dim & !1
-        } else {
-            head_dim
         }
     }
 }

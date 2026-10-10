@@ -477,6 +477,16 @@ pub struct MetalKernelAssets {
 }
 
 impl MetalKernelAssets {
+    #[cfg(test)]
+    pub(crate) fn default_block_size_tokens(&self) -> u32 {
+        self.manifest.default_block_size_tokens
+    }
+
+    #[cfg(test)]
+    pub(crate) fn supported_block_size_tokens(&self) -> &[u32] {
+        &self.manifest.supported_block_size_tokens
+    }
+
     pub fn from_build_dir(path: impl AsRef<Path>) -> Result<Self, MetalRuntimeError> {
         let build_dir = path.as_ref().to_path_buf();
         let build_report_path = build_dir.join("build_report.json");
@@ -505,32 +515,8 @@ impl MetalKernelAssets {
     }
 
     #[cfg(test)]
-    pub(crate) fn build_dir(&self) -> &Path {
-        &self.build_dir
-    }
-
-    #[cfg(test)]
     pub(crate) fn manifest(&self) -> &MetalKernelManifest {
         &self.manifest
-    }
-
-    pub(crate) fn default_block_size_tokens(&self) -> u32 {
-        self.manifest.default_block_size_tokens
-    }
-
-    pub(crate) fn supported_block_size_tokens(&self) -> &[u32] {
-        &self.manifest.supported_block_size_tokens
-    }
-
-    pub(crate) fn validate_block_size_tokens(
-        &self,
-        block_size_tokens: u32,
-    ) -> Result<(), MetalRuntimeError> {
-        validate_supported_block_size_tokens(
-            block_size_tokens,
-            self.default_block_size_tokens(),
-            self.supported_block_size_tokens(),
-        )
     }
 
     pub(crate) fn build_report(&self) -> &MetalBuildReport {
@@ -584,12 +570,6 @@ impl MetalKernelAssets {
 
         read_non_empty_file(path)
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MetalKernelBinary {
-    pub path: PathBuf,
-    pub bytes: Vec<u8>,
 }
 
 pub(super) fn read_json_file<T>(path: &Path) -> Result<T, MetalRuntimeError>
@@ -1699,22 +1679,6 @@ fn validate_phase1_block_size_policy(
     Ok(())
 }
 
-fn validate_supported_block_size_tokens(
-    block_size_tokens: u32,
-    default_block_size_tokens: u32,
-    supported_block_size_tokens: &[u32],
-) -> Result<(), MetalRuntimeError> {
-    if supported_block_size_tokens.contains(&block_size_tokens) {
-        return Ok(());
-    }
-
-    Err(MetalRuntimeError::UnsupportedNativeBlockSize {
-        block_size_tokens,
-        default_block_size_tokens,
-        supported_block_size_tokens: supported_block_size_tokens.to_vec(),
-    })
-}
-
 fn extract_declared_kernel_names(source_text: &str) -> BTreeSet<String> {
     let stripped = strip_metal_comments(source_text);
     let bytes = stripped.as_bytes();
@@ -1843,81 +1807,6 @@ fn workspace_root_from_manifest_path(manifest_path: &Path) -> Result<PathBuf, Me
         });
     };
     Ok(workspace_root.to_path_buf())
-}
-
-#[cfg(test)]
-pub(super) fn load_compiled_metallib_binary(
-    assets: &MetalKernelAssets,
-) -> Result<MetalKernelBinary, MetalRuntimeError> {
-    if assets.build_status() != MetalBuildStatus::Compiled {
-        return Err(MetalRuntimeError::BuildNotCompiled {
-            status: assets.build_status(),
-        });
-    }
-
-    let metallib_path =
-        assets
-            .compiled_metallib_path()
-            .ok_or(MetalRuntimeError::InvalidBuildReport {
-                message: "compiled build report must include outputs.metallib".to_string(),
-            })?;
-
-    Ok(MetalKernelBinary {
-        path: metallib_path.to_path_buf(),
-        bytes: read_non_empty_file(metallib_path)?,
-    })
-}
-
-#[cfg(test)]
-pub(super) fn resolve_required_kernel_names(
-    assets: &MetalKernelAssets,
-) -> Result<Vec<String>, MetalRuntimeError> {
-    let mut resolved_kernel_names = Vec::with_capacity(PHASE1_REQUIRED_METAL_KERNELS.len());
-    for kernel_name in PHASE1_REQUIRED_METAL_KERNELS {
-        assets.required_kernel(kernel_name)?;
-        resolved_kernel_names.push((*kernel_name).to_string());
-    }
-    Ok(resolved_kernel_names)
-}
-
-#[cfg(test)]
-fn manifest_kernel_names(manifest: &MetalKernelManifest) -> BTreeSet<String> {
-    manifest
-        .kernels
-        .iter()
-        .map(|kernel| kernel.name.clone())
-        .collect()
-}
-
-#[cfg(test)]
-pub(super) fn validate_compiled_kernel_inventory(
-    manifest: &MetalKernelManifest,
-    compiled_kernel_names: &[String],
-    metallib_path: &Path,
-) -> Result<(), MetalRuntimeError> {
-    let manifest_kernel_names = manifest_kernel_names(manifest);
-    let compiled_kernel_names = compiled_kernel_names
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-
-    if compiled_kernel_names != manifest_kernel_names {
-        let missing = manifest_kernel_names
-            .difference(&compiled_kernel_names)
-            .cloned()
-            .collect::<Vec<_>>();
-        let extra = compiled_kernel_names
-            .difference(&manifest_kernel_names)
-            .cloned()
-            .collect::<Vec<_>>();
-        return Err(MetalRuntimeError::CompiledKernelInventoryMismatch {
-            path: metallib_path.to_path_buf(),
-            missing,
-            extra,
-        });
-    }
-
-    Ok(())
 }
 
 fn read_non_empty_file(path: &Path) -> Result<Vec<u8>, MetalRuntimeError> {

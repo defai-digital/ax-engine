@@ -9,8 +9,6 @@ pub mod engine;
 pub mod execution_plan;
 pub mod gemma4_unified;
 pub mod generation;
-#[cfg(test)]
-pub mod gguf;
 pub mod ids;
 pub mod kv;
 pub mod loop_detection;
@@ -76,17 +74,15 @@ pub use mempressure::{
     DeviceResidentSnapshot, HostRssSnapshot, PressureLevel, PressureObservation, PressureThresholds,
 };
 pub use metal::{
-    MetalAssetValidator, MetalBinaryArchiveInfo, MetalBinaryArchiveState, MetalBringupRunner,
-    MetalBringupSampler, MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildReport,
-    MetalBuildStatus, MetalBuildToolStatus, MetalBuildToolchainReport, MetalCommandBufferStatus,
-    MetalComputePipelineInfo, MetalDeviceInfo, MetalDispatchArenaInfo, MetalDispatchKernelTrace,
+    MetalBinaryArchiveInfo, MetalBinaryArchiveState, MetalBuildDoctorReport, MetalBuildHostReport,
+    MetalBuildReport, MetalBuildStatus, MetalBuildToolStatus, MetalBuildToolchainReport,
+    MetalCommandBufferStatus, MetalDispatchArenaInfo, MetalDispatchKernelTrace,
     MetalDispatchNumericLayout, MetalDispatchTrace, MetalDispatchWorkload, MetalKernelAssets,
-    MetalKernelBinary, MetalKernelBuildArtifacts, MetalKernelBuildRequest, MetalKernelManifest,
-    MetalKernelSpec, MetalKernelTier, MetalRuntimeBringup, MetalRuntimeBringupReport,
-    MetalRuntimeError, MetalThreadgroupSize, PHASE1_METAL_BUILD_GATE,
+    MetalKernelBuildArtifacts, MetalKernelBuildRequest, MetalKernelManifest, MetalKernelSpec,
+    MetalKernelTier, MetalRuntimeError, MetalThreadgroupSize, PHASE1_METAL_BUILD_GATE,
     PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION, PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION,
     PHASE1_METAL_LANGUAGE_STANDARD, PHASE1_METAL_LIBRARY_NAME, PHASE1_MLX_METAL_TARGET,
-    PHASE1_OPTIONAL_METAL_KERNELS, PHASE1_REQUIRED_METAL_KERNELS, build_phase1_kernel_artifacts,
+    build_phase1_kernel_artifacts,
 };
 pub use minicpm_v::{
     MiniCpmV46ImageRuntimeInput, MiniCpmV46RuntimeInputError, MiniCpmV46RuntimeInputs,

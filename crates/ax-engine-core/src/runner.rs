@@ -74,12 +74,6 @@ pub struct RunnerRequestMultimodalInput {
 }
 
 impl RunnerInput {
-    pub(crate) fn request_context(&self, request_id: RequestId) -> Option<&RunnerRequestContext> {
-        self.request_contexts
-            .iter()
-            .find(|context| context.request_id == request_id)
-    }
-
     pub fn request_multimodal_inputs(
         &self,
         request_id: RequestId,

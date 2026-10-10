@@ -137,10 +137,6 @@ impl TokenSampler for DeterministicSampler {
     }
 }
 
-pub(crate) fn sample_argmax_with_logprob(logits: &[f32]) -> Option<(u32, f32)> {
-    sample_argmax_with_logprob_and_logits_processors(logits, &SamplingParams::default(), &[])
-}
-
 fn sample_argmax_with_logprob_and_logits_processors(
     logits: &[f32],
     sampling: &SamplingParams,
