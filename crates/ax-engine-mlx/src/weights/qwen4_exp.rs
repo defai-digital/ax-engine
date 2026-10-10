@@ -239,6 +239,9 @@ fn load_with_schedule_admission(
     let canonical_root = root.canonicalize().map_err(|e| {
         WeightLoadError::FileMissing(format!("cannot resolve root {}: {e}", root.display()))
     })?;
+    // One parse of model.safetensors.index.json serves paging validation,
+    // resident selection and the schedule step below.
+    let weight_index = read_weight_index(root, &canonical_root)?;
 
     let (streamed_layers, quantization_modes) = stream_manifest
         .as_ref()
@@ -246,6 +249,7 @@ fn load_with_schedule_admission(
             validate_expert_paging_contract(
                 root,
                 &canonical_root,
+                weight_index.as_ref(),
                 &manifest.tensors,
                 manifest.moe.experts_per_token.unwrap_or(1),
                 stream,
@@ -270,8 +274,14 @@ fn load_with_schedule_admission(
         })
         .transpose()?;
     let specs = manifest.tensors.as_slice();
-    let mut name_map = load_resident_tensors(root, &canonical_root, manifest, &stream_skip)?;
-    let mut schedule_index = read_weight_index(root, &canonical_root)?.unwrap_or_default();
+    let mut name_map = load_resident_tensors(
+        root,
+        &canonical_root,
+        weight_index.as_ref(),
+        manifest,
+        &stream_skip,
+    )?;
+    let mut schedule_index = weight_index.unwrap_or_default();
     let target_schedule = match admit_implicit_affine_sidecars(
         root,
         &canonical_root,
@@ -992,6 +1002,7 @@ pub(super) fn read_weight_index(
 fn validate_expert_paging_contract(
     root: &Path,
     canonical_root: &Path,
+    weight_index: Option<&HashMap<String, PathBuf>>,
     specs: &[NativeTensorSpec],
     expected_top_k: u32,
     stream: &crate::expert_stream::ExpertStreamManifest,
@@ -1017,7 +1028,6 @@ fn validate_expert_paging_contract(
         .filter(|spec| projection(spec.role).is_some())
         .map(|spec| (spec.name.as_str(), spec))
         .collect();
-    let index = read_weight_index(root, canonical_root)?;
     let mut declared = HashSet::new();
     let mut layers = HashSet::new();
     let mut modes = ExpertQuantizationModes::new();
@@ -1098,8 +1108,7 @@ fn validate_expert_paging_contract(
             )));
         }
         let base_file = resolve_in_root(root, canonical_root, &spec.file)?;
-        let expected_file = index
-            .as_ref()
+        let expected_file = weight_index
             .and_then(|map| map.get(&entry.name))
             .unwrap_or(&base_file);
         let actual_file = resolve_in_root(root, canonical_root, &entry.file)?;
@@ -1123,9 +1132,7 @@ fn validate_expert_paging_contract(
         }
         let base = spec.name.strip_suffix(".weight").unwrap_or(&spec.name);
         let linear_bias = format!("{base}.bias");
-        if index
-            .as_ref()
-            .is_some_and(|map| map.contains_key(&linear_bias))
+        if weight_index.is_some_and(|map| map.contains_key(&linear_bias))
             || specs.iter().any(|tensor| tensor.name == linear_bias)
         {
             return Err(invalid(format!(
@@ -1135,9 +1142,7 @@ fn validate_expert_paging_contract(
         let group_bias = format!("{base}.biases");
         if modes.get(&spec.name) == Some(&ExpertQuantizationMode::Mxfp4)
             && (declared.contains(&group_bias)
-                || index
-                    .as_ref()
-                    .is_some_and(|map| map.contains_key(&group_bias))
+                || weight_index.is_some_and(|map| map.contains_key(&group_bias))
                 || specs.iter().any(|tensor| tensor.name == group_bias))
         {
             return Err(invalid(format!(
@@ -1150,7 +1155,7 @@ fn validate_expert_paging_contract(
             let base_file = resolve_in_root(root, canonical_root, &spec.file)?;
             for suffix in ["scales", "biases"] {
                 let name = format!("{base}.{suffix}");
-                if let Some(file) = index.as_ref().and_then(|map| map.get(&name))
+                if let Some(file) = weight_index.and_then(|map| map.get(&name))
                     && file != &base_file
                     && !declared.contains(&name)
                 {
@@ -1169,10 +1174,10 @@ fn validate_expert_paging_contract(
 fn load_resident_tensors(
     root: &Path,
     canonical_root: &Path,
+    weight_index: Option<&HashMap<String, PathBuf>>,
     manifest: &NativeModelManifest,
     stream_skip: &HashSet<String>,
 ) -> Result<HashMap<String, MlxArray>, WeightLoadError> {
-    let weight_index = read_weight_index(root, canonical_root)?;
     let mut files = std::collections::BTreeMap::<PathBuf, HashSet<String>>::new();
     let mut declared = HashSet::new();
     for spec in &manifest.tensors {
@@ -1187,7 +1192,6 @@ fn load_resident_tensors(
         }
         let file = resolve_in_root(root, canonical_root, &spec.file)?;
         if weight_index
-            .as_ref()
             .and_then(|index| index.get(&spec.name))
             .is_some_and(|indexed| indexed != &file)
         {
@@ -1204,7 +1208,6 @@ fn load_resident_tensors(
             for suffix in [".scales", ".biases", ".bias"] {
                 let name = format!("{base}{suffix}");
                 let sidecar_file = weight_index
-                    .as_ref()
                     .and_then(|index| index.get(&name))
                     .unwrap_or(&file);
                 files.entry(sidecar_file.clone()).or_default().insert(name);
@@ -2034,6 +2037,10 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
+    fn test_index(root: &Path, canonical: &Path) -> Option<HashMap<String, PathBuf>> {
+        read_weight_index(root, canonical).unwrap()
+    }
+
     fn schedule_projection(
         mode: &str,
         biases: bool,
@@ -2476,9 +2483,12 @@ mod tests {
                 1
             );
         }
+        let canonical = root.canonicalize().unwrap();
+        let index = read_weight_index(&root, &canonical).unwrap();
         let mut name_map = load_resident_tensors(
             &root,
-            &root.canonicalize().unwrap(),
+            &canonical,
+            index.as_ref(),
             &manifest,
             &HashSet::new(),
         )
@@ -2661,17 +2671,31 @@ mod tests {
         .collect();
         let plan = crate::expert_stream::infer_layer_stack_manifest(&specs, 2).unwrap();
         assert_eq!(
-            validate_expert_paging_contract(&root, &canonical, &specs, 2, &plan)
-                .unwrap()
-                .0,
+            validate_expert_paging_contract(
+                &root,
+                &canonical,
+                test_index(&root, &canonical).as_ref(),
+                &specs,
+                2,
+                &plan
+            )
+            .unwrap()
+            .0,
             HashSet::from([0])
         );
         let mut mxfp4_specs = specs.clone();
         for spec in &mut mxfp4_specs {
             spec.quantization.as_mut().unwrap().mode = "mxfp4".into();
         }
-        let (layers, modes) =
-            validate_expert_paging_contract(&root, &canonical, &mxfp4_specs, 2, &plan).unwrap();
+        let (layers, modes) = validate_expert_paging_contract(
+            &root,
+            &canonical,
+            test_index(&root, &canonical).as_ref(),
+            &mxfp4_specs,
+            2,
+            &plan,
+        )
+        .unwrap();
         assert_eq!(layers, HashSet::from([0]));
         assert_eq!(modes.len(), 3);
         assert!(
@@ -2733,8 +2757,15 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(
-                validate_expert_paging_contract(&root, &canonical, &changed_specs, 2, &changed)
-                    .is_err(),
+                validate_expert_paging_contract(
+                    &root,
+                    &canonical,
+                    test_index(&root, &canonical).as_ref(),
+                    &changed_specs,
+                    2,
+                    &changed
+                )
+                .is_err(),
                 "accepted {violation}"
             );
         }
@@ -2747,7 +2778,15 @@ mod tests {
         )
         .unwrap();
         assert!(
-            validate_expert_paging_contract(&root, &canonical, &specs, 2, &plan).is_err(),
+            validate_expert_paging_contract(
+                &root,
+                &canonical,
+                test_index(&root, &canonical).as_ref(),
+                &specs,
+                2,
+                &plan
+            )
+            .is_err(),
             "cross-file scale needs an explicit paging entry"
         );
         let mut explicit = plan;
@@ -2755,7 +2794,17 @@ mod tests {
         sidecar.name = "layers.0.mlp.gate.scales".into();
         sidecar.file = "other.safetensors".into();
         explicit.tensors.push(sidecar);
-        assert!(validate_expert_paging_contract(&root, &canonical, &specs, 2, &explicit).is_ok());
+        assert!(
+            validate_expert_paging_contract(
+                &root,
+                &canonical,
+                test_index(&root, &canonical).as_ref(),
+                &specs,
+                2,
+                &explicit
+            )
+            .is_ok()
+        );
         std::fs::write(
             root.join("model.safetensors.index.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -2766,7 +2815,15 @@ mod tests {
         .unwrap();
         explicit.tensors.pop();
         assert!(
-            validate_expert_paging_contract(&root, &canonical, &specs, 2, &explicit).is_err(),
+            validate_expert_paging_contract(
+                &root,
+                &canonical,
+                test_index(&root, &canonical).as_ref(),
+                &specs,
+                2,
+                &explicit
+            )
+            .is_err(),
             "an unsupported indexed dense bias must not be silently skipped"
         );
     }
