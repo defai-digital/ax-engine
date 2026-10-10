@@ -446,8 +446,8 @@ pub(crate) fn embed_tokens_arr(
         let row_s = take(scales, ids, 0, None);
         let row_b = embedding.biases.as_ref().map(|b| take(b, ids, 0, None));
         // Mode-aware dequant (mxfp8 embeddings have U8 scales and no biases).
-        let dequant_dtype =
-            shared::utils::qwen_prefill_bf16_embed_dequant_active().then_some(MlxDtype::Bfloat16);
+        let dequant_dtype = shared::utils::qwen_prefill_bf16_embed_dequant_active()
+            .then_some(crate::fastpath::activation_dtype());
         let flat = dequantize_with_mode(
             &row_w,
             &row_s,
@@ -566,7 +566,11 @@ pub fn decode_batched_forward(
         "decode_batched_forward: one token per cache row"
     );
     let mut hidden = embed_decode_tokens_batched(tokens, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = astype(
+        &hidden,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
     hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
@@ -706,7 +710,11 @@ pub(crate) fn prefill_batched_forward(
         &[batch as i32, padded_len as i32, cfg.hidden_size as i32],
         None,
     );
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = astype(
+        &hidden,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
     hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
@@ -981,7 +989,11 @@ pub(crate) fn forward_pipeline_stage(
                 MlxDtype::Uint32,
             );
             let embedded = embed_tokens_arr(&ids_1d, embedding, cfg.hidden_size);
-            let embedded = astype(&embedded, MlxDtype::Bfloat16, None);
+            let embedded = astype(
+                &embedded,
+                crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+                None,
+            );
             let embedded = shared::utils::maybe_weightless_embed_norm(cfg, embedded);
             match cfg.hidden_states_scale {
                 Some(scale) => scale_hidden(&embedded, scale),
@@ -1533,7 +1545,11 @@ fn deepseek_v4_forward_trunk(
 ) -> MlxArray {
     let v4_cfg = cfg.deepseek_v4.as_ref().expect("DeepSeek V4 config");
     let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = astype(
+        &hidden,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
     hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
@@ -2134,6 +2150,15 @@ fn lm_head_verify_window_projection(
         {
             return wide;
         }
+        // Quantized affine heads: the `Leading`-invariant qmv_fast kernel
+        // keeps each row on the singleton arithmetic (the same kernel the
+        // exact profile decodes S=1 with), so one launch over the window
+        // reads the head once instead of once per row.
+        if crate::fastpath::exact_lm_head_window_invariant_enabled()
+            && let Some(window) = shared::utils::invariant_projection_window(normed, lm_head)
+        {
+            return window;
+        }
         lm_head_rows_singleton(normed, lm_head, seq, hidden_size)
     } else {
         qw(normed, lm_head)
@@ -2309,7 +2334,11 @@ pub(crate) fn forward_all_positions_with_post_norm_ids(
         return (logits_out, normed);
     }
     let mut hidden = embed_tokens_arr(ids_1d, &weights.token_embedding, cfg.hidden_size);
-    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    hidden = astype(
+        &hidden,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
     hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
@@ -4567,8 +4596,9 @@ fn forward_lazy_single_argmax_impl(
     // The direct-pipeline argmax path already passes a singleton `[1, 1]`
     // array, so no reshape graph node is needed per generated token.
     let mut hidden = embed_tokens_arr(token_arr, &weights.token_embedding, cfg.hidden_size);
-    if hidden.dtype() != MlxDtype::Bfloat16 {
-        hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    let activation_dtype = crate::fastpath::activation_dtype_for_family(&cfg.model_family);
+    if hidden.dtype() != activation_dtype {
+        hidden = astype(&hidden, activation_dtype, None);
     }
     hidden = shared::utils::maybe_weightless_embed_norm(cfg, hidden);
     if let Some(scale) = cfg.hidden_states_scale {

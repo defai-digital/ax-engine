@@ -171,13 +171,14 @@ pub(crate) fn qwen_prefill_maybe_skip_bf16_astype(
     model_family: &str,
     seq: i32,
 ) -> MlxArray {
+    let activation_dtype = fastpath::activation_dtype_for_family(model_family);
     if (fastpath::should_qwen_prefill_skip_bf16_astype(model_family, seq)
         || fastpath::should_gemma4_prefill_bf16_embed(model_family, seq))
-        && x.dtype() == MlxDtype::Bfloat16
+        && x.dtype() == activation_dtype
     {
         x.clone()
     } else {
-        astype(x, MlxDtype::Bfloat16, None)
+        astype(x, activation_dtype, None)
     }
 }
 
@@ -214,11 +215,47 @@ fn activation_seq_len(x: &MlxArray) -> i32 {
 
 fn qwen_prefill_dequant_dense_applies(x: &MlxArray) -> bool {
     QWEN_PREFILL_DEQUANT_DENSE_FAMILY.get()
-        && fastpath::should_qwen_prefill_dequant_dense_for(
-            fastpath::qwen_prefill_dequant_dense_enabled(),
+        && fastpath::should_qwen_prefill_dequant_dense_for_min_seq(
+            fastpath::qwen_prefill_dequant_dense_mode() != fastpath::PrefillDequantDenseMode::Off,
             "qwen3_5",
             activation_seq_len(x),
+            fastpath::qwen_prefill_dequant_dense_min_seq(),
         )
+}
+
+/// Dense `[in, out]` view of `qw` for the prefill dequant-dense route:
+/// the resident cached copy or a per-call transient, per
+/// `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE`.
+fn prefill_dequant_weight_t(qw: &QuantizedWeight) -> Option<MlxArray> {
+    match fastpath::qwen_prefill_dequant_dense_mode() {
+        fastpath::PrefillDequantDenseMode::Off => None,
+        fastpath::PrefillDequantDenseMode::Cached => cached_prefill_dequant_weight_t(qw),
+        fastpath::PrefillDequantDenseMode::Transient => transient_prefill_dequant_weight_t(qw),
+    }
+}
+
+/// Lazily dequantize `qw` to the activation dtype and transpose to
+/// `[in, out]`; nothing is materialized or retained here, so the dense copy
+/// lives only inside the chunk graph that consumes it.
+fn transient_prefill_dequant_weight_t(qw: &QuantizedWeight) -> Option<MlxArray> {
+    let scales = qw.scales.as_ref()?;
+    let mode = qw.mlx_quantization_mode();
+    let quant_biases = match mode {
+        mlx_sys::MlxQuantizationMode::Affine => qw.biases.as_ref(),
+        _ => None,
+    };
+    let dense = dequantize_with_mode(
+        &qw.weight,
+        scales,
+        quant_biases,
+        Some(qw.group_size),
+        Some(qw.bits),
+        mode,
+        None,
+        Some(fastpath::activation_dtype()),
+        None,
+    );
+    Some(transpose(&dense, &[1, 0], None))
 }
 
 fn cached_prefill_dequant_weight_t(qw: &QuantizedWeight) -> Option<MlxArray> {
@@ -241,7 +278,7 @@ fn cached_prefill_dequant_weight_t(qw: &QuantizedWeight) -> Option<MlxArray> {
             Some(qw.bits),
             mode,
             None,
-            Some(MlxDtype::Bfloat16),
+            Some(fastpath::activation_dtype()),
             None,
         );
         let weight_t = transpose(&dense, &[1, 0], None);
@@ -877,7 +914,7 @@ fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     // Always MLX quantized_matmul / dense matmul (no invariant). Used by
     // RowExact so multi-token rows match pure-direct MLX singletons.
     let y = if qwen_prefill_dequant_dense_applies(x)
-        && let Some(weight_t) = cached_prefill_dequant_weight_t(qw)
+        && let Some(weight_t) = prefill_dequant_weight_t(qw)
     {
         matmul(x, &weight_t, None)
     } else if let Some(scales) = &qw.scales {
@@ -1210,7 +1247,7 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     } else if let Some(verify) = super::verify_qmm::try_qwen_mtp_verify_qmm(x, qw) {
         verify
     } else if qwen_prefill_dequant_dense_applies(x)
-        && let Some(weight_t) = cached_prefill_dequant_weight_t(qw)
+        && let Some(weight_t) = prefill_dequant_weight_t(qw)
     {
         matmul(x, &weight_t, None)
     } else if let Some(scales) = &qw.scales {
@@ -1597,6 +1634,37 @@ fn trace_invariant_qmv_shape(
 /// is the kill switch back to the generic form.
 fn invariant_affine_bf16_q4_kernel_selected(input_dtype: MlxDtype, bits: i32) -> bool {
     input_dtype == MlxDtype::Bfloat16 && bits == 4 && fastpath::invariant_qmv_bf16_q4_enabled()
+}
+
+/// Project a 2..=4-row verify window (`[1, S, K]`) through a quantized affine
+/// weight with one `Leading`-invariant launch, so each row carries the exact
+/// singleton arithmetic while the weight is read once for the window. `None`
+/// when the exact profile is off, the window is not 2..=4 rows, or the
+/// weight is not an affine 4/6/8-bit tensor the invariant kernel accepts;
+/// callers then keep their row-by-row loop. Applies the dense `linear_bias`
+/// like `qw` does.
+pub(crate) fn invariant_projection_window(x: &MlxArray, qw: &QuantizedWeight) -> Option<MlxArray> {
+    if !fastpath::qwen_linear_mtp_exact_enabled() {
+        return None;
+    }
+    let shape = x.shape();
+    if shape.len() != 3 || shape[0] != 1 || !(2..=4).contains(&shape[1]) {
+        return None;
+    }
+    if qw.scales.is_none()
+        || qw.biases.is_none()
+        || !matches!(
+            qw.mlx_quantization_mode(),
+            mlx_sys::MlxQuantizationMode::Affine
+        )
+    {
+        return None;
+    }
+    let y = invariant_projection_metal_impl(x, qw)?;
+    Some(match &qw.linear_bias {
+        Some(bias) => add(&y, bias, None),
+        None => y,
+    })
 }
 
 fn invariant_projection_metal_impl(x: &MlxArray, qw: &QuantizedWeight) -> Option<MlxArray> {

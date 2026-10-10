@@ -1,0 +1,3287 @@
+{
+  "schema_version": "ax.mlx_inference_stack.v2",
+  "claim_gate": {
+    "schema_version": "ax.phase0_claim_gate.v1",
+    "scope": "mlx_inference_stack_public_readme",
+    "requires_prompt_hash_parity": true,
+    "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+    "shape_only_external_rows": [],
+    "requires_runtime_identity": true,
+    "requires_decode_policy_identity": true,
+    "requires_prefill_decode_split": true,
+    "requires_clean_build_commit": true,
+    "minimum_warmup_repetitions": 2,
+    "minimum_measurement_repetitions": 5,
+    "forbidden_public_claims_without_artifacts": [
+      "continuous_batching",
+      "prefix_reuse",
+      "long_context_prefill_improvement"
+    ]
+  },
+  "host": {
+    "chip": "Apple M2 Ultra",
+    "memory_gb": 192,
+    "os_version": "27.0.1",
+    "platform": "darwin",
+    "os_build": "26A434",
+    "toolchain": {
+      "macos_sdk_version": "27.0",
+      "xcodebuild_version": [
+        "Xcode 27.0",
+        "Build version 27A266a"
+      ],
+      "rustc_version": [
+        "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+        "binary: rustc",
+        "commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+        "commit-date: 2026-07-14",
+        "host: aarch64-apple-darwin",
+        "release: 1.97.1",
+        "LLVM version: 22.1.6"
+      ],
+      "cargo_version": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "python_mlx": "0.32.3",
+      "python_mlx_lm": "0.31.3"
+    },
+    "performance_conditions": {
+      "load_average": {
+        "one_minute": 5.351,
+        "five_minutes": 5.298,
+        "fifteen_minutes": 5.45
+      },
+      "power_source": "AC Power",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 4913,
+          "state": "Rs",
+          "cpu_percent": 170.6,
+          "command": "com.apple.Virtualization.VirtualMachine"
+        },
+        {
+          "pid": 493,
+          "state": "Rs",
+          "cpu_percent": 99.4,
+          "command": "python"
+        },
+        {
+          "pid": 481,
+          "state": "Rs",
+          "cpu_percent": 42.1,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 772,
+          "state": "S",
+          "cpu_percent": 15.5,
+          "command": "ghostty"
+        },
+        {
+          "pid": 2463,
+          "state": "S+",
+          "cpu_percent": 4.3,
+          "command": "codex"
+        },
+        {
+          "pid": 747,
+          "state": "S",
+          "cpu_percent": 3.6,
+          "command": "WindowManager"
+        },
+        {
+          "pid": 2936,
+          "state": "S+",
+          "cpu_percent": 1.8,
+          "command": "kimi"
+        },
+        {
+          "pid": 67200,
+          "state": "S+",
+          "cpu_percent": 1.6,
+          "command": "claude"
+        }
+      ]
+    }
+  },
+  "benchmark_window": {
+    "started_at": "2026-10-10T17:37:56-0400",
+    "finished_at": "2026-10-10T17:40:52-0400",
+    "elapsed_seconds": 175.9,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 4.326,
+        "five_minutes": 5.621,
+        "fifteen_minutes": 5.607
+      },
+      "power_source": "AC Power",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 564,
+          "state": "Rs",
+          "cpu_percent": 119.6,
+          "command": "syspolicyd"
+        },
+        {
+          "pid": 93324,
+          "state": "R",
+          "cpu_percent": 98.8,
+          "command": "python"
+        },
+        {
+          "pid": 481,
+          "state": "Ss",
+          "cpu_percent": 34.1,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 772,
+          "state": "S",
+          "cpu_percent": 12.6,
+          "command": "ghostty"
+        },
+        {
+          "pid": 4670,
+          "state": "Ss",
+          "cpu_percent": 7.3,
+          "command": "XprotectService"
+        },
+        {
+          "pid": 2463,
+          "state": "R+",
+          "cpu_percent": 4.3,
+          "command": "codex"
+        },
+        {
+          "pid": 747,
+          "state": "S",
+          "cpu_percent": 3.4,
+          "command": "WindowManager"
+        },
+        {
+          "pid": 94283,
+          "state": "S",
+          "cpu_percent": 2.5,
+          "command": "python"
+        }
+      ]
+    },
+    "performance_conditions_end": {
+      "load_average": {
+        "one_minute": 5.351,
+        "five_minutes": 5.298,
+        "fifteen_minutes": 5.45
+      },
+      "power_source": "AC Power",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 4913,
+          "state": "Rs",
+          "cpu_percent": 170.6,
+          "command": "com.apple.Virtualization.VirtualMachine"
+        },
+        {
+          "pid": 493,
+          "state": "Rs",
+          "cpu_percent": 99.4,
+          "command": "python"
+        },
+        {
+          "pid": 481,
+          "state": "Rs",
+          "cpu_percent": 42.1,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 772,
+          "state": "S",
+          "cpu_percent": 15.5,
+          "command": "ghostty"
+        },
+        {
+          "pid": 2463,
+          "state": "S+",
+          "cpu_percent": 4.3,
+          "command": "codex"
+        },
+        {
+          "pid": 747,
+          "state": "S",
+          "cpu_percent": 3.6,
+          "command": "WindowManager"
+        },
+        {
+          "pid": 2936,
+          "state": "S+",
+          "cpu_percent": 1.8,
+          "command": "kimi"
+        },
+        {
+          "pid": 67200,
+          "state": "S+",
+          "cpu_percent": 1.6,
+          "command": "claude"
+        }
+      ]
+    }
+  },
+  "build": {
+    "commit": "fe13a04ba5fdd14a9a12724f87183f7d7696a165",
+    "engine_version": "7.6.3",
+    "build_profile": "release",
+    "server_binary": "/Volumes/Ext16TR0/code/ax-engine-wt-perf27b/target/release/ax-engine-server",
+    "git_tracked_dirty": false,
+    "git_tracked_status": [],
+    "linked_libraries": [
+      "@rpath/libmlx.dylib (compatibility version 0.0.0, current version 0.0.0)",
+      "/System/Library/Frameworks/Metal.framework/Versions/A/Metal (compatibility version 1.0.0, current version 382.5.3)"
+    ],
+    "libmlx_rpaths": [
+      "/Volumes/Ext16TR0/code/ax-engine-wt-perf27b/crates/mlx-sys/../../.venv/lib/python3.12/site-packages/mlx/lib"
+    ],
+    "resolved_libmlx": "/Volumes/Ext16TR0/code/ax-engine-wt-perf27b/crates/mlx-sys/../../.venv/lib/python3.12/site-packages/mlx/lib/libmlx.dylib"
+  },
+  "model": "/Users/<user>/models/ax-qwen38-27b-mxfp4-b2c5354f",
+  "model_repo_id": "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
+  "model_dir": "/Users/<user>/models/ax-qwen38-27b-mxfp4-b2c5354f",
+  "model_dir_source": "explicit",
+  "hf_cache_root": null,
+  "model_config": {
+    "model_type": "qwen3_5",
+    "quantization": {
+      "bits": 4,
+      "group_size": 32,
+      "language_model.lm_head": {
+        "bits": 8,
+        "group_size": 64,
+        "mode": "affine"
+      },
+      "language_model.model.embed_tokens": {
+        "bits": 8,
+        "group_size": 64,
+        "mode": "affine"
+      },
+      "language_model.model.layers.0.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.0.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.0.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.0.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.0.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.0.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.0.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.0.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.1.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.1.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.1.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.1.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.1.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.1.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.1.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.1.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.10.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.10.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.10.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.10.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.10.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.10.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.10.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.10.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.11.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.11.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.11.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.11.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.11.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.11.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.11.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.12.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.12.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.12.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.12.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.12.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.12.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.12.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.12.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.13.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.13.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.13.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.13.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.13.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.13.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.13.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.13.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.14.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.14.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.14.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.14.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.14.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.14.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.14.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.14.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.15.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.15.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.15.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.15.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.15.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.15.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.15.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.16.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.16.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.16.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.16.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.16.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.16.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.16.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.16.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.17.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.17.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.17.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.17.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.17.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.17.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.17.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.17.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.18.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.18.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.18.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.18.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.18.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.18.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.18.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.18.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.19.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.19.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.19.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.19.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.19.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.19.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.19.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.2.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.2.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.2.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.2.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.2.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.2.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.2.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.2.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.20.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.20.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.20.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.20.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.20.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.20.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.20.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.20.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.21.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.21.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.21.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.21.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.21.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.21.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.21.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.21.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.22.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.22.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.22.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.22.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.22.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.22.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.22.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.22.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.23.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.23.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.23.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.23.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.23.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.23.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.23.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.24.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.24.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.24.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.24.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.24.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.24.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.24.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.24.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.25.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.25.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.25.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.25.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.25.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.25.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.25.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.25.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.26.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.26.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.26.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.26.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.26.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.26.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.26.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.26.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.27.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.27.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.27.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.27.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.27.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.27.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.27.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.28.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.28.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.28.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.28.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.28.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.28.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.28.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.28.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.29.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.29.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.29.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.29.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.29.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.29.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.29.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.29.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.3.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.3.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.3.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.3.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.3.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.3.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.3.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.30.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.30.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.30.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.30.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.30.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.30.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.30.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.30.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.31.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.31.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.31.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.31.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.31.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.31.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.31.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.32.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.32.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.32.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.32.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.32.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.32.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.32.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.32.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.33.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.33.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.33.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.33.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.33.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.33.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.33.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.33.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.34.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.34.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.34.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.34.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.34.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.34.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.34.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.34.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.35.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.35.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.35.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.35.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.35.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.35.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.35.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.36.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.36.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.36.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.36.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.36.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.36.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.36.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.36.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.37.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.37.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.37.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.37.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.37.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.37.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.37.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.37.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.38.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.38.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.38.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.38.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.38.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.38.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.38.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.38.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.39.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.39.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.39.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.39.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.39.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.39.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.39.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.4.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.4.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.4.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.4.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.4.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.4.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.4.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.4.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.40.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.40.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.40.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.40.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.40.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.40.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.40.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.40.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.41.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.41.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.41.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.41.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.41.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.41.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.41.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.41.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.42.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.42.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.42.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.42.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.42.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.42.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.42.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.42.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.43.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.43.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.43.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.43.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.43.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.43.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.43.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.44.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.44.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.44.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.44.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.44.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.44.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.44.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.44.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.45.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.45.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.45.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.45.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.45.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.45.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.45.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.45.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.46.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.46.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.46.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.46.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.46.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.46.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.46.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.46.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.47.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.47.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.47.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.47.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.47.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.47.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.47.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.48.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.48.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.48.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.48.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.48.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.48.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.48.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.48.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.49.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.49.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.49.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.49.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.49.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.49.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.49.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.49.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.5.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.5.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.5.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.5.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.5.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.5.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.5.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.5.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.50.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.50.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.50.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.50.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.50.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.50.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.50.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.50.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.51.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.51.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.51.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.51.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.51.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.51.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.51.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.52.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.52.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.52.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.52.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.52.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.52.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.52.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.52.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.53.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.53.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.53.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.53.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.53.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.53.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.53.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.53.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.54.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.54.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.54.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.54.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.54.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.54.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.54.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.54.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.55.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.55.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.55.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.55.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.55.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.55.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.55.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.56.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.56.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.56.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.56.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.56.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.56.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.56.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.56.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.57.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.57.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.57.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.57.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.57.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.57.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.57.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.57.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.58.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.58.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.58.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.58.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.58.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.58.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.58.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.58.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.59.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.59.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.59.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.59.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.59.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.59.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.59.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.6.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.6.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.6.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.6.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.6.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.6.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.6.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.6.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.60.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.60.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.60.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.60.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.60.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.60.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.60.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.60.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.61.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.61.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.61.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.61.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.61.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.61.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.61.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.61.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.62.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.62.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.62.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.62.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.62.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.62.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.62.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.62.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.63.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.63.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.63.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.63.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.63.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.63.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.63.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.7.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.7.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.7.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.7.self_attn.k_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.7.self_attn.o_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.7.self_attn.q_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.7.self_attn.v_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.8.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.8.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.8.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.8.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.8.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.8.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.8.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.8.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.9.linear_attn.in_proj_a": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.9.linear_attn.in_proj_b": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.9.linear_attn.in_proj_qkv": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.9.linear_attn.in_proj_z": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.9.linear_attn.out_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.9.mlp.down_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.9.mlp.gate_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "language_model.model.layers.9.mlp.up_proj": {
+        "bits": 4,
+        "group_size": 32,
+        "mode": "mxfp4"
+      },
+      "mode": "affine"
+    },
+    "model_family": "qwen3_5",
+    "linear_attention_enabled": true,
+    "linear_attention": {
+      "full_attention_interval": 4,
+      "num_value_heads": 48,
+      "num_key_heads": 16,
+      "key_head_dim": 128,
+      "value_head_dim": 128,
+      "conv_kernel_dim": 4
+    },
+    "linear_attention_projection_layout": {
+      "schema_version": "ax.linear_attention_projection_layout.v1",
+      "layout": "split_qkv_z_a_b",
+      "linear_layers": 48,
+      "packed_layers": 0,
+      "split_layers": 48,
+      "role_counts": {
+        "linear_attention_in_proj_a": 48,
+        "linear_attention_in_proj_b": 48,
+        "linear_attention_in_proj_qkv": 48,
+        "linear_attention_in_proj_z": 48
+      },
+      "offline_pack_candidate": true
+    }
+  },
+  "reference_contract": {
+    "primary_reference": "mlx_lm.benchmark",
+    "primary_reference_required": true,
+    "mlx_lm_warmup_contract": {
+      "requested_warmup_repetitions": 2,
+      "upstream_builtin_warmup_repetitions": 1,
+      "additional_discarded_trial_count": 1,
+      "measurement_repetitions": 3
+    },
+    "retired_reference": "SwiftLM application server",
+    "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback.",
+    "prompt_contract": {
+      "source": "mlx_lm.benchmark",
+      "random_seed": 0,
+      "distribution": "mx.random.randint(0, vocab_size, (1, prompt_tokens))",
+      "batch_size": 1,
+      "artifacts": [
+        {
+          "prompt_tokens": 128,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "/tmp/claude/-Volumes-Ext16TR0-code-ax-engine/1c3de146-55fe-4b99-a1bd-701ca893c9fe/scratchpad/baseline/mlx_lm-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+          "token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+          "token_count": 128,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 512,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "/tmp/claude/-Volumes-Ext16TR0-code-ax-engine/1c3de146-55fe-4b99-a1bd-701ca893c9fe/scratchpad/baseline/mlx_lm-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+          "token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+          "token_count": 512,
+          "prompt_source": "random"
+        },
+        {
+          "prompt_tokens": 2048,
+          "generation_tokens": 128,
+          "vocab_size": 248320,
+          "random_seed": 0,
+          "token_ids_path": "/tmp/claude/-Volumes-Ext16TR0-code-ax-engine/1c3de146-55fe-4b99-a1bd-701ca893c9fe/scratchpad/baseline/mlx_lm-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+          "token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+          "token_count": 2048,
+          "prompt_source": "random"
+        }
+      ]
+    },
+    "strictness": "mlx_lm_prompt_algorithm_reproduced"
+  },
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "generation_tokens": 128,
+  "seed": 0,
+  "repetitions": 3,
+  "warmup_repetitions": 2,
+  "cooldown": 3.0,
+  "prefill_step_size": 2048,
+  "ax_mtp_max_depth": null,
+  "ax_mtp_disable_ngram_stacking": false,
+  "ax_mtp_policy": null,
+  "ax_mtp_approximate_optimistic": false,
+  "ax_mtp_fast_tail_topk_sampling": false,
+  "ax_qwen_linear_mtp_exact": false,
+  "ax_qwen_linear_mtp_exact_explicit_enable": false,
+  "ax_qwen_linear_mtp_exact_selection_contract": "explicit_validated_qwen_linear_attention_verifier_profile",
+  "ax_prefix_cache_mode": "disabled_for_cold_prefill_benchmark",
+  "prefill_ttft_measurement_contract": "cold_prefill_no_cross_request_prefix_cache",
+  "prefill_timing_scope_contract": {
+    "mlx_lm": "upstream_mlx_lm_response_stats",
+    "ax_engine_primary_prefill": "server_sse_runner_time_us",
+    "ax_engine_client_wall_ttft": "http_sse_first_output_token_observed_by_client",
+    "long_greedy_ax_prefill_work": "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
+  },
+  "concurrency": 1,
+  "concurrent_prefill_overlap_classification": {
+    "classification": "single_request_no_overlap",
+    "continuous_batching_claim": false,
+    "concurrency": 1
+  },
+  "prefix_reuse_evidence": {
+    "hit_count": 0,
+    "miss_count": 0,
+    "blocked_count": 0,
+    "blocked_policy_disabled_count": 0,
+    "blocked_unsupported_layout_count": 0,
+    "blocked_trim_failure_count": 0,
+    "stored_prefix_count": 0,
+    "eviction_count": 0,
+    "reused_token_count": 0,
+    "warmup_token_count": 0,
+    "cache_entry_count": 0,
+    "cache_bytes_kib": 0,
+    "physical_snapshot_hit_observed": false,
+    "physical_snapshot_miss_warmup_observed": false,
+    "physical_snapshot_blocked_observed": false,
+    "physical_snapshot_coverage": "none_observed",
+    "blocked_reason_count": 0,
+    "blocked_reason_accounting_gap_count": 0
+  },
+  "run_stability_summary": {
+    "schema_version": "ax.benchmark_run_stability_summary.v1",
+    "scope": "ax_engine_rows",
+    "row_count": 0,
+    "stable_enough_count": 0,
+    "unstable_count": 0,
+    "missing_count": 0,
+    "classification_counts": {},
+    "unstable_rows": [],
+    "publication_candidate": false
+  },
+  "ax_gemma4_moe_profile": false,
+  "ax_linear_attention_profile": false,
+  "ax_linear_attention_projection_pack": false,
+  "ax_linear_attention_projection_pack_compare": false,
+  "ax_dense_ffn_gate_up_pack": false,
+  "ax_dense_ffn_gate_up_pack_compare": false,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal": true,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal_explicit_enable": false,
+  "ax_qwen_dense_ffn_gate_up_matvec_metal_selection_contract": "default_on_shape_gated_server_route_telemetry_authoritative",
+  "ax_direct_linear_attention_post_input_route_compare": false,
+  "ax_prefill_profile": false,
+  "ax_decode_profile": false,
+  "results": [
+    {
+      "prefill_tok_s": {
+        "mean": 136.514,
+        "median": 136.355,
+        "min": 135.806,
+        "max": 137.381
+      },
+      "decode_tok_s": {
+        "mean": 31.429000000000002,
+        "median": 31.445,
+        "min": 31.389,
+        "max": 31.453
+      },
+      "peak_memory_gb": {
+        "mean": 16.192666666666668,
+        "median": 16.193,
+        "min": 16.192,
+        "max": 16.193
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 136.355,
+          "decode_tok_s": 31.389,
+          "peak_memory_gb": 16.192,
+          "total_time_s": 5.166,
+          "ttft_ms": 938.7261193208903
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 137.381,
+          "decode_tok_s": 31.453,
+          "peak_memory_gb": 16.193,
+          "total_time_s": 5.147,
+          "ttft_ms": 931.7154482788741
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 135.806,
+          "decode_tok_s": 31.445,
+          "peak_memory_gb": 16.193,
+          "total_time_s": 5.156,
+          "ttft_ms": 942.5209490007804
+        }
+      ],
+      "total_time_s": {
+        "mean": 5.156333333333333,
+        "median": 5.156,
+        "min": 5.147,
+        "max": 5.166
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 138.416,
+        "decode_tok_s": 31.441,
+        "peak_memory_gb": 16.192
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 144.122,
+          "decode_tok_s": 31.476,
+          "peak_memory_gb": 16.192,
+          "total_time_s": 5.099
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 136.514,
+        "decode_tok_s": 31.429000000000002,
+        "peak_memory_gb": 16.192666666666668
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "/tmp/claude/-Volumes-Ext16TR0-code-ax-engine/1c3de146-55fe-4b99-a1bd-701ca893c9fe/scratchpad/baseline/mlx_lm-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
+      "prompt_source": "random",
+      "prompt_tokens": 128,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 937.6541722001816,
+        "median": 938.7261193208903,
+        "min": 931.7154482788741,
+        "max": 942.5209490007804
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 191.60066666666668,
+        "median": 192.259,
+        "min": 190.162,
+        "max": 192.381
+      },
+      "decode_tok_s": {
+        "mean": 30.93466666666667,
+        "median": 31.06,
+        "min": 30.665,
+        "max": 31.079
+      },
+      "peak_memory_gb": {
+        "mean": 16.900333333333332,
+        "median": 16.9,
+        "min": 16.9,
+        "max": 16.901
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 190.162,
+          "decode_tok_s": 30.665,
+          "peak_memory_gb": 16.9,
+          "total_time_s": 6.99,
+          "ttft_ms": 2692.4411817292626
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 192.381,
+          "decode_tok_s": 31.06,
+          "peak_memory_gb": 16.9,
+          "total_time_s": 6.905,
+          "ttft_ms": 2661.385479855079
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 192.259,
+          "decode_tok_s": 31.079,
+          "peak_memory_gb": 16.901,
+          "total_time_s": 6.91,
+          "ttft_ms": 2663.074290410332
+        }
+      ],
+      "total_time_s": {
+        "mean": 6.935,
+        "median": 6.91,
+        "min": 6.905,
+        "max": 6.99
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 191.773,
+        "decode_tok_s": 30.952,
+        "peak_memory_gb": 16.9
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 192.291,
+          "decode_tok_s": 31.004,
+          "peak_memory_gb": 16.899,
+          "total_time_s": 6.918
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 191.60066666666668,
+        "decode_tok_s": 30.93466666666667,
+        "peak_memory_gb": 16.900333333333332
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "/tmp/claude/-Volumes-Ext16TR0-code-ax-engine/1c3de146-55fe-4b99-a1bd-701ca893c9fe/scratchpad/baseline/mlx_lm-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
+      "prompt_source": "random",
+      "prompt_tokens": 512,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 2672.300317331558,
+        "median": 2663.074290410332,
+        "min": 2661.385479855079,
+        "max": 2692.4411817292626
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    },
+    {
+      "prefill_tok_s": {
+        "mean": 210.40766666666664,
+        "median": 210.49,
+        "min": 210.196,
+        "max": 210.537
+      },
+      "decode_tok_s": {
+        "mean": 30.698333333333334,
+        "median": 30.694,
+        "min": 30.691,
+        "max": 30.71
+      },
+      "peak_memory_gb": {
+        "mean": 18.716666666666665,
+        "median": 18.717,
+        "min": 18.716,
+        "max": 18.717
+      },
+      "trials": [
+        {
+          "trial": 2,
+          "prefill_tok_s": 210.537,
+          "decode_tok_s": 30.71,
+          "peak_memory_gb": 18.716,
+          "total_time_s": 14.041,
+          "ttft_ms": 9727.506329053802
+        },
+        {
+          "trial": 3,
+          "prefill_tok_s": 210.196,
+          "decode_tok_s": 30.691,
+          "peak_memory_gb": 18.717,
+          "total_time_s": 14.054,
+          "ttft_ms": 9743.287217644483
+        },
+        {
+          "trial": 4,
+          "prefill_tok_s": 210.49,
+          "decode_tok_s": 30.694,
+          "peak_memory_gb": 18.717,
+          "total_time_s": 14.048,
+          "ttft_ms": 9729.67836951874
+        }
+      ],
+      "total_time_s": {
+        "mean": 14.047666666666666,
+        "median": 14.048,
+        "min": 14.041,
+        "max": 14.054
+      },
+      "upstream_reported_averages_all_trials": {
+        "prefill_tok_s": 210.712,
+        "decode_tok_s": 30.707,
+        "peak_memory_gb": 18.716
+      },
+      "discarded_warmup_trials": [
+        {
+          "trial": 1,
+          "prefill_tok_s": 211.624,
+          "decode_tok_s": 30.732,
+          "peak_memory_gb": 18.715,
+          "total_time_s": 13.979
+        }
+      ],
+      "warmup_repetitions_requested": 2,
+      "warmup_repetitions_upstream_builtin": 1,
+      "warmup_repetitions_discarded_trials": 1,
+      "warmup_repetitions_effective": 2,
+      "reported_averages": {
+        "prefill_tok_s": 210.40766666666664,
+        "decode_tok_s": 30.698333333333334,
+        "peak_memory_gb": 18.716666666666665
+      },
+      "engine": "mlx_lm",
+      "method": "mlx_lm.benchmark",
+      "timing_scope": "upstream_mlx_lm_response_stats",
+      "prompt_contract": "mlx_lm_random_tokens_seed_0",
+      "random_seed": 0,
+      "batch_size": 1,
+      "prefill_step_size": 2048,
+      "prompt_token_ids_origin": "reproduced_from_mlx_lm_benchmark_algorithm",
+      "prompt_token_ids_path": "/tmp/claude/-Volumes-Ext16TR0-code-ax-engine/1c3de146-55fe-4b99-a1bd-701ca893c9fe/scratchpad/baseline/mlx_lm-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+      "prompt_token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
+      "prompt_source": "random",
+      "prompt_tokens": 2048,
+      "generation_tokens": 128,
+      "ttft_ms": {
+        "mean": 9733.49063873901,
+        "median": 9729.67836951874,
+        "min": 9727.506329053802,
+        "max": 9743.287217644483
+      },
+      "ttft_source": "derived_from_mlx_lm_prefill_tok_s",
+      "baseline": {
+        "engine": "mlx_lm",
+        "method": "mlx_lm.benchmark",
+        "role": "primary_reference",
+        "prompt_contract": "mlx_lm_random_tokens_seed_0",
+        "timing_scope": "upstream_mlx_lm_response_stats"
+      }
+    }
+  ],
+  "ax_mlx_lm_peer_wins": {
+    "schema_version": "ax.ax_mlx_lm_peer_wins.v1",
+    "scope": "ax_engine_mlx_vs_mlx_lm_matching_prompt_generation",
+    "required_wins": {
+      "prefill_tok_s": "ax_strictly_greater",
+      "decode_tok_s": "ax_strictly_greater",
+      "ttft_ms": "ax_strictly_lower"
+    },
+    "row_count": 3,
+    "pair_count": 0,
+    "strict_win_count": 0,
+    "failure_count": 3,
+    "missing_ax_count": 3,
+    "missing_mlx_lm_count": 0,
+    "duplicate_ax_count": 0,
+    "duplicate_mlx_lm_count": 0,
+    "failure_reason_counts": {
+      "missing_ax": 3
+    },
+    "rows": [
+      {
+        "prompt_tokens": 128,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      },
+      {
+        "prompt_tokens": 512,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      },
+      {
+        "prompt_tokens": 2048,
+        "generation_tokens": 128,
+        "classification": "not_strict_win",
+        "failure_reasons": [
+          "missing_ax"
+        ]
+      }
+    ],
+    "publication_candidate": false,
+    "required_by_cli": false
+  },
+  "bandwidth_accounting": {
+    "safetensor_bytes": 17414319217,
+    "moe_block": null,
+    "moe_active_bytes": null,
+    "bytes_used_for_estimate": 17414319217,
+    "estimate_kind": "dense_safetensor_total",
+    "peak_bandwidth_gb_s": null,
+    "peak_bandwidth_source": null,
+    "ax_bandwidth_peak_source": null,
+    "per_row": []
+  }
+}
