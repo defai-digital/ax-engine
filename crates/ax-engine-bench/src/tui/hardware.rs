@@ -31,7 +31,14 @@ impl HardwareInfo {
 }
 
 pub(super) fn sysctl_string(key: &str) -> Option<String> {
-    let output = Command::new("sysctl").args(["-n", key]).output().ok()?;
+    // `sysctl` lives in /usr/sbin, which launchd services and other
+    // minimal-PATH environments omit; fall back to the absolute path so the
+    // probe agrees with `ax-engine doctor` (issue #73).
+    sysctl_stdout("sysctl", key).or_else(|| sysctl_stdout("/usr/sbin/sysctl", key))
+}
+
+fn sysctl_stdout(program: &str, key: &str) -> Option<String> {
+    let output = Command::new(program).args(["-n", key]).output().ok()?;
     if !output.status.success() {
         return None;
     }

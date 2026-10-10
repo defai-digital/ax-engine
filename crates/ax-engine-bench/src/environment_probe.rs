@@ -66,7 +66,7 @@ pub(crate) fn bytes_to_gib(bytes: u64) -> u64 {
     bytes / (1024 * 1024 * 1024)
 }
 
-fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+pub(crate) fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program).args(args).output().ok()?;
     if !output.status.success() {
         return None;

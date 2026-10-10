@@ -5,8 +5,18 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+#[path = "../environment_probe.rs"]
+#[allow(dead_code)]
+mod environment_probe;
+#[path = "../error.rs"]
+#[allow(dead_code)]
+mod error;
 #[path = "../tui/mod.rs"]
 mod tui;
+
+use crate::environment_probe::{
+    bytes_to_gib, command_stdout, detect_memory_bytes, detect_os_build, detect_os_version,
+};
 
 #[derive(Clone, Copy)]
 struct ModelProfile {
@@ -1849,28 +1859,6 @@ fn value_or_unknown(value: &str) -> &str {
     if value.is_empty() { "unknown" } else { value }
 }
 
-fn detect_os_version() -> Option<String> {
-    match env::consts::OS {
-        "macos" => command_stdout("sw_vers", &["-productVersion"]),
-        _ => None,
-    }
-}
-
-fn detect_os_build() -> Option<String> {
-    match env::consts::OS {
-        "macos" => command_stdout("sw_vers", &["-buildVersion"]),
-        _ => None,
-    }
-}
-
-fn detect_memory_bytes() -> Option<u64> {
-    match env::consts::OS {
-        "macos" => command_stdout("sysctl", &["-n", "hw.memsize"])
-            .and_then(|value| value.parse::<u64>().ok()),
-        _ => None,
-    }
-}
-
 fn detect_cpu_cores(hardware_profile: Option<&str>) -> Value {
     let physical = command_stdout("sysctl", &["-n", "hw.physicalcpu"])
         .and_then(|value| value.parse::<u64>().ok())
@@ -1993,23 +1981,6 @@ fn detect_gpu_cores() -> Option<u64> {
         }
     }
     None
-}
-
-fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    Some(trimmed.to_string())
-}
-
-fn bytes_to_gib(bytes: u64) -> u64 {
-    bytes / (1024 * 1024 * 1024)
 }
 
 fn ready_for(result: &str, model_status: &str) -> Vec<&'static str> {
