@@ -69,8 +69,6 @@ def run_reference_depth(
     """Run mlx-embeddings Gemma3 encoder layer by layer."""
     import mlx.core as mx
     import mlx_embeddings
-    import mlx.nn as nn
-    from mlx_lm.models.gemma3_text import RMSNorm
     from transformers import AutoTokenizer
 
     model, _ = mlx_embeddings.load(str(model_dir))

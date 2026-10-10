@@ -11,8 +11,9 @@
 //! Output is a small JSON-ish summary suitable for pasting into
 //! .internal/benchmark/track-k-*.md as the REQ-K2 evidence.
 
-use std::time::Instant;
+mod common;
 
+use common::{max_abs_diff, time_loop};
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, eval,
     fast::rms_norm as mlx_rms_norm,
@@ -148,26 +149,6 @@ fn run_custom_kernel(kernel: &MlxMetalKernel, x: &MlxArray, w: &MlxArray) -> Mlx
         .into_iter()
         .next()
         .expect("kernel must produce one output")
-}
-
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0_f32, f32::max)
-}
-
-fn time_loop<F: FnMut()>(label: &str, iters: usize, mut f: F) -> f64 {
-    // Warm up the path once.
-    f();
-    let t0 = Instant::now();
-    for _ in 0..iters {
-        f();
-    }
-    let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let per_iter_us = elapsed_ms * 1000.0 / iters as f64;
-    println!("  {label}: {elapsed_ms:.1} ms total, {per_iter_us:.2} us/iter");
-    per_iter_us
 }
 
 fn main() {

@@ -260,7 +260,6 @@ def build_orthonormal_hadamard(dim: int, seed: int) -> "np.ndarray":
 
 
 def apply_rotation(args: argparse.Namespace, plan: dict) -> dict:
-    import numpy as np
     import mlx.core as mx
 
     candidates = [c for c in plan["candidates"] if c["action"] == "would_rotate"]
@@ -422,7 +421,6 @@ def apply_rotation(args: argparse.Namespace, plan: dict) -> dict:
             # The runtime multiplier (stored under `rotation_smoothing_inverse`
             # in safetensors for naming continuity) IS s, not 1/s.
             s_inverse = s
-            s_value = s
             s_value = s
             smoothing_log.append(
                 {

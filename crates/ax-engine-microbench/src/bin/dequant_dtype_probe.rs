@@ -30,8 +30,9 @@
 //! Run:
 //!   cargo run -p ax-engine-microbench --release --bin dequant-dtype-probe
 
-use std::time::Instant;
+mod common;
 
+use common::time_loop_indented;
 use mlx_sys::{MlxArray, MlxDtype, astype, eval, ops::matmul};
 
 const ITERS: usize = 200;
@@ -63,18 +64,6 @@ fn build_random_f32(seed: u64, count: usize, scale: f32) -> Vec<f32> {
         data.push(f);
     }
     data
-}
-
-fn time_loop<F: FnMut()>(label: &str, iters: usize, mut f: F) -> f64 {
-    f();
-    let t0 = Instant::now();
-    for _ in 0..iters {
-        f();
-    }
-    let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let per_iter_us = elapsed_ms * 1000.0 / iters as f64;
-    println!("    {label}: {elapsed_ms:.1} ms total, {per_iter_us:.2} us/iter");
-    per_iter_us
 }
 
 fn max_abs_diff_against_f32_reference(actual: &[f32], expected: &[f32]) -> f32 {
@@ -130,11 +119,11 @@ fn probe_shape(hidden: usize, intermediate: usize, label: &str) -> (f64, f64) {
     let _ = MAX_ABS_DIFF;
     let _ = max_abs_diff_against_f32_reference;
 
-    let bf16_us = time_loop("bf16 matmul", ITERS, || {
+    let bf16_us = time_loop_indented("bf16 matmul", ITERS, "    ", || {
         let y = matmul(&x_bf16, &w_bf16, None);
         eval(&[&y]);
     });
-    let f16_us = time_loop("f16  matmul", ITERS, || {
+    let f16_us = time_loop_indented("f16  matmul", ITERS, "    ", || {
         let y = matmul(&x_f16, &w_f16, None);
         eval(&[&y]);
     });

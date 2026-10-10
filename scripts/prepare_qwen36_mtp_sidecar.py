@@ -177,8 +177,6 @@ def _runtime_contract(cfg: dict, tensor_count: int) -> dict:
 
 def _unpack_moe_experts(tensors: dict) -> dict:
     """Unpack packed gate_up_proj [E, 2*D, in] -> separate gate_proj and up_proj [E, D, in]."""
-    import mlx.core as mx
-
     out = {}
     for k, v in tensors.items():
         if k.endswith("mlp.experts.gate_up_proj"):

@@ -21,8 +21,9 @@
 //!
 //! Output: human-readable summary plus the verdict bucket for follow-up reports.
 
-use std::time::Instant;
+mod common;
 
+use common::time_loop;
 use mlx_sys::{KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, eval};
 
 const N: usize = 4096;
@@ -86,19 +87,6 @@ fn case_b_eval_between(kernel: &MlxMetalKernel, input: &MlxArray) {
         current = apply_once(kernel, &current);
         eval(&[&current]);
     }
-}
-
-fn time_loop<F: FnMut()>(label: &str, iters: usize, mut f: F) -> f64 {
-    // Warm up so the first compile / cache pass does not skew the loop.
-    f();
-    let t0 = Instant::now();
-    for _ in 0..iters {
-        f();
-    }
-    let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
-    let per_iter_us = elapsed_ms * 1000.0 / iters as f64;
-    println!("  {label}: {elapsed_ms:.1} ms total, {per_iter_us:.2} us/iter");
-    per_iter_us
 }
 
 fn main() {

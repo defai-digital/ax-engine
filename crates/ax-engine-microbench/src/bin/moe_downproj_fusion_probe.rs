@@ -26,8 +26,11 @@
 //!
 //! Shapes default to a fine-grained MoE decode (35B-A3B / GLM-4.7-Flash class).
 
+mod common;
+
 use std::time::Instant;
 
+use common::max_abs_diff;
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, astype, eval,
     expand_dims_axes,
@@ -248,13 +251,6 @@ fn run_downproj(
         &[NUM_TOKENS as i32, TOP_K as i32, HIDDEN as i32],
         None,
     )
-}
-
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0, f32::max)
 }
 
 fn main() {

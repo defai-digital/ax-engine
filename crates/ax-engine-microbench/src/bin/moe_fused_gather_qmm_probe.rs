@@ -37,8 +37,11 @@
 //! Run:
 //!   cargo run -p ax-engine-microbench --release --bin moe-fused-gather-qmm-probe
 
+mod common;
+
 use std::time::Instant;
 
+use common::max_abs_diff;
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, astype, eval,
     expand_dims_axes,
@@ -297,13 +300,6 @@ fn run_fused(
         None,
     );
     outputs.pop().unwrap()
-}
-
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0, f32::max)
 }
 
 fn time_amortized<F: FnMut(usize) -> MlxArray>(label: &str, mut build: F) -> f64 {
