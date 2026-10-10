@@ -33,6 +33,9 @@
 //! For stable cold-prefill measurements, set
 //! `AX_MLX_PREFIX_CACHE_MAX_ENTRIES=0`.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -45,14 +48,7 @@ use ax_engine_core::{
 };
 use ax_engine_mlx::{MlxRunner, generate::DEFAULT_PREFILL_CHUNK, model::ModelConfig};
 
-fn env_usize(name: &str, default: usize) -> Result<usize, String> {
-    match env::var(name) {
-        Ok(value) => value
-            .parse::<usize>()
-            .map_err(|_| format!("{name} must be a non-negative integer, got {value:?}")),
-        Err(_) => Ok(default),
-    }
-}
+use common::{env_usize, median};
 
 fn env_u64(name: &str, default: u64) -> Result<u64, String> {
     match env::var(name) {
@@ -329,19 +325,6 @@ fn run_prefill(
     })
 }
 
-fn median(values: &mut [f64]) -> f64 {
-    values.sort_by(f64::total_cmp);
-    if values.is_empty() {
-        return 0.0;
-    }
-    let middle = values.len() / 2;
-    if values.len().is_multiple_of(2) {
-        (values[middle - 1] + values[middle]) * 0.5
-    } else {
-        values[middle]
-    }
-}
-
 fn run() -> Result<ExitCode, String> {
     let model_dir = env::args()
         .nth(1)
@@ -420,8 +403,8 @@ fn run() -> Result<ExitCode, String> {
         }
     }
 
-    let mut sorted_ms = measured_ms.clone();
-    let median_ttft_ms = median(&mut sorted_ms);
+    let sorted_ms = measured_ms.clone();
+    let median_ttft_ms = median(sorted_ms);
     let report = serde_json::json!({
         "model_family": cfg.model_family,
         "prompt_len": prompt_len,

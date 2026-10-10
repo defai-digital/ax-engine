@@ -21,6 +21,9 @@
 //! Env: AX_BATCH (default 4), AX_PROMPT_LEN (default 384), AX_GEN
 //! (default 12), AX_PROMPT_SEED (default 0).
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -33,14 +36,7 @@ use ax_engine_core::{
 };
 use ax_engine_mlx::{MlxRunner, generate::DEFAULT_PREFILL_CHUNK, model::ModelConfig};
 
-fn env_usize(name: &str, default: usize) -> Result<usize, String> {
-    match env::var(name) {
-        Ok(value) => value
-            .parse::<usize>()
-            .map_err(|_| format!("{name} must be a non-negative integer, got {value:?}")),
-        Err(_) => Ok(default),
-    }
-}
+use common::{env_usize, median_upper};
 
 fn greedy_ctx(
     request: u64,
@@ -147,14 +143,6 @@ fn run_step(runner: &MlxRunner, input: RunnerInput) -> Result<StepResult, String
         batched_prefill_rows,
         wall_ms,
     })
-}
-
-fn median(values: &mut [f64]) -> f64 {
-    values.sort_by(f64::total_cmp);
-    if values.is_empty() {
-        return 0.0;
-    }
-    values[values.len() / 2]
 }
 
 fn run() -> Result<ExitCode, String> {
@@ -294,8 +282,8 @@ fn run() -> Result<ExitCode, String> {
     }
     let stage3_wall_s = stage3_started.elapsed().as_secs_f64();
 
-    let mut baseline = baseline_itl.clone();
-    let mut stage3_sorted = stage3_steps.clone();
+    let baseline = baseline_itl.clone();
+    let stage3_sorted = stage3_steps.clone();
     let report = serde_json::json!({
         "model_family": cfg.model_family,
         "batch": batch,
@@ -305,8 +293,8 @@ fn run() -> Result<ExitCode, String> {
         "ttft_first_request_ms": stage1_prefill.wall_ms,
         "ttft_joining_requests_ms": mixed.wall_ms,
         "decode_gap_during_joining_prefill_ms": mixed.wall_ms,
-        "baseline_itl_ms": median(&mut baseline),
-        "batched_decode_itl_ms": median(&mut stage3_sorted),
+        "baseline_itl_ms": median_upper(baseline),
+        "batched_decode_itl_ms": median_upper(stage3_sorted),
         "aggregate_decode_tokens_per_s": (batch * gen_len) as f64 / stage3_wall_s,
         "peak_memory_mb": mlx_sys::get_peak_memory() as f64 / (1024.0 * 1024.0),
         "final_tokens": current,

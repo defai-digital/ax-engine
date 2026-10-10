@@ -16,6 +16,9 @@
 //! `PATH` as raw little-endian f32 (one f32 per vocab entry, no header) for
 //! offline comparison against an external reference.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -31,22 +34,7 @@ use ax_engine_mlx::{
 };
 use mlx_sys::eval;
 
-fn parse_token_ids(spec: &str) -> Result<Vec<u32>, String> {
-    let ids = spec
-        .split(|character: char| character == ',' || character.is_whitespace())
-        .filter(|token| !token.trim().is_empty())
-        .map(|token| {
-            token
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid token id {token:?}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if ids.is_empty() {
-        return Err("token id list must not be empty".to_string());
-    }
-    Ok(ids)
-}
+use common::parse_token_ids;
 
 fn run() -> Result<(), String> {
     // Separate `--dump=PATH` from the positional args so the existing

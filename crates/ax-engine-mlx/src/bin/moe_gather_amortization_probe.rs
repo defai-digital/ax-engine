@@ -35,6 +35,9 @@
 //! calls (a decode forward emits exactly one router call per MoE layer, in
 //! layer order). `AX_BATCHES` overrides the batch sweep.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -48,6 +51,8 @@ use ax_engine_mlx::{
     weights::{ModelWeights, QuantizedWeight, load_weights},
 };
 use mlx_sys::{MlxArray, MlxDtype, clear_cache, eval, gather_qmm, multiply, sigmoid, slice, zeros};
+
+use common::{median_upper, optional_env};
 
 /// One decode step of one traced request: per-MoE-layer top-k expert ids.
 type TraceStep = Vec<Vec<u32>>;
@@ -163,11 +168,6 @@ fn per_expert_bytes(w: &QuantizedWeight) -> f64 {
     b
 }
 
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(f64::total_cmp);
-    v[v.len() / 2]
-}
-
 fn parse_batches(spec: Option<&str>) -> Result<Vec<usize>, String> {
     let mut batches = match spec {
         Some(spec) => spec
@@ -194,14 +194,6 @@ fn parse_batches(spec: Option<&str>) -> Result<Vec<usize>, String> {
         return Err("AX_BATCHES must include batch 1 as the amortization baseline".to_string());
     }
     Ok(batches)
-}
-
-fn optional_env(name: &str) -> Result<Option<String>, String> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
 }
 
 fn run() -> Result<(), String> {
@@ -422,7 +414,7 @@ fn run() -> Result<(), String> {
         for _ in 0..2 {
             iteration()?;
         }
-        let secs = median((0..5).map(|_| iteration()).collect::<Result<_, _>>()?);
+        let secs = median_upper((0..5).map(|_| iteration()).collect::<Result<_, _>>()?);
         if bi == 0 {
             baseline = secs;
         }

@@ -10,6 +10,9 @@
 //! Usage:
 //!   cargo run --release --bin greedy_token_dump_probe -- <model_dir> <id,id,...> [steps]
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -27,22 +30,7 @@ use ax_engine_mlx::{
     weights::load_weights,
 };
 
-fn parse_token_ids(spec: &str) -> Result<Vec<u32>, String> {
-    let ids = spec
-        .split(|character: char| character == ',' || character.is_whitespace())
-        .filter(|token| !token.trim().is_empty())
-        .map(|token| {
-            token
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid token id {token:?}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if ids.is_empty() {
-        return Err("token id list must not be empty".to_string());
-    }
-    Ok(ids)
-}
+use common::parse_token_ids;
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);

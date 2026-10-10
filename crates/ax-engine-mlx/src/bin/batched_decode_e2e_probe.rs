@@ -39,6 +39,9 @@
 //! Per-request seeds come from `AX_SEED_BASE` (default 1) so the two runners
 //! advance identical RNGs.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -57,6 +60,8 @@ use ax_engine_mlx::{
     weights::{ModelWeights, load_weights},
 };
 use mlx_sys::{argmax, eval};
+
+use common::{env_usize_strict, optional_env};
 
 const MODEL_ID: &str = "harness";
 
@@ -351,25 +356,6 @@ fn decode_sequential(
     Ok(streams)
 }
 
-fn optional_env(name: &str) -> Result<Option<String>, String> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
-}
-
-fn env_usize(name: &str, default: usize) -> Result<usize, String> {
-    optional_env(name)?
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .map_err(|_| format!("{name} must be a non-negative integer, got {value:?}"))
-        })
-        .transpose()
-        .map(|value| value.unwrap_or(default))
-}
-
 fn build_prompts(batch: usize, len: usize, vocab: usize) -> Result<Vec<Vec<u32>>, String> {
     if vocab <= 1 || vocab > u32::MAX as usize {
         return Err(format!(
@@ -377,7 +363,7 @@ fn build_prompts(batch: usize, len: usize, vocab: usize) -> Result<Vec<Vec<u32>>
             u32::MAX
         ));
     }
-    let prompt_seed = env_usize("AX_PROMPT_SEED", 0)?;
+    let prompt_seed = env_usize_strict("AX_PROMPT_SEED", 0)?;
     let ragged = env::var_os("AX_RAGGED").is_some();
     let modulus = (vocab - 1) as u128;
     (0..batch)
@@ -432,9 +418,9 @@ fn run() -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let batch = env_usize("AX_BATCH", 3)?;
-    let prompt_len = env_usize("AX_PROMPT_LEN", 24)?;
-    let gen_len = env_usize("AX_GEN", 16)?;
+    let batch = env_usize_strict("AX_BATCH", 3)?;
+    let prompt_len = env_usize_strict("AX_PROMPT_LEN", 24)?;
+    let gen_len = env_usize_strict("AX_GEN", 16)?;
     if batch < 2 {
         return Err("AX_BATCH must be at least 2 to exercise a shared decode forward".to_string());
     }

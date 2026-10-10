@@ -43,6 +43,9 @@
 //!                       id ramp is used (relative cross-check only).
 //!   AX_TREE_PROMPT_LEN  synthetic prompt length when no file (default 48).
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -61,7 +64,9 @@ use ax_engine_mlx::{
     sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     weights::{ModelWeights, load_weights},
 };
-use mlx_sys::{MlxArray, argmax, clear_cache, enable_compile, eval, slice};
+use mlx_sys::{MlxArray, argmax, clear_cache, enable_compile, eval};
+
+use common::{optional_env, parse_positive_usize, parse_prompt_token_ids, slice_hidden_row};
 
 const MAX_DRAFT_DEPTH: usize = 32;
 const MAX_TREE_LEAVES: usize = 4096;
@@ -88,13 +93,6 @@ impl ArmStats {
     fn effective_tpf_projected(&self) -> f64 {
         1.0 + self.mean_accepted()
     }
-}
-
-fn slice_hidden_row(post_norm_all: &MlxArray, row: usize, hidden: usize) -> MlxArray {
-    // post_norm_all: [1, seq, hidden] -> [1, 1, hidden] at `row`.
-    let r = row as i32;
-    let h = hidden as i32;
-    slice(post_norm_all, &[0, r, 0], &[1, r + 1, h], &[1, 1, 1], None)
 }
 
 /// Build the candidate set by branching the real MTP head per `branch[d]`.
@@ -653,16 +651,6 @@ fn run_linear_adaptive(
     }
 }
 
-fn parse_positive_usize(label: &str, value: &str) -> Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|_| format!("{label} must be a positive integer, got {value:?}"))?;
-    if parsed == 0 {
-        return Err(format!("{label} must be greater than zero"));
-    }
-    Ok(parsed)
-}
-
 fn parse_branch(spec: &str) -> Result<Vec<usize>, String> {
     if spec.trim().is_empty() {
         return Err("tree schedule must not be empty".to_string());
@@ -705,31 +693,6 @@ fn parse_depth_sweep(spec: &str) -> Result<Vec<usize>, String> {
             Ok(depth)
         })
         .collect()
-}
-
-fn parse_token_ids(raw: &str) -> Result<Vec<u32>, String> {
-    let ids = raw
-        .split(|character: char| character == ',' || character.is_whitespace())
-        .filter(|token| !token.trim().is_empty())
-        .map(|token| {
-            token
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid prompt token id {token:?}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if ids.is_empty() {
-        return Err("prompt token list must not be empty".to_string());
-    }
-    Ok(ids)
-}
-
-fn optional_env(name: &str) -> Result<Option<String>, String> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
 }
 
 fn run() -> Result<(), String> {
@@ -801,7 +764,7 @@ fn run() -> Result<(), String> {
         Some(path) => {
             let raw = std::fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read AX_TREE_PROMPT_FILE {path:?}: {error}"))?;
-            parse_token_ids(&raw)?
+            parse_prompt_token_ids(&raw)?
         }
         None => {
             let upper = u32::try_from(prompt_len)

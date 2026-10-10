@@ -12,6 +12,9 @@
 //! Env: AX_PROMPT_LEN (default 64), AX_GEN (default 8), AX_PROMPT_SEED
 //! (default 0).
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -24,16 +27,9 @@ use ax_engine_core::{
 };
 use ax_engine_mlx::{MlxRunner, generate::DEFAULT_PREFILL_CHUNK, model::ModelConfig};
 
-const REQUEST: u64 = 1;
+use common::env_usize;
 
-fn env_usize(name: &str, default: usize) -> Result<usize, String> {
-    match env::var(name) {
-        Ok(value) => value
-            .parse::<usize>()
-            .map_err(|_| format!("{name} must be a non-negative integer, got {value:?}")),
-        Err(_) => Ok(default),
-    }
-}
+const REQUEST: u64 = 1;
 
 fn greedy_ctx(prompt_len: usize, generated_len: usize, max_output: usize) -> RunnerRequestContext {
     RunnerRequestContext {

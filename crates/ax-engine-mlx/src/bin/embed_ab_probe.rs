@@ -22,6 +22,9 @@
 //! Usage:
 //!   cargo run --release --bin embed_ab_probe -- <model_dir> [trials]
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -36,10 +39,7 @@ use mlx_sys::{
     set_cache_limit,
 };
 
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(f64::total_cmp);
-    v[v.len() / 2]
-}
+use common::median_upper;
 
 fn build_batch(batch: usize, seq: usize) -> (Vec<Vec<u32>>, Vec<usize>) {
     let ids: Vec<Vec<u32>> = (0..batch)
@@ -165,8 +165,8 @@ fn run() -> Result<(), String> {
         let ops = op_count_take(prev);
         eprintln!(
             "build-vs-eval (b8 s256): build(FFI) {:.2} ms | eval(GPU) {:.2} ms | mlx ops/forward={ops} ({} layers -> {:.1}/layer)",
-            median(builds),
-            median(evals),
+            median_upper(builds),
+            median_upper(evals),
             cfg.layer_count,
             ops as f64 / cfg.layer_count as f64,
         );
@@ -184,7 +184,7 @@ fn run() -> Result<(), String> {
         for _ in 0..trials {
             ts.push(time_once(&cfg, &weights, &ids, &pos));
         }
-        eprintln!("b{batch} s{seq:<8} {:>13.0}", tokens / median(ts));
+        eprintln!("b{batch} s{seq:<8} {:>13.0}", tokens / median_upper(ts));
     }
     Ok(())
 }

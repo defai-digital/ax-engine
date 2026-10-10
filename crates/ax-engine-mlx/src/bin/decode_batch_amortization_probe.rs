@@ -46,6 +46,9 @@
 //! are intentionally skipped — they need a separate gather_qmm amortization
 //! probe. Env `AX_BATCHES` overrides the batch sweep (comma-separated).
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -57,6 +60,8 @@ use ax_engine_mlx::{
     weights::{ModelWeights, QuantizedWeight, load_weights},
 };
 use mlx_sys::{MlxArray, MlxDtype, clear_cache, eval, quantized_matmul, zeros};
+
+use common::{median_upper, optional_env};
 
 /// Replicates `model::shared::utils::qw` (pub(crate), unreachable from a bin):
 /// affine quantized_matmul with transpose=true, group_size/bits from the weight.
@@ -136,9 +141,8 @@ fn median_step_secs<F: Fn() -> f64>(warmup: usize, measured: usize, step: F) -> 
     for _ in 0..warmup {
         step();
     }
-    let mut samples: Vec<f64> = (0..measured).map(|_| step()).collect();
-    samples.sort_by(f64::total_cmp);
-    samples[samples.len() / 2]
+    let samples: Vec<f64> = (0..measured).map(|_| step()).collect();
+    median_upper(samples)
 }
 
 fn parse_batches(spec: Option<&str>) -> Result<Vec<i64>, String> {
@@ -167,14 +171,6 @@ fn parse_batches(spec: Option<&str>) -> Result<Vec<i64>, String> {
         return Err("AX_BATCHES must include batch 1 as the amortization baseline".to_string());
     }
     Ok(batches)
-}
-
-fn optional_env(name: &str) -> Result<Option<String>, String> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
 }
 
 fn run() -> Result<(), String> {

@@ -25,6 +25,9 @@
 //!                        chat-templated prompt (required for realistic rates).
 //!   AX_TOPK_OUT          output JSONL path (default: stdout).
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::io::Write;
 use std::path::Path;
@@ -44,15 +47,11 @@ use ax_engine_mlx::{
     sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     weights::load_weights,
 };
-use mlx_sys::{MlxArray, MlxDtype, argmax, astype, clear_cache, enable_compile, eval, slice};
+use mlx_sys::{MlxDtype, argmax, astype, clear_cache, enable_compile, eval};
+
+use common::{optional_env, parse_positive_usize, parse_prompt_token_ids, slice_hidden_row};
 
 const TOP_K: usize = 8;
-
-fn slice_hidden_row(post_norm_all: &MlxArray, row: usize, hidden: usize) -> MlxArray {
-    let r = row as i32;
-    let h = hidden as i32;
-    slice(post_norm_all, &[0, r, 0], &[1, r + 1, h], &[1, 1, 1], None)
-}
 
 /// Top-k token ids by logit plus the T=1.0 softmax probability of the argmax.
 fn topk_with_confidence(logits: &[f32], k: usize) -> Result<(Vec<u32>, f32), String> {
@@ -90,41 +89,6 @@ struct PendingDepth2 {
     /// Depth-1 draft hit, so the depth-2 chain conditioning matches the
     /// committed trajectory and the record is meaningful.
     valid: bool,
-}
-
-fn parse_positive_usize(label: &str, value: &str) -> Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|_| format!("{label} must be a positive integer, got {value:?}"))?;
-    if parsed == 0 {
-        return Err(format!("{label} must be greater than zero"));
-    }
-    Ok(parsed)
-}
-
-fn parse_token_ids(raw: &str) -> Result<Vec<u32>, String> {
-    let ids = raw
-        .split(|character: char| character == ',' || character.is_whitespace())
-        .filter(|token| !token.trim().is_empty())
-        .map(|token| {
-            token
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| format!("invalid prompt token id {token:?}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if ids.is_empty() {
-        return Err("prompt token list must not be empty".to_string());
-    }
-    Ok(ids)
-}
-
-fn optional_env(name: &str) -> Result<Option<String>, String> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
 }
 
 fn run() -> Result<(), String> {
@@ -179,7 +143,7 @@ fn run() -> Result<(), String> {
         Some(path) => {
             let raw = std::fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read AX_TOPK_PROMPT_FILE {path:?}: {error}"))?;
-            parse_token_ids(&raw)?
+            parse_prompt_token_ids(&raw)?
         }
         None => (1..=48u32).collect(),
     };

@@ -21,6 +21,9 @@
 //! Env: AX_BATCH (default 4), AX_PROMPT_LEN (default 32), AX_GEN (default 32),
 //!      AX_SEED (prompt base seed, default 0).
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -39,28 +42,11 @@ use ax_engine_mlx::{
 };
 use mlx_sys::{argmax, clear_cache, eval};
 
+use common::env_usize_strict;
+
 /// B distinct but equal-length prompts (equal length ⇒ uniform decode position,
 /// the 2a constraint). Distinct content ⇒ distinct streams ⇒ the oracle checks
 /// real per-row independence, not a trivial all-rows-identical case.
-fn optional_env(name: &str) -> Result<Option<String>, String> {
-    match env::var(name) {
-        Ok(value) => Ok(Some(value)),
-        Err(env::VarError::NotPresent) => Ok(None),
-        Err(error) => Err(format!("failed to read {name}: {error}")),
-    }
-}
-
-fn env_usize(name: &str, default: usize) -> Result<usize, String> {
-    optional_env(name)?
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .map_err(|_| format!("{name} must be a non-negative integer, got {value:?}"))
-        })
-        .transpose()
-        .map(|value| value.unwrap_or(default))
-}
-
 fn build_prompts(batch: usize, len: usize, vocab: usize) -> Result<Vec<Vec<u32>>, String> {
     if vocab <= 1 || vocab > u32::MAX as usize {
         return Err(format!(
@@ -68,10 +54,10 @@ fn build_prompts(batch: usize, len: usize, vocab: usize) -> Result<Vec<Vec<u32>>
             u32::MAX
         ));
     }
-    let base = env_usize("AX_SEED", 0)?;
-    let row_stride = env_usize("AX_ROW_STRIDE", 17)?;
-    let token_stride = env_usize("AX_TOKEN_STRIDE", 5)?;
-    let prompt_bias = env_usize("AX_PROMPT_BIAS", 3)?;
+    let base = env_usize_strict("AX_SEED", 0)?;
+    let row_stride = env_usize_strict("AX_ROW_STRIDE", 17)?;
+    let token_stride = env_usize_strict("AX_TOKEN_STRIDE", 5)?;
+    let prompt_bias = env_usize_strict("AX_PROMPT_BIAS", 3)?;
     if row_stride == 0 {
         return Err("AX_ROW_STRIDE must be greater than zero so batch rows differ".to_string());
     }
@@ -288,9 +274,9 @@ fn run() -> Result<ExitCode, String> {
     if let Some(unexpected) = args.next() {
         return Err(format!("unexpected argument: {unexpected}"));
     }
-    let batch = env_usize("AX_BATCH", 4)?;
-    let prompt_len = env_usize("AX_PROMPT_LEN", 32)?;
-    let gen_len = env_usize("AX_GEN", 32)?;
+    let batch = env_usize_strict("AX_BATCH", 4)?;
+    let prompt_len = env_usize_strict("AX_PROMPT_LEN", 32)?;
+    let gen_len = env_usize_strict("AX_GEN", 32)?;
     if batch == 0 {
         return Err("AX_BATCH must be greater than zero".to_string());
     }

@@ -5,6 +5,9 @@
 //!
 //! Usage: cargo run --release --bin mlx-bench -- <model_dir>
 
+#[path = "bin/common/mod.rs"]
+mod common;
+
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
@@ -21,15 +24,7 @@ use ax_engine_mlx::{
 };
 use mlx_sys::clear_cache;
 
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(f64::total_cmp);
-    let n = v.len();
-    if n.is_multiple_of(2) {
-        (v[n / 2 - 1] + v[n / 2]) / 2.0
-    } else {
-        v[n / 2]
-    }
-}
+use common::median;
 
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
