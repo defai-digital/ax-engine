@@ -108,7 +108,7 @@ pub(crate) fn execute_matrix_manifest(
                     result_dir: artifact_dir,
                     correctness_passed: Some(execution.correctness.passed),
                     determinism_passed: Some(execution.determinism.passed),
-                    ttft_ms: Some(execution.observation.ttft_ms.unwrap_or_default() as f64),
+                    ttft_ms: execution.observation.ttft_ms.map(|ttft_ms| ttft_ms as f64),
                     decode_tok_s: Some(execution.observation.decode_tok_s()),
                     prefix_hit_rate: Some(execution.observation.prefix_hit_rate()),
                     failure_code: None,

@@ -545,6 +545,92 @@ fn token_accounting_json_marks_synthetic_estimates() {
     );
 }
 
+fn artifact_test_execution(ttft_ms: Option<u64>) -> RuntimeResult {
+    RuntimeResult {
+        tool_mode: "mlx_runtime",
+        runtime: RuntimeConfig {
+            deterministic: true,
+            max_batch_tokens: 8,
+            block_size_tokens: 4,
+            kv_total_blocks: Some(2),
+            flags: RuntimeFlags::default(),
+            llama_cpp_preset: None,
+            backend_policy: BackendPolicy::new(ResolutionPolicy::MlxOnly),
+            resolved_backend: ResolvedBackend::new(
+                SelectedBackend::Mlx,
+                SupportTier::MlxPreview,
+                None,
+            ),
+            backend_adapter: None,
+            mlx_model_artifacts_dir: None,
+            mlx_model_artifacts_source: None,
+        },
+        observation: RuntimeObservation {
+            ttft_ms,
+            ..RuntimeObservation::default()
+        },
+        correctness: GateStatus::pass(),
+        determinism: GateStatus::pass(),
+    }
+}
+
+#[test]
+fn metrics_json_preserves_unmeasured_ttft_as_null() {
+    let metrics = build_metrics_json("run-unmeasured-ttft", &artifact_test_execution(None));
+    assert_eq!(
+        nested_value(&metrics, &["metrics", "ttft_ms"]),
+        Some(&Value::Null),
+        "an unmeasured TTFT must stay null instead of a fake 0.0"
+    );
+
+    let measured = build_metrics_json("run-measured-ttft", &artifact_test_execution(Some(37)));
+    assert_eq!(
+        nested_value(&measured, &["metrics", "ttft_ms"]).and_then(Value::as_f64),
+        Some(37.0)
+    );
+}
+
+#[test]
+fn summary_and_trusted_baseline_preserve_unmeasured_ttft() {
+    let execution = artifact_test_execution(None);
+    let summary = build_execution_summary_markdown(
+        "run-unmeasured-ttft",
+        "scenario",
+        Path::new("benchmarks/manifests/scenario/chat_qwen_short.json"),
+        &execution,
+    );
+    assert!(
+        summary.contains("- ttft_ms: `unmeasured`"),
+        "summary must not report 0.00 for an unmeasured TTFT: {summary}"
+    );
+
+    let metrics = build_metrics_json("run-unmeasured-ttft", &execution);
+    let baseline = build_trusted_baseline_json(
+        "Unmeasured TTFT Baseline",
+        "Unmeasured-TTFT-Baseline",
+        Path::new("/tmp/ax-engine-bench-baseline"),
+        &json!({}),
+        &json!({}),
+        &metrics,
+    )
+    .expect("trusted baseline should accept an unmeasured ttft");
+    assert_eq!(
+        nested_value(&baseline, &["metrics", "ttft_ms"]),
+        Some(&Value::Null),
+        "trusted baseline must not record a fake 0.0 for an unmeasured TTFT"
+    );
+}
+
+#[test]
+fn metric_number_rejects_explicit_null_metric() {
+    let error = metric_number(&json!({"metrics": {"ttft_ms": null}}), "ttft_ms")
+        .expect_err("null must not be read as a measured number");
+    assert!(
+        error.to_string().contains("not measured"),
+        "unexpected error: {error}"
+    );
+}
+
 fn find_repo_root_from(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|ancestor| {
         (ancestor.join("Cargo.toml").is_file() && ancestor.join("benchmarks/manifests").is_dir())

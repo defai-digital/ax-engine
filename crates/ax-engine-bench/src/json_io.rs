@@ -105,9 +105,33 @@ pub(crate) fn json_string_label<T: Serialize>(value: T) -> String {
 }
 
 pub(crate) fn metric_number(metrics_json: &Value, key: &str) -> Result<f64, CliError> {
-    metrics_json
+    let value = metrics_json
         .get("metrics")
-        .and_then(|metrics| metrics.get(key))
+        .and_then(|metrics| metrics.get(key));
+    if value.is_some_and(Value::is_null) {
+        return Err(CliError::Contract(format!(
+            "metrics artifact field {key} is null (the metric was not measured)"
+        )));
+    }
+    value
         .and_then(Value::as_f64)
         .ok_or_else(|| CliError::Contract(format!("metrics artifact missing numeric field {key}")))
+}
+
+/// Preserve an explicitly-unmeasured metric as JSON null instead of forcing a
+/// number. Trusted-baseline snapshots use this so an unmeasured `ttft_ms`
+/// stays null end to end; a missing field is still a contract error.
+pub(crate) fn metric_number_or_null(metrics_json: &Value, key: &str) -> Result<Value, CliError> {
+    let value = metrics_json
+        .get("metrics")
+        .and_then(|metrics| metrics.get(key))
+        .ok_or_else(|| CliError::Contract(format!("metrics artifact missing field {key}")))?;
+    if value.is_null() || value.as_f64().is_some() {
+        Ok(value.clone())
+    } else {
+        Err(CliError::Contract(format!(
+            "metrics artifact field {key} is not numeric: {}",
+            json_value_label(value)
+        )))
+    }
 }

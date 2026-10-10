@@ -83,7 +83,7 @@ use crate::inference_args::{InferenceArgs, build_inference_session, parse_infere
 use crate::inference_render::{render_generate_response, render_stream_event};
 use crate::json_io::{
     json_string_label, json_value_label, load_json_value, load_optional_json_value, metric_number,
-    nested_string, nested_value, validate_matching_json_field,
+    metric_number_or_null, nested_string, nested_value, validate_matching_json_field,
     validate_matching_optional_json_field,
 };
 use crate::labels::{

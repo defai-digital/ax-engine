@@ -233,7 +233,7 @@ pub(crate) fn build_trusted_baseline_json(
         "machine": machine,
         "software": software,
         "metrics": {
-            "ttft_ms": metric_number(metrics, "ttft_ms")?,
+            "ttft_ms": metric_number_or_null(metrics, "ttft_ms")?,
             "decode_tok_s": metric_number(metrics, "decode_tok_s")?,
             "memory_peak_mb": metric_number(metrics, "memory_peak_mb")?,
             "prefix_hit_rate": metric_number(metrics, "prefix_hit_rate")?
