@@ -526,7 +526,7 @@ impl OpenAiStreamDriver {
             self.pipeline.tool_scanner = Some(tool_scanner);
             self.emit_tool_events(tx, request_id, model_id, events)
         } else {
-            self.emit_content(tx, request_id, model_id, text, false)
+            self.emit_content(tx, request_id, model_id, text)
         }
     }
 
@@ -543,27 +543,25 @@ impl OpenAiStreamDriver {
         let batch_has_call = events
             .iter()
             .any(|event| matches!(event, ToolScanEvent::Call(_)));
+        if batch_has_call && let Some(mut stop_scanner) = self.pipeline.stop_scanner.take() {
+            // Pending text precedes every event in this batch. Retire the
+            // stop scanner before emitting any content, restoring even a
+            // match deferred while a tool opener was incomplete.
+            let pending = stop_scanner.finish_without_stop();
+            if !pending.is_empty() && !self.send_content_chunk(tx, request_id, model_id, pending) {
+                return false;
+            }
+        }
         for event in events {
             match event {
                 ToolScanEvent::Content(content) => {
-                    if !self.emit_content(tx, request_id, model_id, content, batch_has_call) {
+                    if !self.emit_content(tx, request_id, model_id, content) {
                         return false;
                     }
                 }
                 ToolScanEvent::Call(call) => {
-                    // Text withheld by the stop scanner precedes the call in
-                    // the model output; release it first so a stop string can
-                    // never be assembled across the tool-call boundary.
-                    if let Some(mut stop_scanner) = self.pipeline.stop_scanner.take() {
-                        let pending = stop_scanner.finish();
-                        if !pending.is_empty()
-                            && !self.send_content_chunk(tx, request_id, model_id, pending)
-                        {
-                            return false;
-                        }
-                    }
-                    // Once a call has been emitted, disable the stop scanner
-                    // for the rest of the stream (ADR-040 D2): stops match
+                    // The call's batch retired the stop scanner for the rest
+                    // of the stream (ADR-040 D2): stops match
                     // visible content only, never text that follows a tool
                     // call, so `AAA<tool_call>...</tool_call>BB STOP CC` keeps
                     // `BB STOP CC` and finishes `tool_calls`, mirroring the
@@ -589,30 +587,25 @@ impl OpenAiStreamDriver {
     /// Emit visible content, running it through the stop scanner. On a stop
     /// match: emit the surviving prefix, the `finish_reason:"stop"` final
     /// chunk and `[DONE]`, then return false to end the stream.
-    ///
-    /// `suspend_stop_match` disables stop matching for content released in
-    /// the same batch as a Call; withheld tool text only defers termination.
     fn emit_content(
         &mut self,
         tx: &StreamEventSender,
         request_id: u64,
         model_id: &str,
         text: String,
-        suspend_stop_match: bool,
     ) -> bool {
         let tool_text_withheld = self
             .pipeline
             .tool_scanner
             .as_ref()
             .is_some_and(ToolCallStreamScanner::has_withheld_text);
-        // Content released alongside a Call bypasses the scanner outright: the
-        // call wins and the scanner retires in `emit_tool_events`. While text
+        // A Call retires the scanner in `emit_tool_events`. While text
         // is merely withheld (a partial opener that may still become a call),
         // the scanner keeps tracking so a stop string is never emitted, but
         // termination waits until the scanner resolves: a later Call keeps the
         // `tool_calls` finish, later content ends the stream with `stop`.
         let (emit, matched) = match self.pipeline.stop_scanner.as_mut() {
-            Some(stop_scanner) if !suspend_stop_match => {
+            Some(stop_scanner) => {
                 let step = stop_scanner.push(&text);
                 (step.emit, step.matched && !tool_text_withheld)
             }
@@ -2033,6 +2026,68 @@ mod stop_tool_scanner_tests {
             }
         }
         payloads
+    }
+
+    #[test]
+    fn split_tool_calls_preserve_pre_call_stop_text_and_order() {
+        for (chunks, expected) in [
+            (
+                vec![
+                    "AA STOP BB <to",
+                    "ol_call>{\"name\":\"f\",\"arguments\":{}}</tool_call>",
+                ],
+                "AA STOP BB ",
+            ),
+            (
+                vec![
+                    "AA S",
+                    "TART <tool_call>{\"name\":\"f\",\"arguments\":{}}</tool_call>",
+                ],
+                "AA START ",
+            ),
+            (
+                vec![
+                    "AA STOP BB <to",
+                    "x CC <tool",
+                    "_call>{\"name\":\"f\",\"arguments\":{}}</tool_call>",
+                ],
+                "AA STOP BB <tox CC ",
+            ),
+        ] {
+            let (tx, mut rx) = mpsc::channel(64);
+            let mut driver = chat_driver(&["STOP"]);
+            for chunk in chunks {
+                assert!(driver.process_text(&tx, 1, "qwen3", chunk.to_string()));
+            }
+            assert!(driver.handle_event(
+                &tx,
+                GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                    response: sample_response(),
+                })
+            ));
+            drop(tx);
+            let payloads = collect_chunk_payloads(&mut rx);
+            let choices: Vec<_> = payloads
+                .iter()
+                .filter_map(|payload| payload.get("choices"))
+                .filter_map(Value::as_array)
+                .flatten()
+                .collect();
+            let content: String = choices
+                .iter()
+                .filter_map(|choice| choice.get("delta"))
+                .filter_map(|delta| delta.get("content"))
+                .filter_map(Value::as_str)
+                .collect();
+            assert_eq!(content, expected);
+            assert_eq!(driver.calls_emitted, 1);
+            let reasons: Vec<_> = choices
+                .iter()
+                .filter_map(|choice| choice.get("finish_reason"))
+                .filter_map(Value::as_str)
+                .collect();
+            assert_eq!(reasons, vec!["tool_calls"]);
+        }
     }
 
     #[test]

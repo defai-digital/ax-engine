@@ -16,7 +16,9 @@ const MAX_ERROR_BYTES: usize = 16 * 1024;
 
 pub struct PipelineChainClient {
     topology: PipelineTopology,
-    endpoints: Vec<String>,
+    // Immutable operator-configured worker URL allowlist. Request payloads
+    // never supply a host, scheme, or URL; redirects are also disabled.
+    endpoints: Vec<reqwest::Url>,
     worker_token: String,
     maximum_activation_bytes: u64,
     in_flight_steps: Arc<Semaphore>,
@@ -42,14 +44,8 @@ impl PipelineChainClient {
         }
         let endpoints = endpoints
             .into_iter()
-            .map(|endpoint| endpoint.trim_end_matches('/').to_string())
-            .collect::<Vec<_>>();
-        if endpoints
-            .iter()
-            .any(|endpoint| !endpoint.starts_with("http://") && !endpoint.starts_with("https://"))
-        {
-            return Err(PipelineClientError::InvalidEndpoint);
-        }
+            .map(|endpoint| parse_worker_endpoint(&endpoint))
+            .collect::<Result<Vec<_>, _>>()?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -71,7 +67,11 @@ impl PipelineChainClient {
         for (index, endpoint) in self.endpoints.iter().enumerate() {
             let response = self
                 .client
-                .get(format!("{endpoint}/health"))
+                .get(
+                    endpoint
+                        .join("health")
+                        .map_err(|_| PipelineClientError::InvalidEndpoint)?,
+                )
                 .header(CLUSTER_WORKER_TOKEN_HEADER, &self.worker_token)
                 .timeout(Duration::from_secs(10))
                 .send()
@@ -126,7 +126,11 @@ impl PipelineChainClient {
             .map_err(|_| PipelineClientError::SchedulerClosed)?;
         let response = self
             .client
-            .post(format!("{}/internal/pipeline/tokens", self.endpoints[0]))
+            .post(
+                self.endpoints[0]
+                    .join("internal/pipeline/tokens")
+                    .map_err(|_| PipelineClientError::InvalidEndpoint)?,
+            )
             .header(CLUSTER_WORKER_TOKEN_HEADER, &self.worker_token)
             .json(&request)
             .send()
@@ -150,7 +154,11 @@ impl PipelineChainClient {
             let encoded = frame.encode(&self.topology)?;
             let response = self
                 .client
-                .post(format!("{endpoint}/internal/pipeline/activation"))
+                .post(
+                    endpoint
+                        .join("internal/pipeline/activation")
+                        .map_err(|_| PipelineClientError::InvalidEndpoint)?,
+                )
                 .header(CLUSTER_WORKER_TOKEN_HEADER, &self.worker_token)
                 .header(CONTENT_TYPE, ACTIVATION_CONTENT_TYPE)
                 .body(encoded)
@@ -183,9 +191,11 @@ impl PipelineChainClient {
         for endpoint in &self.endpoints {
             let result = self
                 .client
-                .post(format!(
-                    "{endpoint}/internal/pipeline/requests/{request_id}/close"
-                ))
+                .post(
+                    endpoint
+                        .join(&format!("internal/pipeline/requests/{request_id}/close"))
+                        .map_err(|_| PipelineClientError::InvalidEndpoint)?,
+                )
                 .header(CLUSTER_WORKER_TOKEN_HEADER, &self.worker_token)
                 .send()
                 .await;
@@ -261,6 +271,40 @@ enum ChainStepOutput {
     Token(TokenStepResponse),
 }
 
+fn parse_worker_endpoint(value: &str) -> Result<reqwest::Url, PipelineClientError> {
+    // URL parsers normalize whitespace and controls. Reject them before
+    // parsing so an operator typo cannot silently change the destination.
+    let authority = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"))
+        .ok_or(PipelineClientError::InvalidEndpoint)?;
+    if authority.starts_with('/')
+        || value.contains('\\')
+        || value
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err(PipelineClientError::InvalidEndpoint);
+    }
+    let mut url = reqwest::Url::parse(value).map_err(|_| PipelineClientError::InvalidEndpoint)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || url.cannot_be_a_base()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(PipelineClientError::InvalidEndpoint);
+    }
+    if !url.path().ends_with('/') {
+        url.path_segments_mut()
+            .map_err(|_| PipelineClientError::InvalidEndpoint)?
+            .push("");
+    }
+    Ok(url)
+}
+
 async fn read_bounded(
     mut response: reqwest::Response,
     maximum_bytes: usize,
@@ -302,7 +346,9 @@ pub enum PipelineClientError {
     Contract(#[from] ax_engine_core::PipelineContractError),
     #[error("pipeline endpoint count mismatch: expected {expected}, got {actual}")]
     EndpointCount { expected: usize, actual: usize },
-    #[error("pipeline endpoints must use explicit http:// or https:// URLs")]
+    #[error(
+        "pipeline endpoints must be absolute HTTP(S) base URLs without credentials, queries, fragments, whitespace, or controls"
+    )]
     InvalidEndpoint,
     #[error("cluster worker token must contain at least 16 bytes")]
     WeakWorkerToken,
@@ -397,6 +443,50 @@ mod tests {
                     owns_output_head: true,
                 },
             ],
+        }
+    }
+
+    #[test]
+    fn worker_url_paths_stay_on_the_configured_origin_and_prefix() {
+        for base in ["http://127.0.0.1:9400/prefix", "https://[::1]:9400/prefix/"] {
+            let endpoint = parse_worker_endpoint(base).expect("valid worker base");
+            for path in [
+                "health",
+                "internal/pipeline/tokens",
+                "internal/pipeline/activation",
+                "internal/pipeline/requests/18446744073709551615/close",
+            ] {
+                let url = endpoint.join(path).expect("fixed worker path");
+                assert_eq!(url.origin(), endpoint.origin());
+                assert_eq!(url.path(), format!("/prefix/{path}"));
+            }
+        }
+    }
+
+    #[test]
+    fn client_rejects_ambiguous_worker_urls() {
+        for endpoint in [
+            "http://",
+            "http:rank0",
+            "http:///rank0",
+            "http://rank0\\@other-service",
+            "http://user:password@rank0",
+            "https://rank0?destination=http://other-service",
+            "http://rank0#fragment",
+            "http://rank0/\nignored",
+        ] {
+            assert!(
+                matches!(
+                    PipelineChainClient::new(
+                        topology(),
+                        vec![endpoint.into(), "http://rank1".into()],
+                        "0123456789abcdef".into(),
+                        1024,
+                    ),
+                    Err(PipelineClientError::InvalidEndpoint)
+                ),
+                "ambiguous endpoint must be rejected: {endpoint:?}"
+            );
         }
     }
 

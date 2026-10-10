@@ -136,6 +136,9 @@ impl StopSequenceScanner {
 
     pub(crate) fn push(&mut self, text: &str) -> StopScanStep {
         if self.matched {
+            // A tool opener may defer termination. Retain later pre-call
+            // content so a completed call can supersede the stop intact.
+            self.pending.push_str(text);
             return StopScanStep {
                 emit: String::new(),
                 matched: true,
@@ -144,8 +147,7 @@ impl StopSequenceScanner {
         self.pending.push_str(text);
         if let Some((index, _)) = find_earliest_stop(&self.pending, &self.sequences) {
             self.matched = true;
-            let emit = self.pending[..index].to_string();
-            self.pending.clear();
+            let emit = self.pending.drain(..index).collect();
             return StopScanStep {
                 emit,
                 matched: true,
@@ -163,6 +165,15 @@ impl StopSequenceScanner {
 
     /// End of stream with no match: release everything withheld.
     pub(crate) fn finish(&mut self) -> String {
+        if self.matched {
+            self.pending.clear();
+        }
+        std::mem::take(&mut self.pending)
+    }
+
+    /// A completed tool call supersedes client stops. Restore withheld text,
+    /// including a deferred match, before emitting the call's content batch.
+    pub(crate) fn finish_without_stop(&mut self) -> String {
         std::mem::take(&mut self.pending)
     }
 

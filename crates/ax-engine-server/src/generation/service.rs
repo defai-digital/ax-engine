@@ -1033,13 +1033,10 @@ impl NativeGenerationService {
         let Some(sender) = sender.as_ref() else {
             return Err(GenerationServiceError::Unavailable);
         };
-        if self
-            .state
-            .queued_commands
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
-                (queued < COMMAND_QUEUE_CAPACITY).then_some(queued + 1)
-            })
-            .is_err()
+        if update_counter(&self.state.queued_commands, |queued| {
+            (queued < COMMAND_QUEUE_CAPACITY).then_some(queued + 1)
+        })
+        .is_err()
         {
             record_pressure_event(&self.state, GenerationPressureEvent::CommandSaturated);
             return Err(GenerationServiceError::Saturated);
@@ -2277,42 +2274,32 @@ fn request_state_is_terminal(state: SessionRequestState) -> bool {
     )
 }
 
+// Keep the atomic update API supported by the workspace's Rust 1.88 MSRV.
+// Newer toolchains deprecate its spelling; limit that allowance to this wrapper.
+#[allow(deprecated)]
+fn update_counter(
+    counter: &AtomicUsize,
+    update: impl FnMut(usize) -> Option<usize>,
+) -> Result<usize, usize> {
+    counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, update)
+}
+
 fn complete_job(state: &ServiceState) {
-    if state
-        .pending_jobs
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
-            pending.checked_sub(1)
-        })
-        .is_err()
-    {
+    if update_counter(&state.pending_jobs, |pending| pending.checked_sub(1)).is_err() {
         tracing::error!("native generation pending-job counter underflow");
     }
 }
 
 fn begin_command(state: &ServiceState) {
-    if state
-        .queued_commands
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
-            queued.checked_sub(1)
-        })
-        .is_err()
-    {
+    if update_counter(&state.queued_commands, |queued| queued.checked_sub(1)).is_err() {
         tracing::error!("native generation queued-command counter underflow");
     }
 }
 
 fn rollback_failed_enqueue(state: &ServiceState) {
     // WorkerExitGuard may reset both counters before send observes the closed receiver.
-    let _ = state
-        .queued_commands
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
-            queued.checked_sub(1)
-        });
-    let _ = state
-        .pending_jobs
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
-            pending.checked_sub(1)
-        });
+    let _ = update_counter(&state.queued_commands, |queued| queued.checked_sub(1));
+    let _ = update_counter(&state.pending_jobs, |pending| pending.checked_sub(1));
 }
 
 fn record_step_report(state: &ServiceState, report: &EngineStepReport) {
@@ -2365,12 +2352,10 @@ fn decrement_buffered_stream_events(state: &ServiceState, count: usize) {
     if count == 0 {
         return;
     }
-    if state
-        .buffered_stream_events
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |buffered| {
-            buffered.checked_sub(count)
-        })
-        .is_err()
+    if update_counter(&state.buffered_stream_events, |buffered| {
+        buffered.checked_sub(count)
+    })
+    .is_err()
     {
         tracing::error!(count, "native generation buffered-event counter underflow");
     }
