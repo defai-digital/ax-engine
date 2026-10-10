@@ -1654,6 +1654,16 @@ impl EngineCore {
             (record.processed_prompt_tokens as usize).min(record.prompt_tokens.len());
         let mut warmup_tokens = record.prompt_tokens[..processed_prompt_tokens].to_vec();
         warmup_tokens.extend(record.generated_tokens.iter().copied());
+        // KV ledger convention: `cached = processed_prompt + generated - 1`;
+        // the last generated token is this decode item's feed token and is
+        // NOT in KV yet. The slice is one PAST the ledger by design — its
+        // tail is the feed token, so warming it whole consumes the feed
+        // position (see the runner's `warm_reused_prefix_without_cache`).
+        debug_assert_eq!(
+            warmup_tokens.last().copied(),
+            item.input_token_slice.first().copied(),
+            "decode warmup slice tail must be the item's feed token"
+        );
         warmup_tokens
     }
 

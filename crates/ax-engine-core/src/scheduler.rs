@@ -728,7 +728,19 @@ impl Scheduler {
             .last()
             .copied()
             .or_else(|| snapshot.prompt_tokens.last().copied())?;
+        // KV ledger convention: `cached = processed_prompt + generated - 1` —
+        // the last generated token is this item's feed token and is not in KV
+        // yet. `position_start` counts that feed token, so it is one PAST the
+        // ledger; `EngineCore::native_prefix_warmup_token_slice` builds the
+        // decode warmup slice with the same convention (tail = feed token).
         let position_start = snapshot.prompt_len.saturating_add(snapshot.generated_len);
+        debug_assert_eq!(
+            position_start,
+            snapshot
+                .processed_prompt_tokens
+                .saturating_add(snapshot.generated_len),
+            "decode position_start must count exactly the processed prompt plus generated tokens"
+        );
 
         Some(ExecutionItem {
             request_id: snapshot.request_id,

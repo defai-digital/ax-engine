@@ -7957,6 +7957,21 @@ impl MlxRunner {
         capture_prefill_output: bool,
         needs_flash_next_cursor: bool,
     ) {
+        // Decode slices reaching this path follow the engine KV ledger
+        // convention (`cached = processed_prompt + generated - 1`), so the
+        // slice tail is the item's feed token — see
+        // `EngineCore::native_prefix_warmup_token_slice`. Warming the whole
+        // slice is correct only because the cache is empty (every caller
+        // checks `seq_len() == 0`; asserted below) and the warmed sample is
+        // captured only for the `generated_len == 0` first decode
+        // (`capture_prefill_output`): a mid-generation decode slice
+        // (`capture_prefill_output == false`) must never be warmed, or the
+        // feed token would be committed twice.
+        debug_assert_eq!(
+            state.cache.seq_len(),
+            0,
+            "warm_reused_prefix_without_cache requires an empty cache"
+        );
         let mut warmup_rng = if capture_prefill_output {
             state.rng
         } else {
