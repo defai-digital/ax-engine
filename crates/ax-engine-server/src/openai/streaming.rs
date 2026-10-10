@@ -590,9 +590,8 @@ impl OpenAiStreamDriver {
     /// match: emit the surviving prefix, the `finish_reason:"stop"` final
     /// chunk and `[DONE]`, then return false to end the stream.
     ///
-    /// `suspend_stop_match` defers stop matching while a tool call is at
-    /// stake: content released in the same batch as a Call, or while the
-    /// scanner still holds an open span or partial opener.
+    /// `suspend_stop_match` disables stop matching for content released in
+    /// the same batch as a Call; withheld tool text only defers termination.
     fn emit_content(
         &mut self,
         tx: &StreamEventSender,
@@ -601,16 +600,21 @@ impl OpenAiStreamDriver {
         text: String,
         suspend_stop_match: bool,
     ) -> bool {
-        let tool_scanner_busy = suspend_stop_match
-            || self
-                .pipeline
-                .tool_scanner
-                .as_ref()
-                .is_some_and(ToolCallStreamScanner::has_withheld_text);
+        let tool_text_withheld = self
+            .pipeline
+            .tool_scanner
+            .as_ref()
+            .is_some_and(ToolCallStreamScanner::has_withheld_text);
+        // Content released alongside a Call bypasses the scanner outright: the
+        // call wins and the scanner retires in `emit_tool_events`. While text
+        // is merely withheld (a partial opener that may still become a call),
+        // the scanner keeps tracking so a stop string is never emitted, but
+        // termination waits until the scanner resolves: a later Call keeps the
+        // `tool_calls` finish, later content ends the stream with `stop`.
         let (emit, matched) = match self.pipeline.stop_scanner.as_mut() {
-            Some(stop_scanner) if !tool_scanner_busy => {
+            Some(stop_scanner) if !suspend_stop_match => {
                 let step = stop_scanner.push(&text);
-                (step.emit, step.matched)
+                (step.emit, step.matched && !tool_text_withheld)
             }
             _ => (text, false),
         };
@@ -2166,6 +2170,46 @@ mod stop_tool_scanner_tests {
             vec!["tool_calls".to_string()],
             "the stream must finish tool_calls, never stop"
         );
+    }
+
+    #[test]
+    fn stop_match_while_tool_opener_is_withheld_still_ends_the_stream() {
+        // A stop string that lands in content released while the tool scanner
+        // still withholds a partial `<tool_call>` opener must not leak, and
+        // once the withheld text resolves to plain content the stream must end
+        // with `stop`, as the non-streaming surface truncates there.
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut driver = chat_driver(&["STOP"]);
+        assert!(driver.process_text(&tx, 1, "qwen3", "hi <tool_".to_string()));
+        assert!(
+            driver.process_text(&tx, 1, "qwen3", "STOP <to".to_string()),
+            "termination is deferred while `<to` may still become a call"
+        );
+        assert!(
+            !driver.process_text(&tx, 1, "qwen3", "xyz".to_string()),
+            "withheld text resolved to content: the deferred stop ends the stream"
+        );
+        drop(tx);
+        let payloads = collect_chunk_payloads(&mut rx);
+        let content: String = payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("delta"))
+            .filter_map(|delta| delta.get("content"))
+            .filter_map(Value::as_str)
+            .collect();
+        let finish_reasons: Vec<&str> = payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("finish_reason"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(content, "hi <tool_");
+        assert_eq!(finish_reasons, vec!["stop"]);
     }
 
     #[test]
