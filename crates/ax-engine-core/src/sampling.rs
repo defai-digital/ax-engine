@@ -142,16 +142,23 @@ fn sample_argmax_with_logprob_and_logits_processors(
     sampling: &SamplingParams,
     recent_tokens: &[u32],
 ) -> Option<(u32, f32)> {
+    // `recent_tokens` is sized for the wider of the two processors so the
+    // n-gram ban sees its full window; the penalty must still honour its own
+    // `repetition_context_size`, as the MLX runner does.
+    let penalty_tokens = match sampling.repetition_context_size {
+        Some(size) => &recent_tokens[recent_tokens.len().saturating_sub(size as usize)..],
+        None => recent_tokens,
+    };
     let mut adjusted_logits_buf: Vec<f32>;
-    let logits = if repetition_penalty_applies(sampling.repetition_penalty, recent_tokens)
+    let logits = if repetition_penalty_applies(sampling.repetition_penalty, penalty_tokens)
         || no_repeat_ngram_applies(sampling.no_repeat_ngram_size, recent_tokens)
     {
         adjusted_logits_buf = logits.to_vec();
-        if repetition_penalty_applies(sampling.repetition_penalty, recent_tokens) {
+        if repetition_penalty_applies(sampling.repetition_penalty, penalty_tokens) {
             apply_repetition_penalty_in_place(
                 &mut adjusted_logits_buf,
                 sampling.repetition_penalty,
-                recent_tokens,
+                penalty_tokens,
             );
         }
         apply_no_repeat_ngram_in_place(
@@ -272,6 +279,31 @@ pub(crate) fn apply_repetition_penalty_in_place(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The engine hands the sampler a history wide enough for the n-gram ban
+    /// (`ngram_window`, 128 by default). The repetition penalty must not widen
+    /// to that: a token outside `repetition_context_size` stays unpenalised.
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn repetition_penalty_honours_its_own_context_size_within_a_wider_history() {
+        let sampling = SamplingParams {
+            repetition_penalty: 2.0,
+            repetition_context_size: Some(2),
+            ..SamplingParams::default()
+        };
+        // Token 0 occurs only outside the last two tokens.
+        let history = [0, 5, 6];
+        let logits = [4.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let (token, _) =
+            sample_argmax_with_logprob_and_logits_processors(&logits, &sampling, &history)
+                .expect("sample");
+        assert_eq!(token, 0);
+        // Inside the window the penalty still applies.
+        let (token, _) =
+            sample_argmax_with_logprob_and_logits_processors(&logits, &sampling, &[5, 0])
+                .expect("sample");
+        assert_eq!(token, 1);
+    }
 
     #[test]
     fn deterministic_sampler_marks_max_output_boundary() {
