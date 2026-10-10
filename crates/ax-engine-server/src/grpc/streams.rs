@@ -50,6 +50,7 @@ fn spawn_grpc_blocking_stream_task<T, F>(
     tx: mpsc::Sender<Result<T, Status>>,
     task_name: &'static str,
     permit: AdmissionPermit,
+    cancel_monitor_handle: tokio::task::JoinHandle<()>,
     driver: F,
 ) where
     T: Send + 'static,
@@ -60,16 +61,7 @@ fn spawn_grpc_blocking_stream_task<T, F>(
         let _permit = permit;
         driver(tx);
     });
-    tokio::spawn(async move {
-        if let Err(error) = handle.await {
-            tracing::error!(%error, task = task_name, "gRPC stream task failed");
-            let _ = monitor_tx
-                .send(Err(Status::internal(format!(
-                    "{task_name} task failed: {error}"
-                ))))
-                .await;
-        }
-    });
+    monitor_grpc_stream_task(handle, cancel_monitor_handle, task_name, monitor_tx);
 }
 
 fn spawn_grpc_stream_task<T, F>(
@@ -100,7 +92,10 @@ where
         StreamStateSource::Stateless { .. } | StreamStateSource::Stateful { .. } => None,
     };
     let monitor_tx = tx.clone();
-    tokio::spawn(async move {
+    // The monitor owns a sender clone, so it must end with the producer:
+    // left running, it keeps the channel open after the last event and the
+    // client's stream never terminates (the SSE path aborts it the same way).
+    let cancel_monitor_handle = tokio::spawn(async move {
         monitor_tx.closed().await;
         cancel_monitor.store(true, Ordering::Relaxed);
         if let Some(disconnected) = service_disconnect {
@@ -119,37 +114,49 @@ where
                 };
                 finish_grpc_stream(&tx, driver(&tx, &mut next_event));
             });
-            monitor_grpc_stream_task(handle, task_name, error_tx);
+            monitor_grpc_stream_task(handle, cancel_monitor_handle, task_name, error_tx);
         }
         StreamStateSource::Stateless {
             mut state,
             context,
             permit,
         } => {
-            spawn_grpc_blocking_stream_task(tx, task_name, permit, move |tx| {
-                let mut next_event = || {
-                    if cancel.load(Ordering::Relaxed) {
-                        return Ok(None);
-                    }
-                    context.next_stream_event(&mut state)
-                };
-                finish_grpc_stream(&tx, driver(&tx, &mut next_event));
-            });
+            spawn_grpc_blocking_stream_task(
+                tx,
+                task_name,
+                permit,
+                cancel_monitor_handle,
+                move |tx| {
+                    let mut next_event = || {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(None);
+                        }
+                        context.next_stream_event(&mut state)
+                    };
+                    finish_grpc_stream(&tx, driver(&tx, &mut next_event));
+                },
+            );
         }
         StreamStateSource::Stateful {
             mut state,
             mut session,
             permit,
         } => {
-            spawn_grpc_blocking_stream_task(tx, task_name, permit, move |tx| {
-                let mut next_event = || {
-                    if cancel.load(Ordering::Relaxed) {
-                        return Ok(None);
-                    }
-                    session.next_stream_event(&mut state)
-                };
-                finish_grpc_stream(&tx, driver(&tx, &mut next_event));
-            });
+            spawn_grpc_blocking_stream_task(
+                tx,
+                task_name,
+                permit,
+                cancel_monitor_handle,
+                move |tx| {
+                    let mut next_event = || {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(None);
+                        }
+                        session.next_stream_event(&mut state)
+                    };
+                    finish_grpc_stream(&tx, driver(&tx, &mut next_event));
+                },
+            );
         }
     }
     Ok(())
@@ -165,11 +172,14 @@ fn finish_grpc_stream<T>(tx: &mpsc::Sender<Result<T, Status>>, result: Result<()
 
 fn monitor_grpc_stream_task<T: Send + 'static>(
     handle: tokio::task::JoinHandle<()>,
+    cancel_monitor_handle: tokio::task::JoinHandle<()>,
     task_name: &'static str,
     monitor_tx: mpsc::Sender<Result<T, Status>>,
 ) {
     tokio::spawn(async move {
-        if let Err(error) = handle.await {
+        let result = handle.await;
+        cancel_monitor_handle.abort();
+        if let Err(error) = result {
             tracing::error!(%error, task = task_name, "gRPC stream task failed");
             // A panicked producer must end the client's stream with an error,
             // not leave it waiting for events that will never come.
@@ -577,6 +587,32 @@ mod tests {
 
     use super::*;
 
+    /// The client's stream ends only when every sender is gone. The cancel
+    /// monitor holds one, so it must be aborted once the producer finishes.
+    #[tokio::test]
+    async fn blocking_stream_task_closes_the_channel_after_the_producer_finishes() {
+        let controller = Arc::new(AdmissionController::new(None));
+        let permit = controller.try_admit().expect("permit");
+        let (tx, mut rx) = mpsc::channel::<Result<u32, Status>>(4);
+        let monitor_tx = tx.clone();
+        let cancel_monitor = tokio::spawn(async move {
+            monitor_tx.closed().await;
+        });
+
+        spawn_grpc_blocking_stream_task(tx, "test stream", permit, cancel_monitor, |tx| {
+            tx.blocking_send(Ok(7)).expect("send");
+        });
+
+        let first = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("first event within bound");
+        assert!(matches!(first, Some(Ok(7))));
+        let end = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("channel must close once the producer is done");
+        assert!(end.is_none());
+    }
+
     fn sample_response(finish: Option<GenerateFinishReason>) -> GenerateResponse {
         GenerateResponse {
             request_id: 42,
@@ -767,10 +803,16 @@ mod tests {
         let (release_tx, release_rx) = std_mpsc::channel();
         let (tx, rx) = mpsc::channel::<Result<proto::GenerateStreamEvent, Status>>(1);
 
-        spawn_grpc_blocking_stream_task(tx, "admission lifetime test", permit, move |_| {
-            entered_tx.send(()).expect("test should receive entry");
-            release_rx.recv().expect("test should release producer");
-        });
+        spawn_grpc_blocking_stream_task(
+            tx,
+            "admission lifetime test",
+            permit,
+            tokio::spawn(async {}),
+            move |_| {
+                entered_tx.send(()).expect("test should receive entry");
+                release_rx.recv().expect("test should release producer");
+            },
+        );
         entered_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("producer should start");
