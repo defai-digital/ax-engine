@@ -1,0 +1,24 @@
+mlx 0.32.3 device Device(gpu, 0)
+M=    1 ffn_gate_up  K=5120 N=34816 mlx.core.bfloat16:0.968ms  mlx.core.float16:0.435ms
+M=    1 ffn_down     K=17408 N=5120 mlx.core.bfloat16:0.367ms  mlx.core.float16:0.368ms
+M=    1 la_qkvz      K=5120 N=16384 mlx.core.bfloat16:0.364ms  mlx.core.float16:0.333ms
+M=    1 lm_head_8b   K=5120 N=248320 mlx.core.bfloat16:2.137ms  mlx.core.float16:2.135ms
+M=    4 ffn_gate_up  K=5120 N=34816 mlx.core.bfloat16:0.700ms  mlx.core.float16:0.679ms
+M=    4 ffn_down     K=17408 N=5120 mlx.core.bfloat16:0.498ms  mlx.core.float16:0.495ms
+M=    4 la_qkvz      K=5120 N=16384 mlx.core.bfloat16:0.467ms  mlx.core.float16:0.421ms
+M=    4 lm_head_8b   K=5120 N=248320 mlx.core.bfloat16:7.632ms  mlx.core.float16:7.653ms
+M=  512 ffn_gate_up  K=5120 N=34816 mlx.core.bfloat16:16.993ms  mlx.core.float16:12.526ms
+M=  512 ffn_down     K=17408 N=5120 mlx.core.bfloat16:9.090ms  mlx.core.float16:6.651ms
+M=  512 la_qkvz      K=5120 N=16384 mlx.core.bfloat16:8.206ms  mlx.core.float16:6.153ms
+M=  512 lm_head_8b   K=5120 N=248320 mlx.core.bfloat16:111.322ms  mlx.core.float16:79.228ms
+M= 1024 ffn_gate_up  K=5120 N=34816 mlx.core.bfloat16:33.522ms  mlx.core.float16:24.662ms
+M= 1024 ffn_down     K=17408 N=5120 mlx.core.bfloat16:17.046ms  mlx.core.float16:12.736ms
+M= 1024 la_qkvz      K=5120 N=16384 mlx.core.bfloat16:15.929ms  mlx.core.float16:11.766ms
+M= 1024 lm_head_8b   K=5120 N=248320 mlx.core.bfloat16:220.290ms  mlx.core.float16:155.452ms
+M= 2048 ffn_gate_up  K=5120 N=34816 mlx.core.bfloat16:66.143ms  mlx.core.float16:48.743ms
+M= 2048 ffn_down     K=17408 N=5120 mlx.core.bfloat16:33.605ms  mlx.core.float16:24.786ms
+M= 2048 la_qkvz      K=5120 N=16384 mlx.core.bfloat16:31.480ms  mlx.core.float16:23.132ms
+M= 2048 lm_head_8b   K=5120 N=248320 mlx.core.bfloat16:438.277ms  mlx.core.float16:309.585ms
+sdpa L=1024 mlx.core.bfloat16: 2.448 ms
+sdpa L=1024 mlx.core.float16: 1.951 ms
+sdpa L=1024 mlx.core.float32: 2.365 ms

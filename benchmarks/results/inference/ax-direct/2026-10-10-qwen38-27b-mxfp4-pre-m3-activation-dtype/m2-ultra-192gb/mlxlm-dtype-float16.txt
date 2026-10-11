@@ -1,0 +1,7 @@
+dtype=float16 P=1024 G=128
+  prompt_tps=285.5 gen_tps=25723.47 (1024 prompt, 1 gen)
+  prompt_tps=274.8 gen_tps=64867.70 (1024 prompt, 1 gen)
+  prompt_tps=274.4 gen_tps=67985.57 (1024 prompt, 1 gen)
+  flappy_pipes: 64 tokens, head=[71093, 12305, 198, 262, 687, 17503, 40481, 62, 18, 1153, 1590, 198]
+  flappy_score_gates: 64 tokens, head=[71093, 12305, 198, 727, 9307, 52954, 62, 22, 20, 15, 33336, 25]
+  flappy_collision_checks: 64 tokens, head=[71093, 12305, 198, 262, 687, 1716, 67994, 40481, 62, 18, 1153, 11]

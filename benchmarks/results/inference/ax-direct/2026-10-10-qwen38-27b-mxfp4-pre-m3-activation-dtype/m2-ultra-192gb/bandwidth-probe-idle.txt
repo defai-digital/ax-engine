@@ -1,0 +1,3 @@
+sum over 8 GiB f32: 12.0 ms -> 664 GB/s
+64-layer FFN chain M=1 mlx.core.bfloat16: 17.99 ms, weights 9.09 GB -> 505 GB/s
+64-layer FFN chain M=1 mlx.core.float16: 16.71 ms, weights 9.09 GB -> 544 GB/s

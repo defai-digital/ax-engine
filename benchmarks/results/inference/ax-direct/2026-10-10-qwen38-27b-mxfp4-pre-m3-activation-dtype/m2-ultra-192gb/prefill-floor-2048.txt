@@ -1,0 +1,31 @@
+mlx 0.32.3 M 2048
+--- dtype mlx.core.bfloat16
+  ffn_gate_up         66.670 ms/call  x count =    4266.9 ms
+  ffn_down            33.694 ms/call  x count =    2156.4 ms
+  la_qkvz             31.657 ms/call  x count =    1519.6 ms
+  la_ba                0.596 ms/call  x count =      28.6 ms
+  la_out              12.194 ms/call  x count =     585.3 ms
+  fa_q                12.126 ms/call  x count =     194.0 ms
+  fa_kv                4.268 ms/call  x count =      68.3 ms
+  fa_o                12.100 ms/call  x count =     193.6 ms
+  sdpa_causal          7.464 ms/call  x count =     119.4 ms
+  rms_norm             0.390 ms/call  x count =      74.8 ms
+  silu_mul             1.274 ms/call  x count =      81.6 ms
+  conv1d_dw            3.197 ms/call  x count =     153.5 ms
+  gated_delta_mlx      3.401 ms/call  x count =     163.2 ms
+  FLOOR total    9605.1 ms for M=2048 -> 213.2 tok/s
+--- dtype mlx.core.float16
+  ffn_gate_up         48.955 ms/call  x count =    3133.1 ms
+  ffn_down            24.811 ms/call  x count =    1587.9 ms
+  la_qkvz             23.355 ms/call  x count =    1121.0 ms
+  la_ba                0.516 ms/call  x count =      24.8 ms
+  la_out               9.076 ms/call  x count =     435.6 ms
+  fa_q                 9.019 ms/call  x count =     144.3 ms
+  fa_kv                3.308 ms/call  x count =      52.9 ms
+  fa_o                 9.062 ms/call  x count =     145.0 ms
+  sdpa_causal          5.351 ms/call  x count =      85.6 ms
+  rms_norm             0.372 ms/call  x count =      71.4 ms
+  silu_mul             1.121 ms/call  x count =      71.7 ms
+  conv1d_dw            2.832 ms/call  x count =     135.9 ms
+  gated_delta_mlx      2.334 ms/call  x count =     112.0 ms
+  FLOOR total    7121.4 ms for M=2048 -> 287.6 tok/s
