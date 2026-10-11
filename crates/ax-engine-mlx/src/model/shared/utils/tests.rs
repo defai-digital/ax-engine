@@ -1729,6 +1729,67 @@ fn invariant_mxfp4_qmv_fast_matches_mlx_singleton() {
 }
 
 #[test]
+fn invariant_mxfp4_qmv_fast_s3_and_s4_rows_match_singleton() {
+    // ADR-043 Stage 1 routes S=3..=4 relaxed-verify MXFP4 projections through
+    // this kernel; every row must still equal the isolated MLX S=1 result.
+    for (input_dim, output_dim) in [(512i32, 32i32), (1024i32, 64i32)] {
+        let weight = mxfp4_quantized_weight(output_dim, input_dim);
+        for seq in [3i32, 4i32] {
+            let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
+                .map(|index| ((index % 31) as f32 - 15.0) * 0.0234375)
+                .collect();
+            let x = astype(
+                &array_f32(&input_data, &[1, seq, input_dim]),
+                MlxDtype::Bfloat16,
+                None,
+            );
+            let metal = super::invariant_mxfp4_qmv_fast_impl(&x, &weight)
+                .expect("S=3..4 MXFP4 qmv_fast must engage");
+            eval(&[&metal]);
+            assert_eq!(metal.shape(), vec![1, seq, output_dim]);
+            for t in 0..seq {
+                let start = (t * input_dim) as usize;
+                let single = astype(
+                    &array_f32(
+                        &input_data[start..start + input_dim as usize],
+                        &[1, 1, input_dim],
+                    ),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                let expected = mlx_sys::quantized_matmul_with_mode(
+                    &single,
+                    &weight.weight,
+                    weight.scales.as_ref().unwrap(),
+                    None,
+                    true,
+                    Some(32),
+                    Some(4),
+                    MlxQuantizationMode::Mxfp4,
+                    None,
+                );
+                let actual = contiguous(
+                    &slice(
+                        &metal,
+                        &[0, t, 0],
+                        &[1, t + 1, output_dim],
+                        &[1, 1, 1],
+                        None,
+                    ),
+                    None,
+                );
+                eval(&[&actual, &expected]);
+                let max_abs = max_abs_f32(&actual, &expected);
+                assert!(
+                    max_abs == 0.0,
+                    "S={seq} row {t} (K={input_dim}, N={output_dim}) must equal MLX S=1, max_abs={max_abs}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn invariant_mxfp4_qmv_fast_s2_rows_match_singleton() {
     let input_dim = 512i32;
     let output_dim = 32i32;

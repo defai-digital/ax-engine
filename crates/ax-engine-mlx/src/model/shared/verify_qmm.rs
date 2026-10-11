@@ -19,6 +19,7 @@ use mlx_sys::{
 };
 use std::cell::Cell;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::weights::QuantizedWeight;
 
@@ -496,6 +497,31 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
     Some((m, k, n))
 }
 
+/// Graph constructions routed through the ADR-043 Stage 1 relaxed MXFP4 verify
+/// kernel. Counts routing decisions made while building a graph, so a compiled
+/// closure contributes once per compile, not once per execution.
+static RELAXED_MXFP4_VERIFY_QMM_ROUTES: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn record_relaxed_mxfp4_route() {
+    RELAXED_MXFP4_VERIFY_QMM_ROUTES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn relaxed_mxfp4_verify_qmm_routes() -> u64 {
+    RELAXED_MXFP4_VERIFY_QMM_ROUTES.load(Ordering::Relaxed)
+}
+
+/// Whether `x` is a relaxed-verify MXFP4 projection input for the ADR-043
+/// Stage 1 route: the route is enabled, the current forward is a relaxed target
+/// verify, and `x` is `[1, S, K]` with S in 3..=4. Stock MLX handles S=2
+/// (already flat) and everything outside a verify forward unchanged.
+pub(crate) fn relaxed_mxfp4_verify_rows(x: &MlxArray, enabled: bool) -> bool {
+    if !enabled || !verify_qmm_armed() {
+        return false;
+    }
+    let shape = x.shape();
+    shape.len() == 3 && shape[0] == 1 && (3..=4).contains(&shape[1])
+}
+
 pub(crate) fn try_qwen_mtp_verify_qmm(x: &MlxArray, weight: &QuantizedWeight) -> Option<MlxArray> {
     try_qwen_mtp_verify_qmm_for_min_n(x, weight, min_route_n())
 }
@@ -620,6 +646,32 @@ fn try_qwen_mtp_verify_qmm_for_min_n(
 mod tests {
     use super::*;
     use mlx_sys::{MlxQuantizationMode, astype, eval, quantize, quantized_matmul_with_mode};
+
+    #[test]
+    fn relaxed_mxfp4_verify_rows_requires_route_guard_and_s3_or_s4() {
+        let rows = |s: i32| zeros(&[1, s, 512], MlxDtype::Bfloat16, None);
+        let armed = QwenMtpVerifyQmmGuard::arm(true);
+        for (s, expected) in [(1, false), (2, false), (3, true), (4, true), (5, false)] {
+            assert_eq!(relaxed_mxfp4_verify_rows(&rows(s), true), expected, "S={s}");
+            assert!(
+                !relaxed_mxfp4_verify_rows(&rows(s), false),
+                "disabled S={s}"
+            );
+        }
+        // Batch > 1 and 2-D inputs never route.
+        assert!(!relaxed_mxfp4_verify_rows(
+            &zeros(&[2, 3, 512], MlxDtype::Bfloat16, None),
+            true
+        ));
+        assert!(!relaxed_mxfp4_verify_rows(
+            &zeros(&[3, 512], MlxDtype::Bfloat16, None),
+            true
+        ));
+        drop(armed);
+        // Outside a verify forward nothing routes, whatever the flag says.
+        assert!(!relaxed_mxfp4_verify_rows(&rows(3), true));
+        assert!(!relaxed_mxfp4_verify_rows(&rows(4), true));
+    }
 
     #[test]
     fn guard_restores_nested_state() {

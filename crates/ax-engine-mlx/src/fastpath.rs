@@ -1446,6 +1446,19 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MLX_RELAXED_MXFP4_VERIFY_QMM` — ADR-043 Stage 1. During a relaxed
+    /// (throughput-profile) target-verify forward, route S=3..=4 MXFP4
+    /// projections through the row-invariant microbatch kernel
+    /// (`ax_invariant_mxfp4_qmv_fast_v1`) instead of MLX's stock M=3..4 qmm.
+    /// The stock kernel reads the weights once but runs well above the
+    /// memory-bound floor at those widths. Default OFF until the end-to-end
+    /// A/B gate in ADR-043 passes; S=2 is excluded on purpose (stock M=2 is
+    /// already flat and the kernel was not faster there on M4).
+    relaxed_mxfp4_verify_qmm_enabled,
+    "AX_MLX_RELAXED_MXFP4_VERIFY_QMM"
+);
+
+env_flag!(
     /// `AX_MLX_QWEN_DENSE_FFN_MATVEC_EXT_BITS` — admit 6-bit and 8-bit
     /// affine weights into the Qwen decode gate/up SwiGLU and down matvec
     /// Metal kernels (6-bit via the MLX `qdot` 4-values-per-3-bytes

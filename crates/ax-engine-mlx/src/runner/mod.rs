@@ -4176,6 +4176,12 @@ impl ExecutionRunner for MlxRunner {
             "ax_mlx_qwen_linear_mtp_depth_one_gate_zero_model_default",
             u32::from(self.mtp_requested && self.mtp_model_policy.qwen_gate_default() == Some(0.0)),
         );
+        upsert_route_decision(
+            &mut route_metadata.crossover_decisions,
+            "ax_mlx_relaxed_mxfp4_verify_qmm_routes",
+            u32::try_from(crate::model::shared::verify_qmm::relaxed_mxfp4_verify_qmm_routes())
+                .unwrap_or(u32::MAX),
+        );
         if self.mtp_model_policy.is_qwen_linear_direct_fallback() {
             upsert_route_decision(
                 &mut route_metadata.crossover_decisions,

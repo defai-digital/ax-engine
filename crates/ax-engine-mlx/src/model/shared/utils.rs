@@ -1246,6 +1246,13 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
         invariant
     } else if let Some(verify) = super::verify_qmm::try_qwen_mtp_verify_qmm(x, qw) {
         verify
+    } else if super::verify_qmm::relaxed_mxfp4_verify_rows(
+        x,
+        fastpath::relaxed_mxfp4_verify_qmm_enabled(),
+    ) && let Some(routed) = invariant_mxfp4_qmv_fast_impl(x, qw)
+    {
+        super::verify_qmm::record_relaxed_mxfp4_route();
+        routed
     } else if qwen_prefill_dequant_dense_applies(x)
         && let Some(weight_t) = prefill_dequant_weight_t(qw)
     {

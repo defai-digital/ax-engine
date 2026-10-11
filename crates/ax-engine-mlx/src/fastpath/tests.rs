@@ -2461,6 +2461,19 @@ fn invariant_mxfp4_qmv_fast_is_opt_in() {
 }
 
 #[test]
+fn relaxed_mxfp4_verify_qmm_is_opt_in() {
+    assert!(!env_flag("AX_FASTPATH_TEST_RELAXED_MXFP4_VERIFY_QMM_UNSET"));
+    assert!(!probe(
+        "AX_FASTPATH_TEST_RELAXED_MXFP4_VERIFY_QMM_DISABLED",
+        "0"
+    ));
+    assert!(probe(
+        "AX_FASTPATH_TEST_RELAXED_MXFP4_VERIFY_QMM_ENABLED",
+        "1"
+    ));
+}
+
+#[test]
 fn dense_ffn_compile_uses_default_on_kill_switch_contract() {
     assert!(env_flag_default_on(
         "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_UNSET"
