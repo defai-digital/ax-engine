@@ -2242,7 +2242,11 @@ fn converts_hy_v3_dense_then_sigmoid_moe_directory() {
             ("model.norm.weight", "BF16", &[32]),
             ("lm_head.weight", "BF16", &[32, 32]),
             ("model.layers.0.input_layernorm.weight", "BF16", &[32]),
-            ("model.layers.0.post_attention_layernorm.weight", "BF16", &[32]),
+            (
+                "model.layers.0.post_attention_layernorm.weight",
+                "BF16",
+                &[32],
+            ),
             ("model.layers.0.self_attn.q_proj.weight", "BF16", &[32, 32]),
             ("model.layers.0.self_attn.k_proj.weight", "BF16", &[16, 32]),
             ("model.layers.0.self_attn.v_proj.weight", "BF16", &[16, 32]),
@@ -2250,7 +2254,11 @@ fn converts_hy_v3_dense_then_sigmoid_moe_directory() {
             ("model.layers.0.self_attn.q_norm.weight", "BF16", &[8]),
             ("model.layers.0.self_attn.k_norm.weight", "BF16", &[8]),
             ("model.layers.1.input_layernorm.weight", "BF16", &[32]),
-            ("model.layers.1.post_attention_layernorm.weight", "BF16", &[32]),
+            (
+                "model.layers.1.post_attention_layernorm.weight",
+                "BF16",
+                &[32],
+            ),
             ("model.layers.1.self_attn.q_proj.weight", "BF16", &[32, 32]),
             ("model.layers.1.self_attn.k_proj.weight", "BF16", &[16, 32]),
             ("model.layers.1.self_attn.v_proj.weight", "BF16", &[16, 32]),
@@ -2262,12 +2270,36 @@ fn converts_hy_v3_dense_then_sigmoid_moe_directory() {
             ("model.layers.0.mlp.down_proj.weight", "BF16", &[32, 64]),
             ("model.layers.1.mlp.router.gate.weight", "BF16", &[4, 32]),
             ("model.layers.1.mlp.expert_bias", "F32", &[4]),
-            ("model.layers.1.mlp.switch_mlp.gate_proj.weight", "BF16", &[4, 16, 32]),
-            ("model.layers.1.mlp.switch_mlp.up_proj.weight", "BF16", &[4, 16, 32]),
-            ("model.layers.1.mlp.switch_mlp.down_proj.weight", "BF16", &[4, 32, 16]),
-            ("model.layers.1.mlp.shared_mlp.gate_proj.weight", "BF16", &[16, 32]),
-            ("model.layers.1.mlp.shared_mlp.up_proj.weight", "BF16", &[16, 32]),
-            ("model.layers.1.mlp.shared_mlp.down_proj.weight", "BF16", &[32, 16]),
+            (
+                "model.layers.1.mlp.switch_mlp.gate_proj.weight",
+                "BF16",
+                &[4, 16, 32],
+            ),
+            (
+                "model.layers.1.mlp.switch_mlp.up_proj.weight",
+                "BF16",
+                &[4, 16, 32],
+            ),
+            (
+                "model.layers.1.mlp.switch_mlp.down_proj.weight",
+                "BF16",
+                &[4, 32, 16],
+            ),
+            (
+                "model.layers.1.mlp.shared_mlp.gate_proj.weight",
+                "BF16",
+                &[16, 32],
+            ),
+            (
+                "model.layers.1.mlp.shared_mlp.up_proj.weight",
+                "BF16",
+                &[16, 32],
+            ),
+            (
+                "model.layers.1.mlp.shared_mlp.down_proj.weight",
+                "BF16",
+                &[32, 16],
+            ),
         ],
     );
 

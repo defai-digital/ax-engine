@@ -102,14 +102,8 @@ mod tests {
             | "glm4_moe_lite" | "gpt_oss" | "deepseek_v3" | "deepseek_v32" => {
                 ModelSupportTier::Certified
             }
-            "diffusion_gemma"
-            | "deepseek_v4"
-            | "muse_glimmer"
-            | "minimax_m3"
-            | "qwen4_exp"
-            | "hy_v3" => {
-                ModelSupportTier::Experimental
-            }
+            "diffusion_gemma" | "deepseek_v4" | "muse_glimmer" | "minimax_m3" | "qwen4_exp"
+            | "hy_v3" => ModelSupportTier::Experimental,
             _ => ModelSupportTier::Compatible,
         }
     }
