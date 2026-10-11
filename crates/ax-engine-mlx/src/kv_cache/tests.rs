@@ -1164,6 +1164,93 @@ fn serialize_fa_cache_roundtrips_values() {
     }
 }
 
+/// Serialization evaluates FA layers in batches; a cache that spans several
+/// batches and carries capacity padding must still round-trip every layer's
+/// logical prefix, and repeat serialization must be byte-identical.
+#[test]
+fn serialize_fa_cache_spanning_eval_batches_roundtrips_logical_prefix() {
+    let layer_count = MlxKVCache::SERIALIZE_EVAL_BATCH_LAYERS * 2 + 3;
+    let seq_len = 5usize;
+    let capacity = 12usize;
+    let mut cache = MlxKVCache::new(layer_count);
+    let mut expected: Vec<(Vec<f32>, Vec<f32>)> = Vec::new();
+    for layer in 0..layer_count {
+        let heads = 1 + (layer % 3);
+        let dim = 4 + 2 * (layer % 4);
+        let make = |salt: usize| -> (MlxArray, Vec<f32>) {
+            let total = heads * capacity * dim;
+            let data: Vec<f32> = (0..total)
+                .map(|i| ((layer * 1_000 + salt * 100_000 + i) as f32) * 0.001)
+                .collect();
+            let arr = MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data.as_slice()),
+                &[1, heads as i32, capacity as i32, dim as i32],
+                MlxDtype::Float32,
+            );
+            let mut logical = Vec::with_capacity(heads * seq_len * dim);
+            for h in 0..heads {
+                for t in 0..seq_len {
+                    let base = h * capacity * dim + t * dim;
+                    logical.extend_from_slice(&data[base..base + dim]);
+                }
+            }
+            (arr, logical)
+        };
+        let (k, k_logical) = make(0);
+        let (v, v_logical) = make(1);
+        expected.push((k_logical, v_logical));
+        cache.layers[layer] = Some(FaLayerStorage::Contiguous(LayerKV {
+            last_k_view: None,
+            last_v_view: None,
+            n_kv_heads: heads as i32,
+            head_dim: dim as i32,
+            capacity,
+            rotating_window: None,
+            protected_prefix_ring: None,
+            dtype: MlxDtype::Float32,
+            k,
+            v,
+        }));
+    }
+    cache.seq_len = seq_len;
+
+    let bytes = cache.serialize_to_bytes();
+    assert_eq!(
+        bytes,
+        cache.serialize_to_bytes(),
+        "serialization must be deterministic"
+    );
+
+    // Wire format is unchanged: each layer's K and V encode exactly like the
+    // unbatched per-tensor path, and appear in layer order.
+    let mut cursor = 0usize;
+    for layer in 0..layer_count {
+        let lkv = contiguous_layer(&cache, layer);
+        for arr in [&lkv.k, &lkv.v] {
+            let mut segment = Vec::new();
+            MlxKVCache::serialize_tensor_logical(&mut segment, arr, Some(seq_len));
+            let found = bytes[cursor..]
+                .windows(segment.len())
+                .position(|window| window == segment.as_slice())
+                .unwrap_or_else(|| panic!("layer {layer} tensor missing from payload"));
+            cursor += found + segment.len();
+        }
+    }
+    let restored = MlxKVCache::try_deserialize_from_bytes(&bytes).expect("round-trip");
+
+    assert_eq!(restored.seq_len, seq_len);
+    for (layer, (k_logical, v_logical)) in expected.iter().enumerate() {
+        let back = contiguous_layer(&restored, layer);
+        assert_eq!(
+            back.capacity, seq_len,
+            "layer {layer} keeps only the logical prefix"
+        );
+        assert_eq!(&host_f32(&back.k), k_logical, "layer {layer} K");
+        assert_eq!(&host_f32(&back.v), v_logical, "layer {layer} V");
+    }
+}
+
 #[test]
 fn serialize_mla_cache_roundtrips_values() {
     let mut cache = MlxKVCache::new(1);
