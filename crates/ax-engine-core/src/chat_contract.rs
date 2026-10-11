@@ -207,6 +207,7 @@ mod tests {
                 "embeddinggemma",
                 "nemotron_embed",
                 "mistral3",
+                "hy_v3",
                 "whisper"
             ]
         );

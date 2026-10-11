@@ -725,6 +725,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
     let is_nemotron = is_nemotron_h(model_type);
     let is_ocr = is_unlimited_ocr(model_type);
     let is_minimax = is_minimax_m3(model_type);
+    let is_hy_v3 = model_type == "hy_v3";
     if !is_gemma4_moe
         && !is_diffusion_gemma_moe
         && !is_qwen3_moe
@@ -738,6 +739,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         && !is_nemotron
         && !is_ocr
         && !is_minimax
+        && !is_hy_v3
     {
         return NativeMoeConfig::default();
     }
@@ -761,7 +763,7 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         None
     };
 
-    let first_dense_layers = if is_deepseek_v3 || is_ocr {
+    let first_dense_layers = if is_deepseek_v3 || is_ocr || is_hy_v3 {
         arch_u64(config, model_type, "first_k_dense_replace").and_then(u64_to_u32)
     } else if is_minimax {
         minimax_first_dense_layers(config, model_type)
@@ -775,6 +777,8 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         } else if is_llama4 {
             // LLaMA 4 always has 1 shared expert when MoE is active
             Some(1)
+        } else if is_hy_v3 {
+            arch_u64(config, model_type, "num_shared_experts").and_then(u64_to_u32)
         } else if is_qwen3_moe || is_qwen3_next_moe {
             // Official Flash Next / Qwen 3.5 MoE configs often omit
             // `n_shared_experts` and only set `shared_expert_intermediate_size`.
@@ -811,8 +815,11 @@ pub(crate) fn moe_config(config: &serde_json::Value, model_type: &str) -> Native
         // Nemotron-H MoE gate matches DeepSeek-style sigmoid + correction bias.
         // DeepSeek V4 routes via `scoring_func` (see NativeDeepseekV4Config),
         // not sigmoid routing, so it must not set this flag.
-        sigmoid_routing: is_deepseek_v3 || is_nemotron || is_minimax,
-        routed_scaling_factor: if is_deepseek_v3 || is_deepseek_v4 || is_nemotron || is_minimax {
+        sigmoid_routing: is_deepseek_v3 || is_nemotron || is_minimax || is_hy_v3,
+        routed_scaling_factor: if is_hy_v3 {
+            // Hy-MT2 stores the post-renorm multiplier as `router_scaling_factor`.
+            arch_f64(config, model_type, "router_scaling_factor").map(|v| v as f32)
+        } else if is_deepseek_v3 || is_deepseek_v4 || is_nemotron || is_minimax {
             arch_f64(config, model_type, "routed_scaling_factor").map(|v| v as f32)
         } else {
             None

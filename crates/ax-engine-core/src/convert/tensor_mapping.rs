@@ -234,6 +234,48 @@ pub(crate) const QWEN4_EXP_HC_GLOBAL_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// Hy-MT2 (`hy_v3`) MoE names after mlx-lm sanitize.
+///
+/// On-disk names differ from Qwen3-MoE and from the Transformers fused
+/// checkpoint: the router is `mlp.router.gate`, the selection bias is the
+/// bare parameter `mlp.expert_bias` (no `.weight`), routed experts are
+/// `mlp.switch_mlp.*`, and the shared expert is `mlp.shared_mlp.*`.
+/// Layer 0 stays a dense `mlp.{gate,up,down}_proj` and uses the standard map.
+pub(crate) const HY_V3_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "mlp.router.gate.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "mlp.expert_bias",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInpCorrectionBias),
+    ),
+    (
+        "mlp.switch_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateExps),
+    ),
+    (
+        "mlp.switch_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUpExps),
+    ),
+    (
+        "mlp.switch_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExps),
+    ),
+    (
+        "mlp.shared_mlp.gate_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertGate),
+    ),
+    (
+        "mlp.shared_mlp.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertUp),
+    ),
+    (
+        "mlp.shared_mlp.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
+    ),
+];
+
 pub(crate) const QWEN3_MOE_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     (
         "mlp.gate.weight",

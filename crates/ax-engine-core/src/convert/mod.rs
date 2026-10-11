@@ -145,7 +145,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, qwen3_vl, qwen3_vl_moe, minicpmv4_6, gemma4, gemma4_unified, gemma4_vl, gemma4_assistant, diffusion_gemma, embeddinggemma, glm4_moe_lite, llama, llama3, mistral, mistral3, mixtral, deepseek_v3, deepseek_v32, deepseek_v4, llama4, gpt_oss, nemotron_h, nemotron_h_nano_omni, nemotron_embed, unlimited_ocr, whisper, minimax_m3, minimax_m3_vl, hy_v3"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -432,7 +432,12 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         } else {
             None
         },
-        moe_norm_topk_prob: if is_minimax_m3(&model_type) {
+        moe_norm_topk_prob: if model_type == "hy_v3" {
+            // Hy-MT2 names this flag `route_norm`, not `norm_topk_prob`.
+            // The reference divides the unbiased top-k sigmoid scores by
+            // their sum before `router_scaling_factor`.
+            arch_bool(&config, &model_type, "route_norm").unwrap_or(true)
+        } else if is_minimax_m3(&model_type) {
             true
         } else {
             arch_bool(&config, &model_type, "norm_topk_prob")

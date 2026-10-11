@@ -64,6 +64,17 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
+        // Hy-MT2. Keep a distinct family: the router, expert bias, shared
+        // expert, and scaling-factor config keys are not Qwen3-MoE names.
+        // The standard layer path still owns the forward (QK-norm, dense
+        // layer 0, sigmoid MoE on later layers).
+        "hy_v3" => Ok(ModelFamily {
+            family_name: "hy_v3",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(HY_V3_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
+        }),
         // Keep family_name distinct: standard Gemma 4 is Certified; unified
         // multimodal packages are Compatible until they earn their own cert
         // evidence (DI-W0-002: never inherit gemma4 Certified via rename).

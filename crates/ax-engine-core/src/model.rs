@@ -2259,6 +2259,8 @@ pub(crate) fn validate_native_model_manifest(
                 || roles.contains(&NativeTensorRole::FfnSharedExpertUp)
                 || roles.contains(&NativeTensorRole::FfnSharedExpertDown);
             if has_any_shared_expert || moe_requires_shared_expert(manifest) {
+                // Hy-MT2's shared expert is a plain SwiGLU (`shared_mlp`),
+                // with no extra sigmoid gate input.
                 if !matches!(
                     manifest.model_family.as_str(),
                     "glm4_moe_lite"
@@ -2267,6 +2269,7 @@ pub(crate) fn validate_native_model_manifest(
                         | "llama4"
                         | "unlimited_ocr"
                         | "minimax_m3"
+                        | "hy_v3"
                 ) {
                     require_layer_role(
                         roles,

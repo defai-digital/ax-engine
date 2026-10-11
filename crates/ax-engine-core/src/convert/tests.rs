@@ -2157,6 +2157,142 @@ fn converts_qwen3_5_moe_language_model_switch_mlp_directory() {
 }
 
 #[test]
+fn maps_hy_v3_router_bias_and_shared_mlp() {
+    let config = serde_json::json!({
+        "model_type": "hy_v3",
+        "num_experts": 128,
+        "num_experts_per_tok": 8,
+        "num_shared_experts": 1,
+        "first_k_dense_replace": 1,
+        "moe_intermediate_size": 768,
+        "router_scaling_factor": 2.826,
+        "route_norm": true
+    });
+    let family = model_family_for_type("hy_v3", &config).expect("hy_v3 should be supported");
+    assert_eq!(family.family_name, "hy_v3");
+    assert_eq!(
+        match_tensor("model.layers.0.mlp.gate_proj.weight", &family),
+        Some((NativeTensorRole::FfnGate, Some(0)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.1.mlp.router.gate.weight", &family),
+        Some((NativeTensorRole::FfnGateInp, Some(1)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.1.mlp.expert_bias", &family),
+        Some((NativeTensorRole::FfnGateInpCorrectionBias, Some(1)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.1.mlp.switch_mlp.up_proj.weight", &family),
+        Some((NativeTensorRole::FfnUpExps, Some(1)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.1.mlp.shared_mlp.down_proj.weight", &family),
+        Some((NativeTensorRole::FfnSharedExpertDown, Some(1)))
+    );
+    assert_eq!(
+        match_tensor("model.layers.1.mlp.gate.weight", &family),
+        None,
+        "Qwen3 mlp.gate must not steal the Hy-MT2 router name"
+    );
+
+    let moe = moe_config(&config, "hy_v3");
+    assert!(moe.sigmoid_routing);
+    assert_eq!(moe.expert_count, Some(128));
+    assert_eq!(moe.experts_per_token, Some(8));
+    assert_eq!(moe.expert_intermediate_size, Some(768));
+    assert_eq!(moe.shared_expert_count, Some(1));
+    assert_eq!(moe.first_dense_layers, Some(1));
+    assert_eq!(moe.routed_scaling_factor, Some(2.826_f64 as f32));
+    assert_eq!(moe.n_group, None);
+}
+
+#[test]
+fn converts_hy_v3_dense_then_sigmoid_moe_directory() {
+    let dir = unique_test_dir("hy-v3");
+    write_config(
+        &dir,
+        serde_json::json!({
+            "model_type": "hy_v3",
+            "architectures": ["HYV3ForCausalLM"],
+            "hidden_size": 32,
+            "intermediate_size": 64,
+            "moe_intermediate_size": 16,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "num_hidden_layers": 2,
+            "vocab_size": 32,
+            "num_experts": 4,
+            "num_experts_per_tok": 2,
+            "num_shared_experts": 1,
+            "first_k_dense_replace": 1,
+            "router_scaling_factor": 2.826,
+            "route_norm": true,
+            "rms_norm_eps": 1e-5,
+            "rope_theta": 11158840.0,
+            "tie_word_embeddings": false
+        }),
+    );
+    write_fake_safetensors(
+        &dir,
+        "model.safetensors",
+        &[
+            ("model.embed_tokens.weight", "BF16", &[32, 32]),
+            ("model.norm.weight", "BF16", &[32]),
+            ("lm_head.weight", "BF16", &[32, 32]),
+            ("model.layers.0.input_layernorm.weight", "BF16", &[32]),
+            ("model.layers.0.post_attention_layernorm.weight", "BF16", &[32]),
+            ("model.layers.0.self_attn.q_proj.weight", "BF16", &[32, 32]),
+            ("model.layers.0.self_attn.k_proj.weight", "BF16", &[16, 32]),
+            ("model.layers.0.self_attn.v_proj.weight", "BF16", &[16, 32]),
+            ("model.layers.0.self_attn.o_proj.weight", "BF16", &[32, 32]),
+            ("model.layers.0.self_attn.q_norm.weight", "BF16", &[8]),
+            ("model.layers.0.self_attn.k_norm.weight", "BF16", &[8]),
+            ("model.layers.1.input_layernorm.weight", "BF16", &[32]),
+            ("model.layers.1.post_attention_layernorm.weight", "BF16", &[32]),
+            ("model.layers.1.self_attn.q_proj.weight", "BF16", &[32, 32]),
+            ("model.layers.1.self_attn.k_proj.weight", "BF16", &[16, 32]),
+            ("model.layers.1.self_attn.v_proj.weight", "BF16", &[16, 32]),
+            ("model.layers.1.self_attn.o_proj.weight", "BF16", &[32, 32]),
+            ("model.layers.1.self_attn.q_norm.weight", "BF16", &[8]),
+            ("model.layers.1.self_attn.k_norm.weight", "BF16", &[8]),
+            ("model.layers.0.mlp.gate_proj.weight", "BF16", &[64, 32]),
+            ("model.layers.0.mlp.up_proj.weight", "BF16", &[64, 32]),
+            ("model.layers.0.mlp.down_proj.weight", "BF16", &[32, 64]),
+            ("model.layers.1.mlp.router.gate.weight", "BF16", &[4, 32]),
+            ("model.layers.1.mlp.expert_bias", "F32", &[4]),
+            ("model.layers.1.mlp.switch_mlp.gate_proj.weight", "BF16", &[4, 16, 32]),
+            ("model.layers.1.mlp.switch_mlp.up_proj.weight", "BF16", &[4, 16, 32]),
+            ("model.layers.1.mlp.switch_mlp.down_proj.weight", "BF16", &[4, 32, 16]),
+            ("model.layers.1.mlp.shared_mlp.gate_proj.weight", "BF16", &[16, 32]),
+            ("model.layers.1.mlp.shared_mlp.up_proj.weight", "BF16", &[16, 32]),
+            ("model.layers.1.mlp.shared_mlp.down_proj.weight", "BF16", &[32, 16]),
+        ],
+    );
+
+    let manifest = convert_hf_model_dir(&dir).expect("hy_v3 fixture should convert");
+    assert_eq!(manifest.model_family, "hy_v3");
+    assert!(manifest.moe.sigmoid_routing);
+    assert!(manifest.moe_norm_topk_prob);
+    assert_eq!(manifest.moe.first_dense_layers, Some(1));
+    assert_eq!(manifest.moe.shared_expert_count, Some(1));
+    assert_eq!(manifest.moe.routed_scaling_factor, Some(2.826_f64 as f32));
+    assert!((manifest.rms_norm_eps.unwrap_or(0.0) - 1e-5).abs() < 1e-12);
+    assert_eq!(manifest.rope_theta, Some(11_158_840));
+    assert!(!manifest.attn_output_gate);
+    assert!(manifest.tensors.iter().any(|tensor| {
+        tensor.name == "model.layers.1.mlp.expert_bias"
+            && tensor.role == NativeTensorRole::FfnGateInpCorrectionBias
+            && !tensor.source_quantized
+    }));
+    crate::model::NativeModelArtifacts::from_manifest_and_root(dir.clone(), manifest)
+        .expect("hy_v3 fixture manifest should validate");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn maps_qwen3_moe_switch_mlp_tensors() {
     let empty_config = serde_json::json!({});
     let family =
