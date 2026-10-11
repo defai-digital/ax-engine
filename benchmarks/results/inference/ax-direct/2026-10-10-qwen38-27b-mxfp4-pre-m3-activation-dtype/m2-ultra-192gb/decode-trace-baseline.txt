@@ -1,0 +1,24 @@
+loading /Users/<user>/models/ax-qwen38-27b-mxfp4-b2c5354f
+prefill 128 tokens → 701836 µs
+
+steady-state (64 steps after 8 warmup):
+  total wall               30591.3 µs/tok
+  forward                   1154.7 µs/tok
+    layer_loop (64×)           0.0 µs/tok  (  0.0% of forward, ~0.0 µs/layer)
+    head (norm+lm_head)        0.0 µs/tok  (  0.0% of forward)
+    residual (embed+...)    1154.7 µs/tok  (100.0% of forward)
+  argmax                       1.1 µs/tok
+  async_eval (submit)      29424.0 µs/tok
+  pending eval (gpu wait)      7.7 µs/tok
+  pending read                 0.1 µs/tok
+
+per-layer ops/tok (FFI dispatch count from mlx_sys::op_count):
+
+linear-attention direct C++ counters:
+  inputs:     attempts=3552 hits=3552 fallbacks=0 profile_blocked=0
+  post-input: attempts=48 hits=48 fallbacks=0 profile_blocked=0
+
+moe router fused: attempts=0 hits=0 fallbacks=0
+token stream: n=73 fnv1a64=79e3273b17032495
+
+decode tok/s = 32.69

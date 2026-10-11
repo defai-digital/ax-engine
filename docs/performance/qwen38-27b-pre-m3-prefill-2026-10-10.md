@@ -2,9 +2,12 @@
 
 Why the primary pack prefilled at the MLX kernel floor on a Mac Studio M2
 Ultra, what the host lacks, which two runtime policies now adapt to it, and
-what was measured on the M2 Ultra and on the M5 Max bench host. Single-host
-engineering evidence plus a bench-host regression check; **not a SKU
-qualification** (the 27B SKU is the Mac mini M4 Pro 64 GB).
+what was measured on the M2 Ultra and on the M5 Max bench host, and (added
+2026-10-11) what the Mac mini M4 Pro 64 GB and a controlled M5 Max A/B showed
+about hosts that keep the previous path. Single-host engineering evidence plus
+bench-host regression checks; **not a SKU qualification** (the 27B SKU is the
+Mac mini M4 Pro 64 GB, and the M4 Pro run below is not a qualification run:
+3 reps on a host whose memory state drifted).
 
 Pack: `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` @
 `b2c5354f779e430d0c1733143db848a72b71c16e`. MLX 0.32.3 (pip wheel).
@@ -132,6 +135,85 @@ decode +7-9%; MTP decode +6-7%. The M5 Max keeps its path and its numbers
 (the p2048 prefill spread, 921-972 across runs, is within this host's
 run-to-run variation).
 
+## Verification on native-bf16 generations (2026-10-11)
+
+The policies are meant to leave hosts with native bf16 on their previous
+path. `fe13a04b` is the base; `6e6e98fd` is the merged code (the M5 A/B used
+`3c4065b0`, which differs only by docs and artifacts).
+
+### Mac mini M4 Pro 64 GB (`applegpu_g16s`, generation 16; macOS 27.0, Homebrew cargo 1.98.1, MLX 0.32.3, 3 reps + 2 warmups)
+
+| arm | p128 prefill / decode | p512 | p2048 | output tokens vs base |
+| --- | ---: | ---: | ---: | --- |
+| `mlx_lm` 0.31.3 reference | 105 / 15.8 | 115 / 15.7 | 126 / 15.6 | — |
+| base (`fe13a04b`) | 121 / 16.1 | 128 / 16.0 | 132 / 15.8 | — |
+| defaults (`6e6e98fd`) | 122 / 16.1 | 123 / 16.0 | 132 / 15.9 | identical |
+| `AX_MLX_ACTIVATION_DTYPE=float16` | 121 / 16.1 | 121 / 16.0 | 130 / 15.9 | diverge (random-token prompts) |
+| `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE=transient` | 122 / 16.0 | 122 / 15.9 | 137 / 15.8 | identical |
+
+| MTP arm (flappy, depth 3, exact verifier, gen 256) | decode tok/s per prompt (273 / 374 / 432 / 264 tokens) | output tokens vs base |
+| --- | --- | --- |
+| base | 32.2 / 32.9 / 32.8 / 33.6 | — |
+| defaults | 33.3 / 32.7 / 32.7 / 33.5 | identical (all 4 x 256) |
+| `AX_MLX_ACTIVATION_DTYPE=float16` | 30.5 / 31.0 / 30.5 / 31.2 | identical (all 4 x 256) |
+
+Reading:
+
+- Defaults reproduce the base on a generation-16 host (fp16 and the dense
+  GEMM stay off; the lm_head window is neutral). The one visible gap, p512
+  prefill 128 vs 123, is not a code difference: see the next subsection.
+- fp16 buys nothing where bf16 is native: prefill is 1-2% lower and MTP
+  decode is 5-8% lower. The M4 Pro stays on bf16.
+- The transient dense GEMM is +4% at p2048 (137 vs 132) and flat at p512.
+  That is not enough evidence to enable it by generation: the same arm lost
+  3% on the M5 Max.
+- `AX_MLX_QWEN_PREFILL_DEQUANT_DENSE=1` (resident copies) **cannot run the
+  27B on a 64 GB host**. At p2048 it drove swap to 97 of 98 GB, the host
+  stopped answering SSH and then took a kernel panic and rebooted. Its
+  p128 and p512 rows (121 / 16.1, 122 / 16.0) completed but sit below the
+  1024-token floor, so they exercised nothing; the log is kept as
+  `ab-direct-dequant-resident-ABORTED-kernel-panic.txt` and the arm has no
+  result. The resident mode holds about 2 bytes per parameter (~54 GB on the
+  27B) and is for hosts with the memory to spare, as noted under Numerics.
+
+Limits of this host's data: the base arm was the first arm after a boot, and
+the memory state degraded over the session. After the MTP arms it kept about
+37 GB of ownerless compressed memory and ~20 GB of swap that `purge` did not
+free and only a reboot cleared. A swap watchdog then aborted two more arms
+(MTP with the lm_head window off, and round 2 of the p512 order check).
+Those arms produced no results and are not reported. Only arms that
+finished with swap at zero are in the tables above. The `p512-order-check-*`
+files show the effect: with base first and candidate second on a fresh boot,
+prefill fell from about 130 to about 120 tok/s over the 5 reps of *each* arm
+(base 130.7 -> 120.1, candidate 128.1 -> 121.8), which is larger than the
+gap between the arms.
+
+### Alternating p512 A/B on the M5 Max (base and defaults)
+
+Because the M4 Pro could not settle the p512 gap, the check was repeated on
+the M5 Max, which showed no drift: 3 rounds of base then defaults, each arm
+5 reps + 2 warmups, direct p512 gen128, defaults only.
+
+| arm | prefill median tok/s (15 reps) | sd | decode median tok/s |
+| --- | ---: | ---: | ---: |
+| base (`fe13a04b`) | 912.3 | 1.0 | 35.5 |
+| defaults (`3c4065b0`) | 911.7 | 1.2 | 35.5 |
+
+Delta -0.07%, inside the run-to-run spread; all six arms produced identical
+output tokens. The p512 gap seen on the M4 Pro is therefore attributed to
+host state, not to the change. That attribution is an inference: the M4 Pro
+itself was not re-measured on a clean host.
+
+### Coverage by GPU generation
+
+| generation | examples | activation dtype | prefill dense GEMM | evidence |
+| --- | --- | --- | --- | --- |
+| <= 14 | M1, M2 | fp16 | transient from 512 | measured on M2 Ultra; M1 not measured |
+| 15 | M3 | bf16 | off | not measured (no reachable M3 host) |
+| 16 | M4 | bf16 | off | measured on M4 Pro 64 GB |
+| 17 | M5 | bf16 | off | measured on M5 Max |
+| >= 18 or unparseable | M6 and later | bf16 | off | not measured; the rule falls back to bf16 |
+
 ## The same policies on Qwen 3.5 9B (community affine 4-bit, group 64)
 
 `mlx-community/Qwen3.5-9B-MLX-4bit` @ `938d8919` (`qwen3_5`, 32 layers,
@@ -163,7 +245,10 @@ apply because the pack has no MTP head.
   affine scales/biases (the 8-bit lm_head) follow the activation dtype.
 - `transient` dequant holds no resident dense copy; `1` keeps ~2 bytes per
   parameter resident (~54 GB on the 27B) and is only for hosts with the
-  memory to spare.
+  memory to spare. On a 64 GB host it exhausted memory and panicked the
+  kernel (see the M4 Pro subsection).
 - The M4 Pro SKU (generation 16) and the M5 Max bench host keep bf16 and
   the steel qmm under `auto`; the policies are host adaptations, not a
-  change to the qualified path.
+  change to the qualified path. Verified on both on 2026-10-11 (above); the
+  M3 and any later generation rely on the same generation rule and are not
+  measured.
