@@ -3344,3 +3344,107 @@ fn prefill_warmup_token_lengths_cover_short_prompt_serving_shapes() {
     sorted.dedup();
     assert_eq!(lengths, sorted);
 }
+
+#[test]
+fn activation_dtype_policy_defaults_to_bf16_and_selects_fp16_only_on_request_or_pre_m3() {
+    use mlx_sys::MlxDtype;
+    let m2 = || Some(String::from("applegpu_g14d"));
+    let m5 = || Some(String::from("applegpu_g17s"));
+    let unknown = || None;
+    assert_eq!(activation_dtype_for(None, m5), MlxDtype::Bfloat16);
+    assert_eq!(activation_dtype_for(None, m2), MlxDtype::Float16);
+    assert_eq!(activation_dtype_for(None, unknown), MlxDtype::Bfloat16);
+    assert_eq!(activation_dtype_for(Some("bf16"), m2), MlxDtype::Bfloat16);
+    assert_eq!(
+        activation_dtype_for(Some("bfloat16"), m2),
+        MlxDtype::Bfloat16
+    );
+    assert_eq!(activation_dtype_for(Some("junk"), m2), MlxDtype::Bfloat16);
+    assert_eq!(
+        activation_dtype_for(Some(" Float16 "), m5),
+        MlxDtype::Float16
+    );
+    assert_eq!(activation_dtype_for(Some("fp16"), m5), MlxDtype::Float16);
+    assert_eq!(activation_dtype_for(Some("auto"), m2), MlxDtype::Float16);
+    assert_eq!(activation_dtype_for(Some("auto"), m5), MlxDtype::Bfloat16);
+    assert_eq!(
+        activation_dtype_for(Some("auto"), unknown),
+        MlxDtype::Bfloat16
+    );
+    assert_eq!(gpu_generation("applegpu_g14d"), Some(14));
+    assert_eq!(gpu_generation("applegpu_g17s"), Some(17));
+    assert_eq!(gpu_generation("applegpu_g13"), Some(13));
+    assert_eq!(gpu_generation("something_else"), None);
+}
+
+#[test]
+fn prefill_dequant_dense_mode_parses_transient_truthy_and_off() {
+    let m2 = || Some(String::from("applegpu_g14d"));
+    let m5 = || Some(String::from("applegpu_g17s"));
+    assert_eq!(
+        prefill_dequant_dense_mode_for(None, m5),
+        PrefillDequantDenseMode::Off
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(None, m2),
+        PrefillDequantDenseMode::Transient
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(None, || None),
+        PrefillDequantDenseMode::Off
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some("auto"), m2),
+        PrefillDequantDenseMode::Transient
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some("0"), m2),
+        PrefillDequantDenseMode::Off
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some("1"), m5),
+        PrefillDequantDenseMode::Cached
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some("on"), m5),
+        PrefillDequantDenseMode::Cached
+    );
+    assert_eq!(
+        prefill_dequant_dense_mode_for(Some(" Transient "), m5),
+        PrefillDequantDenseMode::Transient
+    );
+    assert_eq!(prefill_dequant_dense_default_min_seq(m2), 512);
+    assert_eq!(prefill_dequant_dense_default_min_seq(m5), 1024);
+    assert_eq!(prefill_dequant_dense_default_min_seq(|| None), 1024);
+    assert!(should_qwen_prefill_dequant_dense_for_min_seq(
+        true, "qwen3_5", 512, 512
+    ));
+    assert!(!should_qwen_prefill_dequant_dense_for_min_seq(
+        true, "qwen3_5", 511, 512
+    ));
+    assert!(!should_qwen_prefill_dequant_dense_for_min_seq(
+        true, "qwen3_5", 1, 1
+    ));
+}
+
+#[test]
+fn activation_dtype_policy_is_scoped_to_qwen_hybrid_families() {
+    use mlx_sys::MlxDtype;
+    assert!(activation_dtype_policy_applies("qwen3_5"));
+    assert!(activation_dtype_policy_applies("QWEN3_NEXT"));
+    for family in [
+        "gemma4",
+        "deepseek_v4",
+        "qwen4_exp",
+        "glm4_moe_lite",
+        "nemotron_h",
+    ] {
+        assert!(!activation_dtype_policy_applies(family), "{family}");
+        assert_eq!(
+            activation_dtype_for_family(family),
+            MlxDtype::Bfloat16,
+            "{family}"
+        );
+    }
+    assert_eq!(activation_dtype_for_family("qwen3_5"), activation_dtype());
+}

@@ -648,13 +648,16 @@ fn qwen_prefill_bf16_embed_dequant_matches_f32_dequant_cast() {
         &[4],
         MlxDtype::Uint32,
     );
+    // The dequant targets the process activation dtype (bf16, or fp16 on
+    // GPUs without native bf16).
+    let act = crate::fastpath::activation_dtype();
     let f32_path = embed_tokens_arr(&ids, &embedding, hidden);
-    let f32_bf16 = astype(&f32_path, MlxDtype::Bfloat16, None);
+    let f32_bf16 = astype(&f32_path, act, None);
     shared::utils::set_qwen_prefill_bf16_embed_dequant(true);
     let bf16_path = embed_tokens_arr(&ids, &embedding, hidden);
     shared::utils::set_qwen_prefill_bf16_embed_dequant(false);
     eval(&[&f32_bf16, &bf16_path]);
-    assert_eq!(bf16_path.dtype(), MlxDtype::Bfloat16);
+    assert_eq!(bf16_path.dtype(), act);
     assert_eq!(bf16_path.shape(), vec![1, 4, hidden as i32]);
     let left = astype(&f32_bf16, MlxDtype::Float32, None);
     let right = astype(&bf16_path, MlxDtype::Float32, None);

@@ -417,7 +417,11 @@ pub(crate) fn mtp_warmup_cache_kv_batched(
         MlxDtype::Uint32,
     );
     let embed = embed_tokens_arr(&prev_token_arr, &weights.token_embedding, cfg.hidden_size);
-    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    let embed = astype(
+        &embed,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
     let enormed = rms_norm(
         &embed,
         Some(&head.pre_fc_norm_embedding),
@@ -614,7 +618,11 @@ fn mtp_fold_committed_last_row(
         MlxDtype::Uint32,
     );
     let embed = embed_tokens_arr(&prev_token_arr, &weights.token_embedding, cfg.hidden_size);
-    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    let embed = astype(
+        &embed,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
     let enormed = rms_norm(
         &embed,
         Some(&head.pre_fc_norm_embedding),
@@ -773,7 +781,11 @@ fn mtp_head_forward_inner(
 ) -> MlxArray {
     // 1. Embed prev_token → [1, 1, hidden_size] in bf16.
     let embed = embed_tokens_arr(prev_token_arr, &weights.token_embedding, cfg.hidden_size);
-    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    let embed = astype(
+        &embed,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
 
     // 2. Combined input: fc(cat([enorm(embed), hnorm(hidden)])).
     //    concat_order = "embedding_hidden" → [enorm, hnorm] along last dim.
@@ -2173,7 +2185,11 @@ pub(crate) fn glm_mtp_head_forward(
 
     // 1. embed prev_token → [1, 1, hidden_size] in bf16.
     let embed = embed_tokens_arr(prev_token_arr, &weights.token_embedding, cfg.hidden_size);
-    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    let embed = astype(
+        &embed,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
 
     // 2. Fused input: eh_proj(cat([enorm(embed), hnorm(main_hidden)]))
     let enormed = rms_norm(&embed, Some(&head.enorm), cfg.rms_norm_eps, None);
@@ -2694,7 +2710,11 @@ pub(crate) fn deepseek_v4_mtp_head_forward(
         .as_ref()
         .unwrap_or(&weights.token_embedding);
     let embed = embed_tokens_arr(prev_token_arr, embed_table, cfg.hidden_size);
-    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    let embed = astype(
+        &embed,
+        crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+        None,
+    );
     let e_normed = rms_norm(
         &embed,
         Some(nextn.enorm.as_ref().expect("DeepSeek V4 nextn enorm")),

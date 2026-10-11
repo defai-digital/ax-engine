@@ -1422,6 +1422,7 @@ pub(crate) fn load_weights_with_session_budget(
         specs,
         &mut name_map,
     );
+    normalize_activation_dtype(artifacts.manifest().model_family.as_str(), &mut name_map);
 
     let token_embedding = take_weight(
         specs,
@@ -2171,6 +2172,7 @@ pub(crate) fn load_weights_with_session_budget(
         mtp_draft_lm_head_spec,
         mtp_norm_layout,
     ) = load_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
+    normalize_activation_dtype(artifacts.manifest().model_family.as_str(), &mut name_map);
     let mtp = load_mtp(
         &mut name_map,
         &lm_head,
@@ -4644,6 +4646,38 @@ fn apply_rotated_checkpoint(
 /// 6bit, same 35B-A3B graph). Quantized integer payloads are untouched — this
 /// is a dtype normalization, not a requant. Dense F32 checkpoints must remain
 /// F32. Kill switch: `AX_MLX_F32_PACK_BF16_NORMALIZE=0`.
+/// Cast every BF16 tensor still in `name_map` to the selected activation
+/// dtype when `AX_MLX_ACTIVATION_DTYPE` resolves to fp16 (see
+/// `fastpath::activation_dtype`). Runs after [`normalize_f32_pack_to_bf16`]
+/// so F32-shipped sidecars take the same path, and again after the MTP
+/// sidecar is merged so the draft head matches the trunk. Quantized integer
+/// payloads and MXFP e8m0 scales are not floating tensors and stay as-is;
+/// per-layer `a_log` / `dt_bias` are re-promoted to F32 by the
+/// linear-attention loader regardless of this pass.
+fn normalize_activation_dtype(model_family: &str, name_map: &mut HashMap<String, MlxArray>) {
+    if !crate::fastpath::activation_dtype_policy_applies(model_family) {
+        return;
+    }
+    let target = crate::fastpath::activation_dtype();
+    if target != MlxDtype::Float16 {
+        return;
+    }
+    let mut casted = 0usize;
+    for tensor in name_map.values_mut() {
+        if tensor.dtype() == MlxDtype::Bfloat16 {
+            *tensor = astype(tensor, target, None);
+            casted += 1;
+        }
+    }
+    if casted > 0 {
+        tracing::info!(
+            target: "ax_mlx::weights",
+            casted,
+            "cast BF16 pack tensors to Float16 (AX_MLX_ACTIVATION_DTYPE)"
+        );
+    }
+}
+
 fn normalize_f32_pack_to_bf16(
     model_family: &str,
     specs: &[NativeTensorSpec],
