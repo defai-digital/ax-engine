@@ -40,6 +40,9 @@ pub enum ChatTemplateKind {
     DeepSeekV4Chat,
     /// MiniMax M3 hub jinja (`]~b]user` / `]~b]ai` / `[e~[` / `</mm:think>`).
     MiniMaxM3,
+    /// Hy-MT2 30B-A3B (`hy_v3`) hub jinja (`<｜hy_User｜>` / `<｜hy_Assistant｜>` +
+    /// empty `<think></think>` and a `reasoning_effort:no_think` system tail).
+    HyV3,
     /// Families without a verified AX chat fixture use plain role prefixes.
     PlainRolePrefix,
     /// Registered but chat-unsupported today; the renderer rejects with
@@ -207,7 +210,6 @@ mod tests {
                 "embeddinggemma",
                 "nemotron_embed",
                 "mistral3",
-                "hy_v3",
                 "whisper"
             ]
         );
@@ -237,6 +239,10 @@ mod tests {
             chat_contract_for_family("minimax_m3").unwrap().template,
             ChatTemplateKind::MiniMaxM3
         );
+        let hy_v3 = chat_contract_for_family("hy_v3").unwrap();
+        assert_eq!(hy_v3.template, ChatTemplateKind::HyV3);
+        assert_eq!(hy_v3.output_policy, ChatOutputPolicy::Plain);
+        assert!(hy_v3.default_thinking_off);
     }
 
     #[test]

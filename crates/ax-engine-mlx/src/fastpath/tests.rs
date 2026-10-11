@@ -1314,6 +1314,35 @@ fn qwen_prefill_skip_unused_f32_sdpa_is_seq_and_family_gated() {
 }
 
 #[test]
+fn hy_v3_prefill_skip_f32_sdpa_is_seq_and_family_gated() {
+    assert!(should_hy_v3_prefill_skip_f32_sdpa_for(true, "hy_v3", 2048));
+    assert!(
+        should_hy_v3_prefill_skip_f32_sdpa_for(true, "hy_v3", 128),
+        "contract p128 prefill must skip the f32 upcast"
+    );
+    assert!(should_hy_v3_prefill_skip_f32_sdpa_for(true, "HY_V3", 512));
+    assert!(
+        !should_hy_v3_prefill_skip_f32_sdpa_for(true, "hy_v3", 127),
+        "short chunks keep the f32 SDPA"
+    );
+    assert!(
+        !should_hy_v3_prefill_skip_f32_sdpa_for(true, "hy_v3", 8),
+        "n-gram verify windows keep the f32 exactness path"
+    );
+    assert!(!should_hy_v3_prefill_skip_f32_sdpa_for(true, "hy_v3", 1));
+    assert!(
+        !should_hy_v3_prefill_skip_f32_sdpa_for(false, "hy_v3", 2048),
+        "kill switch must disable the skip"
+    );
+    for other in ["qwen3_5", "gemma4", "llama3", "minimax_m3", "deepseek_v3"] {
+        assert!(
+            !should_hy_v3_prefill_skip_f32_sdpa_for(true, other, 2048),
+            "{other} must not inherit the hy_v3 gate"
+        );
+    }
+}
+
+#[test]
 fn gemma4_prefill_skip_unused_f32_sdpa_is_seq_and_family_gated() {
     assert!(should_gemma4_prefill_skip_unused_f32_sdpa_for(
         true, "gemma4", 128

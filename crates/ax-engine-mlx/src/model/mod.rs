@@ -1349,6 +1349,9 @@ fn forward_and_logits_mode(
         ) || crate::fastpath::should_gemma4_prefill_skip_unused_f32_sdpa(
             &cfg.model_family,
             token_ids.len() as i32,
+        ) || crate::fastpath::should_hy_v3_prefill_skip_f32_sdpa(
+            &cfg.model_family,
+            token_ids.len() as i32,
         ),
     );
     let _native_offset = shared::utils::QwenPrefillNativeOffsetCausalGuard::arm(

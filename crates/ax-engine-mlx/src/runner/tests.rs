@@ -3188,6 +3188,114 @@ fn prefix_cache_eviction_is_lru_and_visible() {
     assert!(cache.get(&key3, &[3; 4]).is_some());
 }
 
+/// The portable store only needs to publish the boundaries the L1 cache will
+/// still hold afterwards. Publishing the whole ladder and publishing from the
+/// retention floor must leave the same resident set, for every budget shape.
+#[test]
+fn portable_retention_floor_keeps_the_same_resident_set_as_the_full_ladder() {
+    use std::collections::BTreeSet;
+
+    // (max_bytes, max_entries, block, blocks, kv bytes per token, header bytes)
+    let shapes: &[(u64, usize, usize, usize, u64, u64)] = &[
+        // hy_v3-like KV (98,304 B/token) with a 2k-token prompt: 129 boundaries, 2 fit.
+        (512 << 20, 64, 16, 129, 98_304, 0),
+        // 10k tokens: the longest boundaries exceed the byte budget on their own.
+        (512 << 20, 64, 16, 640, 98_304, 0),
+        // Short prompt: the whole ladder fits, so nothing may be skipped.
+        (512 << 20, 64, 16, 34, 98_304, 0),
+        // Entry-count bound dominates.
+        (1 << 30, 4, 16, 129, 1_000, 0),
+        // Tiny byte budget.
+        (50_000, 64, 16, 40, 100, 0),
+        // Per-snapshot header bytes make the true charge exceed the lower bound.
+        (512 << 20, 64, 16, 129, 98_304, 700),
+    ];
+    for &(max_bytes, max_entries, block, blocks, per_token, header) in shapes {
+        let policy = MlxPrefixCachePolicy {
+            max_bytes,
+            max_entries,
+        };
+        let full = blocks * block;
+        let resident_after_publishing_from = |from: usize| -> BTreeSet<usize> {
+            let mut cache = MlxPrefixCache::new(policy);
+            for len in (from..=full).step_by(block) {
+                let mut key = test_prefix_key(1);
+                key.token_count = len as u32;
+                key.token_hash = len as u64;
+                let snapshot = MlxPrefixSnapshot {
+                    kv_cache_payload: Arc::from(Vec::<u8>::new().into_boxed_slice()),
+                    tokens: vec![1; len],
+                    token_count: len,
+                    bytes: snapshot_charge_bytes(per_token * len as u64 + header, len),
+                    greedy_prefill_output_token: None,
+                    mtp_cursor_payload: None,
+                };
+                cache.insert(key, snapshot);
+            }
+            cache
+                .entries
+                .values()
+                .map(|entry| entry.snapshot.token_count)
+                .collect()
+        };
+
+        let floor = portable_prefix_retention_floor(policy, block, block, full, per_token);
+        assert!(
+            (block..=full).contains(&floor) && floor.is_multiple_of(block),
+            "floor {floor} must be a boundary (shape {max_bytes}/{max_entries}/{blocks})"
+        );
+        let full_ladder = resident_after_publishing_from(block);
+        let from_floor = resident_after_publishing_from(floor);
+        assert_eq!(
+            full_ladder, from_floor,
+            "retention floor {floor} changed the resident set (shape {max_bytes}/{max_entries}/{blocks}/{per_token}/{header})"
+        );
+        if let Some(&smallest) = full_ladder.iter().next() {
+            assert!(
+                floor <= smallest,
+                "floor {floor} above resident minimum {smallest}"
+            );
+        }
+    }
+
+    // 2k-token hy_v3 shape: 129 boundaries collapse to the 2 that can be resident.
+    let policy = MlxPrefixCachePolicy {
+        max_bytes: 512 << 20,
+        max_entries: 64,
+    };
+    assert_eq!(
+        portable_prefix_retention_floor(policy, 16, 16, 2064, 98_304),
+        2048
+    );
+    // The whole ladder is kept when it fits (160 tokens: ~86 MB of snapshots).
+    assert_eq!(
+        portable_prefix_retention_floor(policy, 16, 16, 160, 98_304),
+        16
+    );
+    // Even a 544-token prompt does not fit its whole ladder (~936 MB), so only
+    // the longest boundaries are worth publishing.
+    assert_eq!(
+        portable_prefix_retention_floor(policy, 16, 16, 544, 98_304),
+        384
+    );
+    // Nothing admissible keeps the floor at the largest boundary (the store loop
+    // then reports it as too large exactly as before).
+    let tiny = MlxPrefixCachePolicy {
+        max_bytes: 10,
+        max_entries: 64,
+    };
+    assert_eq!(portable_prefix_retention_floor(tiny, 16, 16, 64, 1_000), 64);
+    // Degenerate geometry never panics or loops.
+    assert_eq!(
+        portable_prefix_retention_floor(policy, 0, 16, 64, 1_000),
+        64
+    );
+    assert_eq!(
+        portable_prefix_retention_floor(policy, 16, 128, 64, 1_000),
+        64
+    );
+}
+
 #[test]
 fn prefix_cache_disabled_policy_does_not_store_snapshots() {
     let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {

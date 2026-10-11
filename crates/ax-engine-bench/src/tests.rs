@@ -1233,6 +1233,60 @@ fn set_doctor_axquant_assignment_bits(model_dir: &Path, module_path: &str, bits:
     .expect("artifact manifest should write");
 }
 
+/// Rewrite a fixture's plan and quantizer execution the way an AXQuant 2.x
+/// pack records them: `v2` schema strings, and `layer.0` quantized with the
+/// `mxfp4` microscaling method (4-bit, group size 32).
+fn convert_doctor_axquant_fixture_to_v2_mxfp4(model_dir: &Path, layer_bits: u32) {
+    let plan_path = model_dir.join("axquant_plan.json");
+    let mut plan: Value =
+        serde_json::from_slice(&fs::read(&plan_path).expect("AXQuant plan should read"))
+            .expect("AXQuant plan should parse");
+    plan["schema_version"] = json!("axquant.plan.v2");
+    for assignment in plan["assignments"]
+        .as_array_mut()
+        .expect("AXQuant plan should have assignments")
+    {
+        if assignment["module_path"] == "layer.0" {
+            assignment["method"] = json!("mxfp4");
+            assignment["bits"] = json!(layer_bits);
+            assignment["group_size"] = json!(32);
+        }
+    }
+    let plan_sha256 =
+        crate::doctor::axquant_stable_sha256(&plan).expect("plan should canonicalize");
+    rewrite_doctor_axquant_bound_json(model_dir, "axquant_plan.json", &plan);
+
+    let execution_path = model_dir.join("axquant_quantizer_execution.json");
+    let mut execution: Value = serde_json::from_slice(
+        &fs::read(&execution_path).expect("quantizer execution should read"),
+    )
+    .expect("quantizer execution should parse");
+    execution["schema_version"] = json!("axquant.quantizer-execution.v2");
+    execution["plan_sha256"] = json!(plan_sha256);
+    for record in execution["records"]
+        .as_array_mut()
+        .expect("quantizer execution should have records")
+    {
+        if record["module_path"] == "layer.0" {
+            record["method"] = json!("mxfp4");
+            record["bits"] = json!(layer_bits);
+            record["group_size"] = json!(32);
+        }
+    }
+    rewrite_doctor_axquant_bound_json(model_dir, "axquant_quantizer_execution.json", &execution);
+
+    let manifest_path = model_dir.join("axquant_manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("artifact manifest should read"))
+            .expect("artifact manifest should parse");
+    manifest["plan_sha256"] = json!(plan_sha256);
+    fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("artifact manifest should serialize"),
+    )
+    .expect("artifact manifest should write");
+}
+
 fn native_model_tensor(
     name: &str,
     role: ax_engine_core::NativeTensorRole,
@@ -3346,6 +3400,101 @@ fn doctor_report_rejects_axquant_execution_coverage_drift() {
             .issues
             .iter()
             .any(|issue| issue.contains("missing 1 planned quantized modules"))
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_accepts_axquant_v2_schemas_with_microscaling_methods() {
+    let root = unique_test_dir("doctor-axquant-v2-mxfp4");
+    let model_dir = root.join("axquant-hy-mt2");
+    write_doctor_axquant_model_fixture(&model_dir);
+    convert_doctor_axquant_fixture_to_v2_mxfp4(&model_dir, 4);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(
+        axquant.issues.is_empty(),
+        "unexpected issues: {:?}",
+        axquant.issues
+    );
+    assert!(axquant.metadata_valid);
+    assert!(axquant.lineage_valid);
+    assert_eq!(axquant.quantized_module_count, 3);
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::Ready
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_axquant_microscaling_method_with_wrong_bit_width() {
+    let root = unique_test_dir("doctor-axquant-mxfp4-wrong-bits");
+    let model_dir = root.join("axquant-hy-mt2");
+    write_doctor_axquant_model_fixture(&model_dir);
+    convert_doctor_axquant_fixture_to_v2_mxfp4(&model_dir, 8);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let issues = &report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected")
+        .issues;
+    assert!(
+        issues.iter().any(|issue| issue
+            .contains("1 assignments with invalid module, method, group-size, or bit metadata")),
+        "issues: {issues:?}"
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_unknown_axquant_schema_versions() {
+    let root = unique_test_dir("doctor-axquant-unknown-schema");
+    let model_dir = root.join("axquant-qwen36");
+    write_doctor_axquant_model_fixture(&model_dir);
+    convert_doctor_axquant_fixture_to_v2_mxfp4(&model_dir, 4);
+    let plan_path = model_dir.join("axquant_plan.json");
+    let mut plan: Value =
+        serde_json::from_slice(&fs::read(&plan_path).expect("AXQuant plan should read"))
+            .expect("AXQuant plan should parse");
+    plan["schema_version"] = json!("axquant.plan.v3");
+    rewrite_doctor_axquant_bound_json(&model_dir, "axquant_plan.json", &plan);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    let issues = &report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected")
+        .issues;
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("unsupported or missing AXQuant plan schema")),
+        "issues: {issues:?}"
     );
 
     fs::remove_dir_all(root).expect("test dir should clean up");

@@ -2246,6 +2246,16 @@ impl MlxKVCache {
     /// memcpy per prefill. The wire format is unchanged: the deserializer
     /// derives capacity from the stored shape and regrows on append.
     fn serialize_tensor_logical(out: &mut Vec<u8>, arr: &MlxArray, logical_tokens: Option<usize>) {
+        Self::serialize_tensor(
+            out,
+            &Self::logical_tensor_for_serialize(arr, logical_tokens),
+        );
+    }
+
+    /// Lazily build the row-contiguous logical prefix that
+    /// [`Self::serialize_tensor_logical`] writes. Splitting this out lets
+    /// `serialize_to_bytes` evaluate many layers' tensors in one call.
+    fn logical_tensor_for_serialize(arr: &MlxArray, logical_tokens: Option<usize>) -> MlxArray {
         let shape = arr.shape();
         if let Some(tokens) = logical_tokens
             && shape.len() == 4
@@ -2255,10 +2265,58 @@ impl MlxKVCache {
             let trimmed = slice(arr, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
             // The slice is a strided view over the capacity buffer;
             // materialize it so `data_raw` reads row-contiguous bytes.
-            let trimmed = contiguous(&trimmed, None);
-            Self::serialize_tensor(out, &trimmed);
+            contiguous(&trimmed, None)
         } else {
-            Self::serialize_tensor(out, arr);
+            arr.clone()
+        }
+    }
+
+    /// Layers per `eval` call while serializing full-attention K/V.
+    /// `serialize_tensor` evaluates one tensor at a time, which costs a GPU
+    /// round trip per K and per V (96 for a 48-layer model) and dominated the
+    /// time of a small prefix snapshot. Batching keeps the transient dense
+    /// copies bounded to a few layers instead of the whole cache.
+    const SERIALIZE_EVAL_BATCH_LAYERS: usize = 8;
+
+    /// Materialize the logical K/V of the full-attention layers in `range`
+    /// with a single `eval`, storing them in `prepared` for the writer.
+    fn prepare_fa_layers_for_serialize(
+        &self,
+        range: std::ops::Range<usize>,
+        prepared: &mut [Option<(MlxArray, MlxArray)>],
+    ) {
+        for idx in range {
+            let Some(fa) = &self.layers[idx] else {
+                continue;
+            };
+            let logical_tokens = if fa.rotating_window().is_none() {
+                Some(self.seq_len)
+            } else {
+                None
+            };
+            let (k, v) = match fa {
+                FaLayerStorage::Contiguous(lkv) => (lkv.k.clone(), lkv.v.clone()),
+                FaLayerStorage::Quantized(quantized) => quantized.dense_view(0, self.seq_len),
+                FaLayerStorage::Paged(paged) => {
+                    let pool = self
+                        .fa_pool
+                        .as_ref()
+                        .expect("paged FA serialization requires pool");
+                    paged.materialize(pool, 0, self.seq_len)
+                }
+            };
+            prepared[idx] = Some((
+                Self::logical_tensor_for_serialize(&k, logical_tokens),
+                Self::logical_tensor_for_serialize(&v, logical_tokens),
+            ));
+        }
+        let pending: Vec<&MlxArray> = prepared
+            .iter()
+            .flatten()
+            .flat_map(|(k, v)| [k, v])
+            .collect();
+        if !pending.is_empty() {
+            eval(&pending);
         }
     }
 
@@ -2439,7 +2497,13 @@ impl MlxKVCache {
             return out;
         }
 
+        let mut prepared: Vec<Option<(MlxArray, MlxArray)>> =
+            (0..self.layers.len()).map(|_| None).collect();
         for idx in 0..self.layers.len() {
+            if idx % Self::SERIALIZE_EVAL_BATCH_LAYERS == 0 {
+                let end = (idx + Self::SERIALIZE_EVAL_BATCH_LAYERS).min(self.layers.len());
+                self.prepare_fa_layers_for_serialize(idx..end, &mut prepared);
+            }
             // Per-index disambiguation: at most one of the three layer
             // vectors is populated. The encoded `kind` byte tells the
             // reader which payload to expect.
@@ -2461,34 +2525,16 @@ impl MlxKVCache {
                 // re-quantized on the first append after restore.
                 let rotating_window = fa.rotating_window();
                 out.extend_from_slice(&(rotating_window.unwrap_or(0) as u64).to_le_bytes());
-                let logical_tokens = if rotating_window.is_none() {
-                    Some(self.seq_len)
-                } else {
-                    None
-                };
-                match fa {
-                    FaLayerStorage::Contiguous(lkv) => {
-                        Self::serialize_tensor_logical(&mut out, &lkv.k, logical_tokens);
-                        Self::serialize_tensor_logical(&mut out, &lkv.v, logical_tokens);
-                    }
-                    FaLayerStorage::Quantized(quantized) => {
-                        let (k, v) = quantized.dense_view(0, self.seq_len);
-                        Self::serialize_tensor_logical(&mut out, &k, logical_tokens);
-                        Self::serialize_tensor_logical(&mut out, &v, logical_tokens);
-                    }
-                    FaLayerStorage::Paged(paged) => {
-                        // serialize is rare vs decode; time is not accumulated
-                        // into `paged_materialize_us` (that field tracks live
-                        // SDPA materialize on the append path).
-                        let pool = self
-                            .fa_pool
-                            .as_ref()
-                            .expect("paged FA serialization requires pool");
-                        let (k, v) = paged.materialize(pool, 0, self.seq_len);
-                        Self::serialize_tensor_logical(&mut out, &k, logical_tokens);
-                        Self::serialize_tensor_logical(&mut out, &v, logical_tokens);
-                    }
-                }
+                // K/V were trimmed to the logical prefix and evaluated in a
+                // batch by `prepare_fa_layers_for_serialize`; paged layers are
+                // materialized there too (serialize is rare vs decode, so that
+                // time is not accumulated into `paged_materialize_us`, which
+                // tracks the live SDPA materialize on the append path).
+                let (k, v) = prepared[idx]
+                    .take()
+                    .expect("FA layer tensors prepared for serialization");
+                Self::serialize_tensor(&mut out, &k);
+                Self::serialize_tensor(&mut out, &v);
             } else if let Some(mla) = &self.glm_mla_layers[idx] {
                 out.push(Self::LAYER_KIND_MLA);
                 out.extend_from_slice(&[0u8; 7]);

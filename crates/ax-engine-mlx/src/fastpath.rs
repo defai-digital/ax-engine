@@ -4825,6 +4825,26 @@ env_flag_default_on!(
     "AX_MLX_QWEN_PREFILL_SKIP_UNUSED_F32_SDPA"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_HY_V3_PREFILL_SKIP_F32_SDPA` — keep Hy-MT2 (`hy_v3`) prefill SDPA
+    /// in the model dtype at `seq >= 128`, like the Qwen/Gemma 4 contract gate.
+    /// `AX_MLX_MULTI_TOKEN_F32_ATTENTION` is default-ON for short teacher-forced
+    /// verify (`seq` 2..=8); on a prefill chunk it casts the whole cached K/V
+    /// of every full-attention layer to f32 and runs the SDPA in f32. All 48
+    /// `hy_v3` layers are full attention, so the cost grows with the cached
+    /// prefix.
+    ///
+    /// **Default: ON** (kill switch `=0`), `hy_v3` only. M2 Ultra, MXFP4 pack,
+    /// prefix cache off, 24-token greedy output identical in every arm:
+    /// p2066 2.28 -> 2.13 s, p3369 3.79 -> 3.36 s, p10248 16.32 -> 13.27 s
+    /// (-19%). Stacking `AX_MLX_NATIVE_OFFSET_CAUSAL=1` gave p10248 12.85 s
+    /// (a further 3%) and is deliberately not enabled: the Qwen flag above
+    /// documents that the pair regresses on M3 Max, and there is no `hy_v3`
+    /// evidence on other hosts.
+    hy_v3_prefill_skip_f32_sdpa_enabled,
+    "AX_MLX_HY_V3_PREFILL_SKIP_F32_SDPA"
+);
+
 env_flag!(
     /// `AX_MLX_QWEN_PREFILL_BF16_EMBED_DEQUANT` — dequantize gathered
     /// embedding rows to BF16 instead of the MLX default f32, then
@@ -5035,6 +5055,23 @@ pub(crate) fn should_qwen_prefill_skip_unused_f32_sdpa_for(
             model_family.to_ascii_lowercase().as_str(),
             "qwen3_5" | "qwen3_next" | "qwen3_vl_moe" | "qwen3_vl"
         )
+}
+
+/// Whether Hy-MT2 (`hy_v3`) prefill should skip the unused f32 SDPA upcast.
+pub(crate) fn should_hy_v3_prefill_skip_f32_sdpa(model_family: &str, seq: i32) -> bool {
+    should_hy_v3_prefill_skip_f32_sdpa_for(hy_v3_prefill_skip_f32_sdpa_enabled(), model_family, seq)
+}
+
+/// Pure helper for [`should_hy_v3_prefill_skip_f32_sdpa`]. The `seq >= 128`
+/// gate mirrors [`should_qwen_prefill_skip_unused_f32_sdpa_for`]: decode
+/// (`seq == 1`) never arms the guard and n-gram verify windows (`seq` 2..=8)
+/// keep the f32 exactness path.
+pub(crate) fn should_hy_v3_prefill_skip_f32_sdpa_for(
+    enabled: bool,
+    model_family: &str,
+    seq: i32,
+) -> bool {
+    enabled && seq >= 128 && model_family.eq_ignore_ascii_case("hy_v3")
 }
 
 /// Whether Qwen prefill should skip the unused embed-id clip.

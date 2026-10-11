@@ -551,9 +551,14 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureRegistration] = &[
         default_generation: GenerationKind::Autoregressive,
         layer_forward_route: LayerForwardRoute::Standard,
         dense_batched_decode_candidate: false,
-        cert_gate_note: "Hy-MT2 hy_v3: QK-norm GQA, sigmoid router plus expert_bias, route_norm, router_scaling_factor, one shared expert, first layer dense. Development graph; the official chat contract is chat_template.jinja, not a built-in renderer",
+        cert_gate_note: "Hy-MT2 hy_v3: QK-norm GQA, sigmoid router plus expert_bias, route_norm, router_scaling_factor, one shared expert, first layer dense. Development graph; chat is rendered non-thinking (reasoning_effort:no_think) to match the upstream chat_template.jinja",
         support_tier: ModelSupportTier::Experimental,
-        chat_contract: ChatContract::not_applicable(),
+        chat_contract: ChatContract {
+            template: ChatTemplateKind::HyV3,
+            output_policy: ChatOutputPolicy::Plain,
+            default_thinking_off: true,
+            requires_instruct_artifact: false,
+        },
     },
     ArchitectureRegistration {
         family_label: "whisper",

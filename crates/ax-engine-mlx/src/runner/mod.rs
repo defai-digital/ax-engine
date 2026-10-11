@@ -1693,6 +1693,60 @@ fn prefix_snapshot_start_tokens(
     }
 }
 
+/// Smallest block-aligned prefix length whose portable snapshot can still be
+/// resident once a cold prefill has published its whole boundary ladder.
+///
+/// The portable store inserts boundaries in ascending order and the L1 cache
+/// evicts least-recently-used first, so after the ladder is published the
+/// cache holds exactly the longest prefixes that fit `max_entries` and
+/// `max_bytes`; every shorter boundary is evicted by a later insert of the
+/// same prefill. Serializing those boundaries only to drop them made the store
+/// O(prompt²) in memory traffic (a 2k-token prompt published 129 snapshots
+/// to keep 2), so the store skips everything below this floor.
+///
+/// `bytes_per_token` is the live cache's logical KV bytes per token. The charge
+/// per boundary (`bytes_per_token * len + 4 * len`) is a lower bound of the real
+/// snapshot charge, so the floor can only be lower (more boundaries kept) than
+/// the true retention window, never higher. Boundaries that cannot be admitted
+/// on their own are skipped without consuming budget, matching the per-prefix
+/// `admits_lower_bound` gate in the store loop.
+fn portable_prefix_retention_floor(
+    policy: MlxPrefixCachePolicy,
+    block_size: usize,
+    start_tokens: usize,
+    full_block_tokens: usize,
+    bytes_per_token: u64,
+) -> usize {
+    let mut floor = full_block_tokens;
+    if block_size == 0 || start_tokens > full_block_tokens {
+        return floor;
+    }
+    let mut retained_bytes = 0u64;
+    let mut retained_entries = 0usize;
+    let mut prefix_len = full_block_tokens;
+    while prefix_len >= start_tokens && prefix_len > 0 {
+        let charge = snapshot_charge_bytes(
+            bytes_per_token.saturating_mul(prefix_len as u64),
+            prefix_len,
+        );
+        if policy.admits_lower_bound(charge) {
+            if retained_entries >= policy.max_entries
+                || retained_bytes.saturating_add(charge) > policy.max_bytes
+            {
+                break;
+            }
+            retained_entries += 1;
+            retained_bytes = retained_bytes.saturating_add(charge);
+            floor = prefix_len;
+        }
+        let Some(next) = prefix_len.checked_sub(block_size) else {
+            break;
+        };
+        prefix_len = next;
+    }
+    floor
+}
+
 /// ADR-016 demote-on-evict kill switch. Default ON;
 /// `AX_MLX_PREFIX_DEMOTE_ON_EVICT=0` (or any other non-truthy value)
 /// restores the pre-change behavior of
@@ -8416,6 +8470,22 @@ impl MlxRunner {
             &state.prompt_prefix_tokens[..full_block_tokens],
             block_size,
         );
+        // Boundaries below this floor would be evicted by the longer ones this
+        // same loop inserts, so they are not worth serializing.
+        let retention_floor = if snapshot_start_tokens < full_block_tokens {
+            let policy = self.prefix_cache.lock().policy;
+            let bytes_per_token =
+                state.cache.usage_snapshot().logical_bytes / state.cache.seq_len().max(1) as u64;
+            portable_prefix_retention_floor(
+                policy,
+                block_size,
+                snapshot_start_tokens,
+                full_block_tokens,
+                bytes_per_token,
+            )
+        } else {
+            snapshot_start_tokens
+        };
         for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
             store_key.token_count = saturating_u32(prefix_len);
@@ -8489,6 +8559,13 @@ impl MlxRunner {
                     self.disk_prefix_key_bytes(&store_key, tokens)
                         .is_some_and(|key_bytes| !disk.contains(&key_bytes))
                 });
+            if prefix_len < retention_floor && !native_store_needed && !disk_store_needed {
+                Self::pfx_dbg(
+                    "store-loop-skip",
+                    &format!("below_retention_floor prefix={prefix_len} floor={retention_floor}"),
+                );
+                continue;
+            }
             // A live standard-FA prefill boundary needs only a runner-local
             // clone-and-pin. Portable serialization is deferred until prompt
             // completion, matching mlxcel's separation between live paged

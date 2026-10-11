@@ -312,6 +312,35 @@ impl DoctorAxquantReport {
     }
 }
 
+/// Plan / quantizer-execution schema versions the doctor can read. Packs from
+/// AXQuant 1.8.x carry `v1`, packs from AXQuant 2.1.0 carry `v2`; the fields
+/// the doctor validates have the same shape in both.
+const AXQUANT_PLAN_SCHEMAS: [&str; 2] = ["axquant.plan.v1", "axquant.plan.v2"];
+const AXQUANT_EXECUTION_SCHEMAS: [&str; 2] = [
+    "axquant.quantizer-execution.v1",
+    "axquant.quantizer-execution.v2",
+];
+
+/// Quantization methods AXQuant records per module. `mxfp4` / `mxfp8` are the
+/// MLX microscaling modes that AXQuant 2.1.0 MXFP4 packs record.
+fn is_axquant_method(method: &str) -> bool {
+    matches!(
+        method,
+        "affine" | "awq" | "dwq" | "gptq" | "mxfp4" | "mxfp8" | "bf16"
+    )
+}
+
+/// `bf16` and the microscaling modes fix the bit width; the remaining
+/// methods quantize below 16 bits.
+fn axquant_method_bits_consistent(method: &str, bits: u32) -> bool {
+    match method {
+        "bf16" => bits == 16,
+        "mxfp4" => bits == 4,
+        "mxfp8" => bits == 8,
+        _ => bits < 16,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AxquantModuleSpec {
     bits: u32,
@@ -1258,7 +1287,10 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
     let mut plan_digest_valid = false;
     let mut planned_quantized_modules = BTreeMap::new();
     if let Some(plan) = &plan {
-        if json_string(plan, "schema_version").as_deref() != Some("axquant.plan.v1") {
+        if !json_string(plan, "schema_version")
+            .as_deref()
+            .is_some_and(|schema| AXQUANT_PLAN_SCHEMAS.contains(&schema))
+        {
             report
                 .issues
                 .push("unsupported or missing AXQuant plan schema".to_string());
@@ -1333,7 +1365,7 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                 let method = assignment
                     .get("method")
                     .and_then(Value::as_str)
-                    .filter(|value| matches!(*value, "affine" | "awq" | "dwq" | "gptq" | "bf16"));
+                    .filter(|value| is_axquant_method(value));
                 let group_size = json_optional_positive_u64(assignment, "group_size");
                 let (Some(module_path), Some(method), Some(group_size)) =
                     (module_path, method, group_size)
@@ -1343,8 +1375,7 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                 };
                 if (bits < 16 && group_size.is_none())
                     || (bits == 16 && group_size.is_some())
-                    || (bits < 16 && method == "bf16")
-                    || (bits == 16 && method != "bf16")
+                    || !axquant_method_bits_consistent(method, bits)
                 {
                     invalid_assignments += 1;
                     continue;
@@ -1426,8 +1457,9 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
         );
         match load_json_value(&execution_path) {
             Ok(execution) => {
-                if json_string(&execution, "schema_version").as_deref()
-                    != Some("axquant.quantizer-execution.v1")
+                if !json_string(&execution, "schema_version")
+                    .as_deref()
+                    .is_some_and(|schema| AXQUANT_EXECUTION_SCHEMAS.contains(&schema))
                 {
                     report
                         .issues
@@ -1603,7 +1635,7 @@ fn validate_axquant_execution_coverage(
         let method = record
             .get("method")
             .and_then(Value::as_str)
-            .filter(|value| matches!(*value, "affine" | "awq" | "dwq" | "gptq" | "bf16"));
+            .filter(|value| is_axquant_method(value));
         let group_size = json_optional_positive_u64(record, "group_size");
         let success = record.get("success").and_then(Value::as_bool);
         let fallback = record.get("fallback").and_then(Value::as_bool);
