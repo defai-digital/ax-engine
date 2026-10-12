@@ -76,8 +76,9 @@ The current Certified families are `qwen3` (dense and MoE), `qwen3_5` /
 `gemma4` / `gemma4_vl`, `glm4_moe_lite`, `gpt_oss`, and `deepseek_v3` /
 `deepseek_v32`. Registered
 families without certification evidence are Compatible unless explicitly
-gated as Experimental. `diffusion_gemma` and `qwen4_exp` (Flash Next) are
-Experimental; implemented execution does not establish certification.
+gated as Experimental. `diffusion_gemma`, `deepseek_v4`, `muse_glimmer`,
+`minimax_m3`, `qwen4_exp` (Flash Next) and `hy_v3` (Hy-MT2) are Experimental;
+implemented execution does not establish certification.
 A manifest whose structural signals force a feature-gated
 generation kind (for example a diffusion canvas) resolves to Experimental even
 when its family label is otherwise Certified — the tier reflects the path that
@@ -583,6 +584,7 @@ Experimental direct-support model families:
 | --- | --- | --- | --- |
 | DiffusionGemma | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Experimental repo-owned MLX block-diffusion path | Experimental rows live under [Performance Results](PERFORMANCE-RESULTS.md#diffusiongemma); benchmark boundary is first committed 256-token diffusion block, not autoregressive TTFT/decode. See [DiffusionGemma experimental support](DIFFUSIONGEMMA.md). |
 | DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | Experimental repo-owned MLX path: hyper-connections, re-parameterized MLA, CSA/HCA compressor + LID indexer, sqrtsoftplus + hash routing | Smoke-validated on an M2 Ultra 192 GB with the AXQ 2-bit repack (`AutomatosX/AX-DeepSeek-V4-Flash-MLX-AXQ-2bit`, ~115 GB): loads, serves `/v1/completions`, and answers 1.6k-token context-retrieval probes coherently. No benchmark evidence and no MTP acceptance-rate data yet — not a support claim. ~284B MoE; needs a 192 GB class host for 2-bit and 256 GB class for 4-bit — smaller hosts fail the load memory preflight. MTP nextn speculative decode is wired for the AXQ `mtp.safetensors` sidecar (FP8 blockwise projections + per-expert MXFP4); DSpark parallel decode is not implemented. The 2-bit artifact requires `AX_ENGINE_2BIT_EXPERIMENTAL=1`. |
+| Hy-MT2 | `AutomatosX/AX-Hy-MT2-30B-A3B-MLX-AXQ-MXFP4`, `AutomatosX/AX-Hy-MT2-30B-A3B-MLX-AXQ-MXFP8` (base `tencent/Hy-MT2-30B-A3B`) | Experimental repo-owned MLX path for `hy_v3`: 48-layer QK-norm GQA MoE (128 experts, top-8, sigmoid router with a selection-only expert bias, one shared SwiGLU expert, first layer dense), non-thinking chat | Translation model. Smoke-validated on an M2 Ultra 192 GB with both AXQ packs: `ax-engine download <repo-id>` generates the manifest, `ax-engine serve <dir>` infers the model id `hy-mt2-30b-a3b`, `/v1/chat/completions` renders the upstream chat template in `no_think` mode, and 14 translation/generation cases decode coherently; two long-context prompts (3.4k and 10.2k tokens) produced the same output as an mlx-lm reference. The packs are AXQ development artifacts, not certified releases. No tool calling, no MTP, no certification or public benchmark rows. Only the 30B-A3B MoE is covered: the dense Hy-MT2 1.8B and 7B (`hunyuan_v1_dense`) are not served by this path. |
 
 All direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Adding a new direct-support architecture
