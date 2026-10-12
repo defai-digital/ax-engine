@@ -664,6 +664,16 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
             "qwen3",
             "qwen3-embedding-8b",
         ),
+        (
+            "models--AutomatosX--AX-Hy-MT2-30B-A3B-MLX-AXQ-MXFP4",
+            "hy_v3",
+            "hy-mt2-30b-a3b",
+        ),
+        (
+            "models--AutomatosX--AX-Hy-MT2-30B-A3B-MLX-AXQ-MXFP8",
+            "hy_v3",
+            "hy-mt2-30b-a3b",
+        ),
     ];
     for (cache_dir, model_type, expected) in cases {
         let root = unique_test_dir("infer-automatosx-pack");
@@ -684,6 +694,32 @@ fn explicit_automatosx_pack_artifacts_infer_product_model_ids() {
         );
         fs::remove_dir_all(root).expect("test dir should clean up");
     }
+}
+
+#[test]
+fn hy_v3_artifacts_infer_model_id_from_model_type_not_directory_name() {
+    // `ax-engine download <repo> --dest <any dir>` then `ax-engine serve <dir>`
+    // passes no --model-id; the directory name carries no family hint.
+    let root = unique_test_dir("infer-hy-v3-any-dir");
+    let artifact_dir = root.join("my-translation-model");
+    write_artifact_dir(&artifact_dir, "hy_v3");
+    let args = ServerArgs {
+        model_id: String::new(),
+        mlx: true,
+        mlx_model_artifacts_dir: Some(artifact_dir.clone()),
+        ..base_args()
+    };
+
+    let model_id = args
+        .effective_model_id()
+        .expect("hy_v3 artifacts should infer a model id from config.json");
+    assert_eq!(model_id, "hy-mt2-30b-a3b");
+    // The inferred id keeps the Hy-MT2 chat framing on the heuristic path.
+    assert_eq!(
+        crate::chat::ChatPromptTemplate::for_model_id(&model_id),
+        crate::chat::ChatPromptTemplate::HyV3
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
 }
 
 #[test]

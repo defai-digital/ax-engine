@@ -147,6 +147,9 @@ pub(crate) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String
         "unlimited-ocr" | "unlimited_ocr" | "deepseekocr" => Some("unlimited-ocr".to_string()),
         "mistral3" | "mistral" | "ministral3" => Some(infer_mistral_model_id(&path_label)),
         "gpt_oss" => Some(infer_gpt_oss_model_id(&path_label)),
+        // Hy-MT2 30B-A3B is the only `hy_v3` product; the dense Hy-MT2
+        // 1.8B/7B checkpoints ship `hunyuan_v1_dense` and are not served here.
+        "hy_v3" => Some("hy-mt2-30b-a3b".to_string()),
         value if value.starts_with("qwen3") => Some(infer_qwen_model_id(&path_label, value)),
         _ => None,
     })
