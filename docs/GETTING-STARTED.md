@@ -103,7 +103,7 @@ If one channel has not caught up with the latest release, use the other channel
 or build that tagged release from source. Do not silently continue with an
 older package: it may not provide the command surface documented here.
 
-### Homebrew (primary)
+### Homebrew
 
 Install the signed macOS arm64 CLI, server, and bench binaries:
 
@@ -251,7 +251,7 @@ downloads (`ax-engine serve qwen3.8-27b:axq`) need the
 [model download helpers](#model-download-helpers). Detached minisign
 signatures for every asset are described in [MINISIGN.md](MINISIGN.md).
 
-### Python wheel (SDK / no Homebrew needed)
+### Python wheel (SDK, no Homebrew needed)
 
 Use the wheel when you need the **Python package** (`import ax_engine`),
 LangChain helpers, or the optional OpenAI/multimodal extras — or when you cannot
