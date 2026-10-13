@@ -188,8 +188,19 @@ pub fn router(
         .with_state(state))
 }
 
-async fn health(State(state): State<RankApiState>) -> Json<RankHealth> {
-    Json(state.processor.health())
+async fn health(State(state): State<RankApiState>) -> Response {
+    // The executor mutex is blocking-held for the duration of a rank step;
+    // taking it directly in an async handler parks a tokio worker (the
+    // tokens/activation/close handlers all offload for the same reason).
+    let processor = Arc::clone(&state.processor);
+    match tokio::task::spawn_blocking(move || processor.health()).await {
+        Ok(health) => Json(health).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("pipeline health task failed: {error}"),
+        )
+            .into_response(),
+    }
 }
 
 async fn tokens(
