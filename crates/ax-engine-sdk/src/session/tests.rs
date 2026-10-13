@@ -2013,7 +2013,7 @@ fn live_native_route_survives_eviction_pressure_and_reaches_terminal_report() {
     live_route
         .crossover_decisions
         .insert("live_marker".to_string(), 7);
-    session.store_native_request_route(42, live_route);
+    session.store_native_request_route(42, live_route, &[]);
 
     // Plain FIFO eviction would drop request 42 here: it was the first route
     // stored, and each store beyond the cap evicts from the front.
@@ -2021,6 +2021,7 @@ fn live_native_route_survives_eviction_pressure_and_reaches_terminal_report() {
         session.store_native_request_route(
             request_id,
             GenerateRouteReport::with_execution_plan("flood-route"),
+            &[],
         );
     }
 
@@ -2046,6 +2047,77 @@ fn live_native_route_survives_eviction_pressure_and_reaches_terminal_report() {
         Some(&7),
         "the terminal report must keep the route through an unscheduled termination"
     );
+}
+
+#[test]
+fn native_route_prune_evicts_dead_routes_in_one_pass_under_kept_pressure() {
+    let mut session = shared_stream_test_session(4);
+    let route = GenerateRouteReport::with_execution_plan("kept-route");
+    let kept: Vec<u64> = (0..MAX_NATIVE_ROUTE_REPORTS as u64).collect();
+    let dead: Vec<u64> =
+        (MAX_NATIVE_ROUTE_REPORTS as u64..MAX_NATIVE_ROUTE_REPORTS as u64 + 6).collect();
+    for request_id in kept.iter().chain(dead.iter()) {
+        session.native_route_report_order.push_back(*request_id);
+        session
+            .native_request_routes
+            .insert(*request_id, route.clone());
+    }
+
+    // The kept ids stand in for routes the current step still has to deliver
+    // (live requests plus ids kept through their terminating step); the dead
+    // ids trail them in FIFO order.
+    session.prune_native_request_routes(&kept);
+
+    assert_eq!(
+        session.native_request_routes.len(),
+        MAX_NATIVE_ROUTE_REPORTS,
+        "one prune pass must shed every evictable route"
+    );
+    for request_id in &dead {
+        assert!(
+            !session.native_request_routes.contains_key(request_id),
+            "unkept route {request_id} must be evicted in the same pass"
+        );
+    }
+    for request_id in &kept {
+        assert!(session.native_request_routes.contains_key(request_id));
+    }
+    let order: Vec<u64> = session.native_route_report_order.iter().copied().collect();
+    assert_eq!(order, kept, "kept routes must rotate in FIFO order");
+}
+
+#[test]
+fn native_route_store_defers_a_kept_route_to_a_later_store() {
+    let mut session = shared_stream_test_session(4);
+    let route = GenerateRouteReport::with_execution_plan("route");
+    let older: Vec<u64> = (0..MAX_NATIVE_ROUTE_REPORTS as u64).collect();
+    for request_id in &older {
+        session.native_route_report_order.push_back(*request_id);
+        session
+            .native_request_routes
+            .insert(*request_id, route.clone());
+    }
+
+    // First store: 9_999 is kept for this call — as a request finishing on
+    // the step that stores its route is — and must survive that prune.
+    let mut keep = older.clone();
+    keep.push(9_999);
+    session.store_native_request_route(9_999, route.clone(), &keep);
+    assert!(
+        session.native_request_routes.contains_key(&9_999),
+        "the route stored by the delivering step must survive that step's prune"
+    );
+
+    // Second store: the previous step's terminal route is stale and evicted,
+    // while the route stored by this call survives.
+    let mut keep = older.clone();
+    keep.push(10_000);
+    session.store_native_request_route(10_000, route.clone(), &keep);
+    assert!(
+        !session.native_request_routes.contains_key(&9_999),
+        "a later store must evict the previous step's terminal route"
+    );
+    assert!(session.native_request_routes.contains_key(&10_000));
 }
 
 #[test]
