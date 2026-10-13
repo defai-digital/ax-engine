@@ -467,10 +467,16 @@ pub(crate) fn run_llama_cpp_replay_workload(
 
         current_time_ms = tick_time_ms;
 
-        if observation.step_count > max_steps {
-            return Err(CliError::Runtime(
-                "llama.cpp replay exceeded delegated step guard".to_string(),
-            ));
+        // `replay_step_guard` is a simulated-time ceiling (latest event time
+        // plus the output budget and slack); the native replay compares it to
+        // `current_time_ms`, and this loop must mirror that. Comparing it to
+        // the step count inflated the allowance by every event's timeline
+        // offset (a hung delegated replay could burn ~timeline-length steps
+        // before tripping).
+        if current_time_ms > max_steps {
+            return Err(CliError::Runtime(format!(
+                "llama.cpp replay exceeded delegated step guard: current_time_ms={current_time_ms}, max_steps={max_steps}"
+            )));
         }
 
         if !progress_made {
