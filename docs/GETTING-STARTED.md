@@ -64,7 +64,7 @@ outside AX Engine; see [AX Serving](AX-SERVING.md).
 
 ### Match this guide
 
-These instructions track the latest tagged `6.x` release. **Homebrew is the
+These instructions track the latest tagged `7.x` release. **Homebrew is the
 primary deployment path** for the `ax-engine` CLI, server, and bench tools on
 macOS Apple Silicon; the wheel is the supported secondary path for Python
 library use.
@@ -208,9 +208,25 @@ Run this once after `brew install`. No Apple Developer account is required.
 
 Use the wheel when you need the **Python package** (`import ax_engine`),
 LangChain helpers, or the optional OpenAI/multimodal extras — or when you cannot
-use Homebrew. Use a dedicated Python 3.12 virtual environment so the wheel,
-Python dependencies, and command wrappers stay on one version. `uv` is the
-recommended setup:
+use Homebrew. Use a dedicated Python 3.12+ virtual environment so the wheel,
+Python dependencies, and command wrappers stay on one version.
+
+Without `uv` or Homebrew, use the official Python macOS installer:
+
+1. Download the Python 3.13 macOS installer from
+   [python.org](https://www.python.org/downloads/macos/) and run it.
+2. Reopen Terminal and check `python3.13 --version`.
+3. Create a new environment and install AX Engine:
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
+```
+
+If you already use `uv`, it can create the environment with an explicit
+Python version instead:
 
 ```bash
 uv venv --python 3.12 .venv
@@ -221,20 +237,12 @@ which -a ax-engine
 ax-engine doctor
 ```
 
-The standard-library equivalent is:
-
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
-```
-
 The current macOS arm64 wheel exposes `ax-engine` and `ax-engine-server` and
 bundles `ax-engine-bench` behind the Python entrypoints, so a wheel-only install
-can still serve and diagnose. If pip cannot find `>=6.12.0` for your platform,
-confirm that your configured package index is current, then use Homebrew or the
-source build below instead of silently accepting an older release. The wheel
+can still serve and diagnose. If pip cannot find a matching release for your
+platform, first check the interpreter and platform requirements in
+[Python installation troubleshooting](#python-installation-troubleshooting),
+then confirm that your configured package index is current. The wheel
 bundles AX and MLX Metal runtime assets used by normal serving; Xcode and
 Apple's Metal Toolchain are only required when you build from source, run
 developer diagnostics, or rebuild AX Metal kernels.
@@ -244,17 +252,55 @@ The wheel and Homebrew formula both install commands named `ax-engine` and
 shadows `/opt/homebrew/bin`; check `which -a ax-engine` and use one installation
 channel in each shell to avoid running mismatched versions.
 
+#### Python installation troubleshooting
+
+The wheel requires **Python 3.12+**, macOS 26+, and Apple Silicon (M2 or newer).
+A generic `python3` command may select an older interpreter, including Python
+3.9.6. Check the interpreter in the active environment:
+
+```bash
+python --version
+python -m pip --version
+```
+
+If pip reports `No matching distribution found` or ignores releases requiring
+another Python version, check these requirements before retrying. Upgrading
+pip does not upgrade Python, and an existing virtual environment keeps the
+interpreter version used to create it. A subsequent `ax-engine: command not
+found` can mean the package was never installed successfully.
+
+To recover from an older virtual environment, deactivate it and create a
+separate Python 3.13 environment, preserving the original environment. Install
+Python 3.13 from python.org first; Homebrew is not required:
+
+```bash
+deactivate  # Run only if a virtual environment is active.
+python3.13 -m venv "$HOME/.venvs/ax-engine-py313"
+source "$HOME/.venvs/ax-engine-py313/bin/activate"
+python --version
+python -m pip install --upgrade pip
+python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
+ax-engine doctor
+```
+
+If `python3.13` is not on your `PATH` after the official installer finishes,
+reopen Terminal or use
+`/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13` to create
+the environment. If you already have Homebrew, `brew install python@3.13` is
+an optional alternative to the official installer.
+
 ### Source
 
 Use source builds for development, local examples, or changes that have not
-been tagged yet. Source is the advanced fallback when neither Homebrew nor pip
-has the current tagged release. Install Xcode first, open it once to finish
+been tagged yet. Install Python 3.13 as described in the wheel setup above.
+Source is the advanced fallback when neither Homebrew nor pip has the current
+tagged release. Install Xcode first, open it once to finish
 Apple's setup prompts, then install the Metal Toolchain component:
 
 ```text
 brew install protobuf
 xcodebuild -downloadComponent metalToolchain
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip maturin
 python -m pip install "mlx==$(cat mlx.version)"

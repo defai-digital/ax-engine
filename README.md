@@ -116,16 +116,24 @@ downloading or serving an alias.
 ### Python SDK (pip)
 
 Use the wheel for Python applications that `import ax_engine`, optional Python
-integrations, or systems where Homebrew is unavailable. Install it in a virtual
-environment:
+integrations, or systems where Homebrew is unavailable. The wheel requires
+**Python 3.12+**, macOS 26+, and Apple Silicon (M2 or newer). No Homebrew is
+required: install Python 3.13 using the macOS installer from
+[python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
+create a virtual environment with that interpreter:
 
 ```bash
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
+python -m pip install --upgrade pip
+python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
 ax-engine doctor
 ```
+
+An existing virtual environment keeps the Python version used to create it;
+upgrading pip does not upgrade Python. If your environment uses Python 3.9,
+follow the [Python installation troubleshooting](docs/GETTING-STARTED.md#python-installation-troubleshooting)
+to create a separate environment with a supported Python version.
 
 The wheel also exposes `ax-engine` and `ax-engine-server` and bundles the bench
 binary used by diagnostics. If both Homebrew and pip are installed, an active

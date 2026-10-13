@@ -7,8 +7,21 @@ High-performance local inference engine for Apple Silicon — Python bindings.
 ### Python SDK (pip)
 
 Use pip when your application imports `ax_engine` or needs AX Engine's optional
-Python integrations. Install the wheel in a dedicated Python 3.12 environment.
-The recommended `uv` path is:
+Python integrations. Install the wheel in a dedicated Python 3.12+ environment.
+Without `uv` or Homebrew, install Python 3.13 using the macOS installer from
+[python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
+create the environment explicitly:
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
+ax-engine doctor
+```
+
+If you already use `uv`, it can create the environment with an explicit
+Python version instead:
 
 ```bash
 uv venv --python 3.12 .venv
@@ -19,9 +32,11 @@ which -a ax-engine
 ax-engine doctor
 ```
 
-Without `uv`, use `python3.12 -m venv .venv`, activate it, and install with
-`python -m pip`. Keep one installation channel active per shell when Homebrew
-is installed too.
+An existing virtual environment keeps its original Python version; upgrading
+pip does not upgrade Python. If installation fails under Python 3.9, follow
+[Python installation troubleshooting](https://github.com/defai-digital/ax-engine/blob/main/docs/GETTING-STARTED.md#python-installation-troubleshooting)
+to create a separate environment with a supported Python version. Keep one
+installation channel active per shell when Homebrew is installed too.
 
 Requires macOS 26+, Apple Silicon (M2 or newer), Python 3.12+. 16 GB is enough
 for compact single models; 32 GB+ for multi-model / larger packs.

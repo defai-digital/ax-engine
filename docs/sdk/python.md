@@ -63,7 +63,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 
 Install `mlx-lm` first, or install the current Python package with the download
 extra:
-`python3 -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"`.
+`python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"`.
 
 The source-tree script uses the same `mlx-lm` download path and can emit a
 machine-readable summary for automation:
@@ -94,12 +94,21 @@ this Python package in a venv or for library embedding.
 
 ### pip (Python SDK)
 
+Requires Python 3.12+, macOS 26+, and Apple Silicon (M2 or newer). Homebrew
+is optional: install Python 3.13 using the macOS installer from
+[python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
+create the virtual environment with that interpreter:
+
 ```text
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install --upgrade "ax-engine>=7.7.0,<8"
+python -m pip install --upgrade pip
+python -m pip install --upgrade "ax-engine>=7.7.0,<8"
 ```
+
+If you already have a virtual environment using an older Python, create a
+separate environment with Python 3.12 or newer; upgrading pip does not change its interpreter.
+See [Python installation troubleshooting](../GETTING-STARTED.md#python-installation-troubleshooting).
 
 The pip wheel also bundles `ax-engine-server`, `ax-engine-bench`, and the Metal
 runtime assets when you want a wheel-only install. No Rust toolchain or Xcode is
