@@ -66,6 +66,8 @@ def _post_json(url: str, payload: dict, timeout: int = 120) -> dict:
 
 def _sse_error_message(event: object) -> str:
     """Extract a message from an SSE error frame payload."""
+    if isinstance(event, str):
+        return event or "stream error frame"
     if isinstance(event, dict):
         error = event.get("error")
         if isinstance(error, dict):
@@ -119,16 +121,22 @@ def _stream_sse(url: str, payload: dict, timeout: int = 120) -> QaResponse:
                         saw_done = True
                         done = True
                         break
+                    if current_event == "error":
+                        # The error frame ends the stream; without this the
+                        # partial output would be graded as a success. Check
+                        # the raw payload first so a non-JSON error body is
+                        # not swallowed by the decode guard below.
+                        try:
+                            error_event: object = json.loads(payload_str)
+                        except json.JSONDecodeError:
+                            error_event = payload_str
+                        error_message = _sse_error_message(error_event)
+                        done = True
+                        break
                     try:
                         event = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
-                    if current_event == "error":
-                        # The error frame ends the stream; without this the
-                        # partial output would be graded as a success.
-                        error_message = _sse_error_message(event)
-                        done = True
-                        break
                     choices = event.get("choices", [])
                     if choices:
                         delta = choices[0].get("delta", {})
@@ -547,6 +555,7 @@ def _stream_generate_sse(
     all_tokens: list[int] = []
     response_tokens: list[int] = []
     response_text: Optional[str] = None
+    saw_terminal = False
     ttft_ms = 0.0
     finish_reason = None
     first_chunk = True
@@ -591,21 +600,27 @@ def _stream_generate_sse(
                     if payload_str == "[DONE]":
                         done = True
                         break
-                    try:
-                        event = json.loads(payload_str)
-                    except json.JSONDecodeError:
-                        continue
                     if event_name == "error":
                         # Error payloads match neither the step nor the
                         # response shape; without this branch the partial
-                        # stream would be graded as a success.
+                        # stream would be graded as a success. Check the raw
+                        # payload first so a non-JSON error body is not
+                        # swallowed by the decode guard below.
+                        try:
+                            error_event: object = json.loads(payload_str)
+                        except json.JSONDecodeError:
+                            error_event = payload_str
                         return QaResponse(
                             text="",
                             finish_reason=None,
                             elapsed_ms=(time.monotonic() - start) * 1000,
                             stream=True,
-                            error=_sse_error_message(event),
+                            error=_sse_error_message(error_event),
                         )
+                    try:
+                        event = json.loads(payload_str)
+                    except json.JSONDecodeError:
+                        continue
                     if event_name == "step":
                         delta = event.get("delta_tokens", [])
                         if delta:
@@ -620,6 +635,7 @@ def _stream_generate_sse(
                         response_tokens = response.get("output_tokens", [])
                         response_text = response.get("output_text")
                         finish_reason = response.get("finish_reason")
+                        saw_terminal = True
                     else:
                         delta = event.get("delta_tokens", [])
                         if delta:
@@ -638,6 +654,17 @@ def _stream_generate_sse(
         )
 
     elapsed = (time.monotonic() - start) * 1000
+    if not saw_terminal:
+        # SDK clients treat a native stream that ends without its terminal
+        # `response` frame as truncated; QA must not grade the partial decode
+        # as a pass.
+        return QaResponse(
+            text="",
+            finish_reason=None,
+            elapsed_ms=elapsed,
+            stream=True,
+            error="stream ended without terminal response",
+        )
     output_tokens = response_tokens or all_tokens
     text = response_text if response_text is not None else tokenizer.decode(output_tokens)
     text = strip_chat_output_text(model_id, text)
