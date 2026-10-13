@@ -378,7 +378,8 @@ than silently dropped.
   matched sequence as `stop_sequence` with `stop_reason:"stop_sequence"`.
   gRPC requests do not get server-side native stop enforcement yet.
 - **`tools` / `tool_choice`** (chat): experimental. Native Qwen ChatML
-  sessions, including Qwen inline-media chat, and native Gemma 4 text sessions
+  sessions, including Qwen inline-media chat, native Gemma 4 text sessions,
+  and native GLM 4.7 sessions
   render tool schemas into the prompt, replay
   assistant `tool_calls` history, and parse generated spans back into
   `message.tool_calls` with `finish_reason=tool_calls`. Native Qwen ChatML tool
@@ -390,9 +391,12 @@ than silently dropped.
   mirrors the selected hub template rather than applying one generic Qwen
   preamble.
   Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
-  `<|tool_response>` DSL. Gemma 4 tools still fail closed for delegated,
-  pre-tokenized, and inline-media chat requests because AX cannot safely inject
-  the model-specific tool DSL into those prompt paths yet.
+  `<|tool_response>` DSL. GLM 4.7 declares tool signatures in a leading
+  `<|system|>` block and emits and consumes
+  `<tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>...</tool_call>`
+  calls from its `chat_template.jinja`. Gemma 4 tools still fail closed for
+  delegated, pre-tokenized, and inline-media chat requests because AX cannot
+  safely inject the model-specific tool DSL into those prompt paths yet.
   `/v1/models` exposes the intended routing metadata in `ax_engine`: Qwen3-Coder
   models report `primary_use="coding"`, `coding_only=true`, and
   `chat_default=false`; Qwen3.6 models report `primary_use="general"`,
@@ -430,7 +434,7 @@ AX also exposes a focused Ollama-shaped adapter for loaded local models:
   `thinking` and tool-call IDs, tool-result `tool_name`, `tools`, `think`,
   `format`, `stream`, and common `options` fields including `num_ctx`. It maps
   them onto the same chat builder used by `/v1/chat/completions`, so supported
-  Qwen/Gemma templates, reasoning separation, vision, and tool-call parsing
+  Qwen/Gemma/GLM templates, reasoning separation, vision, and tool-call parsing
   stay identical across the OpenAI and Ollama surfaces.
 - `POST /api/generate` accepts Ollama `prompt`, optional `system`, `format`,
   `stream`, `raw`, and common `options` fields, then maps them onto the same
