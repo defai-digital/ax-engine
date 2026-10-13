@@ -12,7 +12,7 @@ use crate::openai::requests::{
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
 use crate::routes::build_router;
-use ax_engine_sdk::RequestWorkloadHints;
+use ax_engine_sdk::{MlxMtpPolicy, RequestWorkloadHints};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -22,9 +22,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::fixtures::{
     assert_invalid_request_response, gemma4_unified_artifact, json_request_body, json_response,
     llama_cpp_server_state, minimal_tokenizer_artifact, mlx_lm_delegated_state,
-    native_mlx_openai_builder_state, openai_first_choice, sample_gemma4_multimodal_inputs,
-    sample_openai_chat_request, sample_openai_chat_request_with_role,
-    spawn_llama_cpp_completion_server, test_app_state,
+    native_mlx_openai_builder_state, native_mlx_openai_builder_state_with_mtp_policy,
+    openai_first_choice, sample_gemma4_multimodal_inputs, sample_openai_chat_request,
+    sample_openai_chat_request_with_role, spawn_llama_cpp_completion_server, test_app_state,
 };
 
 #[test]
@@ -3856,6 +3856,66 @@ async fn openai_qwen_chat_preserves_explicit_repetition_penalty() {
     let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.03);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_qwen_chat_sampled_default_penalty_follows_mtp_policy() {
+    // (policy, expected default penalty for a sampled Qwen chat request)
+    let cases = [
+        (MlxMtpPolicy::Auto, 1.1_f32),
+        (MlxMtpPolicy::Disabled, 1.1),
+        (MlxMtpPolicy::Required, 1.0),
+    ];
+    for (policy, expected) in cases {
+        let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-rp-mtp-policy");
+        let state = native_mlx_openai_builder_state_with_mtp_policy(
+            "Qwen3.6-27B-4bit",
+            &artifact_dir,
+            policy,
+        );
+        let live = state.snapshot();
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "model": "Qwen3.6-27B-4bit",
+            "messages": [{"role": "user", "content": "hello openai chat"}],
+            "max_tokens": 64,
+            "temperature": 0.7
+        }))
+        .expect("sample chat request should deserialize");
+
+        let built = build_openai_chat_request(&live, request).expect("chat request should build");
+
+        assert_eq!(
+            built.generate_request.sampling.repetition_penalty, expected,
+            "policy {policy:?}"
+        );
+
+        fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+    }
+}
+
+#[tokio::test]
+async fn openai_qwen_chat_preserves_explicit_penalty_when_mtp_is_required() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-explicit-rp-mtp");
+    let state = native_mlx_openai_builder_state_with_mtp_policy(
+        "Qwen3.6-27B-4bit",
+        &artifact_dir,
+        MlxMtpPolicy::Required,
+    );
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [{"role": "user", "content": "hello openai chat"}],
+        "max_tokens": 64,
+        "temperature": 0.7,
+        "repetition_penalty": 1.05
+    }))
+    .expect("sample chat request should deserialize");
+
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
+
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.05);
 
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

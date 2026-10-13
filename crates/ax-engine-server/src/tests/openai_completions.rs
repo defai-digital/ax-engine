@@ -2,6 +2,7 @@ use crate::openai::requests::{DEFAULT_OPENAI_MAX_TOKENS, build_openai_completion
 use crate::openai::schema::OpenAiCompletionHttpRequest;
 use crate::openai::validation::validate_openai_request;
 use crate::routes::build_router;
+use ax_engine_sdk::MlxMtpPolicy;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -9,8 +10,9 @@ use serde_json::{Value, json};
 use super::fixtures::{
     assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
     minimal_tokenizer_artifact, mlx_lm_delegated_state, native_mlx_openai_builder_state,
-    openai_first_choice, sample_gemma4_multimodal_inputs, sample_openai_completion_request,
-    sample_openai_request_base, spawn_llama_cpp_completion_server,
+    native_mlx_openai_builder_state_with_mtp_policy, openai_first_choice,
+    sample_gemma4_multimodal_inputs, sample_openai_completion_request, sample_openai_request_base,
+    spawn_llama_cpp_completion_server,
 };
 
 #[tokio::test]
@@ -482,6 +484,84 @@ async fn openai_qwen_completion_keeps_mild_penalty_for_sampled_requests() {
     // Sampled Qwen/Gemma defaults keep the mild 1.1 penalty; only greedy is forced
     // to 1.0 for the direct-pipeline fast path.
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_qwen_completion_drops_default_penalty_when_mtp_is_required() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-qwen-rp-mtp-required");
+    let state = native_mlx_openai_builder_state_with_mtp_policy(
+        "Qwen3.6-27B-4bit",
+        &artifact_dir,
+        MlxMtpPolicy::Required,
+    );
+    let live = state.snapshot();
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "prompt": "hello openai completion",
+        "max_tokens": 32,
+        "temperature": 0.7
+    }))
+    .expect("sample completion request should deserialize");
+
+    let built =
+        build_openai_completion_request(&live, request).expect("completion request should build");
+
+    // A default penalty is a logits processor and would silently cancel the
+    // operator's explicit MTP opt-in for every sampled request.
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.0);
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_qwen_completion_keeps_default_penalty_when_mtp_is_disabled() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-qwen-rp-mtp-disabled");
+    let state = native_mlx_openai_builder_state_with_mtp_policy(
+        "Qwen3.6-27B-4bit",
+        &artifact_dir,
+        MlxMtpPolicy::Disabled,
+    );
+    let live = state.snapshot();
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "prompt": "hello openai completion",
+        "max_tokens": 32,
+        "temperature": 0.7
+    }))
+    .expect("sample completion request should deserialize");
+
+    let built =
+        build_openai_completion_request(&live, request).expect("completion request should build");
+
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_qwen_completion_preserves_explicit_penalty_when_mtp_is_required() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-qwen-rp-explicit-mtp");
+    let state = native_mlx_openai_builder_state_with_mtp_policy(
+        "Qwen3.6-27B-4bit",
+        &artifact_dir,
+        MlxMtpPolicy::Required,
+    );
+    let live = state.snapshot();
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "prompt": "hello openai completion",
+        "max_tokens": 32,
+        "temperature": 0.7,
+        "repetition_penalty": 1.05
+    }))
+    .expect("sample completion request should deserialize");
+
+    let built =
+        build_openai_completion_request(&live, request).expect("completion request should build");
+
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.05);
 
     std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

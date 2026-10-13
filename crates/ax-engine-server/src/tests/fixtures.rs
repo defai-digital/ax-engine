@@ -1,7 +1,8 @@
 use crate::app_state::{AppState, LiveState, build_app_state};
 use crate::args::{self, ServerArgs};
 use ax_engine_sdk::{
-    EngineSession, GenerateRequest, GenerateSampling, GenerateStreamEvent, SelectedBackend,
+    EngineSession, GenerateRequest, GenerateSampling, GenerateStreamEvent, MlxMtpPolicy,
+    SelectedBackend,
 };
 use axum::Router;
 use axum::body::Body;
@@ -398,15 +399,24 @@ pub(super) fn mlx_lm_delegated_state(server_url: String) -> AppState {
 }
 
 pub(super) fn native_mlx_openai_builder_state(model_id: &str, artifacts_dir: &Path) -> AppState {
+    native_mlx_openai_builder_state_with_mtp_policy(model_id, artifacts_dir, MlxMtpPolicy::Auto)
+}
+
+pub(super) fn native_mlx_openai_builder_state_with_mtp_policy(
+    model_id: &str,
+    artifacts_dir: &Path,
+    mtp_policy: MlxMtpPolicy,
+) -> AppState {
     let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
     let mut live: LiveState = state.snapshot();
     live.model_id = Arc::new(model_id.to_string());
-    live.session_config = Arc::new(
-        live.session_config
-            .as_ref()
-            .clone()
-            .with_mlx_model_artifacts_dir(artifacts_dir),
-    );
+    let mut session_config = live
+        .session_config
+        .as_ref()
+        .clone()
+        .with_mlx_model_artifacts_dir(artifacts_dir);
+    session_config.mlx_mtp_policy = mtp_policy;
+    live.session_config = Arc::new(session_config);
     live.runtime_report.selected_backend = SelectedBackend::Mlx;
     state.swap_live(live);
     state
