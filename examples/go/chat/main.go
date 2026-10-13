@@ -30,5 +30,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println(resp.Choices[0].Message.Content)
+	if content := resp.Choices[0].Message.Content; content != nil {
+		fmt.Println(*content)
+	}
 }

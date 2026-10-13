@@ -54,6 +54,9 @@ CLAUDE.md
 agents.md
 AGENTS.md
 ax-code.json
+# Generated assistant wiki builds (manifest + pages) — local artifacts
+.ax-wiki/
+ax-wiki/
 
 # Local benchmark scratch outputs. Curated public artifacts live in dated
 # benchmark result directories without these suffixes.
