@@ -3005,6 +3005,8 @@ fn long_prompt_prefill_clamp_skips_qwen3_5() {
     assert!(!long_prompt_prefill_clamp_applies("muse_glimmer"));
     assert!(!long_prompt_prefill_clamp_applies("qwen3_vl_moe"));
     assert!(!long_prompt_prefill_clamp_applies("qwen3_vl"));
+    assert!(!long_prompt_prefill_clamp_applies("hy_v3"));
+    assert!(!long_prompt_prefill_clamp_applies("HY_V3"));
     assert!(long_prompt_prefill_clamp_applies("gemma4"));
     assert!(long_prompt_prefill_clamp_applies("qwen3_next"));
     assert_eq!(
@@ -3019,6 +3021,14 @@ fn long_prompt_prefill_clamp_skips_qwen3_5() {
         scale_prefill_chunk_for_remaining_in_family(2048, 2048, "gemma4"),
         long_prompt_prefill_chunk()
     );
+    // hy_v3 keeps the session chunk for any remaining length, so a 10k prompt
+    // runs as 2048-token forwards instead of 512-token ones.
+    for remaining in [2048, 3369, 10_248] {
+        assert_eq!(
+            scale_prefill_chunk_for_remaining_in_family(2048, remaining, "hy_v3"),
+            2048
+        );
+    }
 }
 
 #[test]

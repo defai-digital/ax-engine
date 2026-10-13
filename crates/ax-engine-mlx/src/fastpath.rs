@@ -5976,13 +5976,20 @@ pub(crate) fn long_prompt_prefill_chunk() -> usize {
 /// family is not SWA-ring-bound, so the Gemma decode penalty does not
 /// apply. `muse_glimmer` is exempt for the same shape reason: its sliding
 /// window is 2048, so a 512-token clamp buys no SWA trimming below the
-/// window and only splits a 2048-token prefill into four evals. Other
-/// families keep the historical clamp.
+/// window and only splits a 2048-token prefill into four evals. `hy_v3`
+/// (128-expert MoE) is exempt because the clamp starves its routed experts:
+/// M5 Max 128 GB, Hy-MT2-30B-A3B MXFP4 stage profile (2026-10-12), 2,066-token
+/// prompt, routed-expert time 0.442 s at chunk 512 vs 0.257 s at 2048 (mlx_lm,
+/// 2048-step: 0.245 s) and cold prefill 0.62 s vs 0.46 s (mlx_lm 0.40 s);
+/// the same per-chunk MoE dispatch cost that motivates
+/// `AX_MLX_QWEN_MOE_PREFILL_SINGLE_2048`. Other families keep the historical
+/// clamp.
 pub(crate) fn long_prompt_prefill_clamp_applies(model_family: &str) -> bool {
     !(model_family.eq_ignore_ascii_case("qwen3_5")
         || model_family.eq_ignore_ascii_case("muse_glimmer")
         || model_family.eq_ignore_ascii_case("qwen3_vl_moe")
-        || model_family.eq_ignore_ascii_case("qwen3_vl"))
+        || model_family.eq_ignore_ascii_case("qwen3_vl")
+        || model_family.eq_ignore_ascii_case("hy_v3"))
 }
 
 env_flag_default_on!(
