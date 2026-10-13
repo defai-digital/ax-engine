@@ -273,6 +273,32 @@ class TestClient < Minitest::Test
     assert_equal "something went wrong", err.message
   end
 
+  # --- streaming request hygiene ---
+
+  def test_stream_completion_does_not_mutate_a_positional_request_hash
+    sse_body = "data: {\"choices\":[{\"text\":\"Once\"}]}\n\ndata: [DONE]\n\n"
+    @srv.set_response(content_type: "text/event-stream", body: sse_body)
+
+    request = { "prompt" => "Once upon", "max_tokens" => 8 }.freeze
+    @client.stream_completion(request) { |_e| }
+
+    assert_equal true, @srv.last_body["stream"]
+    assert_equal "Once upon", @srv.last_body["prompt"]
+    assert_equal({ "prompt" => "Once upon", "max_tokens" => 8 }, request)
+  end
+
+  def test_stream_http_error_keeps_the_server_message
+    @srv.set_response(
+      status: 400,
+      body: JSON.generate({ error: { message: "bad stream request" } })
+    )
+    err = assert_raises(AxEngine::HttpError) do
+      @client.stream_completion(prompt: "x") { |_e| }
+    end
+    assert_equal 400, err.status
+    assert_equal "bad stream request", err.message
+  end
+
   def test_openai_streams_reject_incomplete_done
     [:stream_completion, :stream_chat_completion].each do |method|
       ["", "data: [DONE]", "data: [DONE]\n"].each do |trailer|

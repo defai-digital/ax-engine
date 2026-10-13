@@ -635,6 +635,24 @@ test("non-2xx responses raise AxEngineHttpError with payload", async () => {
   });
 });
 
+test("2xx responses with an empty body raise AxEngineHttpError", async () => {
+  await withServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end();
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    await assert.rejects(
+      () => client.health(),
+      (error) => {
+        assert.ok(error instanceof AxEngineHttpError);
+        assert.equal(error.status, 200);
+        assert.equal(error.payload, null);
+        assert.match(error.message, /empty response body/);
+        return true;
+      },
+    );
+  });
+});
 
 test("OpenAI streams reject truncated completion events after a valid payload", async () => {
   for (const method of ["streamCompletion", "streamChatCompletion"]) {
