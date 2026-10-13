@@ -50,7 +50,6 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
-        | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::MissingRequestSnapshot { .. }
         | EngineSessionError::WhisperTextGenerationUnsupported
         | EngineSessionError::WhisperInvalidLanguage { .. } => {
@@ -98,6 +97,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxRuntimeUnavailable
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::RequestReportInvariantViolation { .. }
+        | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
         | EngineSessionError::EmbeddingNotSupported
         | EngineSessionError::EmbeddingFailed { .. }
@@ -139,6 +139,17 @@ mod tests {
             assert!(inference_error.is_instance_of::<EngineInferenceError>(py));
             assert!(inference_error.is_instance_of::<EngineError>(py));
             assert!(inference_error.is_instance_of::<PyRuntimeError>(py));
+
+            // A request that ran but never terminated is a runtime inference
+            // failure like its StreamEndedWithoutResponse sibling, not a
+            // ValueError.
+            let budget_error = to_py_runtime_error(EngineSessionError::RequestDidNotTerminate {
+                request_id: 11,
+                max_steps: 258,
+            });
+            assert!(budget_error.is_instance_of::<EngineInferenceError>(py));
+            assert!(budget_error.is_instance_of::<EngineError>(py));
+            assert!(!budget_error.is_instance_of::<PyValueError>(py));
 
             let state_error = py_engine_state_error("session is closed");
             assert!(state_error.is_instance_of::<EngineStateError>(py));
