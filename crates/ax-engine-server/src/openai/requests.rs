@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
     EngineTokenizer, GenerateRequest, GenerateSampling, LlamaCppChatGenerateRequest,
-    MlxLmChatGenerateRequest, RequestMultimodalInputs, SelectedBackend,
+    MlxLmChatGenerateRequest, MlxMtpPolicy, RequestMultimodalInputs, SelectedBackend,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -1142,6 +1142,18 @@ pub(crate) fn default_native_mlx_openai_repetition_penalty(
     // generate ~107 tok/s). Clients that want a non-default penalty still set
     // `repetition_penalty` explicitly.
     if live.runtime_report.selected_backend != SelectedBackend::Mlx || temperature <= 0.0 {
+        return 1.0;
+    }
+
+    // `--mlx-mtp-policy required` is the operator asking for model-drafter
+    // speculation. A repetition penalty is a logits processor, which makes the
+    // MTP verify path ineligible, so a default penalty would silently cancel
+    // that opt-in for every sampled request. M5 Max 128 GB, AX-Swift-1.5
+    // Qwen3.8 27B MXFP4 MTP, sampled OpenAI decode (temperature 0.7, top_p
+    // 0.95, top_k 20): 28.2 tok/s with the 1.1 default vs 51.2 tok/s with
+    // `repetition_penalty: 1.0` sent (direct decode 29.0). `auto` keeps the
+    // mild default because it may run direct; clients can still send a penalty.
+    if live.session_config.mlx_mtp_policy == MlxMtpPolicy::Required {
         return 1.0;
     }
 

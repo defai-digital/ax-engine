@@ -494,6 +494,14 @@ admitted drafter is unavailable. Required attachment does not certify a model
 or guarantee drafting for every request: unsupported sampling or request state
 can still use direct decoding. N-gram acceleration is controlled separately.
 
+A repetition penalty other than 1.0 is a logits processor, so the request uses
+direct decoding instead of MTP. Sampled OpenAI and gRPC requests
+(`temperature > 0`) on a native MLX model whose id contains `qwen` or `gemma`
+receive a default `repetition_penalty` of 1.1 when the client sends none; with
+`--mlx-mtp-policy required` that default is 1.0, so the explicit MTP opt-in is
+not cancelled for sampled requests. A `repetition_penalty` sent by the client
+is always used as given. Greedy requests default to 1.0 in every policy.
+
 `--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias
 `--spec`; env `AX_MLX_SPECULATION_PROFILE`) bundles the MTP and n-gram
 speculative-decode configuration into one posture (ADR-022). `auto` is the
