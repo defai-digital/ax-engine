@@ -420,6 +420,33 @@ where
                         return Ok(());
                     }
                 }
+                // Text the incremental decoder was still holding for a
+                // trailing codepoint is content too (same flush as the SSE
+                // path); without it the last character of a byte-level
+                // tokenizer stream is silently dropped.
+                if let Some(decoder) = decoder.as_mut() {
+                    let tail = decoder.finish().map_err(|error| {
+                        Status::internal(format!(
+                            "failed to decode native MLX gRPC stream tokens: {error}"
+                        ))
+                    })?;
+                    if !tail.is_empty() {
+                        if !tail.trim().is_empty()
+                            && let Some(filter) = channel_filter.as_mut()
+                        {
+                            filter.mark_kept_output();
+                        }
+                        let chunk = chat_delta_chunk_proto(
+                            payload.response.request_id,
+                            model_id,
+                            next_grpc_chat_role(chat_role_emitted),
+                            tail,
+                        );
+                        if tx.blocking_send(Ok(chunk)).is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
                 // Final chunk carries finish_reason (OpenAI SSE parity).
                 let finish_reason = payload
                     .response
@@ -524,6 +551,33 @@ where
                     .finish_reason
                     .map(finish_reason_str)
                     .unwrap_or_default();
+                // Text the incremental decoder was still holding for a
+                // trailing codepoint is content too (same flush as the SSE
+                // path); without it the last character of a byte-level
+                // tokenizer stream is silently dropped.
+                if let Some(decoder) = decoder.as_mut() {
+                    let tail = decoder.finish().map_err(|error| {
+                        Status::internal(format!(
+                            "failed to decode native MLX gRPC stream tokens: {error}"
+                        ))
+                    })?;
+                    if !tail.is_empty() {
+                        let chunk = proto::CompletionChunk {
+                            id: format!("cmpl-{}", payload.response.request_id),
+                            object: "text_completion.chunk".to_string(),
+                            created: unix_now(),
+                            model: model_id.to_string(),
+                            choices: vec![proto::CompletionChunkChoice {
+                                index: 0,
+                                text: tail,
+                                finish_reason: String::new(),
+                            }],
+                        };
+                        if tx.blocking_send(Ok(chunk)).is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
                 let final_chunk = proto::CompletionChunk {
                     id: format!("cmpl-{}", payload.response.request_id),
                     object: "text_completion.chunk".to_string(),
@@ -645,7 +699,7 @@ mod tests {
         }
     }
 
-    fn step_with_delta_text(text: &str) -> GenerateStreamEvent {
+    fn step_event(tokens: Vec<u32>, text: Option<&str>) -> GenerateStreamEvent {
         GenerateStreamEvent::Step(GenerateStreamStepEvent {
             request: SessionRequestReport {
                 request_id: 42,
@@ -666,10 +720,18 @@ mod tests {
                 last_error: None,
             },
             step: Default::default(),
-            delta_tokens: Vec::new(),
+            delta_tokens: tokens,
             delta_token_logprobs: Vec::new(),
-            delta_text: Some(text.to_string()),
+            delta_text: text.map(str::to_string),
         })
+    }
+
+    fn step_with_delta_text(text: &str) -> GenerateStreamEvent {
+        step_event(Vec::new(), Some(text))
+    }
+
+    fn step_with_delta_tokens(tokens: Vec<u32>) -> GenerateStreamEvent {
+        step_event(tokens, None)
     }
 
     #[test]
@@ -791,6 +853,89 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].choices[0].finish_reason.is_empty());
         assert_eq!(chunks[0].choices[0].text, "xyz");
+    }
+
+    #[test]
+    fn drive_grpc_chat_events_flushes_the_decoder_tail_before_finishing() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut role = false;
+        let mut decoder = IncrementalDecoder::new(
+            crate::openai::streaming::byte_level_test_tokenizer("grpc-chat-tail"),
+        );
+        let events = [
+            Ok(Some(step_with_delta_tokens(vec![4]))), // "ok"
+            Ok(Some(step_with_delta_tokens(vec![1]))), // held lead byte
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: sample_response(Some(GenerateFinishReason::Stop)),
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_grpc_chat_events(
+            "test-model",
+            &mut role,
+            &tx,
+            Some(&mut decoder),
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        )
+        .expect("drive should succeed");
+
+        let mut chunks = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            chunks.push(chunk.expect("chunk ok"));
+        }
+        let contents: Vec<String> = chunks
+            .iter()
+            .filter_map(|chunk| {
+                chunk.choices[0]
+                    .delta
+                    .as_ref()
+                    .map(|delta| delta.content.clone())
+            })
+            .filter(|content| !content.is_empty())
+            .collect();
+        assert_eq!(
+            contents,
+            vec!["ok".to_string(), "\u{FFFD}".to_string()],
+            "the held trailing codepoint must flush before the final chunk"
+        );
+    }
+
+    #[test]
+    fn drive_grpc_completion_events_flushes_the_decoder_tail_before_finishing() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut decoder = IncrementalDecoder::new(
+            crate::openai::streaming::byte_level_test_tokenizer("grpc-completion-tail"),
+        );
+        let events = [
+            Ok(Some(step_with_delta_tokens(vec![4]))), // "ok"
+            Ok(Some(step_with_delta_tokens(vec![1]))), // held lead byte
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: sample_response(Some(GenerateFinishReason::Stop)),
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_grpc_completion_events("test-model", &tx, Some(&mut decoder), || {
+            iter.next().unwrap_or(Ok(None))
+        })
+        .expect("drive should succeed");
+
+        let mut chunks = Vec::new();
+        while let Ok(chunk) = rx.try_recv() {
+            chunks.push(chunk.expect("chunk ok"));
+        }
+        let texts: Vec<String> = chunks
+            .iter()
+            .map(|chunk| chunk.choices[0].text.clone())
+            .filter(|text| !text.is_empty())
+            .collect();
+        assert_eq!(texts, vec!["ok".to_string(), "\u{FFFD}".to_string()]);
     }
 
     #[tokio::test]
