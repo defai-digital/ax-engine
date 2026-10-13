@@ -72,6 +72,17 @@ class ParityTests(unittest.TestCase):
         )
         self.assertEqual(report.published_without_tag, ("v1.1",))
 
+    def test_version_key_orders_mixed_numeric_and_text_segments(self) -> None:
+        # v7.7.hotfix is matched by TAG_PATTERN and must not raise the
+        # str-vs-int TypeError the old untyped key tuple produced.
+        tags = ["v7.7.hotfix", "v7.7.0", "v7.7.1-rc1", "v7.7.1"]
+        self.assertEqual(
+            sorted(tags, key=parity._version_key),
+            ["v7.7.0", "v7.7.1", "v7.7.1-rc1", "v7.7.hotfix"],
+        )
+        numeric = ["v7.10.0", "v7.9.9"]
+        self.assertEqual(sorted(numeric, key=parity._version_key), ["v7.9.9", "v7.10.0"])
+
     def test_exact_allowed_orphan_does_not_hide_other_orphans(self) -> None:
         report = parity.compute_parity(
             ["v1.0", "v1.1", "v1.2"],
