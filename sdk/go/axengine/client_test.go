@@ -780,3 +780,35 @@ func TestNativeStreamRequiresTerminalResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeStreamsStopReadingAtDone(t *testing.T) {
+	for _, responseBeforeDone := range []bool{false, true} {
+		for _, trailer := range []string{"", "event: response\ndata: {}\n\n", "event: error\ndata: late error\n\n"} {
+			payload := "event: step\ndata: {}\n\n"
+			if responseBeforeDone {
+				payload += "event: response\ndata: {}\n\n"
+			}
+			body := &doneBoundaryBody{payload: payload + "data: [DONE]\n\n" + trailer}
+			c := NewClient(&ClientOptions{HTTPClient: &http.Client{Transport: doneBoundaryTransport{body}}})
+			ch, errs := c.StreamGenerate(context.Background(), PreviewGenerateRequest{})
+			count := 0
+			for range ch {
+				count++
+			}
+			err := <-errs
+			if responseBeforeDone && err != nil {
+				t.Errorf("response before DONE with trailer %q: %v", trailer, err)
+			}
+			if !responseBeforeDone && (err == nil || !strings.Contains(err.Error(), "terminal response")) {
+				t.Errorf("premature DONE with trailer %q: expected missing response error, got %v", trailer, err)
+			}
+			expectedCount := 1
+			if responseBeforeDone {
+				expectedCount++
+			}
+			if count != expectedCount || body.reads != 1 || !body.closed {
+				t.Errorf("response=%v trailer=%q: events=%d reads=%d closed=%v", responseBeforeDone, trailer, count, body.reads, body.closed)
+			}
+		}
+	}
+}

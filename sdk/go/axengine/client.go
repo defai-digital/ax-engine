@@ -315,10 +315,10 @@ func (c *Client) StreamGenerate(ctx context.Context, req PreviewGenerateRequest)
 				return sseStreamError(ev.Data)
 			}
 			// The native stream terminates with [DONE] on the error path;
-			// swallow it like the Ruby and Swift readers instead of yielding
-			// a spurious empty event.
+			// stop at that boundary like the Ruby and Swift readers. The
+			// terminal response check below still rejects a premature sentinel.
 			if ev.Data == "[DONE]" {
-				return nil
+				return errStreamDone
 			}
 			var out GenerateStreamEvent
 			out.Event = ev.Event

@@ -102,6 +102,11 @@ public final class AxEngineClient: @unchecked Sendable {
         let stepURL = baseURL.appendingPathComponent("/v1/step")
         var components = URLComponents(url: stepURL, resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "model", value: model)]
+        // URLQueryItem leaves + literal, but the server's form decoder reads
+        // it as a space. Escape only literal plus signs after URL encoding.
+        let encodedQuery = components?.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
+        components?.percentEncodedQuery = encodedQuery
         guard let url = components?.url else {
             throw AxEngineHTTPError(
                 statusCode: 0,

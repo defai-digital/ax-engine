@@ -95,6 +95,26 @@ private func readBody(_ req: URLRequest) -> Data? {
 
 final class AxEngineClientTests: XCTestCase {
 
+    func testStepPreservesLiteralPlusInModelQuery() async throws {
+        MockURLProtocol.handler = { req in
+            let components = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!
+            let query = components.percentEncodedQuery!
+            XCTAssertTrue(query.contains("%2B"), "literal plus must be percent-encoded: \(query)")
+            // Axum's Query extractor uses form decoding, where bare + means space.
+            let formValue = query.dropFirst("model=".count)
+                .replacingOccurrences(of: "+", with: " ")
+                .removingPercentEncoding
+            XCTAssertEqual(formValue, "org/model+variant & next%2B")
+            return jsonResponse([
+                "step_id": 0, "scheduled_requests": 0, "scheduled_tokens": 0,
+                "ttft_events": 0, "prefix_hits": 0, "kv_usage_blocks": 0,
+                "evictions": 0, "cpu_time_us": 0, "runner_time_us": 0,
+            ])
+        }
+        _ = try await makeClient().step(model: "org/model+variant & next%2B")
+    }
+
+
     func testHealth() async throws {
         MockURLProtocol.handler = { req in
             XCTAssertEqual(req.httpMethod, "GET")
