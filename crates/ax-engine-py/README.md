@@ -10,7 +10,9 @@ Use pip when your application imports `ax_engine` or needs AX Engine's optional
 Python integrations. Install the wheel in a dedicated Python 3.12+ environment.
 Without `uv` or Homebrew, install Python 3.13 using the macOS installer from
 [python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
-create the environment explicitly:
+create the environment explicitly with `python3.13` (not the macOS-bundled
+`python3`, which is 3.9). Python 3.12–3.14 work; the `download` extra does not
+yet install on 3.15 because MLX has no 3.15 wheels:
 
 ```bash
 python3.13 -m venv .venv

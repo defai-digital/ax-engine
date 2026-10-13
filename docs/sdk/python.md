@@ -87,17 +87,19 @@ ax-engine-bench generate-manifest /path/to/dest
 
 ## Install
 
-For the **CLI / server** on macOS Apple Silicon, prefer Homebrew
-(`brew install defai-digital/tap/ax-engine`) — see
-[Getting Started](../GETTING-STARTED.md#installation). Use pip when you need
-this Python package in a venv or for library embedding.
+For the **CLI / server** on macOS Apple Silicon, see
+[Getting Started](../GETTING-STARTED.md#installation) (Homebrew, standalone
+download, or pip — Homebrew is optional). Use pip when you need this Python
+package in a venv or for library embedding.
 
 ### pip (Python SDK)
 
 Requires Python 3.12+, macOS 26+, and Apple Silicon (M2 or newer). Homebrew
 is optional: install Python 3.13 using the macOS installer from
 [python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
-create the virtual environment with that interpreter:
+create the virtual environment with that interpreter. Python 3.12–3.14 work;
+the `download` extra does not yet install on 3.15 (MLX has no 3.15 wheels).
+Use `python3.13` explicitly, not the macOS-bundled `python3` (3.9):
 
 ```text
 python3.13 -m venv .venv

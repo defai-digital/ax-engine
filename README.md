@@ -6,7 +6,8 @@ for Qwen 3.8 27B AXQ**. The Qwen 3.8 27B and Flash Next product scope is
 selectors load MXFP4 MTP packs; MXFP8 pack admission and qualification are
 pending. Standalone affine 4/6/8-bit and non-MTP variants for these two
 models are retired. MTP execution remains explicit opt-in until its gates pass.
-Install with Homebrew or pip and serve OpenAI-compatible endpoints locally.
+Install with pip, a standalone download, or Homebrew and serve
+OpenAI-compatible endpoints locally.
 
 Primary optimization target. Checkpoint Tier 1. MTP Tier 2 pending. AX certification record: Candidate (gates open).
 
@@ -97,50 +98,106 @@ Normative detail is in [Architecture](docs/ARCHITECTURE.md).
 
 ## Quick Start
 
-### Homebrew (primary)
+AX Engine runs on **Apple Silicon (M2 or newer) with macOS 26 or newer**. The
+default model below is a 17.4 GB download, so keep about 20 GB of disk free; a
+Mac with 32 GB+ of memory is recommended for it. Check your Mac first:
+
+```bash
+uname -m                 # must print: arm64
+sw_vers -productVersion  # must print 26.0 or higher
+```
+
+**Homebrew is optional.** Pick one install path:
+
+| You have | Use |
+| --- | --- |
+| Nothing installed (no Homebrew, no Python) | [pip](#install-with-pip-no-homebrew-needed) — one Python install, then three commands |
+| Want only the CLI and server, no Python SDK | [Standalone download](#standalone-download-no-homebrew-no-python-sdk) |
+| Homebrew | [Homebrew](#homebrew) |
+
+### Install with pip (no Homebrew needed)
+
+1. Install Python from the official macOS installer: open
+   [python.org/downloads/macos](https://www.python.org/downloads/macos/),
+   download the **Python 3.13** installer (any 3.13.x), run it, then **quit and
+   reopen Terminal**. Python 3.12 through 3.14 work; 3.15 does not yet work with
+   the `download` extra because MLX publishes no 3.15 wheels.
+2. Check the version. Use `python3.13` explicitly: the `python3` that ships with
+   macOS is 3.9, cannot install AX Engine, and may open an Xcode Command Line
+   Tools prompt.
+
+   ```bash
+   python3.13 --version   # must print: Python 3.13.x
+   ```
+
+3. Create an environment and install:
+
+   ```bash
+   python3.13 -m venv "$HOME/.venvs/ax-engine"
+   source "$HOME/.venvs/ax-engine/bin/activate"
+   python -m pip install --upgrade pip
+   python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
+   ax-engine doctor
+   ```
+
+4. Make `ax-engine` available in every new Terminal (otherwise it is only found
+   after running the `source` line above):
+
+   ```bash
+   echo 'export PATH="$HOME/.venvs/ax-engine/bin:$PATH"' >> ~/.zprofile
+   ```
+
+The wheel provides the Python package (`import ax_engine`), the `ax-engine` and
+`ax-engine-server` commands, and the bench binary used by diagnostics. It
+bundles the MLX runtime; Xcode and the Metal Toolchain are not needed.
+`pip install` printing `No matching distribution found` almost always means an
+old Python (3.9 is the usual culprit) or macOS older than 26 — see
+[Python installation troubleshooting](docs/GETTING-STARTED.md#python-installation-troubleshooting).
+
+### Standalone download (no Homebrew, no Python SDK)
+
+A signed and notarized `arm64` tarball with the `ax-engine`, `ax-engine-server`
+and `ax-engine-bench` binaries and the MLX runtime. Downloading with `curl`
+avoids the browser quarantine prompt:
+
+```bash
+TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+  https://github.com/defai-digital/ax-engine/releases/latest | sed 's|.*/||')
+ASSET="ax-engine-$TAG-macos-arm64.tar.gz"
+BASE="https://github.com/defai-digital/ax-engine/releases/download/$TAG"
+cd "$(mktemp -d)"
+curl -fsSLO "$BASE/$ASSET" && curl -fsSLO "$BASE/$ASSET.sha256"
+shasum -a 256 -c "$ASSET.sha256"          # must print: OK
+mkdir -p "$HOME/.local/ax-engine" && tar -xzf "$ASSET" -C "$HOME/.local/ax-engine"
+echo 'export PATH="$HOME/.local/ax-engine:$PATH"' >> ~/.zprofile
+export PATH="$HOME/.local/ax-engine:$PATH"
+ax-engine doctor
+```
+
+Serving a model directory you already have needs nothing else. Downloading
+models by alias (`ax-engine serve qwen3.8-27b:axq`) also needs Python 3.12+ and
+`huggingface-hub`: follow
+[Model download helpers](docs/GETTING-STARTED.md#model-download-helpers).
+
+### Homebrew
 
 ```bash
 brew install defai-digital/tap/ax-engine
 ax-engine doctor
 ```
 
-Homebrew is the primary install path for the CLI, server, and bench tools.
 The self-contained release formula installs the release's pinned
 `libmlx.dylib`, `libjaccl.dylib`, and precompiled `mlx.metallib`; it does not
 build MLX from source. Native inference from a ready local model directory
-needs no Python, Xcode, or Metal Toolchain. Model aliases and preparation helpers
-use Python 3.12+; online downloads also require `huggingface-hub`. Follow the
-[Homebrew helper setup](docs/GETTING-STARTED.md#homebrew-model-helpers) before
-downloading or serving an alias.
+needs no Python, Xcode, or Metal Toolchain. Model aliases and preparation
+helpers use Python 3.12+; online downloads also require `huggingface-hub`.
+Follow the
+[model download helpers](docs/GETTING-STARTED.md#model-download-helpers) setup
+before downloading or serving an alias.
 
-### Python SDK (pip)
-
-Use the wheel for Python applications that `import ax_engine`, optional Python
-integrations, or systems where Homebrew is unavailable. The wheel requires
-**Python 3.12+**, macOS 26+, and Apple Silicon (M2 or newer). No Homebrew is
-required: install Python 3.13 using the macOS installer from
-[python.org](https://www.python.org/downloads/macos/), reopen Terminal, and
-create a virtual environment with that interpreter:
-
-```bash
-python3.13 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
-ax-engine doctor
-```
-
-An existing virtual environment keeps the Python version used to create it;
-upgrading pip does not upgrade Python. If your environment uses Python 3.9,
-follow the [Python installation troubleshooting](docs/GETTING-STARTED.md#python-installation-troubleshooting)
-to create a separate environment with a supported Python version.
-
-The wheel also exposes `ax-engine` and `ax-engine-server` and bundles the bench
-binary used by diagnostics. If both Homebrew and pip are installed, an active
-virtual environment normally wins on `PATH`; use `which -a ax-engine` to see
-every copy and prefer one installation channel in each shell. See
-[Getting Started](docs/GETTING-STARTED.md) for the full channel comparison and
-troubleshooting.
+If more than one install channel is present, `which -a ax-engine` lists every
+copy; keep one channel per shell. See [Getting Started](docs/GETTING-STARTED.md)
+for the full channel comparison and troubleshooting.
 
 ### Run AX Engine
 
@@ -161,7 +218,8 @@ ax-engine tui
 **Option B — serve Qwen 3.8 27B AXQ MXFP4 MTP**, then request from another
 terminal. `qwen3.8-27b:axq` is the pinned AutomatosX MXFP4 MTP pack (same
 checkpoint as `ax-qwen3.8-27b`). The command reuses the cached snapshot when
-present and downloads it otherwise. Listen defaults to `127.0.0.1:31418`:
+present and downloads it otherwise (about 17.4 GB; the first start waits for
+the download). Listen defaults to `127.0.0.1:31418`:
 
 ```bash
 ax-engine serve qwen3.8-27b:axq
@@ -171,11 +229,17 @@ curl http://127.0.0.1:31418/v1/chat/completions \
   -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Say hello in one sentence."}],"max_tokens":64}'
 ```
 
-**Option C — coding model** (resolve + serve):
+**Option C — coding model** (resolve + serve; Tiel Coder 35B-A3B is a
+development MXFP4 MTP pack, about 22 GB):
 
 ```bash
-ax-engine serve ax-qwen3-coder-next --port 31418
+ax-engine serve tiel-coder-35b:axq --port 31418
 ```
+
+If a download stops with `Repository Not Found` or `401`, that snapshot is not
+publicly downloadable. Pick one from the live
+[AutomatosX collection](https://huggingface.co/AutomatosX/models?sort=alphabetical);
+`qwen3.8-27b:axq` above is public.
 
 Python wheel, source builds, and troubleshooting:
 [Getting Started](docs/GETTING-STARTED.md).

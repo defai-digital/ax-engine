@@ -64,19 +64,29 @@ outside AX Engine; see [AX Serving](AX-SERVING.md).
 
 ### Match this guide
 
-These instructions track the latest tagged `7.x` release. **Homebrew is the
-primary deployment path** for the `ax-engine` CLI, server, and bench tools on
-macOS Apple Silicon; the wheel is the supported secondary path for Python
-library use.
+These instructions track the latest tagged `7.x` release. Homebrew, the
+standalone download, and the Python wheel are all supported on macOS Apple
+Silicon; **Homebrew is not required**.
 
 NVIDIA/CUDA deployments use AX Serving and are not installed by the AX Engine
 Homebrew or Python package path.
 
 | Goal | Recommended channel |
 | --- | --- |
-| Run the TUI, CLI, server, or benchmark tools | Homebrew |
-| Use `import ax_engine`, LangChain helpers, or Python extras | pip in a virtual environment |
+| Run the TUI, CLI, server, or benchmark tools, and you use Homebrew | Homebrew |
+| Run the CLI and server without Homebrew or the Python SDK | Standalone download |
+| Use `import ax_engine`, LangChain helpers, or Python extras — or you have neither Homebrew nor Python | pip in a virtual environment (Python from python.org) |
 | Develop AX Engine or test unreleased changes | Source build |
+
+All paths need **Apple Silicon (M2 or newer)** and **macOS 26 or newer**:
+
+```bash
+uname -m                 # must print: arm64
+sw_vers -productVersion  # must print 26.0 or higher
+```
+
+Homebrew is optional. Start from the [README Quick Start](../README.md#quick-start)
+if you have neither Homebrew nor Python.
 
 The repository can move ahead of its released packages. Refresh the selected
 channel and compare it with the
@@ -112,22 +122,31 @@ helper scripts onto your `PATH`.
 > no Python, Xcode, or Metal Toolchain. Model aliases and preparation helpers
 > use Python 3.12+; online downloads also require `huggingface-hub`.
 
-#### Homebrew model helpers
+#### Model download helpers
 
-Configure a separate Python environment for alias resolution, model preparation,
-and downloads. `AX_ENGINE_PYTHON` selects the helper interpreter while keeping
-the native Homebrew CLI on your `PATH`:
+Applies to the Homebrew and standalone installs (the pip install already
+carries its own helpers). Configure a separate Python environment for alias
+resolution, model preparation, and downloads. `AX_ENGINE_PYTHON` selects the
+helper interpreter while keeping the native CLI on your `PATH`.
+
+1. Install Python 3.12–3.14 if you do not have it. Without Homebrew, use the
+   official macOS installer from
+   [python.org](https://www.python.org/downloads/macos/) (3.13 recommended),
+   then reopen Terminal. With Homebrew, `brew install python@3.13` also works.
+   Do not rely on the bare `python3` that ships with macOS: it is 3.9 and may
+   open an Xcode Command Line Tools prompt.
+2. Create the helper environment:
 
 ```bash
-brew install python@3.12
-python3.12 -m venv "$HOME/.local/share/ax-engine/download-env"
+python3.13 -m venv "$HOME/.local/share/ax-engine/download-env"
 "$HOME/.local/share/ax-engine/download-env/bin/python" -m pip install huggingface-hub
+echo 'export AX_ENGINE_PYTHON="$HOME/.local/share/ax-engine/download-env/bin/python"' >> ~/.zprofile
 export AX_ENGINE_PYTHON="$HOME/.local/share/ax-engine/download-env/bin/python"
 ```
 
-Keep that export in shells running the CLI. Offline aliases still use the Python
-helpers; serving an already prepared directory with `ax-engine serve /path/to/model`
-does not. The helper environment does not require the AX Engine wheel or Python MLX.
+The `~/.zprofile` line keeps that export in every new Terminal. Offline
+aliases still use the Python helpers; serving an already prepared directory with
+`ax-engine serve /path/to/model` does not. The helper environment does not require the AX Engine wheel or Python MLX.
 
 Public Hugging Face repositories download anonymously: no account, no token, and
 no `hf` CLI are needed. An account is required only for gated or private
@@ -204,7 +223,35 @@ sudo xattr -dr com.apple.quarantine "$(which ax-engine-bench)"
 
 Run this once after `brew install`. No Apple Developer account is required.
 
-### Python wheel (SDK / secondary)
+### Standalone download (no Homebrew)
+
+Each GitHub release ships a signed and notarized `arm64` tarball containing
+`ax-engine`, `ax-engine-server`, `ax-engine-bench`, the pinned MLX runtime
+(`libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib`), and the model helper
+scripts. It needs no Python, Xcode, or Metal Toolchain to serve a ready local
+model directory. Downloading with `curl` avoids the browser quarantine prompt:
+
+```bash
+TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+  https://github.com/defai-digital/ax-engine/releases/latest | sed 's|.*/||')
+ASSET="ax-engine-$TAG-macos-arm64.tar.gz"
+BASE="https://github.com/defai-digital/ax-engine/releases/download/$TAG"
+cd "$(mktemp -d)"
+curl -fsSLO "$BASE/$ASSET" && curl -fsSLO "$BASE/$ASSET.sha256"
+shasum -a 256 -c "$ASSET.sha256"          # must print: OK
+mkdir -p "$HOME/.local/ax-engine" && tar -xzf "$ASSET" -C "$HOME/.local/ax-engine"
+echo 'export PATH="$HOME/.local/ax-engine:$PATH"' >> ~/.zprofile
+export PATH="$HOME/.local/ax-engine:$PATH"
+ax-engine doctor
+```
+
+Keep the binaries and the three runtime files in the same directory. To
+upgrade, repeat the commands: extraction overwrites the previous files. Alias
+downloads (`ax-engine serve qwen3.8-27b:axq`) need the
+[model download helpers](#model-download-helpers). Detached minisign
+signatures for every asset are described in [MINISIGN.md](MINISIGN.md).
+
+### Python wheel (SDK / no Homebrew needed)
 
 Use the wheel when you need the **Python package** (`import ax_engine`),
 LangChain helpers, or the optional OpenAI/multimodal extras — or when you cannot
@@ -213,16 +260,27 @@ Python dependencies, and command wrappers stay on one version.
 
 Without `uv` or Homebrew, use the official Python macOS installer:
 
-1. Download the Python 3.13 macOS installer from
-   [python.org](https://www.python.org/downloads/macos/) and run it.
-2. Reopen Terminal and check `python3.13 --version`.
+1. Download the **Python 3.13** macOS installer (any 3.13.x) from
+   [python.org](https://www.python.org/downloads/macos/) and run it. Python 3.12
+   through 3.14 work; 3.15 does not yet work with the `download` extra because
+   MLX publishes no 3.15 wheels.
+2. Quit and reopen Terminal, then check `python3.13 --version`. Use
+   `python3.13` explicitly, not `python3`.
 3. Create a new environment and install AX Engine:
 
 ```bash
-python3.13 -m venv .venv
-source .venv/bin/activate
+python3.13 -m venv "$HOME/.venvs/ax-engine"
+source "$HOME/.venvs/ax-engine/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install --upgrade "ax-engine[download]>=7.7.0,<8"
+ax-engine doctor
+```
+
+4. So that `ax-engine` is found in every new Terminal without activating the
+   environment, add it to your `PATH`:
+
+```bash
+echo 'export PATH="$HOME/.venvs/ax-engine/bin:$PATH"' >> ~/.zprofile
 ```
 
 If you already use `uv`, it can create the environment with an explicit
@@ -268,6 +326,17 @@ another Python version, check these requirements before retrying. Upgrading
 pip does not upgrade Python, and an existing virtual environment keeps the
 interpreter version used to create it. A subsequent `ax-engine: command not
 found` can mean the package was never installed successfully.
+
+Common failures and their fixes:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `No matching distribution found for ax-engine` | Python older than 3.12 (macOS ships 3.9), or macOS older than 26 — the wheel is tagged `macosx_26_0_arm64` | Check `python --version` and `sw_vers -productVersion`; recreate the environment with Python 3.13 below |
+| `ResolutionImpossible` mentioning `mlx` | Python 3.15 (or another version MLX has no wheel for) with the `download` extra | Use Python 3.12–3.14, or install `"ax-engine>=7.7.0,<8"` and `huggingface-hub` without the extra |
+| `ax-engine: command not found` in a new Terminal | The virtual environment is not active and not on `PATH` | `source "$HOME/.venvs/ax-engine/bin/activate"`, or add `$HOME/.venvs/ax-engine/bin` to `PATH` |
+| `python3.13: command not found` after the installer | Terminal opened before the install | Quit and reopen Terminal, or call `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13` |
+| `xcode-select: note: No developer tools were found` prompt | Bare `python3`/`git` ran without Xcode Command Line Tools | Cancel it and use `python3.13` from python.org; AX Engine itself does not need Xcode |
+| `Repository Not Found` / `401` while downloading a model | The snapshot is not publicly downloadable | Choose a public snapshot from the [AutomatosX collection](https://huggingface.co/AutomatosX/models?sort=alphabetical); `qwen3.8-27b:axq` is public |
 
 To recover from an older virtual environment, deactivate it and create a
 separate Python 3.13 environment, preserving the original environment. Install
