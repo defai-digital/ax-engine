@@ -1077,6 +1077,31 @@ async fn ollama_chat_rejects_unsupported_negative_num_predict() {
 }
 
 #[tokio::test]
+async fn ollama_generate_validates_num_predict_on_lifecycle_requests() {
+    // An empty-prompt (lifecycle/unload-form) request must not dodge
+    // num_predict validation: the same invalid value is a 400 when the
+    // prompt is non-empty, and num_ctx is already validated on this path.
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "prompt": "",
+                "options": {"num_predict": 0}
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_ollama_error_response(&json, "num_predict");
+}
+
+#[tokio::test]
 async fn ollama_generate_maps_num_predict_sentinel_to_advertised_budget() {
     let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
         json!({

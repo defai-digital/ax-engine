@@ -791,10 +791,19 @@ impl ChatChannelStreamFilter {
             .filter(|ids| ids.len() == 1)
             .map(|ids| ids[0])
             .collect();
+        // The single-piece "\n" closing the replayed `thought` header:
+        // withheld from the reasoning stream so it matches the non-streaming
+        // strip (`strip_gemma4_channel_name_header` drops `thought\n` exactly).
+        let thought_lead_newline = tokenizer
+            .encode("\n", false)
+            .ok()
+            .filter(|ids| ids.len() == 1)
+            .map(|ids| ids[0]);
         Some(Self::Gemma4(Gemma4ChannelStreamFilter::new(
             ids,
             tokenizer.token_to_id("thought"),
             lead_whitespace,
+            thought_lead_newline,
         )))
     }
 
@@ -878,10 +887,19 @@ pub(crate) struct Gemma4ChannelStreamFilter {
     /// still pending they are held rather than deciding pass-through, so a
     /// leading space before `thought` still suppresses the continuation.
     lead_whitespace: Vec<u32>,
+    /// Single-piece "\n" token id. The replayed channel header is exactly
+    /// `thought\n`; both tokens are framing and stay out of the reasoning
+    /// stream (they remain in `last_channel_body`, whose consumer strips the
+    /// header textually).
+    thought_lead_newline: Option<u32>,
     pending_lead: Vec<u32>,
     state: Gemma4ChannelStreamState,
     in_channel: bool,
     last_channel_body: Vec<u32>,
+    /// True right after the replayed `thought` lead token: the immediately
+    /// following single-piece newline belongs to the channel header, not to
+    /// the reasoning stream.
+    reasoning_header_newline_pending: bool,
     /// True once a non-empty outside-channel chunk has been sent.
     pub(crate) kept_output: bool,
     /// When set, channel-body tokens also accumulate here per filter call so
@@ -906,15 +924,18 @@ impl Gemma4ChannelStreamFilter {
         ids: Gemma4ChannelIds,
         thought_lead: Option<u32>,
         lead_whitespace: Vec<u32>,
+        thought_lead_newline: Option<u32>,
     ) -> Self {
         Self {
             ids,
             thought_lead,
             lead_whitespace,
+            thought_lead_newline,
             pending_lead: Vec::new(),
             state: Gemma4ChannelStreamState::LeadPending,
             in_channel: false,
             last_channel_body: Vec::new(),
+            reasoning_header_newline_pending: false,
             kept_output: false,
             capture_reasoning: false,
             reasoning_delta: Vec::new(),
@@ -959,7 +980,11 @@ impl Gemma4ChannelStreamFilter {
                         self.state = Gemma4ChannelStreamState::Suppressing;
                         // The held whitespace belongs to the continuation.
                         self.pending_lead.clear();
-                        self.push_channel_body(token);
+                        // The replayed channel name is framing, not reasoning:
+                        // it stays in `last_channel_body` (whose consumer strips
+                        // the header textually) but out of the reasoning stream.
+                        self.last_channel_body.push(token);
+                        self.reasoning_header_newline_pending = true;
                     } else {
                         self.state = Gemma4ChannelStreamState::Passing;
                         kept.append(&mut self.pending_lead);
@@ -972,7 +997,17 @@ impl Gemma4ChannelStreamFilter {
                     if token == self.ids.close {
                         self.state = Gemma4ChannelStreamState::Passing;
                     } else {
-                        self.push_channel_body(token);
+                        // The header's closing newline is framing too; withhold
+                        // exactly one single-piece "\n" immediately after the
+                        // replayed channel name from the reasoning stream.
+                        let header_newline = self.reasoning_header_newline_pending
+                            && self.thought_lead_newline == Some(token);
+                        self.reasoning_header_newline_pending = false;
+                        if header_newline {
+                            self.last_channel_body.push(token);
+                        } else {
+                            self.push_channel_body(token);
+                        }
                     }
                 }
                 Gemma4ChannelStreamState::Passing => {
@@ -1658,7 +1693,32 @@ mod gemma4_channel_stream_filter_tests {
     const NEWLINE: u32 = 21;
 
     fn filter() -> Gemma4ChannelStreamFilter {
-        Gemma4ChannelStreamFilter::new(IDS, Some(THOUGHT), vec![SPACE, NEWLINE])
+        Gemma4ChannelStreamFilter::new(IDS, Some(THOUGHT), vec![SPACE, NEWLINE], Some(NEWLINE))
+    }
+
+    #[test]
+    fn replayed_channel_header_stays_out_of_the_reasoning_stream() {
+        // The model continued the pre-filled thought channel by replaying
+        // "thought\n": the framing tokens must not reach reasoning_content,
+        // matching the non-streaming decode's strip_gemma4_channel_name_header.
+        let mut filter = filter();
+        filter.capture_reasoning = true;
+        assert!(filter.filter(&[THOUGHT, NEWLINE, 100, 101]).is_empty());
+        assert_eq!(
+            std::mem::take(&mut filter.reasoning_delta),
+            vec![100, 101],
+            "reasoning stream starts after the replayed header"
+        );
+        // The fallback body still holds the full header; take_fallback_text
+        // strips it textually.
+        assert_eq!(filter.last_channel_body, vec![THOUGHT, NEWLINE, 100, 101]);
+        // A reasoning token that merely equals the newline piece mid-body is
+        // content, not framing.
+        assert!(filter.filter(&[NEWLINE, 102]).is_empty());
+        assert_eq!(
+            std::mem::take(&mut filter.reasoning_delta),
+            vec![NEWLINE, 102]
+        );
     }
 
     #[test]
@@ -2587,6 +2647,7 @@ mod openai_stream_driver_tests {
             },
             None,
             Vec::new(),
+            None,
         ));
         channel_filter.enable_reasoning_capture();
         let mut driver = OpenAiStreamDriver {

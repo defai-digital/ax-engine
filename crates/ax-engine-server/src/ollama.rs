@@ -528,6 +528,10 @@ async fn ollama_generate_inner(
     let live =
         select_openai_model(&state, request.model.as_deref()).map_err(ollama_model_status)?;
     let num_ctx = validate_ollama_num_ctx(&live, request.options.num_ctx)?;
+    // Validate num_predict before the lifecycle short-circuit too: a pure
+    // unload/empty-prompt request must not dodge validation of a known option
+    // (num_ctx above is already checked pre-lifecycle).
+    let num_predict = resolve_ollama_num_predict(&live, request.options.num_predict)?;
     let keep_alive_unload = keep_alive_requests_unload(request.keep_alive.as_ref());
     if let Some(mut response) = ollama_generate_lifecycle_response(&live, &request) {
         // Pure unload form: Ollama unloads the model before answering, so a
@@ -569,7 +573,6 @@ async fn ollama_generate_inner(
     let can_true_stream = stream
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         && request.format.is_none();
-    let num_predict = resolve_ollama_num_predict(&live, request.options.num_predict)?;
     let openai_request = ollama_generate_to_openai_request(request, num_predict)?;
     if can_true_stream {
         let OpenAiBuiltRequest {

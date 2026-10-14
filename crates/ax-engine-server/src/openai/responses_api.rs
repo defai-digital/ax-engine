@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 use crate::app_state::AppState;
 use crate::errors::{ErrorResponse, error_response};
 use crate::openai::chat::openai_chat_completions;
+use crate::openai::requests::openai_tools_are_enabled;
 use crate::openai::schema::OpenAiChatCompletionHttpRequest;
 
 const MAX_CHAT_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -150,9 +151,13 @@ fn validate_stateless_contract(request: &OpenAiResponsesRequest) -> Result<(), H
             "max_tool_calls is not supported by the stateless /v1/responses subset",
         ));
     }
-    if request.parallel_tool_calls == Some(false) {
+    if request.parallel_tool_calls == Some(false)
+        && openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref())
+    {
         // Echoing `false` while emitting several function_call items would
-        // misrepresent the response; fail closed until it is enforced.
+        // misrepresent the response; fail closed until it is enforced. Without
+        // tools the constraint is vacuously satisfied (parity with the chat
+        // surface, which only rejects when tools are enabled).
         return Err(unsupported(
             "parallel_tool_calls=false is not supported by the stateless /v1/responses subset",
         ));
@@ -235,6 +240,18 @@ fn build_chat_request(
             .as_ref()
             .map(|user| json!({"user": user}).to_string())
     });
+    // The Responses API accepts `reasoning.effort` and ignores its value
+    // (docs/API-COMPATIBILITY.md); the delegated chat handler fail-closed
+    // rejects any non-null effort, so strip the key first. Other reasoning
+    // forms (on/off strings, remaining object keys) pass through unchanged.
+    let reasoning = request.reasoning.as_ref().map(|value| match value {
+        Value::Object(map) => {
+            let mut map = map.clone();
+            map.remove("effort");
+            Value::Object(map)
+        }
+        other => other.clone(),
+    });
     serde_json::from_value(json!({
         "model": request.model.clone(),
         "messages": messages,
@@ -246,7 +263,7 @@ fn build_chat_request(
         "tools": tools,
         "tool_choice": tool_choice,
         "response_format": response_format,
-        "reasoning": request.reasoning.clone(),
+        "reasoning": reasoning,
         "metadata": metadata,
     }))
     .map_err(|error| {
@@ -561,6 +578,20 @@ fn build_responses_output(
         .and_then(Value::as_object)
         .ok_or_else(|| internal("chat completion choice did not include a message"))?;
     let response_suffix = chat_id.strip_prefix("chatcmpl-").unwrap_or(chat_id);
+    let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
+    let incomplete_reason = match finish_reason {
+        Some("length") => Some("max_output_tokens"),
+        Some("content_filter") => Some("content_filter"),
+        Some(_) | None => None,
+    };
+    // Item status must reflect the same truncation as the top-level status:
+    // a truncated message or function_call (arguments cut mid-JSON) is
+    // "incomplete", never "completed".
+    let item_status = if incomplete_reason.is_some() {
+        "incomplete"
+    } else {
+        "completed"
+    };
     let mut output = Vec::new();
     if let Some(reasoning) = message
         .get("reasoning_content")
@@ -582,7 +613,7 @@ fn build_responses_output(
         output.push(json!({
             "id": format!("msg_{response_suffix}"),
             "type": "message",
-            "status": "completed",
+            "status": item_status,
             "role": "assistant",
             "content": [{
                 "type": "output_text",
@@ -614,19 +645,13 @@ fn build_responses_output(
             output.push(json!({
                 "id": format!("fc_{response_suffix}_{index}"),
                 "type": "function_call",
-                "status": "completed",
+                "status": item_status,
                 "call_id": call_id,
                 "name": name,
                 "arguments": arguments
             }));
         }
     }
-    let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
-    let incomplete_reason = match finish_reason {
-        Some("length") => Some("max_output_tokens"),
-        Some("content_filter") => Some("content_filter"),
-        Some(_) | None => None,
-    };
     let usage = responses_usage(chat.get("usage"));
     Ok(json!({
         "id": format!("resp_{response_suffix}"),
@@ -1030,5 +1055,77 @@ mod tests {
         )
         .expect("unknown usage should map");
         assert!(response["usage"].is_null());
+    }
+
+    #[test]
+    fn responses_reasoning_effort_is_accepted_and_ignored() {
+        // docs/API-COMPATIBILITY.md: /v1/responses accepts reasoning.effort
+        // and ignores the value. The delegated chat handler fail-closed
+        // rejects any non-null effort, so the builder strips the key.
+        let request: OpenAiResponsesRequest = serde_json::from_value(json!({
+            "input": "hi",
+            "reasoning": {"effort": "low", "summary": "auto"}
+        }))
+        .expect("Responses request should deserialize");
+        let chat = build_chat_request(&request).expect("reasoning.effort must not fail the build");
+        let reasoning = chat.reasoning.as_ref().expect("reasoning is kept");
+        assert!(reasoning.get("effort").is_none());
+        assert_eq!(reasoning.get("summary"), Some(&json!("auto")));
+        assert!(
+            crate::openai::requests::reject_unsupported_reasoning_effort(None, Some(reasoning))
+                .is_ok(),
+            "the stripped reasoning object must pass the chat handler's guard"
+        );
+    }
+
+    #[test]
+    fn truncated_response_marks_output_items_incomplete() {
+        // A response truncated at the token budget has status "incomplete"
+        // with reason max_output_tokens; the output items must reflect the
+        // same state instead of claiming "completed" (the arguments of a
+        // function_call may be cut mid-JSON).
+        let request: OpenAiResponsesRequest =
+            serde_json::from_value(json!({"input": "hi"})).expect("request");
+        let response = build_responses_output(
+            &request,
+            &json!({
+                "id": "chatcmpl-trunc",
+                "created": 123,
+                "model": "qwen3",
+                "choices": [{
+                    "message": {"content": "partial answer"},
+                    "finish_reason": "length"
+                }],
+                "usage": null
+            }),
+        )
+        .expect("truncated chat response should map");
+        assert_eq!(response["status"], "incomplete");
+        let message_item = response["output"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["type"] == "message"))
+            .expect("message item");
+        assert_eq!(message_item["status"], "incomplete");
+    }
+
+    #[test]
+    fn parallel_tool_calls_false_is_accepted_without_tools() {
+        // Parity with the chat surface: parallel_tool_calls=false is only
+        // rejected when tools are actually enabled; a tools-less request
+        // satisfies the constraint vacuously.
+        let no_tools: OpenAiResponsesRequest = serde_json::from_value(json!({
+            "input": "hi",
+            "parallel_tool_calls": false
+        }))
+        .expect("request");
+        assert!(validate_stateless_contract(&no_tools).is_ok());
+
+        let with_tools: OpenAiResponsesRequest = serde_json::from_value(json!({
+            "input": "hi",
+            "parallel_tool_calls": false,
+            "tools": [{"type": "function", "name": "lookup"}]
+        }))
+        .expect("request");
+        assert!(validate_stateless_contract(&with_tools).is_err());
     }
 }

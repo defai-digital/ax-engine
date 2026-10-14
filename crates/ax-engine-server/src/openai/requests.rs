@@ -1282,7 +1282,7 @@ fn merge_thinking_budget_metadata(
     Some(format!("{metadata}; {suffix}"))
 }
 
-fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Option<&Value>) -> bool {
+pub(crate) fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Option<&Value>) -> bool {
     if tool_choice.is_some_and(openai_tool_choice_disables_tools) {
         return false;
     }

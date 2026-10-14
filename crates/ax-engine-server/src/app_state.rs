@@ -117,6 +117,22 @@ pub(crate) enum ParkedLookup {
     Stale(LiveState),
 }
 
+/// Whether the parked generation's artifacts dir is the requested path
+/// (exact match, or canonicalized match for symlinked/relative spellings).
+fn parked_entry_path_matches(live: &LiveState, model_path: &std::path::Path) -> bool {
+    live.session_config
+        .mlx_model_artifacts_dir
+        .as_deref()
+        .is_some_and(|parked_path| {
+            parked_path == model_path
+                || parked_path
+                    .canonicalize()
+                    .ok()
+                    .as_deref()
+                    .is_some_and(|canonical| canonical == model_path)
+        })
+}
+
 impl AppState {
     pub(crate) fn new(mut live: LiveState, env: crate::args::ServerEnvConfig) -> Self {
         live.generation = 1;
@@ -174,6 +190,16 @@ impl AppState {
         }
     }
 
+    /// Whether a parked generation under `model_id` serves `model_path`
+    /// (the match half of [`Self::take_parked_live`], without consuming the
+    /// entry). Used by load preflight to recognize a zero-cost republish.
+    pub(crate) fn parked_live_matches(&self, model_id: &str, model_path: &std::path::Path) -> bool {
+        let parked = self.parked.lock();
+        parked
+            .get(model_id)
+            .is_some_and(|candidate| parked_entry_path_matches(candidate, model_path))
+    }
+
     /// Take a parked generation when its artifacts path still matches.
     ///
     /// A parked generation for the same id but a different path is removed
@@ -189,18 +215,7 @@ impl AppState {
         let Some(candidate) = parked.get(model_id) else {
             return ParkedLookup::None;
         };
-        let path_matches = candidate
-            .session_config
-            .mlx_model_artifacts_dir
-            .as_deref()
-            .is_some_and(|parked_path| {
-                parked_path == model_path
-                    || parked_path
-                        .canonicalize()
-                        .ok()
-                        .as_deref()
-                        .is_some_and(|canonical| canonical == model_path)
-            });
+        let path_matches = parked_entry_path_matches(candidate, model_path);
         let Some(live) = parked.remove(model_id) else {
             return ParkedLookup::None;
         };
@@ -2123,6 +2138,24 @@ mod tests {
             matches!(lookup, ParkedLookup::Matched(_)),
             "matching path must republish"
         );
+        if let ParkedLookup::Matched(matched) = lookup {
+            matched.retire().await.expect("matched generation retires");
+        }
+    }
+
+    #[tokio::test]
+    async fn parked_live_matches_peeks_without_consuming() {
+        let state = test_state("first");
+        assert!(!state.parked_live_matches("first", Path::new("/packs/a")));
+        state.park_live(parked_fixture("first", "/packs/a"));
+
+        assert!(state.parked_live_matches("first", Path::new("/packs/a")));
+        assert!(!state.parked_live_matches("first", Path::new("/packs/b")));
+        assert!(!state.parked_live_matches("other", Path::new("/packs/a")));
+
+        // The peek must not consume the parked entry.
+        let lookup = state.take_parked_live("first", Path::new("/packs/a"));
+        assert!(matches!(lookup, ParkedLookup::Matched(_)));
         if let ParkedLookup::Matched(matched) = lookup {
             matched.retire().await.expect("matched generation retires");
         }

@@ -273,26 +273,38 @@ pub(crate) async fn load_model(
         let _loading_guard = loading_guard;
         // Fast path: soft-parked same-id reload (flip S2). Republish without
         // rebuild so sibling interactive decode is not GPU-stalled.
-        let parked = if load_mode == LoadModelMode::Add {
-            match state_clone.take_parked_live(&model_id, &model_path) {
-                crate::app_state::ParkedLookup::Matched(parked) => Some(parked),
-                crate::app_state::ParkedLookup::Stale(stale) => {
-                    // Same id, different artifacts: the parked worker cannot
-                    // be republished and must not outlive this load as a
-                    // hidden second residency.
-                    if let Err(error) = stale.retire().await {
+        // Replace never republishes (its retire-the-outgoing swap semantics
+        // differ), but a same-id parked generation must not outlive the swap
+        // as a hidden second residency: retire it before the build.
+        let parked = match state_clone.take_parked_live(&model_id, &model_path) {
+            crate::app_state::ParkedLookup::Matched(parked) => {
+                if load_mode == LoadModelMode::Add {
+                    Some(parked)
+                } else {
+                    if let Err(error) = parked.retire().await {
                         tracing::warn!(
                             model_id = %model_id,
                             %error,
-                            "failed to retire a parked generation that no longer matches the requested path"
+                            "failed to retire a parked generation superseded by a replace load"
                         );
                     }
                     None
                 }
-                crate::app_state::ParkedLookup::None => None,
             }
-        } else {
-            None
+            crate::app_state::ParkedLookup::Stale(stale) => {
+                // Same id, different artifacts: the parked worker cannot
+                // be republished and must not outlive this load as a
+                // hidden second residency.
+                if let Err(error) = stale.retire().await {
+                    tracing::warn!(
+                        model_id = %model_id,
+                        %error,
+                        "failed to retire a parked generation that no longer matches the requested path"
+                    );
+                }
+                None
+            }
+            crate::app_state::ParkedLookup::None => None,
         };
         if let Some(parked) = parked {
             let ctx_len = crate::metadata::context_length(&parked);
@@ -775,7 +787,7 @@ fn validate_load_preflight(
             }
         }
     }
-    validate_load_memory_preflight(state, model_path, load_mode, load_policy)?;
+    validate_load_memory_preflight(state, model_id, model_path, load_mode, load_policy)?;
     Ok(live)
 }
 
@@ -937,6 +949,7 @@ fn mlx_device_active_bytes() -> Option<u64> {
 /// unknowable, and can be disabled with `AX_SERVER_LOAD_MEMORY_PREFLIGHT=off`.
 fn validate_load_memory_preflight(
     state: &AppState,
+    model_id: &str,
     model_path: &std::path::Path,
     load_mode: LoadModelMode,
     load_policy: LoadModelPolicy,
@@ -957,7 +970,17 @@ fn validate_load_memory_preflight(
     let incoming_pool = kv_pool_tokens(&default_live.session_config.kv_config);
     let incoming_kv = manifest_kv_geometry(model_path)
         .and_then(|geometry| estimated_kv_pool_bytes(&geometry, incoming_pool));
-    let incoming = estimated_footprint_bytes(incoming_weights, incoming_kv);
+    // A soft-parked same-id reload republishes resident weights, which the
+    // measured/estimated resident total already accounts for — charging the
+    // full incoming estimate would double-count them and false-reject the
+    // evict→reload cycle.
+    let parked_republish =
+        load_mode == LoadModelMode::Add && state.parked_live_matches(model_id, model_path);
+    let incoming = if parked_republish {
+        0
+    } else {
+        estimated_footprint_bytes(incoming_weights, incoming_kv)
+    };
 
     let outgoing_model_id = default_live.model_id;
     let mut resident_total = 0u64;

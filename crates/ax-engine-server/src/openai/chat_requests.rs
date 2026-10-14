@@ -262,11 +262,17 @@ pub(crate) fn render_openai_chat_prompt_with_family(
         return render_llama3_openai_chat_prompt(messages, tools);
     }
     let tool_contract_style = qwen_tool_contract_style(model_id);
+    // HyV3's hub jinja never replays reasoning into history: every assistant
+    // turn takes the fixed empty `<think></think>` prefill (no_think). Injecting
+    // the preserve_thinking wrapper would only be entity-escaped by
+    // `escape_hy_v3_content`, polluting the prompt with literal `&lt;think>`.
+    let preserve_thinking =
+        options.preserve_thinking && !matches!(template, chat::ChatPromptTemplate::HyV3);
     let rendered_messages = render_openai_chat_message_pairs(
         model_id,
         messages,
         tool_contract_style,
-        options.preserve_thinking,
+        preserve_thinking,
     )?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
@@ -5101,5 +5107,49 @@ mod deepseek_dsml_contract_tests {
         )
         .expect("render");
         assert!(prompt.contains("<think>thinking out loud</think>"));
+    }
+
+    #[test]
+    fn hy_v3_never_replays_reasoning_into_history() {
+        // HyV3's hub jinja always prefills the empty `<think></think>`
+        // (no_think); a preserve_thinking request must not inject a wrapper
+        // the HyV3 renderer would entity-escape into literal `&lt;think>` text.
+        let messages: Vec<OpenAiChatMessage> = vec![
+            serde_json::from_value(serde_json::json!({"role": "user", "content": "Hi"}))
+                .expect("user message"),
+            serde_json::from_value(serde_json::json!({
+                "role": "assistant",
+                "content": "Bonjour!",
+                "reasoning_content": "thinking out loud"
+            }))
+            .expect("assistant message"),
+            serde_json::from_value(serde_json::json!({"role": "user", "content": "Bye"}))
+                .expect("user message"),
+        ];
+        let prompt = render_openai_chat_prompt_with_family(
+            "tencent/Hy-MT2-30B-A3B",
+            None,
+            &messages,
+            None,
+            None,
+            ChatPromptRenderOptions {
+                enable_thinking: false,
+                preserve_thinking: true,
+                deepseek_v4_framing: None,
+            },
+        )
+        .expect("render");
+        assert!(
+            !prompt.contains("&lt;think>"),
+            "no entity-escaped think markers: {prompt}"
+        );
+        assert!(
+            !prompt.contains("thinking out loud"),
+            "reasoning content is not replayed: {prompt}"
+        );
+        assert!(
+            prompt.contains("<｜hy_Assistant｜><think></think>Bonjour!<eos:6124c78e>"),
+            "canonical empty-think assistant turn: {prompt}"
+        );
     }
 }
