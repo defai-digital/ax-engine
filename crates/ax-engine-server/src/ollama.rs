@@ -843,6 +843,48 @@ fn drive_ollama_native_events<N>(
                         return;
                     }
                 }
+                // Text the incremental decoder was still holding for a
+                // trailing codepoint is content too (same flush as the SSE
+                // path); route it through the stop scanner like any delta.
+                match decoder.finish() {
+                    Ok(tail) if !tail.is_empty() => {
+                        if !tail.trim().is_empty()
+                            && let Some(filter) = channel_filter.as_mut()
+                        {
+                            filter.mark_kept_output();
+                        }
+                        let (emit, stop_matched) = match stop_scanner.as_mut() {
+                            Some(scanner) => {
+                                let step = scanner.push(&tail);
+                                (step.emit, step.matched)
+                            }
+                            None => (tail, false),
+                        };
+                        if !emit.is_empty() {
+                            let chunk =
+                                ollama_native_delta_chunk(kind, &payload.response.model_id, emit);
+                            if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                                return;
+                            }
+                        }
+                        if stop_matched {
+                            let final_chunk =
+                                ollama_native_stop_final_chunk(kind, &payload.response.model_id);
+                            let _ = send_ollama_ndjson_line(tx, &final_chunk);
+                            return;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        let _ = send_ollama_ndjson_line(
+                            tx,
+                            &json!({ "error": format!(
+                                "failed to decode native MLX Ollama stream tokens: {error}"
+                            ) }),
+                        );
+                        return;
+                    }
+                }
                 // Release the stop scanner's withheld tail (no match fired).
                 if let Some(scanner) = stop_scanner.as_mut() {
                     let tail = scanner.finish();
@@ -2021,6 +2063,114 @@ mod tests {
         OpenAiChatCompletionChoice, OpenAiChatMessageResponse, OpenAiFunctionCall, OpenAiToolCall,
         OpenAiUsage,
     };
+
+    #[test]
+    fn drive_ollama_native_events_flushes_the_decoder_tail_before_done() {
+        use ax_engine_sdk::{
+            CapabilityReport, GenerateFinishReason, GenerateStatus, GenerateStreamResponseEvent,
+            GenerateStreamStepEvent, ResolutionPolicy, RuntimeReport, SessionRequestReport,
+            SessionRequestState, SupportTier,
+        };
+
+        fn step(tokens: Vec<u32>) -> GenerateStreamEvent {
+            GenerateStreamEvent::Step(GenerateStreamStepEvent {
+                request: SessionRequestReport {
+                    request_id: 42,
+                    model_id: "test-model".to_string(),
+                    state: SessionRequestState::Running,
+                    prompt_tokens: vec![1],
+                    processed_prompt_tokens: 1,
+                    output_tokens: Vec::new(),
+                    output_token_logprobs: Vec::new(),
+                    prompt_len: 1,
+                    output_len: 0,
+                    max_output_tokens: 16,
+                    cancel_requested: false,
+                    execution_plan_ref: None,
+                    route: Default::default(),
+                    finish_reason: None,
+                    terminal_stop_reason: None,
+                    last_error: None,
+                },
+                step: Default::default(),
+                delta_tokens: tokens,
+                delta_token_logprobs: Vec::new(),
+                delta_text: None,
+            })
+        }
+
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = AtomicBool::new(false);
+        let tokenizer = crate::openai::streaming::byte_level_test_tokenizer("ollama-tail");
+        let events = [
+            Ok(Some(step(vec![4]))), // "ok"
+            Ok(Some(step(vec![1]))), // held lead byte
+            Ok(Some(GenerateStreamEvent::Response(
+                GenerateStreamResponseEvent {
+                    response: GenerateResponse {
+                        request_id: 42,
+                        model_id: "test-model".to_string(),
+                        prompt_tokens: vec![1],
+                        prompt_text: None,
+                        output_tokens: vec![7, 8],
+                        output_token_logprobs: Vec::new(),
+                        output_text: None,
+                        prompt_token_count: None,
+                        output_token_count: None,
+                        status: GenerateStatus::Finished,
+                        finish_reason: Some(GenerateFinishReason::Stop),
+                        step_count: 1,
+                        ttft_step: Some(1),
+                        route: Default::default(),
+                        runtime: RuntimeReport {
+                            selected_backend: SelectedBackend::Mlx,
+                            support_tier: SupportTier::MlxPreview,
+                            resolution_policy: ResolutionPolicy::MlxOnly,
+                            capabilities: CapabilityReport::mlx_preview(),
+                            fallback_reason: None,
+                            host: Default::default(),
+                            metal_toolchain: Default::default(),
+                            mlx_runtime: None,
+                            mlx_model: None,
+                            delegated_runtime: None,
+                        },
+                        performance: Default::default(),
+                    },
+                },
+            ))),
+            Ok(None),
+        ];
+        let mut iter = events.into_iter();
+        drive_ollama_native_events(
+            OllamaNativeStreamKind::Generate,
+            &tx,
+            &cancel,
+            tokenizer,
+            None,
+            || iter.next().unwrap_or(Ok(None)),
+        );
+
+        let mut lines = Vec::new();
+        while let Ok(line) = rx.try_recv() {
+            lines.push(line.expect("line ok"));
+        }
+        let responses: Vec<String> = lines
+            .iter()
+            .filter_map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+                value
+                    .get("response")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            })
+            .collect();
+        assert_eq!(
+            responses,
+            vec!["ok".to_string(), "\u{FFFD}".to_string()],
+            "the held trailing codepoint must flush before the done chunk"
+        );
+    }
 
     #[test]
     fn ollama_format_wraps_bare_json_schema_and_rejects_unknown_values() {

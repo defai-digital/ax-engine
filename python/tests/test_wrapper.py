@@ -3060,22 +3060,39 @@ class WrapperContractTests(unittest.TestCase):
         with self.assertRaisesRegex(openai_server.OpenAiShimError, "token id array"):
             openai_server.prompt_to_tokens([1, False], FakeTokenizer())
 
-    def test_openai_mlx_shim_rejects_out_of_range_prompt_tokens(self) -> None:
-        # The native bindings take u32 token ids: out-of-range values must be
-        # a 400 validation error, not a pyo3 OverflowError surfacing as a 500.
+    def test_openai_mlx_shim_rejects_empty_and_out_of_range_prompt_tokens(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
         class FakeTokenizer:
             def encode(self, text: str) -> object:
                 return types.SimpleNamespace(ids=[ord(ch) for ch in text])
 
-        with self.assertRaisesRegex(openai_server.OpenAiShimError, "u32 range"):
-            openai_server.prompt_to_tokens([-1], FakeTokenizer())
-        with self.assertRaisesRegex(openai_server.OpenAiShimError, "u32 range"):
-            openai_server.prompt_to_tokens([2**32], FakeTokenizer())
-        tokens, text = openai_server.prompt_to_tokens([0, 2**32 - 1], FakeTokenizer())
-        self.assertEqual(tokens, [0, 4294967295])
-        self.assertIsNone(text)
+        tokenizer = FakeTokenizer()
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "must not be empty"):
+            openai_server.prompt_to_tokens([], tokenizer)
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "must not be empty"):
+            openai_server.prompt_to_tokens("", tokenizer)
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "u32"):
+            openai_server.prompt_to_tokens([-1], tokenizer)
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "u32"):
+            openai_server.prompt_to_tokens([2**32], tokenizer)
+        tokens, prompt_text = openai_server.prompt_to_tokens([0, 2**32 - 1], tokenizer)
+        self.assertEqual(tokens, [0, 2**32 - 1])
+        self.assertIsNone(prompt_text)
+
+    def test_openai_mlx_shim_http_returns_400_for_unusable_prompt_tokens(self) -> None:
+        client, session = self._make_openai_shim_client()
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        for prompt in ([-1], [2**32], []):
+            response = client.post(
+                "/v1/completions",
+                json={"model": "qwen3_dense", "prompt": prompt, "max_tokens": 1},
+            )
+            self.assertEqual(response.status_code, 400)
+            error = response.json()["error"]
+            self.assertEqual(error["message"], openai_server.COMPLETION_REQUEST_ERROR)
+        self.assertEqual(session.generate_kwargs, [])
 
     def test_openai_mlx_shim_http_errors_do_not_expose_exception_details(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

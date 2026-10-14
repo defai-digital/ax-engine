@@ -113,12 +113,15 @@ def _version_key(tag: str) -> tuple:
     body = tag[1:] if tag.startswith("v") else tag
     main, _, suffix = body.partition("-")
     parts = main.split(".")
-    nums: list[object] = []
+    # Tagged segments as (0, number) / (1, text) so a tag mixing numeric and
+    # non-numeric segments at the same position (e.g. v7.7.0 vs v7.7.hotfix,
+    # both matched by TAG_PATTERN) still compares without a str/int TypeError.
+    nums: list[tuple[int, object]] = []
     for p in parts:
         try:
-            nums.append(int(p))
+            nums.append((0, int(p)))
         except ValueError:
-            nums.append(p)
+            nums.append((1, p))
     return (tuple(nums), suffix)
 
 

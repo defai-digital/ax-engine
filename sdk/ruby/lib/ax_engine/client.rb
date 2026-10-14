@@ -117,10 +117,10 @@ module AxEngine
     # Force `stream: true` regardless of the caller's key style: merging a
     # symbol key does not override a string "stream" key in the request hash,
     # which would serialize duplicate JSON keys with an unpredictable winner.
+    # Dup first: for a positional request with no kwargs, `request_body`
+    # returns the caller's own hash, and deleting keys would mutate it (or
+    # raise FrozenError on a frozen input).
     def streaming_body(request, kwargs)
-      # `request_body` may return the caller's own Hash (positional-hash
-      # call with no kwargs); dup before the in-place deletes so we neither
-      # mutate caller state nor raise FrozenError on a frozen params Hash.
       body = request_body(request, kwargs).dup
       body.delete("stream")
       body.delete(:stream)
@@ -178,7 +178,12 @@ module AxEngine
           use_ssl: use_ssl
         ) do |http|
           http.request(req) do |response|
-            raise_on_error(response, path)
+            unless (200..299).cover?(response.code.to_i)
+              # `response.body` is nil inside the streaming block until the
+              # body is read; read it explicitly so the HttpError keeps the
+              # server's error envelope (mirrors the non-streaming `execute`).
+              raise_on_error(response, path, body: response.read_body)
+            end
             response.read_body do |chunk|
               reader.feed(chunk) do |event|
                 if event["event"] == "error"
@@ -232,14 +237,17 @@ module AxEngine
       end
     end
 
-    def raise_on_error(response, path)
+    def raise_on_error(response, path, body: nil)
       code = response.code.to_i
       return if code >= 200 && code < 300
 
+      # Streaming callers pass the body they already read; `response.body` is
+      # nil inside Net::HTTP's streaming block until the body is read.
+      body = response.body if body.nil?
       payload = begin
-        JSON.parse(response.body)
+        JSON.parse(body)
       rescue StandardError
-        response.body
+        body
       end
 
       message = if payload.is_a?(Hash)

@@ -347,11 +347,17 @@ def main() -> int:
             tokenizer = Tokenizer.from_file(args.tokenizer)
             print(f"  Tokenizer: {args.tokenizer}")
         except ImportError:
+            # An explicit --tokenizer promises a /v1/generate run; silently
+            # falling back would gate /v1/chat/completions instead and the
+            # report would not record the substitution.
             print(
-                "  WARNING: tokenizers library not installed, falling back to /v1/chat/completions"
+                "  ERROR: --tokenizer was requested but the tokenizers library is not installed",
+                file=sys.stderr,
             )
+            return 1
         except Exception as e:
-            print(f"  WARNING: Failed to load tokenizer: {e}")
+            print(f"  ERROR: failed to load tokenizer {args.tokenizer}: {e}", file=sys.stderr)
+            return 1
 
     print("AX Engine QA Suite")
     print(f"  Server:   {args.base_url}")

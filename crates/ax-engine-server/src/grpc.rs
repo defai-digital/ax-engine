@@ -216,6 +216,16 @@ impl AxEngine for AxEngineGrpcService {
         // Native MLX leaves output_text unset; decode + strip channels like OpenAI.
         populate_native_mlx_output_text(&live, &mut r, OpenAiStreamKind::ChatCompletion, false)
             .map_err(openai_error_to_status)?;
+        // Delegated backends report counts without materializing token
+        // arrays, so `.len()` would report zero usage; use the SDK's
+        // authoritative counts exactly like the HTTP surface.
+        let usage = r
+            .known_usage()
+            .map(|(prompt_tokens, completion_tokens)| proto::TokenUsage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            });
         let content = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::ChatCompletionResponse {
@@ -231,11 +241,7 @@ impl AxEngine for AxEngineGrpcService {
                 }),
                 finish_reason,
             }],
-            usage: Some(proto::TokenUsage {
-                prompt_tokens: r.prompt_tokens.len() as u32,
-                completion_tokens: r.output_tokens.len() as u32,
-                total_tokens: (r.prompt_tokens.len() + r.output_tokens.len()) as u32,
-            }),
+            usage,
         }))
     }
 
@@ -272,6 +278,16 @@ impl AxEngine for AxEngineGrpcService {
         let mut r = run_grpc_generate_request(&self.state, &live, request_id, generate_req).await?;
         populate_native_mlx_output_text(&live, &mut r, OpenAiStreamKind::Completion, false)
             .map_err(openai_error_to_status)?;
+        // Delegated backends report counts without materializing token
+        // arrays, so `.len()` would report zero usage; use the SDK's
+        // authoritative counts exactly like the HTTP surface.
+        let usage = r
+            .known_usage()
+            .map(|(prompt_tokens, completion_tokens)| proto::TokenUsage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            });
         let text = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::CompletionResponse {
@@ -284,11 +300,7 @@ impl AxEngine for AxEngineGrpcService {
                 text,
                 finish_reason,
             }],
-            usage: Some(proto::TokenUsage {
-                prompt_tokens: r.prompt_tokens.len() as u32,
-                completion_tokens: r.output_tokens.len() as u32,
-                total_tokens: (r.prompt_tokens.len() + r.output_tokens.len()) as u32,
-            }),
+            usage,
         }))
     }
 

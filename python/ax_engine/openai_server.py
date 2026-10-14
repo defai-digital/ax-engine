@@ -16,6 +16,9 @@ CHAT_COMPLETION_REQUEST_ERROR = "invalid chat completion request"
 # values outside those ranges must fail validation instead of overflowing.
 MAX_OUTPUT_TOKENS_LIMIT = 4294967295
 TOP_K_LIMIT = 4294967295
+# Prompt token ids reach the native binding as Vec<u32>; out-of-range ids fail
+# with OverflowError after request validation, i.e. as an HTTP 500.
+TOKEN_ID_LIMIT = 4294967295
 MAX_SAMPLING_FLOAT = float.fromhex("0x1.fffffep+127")
 SEED_LIMIT = 18446744073709551615
 SAMPLING_PARAM_KEYS = ("temperature", "top_p", "top_k", "repetition_penalty", "seed", "min_p")
@@ -712,16 +715,23 @@ def _qwen_parameter_value_end(body: str, value_start: int) -> int:
 
 def prompt_to_tokens(prompt: Any, tokenizer: Any) -> tuple[list[int], str | None]:
     if isinstance(prompt, str):
-        return list(tokenizer.encode(prompt).ids), prompt
-    if isinstance(prompt, list) and all(
+        tokens = [int(token) for token in tokenizer.encode(prompt).ids]
+        prompt_text: str | None = prompt
+    elif isinstance(prompt, list) and all(
         isinstance(token, int) and not isinstance(token, bool) for token in prompt
     ):
-        # The native bindings take u32 token ids; reject out-of-range values
-        # here (400) instead of surfacing a pyo3 OverflowError as a 500.
-        if any(token < 0 or token > MAX_OUTPUT_TOKENS_LIMIT for token in prompt):
-            raise OpenAiShimError("completions prompt token ids must be within u32 range")
-        return [int(token) for token in prompt], None
-    raise OpenAiShimError("completions prompt must be a string or token id array")
+        tokens = [int(token) for token in prompt]
+        prompt_text = None
+    else:
+        raise OpenAiShimError("completions prompt must be a string or token id array")
+    # The engine rejects an empty token list (EmptyInputTokens) and the native
+    # binding takes Vec<u32>; both would otherwise surface as an unhandled 500
+    # after the request has already passed the 400 validation chain.
+    if not tokens:
+        raise OpenAiShimError("completions prompt must not be empty")
+    if any(token < 0 or token > TOKEN_ID_LIMIT for token in tokens):
+        raise OpenAiShimError("completions prompt token ids must fit in u32")
+    return tokens, prompt_text
 
 
 def finish_reason(reason: str | None) -> str | None:

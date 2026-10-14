@@ -254,6 +254,16 @@ export class AxEngineClient {
   async #requestJson(path, init) {
     const response = await this.#request(path, init);
     const payload = await readJsonSafely(response);
+    if (payload === null) {
+      // 2xx with an empty body: typed callers must not receive null. The
+      // non-JSON branch below keeps the HTTP status; this one reports the
+      // empty payload the same way (the Ruby/Go/Swift clients fail closed
+      // here too).
+      throw new AxEngineHttpError(
+        `HTTP ${response.status} returned an empty response body`,
+        { status: response.status, payload: null },
+      );
+    }
     if (typeof payload === "string") {
       // 2xx with a non-JSON body: surface a structured error that keeps the
       // HTTP status instead of leaking a bare SyntaxError from response.json().

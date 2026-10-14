@@ -1654,7 +1654,7 @@ fn send_openai_llama_cpp_chat_final_chunk(
 /// incomplete codepoint. Shared by the decoder and stream-driver tests.
 #[cfg(test)]
 #[allow(clippy::expect_used)]
-fn byte_level_test_tokenizer(label: &str) -> EngineTokenizer {
+pub(crate) fn byte_level_test_tokenizer(label: &str) -> EngineTokenizer {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time")

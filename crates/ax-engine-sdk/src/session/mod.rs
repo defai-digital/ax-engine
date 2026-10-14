@@ -444,7 +444,12 @@ impl EngineSession {
         }
     }
 
-    fn store_native_request_route(&mut self, request_id: u64, route: GenerateRouteReport) {
+    fn store_native_request_route(
+        &mut self,
+        request_id: u64,
+        route: GenerateRouteReport,
+        keep: &[u64],
+    ) {
         if let Some(existing) = self.native_request_routes.get_mut(&request_id) {
             merge_native_route_into(existing, route);
         } else {
@@ -452,29 +457,36 @@ impl EngineSession {
             self.native_request_routes.insert(request_id, route);
         }
 
-        self.prune_native_request_routes();
+        self.prune_native_request_routes(keep);
     }
 
     /// Bound `native_request_routes` at `MAX_NATIVE_ROUTE_REPORTS`, evicting
-    /// terminal requests in FIFO order. A non-terminal request's route must
-    /// never be evicted: a termination that runs no batch item (memory
-    /// starvation cleanup) does not re-store the route, so the terminal
-    /// report and terminal stream event would lose its route and counters.
-    /// Live entries are rotated to the back instead; when every entry is live
-    /// the cap is temporarily exceeded rather than dropping a live route.
-    fn prune_native_request_routes(&mut self) {
+    /// terminal requests in FIFO order. A route must never be evicted while
+    /// the step that made its request terminal may still deliver it: a
+    /// termination that runs no batch item (memory starvation cleanup) does
+    /// not re-store the route, and a request that finishes on this step is
+    /// already terminal in the manager when this step stores its route, so
+    /// both are passed in `keep` for the storing step. A later step's store
+    /// evicts them normally. Live entries are rotated to the back instead;
+    /// when every entry is live or kept the cap is temporarily exceeded
+    /// rather than dropping a needed route.
+    fn prune_native_request_routes(&mut self, keep: &[u64]) {
+        // Bound the scan by the length captured here: evictions shrink the
+        // live length, and comparing against the shrinking value would stop
+        // the pass early while evictable entries are still queued behind it.
+        let initial_len = self.native_route_report_order.len();
         let mut scanned = 0;
         while self.native_route_report_order.len() > MAX_NATIVE_ROUTE_REPORTS
-            && scanned < self.native_route_report_order.len()
+            && scanned < initial_len
         {
             scanned += 1;
-            let Some(evicted_request_id) = self.native_route_report_order.pop_front() else {
+            let Some(candidate_id) = self.native_route_report_order.pop_front() else {
                 break;
             };
-            if self.native_request_route_is_live(evicted_request_id) {
-                self.native_route_report_order.push_back(evicted_request_id);
+            if keep.contains(&candidate_id) || self.native_request_route_is_live(candidate_id) {
+                self.native_route_report_order.push_back(candidate_id);
             } else {
-                self.native_request_routes.remove(&evicted_request_id);
+                self.native_request_routes.remove(&candidate_id);
             }
         }
     }
@@ -824,7 +836,7 @@ impl EngineSession {
         let report = if needs_route {
             let report = EngineStepReport::from_native_outcome(&outcome, metal_dispatch);
             if let Some(route) = report.route.as_ref() {
-                let request_ids = outcome
+                let batch_request_ids = outcome
                     .schedule_plan
                     .execution_batch
                     .as_ref()
@@ -836,10 +848,27 @@ impl EngineSession {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
+                // Keep every id this step may still deliver — the batch being
+                // stored now, the selected requests, and the ids that just
+                // terminated without a batch item (memory-starvation cleanup)
+                // — so the prune cannot evict a route before this step's
+                // terminal report and stream event have read it. The next
+                // step's store evicts them normally.
+                let mut keep = batch_request_ids.clone();
+                for request_id in selected_request_ids.iter().chain(
+                    outcome
+                        .cleanup_results
+                        .iter()
+                        .map(|cleanup| &cleanup.request_id.0),
+                ) {
+                    if !keep.contains(request_id) {
+                        keep.push(*request_id);
+                    }
+                }
                 // Always merge when we paid to materialise the route: decode
                 // counters are max-merged into any prefill-only store.
-                for request_id in request_ids {
-                    self.store_native_request_route(request_id, route.clone());
+                for request_id in batch_request_ids {
+                    self.store_native_request_route(request_id, route.clone(), &keep);
                 }
             }
             report
