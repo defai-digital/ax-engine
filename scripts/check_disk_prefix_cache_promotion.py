@@ -37,6 +37,8 @@ REQUIRED_MODE_KEYS = (
     "producer_l2_enabled",
 )
 PREFIX_BUCKETS = ("256", "2k", "8k", "32k", "gte_32k")
+# Long-prefix buckets the PRD §9.2 ≥25% p95 TTFT gate is enforced on.
+GATED_PROMOTION_BUCKETS = ("8k", "8k_32k", "32k", "gte_32k")
 
 
 class DiskPrefixCachePromotionError(RuntimeError):
@@ -78,6 +80,9 @@ def check_schema(artifact: dict[str, Any], *, path: Path) -> None:
     fs_state = modes.get("l2_hit_cold_fs", {})
     if isinstance(fs_state, dict):
         provenance = fs_state.get("filesystem_cache_state")
+        # `None` (field absent) is tolerated here because incomplete runs may
+        # not have written provenance yet; the promotion gate rejects a
+        # missing/unknown cold-fs state before any promotion can pass.
         if provenance not in ("cold_fs", "warm_fs", "unknown", None):
             raise DiskPrefixCachePromotionError(
                 f"{path}: l2_hit_cold_fs.filesystem_cache_state invalid: {provenance!r}"
@@ -139,7 +144,7 @@ def check_performance_gates(artifact: dict[str, Any], *, path: Path) -> None:
         if not isinstance(row, dict):
             raise DiskPrefixCachePromotionError(f"{path}: improvement row must be object")
         bucket = str(row.get("prefix_bucket", ""))
-        if bucket not in ("8k", "8k_32k", "32k", "gte_32k") and bucket not in PREFIX_BUCKETS:
+        if bucket not in GATED_PROMOTION_BUCKETS and bucket not in PREFIX_BUCKETS:
             raise DiskPrefixCachePromotionError(
                 f"{path}: admitted bucket has unrecognized prefix_bucket {bucket!r}",
                 exit_code=4,
@@ -161,19 +166,39 @@ def check_performance_gates(artifact: dict[str, Any], *, path: Path) -> None:
             )
         if cold_f > 0 and (cold_f - warm_f) / cold_f < 0.25:
             # Only enforce 25% on declared 8k / 32k+ promotion buckets.
-            if bucket in ("8k", "8k_32k", "32k", "gte_32k"):
+            if bucket in GATED_PROMOTION_BUCKETS:
                 raise DiskPrefixCachePromotionError(
                     f"{path}: admitted bucket {bucket} needs ≥25% p95 TTFT gain; "
                     f"cold={cold_f} l2={warm_f}",
                     exit_code=4,
                 )
 
-    cold_fs = (artifact.get("modes") or {}).get("l2_hit_cold_fs") or {}
-    if isinstance(cold_fs, dict) and cold_fs.get("filesystem_cache_state") == "unknown":
+    # The ≥25% gate above only fires on 8k/32k+ rows, so an artifact whose
+    # admitted_bucket_improvements lists only short-prefix rows would satisfy
+    # every gate without the PRD §9.2 long-prefix gain ever being evaluated.
+    # Require at least one gated bucket to be present.
+    if not any(
+        isinstance(row, dict) and str(row.get("prefix_bucket", "")) in GATED_PROMOTION_BUCKETS
+        for row in improvements
+    ):
         raise DiskPrefixCachePromotionError(
-            f"{path}: cold_fs provenance is unknown; cannot claim cold-fs promotion",
+            f"{path}: admitted_bucket_improvements has no 8k/32k+ bucket; "
+            "promotion requires a measurable long-prefix p95 TTFT gain",
             exit_code=4,
         )
+
+    cold_fs = (artifact.get("modes") or {}).get("l2_hit_cold_fs") or {}
+    if isinstance(cold_fs, dict):
+        provenance = cold_fs.get("filesystem_cache_state")
+        # A promotion must rest on known cold-filesystem provenance: reject
+        # both the literal "unknown" and a missing/None field, which the
+        # schema check tolerates for incomplete runs.
+        if provenance not in ("cold_fs", "warm_fs"):
+            raise DiskPrefixCachePromotionError(
+                f"{path}: cold_fs provenance is {provenance!r}; cannot claim "
+                "cold-fs promotion",
+                exit_code=4,
+            )
 
 
 def check_disk_prefix_cache_promotion(

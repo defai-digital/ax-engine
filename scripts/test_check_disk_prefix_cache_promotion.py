@@ -110,6 +110,34 @@ class CheckDiskPrefixCachePromotionTest(unittest.TestCase):
             checker.check_disk_prefix_cache_promotion(path)
         self.assertEqual(ctx.exception.exit_code, 4)
 
+    def test_short_prefix_only_does_not_promote(self) -> None:
+        # Regression: listing only short-prefix buckets used to satisfy every
+        # gate, because the ≥25% check is scoped to 8k/32k+ rows, so a
+        # promotion could pass with the long-prefix gain never evaluated.
+        art = base_artifact()
+        art["performance_gates"]["admitted_bucket_improvements"] = [
+            {
+                "prefix_bucket": "256",
+                "cold_prefill_p95_ttft_ms": 100.0,
+                "l2_hit_p95_ttft_ms": 99.0,
+            }
+        ]
+        path = self.write("short_only.json", art)
+        with self.assertRaises(checker.DiskPrefixCachePromotionError) as ctx:
+            checker.check_disk_prefix_cache_promotion(path)
+        self.assertEqual(ctx.exception.exit_code, 4)
+
+    def test_missing_cold_fs_provenance_fails_closed(self) -> None:
+        # Regression: a missing filesystem_cache_state bypassed the
+        # "unknown provenance" rejection, which only matched the literal
+        # string "unknown", so an evidence-free promotion could pass.
+        art = base_artifact()
+        art["modes"]["l2_hit_cold_fs"] = {}
+        path = self.write("no_provenance.json", art)
+        with self.assertRaises(checker.DiskPrefixCachePromotionError) as ctx:
+            checker.check_disk_prefix_cache_promotion(path)
+        self.assertEqual(ctx.exception.exit_code, 4)
+
     def test_wrong_schema_fails(self) -> None:
         path = self.write("bad.json", base_artifact(schema="wrong"))
         with self.assertRaises(checker.DiskPrefixCachePromotionError):

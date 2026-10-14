@@ -33,6 +33,27 @@ class QwenGemmaFlipCampaignSummaryTests(unittest.TestCase):
 
         self.assertFalse(rendered.endswith("\n"))
 
+    def test_empty_scenarios_fails_closed(self) -> None:
+        # Regression: an empty scenario list made `all(...)` vacuously true,
+        # reporting a "flip" decision with no gate ever evaluated.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            campaign = root / "campaign.json"
+            campaign.write_text(
+                json.dumps(
+                    {
+                        "schema_version": summary.CAMPAIGN_SCHEMA_VERSION,
+                        "passed": True,
+                        "methodology": {"repetitions": 3},
+                        "scenarios": [],
+                        "runs": [],
+                    }
+                )
+            )
+            code = summary.main([str(campaign), "--output", str(root / "summary.json")])
+
+        self.assertNotEqual(code, 0)
+
     def test_load_gate_thresholds_uses_locked_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "gates.json"

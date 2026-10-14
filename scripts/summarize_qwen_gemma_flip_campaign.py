@@ -339,6 +339,10 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(runs, list):
             raise SummaryError("campaign runs are missing")
         scenario_ids = [str(item["id"]) for item in campaign.get("scenarios") or []]
+        if not scenario_ids:
+            # all([]) is True, so an empty scenario list would otherwise
+            # report a vacuous "flip" pass with no gate ever evaluated.
+            raise SummaryError("campaign lists no scenarios; nothing to evaluate")
         repetitions = int(campaign.get("methodology", {}).get("repetitions") or 0)
         if repetitions < 3:
             raise SummaryError("campaign needs at least three repetitions")
