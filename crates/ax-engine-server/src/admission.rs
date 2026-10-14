@@ -56,7 +56,13 @@ impl AdmissionController {
 
     pub(crate) async fn wait_for_idle(&self) {
         loop {
+            // Register interest before checking the condition: otherwise a
+            // `notify_waiters()` from the last permit dropping between the
+            // `notified()` call and its first poll is missed, and the waiter
+            // blocks until an unrelated later notification.
             let notified = self.idle_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.active_jobs() == 0 {
                 return;
             }
