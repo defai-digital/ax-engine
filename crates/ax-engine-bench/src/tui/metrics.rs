@@ -38,6 +38,10 @@ pub(super) const HISTORY_LEN: usize = 120;
 /// How often host probes append a chart point (slower = calmer trend line).
 pub(super) const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Abandon an in-flight sample that has not returned within this window: a
+/// wedged `df`/`ioreg` probe must not freeze the metrics panel indefinitely.
+const SAMPLE_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// One row in the process strip.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct TopProc {
@@ -116,6 +120,8 @@ pub(super) struct LiveMetrics {
     identity_probed: bool,
     /// In-flight background sample; UI never blocks on probes.
     pending: Option<Receiver<MetricsSnapshot>>,
+    /// When `pending` was launched, so a wedged probe cannot freeze sampling.
+    pending_since: Option<Instant>,
 }
 
 impl LiveMetrics {
@@ -241,8 +247,16 @@ impl LiveMetrics {
                     return true;
                 }
                 Err(TryRecvError::Empty) => {
-                    // Still sampling — do not launch another.
-                    return false;
+                    // Still sampling — unless the probe has been wedged past the
+                    // timeout, in which case abandon it and start a fresh one.
+                    let stalled = self
+                        .pending_since
+                        .is_some_and(|t| t.elapsed() >= SAMPLE_TIMEOUT);
+                    if !stalled {
+                        return false;
+                    }
+                    self.pending = None;
+                    self.pending_since = None;
                 }
                 Err(TryRecvError::Disconnected) => {
                     self.pending = None;
@@ -275,6 +289,7 @@ impl LiveMetrics {
         };
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
+        self.pending_since = Some(Instant::now());
         thread::spawn(move || {
             let snap = collect_snapshot(request);
             let _ = tx.send(snap);
