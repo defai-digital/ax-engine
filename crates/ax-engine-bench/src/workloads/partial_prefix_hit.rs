@@ -89,7 +89,7 @@ impl PartialPrefixHit {
                 Some(&format!("partial_prefix_hit/request_{ordinal}/seed={seed}")),
                 Some("partial_prefix_hit/shared"),
                 self.shared_prefix_tokens,
-                Some(&format!("partial_prefix_hit/variant_{ordinal}")),
+                Some(&format!("partial_prefix_hit/variant_{ordinal}/seed={seed}")),
                 ordinal,
             ),
             input_text: None,
