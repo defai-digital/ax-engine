@@ -7036,15 +7036,17 @@ impl MlxRunner {
         };
         // Keep tokens for LoopDetected (and continuing decode).
         if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
-            let was_in_think = state.ngram_in_think;
+            // Credit the think-token budget per token, not per step: an MTP
+            // step can emit several tokens that cross the think boundary, and
+            // charging the whole step to its pre-step state would over- or
+            // under-count the budget. A single-token step is unchanged.
             for &sampled_token in &sampled_tokens {
+                let in_think = state.ngram_in_think;
                 state.generated_tokens.push(sampled_token);
                 update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
-            }
-            if was_in_think {
-                state.think_emitted_tokens = state
-                    .think_emitted_tokens
-                    .saturating_add(sampled_tokens.len() as u32);
+                if in_think {
+                    state.think_emitted_tokens = state.think_emitted_tokens.saturating_add(1);
+                }
             }
         }
 
