@@ -1202,6 +1202,24 @@ def main() -> int:
     summary_path.write_text("".join(summary_lines))
     print(f"Summary: {summary_path}", flush=True)
 
+    # A non-skipped engine whose result is None raised (see the ERROR lines):
+    # the comparison artifact is incomplete, so exit non-zero instead of
+    # reporting a clean run that merely shows "—" / "skipped".
+    errored = 0
+    for row in rows:
+        if not args.skip_lightning and row["lightning"] is None:
+            errored += 1
+        if not args.skip_rapid_mlx and row["rapid_mlx"] is None:
+            errored += 1
+        if not args.skip_ax_ngram and row["ax_ngram_same_loop"] is None:
+            errored += 1
+    if errored:
+        print(
+            f"ERROR: {errored} enabled speculative engine run(s) produced no "
+            "result; artifact is incomplete",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
