@@ -61,19 +61,25 @@ assert "- supported_block_size_tokens: `16`" in summary
 
 if report["status"] == "compiled":
     air_path = Path(report["outputs"]["air"])
-    metalar_path = Path(report["outputs"]["metalar"])
     metallib_path = Path(report["outputs"]["metallib"])
     assert air_path.is_file()
-    assert metalar_path.is_file()
     assert metallib_path.is_file()
     assert air_path.stat().st_size > 0
-    assert metalar_path.stat().st_size > 0
     assert metallib_path.stat().st_size > 0
     assert len(report["outputs"]["air_sha256"]) == 64
-    assert len(report["outputs"]["metalar_sha256"]) == 64
     assert len(report["outputs"]["metallib_sha256"]) == 64
-    # air compile + metal-ar + metallib, plus the AST signature gate dump
-    assert len(report["compile_commands"]) == 4
+    # The builder archives via metal-ar only when it exists; otherwise it
+    # compiles AIR→metallib directly and the metalar output is null.
+    if report["outputs"]["metalar"] is None:
+        # air compile + metallib link, plus the AST signature gate dump
+        assert len(report["compile_commands"]) == 3
+    else:
+        metalar_path = Path(report["outputs"]["metalar"])
+        assert metalar_path.is_file()
+        assert metalar_path.stat().st_size > 0
+        assert len(report["outputs"]["metalar_sha256"]) == 64
+        # air compile + metal-ar + metallib, plus the AST signature gate dump
+        assert len(report["compile_commands"]) == 4
 else:
     assert report["status"] in {
         "skipped_toolchain_unavailable",
