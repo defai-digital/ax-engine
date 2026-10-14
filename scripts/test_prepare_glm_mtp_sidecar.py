@@ -162,16 +162,27 @@ class ExpertStackTests(unittest.TestCase):
     """_stack_per_expert_tensors stacks per-expert arrays in expert-index order."""
 
     def setUp(self) -> None:
-        # Patch mlx.core with a fake during these tests.
+        # Patch mlx.core with a fake during these tests. Set both the
+        # sys.modules entry and the attribute on the parent package, because
+        # `import mlx.core as mx` may bind through `mlx.core` (the attribute)
+        # rather than sys.modules once the mlx package has been imported by an
+        # earlier test — otherwise the fake is silently bypassed.
         import sys
 
+        import mlx
+
         self._orig = sys.modules.get("mlx.core")
+        self._orig_attr = mlx.core
         self._mx = _make_mx_mock()
         sys.modules["mlx.core"] = self._mx
+        mlx.core = self._mx
 
     def tearDown(self) -> None:
         import sys
 
+        import mlx
+
+        mlx.core = self._orig_attr
         if self._orig is None:
             sys.modules.pop("mlx.core", None)
         else:

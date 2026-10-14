@@ -23,8 +23,9 @@ if "PIL" not in sys.modules:
     pil_module = types.ModuleType("PIL")
     pil_image_module = types.ModuleType("PIL.Image")
     pil_module.Image = pil_image_module  # type: ignore[attr-defined]
-    sys.modules["PIL"] = pil_module
-    sys.modules["PIL.Image"] = pil_image_module
+    _STUB_MODULES = {"PIL": pil_module, "PIL.Image": pil_image_module}
+else:
+    _STUB_MODULES = {}
 
 if "tokenizers" not in sys.modules:
     tokenizers_module = types.ModuleType("tokenizers")
@@ -35,7 +36,7 @@ if "tokenizers" not in sys.modules:
             raise NotImplementedError
 
     tokenizers_module.Tokenizer = _StubTokenizer  # type: ignore[attr-defined]
-    sys.modules["tokenizers"] = tokenizers_module
+    _STUB_MODULES["tokenizers"] = tokenizers_module
 
 SCRIPT_PATH = Path(__file__).with_name("bench_gemma4_image_prefill_ttft.py")
 MODULE_SPEC = importlib.util.spec_from_file_location(
@@ -44,7 +45,11 @@ MODULE_SPEC = importlib.util.spec_from_file_location(
 assert MODULE_SPEC and MODULE_SPEC.loader
 mod = importlib.util.module_from_spec(MODULE_SPEC)
 sys.modules[MODULE_SPEC.name] = mod
-MODULE_SPEC.loader.exec_module(mod)
+# Install the stubs only for the duration of the import: leaving a fake
+# `PIL.Image` (no `Image.new`) in sys.modules leaked into later tests and made
+# the gemma4 multimodal suite run its Pillow cases against the stub.
+with unittest.mock.patch.dict(sys.modules, _STUB_MODULES):
+    MODULE_SPEC.loader.exec_module(mod)
 
 
 class _FakeResponse:
