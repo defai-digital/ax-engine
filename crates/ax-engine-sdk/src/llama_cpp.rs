@@ -1100,10 +1100,16 @@ impl LlamaCppChatCompletionStreamChunk {
         // OpenAI finish reasons are mapped onto the shared stop_type table:
         // a tool-call or function-call terminal delta is a normal stop, not
         // an unknown stop_type (which the table reports as an error finish).
-        let finish_reason = choice.finish_reason.map(|reason| match reason.as_str() {
-            "tool_calls" | "function_call" => "stop".to_string(),
-            _ => reason,
-        });
+        // An empty-string reason (some servers write "" where null belongs)
+        // is not terminal — otherwise the shared table maps Some("") to an
+        // error finish and the stream fails early.
+        let finish_reason: Option<String> = choice
+            .finish_reason
+            .filter(|reason| !reason.is_empty())
+            .map(|reason| match reason.as_str() {
+                "tool_calls" | "function_call" => "stop".to_string(),
+                _ => reason,
+            });
         LlamaCppStreamChunk {
             content: choice
                 .delta
@@ -1243,6 +1249,23 @@ mod tests {
         assert_eq!(
             crate::generate::finish_reason_from_stop_type(chunk.stop, chunk.stop_type.as_deref()),
             Some(GenerateFinishReason::Stop)
+        );
+    }
+
+    #[test]
+    fn openai_chat_stream_empty_finish_reason_is_not_terminal() {
+        // Regression: an empty-string finish_reason used to latch `stop`,
+        // and the shared table maps Some("") to an error finish, so a normal
+        // non-terminal chunk failed the whole stream.
+        let chunk: LlamaCppChatCompletionStreamChunk =
+            serde_json::from_str(r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":""}]}"#)
+                .expect("chunk parses");
+        let chunk = chunk.into_stream_chunk();
+        assert!(!chunk.stop);
+        assert_eq!(chunk.stop_type, None);
+        assert_eq!(
+            crate::generate::finish_reason_from_stop_type(chunk.stop, chunk.stop_type.as_deref()),
+            None
         );
     }
 
