@@ -240,8 +240,14 @@ pub struct Gemma4UnifiedExpandedVideoPlaceholder {
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Gemma4UnifiedRuntimeInputs {
+    // `default` so a client that omits an unused modality (the Swift SDK's
+    // `encodeIfPresent`, the Go SDK's `omitempty`) sends a valid request
+    // instead of being rejected for a missing field.
+    #[serde(default)]
     pub images: Vec<Gemma4UnifiedImageRuntimeInput>,
+    #[serde(default)]
     pub audios: Vec<Gemma4UnifiedAudioRuntimeInput>,
+    #[serde(default)]
     pub videos: Vec<Gemma4UnifiedVideoRuntimeInput>,
 }
 
@@ -1805,6 +1811,21 @@ mod tests {
                     .to_string(),
             }
         );
+    }
+
+    #[test]
+    fn runtime_inputs_tolerate_omitted_modality_arrays() {
+        // Regression: the Swift (encodeIfPresent) and Go (omitempty) SDKs omit
+        // an unused modality array; the server must read a missing array as
+        // empty instead of rejecting the request for a missing field.
+        let inputs: Gemma4UnifiedRuntimeInputs =
+            serde_json::from_str(r#"{"images":[]}"#)
+                .expect("omitted audios/videos must default to empty");
+        assert!(inputs.audios.is_empty());
+        assert!(inputs.videos.is_empty());
+        let none: Gemma4UnifiedRuntimeInputs =
+            serde_json::from_str("{}").expect("all modality arrays omitted must default");
+        assert!(none.is_empty());
     }
 
     #[test]
