@@ -308,6 +308,10 @@ class GenerateResult:
     route: GenerateRoute
     runtime: RuntimeInfo
     output_token_logprobs: list[float | None] = field(default_factory=list)
+    # Authoritative counts a text-only delegated backend reports when the token
+    # arrays are unavailable; None for native backends (use the array lengths).
+    prompt_token_count: int | None = None
+    output_token_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -326,6 +330,7 @@ class RequestReport:
     route: GenerateRoute
     finish_reason: str | None = None
     terminal_stop_reason: str | None = None
+    last_error: str | None = None
     output_token_logprobs: list[float | None] = field(default_factory=list)
 
 
@@ -1130,6 +1135,8 @@ def _generate_from_dict(value: dict[str, Any]) -> GenerateResult:
         ttft_step=value.get("ttft_step"),
         route=_route_from_dict(value["route"]),
         runtime=_runtime_from_dict(value["runtime"]),
+        prompt_token_count=value.get("prompt_token_count"),
+        output_token_count=value.get("output_token_count"),
     )
 
 
@@ -1150,6 +1157,7 @@ def _request_from_dict(value: dict[str, Any]) -> RequestReport:
         route=_route_from_dict(value["route"]),
         finish_reason=value.get("finish_reason"),
         terminal_stop_reason=value.get("terminal_stop_reason"),
+        last_error=value.get("last_error"),
     )
 
 

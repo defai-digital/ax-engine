@@ -736,14 +736,42 @@ def finish_reason(reason: str | None) -> str | None:
     return None
 
 
-def usage(prompt_tokens: list[int], output_tokens: list[int]) -> dict[str, int]:
-    prompt_count = len(prompt_tokens)
-    completion_count = len(output_tokens)
+def usage(
+    prompt_tokens: list[int],
+    output_tokens: list[int],
+    prompt_token_count: int | None = None,
+    output_token_count: int | None = None,
+) -> dict[str, int]:
+    # A text-only delegated backend reports authoritative counts while leaving
+    # the token arrays empty; prefer the count when present.
+    prompt_count = len(prompt_tokens) if prompt_token_count is None else prompt_token_count
+    completion_count = (
+        len(output_tokens) if output_token_count is None else output_token_count
+    )
     return {
         "prompt_tokens": prompt_count,
         "completion_tokens": completion_count,
         "total_tokens": prompt_count + completion_count,
     }
+
+
+def result_text(result: Any, tokenizer: Any) -> str:
+    """Decoded output text: prefer a text-only delegated backend's
+    ``output_text`` over decoding its (empty) token array."""
+    output_text = getattr(result, "output_text", None)
+    if output_text is not None:
+        return output_text
+    return tokenizer.decode(list(result.output_tokens))
+
+
+def result_usage(result: Any, prompt_tokens: list[int]) -> dict[str, int]:
+    """Usage for a generation result, preferring its authoritative counts."""
+    return usage(
+        prompt_tokens,
+        list(result.output_tokens),
+        getattr(result, "prompt_token_count", None),
+        getattr(result, "output_token_count", None),
+    )
 
 
 def create_app(
@@ -861,7 +889,7 @@ def create_app(
         # never occupies a threadpool thread.
         async with generation_gate:
             result = await anyio.to_thread.run_sync(_blocking_completion)
-        text = tokenizer.decode(list(result.output_tokens))
+        text = result_text(result, tokenizer)
         text, stop_hit = truncate_at_stop(text, client_stop_sequences(payload))
         return {
             "id": f"cmpl-{result.request_id}",
@@ -875,7 +903,7 @@ def create_app(
                     "finish_reason": "stop" if stop_hit else finish_reason(result.finish_reason),
                 }
             ],
-            "usage": usage(input_tokens, list(result.output_tokens)),
+            "usage": result_usage(result, input_tokens),
         }
 
     @app.post("/v1/chat/completions")
@@ -922,7 +950,7 @@ def create_app(
                 # handler for rationale.
                 async with generation_gate:
                     result = await anyio.to_thread.run_sync(_blocking_tool_chat)
-                text = tokenizer.decode(list(result.output_tokens))
+                text = result_text(result, tokenizer)
                 # Client stops apply to visible content only; a parsed tool
                 # call is never truncated (same contract as the Rust server).
                 buffered_finish = finish_reason(result.finish_reason)
@@ -936,7 +964,7 @@ def create_app(
                     text,
                     buffered_finish,
                     include_usage=stream_include_usage(payload),
-                    token_usage=usage(input_tokens, list(result.output_tokens)),
+                    token_usage=result_usage(result, input_tokens),
                 )
                 return StreamingResponse(events, media_type="text/event-stream")
             gated_events = serialized_stream(
@@ -958,7 +986,7 @@ def create_app(
         # for rationale.
         async with generation_gate:
             result = await anyio.to_thread.run_sync(_blocking_chat)
-        text = tokenizer.decode(list(result.output_tokens))
+        text = result_text(result, tokenizer)
         # Client stops apply to visible content only; a parsed tool call is
         # never truncated (same order as the streaming tool-chat path above).
         tool_calls: list[dict[str, Any]] | None = None
@@ -986,7 +1014,7 @@ def create_app(
                     "finish_reason": response_finish_reason,
                 }
             ],
-            "usage": usage(input_tokens, list(result.output_tokens)),
+            "usage": result_usage(result, input_tokens),
         }
 
     def openai_error(status: int, message: str, *, code: str = "invalid_request") -> Any:
@@ -1188,10 +1216,14 @@ def stream_completion_chunks(
     held_text = ""
     stop_hit = False
     streamed_delta_text = False
+    # Authoritative counts from the terminal response (a text-only delegated
+    # backend leaves the token arrays empty).
+    response_prompt_token_count: int | None = None
+    response_output_token_count: int | None = None
     try:
         generator = session.stream_generate(input_tokens, **session_generate_kwargs(payload))
         for event in generator:
-            if event.event == "step" and event.delta_tokens:
+            if event.event == "step" and (event.delta_tokens or event.delta_text is not None):
                 accumulated_tokens.extend(event.delta_tokens)
                 # Prefer engine-provided delta_text: cumulative re-decode corrupts
                 # multi-token glyphs (ZWJ emoji) when a partial sequence yields
@@ -1248,6 +1280,12 @@ def stream_completion_chunks(
                     yield sse_chunk(stream_id, created, model_id, "", "stop", kind)
                     break
             elif event.event == "response" and event.response is not None:
+                response_prompt_token_count = getattr(
+                    event.response, "prompt_token_count", None
+                )
+                response_output_token_count = getattr(
+                    event.response, "output_token_count", None
+                )
                 # No later delta can complete a stop: flush whatever prefix was
                 # held back against a stop split across deltas.
                 if held_text:
@@ -1306,7 +1344,16 @@ def stream_completion_chunks(
         return
     if include_usage:
         yield sse_usage_chunk(
-            stream_id, created, model_id, usage(input_tokens, accumulated_tokens), kind
+            stream_id,
+            created,
+            model_id,
+            usage(
+                input_tokens,
+                accumulated_tokens,
+                response_prompt_token_count,
+                response_output_token_count,
+            ),
+            kind,
         )
     yield "data: [DONE]\n\n"
 

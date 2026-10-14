@@ -831,8 +831,8 @@ class RecordingShimSession:
 class ScriptedDeltaTextSession:
     """Session double for direct stream_completion_chunks tests.
 
-    Yields one step event per scripted delta (with delta_text set so the
-    delta path is exercised), then a terminal response event.
+    Yields one step event per scripted delta carrying only delta_text (empty
+    delta_tokens) — the text-only delegated shape — then a terminal response.
     """
 
     def __init__(self, deltas: tuple[str, ...], finish_reason: str = "max_output_tokens"):
@@ -847,7 +847,7 @@ class ScriptedDeltaTextSession:
         for delta in self.deltas:
             yield types.SimpleNamespace(
                 event="step",
-                delta_tokens=[4],
+                delta_tokens=[],
                 delta_text=delta,
                 response=None,
             )
@@ -3122,6 +3122,32 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(chat_message, openai_server.CHAT_COMPLETION_REQUEST_ERROR)
         self.assertNotIn("token id array", completion_message)
         self.assertNotIn("messages must be a list", chat_message)
+
+    def test_openai_mlx_shim_prefers_delegated_output_text_and_counts(self) -> None:
+        # A text-only delegated backend returns output_text plus authoritative
+        # counts while leaving the token arrays empty; the shim must surface the
+        # text and counts instead of "" and zero tokens (and tolerate a result
+        # that omits the newer fields entirely).
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        result = types.SimpleNamespace(
+            output_text="hello from llama.cpp",
+            output_tokens=[],
+            prompt_token_count=5,
+            output_token_count=4,
+        )
+        self.assertEqual(
+            openai_server.result_text(result, FakeShimTokenizer()),
+            "hello from llama.cpp",
+        )
+        self.assertEqual(
+            openai_server.result_usage(result, [1, 2]),
+            {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9},
+        )
+        bare = types.SimpleNamespace(output_tokens=[65, 66])
+        self.assertEqual(
+            openai_server.result_usage(bare, [1]),
+            {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        )
 
     def _make_openai_shim_client(
         self, *, raise_server_exceptions: bool = True
