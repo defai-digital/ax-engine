@@ -542,11 +542,24 @@ impl MlxLmGenerateStreamState {
             self.current_report.terminal_stop_reason =
                 terminal_stop_reason_from_finish_reason(finish_reason);
         }
+        // Mirror the llama.cpp usage path: a text-only delegated backend
+        // reports its token counts in the usage chunk, so reflect them on the
+        // request report (the streamed usage driver reads report.output_len,
+        // and every consumer reads report.prompt_len/processed_prompt_tokens).
         if let Some(pt) = chunk.prompt_token_count {
             self.prompt_token_count = Some(pt);
+            if self.current_report.prompt_len < pt {
+                self.current_report.prompt_len = pt;
+            }
+            if self.current_report.processed_prompt_tokens < pt {
+                self.current_report.processed_prompt_tokens = pt;
+            }
         }
         if let Some(ct) = chunk.output_token_count {
             self.output_token_count = Some(ct);
+            if self.current_report.output_len < ct {
+                self.current_report.output_len = ct;
+            }
         }
         self.current_report.state = if is_terminal {
             let (state, last_error) = delegated_terminal_request_state(

@@ -583,7 +583,11 @@ struct MlxLmCompletionChoice {
 
 #[derive(Debug, Deserialize)]
 struct MlxLmCompletionUsage {
+    // Tolerate a usage chunk that omits a count (a compatible backend or proxy
+    // may), instead of failing the whole stream on a parse error.
+    #[serde(default)]
     prompt_tokens: u32,
+    #[serde(default)]
     completion_tokens: u32,
 }
 
