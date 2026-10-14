@@ -810,7 +810,7 @@ impl RuntimeObservation {
         self.memory_peak_mb = (f64::from(self.kv_peak_blocks)
             * f64::from(block_size_tokens)
             * LEGACY_KV_CACHE_ESTIMATED_BYTES_PER_TOKEN)
-            / 1024.0;
+            / (1024.0 * 1024.0);
 
         let mut final_requests = Vec::new();
         for request_id in request_ids {

@@ -40,10 +40,10 @@ pub(crate) struct MatrixCompareMemberResult {
     pub(crate) selected_backend: String,
     pub(crate) support_tier: String,
     pub(crate) resolution_policy: String,
-    pub(crate) ttft_ms_pct: f64,
-    pub(crate) decode_tok_s_pct: f64,
-    pub(crate) memory_peak_mb_pct: f64,
-    pub(crate) prefix_hit_rate_pct: f64,
+    pub(crate) ttft_ms_pct: Option<f64>,
+    pub(crate) decode_tok_s_pct: Option<f64>,
+    pub(crate) memory_peak_mb_pct: Option<f64>,
+    pub(crate) prefix_hit_rate_pct: Option<f64>,
 }
 
 pub(crate) fn execute_matrix_manifest(
@@ -479,35 +479,34 @@ pub(crate) fn build_matrix_compare_member_result(
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string(),
-        ttft_ms_pct: nested_value(regression, &["comparison", "ttft_ms_pct"])
-            .and_then(Value::as_f64)
-            .ok_or_else(|| {
-                CliError::Contract(format!(
-                    "matrix compare member {manifest_id} missing ttft_ms_pct"
-                ))
-            })?,
-        decode_tok_s_pct: nested_value(regression, &["comparison", "decode_tok_s_pct"])
-            .and_then(Value::as_f64)
-            .ok_or_else(|| {
-                CliError::Contract(format!(
-                    "matrix compare member {manifest_id} missing decode_tok_s_pct"
-                ))
-            })?,
-        memory_peak_mb_pct: nested_value(regression, &["comparison", "memory_peak_mb_pct"])
-            .and_then(Value::as_f64)
-            .ok_or_else(|| {
-                CliError::Contract(format!(
-                    "matrix compare member {manifest_id} missing memory_peak_mb_pct"
-                ))
-            })?,
-        prefix_hit_rate_pct: nested_value(regression, &["comparison", "prefix_hit_rate_pct"])
-            .and_then(Value::as_f64)
-            .ok_or_else(|| {
-                CliError::Contract(format!(
-                    "matrix compare member {manifest_id} missing prefix_hit_rate_pct"
-                ))
-            })?,
+        ttft_ms_pct: matrix_compare_pct(regression, "ttft_ms_pct", manifest_id)?,
+        decode_tok_s_pct: matrix_compare_pct(regression, "decode_tok_s_pct", manifest_id)?,
+        memory_peak_mb_pct: matrix_compare_pct(regression, "memory_peak_mb_pct", manifest_id)?,
+        prefix_hit_rate_pct: matrix_compare_pct(regression, "prefix_hit_rate_pct", manifest_id)?,
     })
+}
+
+/// Read one `comparison.*_pct` field from a single-compare artifact. An
+/// explicit JSON null is the single-compare contract for an undefined
+/// percentage (zero baseline, nonzero candidate — stats.rs), so it maps to
+/// None instead of failing the matrix as "missing"; only an absent key or a
+/// non-numeric value is a contract error.
+fn matrix_compare_pct(
+    regression: &Value,
+    key: &str,
+    manifest_id: &str,
+) -> Result<Option<f64>, CliError> {
+    match nested_value(regression, &["comparison", key]) {
+        None => Err(CliError::Contract(format!(
+            "matrix compare member {manifest_id} missing {key}"
+        ))),
+        Some(Value::Null) => Ok(None),
+        Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+            CliError::Contract(format!(
+                "matrix compare member {manifest_id} has a non-numeric {key}"
+            ))
+        }),
+    }
 }
 
 pub(crate) fn build_matrix_regression_json(
@@ -577,14 +576,16 @@ pub(crate) fn build_matrix_compare_summary_markdown(
     ];
 
     for member in members {
+        let pct =
+            |value: Option<f64>| value.map_or_else(|| "n/a".to_string(), |v| format!("{v:.2}"));
         lines.push(format!(
-            "| {} | {} | {:.2} | {:.2} | {:.2} | {:.2} |",
+            "| {} | {} | {} | {} | {} | {} |",
             member.label,
             member.compare_mode,
-            member.ttft_ms_pct,
-            member.decode_tok_s_pct,
-            member.memory_peak_mb_pct,
-            member.prefix_hit_rate_pct
+            pct(member.ttft_ms_pct),
+            pct(member.decode_tok_s_pct),
+            pct(member.memory_peak_mb_pct),
+            pct(member.prefix_hit_rate_pct)
         ));
         lines.push(format!(
             "compare_result_dir: `{}`",

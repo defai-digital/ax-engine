@@ -249,7 +249,9 @@ pub(crate) fn run_llama_cpp_blocking_scenario_workload(
 
     let mut final_reports = Vec::new();
     for spec in specs {
-        let request_started = Instant::now();
+        // A blocking call cannot observe time-to-first-token: the measured
+        // round-trip includes every output token, so ttft_ms stays unset
+        // (JSON null) rather than reporting e2e latency as TTFT.
         let response = session
             .generate_with_request_id(
                 spec.request_id.0,
@@ -260,7 +262,6 @@ pub(crate) fn run_llama_cpp_blocking_scenario_workload(
                     "blocking llama.cpp benchmark request failed through the SDK contract: {error}"
                 ))
             })?;
-        let elapsed_ms = elapsed_ms_since(request_started);
         let prompt_token_count = response
             .known_prompt_token_count()
             .unwrap_or(spec.prompt_token_target);
@@ -273,9 +274,6 @@ pub(crate) fn run_llama_cpp_blocking_scenario_workload(
         observation.total_selected_requests += 1;
         observation.prefill_tokens += u64::from(prompt_token_count);
         observation.total_scheduled_tokens += u64::from(prompt_token_count);
-        if observation.ttft_ms.is_none() {
-            observation.ttft_ms = Some(elapsed_ms);
-        }
 
         let mut used_synthetic_output_estimate = false;
         let output_tokens = if response.output_tokens.is_empty() {

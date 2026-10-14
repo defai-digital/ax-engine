@@ -167,7 +167,7 @@ pub(crate) fn memory_peak_estimate_json(
     json!({
         "kind": "kv_cache_legacy_estimate",
         "metric": "memory_peak_mb",
-        "formula": "kv_peak_blocks * block_size_tokens * estimated_bytes_per_token / 1024",
+        "formula": "kv_peak_blocks * block_size_tokens * estimated_bytes_per_token / 1024^2",
         "kv_peak_blocks": observation.kv_peak_blocks,
         "block_size_tokens": runtime.block_size_tokens,
         "estimated_bytes_per_token": LEGACY_KV_CACHE_ESTIMATED_BYTES_PER_TOKEN,
@@ -1552,26 +1552,19 @@ pub(crate) fn build_compare_summary_markdown(
         .get("run_id")
         .and_then(Value::as_str)
         .unwrap_or("candidate");
-    let ttft = regression_json
-        .get("comparison")
-        .and_then(|comparison| comparison.get("ttft_ms_pct"))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    let decode = regression_json
-        .get("comparison")
-        .and_then(|comparison| comparison.get("decode_tok_s_pct"))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    let memory = regression_json
-        .get("comparison")
-        .and_then(|comparison| comparison.get("memory_peak_mb_pct"))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    let prefix = regression_json
-        .get("comparison")
-        .and_then(|comparison| comparison.get("prefix_hit_rate_pct"))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
+    // An explicit JSON null is the compare contract for an undefined
+    // percentage (zero baseline): render it as n/a, not a misleading 0.00%.
+    let pct = |key: &str| -> String {
+        regression_json
+            .get("comparison")
+            .and_then(|comparison| comparison.get(key))
+            .and_then(Value::as_f64)
+            .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}"))
+    };
+    let ttft = pct("ttft_ms_pct");
+    let decode = pct("decode_tok_s_pct");
+    let memory = pct("memory_peak_mb_pct");
+    let prefix = pct("prefix_hit_rate_pct");
     let prefix_reuse_provenance = regression_json
         .get("summary")
         .and_then(|summary| summary.get("prefix_reuse_provenance"))
@@ -1833,7 +1826,7 @@ pub(crate) fn build_compare_summary_markdown(
         mlx_metal_dispatch_share_label(candidate_mlx_metal_direct_decode_min_dispatch_share);
 
     format!(
-        "# Benchmark Compare\n\n- baseline: `{baseline_id}`\n{trusted_baseline_line}- candidate: `{candidate_id}`\n- mode: `{compare_mode}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- baseline_mlx_metal_readiness: `{baseline_mlx_metal_readiness}`\n- baseline_mlx_metal_hot_path_cpu_fallback_free: `{baseline_mlx_metal_hot_path_cpu_fallback_free}`\n- baseline_mlx_metal_batched_direct_decode_logits_ready: `{baseline_mlx_metal_batched_direct_decode_logits_ready}`\n- baseline_prefix_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_prefix_min_dispatch_share}`\n- baseline_direct_decode_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_direct_decode_min_dispatch_share}`\n- baseline_mlx_metal_readiness_blockers: `{baseline_mlx_metal_readiness_blockers}`\n- candidate_mlx_metal_readiness: `{candidate_mlx_metal_readiness}`\n- candidate_mlx_metal_hot_path_cpu_fallback_free: `{candidate_mlx_metal_hot_path_cpu_fallback_free}`\n- candidate_mlx_metal_batched_direct_decode_logits_ready: `{candidate_mlx_metal_batched_direct_decode_logits_ready}`\n- candidate_prefix_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_prefix_min_dispatch_share}`\n- candidate_direct_decode_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_direct_decode_min_dispatch_share}`\n- candidate_mlx_metal_readiness_blockers: `{candidate_mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n{mlx_kv_cache_lines}- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n\n| Metric | Delta % |\n| --- | ---: |\n| TTFT | {ttft:.2} |\n| Decode tok/s | {decode:.2} |\n| Memory peak MB | {memory:.2} |\n| Prefix hit rate | {prefix:.2} |\n{}",
+        "# Benchmark Compare\n\n- baseline: `{baseline_id}`\n{trusted_baseline_line}- candidate: `{candidate_id}`\n- mode: `{compare_mode}`\n- tool_mode: `{tool_mode}`\n- selected_backend: `{selected_backend}`\n- support_tier: `{support_tier}`\n- resolution_policy: `{resolution_policy}`\n- backend_adapter: `{backend_adapter}`\n- execution_semantics: `{execution_semantics}`\n- baseline_mlx_metal_readiness: `{baseline_mlx_metal_readiness}`\n- baseline_mlx_metal_hot_path_cpu_fallback_free: `{baseline_mlx_metal_hot_path_cpu_fallback_free}`\n- baseline_mlx_metal_batched_direct_decode_logits_ready: `{baseline_mlx_metal_batched_direct_decode_logits_ready}`\n- baseline_prefix_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_prefix_min_dispatch_share}`\n- baseline_direct_decode_min_mlx_metal_dispatch_share: `{baseline_mlx_metal_direct_decode_min_dispatch_share}`\n- baseline_mlx_metal_readiness_blockers: `{baseline_mlx_metal_readiness_blockers}`\n- candidate_mlx_metal_readiness: `{candidate_mlx_metal_readiness}`\n- candidate_mlx_metal_hot_path_cpu_fallback_free: `{candidate_mlx_metal_hot_path_cpu_fallback_free}`\n- candidate_mlx_metal_batched_direct_decode_logits_ready: `{candidate_mlx_metal_batched_direct_decode_logits_ready}`\n- candidate_prefix_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_prefix_min_dispatch_share}`\n- candidate_direct_decode_min_mlx_metal_dispatch_share: `{candidate_mlx_metal_direct_decode_min_dispatch_share}`\n- candidate_mlx_metal_readiness_blockers: `{candidate_mlx_metal_readiness_blockers}`\n- metal_numeric_scaffold_only: `{metal_numeric_scaffold_only}`\n- metal_complete_model_forward_supported: `{metal_complete_model_forward_supported}`\n- metal_model_conditioned_inputs: `{metal_model_conditioned_inputs}`\n- mlx_metal_prefix_layers_attention: `{mlx_metal_prefix_layers_attention}`\n- metal_prefix_layers_cpu_reference: `{metal_prefix_layers_cpu_reference}`\n- mlx_metal_prefix_dispatch_count: `{mlx_metal_prefix_dispatch_count}`\n- metal_prefix_cpu_reference_dispatch_count: `{metal_prefix_cpu_reference_dispatch_count}`\n- mlx_metal_projection_f32_binding_count: `{mlx_metal_projection_f32_binding_count}`\n- mlx_metal_projection_f16_binding_count: `{mlx_metal_projection_f16_binding_count}`\n- mlx_metal_projection_bf16_binding_count: `{mlx_metal_projection_bf16_binding_count}`\n- mlx_metal_projection_unsupported_binding_count: `{mlx_metal_projection_unsupported_binding_count}`\n- metal_direct_decode_tokens: `{metal_direct_decode_tokens}`\n- metal_direct_decode_batching_opportunity_observed: `{metal_direct_decode_batching_opportunity_observed}`\n- metal_direct_decode_model_bound_ffn: `{metal_direct_decode_model_bound_ffn}`\n- metal_direct_decode_batched_logits_group_count: `{metal_direct_decode_batched_logits_group_count}`\n- metal_direct_decode_batched_logits_token_count: `{metal_direct_decode_batched_logits_token_count}`\n- metal_direct_decode_batched_group_fallback_count: `{metal_direct_decode_batched_group_fallback_count}`\n- metal_direct_decode_batched_group_fallback_token_count: `{metal_direct_decode_batched_group_fallback_token_count}`\n- metal_real_model_tensor_inputs: `{metal_real_model_tensor_inputs}`\n- metal_real_model_forward: `{metal_real_model_forward}`\n- metal_model_artifacts_validated: `{metal_model_artifacts_validated}`\n- mlx_metal_rms_norm_f32_binding_count: `{mlx_metal_rms_norm_f32_binding_count}`\n- mlx_metal_rms_norm_f16_binding_count: `{mlx_metal_rms_norm_f16_binding_count}`\n- mlx_metal_rms_norm_bf16_binding_count: `{mlx_metal_rms_norm_bf16_binding_count}`\n- mlx_metal_rms_norm_unsupported_binding_count: `{mlx_metal_rms_norm_unsupported_binding_count}`\n{mlx_kv_cache_lines}- prefix_cache_path: `{prefix_cache_path}`\n- prefix_cache_evidence: `{prefix_cache_evidence}`\n- prefix_reuse_provenance: `{prefix_reuse_provenance}`\n- backend_reported_cached_prompt_tokens: `{backend_reported_cached_prompt_tokens}`\n\n| Metric | Delta % |\n| --- | ---: |\n| TTFT | {ttft} |\n| Decode tok/s | {decode} |\n| Memory peak MB | {memory} |\n| Prefix hit rate | {prefix} |\n{}",
         summary_note
     )
 }
