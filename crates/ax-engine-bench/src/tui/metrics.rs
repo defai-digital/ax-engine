@@ -619,16 +619,18 @@ fn find_ioreg_number(raw: &str, key: &str) -> Option<f64> {
     while let Some(idx) = search.find(&needle) {
         let after = &search[idx + needle.len()..];
         let after = after.trim_start();
-        let after = after.strip_prefix('=')?.trim_start();
-        // Skip the driver variant when looking for "In use system memory"
-        // because ioreg may also have "In use system memory (driver)".
-        // We already matched the exact quoted key, so this is fine.
-        let digits: String = after
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
-            .collect();
-        if let Ok(v) = digits.parse::<f64>() {
-            return Some(v);
+        // Advance past this occurrence whether or not it is the "key"=value
+        // form: an earlier non-`=` mention of the key (e.g. inside another
+        // value) must not abort the search for the real assignment.
+        if let Some(after) = after.strip_prefix('=') {
+            let after = after.trim_start();
+            let digits: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+                .collect();
+            if let Ok(v) = digits.parse::<f64>() {
+                return Some(v);
+            }
         }
         search = &search[idx + needle.len()..];
     }

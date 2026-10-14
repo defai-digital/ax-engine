@@ -191,6 +191,12 @@ impl ChatState {
                 ));
             }
             self.finalize_stats();
+            // The curl child can outlive `[DONE]` (until the server closes the
+            // connection); kill and reap it so a finished reply does not leave
+            // a zombie process the UI can no longer cancel.
+            if let Some(job) = &mut self.job {
+                job.cancel();
+            }
             self.job = None;
             return true;
         }
