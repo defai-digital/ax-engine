@@ -517,10 +517,16 @@ impl MlxLmGenerateStreamState {
     ) -> GenerateStreamEvent {
         self.step_count += 1;
         let delta_text = chunk.text;
-        let is_terminal = chunk.finish_reason.is_some();
+        let finish_reason = finish_reason_from_mlx_lm(chunk.finish_reason.as_deref());
+        // Terminality follows the mapped reason, not the raw field: an
+        // empty-string finish_reason maps to a non-terminal chunk, so it must
+        // not latch terminal_chunk_seen (which would bypass the
+        // ended-before-stop guard and finish the request with no reason).
+        let is_terminal = finish_reason.is_some();
         if is_terminal {
             self.terminal_chunk_seen = true;
         }
+        let was_terminal = is_terminal_request_state(self.current_report.state);
 
         let ttft_events = if self.ttft_step.is_none() && !delta_text.is_empty() {
             self.ttft_step = Some(self.step_count);
@@ -531,7 +537,6 @@ impl MlxLmGenerateStreamState {
 
         self.output_text.push_str(&delta_text);
 
-        let finish_reason = finish_reason_from_mlx_lm(chunk.finish_reason.as_deref());
         if finish_reason.is_some() {
             self.current_report.finish_reason = finish_reason;
             self.current_report.terminal_stop_reason =
@@ -553,6 +558,11 @@ impl MlxLmGenerateStreamState {
             );
             self.current_report.last_error = last_error;
             state
+        } else if was_terminal {
+            // Trailing chunks after the terminal one keep the already-terminal
+            // state (Finished, or Failed from an error/content-filter stop),
+            // matching the llama.cpp path's was_terminal guard.
+            self.current_report.state
         } else if !delta_text.is_empty() {
             SessionRequestState::Running
         } else {
@@ -1097,6 +1107,97 @@ mod tests {
                 .expect("phase Done returns Ok(None)")
                 .is_none()
         );
+    }
+
+    fn mlx_lm_delegated_stream_state_running(body: &str) -> MlxLmGenerateStreamState {
+        let mut state = mlx_lm_delegated_stream_state(body);
+        state.current_report.state = SessionRequestState::Running;
+        state.current_report.finish_reason = None;
+        state
+    }
+
+    #[test]
+    fn mlx_lm_stream_empty_finish_reason_is_not_terminal() {
+        // An empty-string finish_reason maps to a non-terminal chunk
+        // (finish_reason_from_mlx_lm): it must not latch terminal_chunk_seen,
+        // or a stream that ends without a real terminator would be reported
+        // as a successful completion with no finish reason instead of
+        // surfacing MlxLmStreamEndedBeforeStop.
+        let mut state = mlx_lm_delegated_stream_state_running(
+            "data: {\"choices\":[{\"index\":0,\"text\":\"hi\",\"finish_reason\":\"\"}]}\n\ndata: [DONE]\n\n",
+        );
+
+        let request_event = next_mlx_lm_stream_event(&mut state)
+            .expect("request event should apply cleanly")
+            .expect("request event should be Some");
+        assert!(matches!(request_event, GenerateStreamEvent::Request(_)));
+
+        let step = next_mlx_lm_stream_event(&mut state)
+            .expect("non-terminal chunk should apply cleanly")
+            .expect("step event should be Some");
+        let GenerateStreamEvent::Step(step) = step else {
+            panic!("expected a step event");
+        };
+        assert_eq!(step.request.state, SessionRequestState::Running);
+        assert_eq!(step.request.finish_reason, None);
+
+        let end = next_mlx_lm_stream_event(&mut state);
+        assert!(
+            matches!(
+                end,
+                Err(EngineSessionError::MlxLmStreamEndedBeforeStop { request_id: 1 })
+            ),
+            "expected MlxLmStreamEndedBeforeStop, got {end:?}"
+        );
+    }
+
+    #[test]
+    fn mlx_lm_stream_trailing_chunk_after_terminal_keeps_terminal_state() {
+        // A backend may emit trailing chunks after the terminal one; they must
+        // not flip the request back to Running (the llama.cpp path guards this
+        // with was_terminal).
+        let mut state = mlx_lm_delegated_stream_state_running(
+            "data: {\"choices\":[{\"index\":0,\"text\":\"done\",\"finish_reason\":\"stop\"}]}\n\n\
+             data: {\"choices\":[{\"index\":0,\"text\":\"x\",\"finish_reason\":null}]}\n\n\
+             data: [DONE]\n\n",
+        );
+
+        let _request = next_mlx_lm_stream_event(&mut state)
+            .expect("request event should apply cleanly")
+            .expect("request event should be Some");
+
+        let terminal = next_mlx_lm_stream_event(&mut state)
+            .expect("terminal chunk should apply cleanly")
+            .expect("step event should be Some");
+        let GenerateStreamEvent::Step(terminal) = terminal else {
+            panic!("expected a step event");
+        };
+        assert_eq!(terminal.request.state, SessionRequestState::Finished);
+        assert_eq!(
+            terminal.request.finish_reason,
+            Some(GenerateFinishReason::Stop)
+        );
+
+        let trailing = next_mlx_lm_stream_event(&mut state)
+            .expect("trailing chunk should apply cleanly")
+            .expect("trailing step event should be Some");
+        let GenerateStreamEvent::Step(trailing) = trailing else {
+            panic!("expected a step event");
+        };
+        assert_eq!(
+            trailing.request.state,
+            SessionRequestState::Finished,
+            "a trailing chunk must not resurrect the request to Running"
+        );
+        assert_eq!(
+            trailing.request.finish_reason,
+            Some(GenerateFinishReason::Stop)
+        );
+
+        let response = next_mlx_lm_stream_event(&mut state)
+            .expect("clean stream end should not error")
+            .expect("response event should be Some");
+        assert!(matches!(response, GenerateStreamEvent::Response(_)));
     }
 
     #[test]
