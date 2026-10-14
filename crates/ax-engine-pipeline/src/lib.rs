@@ -8,7 +8,9 @@ pub mod text_stream;
 use std::sync::{Arc, Mutex};
 
 use ax_engine_core::{ActivationFrame, PipelineTopology};
-use ax_engine_mlx::pipeline::{PipelineRankError, PipelineRankExecutor, PipelineRankOutput};
+use ax_engine_mlx::pipeline::{
+    PipelineActivationError, PipelineRankError, PipelineRankExecutor, PipelineRankOutput,
+};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -117,8 +119,18 @@ impl MlxRankProcessor {
 
 impl RankProcessor for MlxRankProcessor {
     fn health(&self) -> RankHealth {
+        // Never serialize a readiness probe behind the inference critical
+        // section: the executor mutex is held for a full forward + eval, so a
+        // blocking lock here would stall the async worker and trip the
+        // gateway's preflight timeout while the rank is actually healthy.
+        // Contended means busy, and busy is ready; only a poisoned executor
+        // is unready.
+        let ready = !matches!(
+            self.executor.try_lock(),
+            Err(std::sync::TryLockError::Poisoned(_))
+        );
         RankHealth {
-            ready: self.executor.lock().is_ok(),
+            ready,
             rank: self.rank,
             generation: self.topology.generation,
             cluster_id: self.topology.cluster_id.clone(),
@@ -304,10 +316,24 @@ impl IntoResponse for RankServiceError {
         // Contract and token-validation failures are caused by the request
         // the caller sent (422); executor failures and a poisoned mutex are
         // server-internal faults and must surface as 5xx so upstream retry
-        // policies can distinguish them.
-        let status = match self {
+        // policies can distinguish them. The executor's own Contract /
+        // caller-caused variants (tokens sent to a non-zero rank, wire-format
+        // overflows, activations addressed to the wrong destination) keep the
+        // 422 classification through the Executor wrapper.
+        let status = match &self {
             Self::Contract(_) | Self::WeakWorkerToken => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::Executor(_) | Self::ExecutorPoisoned => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ExecutorPoisoned => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Executor(inner) => match inner {
+                PipelineRankError::Contract(_)
+                | PipelineRankError::TokensRequireRankZero
+                | PipelineRankError::TokenCountOverflow
+                | PipelineRankError::TokenOffsetOverflow => StatusCode::UNPROCESSABLE_ENTITY,
+                PipelineRankError::Activation(
+                    PipelineActivationError::Contract(_)
+                    | PipelineActivationError::WrongDestination { .. },
+                ) => StatusCode::UNPROCESSABLE_ENTITY,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            },
         };
         (status, self.to_string()).into_response()
     }
@@ -454,5 +480,25 @@ mod tests {
 
         let response = RankServiceError::WeakWorkerToken.into_response();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn executor_wrapped_caller_errors_keep_the_422_classification() {
+        // A contract violation raised inside the executor (closed request,
+        // sequence/offset mismatch) is caller-caused even though it arrives
+        // wrapped in PipelineRankError: it must not surface as a 500.
+        let contract = ax_engine_core::PipelineContractError::ClosedRequest(7);
+        let response =
+            RankServiceError::Executor(PipelineRankError::Contract(contract)).into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response =
+            RankServiceError::Executor(PipelineRankError::TokensRequireRankZero).into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // Genuine executor-internal faults stay 500.
+        let response =
+            RankServiceError::Executor(PipelineRankError::AssignmentMismatch).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

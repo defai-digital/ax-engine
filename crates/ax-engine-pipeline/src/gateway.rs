@@ -51,6 +51,10 @@ impl GatewayState {
         if request_timeout.is_zero() {
             return Err(GatewayConfigError::ZeroRequestTimeout);
         }
+        // `Instant::now() + duration` panics when the sum is unrepresentable,
+        // so clamp absurd operator input to a far-but-safe horizon (1 year)
+        // instead of panicking inside every request handler.
+        let request_timeout = request_timeout.min(Duration::from_secs(31_536_000));
         Ok(Self {
             client: Arc::new(client),
             tokenizer,
