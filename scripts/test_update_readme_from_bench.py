@@ -37,6 +37,12 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
             "80.0 (-20.0%)",
         )
 
+    def test_zero_reference_renders_infinity_not_zero_division(self) -> None:
+        # Regression: a 0.0 mlx_lm median raised ZeroDivisionError while
+        # rewriting the README; a zero baseline now renders as +∞%.
+        self.assertEqual(updater.pct_delta(12.0, 0.0), float("inf"))
+        self.assertEqual(updater.fmt_pct(12.0, 0.0), "(+∞%)")
+
     def test_current_qwen36_slug_maps_to_readme_row(self) -> None:
         self.assertEqual(
             updater.SLUG_TO_README["qwen3_6-35b-a3b-4bit"],

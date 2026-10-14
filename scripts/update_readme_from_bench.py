@@ -44,11 +44,17 @@ def fmt_num(val: float) -> str:
 
 
 def pct_delta(val: float, ref: float) -> float:
+    # A zero baseline has no defined percent change; returning +inf (rendered
+    # as +∞%) keeps the README rewrite from crashing on ZeroDivisionError.
+    if ref == 0:
+        return float("inf")
     return (val - ref) / ref * 100.0
 
 
 def fmt_pct(val: float, ref: float) -> str:
     pct = pct_delta(val, ref)
+    if pct == float("inf"):
+        return "(+∞%)"
     sign = "+" if pct >= 0 else ""
     return f"({sign}{pct:.1f}%)"
 

@@ -10,12 +10,13 @@ forward pass is identity: `(W @ R) @ (R @ x) = W @ x`.
 Phase 2b extends this with 3-bit / 2-bit re-quantisation of the rotated
 weights and is gated on P2a passing the equivalence harness.
 
-**This first revision is dry-run only.** It walks the model manifest,
-identifies rotation candidates, computes the rotation seed for each, and
-writes a rotation-plan JSON. Actually applying the rotation requires (a)
-dequantising 4-bit weights via MLX, (b) rotating in f32, (c) re-writing
-the safetensors with rotated f32 (or rotated 4-bit for P2b). That work
-is staged behind a `--apply` flag that currently fails closed.
+By default it is dry-run: it walks the model manifest, identifies rotation
+candidates, computes the rotation seed for each, and writes a rotation-plan
+JSON. `--apply` then (a) dequantises the affine 4-bit group_size 64 weights
+via MLX, (b) rotates in f32, and (c) re-writes a rotated safetensors plus a
+sidecar. `--bits` requests 2-8 bit re-quantisation of the rotated weights.
+Applying to a pack whose weights are not affine 4-bit group_size 64 fails
+closed rather than silently dequantising with the wrong parameters.
 
 Artifact schema: ax.rotated_checkpoint_plan.v1
 
@@ -271,6 +272,9 @@ def apply_rotation(args: argparse.Namespace, plan: dict) -> dict:
     # Locate per-tensor file path from the manifest (need original tensor file paths).
     manifest = json.loads((args.mlx_artifacts_dir / "model-manifest.json").read_text())
     name_to_file: dict[str, str] = {t["name"]: t["file"] for t in manifest["tensors"]}
+    name_to_quant: dict[str, dict | None] = {
+        t["name"]: t.get("quantization") for t in manifest["tensors"]
+    }
 
     # Group by source file so each safetensors is opened at most once.
     by_file: dict[str, list[dict]] = {}
@@ -333,6 +337,20 @@ def apply_rotation(args: argparse.Namespace, plan: dict) -> dict:
                     "cannot dequantise"
                 )
             dim = c["rotation_dim"]
+            quant = name_to_quant.get(name)
+            if quant is not None and (
+                quant.get("mode") != "affine"
+                or quant.get("bits") != 4
+                or quant.get("group_size") != 64
+            ):
+                # The dequantize call below is pinned to affine 4-bit g64;
+                # dequantising a different layout would silently corrupt the
+                # rotated weights, so refuse instead.
+                raise SystemExit(
+                    f"{name}: manifest quantization {quant} is not affine 4-bit "
+                    "group_size 64; this tool's dequantize path only supports "
+                    "that layout"
+                )
             w_de = mx.dequantize(
                 w_packed,
                 scales=scales,
