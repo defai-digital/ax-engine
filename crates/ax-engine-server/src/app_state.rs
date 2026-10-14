@@ -424,7 +424,27 @@ impl AppState {
     }
 
     pub(crate) fn remove_request_owner(&self, request_id: u64) {
-        self.request_owners.write().by_id.remove(&request_id);
+        let mut owners = self.request_owners.write();
+        let Some(owner) = owners.by_id.remove(&request_id) else {
+            return;
+        };
+        // Drop the terminal-order entry too, or the queue-length metric keeps
+        // counting a request whose owner record is already gone.
+        if owner.terminal {
+            let key = (owner.model_id.as_ref().clone(), owner.generation);
+            let now_empty = match owners.terminal_order.get_mut(&key) {
+                Some(order) => {
+                    if let Some(position) = order.iter().position(|&id| id == request_id) {
+                        order.remove(position);
+                    }
+                    order.is_empty()
+                }
+                None => false,
+            };
+            if now_empty {
+                owners.terminal_order.remove(&key);
+            }
+        }
     }
 
     pub(crate) fn request_owner_telemetry(&self) -> RequestOwnerTelemetry {
