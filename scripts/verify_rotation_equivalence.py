@@ -207,16 +207,20 @@ print(json.dumps({"output_tokens": list(r.output_tokens)}))
         check=False,
     )
     if proc.returncode != 0:
-        raise SystemExit(
+        print(
             f"Decode subprocess failed (rotation_env={rotation_env!r}):\n"
-            f"stderr:\n{proc.stderr}"
+            f"stderr:\n{proc.stderr}",
+            file=sys.stderr,
         )
+        raise SystemExit(2)
     lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
     if not lines:
-        raise SystemExit(
+        print(
             f"No JSON output from decode (rotation_env={rotation_env!r}):\n"
-            f"stderr:\n{proc.stderr}"
+            f"stderr:\n{proc.stderr}",
+            file=sys.stderr,
         )
+        raise SystemExit(2)
     return list(json.loads(lines[-1])["output_tokens"])
 
 

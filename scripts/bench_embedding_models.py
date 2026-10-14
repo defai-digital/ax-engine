@@ -722,7 +722,9 @@ def main() -> int:
         return 1
 
     label = args.model_label or model_dir.name
-    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M")
+    # Second resolution so two runs in the same minute (e.g. a fast failure
+    # and a rerun) do not share a run directory and overwrite each other.
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     run_dir = args.output_dir / f"{timestamp}-{label}"
     run_dir.mkdir(parents=True, exist_ok=True)
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -127,11 +128,11 @@ def main() -> int:
         "prompts_evaluated": len(records),
         "load_seconds": load_seconds,
         "generation_tps_mean": (sum(gen_tps_values) / len(gen_tps_values)) if gen_tps_values else 0.0,
-        "generation_tps_p50": sorted(gen_tps_values)[len(gen_tps_values) // 2] if gen_tps_values else 0.0,
+        "generation_tps_p50": statistics.median(gen_tps_values) if gen_tps_values else 0.0,
         "generation_tps_max": max(gen_tps_values) if gen_tps_values else 0.0,
         "generation_tps_min": min(gen_tps_values) if gen_tps_values else 0.0,
         "prompt_tps_mean": (sum(prompt_tps_values) / len(prompt_tps_values)) if prompt_tps_values else 0.0,
-        "prompt_tps_p50": sorted(prompt_tps_values)[len(prompt_tps_values) // 2] if prompt_tps_values else 0.0,
+        "prompt_tps_p50": statistics.median(prompt_tps_values) if prompt_tps_values else 0.0,
         "peak_memory_gb_max": max((r.peak_memory_gb for r in records), default=0.0),
         "max_tokens_per_request": args.max_tokens,
     }
