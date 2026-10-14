@@ -80,11 +80,10 @@ impl PressureThresholds {
         hard_fraction: 0.90,
     };
 
-    #[cfg(test)]
     /// Construct custom thresholds. The constructor sorts the pair so `soft`
     /// is always ≤ `hard`; this avoids silently-inverted policy on a caller
     /// mistake. Returns `None` if either input is NaN.
-    pub(crate) fn new(soft: f64, hard: f64) -> Option<Self> {
+    pub fn new(soft: f64, hard: f64) -> Option<Self> {
         if soft.is_nan() || hard.is_nan() {
             return None;
         }

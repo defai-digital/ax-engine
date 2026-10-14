@@ -110,8 +110,8 @@ pub struct EngineCore {
     /// Default generation paradigm applied to new submissions (ADR-038).
     generation_kind: GenerationKind,
     next_step_id: u64,
-    /// Consecutive runner panics contained at the step boundary. Reset on
-    /// every successful dispatch; at `RUNNER_PANIC_RETIREMENT_THRESHOLD`
+    /// Consecutive runner/sampler panics contained at the step boundary.
+    /// Reset on every successful dispatch; at `RUNNER_PANIC_RETIREMENT_THRESHOLD`
     /// the panic is re-raised so the service-level catch retires the
     /// worker (a Metal/MLX state that keeps failing is not trustworthy
     /// enough to keep serving).
@@ -951,10 +951,7 @@ impl EngineCore {
         let runner_output = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.runner.run(runner_input)
         })) {
-            Ok(output) => {
-                self.consecutive_runner_panics = 0;
-                output
-            }
+            Ok(output) => output,
             Err(payload) => {
                 self.consecutive_runner_panics = self.consecutive_runner_panics.saturating_add(1);
                 let message = runner_panic_payload_message(payload.as_ref()).to_string();
@@ -999,17 +996,40 @@ impl EngineCore {
         let sampled_tokens = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.sample_runner_output(&execution_batch, &runner_output)
         })) {
-            Ok(sampled) => sampled?,
+            Ok(sampled) => {
+                // A step is only clean when both the runner and the sampler
+                // completed: the consecutive-panic counter must not reset
+                // between a healthy runner dispatch and a panicking sampler.
+                self.consecutive_runner_panics = 0;
+                sampled?
+            }
             Err(payload) => {
+                // The sampler runs on the same step boundary as the runner, so
+                // it shares the consecutive-panic accounting: a stage that
+                // panics every step is not recoverable by per-step containment
+                // and must retire the worker instead of looping forever.
+                self.consecutive_runner_panics = self.consecutive_runner_panics.saturating_add(1);
                 let message = runner_panic_payload_message(payload.as_ref()).to_string();
-                if step_panic_containment_disabled() {
+                if step_panic_containment_disabled()
+                    || self.consecutive_runner_panics >= RUNNER_PANIC_RETIREMENT_THRESHOLD
+                {
+                    error!(
+                        panic = %message,
+                        consecutive_runner_panics = self.consecutive_runner_panics,
+                        "sampler panic threshold reached (or containment disabled); \
+                         re-raising so the worker retires"
+                    );
                     self.fail_unresolved_step_requests(
                         &schedule_plan.selected_requests,
                         &format!("engine step failed: sampler panicked: {message}"),
                     );
                     std::panic::resume_unwind(payload);
                 }
-                error!(panic = %message, "sampler panicked; failing this step's scheduled requests");
+                error!(
+                    panic = %message,
+                    consecutive_runner_panics = self.consecutive_runner_panics,
+                    "sampler panicked; failing this step's scheduled requests"
+                );
                 return Err(EngineCoreError::RunnerPanicked {
                     step_id,
                     message: format!("sampler panicked: {message}"),
@@ -2020,9 +2040,54 @@ mod tests {
         }
     }
 
+    /// Emits logits for every item — including prefill completions — so the
+    /// sampler runs on a request's very first step.
+    #[derive(Debug)]
+    struct PrefillLogitsPayloadRunner;
+
+    impl ExecutionRunner for PrefillLogitsPayloadRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            let request_updates = input
+                .execution_batch
+                .items
+                .iter()
+                .map(|item| crate::runner::RequestExecutionUpdate {
+                    request_id: item.request_id,
+                    tokens_executed: item.scheduled_token_count,
+                    output_token: None,
+                    output_tokens: Vec::new(),
+                    stop_reason: None,
+                    error: None,
+                    diffusion_schedule: None,
+                })
+                .collect::<Vec<_>>();
+            let logits_outputs = input
+                .execution_batch
+                .items
+                .iter()
+                .map(|item| RequestLogitsOutput {
+                    request_id: item.request_id,
+                    logits: vec![0.0],
+                })
+                .collect::<Vec<_>>();
+
+            RunnerOutput {
+                step_id: input.execution_batch.step_id,
+                request_updates,
+                logits_handles: Vec::new(),
+                logits_outputs,
+                kv_write_summary: crate::runner::KvWriteSummary {
+                    tokens_written: input.execution_batch.total_scheduled_tokens,
+                    blocks_touched: input.block_tables.len() as u32,
+                },
+                route_metadata: input.execution_batch.route_metadata.clone(),
+                execution_status: crate::runner::ExecutionStatus::Success,
+            }
+        }
+    }
+
     #[derive(Debug)]
     struct DuplicateDecodeSourceRunner;
-
     impl ExecutionRunner for DuplicateDecodeSourceRunner {
         fn run(&self, input: RunnerInput) -> RunnerOutput {
             let request_updates = input
@@ -2658,6 +2723,51 @@ mod tests {
         );
         // The re-raise must not strand the scheduled request in Running with
         // its KV reserved: it is failed and cleaned before the unwind.
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(99))
+                .map(|snapshot| snapshot.state),
+            Some(RequestState::Failed)
+        );
+        assert!(
+            engine.kv_manager().used_block_count() <= blocks_before,
+            "KV reserved for the failed step must be released"
+        );
+    }
+
+    #[test]
+    fn consecutive_sampler_panics_reraise_at_threshold() {
+        // The sampler runs on the same step boundary as the runner: a sampler
+        // that panics every step must retire the worker under the same
+        // consecutive-failure threshold instead of looping forever.
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            PrefillLogitsPayloadRunner,
+            PanicSampler,
+        );
+
+        // PrefillLogitsPayloadRunner emits logits for prefill completions, so
+        // each submission's first step already runs the sampler and its panic
+        // is contained at the step boundary — mirroring the runner-panic
+        // threshold test's one-panic-per-round structure.
+        for round in 1..RUNNER_PANIC_RETIREMENT_THRESHOLD as u64 {
+            engine.submit(make_submission(round, round, 1)).unwrap();
+            let error = engine
+                .step(8, true)
+                .expect_err("contained sampler panic surfaces as a step error");
+            assert!(matches!(error, EngineCoreError::RunnerPanicked { .. }));
+        }
+
+        engine.submit(make_submission(99, 99, 1)).unwrap();
+        let blocks_before = engine.kv_manager().used_block_count();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = engine.step(8, true);
+        }));
+        assert!(
+            unwound.is_err(),
+            "sampler panic at the consecutive-failure threshold must re-raise so the worker retires"
+        );
         assert_eq!(
             engine
                 .request_manager()

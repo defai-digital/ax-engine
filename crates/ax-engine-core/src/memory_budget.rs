@@ -182,10 +182,32 @@ pub fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) 
             continue;
         }
         if let Some(interval) = linear_interval {
-            // Hybrid linear-attention layers keep per-request state, not a
-            // per-token cache; the runtime floor covers them.
-            if u64::from(layer_idx) % interval != interval - 1 {
-                continue;
+            // `layer_types` is the authoritative per-layer kind when the
+            // manifest carries it: Nemotron-H writes full_attention_interval=1
+            // as a sentinel that disables the Qwen gated-delta path, so the
+            // interval rule would charge every mamba/moe/mlp layer for a
+            // per-token KV cache the runtime never allocates.
+            match geometry.layer_types.get(layer_idx as usize) {
+                Some(kind) => match kind.as_str() {
+                    "linear_attention" | "mamba" | "M" | "m" | "moe" | "E" | "e" | "mlp" | "-" => {
+                        continue;
+                    }
+                    "sliding_attention" => {
+                        total = total
+                            .saturating_add(pool_tokens.saturating_mul(sliding_bytes_per_token));
+                        continue;
+                    }
+                    // full_attention / attention / "*" / qwen_sparse_attention,
+                    // and unknown kinds, fail closed at the full-attention
+                    // charge (sparse stays conservative: its budget-bounded
+                    // cache is smaller, but admission takes the worst case).
+                    _ => {}
+                },
+                // Manifests that predate layer_types: hybrid linear-attention
+                // layers keep per-request state, not a per-token cache; the
+                // runtime floor covers them.
+                None if u64::from(layer_idx) % interval != interval - 1 => continue,
+                None => {}
             }
             let full_kv_heads = full_kv_head_count_for_layer(
                 geometry,
@@ -406,6 +428,28 @@ mod tests {
         assert_eq!(
             estimated_kv_pool_bytes(&sliding_without_window, 1000),
             Some(1000 * 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT)
+        );
+    }
+
+    #[test]
+    fn kv_pool_bytes_honors_layer_types_over_sentinel_hybrid_interval() {
+        // Nemotron-H writes full_attention_interval=1 as a sentinel to disable
+        // the Qwen gated-delta path; layer_types carries the real layer kinds.
+        // The interval rule alone would charge every layer for per-token KV
+        // (idx % 1 == 0 == interval - 1 is always true).
+        let geometry = kv_geometry(serde_json::json!({
+            "model_family": "nemotron_h",
+            "layer_count": 8, "attention_head_dim": 128, "kv_head_count": 2,
+            "linear_attention": {"full_attention_interval": 1, "num_key_heads": 8},
+            "layer_types": [
+                "mamba", "mamba", "moe", "attention",
+                "mamba", "mamba", "moe", "attention"
+            ]
+        }));
+        let per_token_layer = 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT;
+        assert_eq!(
+            estimated_kv_pool_bytes(&geometry, 1000),
+            Some(2 * 1000 * per_token_layer)
         );
     }
 

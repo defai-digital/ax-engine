@@ -5494,7 +5494,7 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         );
         assert!(
             manifest.runtime_status.notes.iter().any(|n| {
-                n.contains("MacBook Pro M5 Max 128 GB, MXFP4 MTP")
+                n.contains("Mac Studio, Ultra-class Apple Silicon (M2 Ultra+), 192 GiB+, MXFP4 MTP")
                     && n.contains("target qualification pending")
             }),
             "{model_type}: {:?}",
@@ -8908,5 +8908,39 @@ fn qwen4_exp_write_real_server_candidate_manifest() {
         manifest.tensors.len(),
         manifest.weight_sanitize,
         root.display(),
+    );
+}
+
+#[test]
+fn sanitize_nonstandard_json_numbers_rewrites_bare_tokens() {
+    let sanitized = super::sanitize_nonstandard_json_numbers(
+        r#"{"a": NaN, "b": -Infinity, "c": Infinity, "d": 1.5}"#,
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&sanitized).expect("valid json");
+    assert_eq!(parsed["a"], serde_json::Value::Null);
+    assert_eq!(parsed["b"], serde_json::Value::Null);
+    assert_eq!(parsed["c"], serde_json::Value::Null);
+    assert_eq!(parsed["d"], serde_json::json!(1.5));
+}
+
+#[test]
+fn sanitize_nonstandard_json_numbers_preserves_non_ascii_text() {
+    // Byte-wise rewriting used to re-encode every multi-byte UTF-8 character
+    // as one Latin-1 char per byte, corrupting strings like "café" or the
+    // fullwidth bars in Hy-MT2 chat markers.
+    let input = r#"{"name": "café ｜hy_User｜ ✅"}"#;
+    assert_eq!(super::sanitize_nonstandard_json_numbers(input), input);
+}
+
+#[test]
+fn sanitize_nonstandard_json_numbers_leaves_quoted_values_alone() {
+    // String values that happen to equal a token are data, not numbers.
+    let input = r#"{"name": "NaN", "tpl": "value is -Infinity", "esc": "x\" NaN"}"#;
+    assert_eq!(super::sanitize_nonstandard_json_numbers(input), input);
+    // ...while the same tokens outside strings are still rewritten.
+    let mixed = r#"{"name": "NaN", "value": NaN}"#;
+    assert_eq!(
+        super::sanitize_nonstandard_json_numbers(mixed),
+        r#"{"name": "NaN", "value": null}"#
     );
 }

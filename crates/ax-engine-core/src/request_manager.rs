@@ -525,9 +525,11 @@ impl RequestManager {
                     record.processed_prompt_tokens = next_processed_prompt_tokens;
                 }
 
-                if record.generated_tokens.is_empty() {
-                    summary.ttft_events += 1;
-                }
+                // TTFT counts the first token actually emitted into the
+                // output stream: a first sample that is immediately
+                // StopReason::EosToken delivers zero tokens, so the request
+                // never produces a first-token event.
+                let awaiting_first_output = record.generated_tokens.is_empty();
                 let mut stop = None;
                 for sampled_token in sampled_tokens {
                     stop = sampled_token.stop_reason;
@@ -546,6 +548,9 @@ impl RequestManager {
                     if stop.is_some() {
                         break;
                     }
+                }
+                if awaiting_first_output && !record.generated_tokens.is_empty() {
+                    summary.ttft_events += 1;
                 }
                 stop
             } else {
@@ -1521,6 +1526,60 @@ mod tests {
         assert_eq!(snapshot.state, RequestState::Runnable);
         assert_eq!(snapshot.generated_tokens, vec![99, 100, 101]);
         assert_eq!(snapshot.generated_token_logprobs, vec![None, None, None]);
+    }
+
+    #[test]
+    fn eos_first_sample_delivers_no_tokens_and_counts_no_ttft() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        {
+            let record = manager.records.get_mut(&RequestId(1)).unwrap();
+            record.processed_prompt_tokens = 3;
+            record.mark_runnable().unwrap();
+            record.start_running().unwrap();
+        }
+
+        let summary = manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(2),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 1,
+                        output_token: None,
+                        output_tokens: Vec::new(),
+                        stop_reason: None,
+                        error: None,
+                        diffusion_schedule: None,
+                    }],
+                    logits_handles: vec![RequestId(1)],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 1,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: crate::scheduler::RouteMetadata::empty(),
+                    execution_status: ExecutionStatus::Success,
+                },
+                &[crate::sampling::SampledToken {
+                    request_id: RequestId(1),
+                    token_id: 2,
+                    stop_reason: Some(StopReason::EosToken),
+                    logprob: None,
+                }],
+                &[RequestId(1)],
+            )
+            .unwrap();
+
+        // EOS is never emitted into the output stream, so a first-sample EOS
+        // means the request delivered zero tokens and must not count a TTFT
+        // event.
+        assert_eq!(summary.ttft_events, 0);
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert!(snapshot.generated_tokens.is_empty());
+        assert_eq!(snapshot.state, RequestState::Finished);
     }
 
     #[test]

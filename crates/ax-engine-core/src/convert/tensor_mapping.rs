@@ -1228,6 +1228,15 @@ pub(crate) const NEMOTRON_H_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         "mixer.shared_experts.down_proj.weight",
         TensorMapping::PerLayer(NativeTensorRole::FfnSharedExpertDown),
     ),
+    // MLP mixer (-): plain ReLU² up/down projections (no gate, no experts).
+    (
+        "mixer.up_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnUp),
+    ),
+    (
+        "mixer.down_proj.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDown),
+    ),
 ];
 
 pub(crate) const QWEN35_LINEAR_TENSOR_MAP: &[(&str, TensorMapping)] = &[

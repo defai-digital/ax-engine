@@ -2052,8 +2052,15 @@ pub(crate) fn validate_native_model_manifest(
             || roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Blocks)
             || roles.contains(&NativeTensorRole::FfnDownExpsMxfp4Scales);
         // Gemma 4 MoE dual-norm stack (post-attn, dual FFN norms, router scale).
-        // gemma4_vl shares the same text-tower MoE layout when packaged as VL.
-        if matches!(manifest.model_family.as_str(), "gemma4" | "gemma4_vl") && has_moe_expert_ffn {
+        // gemma4_vl shares the same text-tower MoE layout when packaged as VL;
+        // gemma4_unified keeps the standard Gemma 4 language tower (DI-W1-001),
+        // and without this requirement a unified MoE pack missing router.scale
+        // would pass validation but panic in the first MoE forward.
+        if matches!(
+            manifest.model_family.as_str(),
+            "gemma4" | "gemma4_vl" | "gemma4_unified"
+        ) && has_moe_expert_ffn
+        {
             if has_any_attention {
                 require_layer_role(
                     roles,

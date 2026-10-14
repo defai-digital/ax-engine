@@ -24,39 +24,59 @@ pub(crate) fn load_hf_config(model_dir: &Path) -> Result<serde_json::Value, Conv
 /// can parse HF configs that use Python-style float literals.
 pub(crate) fn sanitize_nonstandard_json_numbers(text: &str) -> String {
     // Word-boundary replacements avoid touching strings that merely contain
-    // those substrings as identifiers.
+    // those substrings as identifiers. Iteration is by char (never bytes) so
+    // multi-byte UTF-8 survives, and string-state tracking keeps quoted values
+    // like "NaN" verbatim.
     let mut out = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if matches_token(bytes, i, b"-Infinity") {
+    let mut in_string = false;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        if in_string {
+            out.push(ch);
+            match ch {
+                // Escapes pass through verbatim so an escaped quote does not
+                // end the string early.
+                '\\' => {
+                    if let Some((_, escaped)) = chars.next() {
+                        out.push(escaped);
+                    }
+                }
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            out.push(ch);
+            continue;
+        }
+        let rest = &text[i..];
+        let token = ["-Infinity", "Infinity", "NaN"].iter().find(|token| {
+            if !rest.starts_with(**token) {
+                return false;
+            }
+            let before_ok = i == 0
+                || !text[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c: char| c.is_ascii_alphanumeric());
+            let after_ok = rest[token.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_ascii_alphanumeric());
+            before_ok && after_ok
+        });
+        if let Some(token) = token {
             out.push_str("null");
-            i += b"-Infinity".len();
-        } else if matches_token(bytes, i, b"Infinity") {
-            out.push_str("null");
-            i += b"Infinity".len();
-        } else if matches_token(bytes, i, b"NaN") {
-            out.push_str("null");
-            i += b"NaN".len();
+            for _ in 0..token.len() - 1 {
+                chars.next();
+            }
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            out.push(ch);
         }
     }
     out
-}
-
-fn matches_token(bytes: &[u8], i: usize, token: &[u8]) -> bool {
-    if i + token.len() > bytes.len() {
-        return false;
-    }
-    if &bytes[i..i + token.len()] != token {
-        return false;
-    }
-    let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
-    let after = i + token.len();
-    let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
-    before_ok && after_ok
 }
 
 pub(crate) fn resolve_model_type(config: &serde_json::Value) -> Result<String, ConvertError> {
@@ -402,7 +422,7 @@ pub(crate) fn runtime_status_for_model_type(model_type: &str) -> NativeRuntimeSt
             blockers: Vec::new(),
             notes: vec![
                 "n-gram embedding table must not be eval'd at load_weights".to_string(),
-                "qualification target: MacBook Pro M5 Max 128 GB, MXFP4 MTP; target qualification pending"
+                "qualification target: Mac Studio, Ultra-class Apple Silicon (M2 Ultra+), 192 GiB+, MXFP4 MTP; target qualification pending"
                     .to_string(),
             ],
         };
@@ -592,7 +612,7 @@ pub(crate) fn qwen4_exp_config(
         ngram_seed: Some(ngram_seed),
         ngram_size: integer("ngram_size")?.or(Some(3)),
         ngram_vocab_size_base: integer("ngram_vocab_size_base")?.or(Some(20_000_000)),
-        split_ngram_parts: integer("split_ngram_parts")?.or(Some(512)),
+        split_ngram_parts: integer("split_ngram_parts")?.or(Some(128)),
         heads_per_ngram: integer("heads_per_ngram")?.or(Some(8)),
         hc_count: integer("hc_count")?,
         hc_lowrank: integer("hc_lowrank")?,

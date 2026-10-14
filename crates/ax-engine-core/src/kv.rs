@@ -671,11 +671,11 @@ impl KvManager {
             table.logical_token_count,
             prompt_tokens.len()
         );
-        self.promote_prompt_prefix_to_cache(&table, &prompt_tokens)?;
-        self.remove_live_prefix_index(request_id)?;
-        // Validate the whole release set before unregistering the request:
-        // erroring mid-loop would strand the trailing blocks of a request
-        // whose table no longer exists, leaving them impossible to reclaim.
+        // Validate the whole release set before any mutation: promotion bumps
+        // refcounts and inserts cache entries, and erroring after it would
+        // leave a promoted entry co-owning blocks of a request that stays
+        // registered; erroring mid-release would strand the trailing blocks of
+        // a request whose table no longer exists.
         if table
             .block_ids
             .iter()
@@ -685,6 +685,8 @@ impl KvManager {
                 "block refcount missing during free",
             ));
         }
+        self.promote_prompt_prefix_to_cache(&table, &prompt_tokens)?;
+        self.remove_live_prefix_index(request_id)?;
         let table = self
             .block_tables
             .remove(&request_id)
@@ -1607,6 +1609,11 @@ mod tests {
         // The failed free must leave the request registered so its remaining
         // blocks stay reclaimable.
         assert!(manager.block_table(RequestId(1)).is_ok());
+        // ...and it must not have mutated anything before failing: no cache
+        // promotion, no refcount bump on the request's surviving full block.
+        let full_block = manager.block_table(RequestId(1)).unwrap().block_ids[0];
+        assert_eq!(manager.block_ref_counts.get(&full_block), Some(&1));
+        assert!(manager.cached_blocks.is_empty());
     }
 
     #[test]
