@@ -65,7 +65,9 @@ class QualityReport:
     @property
     def hard_pass(self) -> bool:
         hard = self.hard_checks
-        return all(c.passed for c in hard) if hard else True
+        # No hard checks means no evidence of success (e.g. a transport-error
+        # row has no checks), so it must not read as a vacuous pass.
+        return bool(hard) and all(c.passed for c in hard)
 
     @property
     def summary(self) -> str:
@@ -393,7 +395,12 @@ def check_invoice_total(text: str, prompt: QaPrompt) -> CheckResult:
             continue
         if not isinstance(data, dict) or "total" not in data:
             continue
-        actual = float(data["total"])
+        try:
+            # Model-controlled: `total` may be null, a currency string, etc.
+            # A failed conversion is not a crash — just skip this candidate.
+            actual = float(data["total"])
+        except (TypeError, ValueError):
+            continue
         seen_totals.append(actual)
         if abs(actual - expected) < 0.001:
             return CheckResult(

@@ -523,6 +523,16 @@ def _stream_generate_sse(
                 data_lines = []
                 return frame
 
+            def stamp_ttft() -> None:
+                # Stamp TTFT on the first token-bearing event of any kind.
+                # Some native streams deliver tokens only in the terminal
+                # `response` frame, with no per-token `step` frames; stamping
+                # only on `step` left ttft_ms at its 0.0 sentinel.
+                nonlocal ttft_ms, first_chunk
+                if first_chunk:
+                    ttft_ms = (time.monotonic() - start) * 1000
+                    first_chunk = False
+
             while not done:
                 raw = resp.read(4096)
                 if not raw:
@@ -555,18 +565,19 @@ def _stream_generate_sse(
                         if delta:
                             # Stamp TTFT on the first token-bearing step; the
                             # `request` ack event carries no tokens.
-                            if first_chunk:
-                                ttft_ms = (time.monotonic() - start) * 1000
-                                first_chunk = False
+                            stamp_ttft()
                             all_tokens.extend(delta)
                     elif event_name == "response":
                         response = event.get("response", {})
                         response_tokens = response.get("output_tokens", [])
                         response_text = response.get("output_text")
                         finish_reason = response.get("finish_reason")
+                        if response_tokens:
+                            stamp_ttft()
                     else:
                         delta = event.get("delta_tokens", [])
                         if delta:
+                            stamp_ttft()
                             all_tokens.extend(delta)
                         fr = event.get("finish_reason")
                         if fr:
@@ -584,6 +595,8 @@ def _stream_generate_sse(
                     response_tokens = response.get("output_tokens", [])
                     response_text = response.get("output_text")
                     finish_reason = response.get("finish_reason")
+                    if response_tokens:
+                        stamp_ttft()
     except Exception as e:
         elapsed = (time.monotonic() - start) * 1000
         return QaResponse(
