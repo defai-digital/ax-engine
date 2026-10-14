@@ -195,7 +195,18 @@ impl App {
             self.navigate_to(Screen::Serve);
             return;
         }
-        if let Some(idx) = self.downloads.iter().position(|t| t.is_ready()) {
+        // Prefer the selected download when it is the ready model the banner
+        // is advertising; otherwise fall back to the first ready task.
+        let ready_idx = if self
+            .downloads
+            .get(self.download_idx)
+            .is_some_and(|t| t.is_ready())
+        {
+            Some(self.download_idx)
+        } else {
+            self.downloads.iter().position(|t| t.is_ready())
+        };
+        if let Some(idx) = ready_idx {
             self.select_download(idx);
             self.navigate_to(Screen::Downloads);
             self.modal = Some(Modal::ServeReady { download_idx: idx });
