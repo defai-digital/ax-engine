@@ -111,13 +111,18 @@ def build_scaffold(
     }
 
 
-def try_execute_correctness(models: list[str], out_dir: Path) -> list[str]:
-    """Best-effort: invoke cross-restart harness when model dirs exist."""
+def try_execute_correctness(models: list[str], out_dir: Path) -> tuple[list[str], int]:
+    """Best-effort: invoke the cross-restart harness when model dirs exist.
+
+    Returns the notes and the failure count so ``main`` can exit non-zero
+    instead of reporting success on a failed harness run.
+    """
     notes: list[str] = []
+    failures = 0
     harness = ROOT / "scripts" / "verify_disk_prefix_cache_cross_restart.py"
     if not harness.is_file():
         notes.append("verify_disk_prefix_cache_cross_restart.py missing")
-        return notes
+        return notes, 1
     for model_id in models:
         # Conventional local layout; skip quietly when absent.
         candidates = [
@@ -151,10 +156,12 @@ def try_execute_correctness(models: list[str], out_dir: Path) -> list[str]:
             )
             notes.append(f"{model_id}: exit={proc.returncode}")
             if proc.returncode != 0:
+                failures += 1
                 notes.append((proc.stderr or proc.stdout or "")[:500])
         except (OSError, subprocess.TimeoutExpired) as exc:
+            failures += 1
             notes.append(f"{model_id}: failed: {exc}")
-    return notes
+    return notes, failures
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -193,8 +200,10 @@ def main(argv: list[str] | None = None) -> int:
         "Scaffold only: full cold/warm FS + TTFT matrix is not automated here yet.",
         "Use check_disk_prefix_cache_promotion.py --allow-incomplete on the decision JSON.",
     ]
+    exec_failures = 0
     if args.execute:
-        notes.extend(try_execute_correctness(list(args.models), out_dir))
+        exec_notes, exec_failures = try_execute_correctness(list(args.models), out_dir)
+        notes.extend(exec_notes)
 
     artifact = build_scaffold(run_id=run_id, models=list(args.models), execute_notes=notes)
     decision_path = out_dir / "decision.json"
@@ -220,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     print(json.dumps({"output_dir": str(out_dir), "decision": str(decision_path)}, indent=2))
-    return 0
+    return 1 if exec_failures else 0
 
 
 if __name__ == "__main__":
