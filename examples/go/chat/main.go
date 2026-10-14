@@ -30,5 +30,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println(resp.Choices[0].Message.Content)
+	if len(resp.Choices) == 0 {
+		log.Fatal("no choices returned")
+	}
+	if content := resp.Choices[0].Message.Content; content != nil {
+		fmt.Println(*content)
+	}
 }

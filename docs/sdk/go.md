@@ -65,7 +65,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Println(resp.Choices[0].Message.Content)
+    fmt.Println(*resp.Choices[0].Message.Content)
 }
 ```
 

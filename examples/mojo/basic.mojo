@@ -3,7 +3,9 @@ Basic AX Engine usage from Mojo.
 
 Prerequisites:
     maturin develop          # build the ax_engine Python extension
-    magic run mojo basic.mojo
+
+Run from the repo root so the `sdk.mojo` package resolves:
+    magic run mojo -I . examples/mojo/basic.mojo
 
 The Session struct delegates to the ax_engine Python package via Mojo's
 PythonObject interop, so no separate HTTP client is needed.
