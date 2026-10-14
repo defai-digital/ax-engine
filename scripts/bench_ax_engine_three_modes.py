@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -223,6 +224,18 @@ def main() -> None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text + "\n")
     print(text)
+
+    # A mode whose every measured run failed (ok_runs == 0) produced no usable
+    # latency; surface it through the exit code rather than a silent success.
+    failed_modes = [
+        mode["name"] for mode in result["modes"] if mode["summary"]["ok_runs"] == 0
+    ]
+    if failed_modes:
+        print(
+            "ERROR: no successful measured runs for: " + ", ".join(failed_modes),
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
