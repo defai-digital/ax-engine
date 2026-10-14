@@ -71,6 +71,7 @@ class ParityTests(unittest.TestCase):
             [parity.ReleaseInfo("v1.1", is_draft=False, is_prerelease=False)],
         )
         self.assertEqual(report.published_without_tag, ("v1.1",))
+        self.assertFalse(report.ok, "a published release without a tag must not pass")
 
     def test_exact_allowed_orphan_does_not_hide_other_orphans(self) -> None:
         report = parity.compute_parity(

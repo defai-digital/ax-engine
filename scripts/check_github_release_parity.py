@@ -53,7 +53,13 @@ class ParityReport:
 
     @property
     def ok(self) -> bool:
-        return not self.orphan_tags and not self.draft_tags
+        # A release published while its tag is missing (deleted/renamed) is a
+        # parity problem just like an orphan tag: report it, do not pass.
+        return (
+            not self.orphan_tags
+            and not self.draft_tags
+            and not self.published_without_tag
+        )
 
 
 def is_version_tag(name: str) -> bool:
@@ -314,7 +320,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = compute_parity(tags, releases, allowed_orphans=args.allow_orphan)
     sys.stdout.write(format_report(report, strict_drafts=args.strict))
 
-    if report.orphan_tags:
+    if report.orphan_tags or report.published_without_tag:
         return 1
     if args.strict and report.draft_tags:
         return 1

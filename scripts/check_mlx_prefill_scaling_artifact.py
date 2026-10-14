@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -72,7 +73,12 @@ def require_positive_int(payload: dict[str, Any], key: str, *, owner: str) -> in
 
 def require_positive_float(payload: dict[str, Any], key: str, *, owner: str) -> float:
     value = payload.get(key)
-    if not isinstance(value, (int, float)) or float(value) <= 0.0:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or float(value) <= 0.0
+    ):
         raise PrefillScalingArtifactError(f"{owner} lacks positive numeric field {key!r}")
     return float(value)
 
@@ -189,7 +195,7 @@ def assert_ratio_matches(
             f"{row.artifact_path} {row.engine} context={row.shape.context_tokens} "
             f"lacks numeric ratios_to_mlx_lm.{ratio_key}"
         )
-    if abs(float(value) - expected) > tolerance:
+    if not math.isfinite(float(value)) or abs(float(value) - expected) > tolerance:
         raise PrefillScalingArtifactError(
             f"{row.artifact_path} stale {ratio_key} ratio for "
             f"context={row.shape.context_tokens} generation={row.shape.generation_tokens}: "

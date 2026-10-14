@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -40,8 +41,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_symlinks(model_dir: Path) -> tuple[Path, bool]:
+    # Compare the symlink-resolved path against the *absolute but not
+    # symlink-resolved* path. A difference means a symlink was traversed; a
+    # merely relative or non-normalized input is not a symlink (the previous
+    # `resolved != model_dir` flagged every relative path).
     resolved = model_dir.resolve()
-    return resolved, resolved != model_dir
+    return resolved, resolved != Path(os.path.abspath(model_dir))
 
 
 def sum_safetensor_bytes(model_dir: Path) -> tuple[int, int, list[str], bool]:

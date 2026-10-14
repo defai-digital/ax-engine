@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -66,7 +67,12 @@ def require_positive_int(payload: dict[str, Any], key: str, *, owner: str) -> in
 
 def require_positive_float(payload: dict[str, Any], key: str, *, owner: str) -> float:
     value = payload.get(key)
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or float(value) <= 0.0:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or float(value) <= 0.0
+    ):
         raise LongContextDecodeAtDepthArtifactError(
             f"{owner} lacks positive numeric field {key!r}"
         )
@@ -164,7 +170,7 @@ def assert_ratio(*, row: Row, baseline: Row, tolerance: float) -> None:
             f"{row.engine} depth={row.shape.context_depth_tokens} lacks decode_tok_s ratio"
         )
     expected = row.decode_tok_s_median / baseline.decode_tok_s_median
-    if abs(float(value) - expected) > tolerance:
+    if not math.isfinite(float(value)) or abs(float(value) - expected) > tolerance:
         raise LongContextDecodeAtDepthArtifactError(
             f"stale decode_tok_s ratio for {row.engine} depth={row.shape.context_depth_tokens}: "
             f"artifact={float(value):.6f} expected={expected:.6f}"

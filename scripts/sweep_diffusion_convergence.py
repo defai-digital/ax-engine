@@ -343,7 +343,13 @@ def main() -> None:
             results = partial["results"]
             log(f"resumed: {len(completed_keys)} configs already done")
         except (json.JSONDecodeError, KeyError):
+            # A malformed partial (e.g. a row missing a field from an older
+            # schema) must not leave a half-populated `completed_keys`: those
+            # configs would be skipped while their results were discarded,
+            # producing an incomplete final artifact.
             results = []
+            completed_keys = set()
+            log("partial results unreadable; re-running all configs")
 
     def _result_key(prompt_tokens: int, grid: GridPoint) -> str:
         return (
