@@ -1235,6 +1235,9 @@ pub(crate) fn load_weights_with_session_budget(
     session_budget: Option<crate::expert_stream::SessionResidencyBudget>,
 ) -> Result<ModelWeights, WeightLoadError> {
     maybe_raise_metal_buffer_caps(artifacts);
+    // New weights invalidate the address-keyed prefill dense-weight cache, so
+    // a freshly loaded model cannot reuse a recycled weight address's entry.
+    crate::model::shared::clear_prefill_dequant_dense_cache();
     if artifacts.manifest().model_family == "qwen4_exp" {
         let dedicated = qwen4_exp::load_artifacts(artifacts)?;
         let token_embedding = dedicated.token_embedding.clone();

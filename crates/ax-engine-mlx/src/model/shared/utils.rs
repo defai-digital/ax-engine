@@ -44,6 +44,16 @@ pub(crate) fn set_qwen_prefill_dequant_dense_family(active: bool) {
     QWEN_PREFILL_DEQUANT_DENSE_FAMILY.set(active);
 }
 
+/// Drop the thread-local prefill dense-weight cache.
+///
+/// A cached dense matrix is keyed by the `QuantizedWeight` address, which a
+/// later model load on the same thread can recycle; without clearing, a
+/// freshly loaded model could read the previous model's weights. Model load
+/// calls this before installing new weights.
+pub(crate) fn clear_prefill_dequant_dense_cache() {
+    PREFILL_DEQUANT_DENSE_T.with(|cache| cache.borrow_mut().clear());
+}
+
 /// Enable skipping the unused embed-id `clip` for this Qwen prefill forward.
 pub(crate) fn set_qwen_prefill_skip_embed_clip(active: bool) {
     QWEN_PREFILL_SKIP_EMBED_CLIP.set(active);

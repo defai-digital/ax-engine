@@ -63,8 +63,9 @@ pub(crate) use utils::Gemma4PrefillSkipLastFfnPackedGuard;
 pub(crate) use utils::scale_hidden_pub;
 pub(crate) use utils::{
     ProjectionBatchPolicy, add_then_multiply_scalar, apply_final_logit_softcap,
-    packed_qkv_kv_head_count, qw, qw_gather, qw_with_policy, scale_hidden,
-    set_qwen_prefill_dequant_dense_family, shape_element_count, squeeze_switch_singleton,
+    clear_prefill_dequant_dense_cache, packed_qkv_kv_head_count, qw, qw_gather, qw_with_policy,
+    scale_hidden, set_qwen_prefill_dequant_dense_family, shape_element_count,
+    squeeze_switch_singleton,
 };
 
 // Additional re-exports used by test code (via `use super::*` in #[cfg(test)] mod).
