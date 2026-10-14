@@ -314,12 +314,17 @@ kernel void copy_blocks(
     uint pair_index = gid / elements_per_pair;
     uint block_offset = gid % elements_per_pair;
     uint2 pair = block_base_mapping[pair_index];
-    uint source_block_base = pair.x * params.head_size;
-    uint target_block_base = pair.y * params.head_size;
+    // A block occupies `numel_per_block_*` elements (block_size_tokens *
+    // head_size), not a single head_size slot; the base is the pair index
+    // times the per-block element count (see gather_kv_cache's slot layout).
     if (block_offset < params.numel_per_block_key) {
+        uint source_block_base = pair.x * params.numel_per_block_key;
+        uint target_block_base = pair.y * params.numel_per_block_key;
         key_target[target_block_base + block_offset] = key_source[source_block_base + block_offset];
     }
     if (block_offset < params.numel_per_block_value) {
+        uint source_block_base = pair.x * params.numel_per_block_value;
+        uint target_block_base = pair.y * params.numel_per_block_value;
         value_target[target_block_base + block_offset] =
             value_source[source_block_base + block_offset];
     }
