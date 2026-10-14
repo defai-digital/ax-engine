@@ -325,9 +325,9 @@ impl PostRestartCacheSafety {
             return Err("corrupted payload unexpectedly returned Some".to_string());
         }
 
-        // Truncated file: write a tiny stub that cannot satisfy the outer
-        // header parse, then verify get returns None. We use a fresh key so
-        // the truncated file lives at a new path.
+        // Truncated file: a stub shorter than the fixed header fails the
+        // outer read/parse, not the version check, so it counts as an
+        // "other" rejection. We use a fresh key so the file is new.
         let truncated_key = workload_key(
             "truncation_test_model",
             &self.baseline_policy,
@@ -344,9 +344,40 @@ impl PostRestartCacheSafety {
             .map_err(|e| format!("get truncated: {e}"))?
             .is_none()
         {
-            counters.rejected_format_version_mismatch += 1;
+            counters.rejected_other += 1;
         } else {
             return Err("truncated stub unexpectedly returned Some".to_string());
+        }
+
+        // Wrong format version: a full-length header carrying the `AXKV`
+        // magic but version=1 reaches the version check and is rejected
+        // there. The reader reads the whole fixed header before it checks
+        // the version, so the stub must be at least FIXED_HEADER_LEN (80)
+        // bytes for this branch to be exercised.
+        let wrong_version_key = workload_key(
+            "wrong_version_test_model",
+            &self.baseline_policy,
+            &self.baseline_layout,
+            self.baseline_block_size_tokens,
+            self.baseline_token_count,
+            self.baseline_token_hash,
+            &tokens_for(self.baseline_token_count),
+        );
+        let wrong_version_path = cache.path_for(&wrong_version_key);
+        let mut wrong_version_bytes = Vec::with_capacity(80);
+        wrong_version_bytes.extend_from_slice(b"AXKV");
+        wrong_version_bytes.extend_from_slice(&1u32.to_le_bytes());
+        wrong_version_bytes.resize(80, 0);
+        std::fs::write(&wrong_version_path, &wrong_version_bytes)
+            .map_err(|e| format!("write wrong-version stub: {e}"))?;
+        if cache
+            .get(&wrong_version_key)
+            .map_err(|e| format!("get wrong-version: {e}"))?
+            .is_none()
+        {
+            counters.rejected_format_version_mismatch += 1;
+        } else {
+            return Err("wrong-version stub unexpectedly returned Some".to_string());
         }
 
         if started_at.elapsed() > FIXTURE_TIME_BUDGET {

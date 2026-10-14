@@ -208,7 +208,14 @@ fn run() -> Result<(), String> {
 
     ms_samples.sort_by(f64::total_cmp);
     let n = ms_samples.len();
-    let median = ms_samples[n / 2];
+    // True median: for an even trial count average the two middle samples,
+    // matching statistics.median in the Python harness. Picking the
+    // upper-middle sample biases the median (and the derived tok/s) high.
+    let median = if n % 2 == 1 {
+        ms_samples[n / 2]
+    } else {
+        (ms_samples[n / 2 - 1] + ms_samples[n / 2]) / 2.0
+    };
     let min = ms_samples[0];
     let max = ms_samples[n - 1];
     let mean: f64 = ms_samples.iter().sum::<f64>() / n as f64;

@@ -464,7 +464,10 @@ pub(super) fn most_recent_subdir(dir: &Path) -> Option<PathBuf> {
     dirs.pop().map(|(path, _)| path)
 }
 
-/// Recursive on-disk size, following directories but not chasing symlinks twice.
+/// Recursive on-disk size. Symlinks are not followed: a directory symlink
+/// cycle (e.g. a user-created `ln -s ..`) would otherwise make this loop
+/// forever on the UI tick path, and a link back into the tree would
+/// double-count bytes.
 pub(super) fn dir_size(dir: &Path) -> u64 {
     let mut total = 0;
     let mut stack = vec![dir.to_path_buf()];
@@ -473,6 +476,14 @@ pub(super) fn dir_size(dir: &Path) -> u64 {
             continue;
         };
         for entry in entries.flatten() {
+            // file_type() reflects the symlink itself (lstat), unlike
+            // metadata(); skip links rather than chase them.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_dir() {
                 stack.push(entry.path());
