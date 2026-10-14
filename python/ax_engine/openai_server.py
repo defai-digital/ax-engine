@@ -716,6 +716,10 @@ def prompt_to_tokens(prompt: Any, tokenizer: Any) -> tuple[list[int], str | None
     if isinstance(prompt, list) and all(
         isinstance(token, int) and not isinstance(token, bool) for token in prompt
     ):
+        # The native bindings take u32 token ids; reject out-of-range values
+        # here (400) instead of surfacing a pyo3 OverflowError as a 500.
+        if any(token < 0 or token > MAX_OUTPUT_TOKENS_LIMIT for token in prompt):
+            raise OpenAiShimError("completions prompt token ids must be within u32 range")
         return [int(token) for token in prompt], None
     raise OpenAiShimError("completions prompt must be a string or token id array")
 
@@ -1200,8 +1204,15 @@ def stream_completion_chunks(
                         prev_text_len += len(new_text)
                 else:
                     full_text = tokenizer.decode(accumulated_tokens)
-                    new_text = full_text[prev_text_len:]
-                    prev_text_len = len(full_text)
+                    # A trailing U+FFFD run marks an incomplete UTF-8 sequence
+                    # a later token may complete. Counting it as emitted
+                    # swallows the finished glyph (the complete decode can be
+                    # shorter than its replacement-char placeholder), so only
+                    # the stable prefix advances prev_text_len; the response
+                    # flush below re-decodes and emits any held-back remainder.
+                    stable_text = full_text.rstrip("\ufffd")
+                    new_text = stable_text[prev_text_len:]
+                    prev_text_len = len(stable_text)
                 if new_text and stops:
                     # Client stop strings are enforced on the visible text:
                     # emit only up to the match, then finish with "stop". A stop

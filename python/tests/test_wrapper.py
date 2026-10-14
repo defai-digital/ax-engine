@@ -872,6 +872,55 @@ class ReplacementSuffixDecoder:
         return "ok" + "\ufffd" if tokens else ""
 
 
+class ScriptedTokenStepSession:
+    """Session double yielding step events with token deltas but no
+    delta_text — the native MLX stream shape — then a terminal response.
+    """
+
+    def __init__(self, token_deltas: tuple[list[int], ...], finish_reason: str = "stop"):
+        self.token_deltas = token_deltas
+        self.finish_reason = finish_reason
+
+    def stream_generate(
+        self, input_tokens: list[int] | None = None, **kwargs: object
+    ) -> Iterator[object]:
+        for delta in self.token_deltas:
+            yield types.SimpleNamespace(
+                event="step",
+                delta_tokens=list(delta),
+                delta_text=None,
+                response=None,
+            )
+        yield types.SimpleNamespace(
+            event="response",
+            delta_tokens=[],
+            delta_text=None,
+            response=types.SimpleNamespace(finish_reason=self.finish_reason),
+        )
+
+
+class PartialGlyphDecoder:
+    """Decoder simulating byte-level BPE for a three-token emoji: partial
+    sequences decode to U+FFFD placeholders, and the complete sequence
+    decodes to a glyph shorter than its placeholder run.
+    """
+
+    GLYPH_TOKENS = (1, 2, 3)
+
+    def encode(self, text: str) -> object:
+        return types.SimpleNamespace(ids=[])
+
+    def decode(self, tokens: list[int]) -> str:
+        prefix = []
+        for token in tokens:
+            if token not in self.GLYPH_TOKENS:
+                return ""
+            prefix.append(token)
+        if tuple(prefix) == self.GLYPH_TOKENS:
+            return "\U0001f31f"
+        return "\ufffd" * len(prefix)
+
+
 def _sse_data_payloads(chunks: list[str]) -> list[dict[str, Any]]:
     """Parse SSE chunk strings into their JSON payloads, skipping [DONE]."""
     payloads: list[dict[str, Any]] = []
@@ -3011,6 +3060,23 @@ class WrapperContractTests(unittest.TestCase):
         with self.assertRaisesRegex(openai_server.OpenAiShimError, "token id array"):
             openai_server.prompt_to_tokens([1, False], FakeTokenizer())
 
+    def test_openai_mlx_shim_rejects_out_of_range_prompt_tokens(self) -> None:
+        # The native bindings take u32 token ids: out-of-range values must be
+        # a 400 validation error, not a pyo3 OverflowError surfacing as a 500.
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        class FakeTokenizer:
+            def encode(self, text: str) -> object:
+                return types.SimpleNamespace(ids=[ord(ch) for ch in text])
+
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "u32 range"):
+            openai_server.prompt_to_tokens([-1], FakeTokenizer())
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "u32 range"):
+            openai_server.prompt_to_tokens([2**32], FakeTokenizer())
+        tokens, text = openai_server.prompt_to_tokens([0, 2**32 - 1], FakeTokenizer())
+        self.assertEqual(tokens, [0, 4294967295])
+        self.assertIsNone(text)
+
     def test_openai_mlx_shim_http_errors_do_not_expose_exception_details(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
@@ -4186,6 +4252,29 @@ hello
                 self.assertEqual("".join(texts), expected_text)
                 self.assertEqual(finishes[-1], expected_finish)
                 self.assertIn("stop_sequences", session.stream_kwargs[0])
+
+    def test_openai_mlx_shim_token_stream_does_not_swallow_multibyte_glyphs(self) -> None:
+        # Native MLX steps carry tokens with delta_text=None, so the shim
+        # cumulative re-decodes. A glyph whose bytes span several tokens
+        # decodes to trailing U+FFFD placeholders mid-stream; counting those
+        # as emitted used to swallow the finished glyph entirely.
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        session = ScriptedTokenStepSession(([1], [2], [3]))
+        chunks = list(
+            openai_server.stream_completion_chunks(
+                session,
+                PartialGlyphDecoder(),
+                "qwen3_dense",
+                [1],
+                {"max_tokens": 4},
+                "completion",
+            )
+        )
+
+        payloads = _sse_data_payloads(chunks)
+        texts = [payload["choices"][0]["text"] for payload in payloads]
+        self.assertEqual("".join(texts), "\U0001f31f")
+        self.assertNotIn("\ufffd", "".join(texts))
 
     def test_openai_mlx_shim_builds_mlx_session_with_artifacts_dir(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

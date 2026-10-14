@@ -20,9 +20,12 @@ use crate::stream::GenerateStreamIterator;
 /// A handle to a live [`EngineSession`], shareable across threads.
 ///
 /// The OpenAI shim drives generation from anyio worker threads
-/// (`anyio.to_thread.run_sync` / `iterate_in_threadpool`), so callers may
-/// invoke methods from any thread. The inner `Arc<Mutex<SessionSlot>>`
-/// serializes access to the single native session.
+/// (`anyio.to_thread.run_sync` / `iterate_in_threadpool`), so methods may be
+/// invoked from any thread. PyO3's `&mut self` borrow rules admit only one
+/// method call per Session at a time — a concurrent call fails fast with
+/// `RuntimeError: already borrowed` instead of blocking. The inner
+/// `Arc<Mutex<SessionSlot>>` serializes the session against a stream
+/// iterator that has borrowed it.
 #[pyclass(module = "ax_engine._ax_engine")]
 pub(crate) struct Session {
     model_id: String,
@@ -76,27 +79,34 @@ impl Session {
         delegated_http_write_timeout_secs: u64,
         mlx_stream_experts: Option<&str>,
     ) -> PyResult<Self> {
-        let stream_env = if mlx && mlx_stream_experts.is_none() {
+        let support_tier = preview_support_tier_from_label(support_tier)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        // The tier form selects MLX too: a caller passing support_tier
+        // "mlx_preview"/"mlx_certified" plus a model directory must not have
+        // the directory (or the AX_STREAM_EXPERTS operator override) silently
+        // dropped just because it did not set the `mlx` flag.
+        let tier_selects_mlx = !mlx
+            && matches!(
+                support_tier,
+                ax_engine_sdk::SupportTier::MlxPreview | ax_engine_sdk::SupportTier::MlxCertified
+            );
+        let stream_env = if (mlx || tier_selects_mlx) && mlx_stream_experts.is_none() {
             std::env::var("AX_STREAM_EXPERTS").ok()
         } else {
             None
         };
         let mlx_stream_experts = resolve_stream_experts(mlx_stream_experts, stream_env.as_deref())?;
-        let support_tier = preview_support_tier_from_label(support_tier)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let delegated_http_timeouts = delegated_http_timeouts_from_secs(
             delegated_http_connect_timeout_secs,
             delegated_http_read_timeout_secs,
             delegated_http_write_timeout_secs,
         )?;
-        let effective_mlx_model_artifacts_dir = if mlx {
-            mlx_model_artifacts_dir
-                .clone()
-                .or_else(|| llama_model_path.clone())
-                .map(PathBuf::from)
-        } else {
-            None
-        };
+        let effective_mlx_model_artifacts_dir = resolve_mlx_model_artifacts_dir(
+            mlx,
+            tier_selects_mlx,
+            mlx_model_artifacts_dir.as_deref(),
+            llama_model_path.as_deref(),
+        );
         let backend_request = if mlx {
             PreviewBackendRequest::shipping_mlx()
         } else if support_tier == ax_engine_sdk::SupportTier::LlamaCpp {
@@ -610,6 +620,24 @@ fn store_slot(owner: &Mutex<SessionSlot>, slot: SessionSlot) {
     *guard = slot;
 }
 
+/// The model artifacts dir applies to every MLX-selecting form of the
+/// constructor — the `mlx` flag and the "mlx_preview"/"mlx_certified" support
+/// tiers alike. `llama_model_path` doubles as the directory fallback (the
+/// flag form's historical behaviour).
+fn resolve_mlx_model_artifacts_dir(
+    mlx: bool,
+    tier_selects_mlx: bool,
+    mlx_model_artifacts_dir: Option<&str>,
+    llama_model_path: Option<&str>,
+) -> Option<PathBuf> {
+    if !mlx && !tier_selects_mlx {
+        return None;
+    }
+    mlx_model_artifacts_dir
+        .or(llama_model_path)
+        .map(PathBuf::from)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -634,6 +662,24 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(matches!(*guard, SessionSlot::Closed));
+    }
+
+    #[test]
+    fn mlx_artifacts_dir_applies_to_flag_and_tier_forms_alike() {
+        let flag_form = resolve_mlx_model_artifacts_dir(true, false, None, Some("/tmp/model"));
+        let tier_form = resolve_mlx_model_artifacts_dir(false, true, None, Some("/tmp/model"));
+        assert_eq!(flag_form, Some(PathBuf::from("/tmp/model")));
+        assert_eq!(flag_form, tier_form);
+        // The explicit artifacts dir wins over the llama_model_path fallback.
+        assert_eq!(
+            resolve_mlx_model_artifacts_dir(false, true, Some("/tmp/mlx"), Some("/tmp/model")),
+            Some(PathBuf::from("/tmp/mlx"))
+        );
+        // Non-MLX forms never consume either path.
+        assert_eq!(
+            resolve_mlx_model_artifacts_dir(false, false, Some("/tmp/mlx"), Some("/tmp/model")),
+            None
+        );
     }
 
     /// Compile-time guard: pyo3 requires non-`unsendable` pyclasses to be
