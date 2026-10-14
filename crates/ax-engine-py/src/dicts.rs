@@ -263,6 +263,11 @@ pub(crate) fn request_report_dict<'py>(
     if let Some(execution_plan_ref) = report.execution_plan_ref.as_deref() {
         dict.set_item("execution_plan_ref", execution_plan_ref)?;
     }
+    // Why a request failed: without this a delegated stream that is marked
+    // `failed` gives Python no reason string to surface.
+    if let Some(last_error) = report.last_error.as_deref() {
+        dict.set_item("last_error", last_error)?;
+    }
     dict.set_item("route", route_dict(py, &report.route)?)?;
     Ok(dict.unbind())
 }
@@ -548,6 +553,15 @@ pub(crate) fn generate_response_dict<'py>(
         dict.set_item("prompt_text", prompt_text)?;
     }
     dict.set_item("output_tokens", response.output_tokens.clone())?;
+    // Authoritative counts a text-only delegated backend reports when token
+    // arrays are unavailable; without these the Python usage() sees empty
+    // arrays and reports zero tokens.
+    if let Some(prompt_token_count) = response.prompt_token_count {
+        dict.set_item("prompt_token_count", prompt_token_count)?;
+    }
+    if let Some(output_token_count) = response.output_token_count {
+        dict.set_item("output_token_count", output_token_count)?;
+    }
     if has_observed_token_logprobs(&response.output_token_logprobs) {
         dict.set_item(
             "output_token_logprobs",
