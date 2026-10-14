@@ -386,21 +386,33 @@ impl PipelineRequestLedger {
         if self.closed.contains(&request_id) {
             return Err(PipelineContractError::ClosedRequest(request_id));
         }
-        let cursor = self.active.entry(request_id).or_insert(RequestCursor {
-            next_sequence: 1,
-            next_token_offset: 0,
-        });
-        if request_sequence != cursor.next_sequence {
+        // Validate before inserting: `active` entries are only removed by
+        // `close()`, so a rejected first step must not leave a cursor behind
+        // (which a peer sending bad sequence numbers could grow without bound).
+        let (expected_sequence, expected_offset, exists) = match self.active.get(&request_id) {
+            Some(cursor) => (cursor.next_sequence, cursor.next_token_offset, true),
+            None => (1, 0, false),
+        };
+        if request_sequence != expected_sequence {
             return Err(PipelineContractError::UnexpectedRequestSequence {
-                expected: cursor.next_sequence,
+                expected: expected_sequence,
                 actual: request_sequence,
             });
         }
-        if token_offset != cursor.next_token_offset {
+        if token_offset != expected_offset {
             return Err(PipelineContractError::UnexpectedTokenOffset {
-                expected: cursor.next_token_offset,
+                expected: expected_offset,
                 actual: token_offset,
             });
+        }
+        if !exists {
+            self.active.insert(
+                request_id,
+                RequestCursor {
+                    next_sequence: 1,
+                    next_token_offset: 0,
+                },
+            );
         }
         Ok(())
     }

@@ -328,6 +328,11 @@ impl IntoResponse for RankServiceError {
                 | PipelineRankError::TokensRequireRankZero
                 | PipelineRankError::TokenCountOverflow
                 | PipelineRankError::TokenOffsetOverflow => StatusCode::UNPROCESSABLE_ENTITY,
+                // Caller-caused: an empty token list is a bad request, not a
+                // server fault.
+                PipelineRankError::Forward(
+                    ax_engine_mlx::model::PipelineStageForwardError::EmptySequence,
+                ) => StatusCode::UNPROCESSABLE_ENTITY,
                 PipelineRankError::Activation(
                     PipelineActivationError::Contract(_)
                     | PipelineActivationError::WrongDestination { .. },
