@@ -232,7 +232,7 @@ def main() -> int:
     print(f"verdict: {result['verdict']}")
     for f in failures:
         print(f"  gate failure: {f}")
-    return 0
+    return 0 if not failures else 1
 
 
 if __name__ == "__main__":

@@ -83,6 +83,16 @@ def _positive_integer(value: Any, field: str) -> int:
     return int(value)
 
 
+def _require_zero(value: Any, field: str) -> None:
+    # Strict: 0.75, "0", and False are not the integer zero. Full int()
+    # coercion would let a fractional or stringified count satisfy a
+    # "must be zero" gate, and None would raise an uncaught TypeError.
+    _require(
+        isinstance(value, int) and not isinstance(value, bool) and value == 0,
+        f"{field} must be the integer zero",
+    )
+
+
 def _metric_median(row: dict[str, Any], key: str, owner: str) -> float:
     metric = _mapping(row.get(key), f"{owner}.{key}")
     value = _number(metric.get("median"), f"{owner}.{key}.median")
@@ -135,11 +145,8 @@ def _validate_route(
     attempts = _positive_integer(route.get("attempts"), f"{owner}.attempts")
     hits = _positive_integer(route.get("hits"), f"{owner}.hits")
     _require(hits == attempts, f"{owner}.hits must equal attempts")
-    _require(int(route.get("fallbacks", -1)) == 0, f"{owner}.fallbacks must be zero")
-    _require(
-        int(route.get("profile_blocked", -1)) == 0,
-        f"{owner}.profile_blocked must be zero",
-    )
+    _require_zero(route.get("fallbacks", -1), f"{owner}.fallbacks")
+    _require_zero(route.get("profile_blocked", -1), f"{owner}.profile_blocked")
     return hits, attempts
 
 

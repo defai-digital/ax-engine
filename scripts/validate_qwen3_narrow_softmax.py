@@ -61,9 +61,12 @@ def _build_prompts(num_prompts: int, rng_seed: int) -> list[str]:
     return prompts
 
 
-def _generate_tokens(model, prompt: str, max_new_tokens: int) -> list[int]:
-    """Generate tokens greededy (temperature=0) and return the token IDs."""
-    tokens: list[int] = []
+def _generate_tokens(model, prompt: str, max_new_tokens: int) -> list[int] | None:
+    """Generate tokens greedily (temperature=0) and return the token IDs.
+
+    Returns ``None`` when generation raised, so the caller can distinguish a
+    failed run from a genuinely empty one instead of treating both as a match.
+    """
     try:
         result = model.generate(
             prompt,
@@ -72,16 +75,15 @@ def _generate_tokens(model, prompt: str, max_new_tokens: int) -> list[int]:
         )
         # Extract token IDs from the result.
         if hasattr(result, "token_ids"):
-            tokens = list(result.token_ids)
-        elif hasattr(result, "tokens"):
-            tokens = [t.id if hasattr(t, "id") else int(t) for t in result.tokens]
-        else:
-            # Fallback: encode the output text.
-            text = result.text if hasattr(result, "text") else str(result)
-            tokens = list(model.encode(text))
+            return list(result.token_ids)
+        if hasattr(result, "tokens"):
+            return [t.id if hasattr(t, "id") else int(t) for t in result.tokens]
+        # Fallback: encode the output text.
+        text = result.text if hasattr(result, "text") else str(result)
+        return list(model.encode(text))
     except Exception as exc:
         print(f"  Generation error: {exc}", file=sys.stderr)
-    return tokens
+        return None
 
 
 def _match_rate(ref_tokens: list[int], cand_tokens: list[int]) -> float:
@@ -141,10 +143,13 @@ def main() -> int:
     os.environ["AX_MLX_QWEN3_MOE_NARROW_SOFTMAX"] = "0"
     print("\n[1/2] Reference run (AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=0)...")
     ref_model = ax_engine.load_model(model_path)
-    ref_results: list[list[int]] = []
+    ref_results: list[list[int] | None] = []
+    generation_errors = 0
     t0 = time.monotonic()
     for i, prompt in enumerate(prompts):
         tokens = _generate_tokens(ref_model, prompt, args.max_new_tokens)
+        if tokens is None:
+            generation_errors += 1
         ref_results.append(tokens)
         if (i + 1) % 10 == 0:
             print(f"  {i + 1}/{len(prompts)} prompts done")
@@ -155,10 +160,12 @@ def main() -> int:
     os.environ["AX_MLX_QWEN3_MOE_NARROW_SOFTMAX"] = "1"
     print("\n[2/2] Candidate run (AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=1)...")
     cand_model = ax_engine.load_model(model_path)
-    cand_results: list[list[int]] = []
+    cand_results: list[list[int] | None] = []
     t0 = time.monotonic()
     for i, prompt in enumerate(prompts):
         tokens = _generate_tokens(cand_model, prompt, args.max_new_tokens)
+        if tokens is None:
+            generation_errors += 1
         cand_results.append(tokens)
         if (i + 1) % 10 == 0:
             print(f"  {i + 1}/{len(prompts)} prompts done")
@@ -170,6 +177,12 @@ def main() -> int:
     matching_tokens = 0
     divergent_prompts: list[tuple[int, float, int]] = []
     for i, (ref, cand) in enumerate(zip(ref_results, cand_results)):
+        if ref is None or cand is None:
+            # A prompt that failed to generate is a divergence, not a match,
+            # and must count against overall_rate so an all-error run cannot
+            # report PASS.
+            divergent_prompts.append((i, 0.0, 0))
+            continue
         rate = _match_rate(ref, cand)
         n = max(len(ref), len(cand))
         matches = int(rate * n)
@@ -178,11 +191,12 @@ def main() -> int:
         if rate < 1.0:
             divergent_prompts.append((i, rate, n))
 
-    overall_rate = matching_tokens / total_tokens if total_tokens > 0 else 1.0
+    overall_rate = matching_tokens / total_tokens if total_tokens > 0 else 0.0
 
     print(f"\n{'='*60}")
     print(f"Results:")
     print(f"  Prompts:            {len(prompts)}")
+    print(f"  Generation errors:  {generation_errors}")
     print(f"  Total tokens:       {total_tokens}")
     print(f"  Matching tokens:    {matching_tokens}")
     print(f"  Match rate:         {overall_rate:.6f} ({overall_rate*100:.3f}%)")
@@ -190,10 +204,15 @@ def main() -> int:
     for idx, rate, n in divergent_prompts[:10]:
         print(f"    prompt[{idx}]: {rate:.4f} ({n} tokens)")
     print(f"  Threshold:          {MATCH_THRESHOLD*100:.1f}%")
-    print(f"  PASS:               {overall_rate >= MATCH_THRESHOLD}")
+    passed = (
+        generation_errors == 0
+        and total_tokens > 0
+        and overall_rate >= MATCH_THRESHOLD
+    )
+    print(f"  PASS:               {passed}")
     print(f"{'='*60}")
 
-    return 0 if overall_rate >= MATCH_THRESHOLD else 1
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

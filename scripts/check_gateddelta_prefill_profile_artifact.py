@@ -88,7 +88,9 @@ def require_non_empty_str(payload: dict[str, Any], key: str, *, owner: str) -> s
 
 def require_positive_int(payload: dict[str, Any], key: str, *, owner: str) -> int:
     value = payload.get(key)
-    if not isinstance(value, int) or value <= 0:
+    # A bool is an int in Python; reject it so a placeholder true/false cannot
+    # stand in for measured evidence.
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise GatedDeltaPrefillProfileArtifactError(
             f"{owner} lacks positive integer field {key!r}"
         )
@@ -97,7 +99,7 @@ def require_positive_int(payload: dict[str, Any], key: str, *, owner: str) -> in
 
 def require_non_negative_int(payload: dict[str, Any], key: str, *, owner: str) -> int:
     value = payload.get(key)
-    if not isinstance(value, int) or value < 0:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise GatedDeltaPrefillProfileArtifactError(
             f"{owner} lacks non-negative integer field {key!r}"
         )
@@ -106,7 +108,11 @@ def require_non_negative_int(payload: dict[str, Any], key: str, *, owner: str) -
 
 def require_positive_float(payload: dict[str, Any], key: str, *, owner: str) -> float:
     value = payload.get(key)
-    if not isinstance(value, (int, float)) or float(value) <= 0.0:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or float(value) <= 0.0
+    ):
         raise GatedDeltaPrefillProfileArtifactError(
             f"{owner} lacks positive numeric field {key!r}"
         )
