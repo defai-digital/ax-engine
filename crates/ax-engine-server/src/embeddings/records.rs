@@ -173,6 +173,21 @@ pub(crate) async fn embedding_records(
     })?
     .map_err(map_generation_service_error)?;
 
+    // `EmbeddingMatrix::row` asserts index < batch_size; pair the rows to the
+    // chunks explicitly so a short matrix is a 500, not a panic (the release
+    // build is panic = abort).
+    if matrix.batch_size != chunks.len() {
+        return Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            format!(
+                "embedding batch returned {} rows for {} chunks",
+                matrix.batch_size,
+                chunks.len()
+            ),
+        ));
+    }
+
     let data = chunks
         .into_iter()
         .enumerate()

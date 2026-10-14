@@ -94,7 +94,6 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::WhisperTextGenerationUnsupported
         | EngineSessionError::WhisperInvalidLanguage { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
-        | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::MissingRequestSnapshot { .. } => error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -158,6 +157,9 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         ),
         EngineSessionError::RequestReportInvariantViolation { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
+        // The engine did not terminate the request within the step budget: a
+        // runtime failure, not a malformed request.
+        | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::EmbeddingFailed { .. }
         | EngineSessionError::Core(_)
         | EngineSessionError::MetalRuntime(_)
