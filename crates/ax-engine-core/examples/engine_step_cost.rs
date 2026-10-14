@@ -161,10 +161,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cpu_time_us += outcome.metrics.cpu_time_us;
                 black_box(&outcome);
             }
-            let step_us = start.elapsed().as_secs_f64() * 1e6 / f64::from(measured_steps);
+            // `measured_steps` may be 0 from the CLI; guard the divisor so a
+            // zero step count cannot print NaN/inf (invalid JSON).
+            let denom = f64::from(measured_steps.max(1));
+            let step_us = start.elapsed().as_secs_f64() * 1e6 / denom;
             println!(
                 "{{\"requests\":{requests},\"context\":{context},\"retained_requests\":{retained},\"trial\":{trial},\"steps\":{measured_steps},\"step_us\":{step_us:.3},\"metrics_cpu_time_us\":{:.3}}}",
-                cpu_time_us as f64 / f64::from(measured_steps)
+                cpu_time_us as f64 / denom
             );
         }
     }
