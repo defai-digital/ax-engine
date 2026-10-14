@@ -175,7 +175,16 @@ def aggregate(artifacts: list[Path]) -> dict:
                 high_var.append(f"{regime_name}.{k}")
 
     max_cv = max(all_cvs) if all_cvs else 0.0
-    if max_cv > 25:
+    if not all_cvs:
+        # No numeric metric across the artifacts: a "tight" verdict here would
+        # be vacuously true (all([]) is fine but nothing was measured).
+        verdict = "insufficient_data"
+        explanation = (
+            "No numeric metrics were found across the input artifacts; "
+            "variance cannot be assessed. Refusing to report a tight/"
+            "evidence-grade verdict."
+        )
+    elif max_cv > 25:
         verdict = "polluted"
         explanation = (
             "CV > 25% on at least one metric. Likely cause: GPU contention "

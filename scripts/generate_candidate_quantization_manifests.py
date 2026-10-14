@@ -82,14 +82,17 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def read_config(model_dir: Path) -> dict[str, Any]:
+def read_config(model_dir: Path) -> dict[str, Any] | None:
+    """Read config.json. Returns ``{}`` when the file is absent (an fp16 model
+    may legitimately have none) and ``None`` when it exists but is unreadable,
+    so a corrupt config is not silently treated as unquantized."""
     config_path = model_dir / "config.json"
     if not config_path.is_file():
         return {}
     try:
         return json.loads(config_path.read_text())
     except (json.JSONDecodeError, OSError):
-        return {}
+        return None
 
 
 def read_manifest(model_dir: Path) -> dict[str, Any]:
@@ -187,6 +190,14 @@ def build_candidates(
         }
 
     config = read_config(model_dir)
+    if config is None:
+        # A corrupt config would otherwise be read as "unquantized" (bits 16)
+        # and silently inflate every byte estimate.
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "error": "config_unreadable",
+            "model_dir": str(model_dir),
+        }
     manifest = read_manifest(model_dir)
 
     recipes = CANDIDATE_RECIPES

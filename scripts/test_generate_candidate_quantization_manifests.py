@@ -164,6 +164,19 @@ class GenerateCandidateQuantizationManifestsTests(unittest.TestCase):
         result = mod.build_candidates(Path("/nonexistent/path"))
         self.assertEqual(result["error"], "directory_not_found")
 
+    def test_corrupt_config_is_not_treated_as_unquantized(self) -> None:
+        # Regression: an unreadable config.json used to default the base bit
+        # width to 16 and silently inflate every byte estimate for a model
+        # that is actually quantized on disk.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "model"
+            root.mkdir(parents=True)
+            (root / "config.json").write_text("{ not valid json")
+
+            result = mod.build_candidates(root)
+
+        self.assertEqual(result["error"], "config_unreadable")
+
     def test_output_to_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "model"
