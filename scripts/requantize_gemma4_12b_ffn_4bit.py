@@ -33,9 +33,27 @@ def is_ffn_weight(name: str) -> bool:
     return ".mlp." in name and name.endswith(".weight")
 
 
+def validate_ffn_overrides(base: str) -> list[str]:
+    """Return the per-layer `.mlp.` override keys, failing closed unless each
+    is the 8-bit group-64 layout this tool dequantizes (a different base must
+    not be silently rewritten with the wrong dequant parameters)."""
+    with open(os.path.join(base, "config.json")) as f:
+        q = json.load(f).get("quantization", {})
+    overrides = [k for k, v in q.items() if isinstance(v, dict) and ".mlp." in k]
+    if not overrides:
+        sys.exit("refusing: config.json has no per-layer .mlp. overrides to re-quantize")
+    for k in overrides:
+        o = q[k]
+        if o.get("bits") != 8 or o.get("group_size") != GROUP:
+            sys.exit(f"refusing: per-layer override {k} is not 8-bit group {GROUP}: {o}")
+    return overrides
+
+
 def main() -> None:
     base, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
+
+    removed = validate_ffn_overrides(base)
 
     shards = sorted(glob.glob(os.path.join(base, "*.safetensors")))
     if not shards:
@@ -74,11 +92,11 @@ def main() -> None:
         if os.path.isfile(f):
             shutil.copy2(f, os.path.join(out, bn))
 
-    # Strip the per-layer 8-bit FFN overrides so the artifact is uniformly 4-bit.
+    # Strip the per-layer 8-bit FFN overrides (validated above) so the artifact
+    # is uniformly 4-bit.
     with open(os.path.join(base, "config.json")) as config_in:
         cfg = json.load(config_in)
     q = cfg.get("quantization", {})
-    removed = [k for k in list(q) if isinstance(q[k], dict) and ".mlp." in k]
     for k in removed:
         del q[k]
     with open(os.path.join(out, "config.json"), "w") as config_out:
