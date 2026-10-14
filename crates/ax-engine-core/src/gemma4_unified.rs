@@ -1818,9 +1818,8 @@ mod tests {
         // Regression: the Swift (encodeIfPresent) and Go (omitempty) SDKs omit
         // an unused modality array; the server must read a missing array as
         // empty instead of rejecting the request for a missing field.
-        let inputs: Gemma4UnifiedRuntimeInputs =
-            serde_json::from_str(r#"{"images":[]}"#)
-                .expect("omitted audios/videos must default to empty");
+        let inputs: Gemma4UnifiedRuntimeInputs = serde_json::from_str(r#"{"images":[]}"#)
+            .expect("omitted audios/videos must default to empty");
         assert!(inputs.audios.is_empty());
         assert!(inputs.videos.is_empty());
         let none: Gemma4UnifiedRuntimeInputs =
