@@ -341,6 +341,16 @@ fn axquant_method_bits_consistent(method: &str, bits: u32) -> bool {
     }
 }
 
+/// The runtime fails closed on microscaling formats unless the group size is
+/// exactly 32 (`mxfp4`/`mxfp8` in `model.rs`), so a plan or execution record
+/// with any other group size describes a pack that cannot load.
+fn axquant_method_group_size_consistent(method: &str, group_size: Option<u64>) -> bool {
+    match method {
+        "mxfp4" | "mxfp8" => group_size == Some(32),
+        _ => true,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AxquantModuleSpec {
     bits: u32,
@@ -1376,6 +1386,7 @@ fn doctor_axquant_report(path: &Path) -> Option<DoctorAxquantReport> {
                 if (bits < 16 && group_size.is_none())
                     || (bits == 16 && group_size.is_some())
                     || !axquant_method_bits_consistent(method, bits)
+                    || !axquant_method_group_size_consistent(method, group_size)
                 {
                     invalid_assignments += 1;
                     continue;
@@ -1598,7 +1609,11 @@ fn validate_axquant_metadata_file(
 
     match fs::read(root.join(file_name)) {
         Ok(bytes) => {
-            if recorded_size != u64::try_from(bytes.len()).ok() {
+            // A missing size is already its own issue; do not also report a
+            // spurious mismatch against it.
+            if let Some(recorded_size) = recorded_size
+                && u64::try_from(bytes.len()).ok() != Some(recorded_size)
+            {
                 issues.push(format!("{file_name} size differs from the manifest"));
             }
             if sha256_hex(&bytes) != recorded_sha256 {
@@ -1649,8 +1664,16 @@ fn validate_axquant_execution_coverage(
             || fallback.is_none()
             || (bits < 16 && group_size.is_none())
             || (bits == 16 && group_size.is_some())
+            || !axquant_method_bits_consistent(method, bits)
+            || !axquant_method_group_size_consistent(method, group_size)
         {
             malformed += 1;
+            continue;
+        }
+        // A plan-approved 16-bit (bf16) module is not a quantized module and
+        // is deliberately absent from the planned map; there is no spec to
+        // cross-check, so it must not count as unexpected.
+        if bits == 16 {
             continue;
         }
         // Only a well-formed execution record describes bits the runtime really

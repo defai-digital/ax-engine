@@ -1187,6 +1187,17 @@ fn write_doctor_axquant_model_fixture(model_dir: &Path) {
 /// Change the bit width of one module in both the plan and the quantizer
 /// execution, then rebind plan_sha256 so lineage stays valid.
 fn set_doctor_axquant_assignment_bits(model_dir: &Path, module_path: &str, bits: u32) {
+    set_doctor_axquant_assignment_field(model_dir, module_path, "bits", json!(bits));
+}
+
+/// Change one field of a module in both the plan and the quantizer execution,
+/// then rebind plan_sha256 so lineage stays valid.
+fn set_doctor_axquant_assignment_field(
+    model_dir: &Path,
+    module_path: &str,
+    field: &str,
+    value: Value,
+) {
     let plan_path = model_dir.join("axquant_plan.json");
     let mut plan: Value =
         serde_json::from_slice(&fs::read(&plan_path).expect("AXQuant plan should read"))
@@ -1197,7 +1208,7 @@ fn set_doctor_axquant_assignment_bits(model_dir: &Path, module_path: &str, bits:
         .expect("AXQuant plan should have assignments");
     for assignment in assignments.iter_mut() {
         if assignment.get("module_path").and_then(Value::as_str) == Some(module_path) {
-            assignment["bits"] = json!(bits);
+            assignment[field] = value.clone();
         }
     }
     let plan_sha256 =
@@ -1215,7 +1226,7 @@ fn set_doctor_axquant_assignment_bits(model_dir: &Path, module_path: &str, bits:
         .expect("quantizer execution should have records");
     for record in records.iter_mut() {
         if record.get("module_path").and_then(Value::as_str) == Some(module_path) {
-            record["bits"] = json!(bits);
+            record[field] = value.clone();
         }
     }
     execution["plan_sha256"] = json!(plan_sha256);
@@ -3429,6 +3440,93 @@ fn doctor_report_accepts_axquant_v2_schemas_with_microscaling_methods() {
     assert!(axquant.metadata_valid);
     assert!(axquant.lineage_valid);
     assert_eq!(axquant.quantized_module_count, 3);
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::Ready
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_rejects_microscaling_group_size_other_than_32() {
+    // The runtime fails closed on microscaling formats unless group_size is
+    // exactly 32 (model.rs), so a plan/execution pair recording mxfp4 with
+    // group_size 64 describes a pack that cannot load; doctor must not pass it.
+    let root = unique_test_dir("doctor-axquant-mxfp4-group-size");
+    let model_dir = root.join("axquant-hy-mt2");
+    write_doctor_axquant_model_fixture(&model_dir);
+    convert_doctor_axquant_fixture_to_v2_mxfp4(&model_dir, 4);
+    set_doctor_axquant_assignment_field(&model_dir, "layer.0", "group_size", json!(64));
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    assert_eq!(
+        report.model_artifacts.status,
+        DoctorModelArtifactsStatus::NotReady
+    );
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(!axquant.metadata_valid);
+    assert!(
+        axquant
+            .issues
+            .iter()
+            .any(|issue| issue.contains("group-size")),
+        "issues should name the invalid group size: {:?}",
+        axquant.issues
+    );
+
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn doctor_report_tolerates_bf16_execution_records() {
+    // The plan approves `norm` as bf16 (16-bit, not quantized), so it is
+    // absent from the planned-quantized map by design; an execution record
+    // for it carries no spec to cross-check and must not be flagged as an
+    // unexpected module.
+    let root = unique_test_dir("doctor-axquant-bf16-execution-record");
+    let model_dir = root.join("axquant-hy-mt2");
+    write_doctor_axquant_model_fixture(&model_dir);
+    convert_doctor_axquant_fixture_to_v2_mxfp4(&model_dir, 4);
+    let execution_path = model_dir.join("axquant_quantizer_execution.json");
+    let mut execution: Value = serde_json::from_slice(
+        &fs::read(&execution_path).expect("quantizer execution should read"),
+    )
+    .expect("quantizer execution should parse");
+    execution["records"]
+        .as_array_mut()
+        .expect("quantizer execution should have records")
+        .push(json!({
+            "module_path": "norm",
+            "method": "bf16",
+            "bits": 16,
+            "group_size": null,
+            "success": true,
+            "fallback": false
+        }));
+    rewrite_doctor_axquant_bound_json(&model_dir, "axquant_quantizer_execution.json", &execution);
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+
+    let report = build_doctor_report_for_model(host, toolchain, Some(&model_dir));
+
+    let axquant = report
+        .model_artifacts
+        .axquant
+        .as_ref()
+        .expect("AXQuant metadata should be detected");
+    assert!(
+        axquant.issues.is_empty(),
+        "a plan-approved bf16 execution record must not raise issues: {:?}",
+        axquant.issues
+    );
     assert_eq!(
         report.model_artifacts.status,
         DoctorModelArtifactsStatus::Ready
