@@ -5,9 +5,19 @@
 use std::time::Instant;
 
 pub(crate) fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+    // A length mismatch or a NaN diff is a correctness failure, not a zero
+    // diff: zip would silently truncate to the shorter prefix, and f32::max
+    // returns the non-NaN operand, so both must be surfaced as infinity to
+    // trip the callers' tolerance gates.
+    if a.len() != b.len() {
+        return f32::INFINITY;
+    }
     a.iter()
         .zip(b.iter())
-        .map(|(x, y)| (x - y).abs())
+        .map(|(x, y)| {
+            let diff = (x - y).abs();
+            if diff.is_nan() { f32::INFINITY } else { diff }
+        })
         .fold(0.0_f32, f32::max)
 }
 

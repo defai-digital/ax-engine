@@ -18,8 +18,11 @@
 //!      random fp32 input `[1, 1, hidden]`.
 //!   2. Cast both to bf16, time `matmul(x_bf16, w_bf16)` over ITERS.
 //!   3. Cast both to f16,  time `matmul(x_f16,  w_f16)` over ITERS.
-//!   4. Report the bf16 - f16 wall-time delta. PASS gate (per PRD
-//!      §4.2): f16 must be ≥3% faster on every probe shape.
+//!   4. Report the bf16 - f16 wall-time delta per shape, plus a
+//!      time-weighted aggregate. PASS gate (per PRD §4.2): f16 must be
+//!      ≥3% faster on every probe shape, so the headline verdict is
+//!      PASS only when all shapes clear the gate; the aggregate is
+//!      printed for direction but does not by itself decide.
 //!
 //! This is a directional probe. The bf16-vs-f16 matmul perf gap is
 //! what limits the post-dequant gain; the F1 PRD additionally covers
@@ -67,10 +70,18 @@ fn build_random_f32(seed: u64, count: usize, scale: f32) -> Vec<f32> {
 }
 
 fn max_abs_diff_against_f32_reference(actual: &[f32], expected: &[f32]) -> f32 {
+    // Same contract as the shared microbench helper: length mismatches and
+    // NaN diffs are correctness failures, not zero diffs.
+    if actual.len() != expected.len() {
+        return f32::INFINITY;
+    }
     actual
         .iter()
         .zip(expected.iter())
-        .map(|(a, b)| (a - b).abs())
+        .map(|(a, b)| {
+            let diff = (a - b).abs();
+            if diff.is_nan() { f32::INFINITY } else { diff }
+        })
         .fold(0.0_f32, f32::max)
 }
 
@@ -149,23 +160,43 @@ fn main() {
 
     let mut total_bf16_us = 0.0;
     let mut total_f16_us = 0.0;
+    let mut shape_deltas: Vec<(&str, f64)> = Vec::new();
 
     for (hidden, intermediate, label) in SHAPES {
         let (bf16, f16) = probe_shape(*hidden, *intermediate, label);
         total_bf16_us += bf16;
         total_f16_us += f16;
+        // The warmup row exists to absorb one-time GPU / library init
+        // cost; it is not a headline shape and does not gate the verdict.
+        if !label.starts_with("warmup") {
+            shape_deltas.push((label, (bf16 - f16) / bf16 * 100.0));
+        }
     }
 
+    // Per-shape gate (PRD §4.2): f16 must be ≥3% faster on every shape.
+    println!("=== Per-shape gate (threshold +3.0%) ===");
+    let mut all_shapes_pass = true;
+    for (label, delta_pct) in &shape_deltas {
+        let mark = if *delta_pct >= 3.0 { "PASS" } else { "REJECT" };
+        if *delta_pct < 3.0 {
+            all_shapes_pass = false;
+        }
+        println!("  {label}: {delta_pct:+.1}% [{mark}]");
+    }
+    println!();
+
     let delta_pct = (total_bf16_us - total_f16_us) / total_bf16_us * 100.0;
-    let verdict = if delta_pct >= 3.0 {
+    let verdict = if all_shapes_pass {
         "PASS — schedule weight-loader migration to f16 (per F1 PRD §4.3)"
+    } else if delta_pct >= 3.0 {
+        "REJECT — aggregate ≥3% but a shape misses the per-shape gate; do not migrate"
     } else if delta_pct >= 0.0 {
         "MARGINAL — within noise; do not migrate"
     } else {
         "REJECT — f16 slower than bf16; close F1 NO-GO"
     };
 
-    println!("=== Aggregate verdict ===");
+    println!("=== Aggregate (time-weighted) ===");
     println!(
         "  Sum across {n} shapes: bf16 = {total_bf16_us:.2} us, f16 = {total_f16_us:.2} us",
         n = SHAPES.len()
