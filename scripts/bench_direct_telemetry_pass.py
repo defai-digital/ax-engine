@@ -79,7 +79,6 @@ def run_telemetry_pass(args: argparse.Namespace) -> dict[str, Any]:
         str(args.repetitions),
         "--ax-direct",
         "--skip-mlx-lm",
-        "--skip-llama-cpp",
     ]
 
     try:

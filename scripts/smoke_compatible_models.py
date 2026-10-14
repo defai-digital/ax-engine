@@ -320,7 +320,10 @@ def ensure_binary(name: str, package: str, no_build: bool, release: bool) -> Pat
         if not binary.is_file():
             raise SmokeFailure(f"binary does not exist and --no-build was given: {binary}")
         return binary
-    command = ["cargo", "build", "-p", package]
+    # Invoke the repo-pinned toolchain: a Homebrew cargo on PATH shadows the
+    # pinned rustup toolchain, which would let the build evidence come from an
+    # unpinned compiler.
+    command = ["bash", str(REPO_ROOT / "scripts" / "cargo-pinned.sh"), "build", "-p", package]
     if release:
         command.append("--release")
     subprocess.run(command, cwd=REPO_ROOT, check=True)

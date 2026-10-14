@@ -385,7 +385,13 @@ def ensure_server_binary(args: argparse.Namespace) -> Path:
         if server_bin.is_file():
             return server_bin
         raise SmokeFailure(f"server binary does not exist: {server_bin}")
-    command = ["cargo", "build", "-p", "ax-engine-server"]
+    command = [
+        "bash",
+        str(REPO_ROOT / "scripts" / "cargo-pinned.sh"),
+        "build",
+        "-p",
+        "ax-engine-server",
+    ]
     if args.release:
         command.append("--release")
     subprocess.run(command, cwd=REPO_ROOT, check=True)

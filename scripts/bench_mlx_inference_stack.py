@@ -284,7 +284,15 @@ def infer_hf_repo_id_from_path(path: Path) -> str | None:
 
 def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
     if build:
-        cmd = ["cargo", "build", "-p", "ax-engine-server", "--release"]
+        # Repo-pinned toolchain (Homebrew cargo on PATH shadows the pin).
+        cmd = [
+            "bash",
+            str(REPO_ROOT / "scripts" / "cargo-pinned.sh"),
+            "build",
+            "-p",
+            "ax-engine-server",
+            "--release",
+        ]
         print(f"  [build] {' '.join(cmd)}", file=sys.stderr)
         try:
             subprocess.run(cmd, cwd=REPO_ROOT, check=True)

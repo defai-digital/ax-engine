@@ -210,7 +210,7 @@ def parse_config(model_dir: Path) -> dict[str, Any]:
     rope_theta = int(text_cfg.get("rope_theta", cfg.get("rope_theta", 10000)))
     tie_word_embeddings = bool(text_cfg.get("tie_word_embeddings", cfg.get("tie_word_embeddings", False)))
 
-    quant_cfg = cfg.get("quantization_config") or {}
+    quant_cfg = cfg.get("quantization") or {}
     quant_bits = int(quant_cfg.get("bits", 8))
     quant_group_size = int(quant_cfg.get("group_size", 64))
 

@@ -795,7 +795,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 bench.ensure_ax_engine_server_binary(build=True)
 
         run.assert_called_once_with(
-            ["cargo", "build", "-p", "ax-engine-server", "--release"],
+            [
+                "bash",
+                str(bench.REPO_ROOT / "scripts" / "cargo-pinned.sh"),
+                "build",
+                "-p",
+                "ax-engine-server",
+                "--release",
+            ],
             cwd=bench.REPO_ROOT,
             check=True,
         )

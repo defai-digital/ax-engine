@@ -57,7 +57,8 @@ def main() -> int:
     if not args.no_build:
         subprocess.check_call(
             [
-                "cargo",
+                "bash",
+                str(REPO / "scripts" / "cargo-pinned.sh"),
                 "build",
                 "-p",
                 "ax-engine-server",
@@ -67,6 +68,7 @@ def main() -> int:
             env={**env, "RUSTFLAGS": env.get("RUSTFLAGS", "-C target-cpu=native")},
         )
 
+    ran = 0
     for m in MODELS:
         if not m["dir"].is_dir():
             print(f"skip missing model dir {m['dir']}", file=sys.stderr)
@@ -107,6 +109,15 @@ def main() -> int:
         ]
         print("running", m["name"], "->", out, flush=True)
         subprocess.check_call(cmd, cwd=REPO, env=env)
+        ran += 1
+    if ran == 0:
+        # A refresh that produced no artifact must not report success: every
+        # listed model directory was missing (wrong host / cache root).
+        print(
+            "error: no target model directory was present; nothing refreshed",
+            file=sys.stderr,
+        )
+        return 1
     print("done", args.output_root)
     return 0
 
