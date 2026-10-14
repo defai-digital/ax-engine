@@ -609,6 +609,21 @@ def main() -> None:
 
     write_summary(all_results, args.output_dir)
 
+    # A server that failed to start drops its variant, so a model can end up
+    # with fewer variants than requested; surface that through the exit code
+    # instead of reporting a silent success.
+    expected_variants = 1 + len(mtp_depths)
+    short = [
+        r["model_label"] for r in all_results if len(r["variants"]) < expected_variants
+    ]
+    if short:
+        print(
+            f"ERROR: {len(short)} model(s) produced fewer variants than expected "
+            f"(a server failed to start): {', '.join(short)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

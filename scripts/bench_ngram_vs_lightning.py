@@ -1167,6 +1167,19 @@ def main() -> None:
     for v in _verdict(ax_direct, ax_ngram, oracle, lightning):
         print(f"  {v}", flush=True)
 
+    # A non-skipped path that produced no rows failed (model load or server
+    # start); surface it through the exit code rather than a silent success.
+    failed = []
+    if not args.skip_ax and not ax_direct:
+        failed.append("ax-engine")
+    if not args.skip_lightning and not lightning:
+        failed.append("lightning")
+    if not args.skip_oracle and not oracle:
+        failed.append("oracle")
+    if failed:
+        print(f"ERROR: no results from: {', '.join(failed)}", file=sys.stderr)
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
