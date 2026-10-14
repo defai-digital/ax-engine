@@ -50,7 +50,6 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxLmDoesNotSupportStreaming
         | EngineSessionError::NativeBackendStatelessStreamNotSupported { .. }
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::StreamingNotSupported { .. })
-        | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::MissingRequestSnapshot { .. }
         | EngineSessionError::WhisperTextGenerationUnsupported
         | EngineSessionError::WhisperInvalidLanguage { .. } => {
@@ -98,6 +97,9 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
         | EngineSessionError::MlxRuntimeUnavailable
         | EngineSessionError::UnsupportedHostHardware { .. }
         | EngineSessionError::RequestReportInvariantViolation { .. }
+        // A runtime failure, not a malformed request (matches the server, which
+        // maps it to 500 rather than 400).
+        | EngineSessionError::RequestDidNotTerminate { .. }
         | EngineSessionError::StreamEndedWithoutResponse { .. }
         | EngineSessionError::EmbeddingNotSupported
         | EngineSessionError::EmbeddingFailed { .. }
