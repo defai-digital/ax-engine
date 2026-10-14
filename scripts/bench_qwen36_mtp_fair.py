@@ -12,7 +12,7 @@ import statistics
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -2417,7 +2417,7 @@ def main() -> int:
     args = parse_args()
     args.output_dir = (
         args.output_dir
-        or DEFAULT_OUTPUT_BASE / f"{date.today().isoformat()}-qwen36-fair"
+        or DEFAULT_OUTPUT_BASE / f"{datetime.now().strftime('%Y-%m-%d-%H%M%S')}-qwen36-fair"
     )
     # Resolve vendor × mode combinations into ordered internal engine keys.
     args.engines = resolve_engines(args.engines, args.modes)

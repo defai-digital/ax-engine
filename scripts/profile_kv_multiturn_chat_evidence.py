@@ -414,7 +414,7 @@ def resolve_output_path(out: Path, model_id: str) -> Path:
     if out.is_dir() or (not out.exists() and out.suffix == ""):
         out.mkdir(parents=True, exist_ok=True)
         safe_id = model_id.replace("/", "-")
-        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
         return out / f"{safe_id}-multiturn-{stamp}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     return out

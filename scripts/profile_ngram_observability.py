@@ -408,7 +408,7 @@ def run(args: argparse.Namespace) -> dict:
 def write_artifact(args: argparse.Namespace, artifact: dict) -> Path:
     args.output_root.mkdir(parents=True, exist_ok=True)
     safe_id = args.model_id.replace("/", "_").replace(" ", "_")
-    date_part = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    date_part = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
     path = args.output_root / f"{safe_id}-{date_part}.json"
     path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
     return path
