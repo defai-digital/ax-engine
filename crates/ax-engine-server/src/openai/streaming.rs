@@ -1326,24 +1326,26 @@ impl IncrementalDecoder {
         }
         self.tokens.extend_from_slice(delta_tokens);
 
-        // Fast path: empty held window and a single complete piece. One decode
-        // instead of two; covers most ASCII-heavy coding streams token-by-token
-        // and every multi-token batch whose held window is empty.
+        // Empty held window (first push, or after a fall-through) with a single
+        // complete piece: one decode instead of two. `prefix_offset` is kept at
+        // the window start below, so the next push takes the dual-decode path
+        // and retains this piece as left context.
         if self.prefix_offset == self.read_offset {
             let whole = self
                 .tokenizer
                 .decode(&self.tokens[self.prefix_offset..], true)?;
             if !whole.is_empty() && !whole.ends_with('\u{FFFD}') {
+                // Advance only read_offset. `prefix_offset` stays at the
+                // window start (== the old read_offset) so the tokens just
+                // decoded remain as left context for the next window. Emptying
+                // the window instead lets a SentencePiece `Strip` decoder drop
+                // the next piece's leading space ("The" + "cat" + "sat" ->
+                // "Thecatsat"). This mirrors the dual-decode path below.
                 self.read_offset = self.tokens.len();
-                // After a complete emit the held window is the tokens just
-                // finished; next push starts a fresh window at read_offset.
-                // Mirror the dual-decode path: advance prefix to previous end.
-                self.prefix_offset = self.read_offset;
                 return Ok(whole);
             }
-            // Incomplete multi-byte sequence: fall through is not possible with
-            // prefix_offset == read_offset and a growing window that includes
-            // only new tokens — use dual-decode with empty prefix.
+            // Incomplete multi-byte sequence: hold until the completing tokens
+            // arrive (the dual-decode path below re-checks it).
             if whole.ends_with('\u{FFFD}') {
                 return Ok(String::new());
             }
@@ -1682,6 +1684,46 @@ fn byte_level_test_tokenizer(label: &str) -> EngineTokenizer {
     EngineTokenizer::from_model_dir(&dir).expect("byte-level fixture tokenizer loads")
 }
 
+/// Minimal SentencePiece-style vocabulary: `Replace(U+2581 -> " ")` then
+/// `Strip(" ", start=1)`, which drops the leading space of the first piece in
+/// a standalone decode. Mirrors the Gemma / Llama / GLM / Ministral decoder
+/// chains and exercises the incremental decoder's left-context requirement.
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+fn spm_strip_test_tokenizer(label: &str) -> EngineTokenizer {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-spm-{label}-{unique}"));
+    std::fs::create_dir_all(&dir).expect("tokenizer dir");
+    std::fs::write(dir.join("config.json"), r#"{"eos_token_id":4}"#).expect("config");
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": null,
+  "post_processor": null,
+  "decoder": {"type": "Sequence", "decoders": [
+    {"type": "Replace", "pattern": {"String": "\u2581"}, "content": " "},
+    {"type": "Fuse"},
+    {"type": "Strip", "content": " ", "start": 1, "stop": 0}
+  ]},
+  "model": {
+    "type": "WordLevel",
+    "vocab": {"[UNK]": 0, "\u2581The": 1, "\u2581cat": 2, "\u2581sat": 3, "<eos>": 4},
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer json");
+    EngineTokenizer::from_model_dir(&dir).expect("spm fixture tokenizer loads")
+}
+
 #[cfg(test)]
 mod gemma4_channel_stream_filter_tests {
     use super::Gemma4ChannelStreamFilter;
@@ -1843,6 +1885,22 @@ mod incremental_decoder_tests {
         let mut decoder = IncrementalDecoder::new(byte_level_test_tokenizer("finish-complete"));
         assert_eq!(decoder.push(&[1]).expect("decode"), "");
         assert_eq!(decoder.push(&[2]).expect("decode"), "\u{e9}");
+        assert_eq!(decoder.finish().expect("finish"), "");
+    }
+
+    #[test]
+    fn single_token_pushes_preserve_leading_space_with_strip_decoder() {
+        // Regression: the empty-window fast path emptied the window after each
+        // emit, so a SentencePiece `Strip` decoder dropped the next piece's
+        // leading space: a token-by-token stream produced "Thecatsat" while
+        // the non-stream decode of the same tokens rendered "The cat sat".
+        // ▁The / ▁cat / ▁sat each decode standalone as "The" / "cat" / "sat".
+        let mut decoder = IncrementalDecoder::new(super::spm_strip_test_tokenizer("spm-strip"));
+        let mut streamed = String::new();
+        for token in [1_u32, 2, 3] {
+            streamed.push_str(&decoder.push(&[token]).expect("decode"));
+        }
+        assert_eq!(streamed, "The cat sat");
         assert_eq!(decoder.finish().expect("finish"), "");
     }
 }

@@ -341,13 +341,27 @@ impl AxEngine for AxEngineGrpcService {
             ));
         }
         // Start-up-resolved AX_ENGINE_EMBED_MAX_TOKENS (default 8192;
-        // see ServerEnvConfig for the accepted values).
+        // see ServerEnvConfig for the accepted values). The cap is per item,
+        // matching the HTTP surface: each input is embedded independently, so
+        // a many-item batch of valid inputs must not fail. The running total
+        // is bounded separately by the batch budget.
         let max_tokens = self.state.env.embed_max_tokens;
-        let token_count: usize = batch.iter().map(Vec::len).sum();
-        if token_count > max_tokens {
+        let max_batch_tokens = self.state.env.embed_max_batch_tokens;
+        let mut token_count = 0usize;
+        for (i, ids) in batch.iter().enumerate() {
+            token_count += ids.len();
+            if ids.len() > max_tokens {
+                return Err(Status::invalid_argument(format!(
+                    "input[{i}] token count ({}) exceeds maximum ({max_tokens}); \
+                     set AX_ENGINE_EMBED_MAX_TOKENS to override",
+                    ids.len()
+                )));
+            }
+        }
+        if token_count > max_batch_tokens {
             return Err(Status::invalid_argument(format!(
-                "input token count ({token_count}) exceeds maximum ({max_tokens}); \
-                 set AX_ENGINE_EMBED_MAX_TOKENS to override"
+                "batch token count ({token_count}) exceeds maximum ({max_batch_tokens}); \
+                 set AX_ENGINE_EMBED_MAX_BATCH_TOKENS to override"
             )));
         }
         let permit = self.state.try_admit(&live).map_err(admission_status)?;

@@ -20,7 +20,9 @@ use crate::openai::requests::{
 /// Takes the manifest `model_family` hint so registry chat contracts (ADR-025
 /// D2) resolve identically across the OpenAI, Ollama, and gRPC surfaces: an
 /// artifact served under a custom model id must not fall back to plain role
-/// prefixes here while the HTTP surfaces render the family template.
+/// prefixes here while the HTTP surfaces render the family template. The
+/// DeepSeek V4 framing is resolved from the same family hint, mirroring the
+/// HTTP edge, instead of leaving the renderer's model-id heuristic in place.
 fn render_grpc_chat_prompt(
     model_id: &str,
     family_hint: Option<&str>,
@@ -31,7 +33,7 @@ fn render_grpc_chat_prompt(
         chat::resolve_chat_template(model_id, family_hint),
         messages,
         false,
-        None,
+        chat::resolve_deepseek_v4_framing(family_hint),
     )
 }
 

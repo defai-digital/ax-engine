@@ -729,6 +729,10 @@ fn drive_ollama_native_events<N>(
         OllamaNativeStreamKind::Generate => None,
     };
     let mut decoder = IncrementalDecoder::new(tokenizer);
+    // Wall clock for the terminal chunk's durations: clients derive
+    // throughput as eval_count / eval_duration, and a zero duration would
+    // divide by zero. Mirrors the buffered Ollama paths.
+    let started = std::time::Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             tracing::debug!("Ollama stream cancelled: client disconnected");
@@ -850,7 +854,10 @@ fn drive_ollama_native_events<N>(
                         }
                     }
                 }
-                let summary = ollama_generate_response_from_generate(payload.response);
+                let mut summary = ollama_generate_response_from_generate(payload.response);
+                let elapsed_ns = duration_nanos(started.elapsed());
+                summary.total_duration = elapsed_ns;
+                summary.eval_duration = elapsed_ns;
                 let final_chunk = match kind {
                     OllamaNativeStreamKind::Chat => with_done_reason(
                         json!({
@@ -868,7 +875,6 @@ fn drive_ollama_native_events<N>(
                         summary.done_reason,
                     ),
                     OllamaNativeStreamKind::Generate => {
-                        let mut summary = summary;
                         summary.response = String::new();
                         ollama_generate_final_chunk(&summary)
                     }
