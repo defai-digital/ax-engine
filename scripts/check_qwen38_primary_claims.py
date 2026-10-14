@@ -210,10 +210,20 @@ def find_primary_claim_issues(root: Path) -> list[Hit]:
                 )
         folded = " ".join(text.splitlines())
         if _has_unearned_tier2_claim(folded):
+            # Report the line carrying the claim (the folded scan can span
+            # lines); fall back to line 1 only for a multi-line claim.
+            claim_line = next(
+                (
+                    number
+                    for number, candidate in enumerate(text.splitlines(), start=1)
+                    if _has_unearned_tier2_claim(candidate)
+                ),
+                1,
+            )
             hits.append(
                 Hit(
                     path=relative,
-                    line_number=1,
+                    line_number=claim_line,
                     message="unearned Qwen 3.8 MTP Tier 2 certified claim",
                 )
             )
