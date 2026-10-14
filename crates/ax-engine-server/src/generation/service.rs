@@ -91,7 +91,7 @@ impl ModelExecutionArbiter {
         self.max_concurrent
     }
 
-    /// Optionally force exclusive dual-hold after a multi-token prefill quantum.
+    /// Renew the exclusive single-hold window while a sibling model is active.
     ///
     /// Default **on** when `max_concurrent > 1`: M5 dual-hold A/B without this
     /// window measured S1 gap p95 160–220 ms and thr regression under Metal
@@ -1786,10 +1786,11 @@ fn advance_shared_engine(
             service_state
                 .adaptive_prefill_tokens
                 .store(adjusted, Ordering::Release);
-            // Optional exclusive window (AX_SERVER_LONG_PREFILL_EXCLUSIVE=1):
-            // force single-hold after multi-token quanta for gap-first isolation.
-            // Default off so dual-hold can hide interactive decode under long
-            // Gemma prefill (S1 thr). Adaptive quantum sizes the turn for gap.
+            // Exclusive window (AX_SERVER_LONG_PREFILL_EXCLUSIVE, default on):
+            // while a sibling is active, renew single-hold so the two models
+            // do not contend (M5 dual-hold without this measured S1 gap p95
+            // 160-220 ms). Set the env var to 0 to re-open dual-hold. The
+            // adaptive quantum above still sizes the prefill turn.
             target.arbiter.mark_long_prefill_quantum();
             // Sibling active: ring-rotated multi-token prefill keeps SWA
             // layers at O(window + chunk) storage so the sibling stream and a
