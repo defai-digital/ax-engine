@@ -293,6 +293,7 @@ def main() -> None:
 
     summary = summarize(trials)
     if args.output_json:
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(json.dumps(summary, indent=2))
         print(f"\nWrote JSON summary to {args.output_json}")
 

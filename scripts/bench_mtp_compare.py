@@ -120,7 +120,9 @@ def run_ax_suite(
     print(f"  sampling:   {MTP_SAMPLING}", flush=True)
     print(f"  command:    {' '.join(cmd)}\n", flush=True)
 
-    result = subprocess.run(cmd, check=True)
+    # check=False so the returncode check below raises the intended error with
+    # the suite name instead of a bare CalledProcessError first.
+    result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         raise RuntimeError(
             f"bench_mlx_inference_stack.py exited {result.returncode} for suite {suite_name}"
@@ -254,7 +256,7 @@ def write_summary(
         f"Sampling: temperature={MTP_SAMPLING['temperature']}, top_p={MTP_SAMPLING['top_p']}, top_k={MTP_SAMPLING['top_k']}  "
     )
     lines.append(f"Generation tokens: {MTP_GENERATION_TOKENS}  ")
-    lines.append(f"Repetitions: {repetitions} + 1 warmup  ")
+    lines.append(f"Repetitions: {repetitions} + {MTP_WARMUP_REPS} warmup  ")
     lines.append("")
 
     # Dirty build warning — surfaces when any suite artifact was built from uncommitted changes.
