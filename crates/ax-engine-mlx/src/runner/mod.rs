@@ -3763,6 +3763,15 @@ impl MlxRunner {
                 row.max_output,
                 terminal,
             );
+            // Same loop-detection tail as the per-item and row-exact decode
+            // paths, so a coalesced assistant-MTP row stops where its solo
+            // decode would (Gemma 4 loop detection is default-on).
+            let (sampled, stop_reason) = apply_loop_detection_stop(
+                sampled,
+                stop_reason,
+                &row.state.generated_tokens,
+                loop_detection_for_request(row.ignore_eos, &self.cfg.model_family),
+            );
             if row.state.cache.hard_cap_exhausted() {
                 should_clear_cache = true;
                 runs.push((
@@ -3775,7 +3784,8 @@ impl MlxRunner {
                 ));
                 continue;
             }
-            if stop_reason.is_none() {
+            // Keep tokens for LoopDetected (and continuing decode).
+            if stop_reason.is_none() || matches!(stop_reason, Some(StopReason::LoopDetected)) {
                 for &token in &sampled {
                     row.state.generated_tokens.push(token);
                     update_ngram_think_state(&self.cfg, &mut row.state.ngram_in_think, token);
