@@ -38,6 +38,11 @@ type Client struct {
 //     the default is TLS with the system root CAs.
 //   - Otherwise the default is plaintext (suitable for local loopback).
 //
+// Note: the AX Engine gRPC listener serves plaintext only, so enable TLS only
+// when a TLS-terminating proxy sits in front of the server (or point addr at
+// the proxy). When the server runs with --api-key, requests must also carry an
+// `authorization: Bearer <key>` metadata header.
+//
 // Pass grpc.WithTransportCredentials(...) to force a specific credential set.
 func New(addr string, opts ...grpc.DialOption) (*Client, error) {
 	target, useTLS := resolveDialTarget(addr)
