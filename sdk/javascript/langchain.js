@@ -62,6 +62,13 @@ function messageAdditionalKwargs(message) {
   if (message?.function_call && typeof message.function_call === "object") {
     additionalKwargs.function_call = message.function_call;
   }
+  // Thinking models stream reasoning separately from the answer; surface it
+  // rather than dropping it (native `reasoning_content`, or the OpenRouter-
+  // style `reasoning` alias).
+  const reasoning = message?.reasoning_content ?? message?.reasoning;
+  if (typeof reasoning === "string" && reasoning.length > 0) {
+    additionalKwargs.reasoning_content = reasoning;
+  }
   return additionalKwargs;
 }
 
