@@ -82,7 +82,12 @@ def _latest_snapshot(model_dir: Path) -> Path | None:
     snaps_dir = model_dir / "snapshots"
     if not snaps_dir.exists():
         return None
-    snapshots = sorted(snaps_dir.iterdir())
+    # Snapshot directories are commit hashes; "newest" is the most recently
+    # modified, not the lexicographically last.
+    snapshots = sorted(
+        (path for path in snaps_dir.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+    )
     return snapshots[-1] if snapshots else None
 
 

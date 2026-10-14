@@ -104,7 +104,17 @@ def _find_snapshot(slug: str) -> Path | None:
     model_dir = HF_CACHE / slug
     if not model_dir.exists():
         return None
-    snapshots = sorted((model_dir / "snapshots").iterdir()) if (model_dir / "snapshots").exists() else []
+    snaps_dir = model_dir / "snapshots"
+    # Snapshot directories are commit hashes; "newest" is the most recently
+    # modified, not the lexicographically last.
+    snapshots = (
+        sorted(
+            (path for path in snaps_dir.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+        )
+        if snaps_dir.exists()
+        else []
+    )
     return snapshots[-1] if snapshots else None
 
 

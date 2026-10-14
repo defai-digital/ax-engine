@@ -210,6 +210,10 @@ def load_corpus(args: argparse.Namespace) -> list[dict]:
     for item in items:
         if not isinstance(item, dict) or "id" not in item or "text" not in item:
             raise SystemExit("each --corpus item must be {id: str, text: str}")
+    if not items:
+        # An empty corpus makes `all_pass = total_pass == len(corpus)`
+        # vacuously true; refuse it so a truncated/typo'd corpus cannot PASS.
+        raise SystemExit("--corpus must contain at least one item")
     return items
 
 
@@ -468,7 +472,9 @@ def main() -> int:
         out_path.mkdir(parents=True, exist_ok=True)
         safe_id = args.model_id.replace("/", "_").replace(" ", "_")
         date_part = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        out_path = out_path / f"{safe_id}-{date_part}.json"
+        # Include the mode: warm_repeat and warm_extend are different evidence
+        # and must not overwrite each other on the same day.
+        out_path = out_path / f"{safe_id}-{args.mode}-{date_part}.json"
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
