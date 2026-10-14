@@ -287,16 +287,18 @@ def ax_medians(json_path: Path) -> dict[int, tuple[float, float]]:
             pt = obj.get("prompt_tokens")
             pre = obj.get("prefill_tok_s")
             dec = obj.get("decode_tok_s")
+            # Either median can be null (the harness writes null when every
+            # trial was invalid) or missing; skip such rows instead of crashing
+            # on float(None) or a missing dict key.
+            pre_median = pre.get("median") if isinstance(pre, dict) else None
+            dec_median = dec.get("median") if isinstance(dec, dict) else dec
             if (
                 eng == "ax_engine_mlx"
                 and pt in (128, 512, 2048)
-                and isinstance(pre, dict)
-                and "median" in pre
+                and pre_median is not None
+                and dec_median is not None
             ):
-                out[int(pt)] = (
-                    float(pre["median"]),
-                    float(dec["median"] if isinstance(dec, dict) else dec),
-                )
+                out[int(pt)] = (float(pre_median), float(dec_median))
             for value in obj.values():
                 walk(value)
         elif isinstance(obj, list):
