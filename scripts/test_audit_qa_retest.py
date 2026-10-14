@@ -66,6 +66,20 @@ class RetestAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "answer key differs"):
             audit(self.root, ["pack"])
 
+    def test_transport_error_row_without_reply_does_not_crash(self):
+        # Regression: a row the runner wrote for a transport error has neither
+        # decoded_response nor response; the audit must count the saved grade
+        # instead of raising KeyError.
+        self.row.pop("decoded_response")
+        self.row.pop("recovery_decoded_response")
+        self.row.pop("response")
+        self.write("pack/000.json", self.row)
+        pack = audit(self.root, ["pack"])["packs"]["pack"]
+        self.assertEqual(pack["primary"], {"truncated": 1})
+        self.assertEqual(pack["final"], {"wrong": 1})
+        self.assertEqual(pack["finish_reason"], {})
+        self.assertEqual(pack["output_cap_hits"], 0)
+
     def test_hash_changes_with_evidence(self):
         before = audit(self.root, ["pack"])
         self.write("pack_provenance.json", {"source_commit": "abc"})

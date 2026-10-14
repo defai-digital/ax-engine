@@ -56,6 +56,12 @@ def audit(root: Path, packs: list[str]) -> dict:
             # Recovery replaces decoded_response in the campaign runner. The
             # original primary grade survives, but its decoded text may not.
             first = row.get("primary_grade", row["grade"])
+            # A transport-error row has no reply to re-grade; count the saved
+            # grade and skip the reply-derived checks instead of crashing.
+            if "decoded_response" not in row:
+                primary[first["status"]] += 1
+                final[row["grade"]["status"]] += 1
+                continue
             last = grade(case, row["decoded_response"])
             if "recovery_decoded_response" in row:
                 recovered = grade(case, row["recovery_decoded_response"])
@@ -75,9 +81,15 @@ def audit(root: Path, packs: list[str]) -> dict:
             "primary": dict(primary),
             "final": dict(final),
             "recovery": dict(recovery),
-            "finish_reason": dict(Counter(r["response"]["finish_reason"] for r in rows)),
+            "finish_reason": dict(
+                Counter(
+                    r["response"]["finish_reason"] for r in rows if "response" in r
+                )
+            ),
             "output_cap_hits": sum(
-                len(r["response"]["output_tokens"]) == manifest["max_tokens"] for r in rows
+                "response" in r
+                and len(r["response"]["output_tokens"]) == manifest["max_tokens"]
+                for r in rows
             ),
             "loop_suspect": sum(bool(r.get("loop_suspect")) for r in rows),
             "repetition_max_run": {
