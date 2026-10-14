@@ -222,7 +222,7 @@ fn click_on_completed_step_header_navigates_back() {
 
     let _ = render(&app);
     let rect = app.step_header_rect.get();
-    let model_offset = "Step 3 of 3 — ".chars().count();
+    let model_offset = " Step 3 of 3 — ".chars().count();
     app.on_click(rect.x + model_offset as u16, rect.y);
 
     assert_eq!(app.stage, WizardStage::Families);

@@ -161,7 +161,9 @@ impl App {
             .iter()
             .position(|(_, stage)| *stage == self.stage)
             .unwrap_or(0);
-        let mut cursor = format!("Step {} of {} — ", current + 1, steps.len())
+        // The header is drawn with a leading space (" Step 1 of 3 — …"); the
+        // click cursor must match it or every label hit-tests one column left.
+        let mut cursor = format!(" Step {} of {} — ", current + 1, steps.len())
             .chars()
             .count();
         for (index, (label, stage)) in steps.iter().enumerate() {
