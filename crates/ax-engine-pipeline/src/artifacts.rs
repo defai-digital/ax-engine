@@ -293,6 +293,39 @@ fn artifact_url(base: &Url, path: &Path) -> Result<Url, ArtifactVerificationErro
     Ok(url)
 }
 
+/// Reject a destination whose nearest existing ancestor already escapes the
+/// model root, before `create_dir_all` can create directories outside it
+/// through a symlinked intermediate directory.
+fn ensure_within_root(
+    canonical_root: &Path,
+    parent: &Path,
+    relative_path: &Path,
+) -> Result<(), ArtifactVerificationError> {
+    let mut ancestor = parent;
+    loop {
+        match ancestor.canonicalize() {
+            Ok(canonical) => {
+                return if canonical.starts_with(canonical_root) {
+                    Ok(())
+                } else {
+                    Err(ArtifactVerificationError::ArtifactEscapesModelRoot(
+                        relative_path.to_path_buf(),
+                    ))
+                };
+            }
+            Err(source) => match ancestor.parent() {
+                Some(up) if up != ancestor => ancestor = up,
+                _ => {
+                    return Err(ArtifactVerificationError::ReadArtifact {
+                        path: relative_path.to_path_buf(),
+                        source,
+                    });
+                }
+            },
+        }
+    }
+}
+
 fn checked_destination(
     canonical_root: &Path,
     relative_path: &Path,
@@ -304,6 +337,10 @@ fn checked_destination(
         ArtifactVerificationError::UnsafeArtifactPath(relative_path.to_path_buf())
     })?;
     if create_parent {
+        // Reject an escaping nearest-existing ancestor before create_dir_all
+        // can create directories outside the root through a symlinked
+        // intermediate (the canonical check below runs only after creation).
+        ensure_within_root(canonical_root, parent, relative_path)?;
         std::fs::create_dir_all(parent).map_err(|source| {
             ArtifactVerificationError::CreateArtifactDirectory {
                 path: relative_path.to_path_buf(),
