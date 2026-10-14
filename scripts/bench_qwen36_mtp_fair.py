@@ -227,13 +227,23 @@ def suite_path_for(suite: str, suites_dir: Path) -> Path:
     return suites_dir / f"{suite}.jsonl"
 
 
+def shared_depth_for(policy: str, profiles: list[QwenProfile]) -> int | None:
+    """The single depth every model runs under ``--depth-policy fair-shared``:
+    the smallest native depth across the selected models, so a cross-model
+    comparison is apples-to-apples. ``native`` yields None (each model keeps
+    its own native depth)."""
+    if policy != "fair-shared":
+        return None
+    return min((profile.native_depth for profile in profiles), default=None)
+
+
 def effective_depth(
-    profile: QwenProfile, engines: list[str], policy: str, override: int | None
+    profile: QwenProfile, shared_depth: int | None, override: int | None
 ) -> int:
     if override is not None:
         return override
-    if policy == "native":
-        return profile.native_depth
+    if shared_depth is not None:
+        return shared_depth
     return profile.native_depth
 
 
@@ -1356,8 +1366,9 @@ def build_summary(
         if engine in args.engines
     }
     has_tuned_engines = any(engine.endswith("_tuned") for engine in args.engines)
+    shared_depth = shared_depth_for(args.depth_policy, profiles)
     for profile in profiles:
-        depth = effective_depth(profile, args.engines, args.depth_policy, args.depth)
+        depth = effective_depth(profile, shared_depth, args.depth)
         provenance = diff.model_provenance_for(sidecar_dir(profile, args.hf_cache))
         for suite in args.suites:
             engine_summaries = {
@@ -2447,9 +2458,12 @@ def main() -> int:
             raise FileNotFoundError(f"missing suite: {suite_file}")
 
     artifact_paths: dict[tuple[str, str, str], Path] = {}
+    shared_depth = shared_depth_for(
+        args.depth_policy, [QWEN36_PROFILES[key] for key in args.models]
+    )
     for model_key in args.models:
         profile = QWEN36_PROFILES[model_key]
-        depth = effective_depth(profile, args.engines, args.depth_policy, args.depth)
+        depth = effective_depth(profile, shared_depth, args.depth)
         for suite in args.suites:
             for engine in args.engines:
                 artifact_paths[(profile.key, suite, engine)] = run_engine_suite(

@@ -52,16 +52,22 @@ class Qwen36MtpFairTests(unittest.TestCase):
 
     def test_depth_policy_native_uses_profile_depth(self) -> None:
         profile = fair.QWEN36_PROFILES["27b-4bit"]
-        self.assertEqual(
-            fair.effective_depth(profile, ["mtplx", "ax_engine"], "native", None), 3
-        )
-        self.assertEqual(
-            fair.effective_depth(profile, ["mtplx", "ax_engine"], "fair-shared", None),
-            3,
-        )
-        self.assertEqual(
-            fair.effective_depth(profile, ["mtplx", "ax_engine"], "native", 2), 2
-        )
+        # native: no shared depth, so each model keeps its own native depth.
+        self.assertEqual(fair.effective_depth(profile, None, None), 3)
+        # --depth overrides the policy.
+        self.assertEqual(fair.effective_depth(profile, None, 2), 2)
+
+    def test_depth_policy_fair_shared_uses_smallest_native_depth(self) -> None:
+        profiles = [
+            fair.QWEN36_PROFILES["27b-4bit"],
+            fair.QWEN36_PROFILES["35b-a3b-4bit"],
+        ]
+        # 27b native=3, 35b native=1 -> the shared depth is the smallest.
+        shared = fair.shared_depth_for("fair-shared", profiles)
+        self.assertEqual(shared, 1)
+        self.assertIsNone(fair.shared_depth_for("native", profiles))
+        for profile in profiles:
+            self.assertEqual(fair.effective_depth(profile, shared, None), 1)
 
     def test_validate_sidecar_for_profile_accepts_current_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
