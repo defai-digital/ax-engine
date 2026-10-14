@@ -118,7 +118,10 @@ module AxEngine
     # symbol key does not override a string "stream" key in the request hash,
     # which would serialize duplicate JSON keys with an unpredictable winner.
     def streaming_body(request, kwargs)
-      body = request_body(request, kwargs)
+      # `request_body` may return the caller's own Hash (positional-hash
+      # call with no kwargs); dup before the in-place deletes so we neither
+      # mutate caller state nor raise FrozenError on a frozen params Hash.
+      body = request_body(request, kwargs).dup
       body.delete("stream")
       body.delete(:stream)
       body.merge(stream: true)

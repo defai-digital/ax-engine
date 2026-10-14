@@ -92,7 +92,10 @@ module AxEngine
         if stream && block_given?
           @client.stream_chat_completion(params) do |event|
             Langchain.raise_on_stream_error!(event)
-            delta = event.dig("data", "choices", 0, "delta", "content")
+            data = event["data"]
+            next unless data.is_a?(Hash)
+
+            delta = data.dig("choices", 0, "delta", "content")
             block.call(delta) if delta
           end
           nil
@@ -133,7 +136,10 @@ module AxEngine
         if stream && block_given?
           @client.stream_completion(params) do |event|
             Langchain.raise_on_stream_error!(event)
-            text = event.dig("data", "choices", 0, "text")
+            data = event["data"]
+            next unless data.is_a?(Hash)
+
+            text = data.dig("choices", 0, "text")
             block.call(text) if text && !text.empty?
           end
           nil

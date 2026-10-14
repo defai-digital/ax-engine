@@ -250,6 +250,32 @@ class TestClient < Minitest::Test
     assert_equal "Once", text
   end
 
+  def test_stream_completion_does_not_mutate_callers_hash
+    # Regression: streaming_body used to delete "stream" from the caller's
+    # own Hash, so a reused params Hash silently lost data between calls.
+    sse_body = "data: {\"choices\":[{\"text\":\"Once\"}]}\n\ndata: [DONE]\n\n"
+    @srv.set_response(content_type: "text/event-stream", body: sse_body)
+
+    params = { "prompt" => "Once upon", max_tokens: 8 }
+    @client.stream_completion(params) { |_e| }
+
+    assert_equal({ "prompt" => "Once upon", max_tokens: 8 }, params)
+    assert_equal true, @srv.last_body["stream"]
+  end
+
+  def test_stream_completion_accepts_frozen_hash
+    # Regression: the destructive delete raised FrozenError on a frozen Hash.
+    sse_body = "data: {\"choices\":[{\"text\":\"Once\"}]}\n\ndata: [DONE]\n\n"
+    @srv.set_response(content_type: "text/event-stream", body: sse_body)
+
+    params = { "prompt" => "Once upon", max_tokens: 8 }.freeze
+    collected = []
+    @client.stream_completion(params) { |e| collected << e }
+
+    assert_equal "Once", collected.map { |e| e.dig("data", "choices", 0, "text") }.join
+    assert_equal true, @srv.last_body["stream"]
+  end
+
   # --- stream error handling ---
 
   def test_stream_error_event_raises

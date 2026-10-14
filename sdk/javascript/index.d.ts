@@ -272,7 +272,7 @@ export interface OpenAiChatCompletionChunk {
 
 export interface OpenAiEmbeddingRequest {
   model?: string;
-  input: number[] | number[][];
+  input: string | string[] | number[] | number[][];
   encoding_format?: string;
   pooling?: "last" | "mean" | "cls" | string;
   normalize?: boolean;
