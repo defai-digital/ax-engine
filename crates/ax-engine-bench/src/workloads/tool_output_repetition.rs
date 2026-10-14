@@ -154,6 +154,12 @@ impl ToolOutputRepetition {
                         }
                     }
                     Ok(Some(GenerateStreamEvent::Response(response))) => {
+                        if !crate::harness::response_completed(&response) {
+                            return Err(format!(
+                                "iteration {iteration} terminated with status {:?}",
+                                response.response.status
+                            ));
+                        }
                         // Aggregate n-gram counters across iterations so the
                         // artifact captures the cumulative acceleration effect.
                         if let Some(attempts) =

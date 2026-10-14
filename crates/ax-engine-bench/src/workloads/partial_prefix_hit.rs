@@ -194,7 +194,15 @@ fn run_single_request(
                     ttft_us = Some(ttft.as_micros().min(u128::from(u64::MAX)) as u64);
                 }
             }
-            Ok(Some(GenerateStreamEvent::Response(_))) => break,
+            Ok(Some(GenerateStreamEvent::Response(response))) => {
+                if !crate::harness::response_completed(&response) {
+                    return Err(format!(
+                        "request terminated with status {:?}",
+                        response.response.status
+                    ));
+                }
+                break;
+            }
             Ok(Some(GenerateStreamEvent::Request(_))) => {}
             Ok(None) => break,
             Err(e) => return Err(format!("stream advance failed: {e}")),

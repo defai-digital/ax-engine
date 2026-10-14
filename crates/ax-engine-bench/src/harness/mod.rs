@@ -14,3 +14,11 @@ pub(crate) mod pressure_observer;
 // types stay reachable via `crate::harness::metrics::*`. Phase 4 added
 // `pressure_observer` as the harness adapter for `ax_engine_core::mempressure`.
 pub(crate) use metrics::WorkloadReport;
+
+/// Whether a terminal stream response reports a successfully completed
+/// request. Fixtures that record latency must not count a `Failed`/`Cancelled`
+/// terminal as a successful sample: a request that ends early has a shorter
+/// TTFT and fewer tokens, biasing the invariant toward "satisfied".
+pub(crate) fn response_completed(response: &ax_engine_sdk::GenerateStreamResponseEvent) -> bool {
+    response.response.status == ax_engine_sdk::GenerateStatus::Finished
+}

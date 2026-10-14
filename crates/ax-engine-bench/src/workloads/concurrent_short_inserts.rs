@@ -206,7 +206,15 @@ fn wait_for_first_step(
         }
         match session.next_stream_event(state) {
             Ok(Some(GenerateStreamEvent::Step(_))) => return Ok(()),
-            Ok(Some(GenerateStreamEvent::Response(_))) => return Ok(()),
+            Ok(Some(GenerateStreamEvent::Response(response))) => {
+                if !crate::harness::response_completed(&response) {
+                    return Err(format!(
+                        "stream terminated with status {:?}",
+                        response.response.status
+                    ));
+                }
+                return Ok(());
+            }
             Ok(Some(GenerateStreamEvent::Request(_))) => continue,
             Ok(None) => return Ok(()),
             Err(e) => return Err(format!("stream advance: {e}")),
@@ -279,7 +287,15 @@ fn drain_to_response(
             return Err("drain_to_response exceeded poll cap".to_string());
         }
         match session.next_stream_event(state) {
-            Ok(Some(GenerateStreamEvent::Response(_))) => return Ok(()),
+            Ok(Some(GenerateStreamEvent::Response(response))) => {
+                if !crate::harness::response_completed(&response) {
+                    return Err(format!(
+                        "stream terminated with status {:?}",
+                        response.response.status
+                    ));
+                }
+                return Ok(());
+            }
             Ok(Some(GenerateStreamEvent::Step(_) | GenerateStreamEvent::Request(_))) => continue,
             Ok(None) => return Ok(()),
             Err(e) => return Err(format!("stream advance: {e}")),

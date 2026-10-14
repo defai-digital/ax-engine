@@ -309,6 +309,15 @@ impl LongPrefillVsDecode {
                     }
                     Ok(Some(GenerateStreamEvent::Response(response))) => {
                         handle.active = false;
+                        if !crate::harness::response_completed(&response) {
+                            return Err(FixtureError::with_partial(
+                                format!(
+                                    "short_decode (request_id={}) terminated with status {:?}",
+                                    handle.request_id, response.response.status
+                                ),
+                                finalize_report(report, started_at, &short_handles, long_submit_at),
+                            ));
+                        }
                         capture_route_decisions(
                             &mut report,
                             &response,
