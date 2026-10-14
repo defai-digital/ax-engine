@@ -1246,7 +1246,8 @@ Optional `--model-idle-timeout-secs` / `AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS`
 evicts non-default models that have not admitted a request within the
 timeout (same drain path as unload, including the soft-park behavior above —
 eviction frees the live registry slot, not the parked weights). The default
-model is never evicted; sweeps run only while the server is otherwise idle.
+model is never evicted, and a non-default model with an in-flight admitted
+request is skipped until it goes idle.
 
 Engine-step `/metrics` series carry a `model` label per loaded model, plus
 unlabeled aggregates for single-model dashboards. Unload/replace drop the

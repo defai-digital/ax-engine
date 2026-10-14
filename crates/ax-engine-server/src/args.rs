@@ -351,7 +351,7 @@ pub struct ServerArgs {
 
     /// Idle-evict non-default resident models after this many seconds without
     /// an admitted request (multi-model serving). The default model is never
-    /// evicted, and eviction only runs while the server is otherwise idle.
+    /// evicted, and a model with an in-flight admitted request is skipped.
     /// Unset (or non-positive) disables eviction. Falls back to
     /// AX_ENGINE_MODEL_IDLE_TIMEOUT_SECS.
     #[arg(long = "model-idle-timeout-secs")]
