@@ -223,6 +223,7 @@ impl Job {
                         };
                     }
                 }
+                let moved = self.bytes != bytes;
                 self.last_poll = Some((now, bytes));
                 self.bytes = bytes;
                 self.speed_history.push(self.speed as u64);
@@ -230,8 +231,9 @@ impl Job {
                     let overflow = self.speed_history.len() - SPEED_HISTORY_CAP;
                     self.speed_history.drain(0..overflow);
                 }
-                // Progress gauge / tab-bar percent updates at sample rate.
-                material = true;
+                // Progress gauge / tab-bar percent only change when the byte
+                // counter moved, so a stalled download stays quiet.
+                material |= moved;
             }
         }
         self.spinner = (self.spinner + 1) % SPINNER.len();

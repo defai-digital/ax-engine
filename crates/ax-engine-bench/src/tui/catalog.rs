@@ -841,7 +841,12 @@ pub(super) fn next_link(header: Option<&str>) -> Option<String> {
     let header = header?;
     for part in header.split(',') {
         let part = part.trim();
-        let (url, params) = part.split_once(';')?;
+        // A comma part with no parameters is not a `rel=…` entry; skip it
+        // rather than aborting the whole header parse (which would drop a
+        // later `rel="next"` part and silently truncate pagination).
+        let Some((url, params)) = part.split_once(';') else {
+            continue;
+        };
         let is_next = params.split(';').any(|param| {
             let param = param.trim();
             param.eq_ignore_ascii_case("rel=\"next\"") || param.eq_ignore_ascii_case("rel=next")
