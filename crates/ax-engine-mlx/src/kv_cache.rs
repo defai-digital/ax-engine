@@ -2644,6 +2644,13 @@ impl MlxKVCache {
                     if v_arr.shape() != shape || v_arr.dtype() != k_arr.dtype() {
                         return Err(MlxKVCacheSerializeError::BadShape(v_arr.shape().len()));
                     }
+                    // `append` requires positive heads/capacity/head_dim, so the
+                    // serializer never writes a degenerate layer. A zero
+                    // dimension is internally consistent (zero payload bytes)
+                    // but would trip geometry asserts on the next append.
+                    if shape[1] <= 0 || shape[2] <= 0 || shape[3] <= 0 {
+                        return Err(MlxKVCacheSerializeError::BadShape(shape.len()));
+                    }
                     let capacity = shape[2] as usize;
                     let rotating_window = (ring_window != 0).then_some(ring_window);
                     if let Some(window) = rotating_window {

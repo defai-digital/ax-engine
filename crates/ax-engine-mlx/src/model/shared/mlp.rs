@@ -2865,7 +2865,11 @@ pub(crate) fn ffn_swiglu_plus_residual(
     residual: &MlxArray,
 ) -> MlxArray {
     let seq = x.shape().get(1).copied().unwrap_or(1);
+    // The fused down+residual kernel cannot honor `post_norm`: the fallback
+    // computes `residual + rms_norm(ffn)` while the fused path would produce
+    // `rms_norm(ffn + residual)`. Only take the fused path without a post-norm.
     if seq == 1
+        && post_norm.is_none()
         && let (Some(gate), Some(up), Some(down)) = (
             w.gate_proj.as_ref(),
             w.up_proj.as_ref(),
@@ -2875,10 +2879,7 @@ pub(crate) fn ffn_swiglu_plus_residual(
         && let Some(fused) =
             qwen_dense_ffn_down_matvec_metal_impl(&ffn_hidden, down, Some(residual))
     {
-        return match post_norm {
-            Some(norm_w) => rms_norm(&fused, Some(norm_w), cfg.rms_norm_eps, None),
-            None => fused,
-        };
+        return fused;
     }
     add(residual, &ffn_swiglu(cfg, w, x, post_norm, layer_idx), None)
 }

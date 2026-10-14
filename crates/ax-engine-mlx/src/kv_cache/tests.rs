@@ -1486,6 +1486,45 @@ fn deserialize_rejects_oversized_byte_count() {
 }
 
 #[test]
+fn deserialize_rejects_degenerate_fa_layer_geometry() {
+    // The serializer only writes FA layers `append` produced (positive
+    // heads/capacity/head_dim). A crafted payload declaring a zero-dimension
+    // FA layer is byte-count consistent (zero elements) and would otherwise
+    // restore a layer whose next append trips geometry asserts.
+    let mut payload = Vec::new();
+    payload.extend_from_slice(MlxKVCache::SERIALIZE_MAGIC);
+    payload.extend_from_slice(&MlxKVCache::SERIALIZE_VERSION.to_le_bytes());
+    payload.extend_from_slice(&0u64.to_le_bytes()); // seq_len
+    payload.extend_from_slice(&0u64.to_le_bytes()); // growth_count
+    payload.extend_from_slice(&0u64.to_le_bytes()); // rope_offset
+    payload.extend_from_slice(&1u32.to_le_bytes()); // layer_count
+    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+
+    payload.push(MlxKVCache::LAYER_KIND_FA);
+    payload.extend_from_slice(&[0u8; 7]);
+    payload.extend_from_slice(&0u64.to_le_bytes()); // rotating_window: none
+    for _ in 0..2 {
+        // K then V: f32, shape [1, 0, 0, 0] = 0 elements = 0 payload bytes.
+        payload.push(MlxKVCache::dtype_to_tag(MlxDtype::Float32));
+        payload.push(4);
+        payload.extend_from_slice(&[0u8; 6]);
+        payload.extend_from_slice(&1i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0i32.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+    }
+
+    let err = MlxKVCache::try_deserialize_from_bytes(&payload)
+        .err()
+        .expect("a zero-dimension FA layer must be rejected at ingest");
+    assert!(
+        matches!(err, MlxKVCacheSerializeError::BadShape(4)),
+        "expected BadShape(4), got {err:?}"
+    );
+}
+
+#[test]
 fn deserialize_rejects_unknown_dtype_tag() {
     // Hand-craft a payload whose tensor header carries a dtype tag that
     // is not in `dtype_from_tag`'s match table. The deserializer must

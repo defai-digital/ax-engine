@@ -54,6 +54,24 @@ pub(crate) fn qwen_prefill_skip_embed_clip_active() -> bool {
     QWEN_PREFILL_SKIP_EMBED_CLIP.get()
 }
 
+/// Arms [`set_qwen_prefill_skip_embed_clip`] until dropped. A guard (unlike
+/// a manual set/false pair) also resets the flag on unwind, so a panicking
+/// embed cannot leak a disabled OOB-gather clip into the thread's next job.
+pub(crate) struct QwenPrefillSkipEmbedClipGuard;
+
+impl QwenPrefillSkipEmbedClipGuard {
+    pub(crate) fn arm(active: bool) -> Self {
+        set_qwen_prefill_skip_embed_clip(active);
+        Self
+    }
+}
+
+impl Drop for QwenPrefillSkipEmbedClipGuard {
+    fn drop(&mut self) {
+        set_qwen_prefill_skip_embed_clip(false);
+    }
+}
+
 /// Enable skipping the unused f32 SDPA upcast for this Qwen prefill forward.
 pub(crate) fn set_qwen_prefill_skip_f32_sdpa(active: bool) {
     QWEN_PREFILL_SKIP_F32_SDPA.set(active);
@@ -88,6 +106,23 @@ pub(crate) fn set_qwen_prefill_bf16_embed_dequant(active: bool) {
 /// Whether [`set_qwen_prefill_bf16_embed_dequant`] is set for this forward.
 pub(crate) fn qwen_prefill_bf16_embed_dequant_active() -> bool {
     QWEN_PREFILL_BF16_EMBED_DEQUANT.get()
+}
+
+/// Arms [`set_qwen_prefill_bf16_embed_dequant`] until dropped (panic-safe,
+/// same contract as [`QwenPrefillSkipEmbedClipGuard`]).
+pub(crate) struct QwenPrefillBf16EmbedDequantGuard;
+
+impl QwenPrefillBf16EmbedDequantGuard {
+    pub(crate) fn arm(active: bool) -> Self {
+        set_qwen_prefill_bf16_embed_dequant(active);
+        Self
+    }
+}
+
+impl Drop for QwenPrefillBf16EmbedDequantGuard {
+    fn drop(&mut self) {
+        set_qwen_prefill_bf16_embed_dequant(false);
+    }
 }
 
 /// Enable native offset-causal SDPA for this Qwen prefill forward.

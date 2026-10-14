@@ -1680,11 +1680,14 @@ pub(crate) fn load_weights_with_session_budget(
         let router_scale =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnGateInpScale, idx)?;
         // Gemma4 MoE router scale applies to the Gemma4 backbone including
-        // DiffusionGemma (same architecture, BlockDiffusion generation — ADR-038)
-        // and gemma4_vl (encoder-VL packaging of the same text tower).
+        // DiffusionGemma (same architecture, BlockDiffusion generation — ADR-038),
+        // gemma4_vl (encoder-VL packaging of the same text tower), and
+        // gemma4_unified (same language tower — DI-W1-001). Excluding unified
+        // while `gemma4_moe_router` includes it would panic the first MoE
+        // forward on a missing router_combined_scale.
         let router_combined_scale = if matches!(
             artifacts.manifest().model_family.as_str(),
-            "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma"
+            "gemma4" | "gemma4_vl" | "gemma4_assistant" | "diffusion_gemma" | "gemma4_unified"
         ) || artifacts.manifest().generation_kind()
             == ax_engine_core::GenerationKind::BlockDiffusion
         {
@@ -2750,13 +2753,20 @@ fn mtp_take_fp8_blockscaled(
     let scale_key = format!("{base}.scale");
     let (w_shape, s_shape) = {
         let weight = name_map.get(&weight_key)?;
-        let scale = name_map.get(&scale_key)?;
         // Only the FP8 byte-container layout belongs to this helper; a dense
         // (e.g. BF16 raw-HF) weight falls through to `mtp_take_weight` even
         // when a `.scale` tensor happens to share the prefix.
         if weight.dtype() != MlxDtype::Uint8 {
             return None;
         }
+        let Some(scale) = name_map.get(&scale_key) else {
+            // Byte-container weight without its scale grid: the dense
+            // fallback would read the raw E4M3 bytes as a dense weight, so
+            // consume the weight and fail closed (the sidecar is then
+            // reported incomplete).
+            name_map.remove(&weight_key);
+            return None;
+        };
         (weight.shape(), scale.shape())
     };
     if w_shape.len() != 2
@@ -3625,7 +3635,17 @@ fn load_glm_mtp_sidecar(
     }
     let tensors = match load_safetensors(&sidecar, None) {
         Ok(t) => t,
-        Err(_) => return None,
+        Err(error) => {
+            // A present-but-unreadable sidecar must not look like "no
+            // sidecar": the operator would otherwise lose MTP silently.
+            tracing::error!(
+                target: "ax_mlx::weights",
+                path = %sidecar.display(),
+                error = %error,
+                "GLM MTP sidecar exists but failed to load; continuing without MTP"
+            );
+            return None;
+        }
     };
     if !tensors.is_empty() {
         let refs: Vec<&MlxArray> = tensors.values().collect();
@@ -4375,6 +4395,9 @@ fn load_mtp(
         .as_ref()
         .and_then(|qn| qn.shape().first().copied())
         .map(|d| d as usize)
+        // A zero-length q_norm would make the divisions below divide by zero;
+        // treat it as absent and probe instead.
+        .filter(|d| *d > 0)
         .or_else(|| {
             // Fallback: probe common head_dims assuming q_rows = n_heads * head_dim * 2.
             [256usize, 128, 64, 96]
@@ -4571,6 +4594,16 @@ fn apply_rotated_checkpoint(
                 target.biases = None;
             }
             replaced += 1;
+        }
+        // A packed layer keeps its FFN in `gate_up_packed` with no per-suffix
+        // slots, so the probe loop above never touches it: it would keep its
+        // original un-rotated weights while Apply mode rotates its activation
+        // input. Its rotated tensors arrive through the same unpacked
+        // gate_proj/up_proj keys (filling the slots), so flag it as missing
+        // only when neither slot was filled this pass.
+        if layer.gate_up_packed.is_some() && layer.gate_proj.is_none() && layer.up_proj.is_none() {
+            missing_layers.push(layer_idx);
+            continue;
         }
         if layer.gate_up_packed.is_some()
             && let (Some(gate), Some(up)) = (&layer.gate_proj, &layer.up_proj)
@@ -5788,7 +5821,17 @@ fn load_deepseek_v4_mtp_sidecar(
     // which would skip the whole AXQuant sidecar.
     let tensors = match load_safetensors_mmap(&sidecar) {
         Ok(t) => t,
-        Err(_) => return None,
+        Err(error) => {
+            // A present-but-unreadable sidecar must not look like "no
+            // sidecar": the operator would otherwise lose MTP silently.
+            tracing::error!(
+                target: "ax_mlx::weights",
+                path = %sidecar.display(),
+                error = %error,
+                "DeepSeek V4 MTP sidecar exists but failed to load; continuing without MTP"
+            );
+            return None;
+        }
     };
     if !tensors.is_empty() {
         let refs: Vec<&MlxArray> = tensors.values().collect();

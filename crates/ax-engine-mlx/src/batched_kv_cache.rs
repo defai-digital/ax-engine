@@ -378,6 +378,14 @@ impl BatchedKvCache {
             .as_mut()
             .expect("layer allocated by ensure_layer");
         Self::write_row_block(layer_kv, row, 0, len, new_k, new_v);
+        // `add_active_row` zeroes the slot's length, so a nonzero value here
+        // means another layer already seeded this row this step; all layers
+        // must agree on the row's logical length.
+        assert!(
+            self.lengths[row] == 0 || self.lengths[row] == len,
+            "row {row} already seeded to length {} but layer {layer} got {len}",
+            self.lengths[row],
+        );
         self.lengths[row] = len;
     }
 
@@ -971,6 +979,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Two layers seeding the same row with different lengths must panic:
+    /// `lengths` is per-row while the write is per-layer, so a silent
+    /// last-write-wins would corrupt the shorter layer's view.
+    #[test]
+    #[should_panic(expected = "already seeded to length")]
+    fn seed_row_layer_rejects_inconsistent_lengths() {
+        let (heads, dim) = (1usize, 2usize);
+        let mut keep: Vec<Vec<f32>> = Vec::new();
+        let mut cache = BatchedKvCache::new(2, 1);
+        let k3 = seq_block(0, 0, 3, heads, dim);
+        keep.push(k3);
+        let k3 = arr(keep.last().unwrap().as_slice(), heads as i32, 3, dim as i32);
+        cache.seed_row_layer(0, 0, &k3, &k3);
+        let k5 = seq_block(1, 0, 5, heads, dim);
+        keep.push(k5);
+        let k5 = arr(keep.last().unwrap().as_slice(), heads as i32, 5, dim as i32);
+        cache.seed_row_layer(1, 0, &k5, &k5);
     }
 
     /// `layer_view` spans the ragged max length; `lengths` reports each row.

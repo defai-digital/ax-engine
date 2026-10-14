@@ -3174,11 +3174,17 @@ fn mtp_take_fp8_blockscaled_dequantizes_tiny_block() {
 }
 
 #[test]
-fn mtp_take_fp8_blockscaled_none_without_consuming_on_bad_input() {
-    // Missing scale: weight must stay in the map for the BF16 fallback.
+fn mtp_take_fp8_blockscaled_fail_closed_on_bad_input() {
+    // Missing scale with an E4M3 byte-container weight: consume the weight
+    // (fail closed) so the dense fallback cannot read raw FP8 bytes as a
+    // dense weight. A genuine BF16 raw-HF weight is not uint8 and still
+    // falls through to the fallback (next case).
     let mut name_map = HashMap::from([("w.weight".to_string(), array_u8(&[0x38; 4], &[2, 2]))]);
     assert!(mtp_take_fp8_blockscaled(&mut name_map, "w").is_none());
-    assert!(name_map.contains_key("w.weight"));
+    assert!(
+        !name_map.contains_key("w.weight"),
+        "orphan FP8 byte container must be consumed"
+    );
     // Non-byte-container weight (dense fallback territory): reject
     // without consuming even when a `.scale` tensor shares the prefix.
     let mut name_map = HashMap::from([

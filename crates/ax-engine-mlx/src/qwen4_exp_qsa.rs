@@ -1136,7 +1136,16 @@ fn select_tokens_device_multi(
         None,
     );
     let tail_valid = less(&tail, &visible_dev, None);
-    parts.push(where_cond(&tail_valid, &tail, &neg_one, None));
+    // `tail` was built from [1, seq, ·] operands (the counts are
+    // batch-invariant); give it the explicit batch dimension so the
+    // concatenate with the [batch, seq, topk*ratio] block segment also
+    // works for batch > 1.
+    let tail = broadcast_to(
+        &where_cond(&tail_valid, &tail, &neg_one, None),
+        &[batch, seq, tail_width],
+        None,
+    );
+    parts.push(tail);
     let refs: Vec<&MlxArray> = parts.iter().collect();
     let joined = concatenate(&refs, 2, None);
     Ok((joined, segments))
@@ -1488,6 +1497,41 @@ mod tests {
         assert!(
             select_tokens_device_multi(cfg, 1, 2, 3, 1, Some(&scores)).is_err(),
             "fewer complete blocks than topk must fail closed to the host path"
+        );
+    }
+
+    #[test]
+    fn multi_query_device_selection_broadcasts_the_tail_across_the_batch() {
+        // The visible-tail segment is built from [1, seq, ·] operands
+        // (counts are batch-invariant); without the explicit batch dimension
+        // the final concatenate fails for batch > 1.
+        let cfg = QsaConfig::new(2, 1, 4, 4, 4, 8, 16, EPS, BASE).unwrap();
+        let (ratio, budget) = (4usize, 8usize);
+        let max_keep = budget + ratio - 1;
+        let n_complete = 5usize;
+        let seq = 3i32;
+        let batch = 2i32;
+        let position_offset = n_complete * ratio + 2 - seq as usize; // partial tail
+        let scores = array_f32(&[0.5f32; 2 * 3 * 5], &[batch, seq, n_complete as i32]);
+        let (device, segments) = select_tokens_device_multi(
+            cfg,
+            batch,
+            seq,
+            position_offset,
+            n_complete as i32,
+            Some(&scores),
+        )
+        .unwrap();
+        assert_eq!(device.shape(), vec![batch, seq, max_keep as i32]);
+        assert_eq!(segments.len(), (batch * seq) as usize);
+        let device = astype(&device, MlxDtype::Uint32, None);
+        eval(&[&device]);
+        let data = device.data_u32();
+        let row_width = seq as usize * max_keep;
+        assert_eq!(
+            &data[..row_width],
+            &data[row_width..],
+            "batch rows share the batch-invariant selection"
         );
     }
 

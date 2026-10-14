@@ -11460,13 +11460,22 @@ impl MlxRunner {
                     let mut ac = 0usize;
                     let mut predicted: Vec<u32> = Vec::with_capacity(pending.len() + 1);
                     let mut correction = 0u32;
+                    // The pipeline (re)bootstrap treats `last_token` as the
+                    // one emitted token not yet in the KV cache, so it must
+                    // track the token the previous iteration emitted. Re-passing
+                    // `verify_input[0]` after a fresh bootstrap would append the
+                    // same token twice and corrupt every later step of the
+                    // request (the stale-latch hazard run_direct_pipeline_decode
+                    // documents for the n-gram feed).
+                    let mut verify_last_token = verify_input[0];
                     for &draft in &pending {
                         let tok = self.run_direct_pipeline_decode(
                             state,
-                            verify_input[0],
+                            verify_last_token,
                             final_by_max,
                             false,
                         );
+                        verify_last_token = tok;
                         predicted.push(tok);
                         if tok != draft {
                             correction = tok;
@@ -11479,7 +11488,7 @@ impl MlxRunner {
                     if all_accepted {
                         correction = self.run_direct_pipeline_decode(
                             state,
-                            verify_input[0],
+                            verify_last_token,
                             final_by_max,
                             false,
                         );

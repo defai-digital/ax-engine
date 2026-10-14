@@ -1297,6 +1297,9 @@ fn forward_and_logits_mode(
     }
     families::qwen3_linear::clear_qwen_prefill_pending_ffn();
     let profile_prefill = token_ids.len() > 1 && prefill_profile_enabled();
+    // KV positions (and therefore mask widths) are physical; only RoPE uses
+    // the MRoPE-rotated offset from qwen_visual_rope_offset. Keep both.
+    let physical_token_offset = token_offset;
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
 
     // Build ids_1d once; reused for both embedding and per-layer-input projection
@@ -1307,27 +1310,27 @@ fn forward_and_logits_mode(
         &[token_ids.len() as i32],
         MlxDtype::Uint32,
     );
-    shared::utils::set_qwen_prefill_skip_embed_clip(
-        crate::fastpath::should_qwen_prefill_skip_unused_embed_clip(
-            &cfg.model_family,
-            token_ids.len() as i32,
-        ) || crate::fastpath::should_gemma4_prefill_skip_unused_embed_clip(
-            &cfg.model_family,
-            token_ids.len() as i32,
-        ),
-    );
-    shared::utils::set_qwen_prefill_bf16_embed_dequant(
-        crate::fastpath::should_qwen_prefill_bf16_embed_dequant(
-            &cfg.model_family,
-            token_ids.len() as i32,
-        ) || crate::fastpath::should_gemma4_prefill_bf16_embed(
-            &cfg.model_family,
-            token_ids.len() as i32,
-        ),
-    );
-    let mut hidden = embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size);
-    shared::utils::set_qwen_prefill_skip_embed_clip(false);
-    shared::utils::set_qwen_prefill_bf16_embed_dequant(false);
+    let mut hidden = {
+        let _skip_embed_clip = shared::utils::QwenPrefillSkipEmbedClipGuard::arm(
+            crate::fastpath::should_qwen_prefill_skip_unused_embed_clip(
+                &cfg.model_family,
+                token_ids.len() as i32,
+            ) || crate::fastpath::should_gemma4_prefill_skip_unused_embed_clip(
+                &cfg.model_family,
+                token_ids.len() as i32,
+            ),
+        );
+        let _bf16_embed_dequant = shared::utils::QwenPrefillBf16EmbedDequantGuard::arm(
+            crate::fastpath::should_qwen_prefill_bf16_embed_dequant(
+                &cfg.model_family,
+                token_ids.len() as i32,
+            ) || crate::fastpath::should_gemma4_prefill_bf16_embed(
+                &cfg.model_family,
+                token_ids.len() as i32,
+            ),
+        );
+        embed_tokens_arr(&ids_1d, &weights.token_embedding, cfg.hidden_size)
+    };
     hidden = shared::utils::qwen_prefill_maybe_skip_bf16_astype(
         &hidden,
         &cfg.model_family,
@@ -1374,7 +1377,9 @@ fn forward_and_logits_mode(
     // mask even for one query. Keep the common decode path on one borrowed
     // `None` instead of allocating a per-layer mask vec.
     let decode_mask: Option<MlxArray> = None;
-    let key_len = token_offset + seq;
+    // Physical K length: mask geometry tracks where KV is actually written,
+    // never the MRoPE-rotated RoPE position.
+    let key_len = physical_token_offset + seq;
     let min_sliding_window = cfg
         .layer_configs
         .iter()
@@ -1538,7 +1543,7 @@ fn forward_and_logits_mode(
 /// `[1, seq, hc*hidden]`. `ids_1d` is a scalar/1-D `[seq]`/singleton u32
 /// array (lazy arrays allowed); the same ids feed the hash-routed MoE
 /// layers' `tid2eid` lookup.
-fn deepseek_v4_forward_trunk(
+pub(crate) fn deepseek_v4_forward_trunk(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     ids_1d: &MlxArray,
@@ -1932,6 +1937,8 @@ pub fn forward_all_positions_update_cache(
         return;
     }
     // DI-VL-001: match singleton decode MRoPE origin after visual prefill.
+    // Mask widths keep the physical offset; only RoPE uses the rotated one.
+    let physical_token_offset = token_offset;
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     let ids_1d = MlxArray::from_raw_data(
         token_ids.as_ptr() as *const u8,
@@ -1962,8 +1969,13 @@ pub fn forward_all_positions_update_cache(
     );
 
     let seq = token_ids.len();
-    let masks =
-        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
+    let masks = build_layer_masks_for_forward(
+        cfg,
+        weights.layers.len(),
+        seq,
+        physical_token_offset + seq,
+        cache,
+    );
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
@@ -2003,6 +2015,8 @@ pub fn forward_all_positions(
     }
     // DI-VL-001: multi-token n-gram / MTP verify must use the same MRoPE origin
     // as singleton decode after visual prefill (mrope_position_delta).
+    // Mask widths keep the physical offset; only RoPE uses the rotated one.
+    let physical_token_offset = token_offset;
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     let ids_1d = MlxArray::from_raw_data(
         token_ids.as_ptr() as *const u8,
@@ -2037,8 +2051,13 @@ pub fn forward_all_positions(
     );
 
     let seq = token_ids.len();
-    let masks =
-        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
+    let masks = build_layer_masks_for_forward(
+        cfg,
+        weights.layers.len(),
+        seq,
+        physical_token_offset + seq,
+        cache,
+    );
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
@@ -2191,6 +2210,8 @@ pub fn forward_all_positions_with_post_norm_greedy(
     let moe_long_mt = cfg.moe_expert_count > 0
         && token_offset >= 512
         && crate::fastpath::gemma4_moe_long_mt_enabled();
+    // Mask widths keep the physical offset; only RoPE uses the rotated one.
+    let physical_token_offset = token_offset;
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     // LONG_MT aligns both the materialized S=1 baseline and the multi-token
     // verifier on the invariant affine projection kernel. RowExact MLX reads
@@ -2224,8 +2245,13 @@ pub fn forward_all_positions_with_post_norm_greedy(
         hidden = scale_hidden(&hidden, scale);
     }
     shared::utils::qwen_prefill_maybe_async_embed(&hidden, &cfg.model_family, seq as i32);
-    let masks =
-        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
+    let masks = build_layer_masks_for_forward(
+        cfg,
+        weights.layers.len(),
+        seq,
+        physical_token_offset + seq,
+        cache,
+    );
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
@@ -2325,6 +2351,8 @@ pub(crate) fn forward_all_positions_with_post_norm_ids(
         return (output.logits, output.hidden);
     }
     // DI-VL-001: async-draft verify and MTP multi-token path share this entry.
+    // Mask widths keep the physical offset; only RoPE uses the rotated one.
+    let physical_token_offset = token_offset;
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     if cfg.deepseek_v4.is_some() {
         let hidden = deepseek_v4_forward_hidden(cfg, weights, ids_1d, seq, cache, token_offset);
@@ -2348,8 +2376,13 @@ pub(crate) fn forward_all_positions_with_post_norm_ids(
     }
     shared::utils::qwen_prefill_maybe_async_embed(&hidden, &cfg.model_family, seq as i32);
 
-    let masks =
-        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
+    let masks = build_layer_masks_for_forward(
+        cfg,
+        weights.layers.len(),
+        seq,
+        physical_token_offset + seq,
+        cache,
+    );
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, ids_1d, &hidden);
     let layer_count = weights.layers.len();
     // Chunked submit (`AX_MLX_MTP_VERIFY_SUBMIT_LAYERS`, default off).
@@ -2550,6 +2583,8 @@ pub(crate) fn forward_all_positions_post_norm_last_lm_head(
         );
     }
     // DI-VL-001: MTP warmup / optimistic multi-token path after visual prefill.
+    // Mask widths keep the physical offset; only RoPE uses the rotated one.
+    let physical_token_offset = token_offset;
     let token_offset = qwen_visual_rope_offset(weights, cache, token_offset);
     let ids_1d = MlxArray::from_raw_data(
         token_ids.as_ptr() as *const u8,
@@ -2587,8 +2622,13 @@ pub(crate) fn forward_all_positions_post_norm_last_lm_head(
     );
 
     let seq = token_ids.len();
-    let masks =
-        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
+    let masks = build_layer_masks_for_forward(
+        cfg,
+        weights.layers.len(),
+        seq,
+        physical_token_offset + seq,
+        cache,
+    );
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     // Full-seq residual through every layer: MTP warmup needs post-norm at
     // every position. Do not use last-layer last-only / skip-FFN here.
@@ -3256,6 +3296,29 @@ fn layer_forward_dense_embed(
             0,
             rope_freqs_ref,
         )
+    };
+    // YaRN mscale (mlx-lm YarnRoPE): scale Q/K by the attention factor.
+    // RoPE is linear, so scaling the rotated output is identical to the
+    // pre-rope scaling gpt_oss performs; the fused qk_norm_rope helpers
+    // cannot inject between norm and rope, and RMSNorm would cancel a
+    // pre-norm multiply.
+    let q_rope = if (cfg.rope_mscale - 1.0).abs() > 1e-6 {
+        multiply(
+            &q_rope,
+            &mlx_sys::ops::cached_scalar(cfg.rope_mscale, q_rope.dtype()),
+            None,
+        )
+    } else {
+        q_rope
+    };
+    let k_rope = if (cfg.rope_mscale - 1.0).abs() > 1e-6 {
+        multiply(
+            &k_rope,
+            &mlx_sys::ops::cached_scalar(cfg.rope_mscale, k_rope.dtype()),
+            None,
+        )
+    } else {
+        k_rope
     };
     if let Some(started) = qk_norm_rope_started {
         embed_profile_eval_elapsed(

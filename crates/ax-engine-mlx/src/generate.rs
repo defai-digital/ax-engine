@@ -1019,6 +1019,20 @@ pub(crate) fn chunked_prefill_with_mtp_history_and_sampling_buffers(
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
+    if total == 0 {
+        // Defensive: the runner never submits an empty prefill, and the
+        // `prompt_tokens[history_start + 1..]` history slice below would
+        // panic on one (as would `seq - 1` inside the per-chunk forward).
+        return (
+            0,
+            mlx_sys::zeros(
+                &[1, 0, cfg.hidden_size as i32],
+                crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+                None,
+            ),
+            Vec::new(),
+        );
+    }
 
     // AX_MLX_PREFILL_TIME_DEBUG=1 phase timing (diagnostic only): one
     // fixed-key stderr row per chunk plus a final summary row. No evals,
@@ -1269,6 +1283,26 @@ pub(crate) fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
+    if total == 0 {
+        // Defensive: the runner never submits an empty prefill, and the
+        // `chunk.len() - 1` last-logits slice in the final-chunk branch would
+        // panic on one.
+        let packed_width = cfg
+            .deepseek_v4
+            .as_ref()
+            .map(|config| config.hc_mult)
+            .unwrap_or(0)
+            .saturating_mul(cfg.hidden_size);
+        return (
+            0,
+            mlx_sys::zeros(
+                &[1, 0, packed_width as i32],
+                crate::fastpath::activation_dtype_for_family(&cfg.model_family),
+                None,
+            ),
+            Vec::new(),
+        );
+    }
     // Keep the MTP warmup suffix out of the cache-only prefix, as the Qwen
     // path does: the cache-only split used to return a single-row history,
     // so the nextn head was warmed with one transition instead of the
@@ -1302,6 +1336,12 @@ pub(crate) fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
         offset = end;
     }
 
+    // Accumulate the packed residual history across every chunk of the
+    // retained window: the warmup cap can exceed one chunk (or be unlimited),
+    // and non-final chunks previously dropped their packed rows, warming the
+    // nextn head with only the last chunk's transitions.
+    let mut packed_chunks: Vec<MlxArray> = Vec::new();
+    let mut history_tokens: Vec<u32> = Vec::new();
     loop {
         let end = (offset + chunk_size).min(total);
         let chunk = &prompt_tokens[offset..end];
@@ -1345,17 +1385,42 @@ pub(crate) fn chunked_prefill_with_deepseek_v4_mtp_history_and_sampling_buffers(
                 eval_with_kv_refs(&token_arr, cache);
                 token_arr.data_u32()[0]
             };
-            let mut history_tokens = Vec::with_capacity(chunk.len());
+            packed_chunks.push(packed_all);
             if chunk.len() > 1 {
                 history_tokens.extend_from_slice(&chunk[1..]);
             }
             history_tokens.push(tok);
+            let packed_all = if packed_chunks.len() == 1 {
+                packed_chunks.swap_remove(0)
+            } else {
+                let refs: Vec<&MlxArray> = packed_chunks.iter().collect();
+                concatenate(&refs, 1, None)
+            };
             eval(&[&packed_all]);
             clear_cache();
             return (tok, packed_all, history_tokens);
         }
-        let _hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
+        // Non-final chunk of the retained window: keep its packed rows (the
+        // trunk alone — no lm_head needed here); its last row pairs with the
+        // first token of the next chunk.
+        let ids_1d = MlxArray::from_raw_data(
+            chunk.as_ptr() as *const u8,
+            std::mem::size_of_val(chunk),
+            &[chunk.len() as i32],
+            MlxDtype::Uint32,
+        );
+        let packed = crate::model::deepseek_v4_forward_trunk(
+            cfg,
+            weights,
+            &ids_1d,
+            chunk.len(),
+            cache,
+            chunk_offset,
+        );
         cache.advance(chunk.len());
+        packed_chunks.push(packed);
+        history_tokens.extend_from_slice(&chunk[1..]);
+        history_tokens.push(prompt_tokens[end]);
         maybe_async_eval_intermediate_qwen_prefill(cfg, cache, false);
         offset = end;
     }

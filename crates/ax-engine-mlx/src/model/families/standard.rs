@@ -392,11 +392,17 @@ fn layer_shell_post_attention(
                     // (Full per-pos experts smokef112 still drifted at successive step=18.)
                     use mlx_sys::{concatenate, slice};
                     let hs = cfg.hidden_size as i32;
-                    let mut h1_rows = Vec::with_capacity(seq);
-                    let mut h2_normed_rows = Vec::with_capacity(seq);
-                    let mut idx_rows = Vec::with_capacity(seq);
-                    let mut wts_rows = Vec::with_capacity(seq);
-                    for t in 0..seq {
+                    // Under last-position-only prefill the residual/normed
+                    // tensors are already collapsed to one row; never slice
+                    // past the actual row count (empty-slice tolerance is not
+                    // a contract).
+                    let row_count =
+                        (normed2.shape().get(1).copied().unwrap_or(seq as i32) as usize).min(seq);
+                    let mut h1_rows = Vec::with_capacity(row_count);
+                    let mut h2_normed_rows = Vec::with_capacity(row_count);
+                    let mut idx_rows = Vec::with_capacity(row_count);
+                    let mut wts_rows = Vec::with_capacity(row_count);
+                    for t in 0..row_count {
                         let n2 = slice(
                             &normed2,
                             &[0, t as i32, 0],
