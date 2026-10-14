@@ -46,10 +46,22 @@ pub(crate) fn layer_forward(
         &normed,
         w.q_proj.as_ref().expect("gpt_oss layer must have q_proj"),
     );
-    let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+    // Sliding-attention layers use plain RoPE at the local base theta
+    // (LayerConfig's swa_theta) with no YaRN corrected freqs and no mscale —
+    // mlx-lm gpt_oss applies YarnRoPE + mscale to the full-attention layers
+    // only. Falling back to the model-level yarn freqs on a sliding layer
+    // would silently override that layer's own theta.
+    let full_attention = sliding_window.is_none();
+    let rope_freqs = if full_attention {
+        layer_rope_freqs.or(cfg.rope_freqs.as_ref())
+    } else {
+        layer_rope_freqs
+    };
     let (rope_base, rope_freqs_ref) = rope_freqs
         .map(|f| (None, Some(f)))
         .unwrap_or((Some(rope_theta), None));
+    // YaRN mscale: full-attention layers only (see above).
+    let yarn_mscale_active = full_attention && (cfg.rope_mscale - 1.0).abs() > 1e-6;
 
     let q = qk_norm_bhsd_from_proj(
         &q_raw,
@@ -60,7 +72,7 @@ pub(crate) fn layer_forward(
         cfg.rms_norm_eps,
     );
     // YaRN mscale (mlx-lm YarnRoPE): scale rotated dims before rope.
-    let q = if (cfg.rope_mscale - 1.0).abs() > 1e-6 {
+    let q = if yarn_mscale_active {
         multiply(
             &q,
             &mlx_sys::ops::cached_scalar(cfg.rope_mscale, q.dtype()),
@@ -92,7 +104,7 @@ pub(crate) fn layer_forward(
         seq,
         cfg.rms_norm_eps,
     );
-    let k = if (cfg.rope_mscale - 1.0).abs() > 1e-6 {
+    let k = if yarn_mscale_active {
         multiply(
             &k,
             &mlx_sys::ops::cached_scalar(cfg.rope_mscale, k.dtype()),

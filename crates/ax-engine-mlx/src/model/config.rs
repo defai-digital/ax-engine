@@ -220,72 +220,64 @@ impl DeepseekV4Config {
         }
         let attention = &cfg.attention;
 
+        // These fields are only guaranteed by the convert-time contract
+        // checks; load-time manifest validation does not back them. A
+        // hand-edited or schema-drifted manifest must fail soft here (the
+        // weights loader then rejects the mismatched checkpoint with a
+        // structured error) instead of panicking the serving process.
+        let head_dim = attention.head_dim? as usize;
+        let qk_rope_head_dim = attention.qk_rope_head_dim? as usize;
+        let q_lora_rank = attention.q_lora_rank? as usize;
+        let o_lora_rank = attention.o_lora_rank? as usize;
+        let o_groups = attention.o_groups? as usize;
+        let index_topk = attention.index_topk? as usize;
+        let index_n_heads = attention.index_n_heads? as usize;
+        let index_head_dim = attention.index_head_dim? as usize;
+        let compress_rope_theta = attention.compress_rope_theta? as f32;
+        // Same yarn family gate as the standard freqs below; beta
+        // fast/slow fall back to the mlx-lm YarnRoPE defaults (32/1)
+        // when the manifest omits them.
+        let compress_rope_scaling = match m.rope_scaling_type.as_deref() {
+            Some("yarn") | Some("deepseek_yarn") | Some("telechat3-yarn") => {
+                Some(DeepseekV4CompressRopeScaling {
+                    factor: m.rope_scaling_factor.unwrap_or(1.0),
+                    beta_fast: m.rope_beta_fast.unwrap_or(32.0),
+                    beta_slow: m.rope_beta_slow.unwrap_or(1.0),
+                    original_context_len: m.rope_original_context_len.unwrap_or(4096),
+                })
+            }
+            _ => None,
+        };
+        let has_attn_sinks = attention.has_attn_sinks;
+        let compress_ratios = cfg.compress_ratios.clone();
+        let hc_mult = cfg.hc_mult? as usize;
+        let hc_sinkhorn_iters = cfg.hc_sinkhorn_iters? as usize;
+        let hc_eps = cfg.hc_eps?;
+        let num_hash_layers = cfg.num_hash_layers? as usize;
+        let num_nextn_predict_layers = cfg.num_nextn_predict_layers.unwrap_or(0) as usize;
+        let scoring_func = cfg.scoring_func.clone();
+        let swiglu_limit = cfg.swiglu_limit?;
+
         Some(Self {
-            head_dim: attention
-                .head_dim
-                .expect("validated deepseek_v4.attention.head_dim") as usize,
-            qk_rope_head_dim: attention
-                .qk_rope_head_dim
-                .expect("validated deepseek_v4.attention.qk_rope_head_dim")
-                as usize,
-            q_lora_rank: attention
-                .q_lora_rank
-                .expect("validated deepseek_v4.attention.q_lora_rank")
-                as usize,
-            o_lora_rank: attention
-                .o_lora_rank
-                .expect("validated deepseek_v4.attention.o_lora_rank")
-                as usize,
-            o_groups: attention
-                .o_groups
-                .expect("validated deepseek_v4.attention.o_groups") as usize,
-            index_topk: attention
-                .index_topk
-                .expect("validated deepseek_v4.attention.index_topk")
-                as usize,
-            index_n_heads: attention
-                .index_n_heads
-                .expect("validated deepseek_v4.attention.index_n_heads")
-                as usize,
-            index_head_dim: attention
-                .index_head_dim
-                .expect("validated deepseek_v4.attention.index_head_dim")
-                as usize,
-            compress_rope_theta: attention
-                .compress_rope_theta
-                .expect("validated deepseek_v4.attention.compress_rope_theta")
-                as f32,
-            // Same yarn family gate as the standard freqs below; beta
-            // fast/slow fall back to the mlx-lm YarnRoPE defaults (32/1)
-            // when the manifest omits them.
-            compress_rope_scaling: match m.rope_scaling_type.as_deref() {
-                Some("yarn") | Some("deepseek_yarn") | Some("telechat3-yarn") => {
-                    Some(DeepseekV4CompressRopeScaling {
-                        factor: m.rope_scaling_factor.unwrap_or(1.0),
-                        beta_fast: m.rope_beta_fast.unwrap_or(32.0),
-                        beta_slow: m.rope_beta_slow.unwrap_or(1.0),
-                        original_context_len: m.rope_original_context_len.unwrap_or(4096),
-                    })
-                }
-                _ => None,
-            },
-            has_attn_sinks: attention.has_attn_sinks,
-            compress_ratios: cfg.compress_ratios.clone(),
-            hc_mult: cfg.hc_mult.expect("validated deepseek_v4.hc_mult") as usize,
-            hc_sinkhorn_iters: cfg
-                .hc_sinkhorn_iters
-                .expect("validated deepseek_v4.hc_sinkhorn_iters")
-                as usize,
-            hc_eps: cfg.hc_eps.expect("validated deepseek_v4.hc_eps"),
-            num_hash_layers: cfg
-                .num_hash_layers
-                .expect("validated deepseek_v4.num_hash_layers")
-                as usize,
-            num_nextn_predict_layers: cfg.num_nextn_predict_layers.unwrap_or(0) as usize,
-            scoring_func: cfg.scoring_func.clone(),
-            swiglu_limit: cfg
-                .swiglu_limit
-                .expect("validated deepseek_v4.swiglu_limit"),
+            head_dim,
+            qk_rope_head_dim,
+            q_lora_rank,
+            o_lora_rank,
+            o_groups,
+            index_topk,
+            index_n_heads,
+            index_head_dim,
+            compress_rope_theta,
+            compress_rope_scaling,
+            has_attn_sinks,
+            compress_ratios,
+            hc_mult,
+            hc_sinkhorn_iters,
+            hc_eps,
+            num_hash_layers,
+            num_nextn_predict_layers,
+            scoring_func,
+            swiglu_limit,
         })
     }
 
@@ -635,10 +627,13 @@ impl ModelConfig {
         // the full head dim — building YaRN freqs at head_dim would give
         // freqs of len head_dim/2 and mlx_fast_rope would reject them.
         let rope_dims = if m.deepseek_v4.is_enabled() {
+            // Fail soft on a schema-drifted manifest: the weights loader
+            // rejects the checkpoint with a structured error either way.
             m.deepseek_v4
                 .attention
                 .qk_rope_head_dim
-                .expect("validated deepseek_v4.attention.qk_rope_head_dim") as usize
+                .map(|dims| dims as usize)
+                .unwrap_or(head_dim)
         } else {
             m.partial_rotary_factor
                 .map(|f| ((head_dim as f32 * f) as usize).next_multiple_of(2))
