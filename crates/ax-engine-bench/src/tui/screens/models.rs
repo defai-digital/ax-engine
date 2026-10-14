@@ -281,9 +281,11 @@ impl App {
             .confirm_dest
             .as_ref()
             .map(|parent| explicit_destination_path(parent, &variant.model.label));
-        let watch_dir = dest
-            .clone()
-            .unwrap_or_else(|| catalog::repo_cache_dir(&repo_id));
+        // The download always streams into the HF cache first (a custom dest is
+        // populated by a later copy), so watch the cache dir: watching the
+        // final `dest` shows 0 B for the whole download and only jumps at the
+        // rename.
+        let watch_dir = catalog::repo_cache_dir(&repo_id);
         let label = format!(
             "{} {}",
             self.families[pending.family_idx].display_name(),
