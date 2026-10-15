@@ -1,4 +1,4 @@
-pub(crate) mod artifact_identity;
+pub mod artifact_identity;
 mod artifact_path;
 pub(crate) mod attention_mask;
 pub mod batched_decode_certification;

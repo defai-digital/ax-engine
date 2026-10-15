@@ -35,6 +35,12 @@ use sha2::{Digest, Sha256};
 /// (canonical key schema v3).
 pub(crate) const PREFIX_CACHE_ARTIFACT_DOMAIN: &[u8] = b"ax.mlx.prefix_cache.artifact.v1\0";
 
+/// Domain string for the pipeline rank's loaded-model identity: the rank
+/// reports this fingerprint as `model_artifact_digest` so the gateway compares
+/// the topology's declared digest against the artifact actually loaded (rather
+/// than a digest the rank merely echoes from the same topology).
+pub const PIPELINE_ARTIFACT_DOMAIN: &[u8] = b"ax.pipeline.model_artifact.v1\0";
+
 /// Aux files that can change token IDs or model execution without
 /// retargeting weight tensors. Present files are content-hashed; missing
 /// files are skipped (not fail-closed).
@@ -50,7 +56,7 @@ const AUX_IDENTITY_FILES: &[&str] = &[
 /// Compute the content fingerprint under a consumer-specific domain.
 /// Returns `None` when the artifact source cannot supply a stable content
 /// identity (unreadable manifest, tensor not content-addressed).
-pub(crate) fn artifact_fingerprint_sha256_with_domain(
+pub fn artifact_fingerprint_sha256_with_domain(
     artifacts: &NativeModelArtifacts,
     domain: &[u8],
 ) -> Option<String> {

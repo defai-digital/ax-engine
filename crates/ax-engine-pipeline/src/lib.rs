@@ -64,11 +64,40 @@ pub trait RankProcessor: Send + Sync + 'static {
     fn close_request(&self, request_id: u64) -> Result<(), RankServiceError>;
 }
 
+/// SHA-256 of the native model manifest bytes. Every rank can compute this from
+/// the artifacts it loaded, so the reported `manifest_digest` reflects the
+/// actual checkpoint rather than an echo of the topology.
+pub fn model_manifest_sha256(artifacts: &ax_engine_core::NativeModelArtifacts) -> Option<String> {
+    let path = artifacts
+        .root_dir()
+        .join(ax_engine_core::AX_NATIVE_MODEL_MANIFEST_FILE);
+    let bytes = std::fs::read(&path).ok()?;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// Content fingerprint of the loaded artifact under the pipeline domain, or
+/// `None` when the artifact is not content-addressed (see `artifact_identity`).
+pub fn pipeline_model_artifact_digest(
+    artifacts: &ax_engine_core::NativeModelArtifacts,
+) -> Option<String> {
+    ax_engine_mlx::artifact_identity::artifact_fingerprint_sha256_with_domain(
+        artifacts,
+        ax_engine_mlx::artifact_identity::PIPELINE_ARTIFACT_DOMAIN,
+    )
+}
+
 pub struct MlxRankProcessor {
     topology: PipelineTopology,
     rank: u16,
     executor: Mutex<PipelineRankExecutor>,
     maximum_activation_bytes: u64,
+    /// Digests of the artifact this rank actually loaded (computed at startup),
+    /// not an echo of the topology's declared values.
+    manifest_digest: String,
+    model_artifact_digest: String,
 }
 
 impl MlxRankProcessor {
@@ -77,12 +106,16 @@ impl MlxRankProcessor {
         rank: u16,
         executor: PipelineRankExecutor,
         maximum_activation_bytes: u64,
+        manifest_digest: String,
+        model_artifact_digest: String,
     ) -> Self {
         Self {
             topology,
             rank,
             executor: Mutex::new(executor),
             maximum_activation_bytes,
+            manifest_digest,
+            model_artifact_digest,
         }
     }
 
@@ -134,8 +167,8 @@ impl RankProcessor for MlxRankProcessor {
             rank: self.rank,
             generation: self.topology.generation,
             cluster_id: self.topology.cluster_id.clone(),
-            manifest_digest: self.topology.manifest_digest.clone(),
-            model_artifact_digest: self.topology.model_artifact_digest.clone(),
+            manifest_digest: self.manifest_digest.clone(),
+            model_artifact_digest: self.model_artifact_digest.clone(),
         }
     }
 
