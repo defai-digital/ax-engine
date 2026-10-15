@@ -970,13 +970,14 @@ fn validate_load_memory_preflight(
     let incoming_pool = kv_pool_tokens(&default_live.session_config.kv_config);
     let incoming_kv = manifest_kv_geometry(model_path)
         .and_then(|geometry| estimated_kv_pool_bytes(&geometry, incoming_pool));
-    // A soft-parked same-id reload republishes resident weights, which the
-    // measured/estimated resident total already accounts for — charging the
-    // full incoming estimate would double-count them and false-reject the
-    // evict→reload cycle.
-    let parked_republish =
-        load_mode == LoadModelMode::Add && state.parked_live_matches(model_id, model_path);
-    let incoming = if parked_republish {
+    // A parked generation with the same id+path already holds these weights as
+    // resident, and the measured/estimated resident total counts them: charging
+    // the incoming estimate again would double-count and false-reject the
+    // evict→reload cycle. This holds for Add (republish) and equally for
+    // Replace, whose preflight runs before the load task retires the parked
+    // generation, so the measurement still includes it.
+    let parked_same_id_resident = state.parked_live_matches(model_id, model_path);
+    let incoming = if parked_same_id_resident {
         0
     } else {
         estimated_footprint_bytes(incoming_weights, incoming_kv)
