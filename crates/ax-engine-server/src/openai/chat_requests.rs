@@ -3427,12 +3427,17 @@ fn nemotron_omni_per_image_patch_budget(
                 "Nemotron H Nano Omni downsample factor overflowed".to_string(),
             )
         })?;
-    let budget = tokens_available
-        .saturating_mul(factor_sq)
-        .max(config.min_num_patches.saturating_mul(image_count));
+    // The budget returned here is for ONE image, and every image draws from the
+    // same context, so the pool is shared across them. The earlier
+    // `.max(min_num_patches * image_count)` form mixed a whole-request quantity
+    // into a per-image bound and let N images each claim the full pool; the
+    // request was then rejected by the context gate only after every image had
+    // been decoded and normalized.
+    let image_count = image_count.max(1);
+    let budget = (tokens_available / image_count).saturating_mul(factor_sq);
     Ok(budget
-        .min(config.max_num_patches)
-        .max(config.min_num_patches))
+        .max(config.min_num_patches)
+        .min(config.max_num_patches))
 }
 
 /// Probe and decode image bytes to RGB, failing closed as `invalid_request`
@@ -4638,6 +4643,41 @@ fn gemma4_unified_error_response(error: Gemma4UnifiedError) -> HttpErrorResponse
 mod media_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn nemotron_per_image_patch_budget_shares_the_context_across_images() {
+        // Every image draws from the same context, so the per-image patch budget
+        // has to shrink with the image count: N images each claiming the whole
+        // pool were only rejected by the context gate after all of them had been
+        // decoded and normalized.
+        let config = NemotronOmniProcessorConfig {
+            patch_size: 16,
+            downsample_factor: 2,
+            min_num_patches: 1024,
+            max_num_patches: 13_312,
+            max_model_len: 16_384,
+            audio_sampling_rate: 16_000,
+            audio_hop_length: 160,
+            audio_subsampling_factor: 1,
+            audio_subsampling_kernel: 3,
+            audio_subsampling_stride: 1,
+            mean: [0.0; 3],
+            std: [1.0; 3],
+        };
+
+        let one = nemotron_omni_per_image_patch_budget(&config, 1).expect("one image");
+        let five = nemotron_omni_per_image_patch_budget(&config, 5).expect("five images");
+        assert_eq!(one, 13_312, "a single image may use the whole pool");
+        assert_eq!(five, 13_104);
+        let patches_per_token = config.downsample_factor * config.downsample_factor;
+        assert!(
+            u64::from(five / patches_per_token) * 5 <= u64::from(config.max_model_len - 4),
+            "five per-image budgets must fit the shared context together"
+        );
+        // A zero-image call must not divide by zero (the caller may render an
+        // audio-only prompt through the same path).
+        assert!(nemotron_omni_per_image_patch_budget(&config, 0).is_ok());
+    }
 
     fn processor_config() -> Gemma4UnifiedProcessorConfig {
         let model = json!({
