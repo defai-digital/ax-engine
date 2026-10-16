@@ -107,6 +107,19 @@ pub(crate) fn is_nemotron_omni_model_dir(model_dir: &Path) -> bool {
 /// an unbounded content-part Vec.
 pub(crate) const MAX_INLINE_IMAGES_PER_REQUEST: usize = 40;
 
+/// Per-request cap on inline audio across all messages, for the same reason as
+/// the image cap: each clip is decoded (up to the model's audio window) before
+/// the media token budget is checked, so an unbounded clip list would let one
+/// request monopolize CPU and memory first. Aligned with the core's
+/// per-modality media cap.
+pub(crate) const MAX_INLINE_AUDIOS_PER_REQUEST: usize = 40;
+
+/// Per-request cap on inline video across all messages: each item spawns an
+/// ffmpeg decode or buffers GIF frames before any token budget applies, so the
+/// bound has to come before decoding. Aligned with the core's per-modality
+/// media cap.
+pub(crate) const MAX_INLINE_VIDEOS_PER_REQUEST: usize = 40;
+
 /// Fail-safe defaults for unified Qwen vision checkpoints. The renderer reads
 /// the actual processor/config files before preprocessing.
 const QWEN3_VL_DEFAULT_PATCH_SIZE: u32 = 16;
@@ -4314,10 +4327,30 @@ inline images; split the conversation or drop older images"
                         rendered.push_str(image_placeholder);
                     }
                     OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio) => {
+                        if collected.audios.len() >= MAX_INLINE_AUDIOS_PER_REQUEST {
+                            return Err(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request",
+                                format!(
+                                    "request carries more than {MAX_INLINE_AUDIOS_PER_REQUEST} \
+inline audio clips; split the conversation or drop older clips"
+                                ),
+                            ));
+                        }
                         collected.audios.push(audio_part_bytes(part)?);
                         rendered.push_str(audio_placeholder);
                     }
                     OpenAiChatContentPartKind::Video => {
+                        if collected.videos.len() >= MAX_INLINE_VIDEOS_PER_REQUEST {
+                            return Err(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request",
+                                format!(
+                                    "request carries more than {MAX_INLINE_VIDEOS_PER_REQUEST} \
+inline videos; split the conversation or drop older videos"
+                                ),
+                            ));
+                        }
                         collected.videos.push(video_part_bytes(part)?);
                         rendered.push_str(video_placeholder);
                     }
