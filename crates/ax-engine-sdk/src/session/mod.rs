@@ -687,9 +687,21 @@ impl EngineSession {
         &mut self,
         submission: RequestSubmission,
     ) -> Result<RequestId, EngineSessionError> {
-        self.core
+        let request_id = submission.request_id.0;
+        let submitted = self
+            .core
             .submit(submission)
-            .map_err(EngineSessionError::from)
+            .map_err(EngineSessionError::from)?;
+        // A caller may reuse a request id that an earlier request already used
+        // (`submit_generate_with_request_id`). Stored routes are keyed by id
+        // alone, so drop the previous request's entry: otherwise the new
+        // request's steps merge into the dead request's counters instead of
+        // starting clean.
+        if self.native_request_routes.remove(&request_id).is_some() {
+            self.native_route_report_order
+                .retain(|queued| *queued != request_id);
+        }
+        Ok(submitted)
     }
 
     pub fn cancel(&mut self, request_id: RequestId) -> Result<(), EngineSessionError> {

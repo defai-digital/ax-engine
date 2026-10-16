@@ -2616,3 +2616,36 @@ fn shared_decode_reports_every_selected_read_delta_without_full_routes() {
         Some("test_attention")
     );
 }
+
+#[test]
+fn resubmitting_a_recycled_request_id_drops_the_previous_route() {
+    // `submit_generate_with_request_id` lets a caller reuse an id once the
+    // previous request finished. Stored routes are keyed by id alone, so a
+    // recycled id must not inherit the dead request's counters by merging.
+    let mut session = shared_stream_test_session(4);
+    let mut stale = GenerateRouteReport::with_execution_plan("stale-route");
+    stale
+        .crossover_decisions
+        .insert("ax_mlx_prefill_tokens".to_string(), 4096);
+    session.store_native_request_route(7, stale, &[]);
+    assert!(session.native_request_routes.contains_key(&7));
+
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 4,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(7, request)
+        .expect("resubmit with a recycled id");
+
+    assert!(
+        !session.native_request_routes.contains_key(&7),
+        "a recycled request id must start without the previous request's route"
+    );
+}
