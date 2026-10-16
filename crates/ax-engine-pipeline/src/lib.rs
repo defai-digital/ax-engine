@@ -80,6 +80,14 @@ pub fn model_manifest_sha256(artifacts: &ax_engine_core::NativeModelArtifacts) -
 
 /// Content fingerprint of the loaded artifact under the pipeline domain, or
 /// `None` when the artifact is not content-addressed (see `artifact_identity`).
+///
+/// Callers that must still report a digest (the pipeline rank) fall back to
+/// [`model_manifest_sha256`]. That fallback is not domain-separated and hashes
+/// only the manifest bytes, so two checkpoints with byte-identical manifests
+/// but different tensor content produce the same value: it detects a different
+/// *manifest*, never rewritten weights. Whoever produces the expected value on
+/// the other side of a comparison must derive it with this same function (or
+/// the same fallback) for a valid topology to pass.
 pub fn pipeline_model_artifact_digest(
     artifacts: &ax_engine_core::NativeModelArtifacts,
 ) -> Option<String> {

@@ -971,11 +971,17 @@ fn validate_load_memory_preflight(
     let incoming_kv = manifest_kv_geometry(model_path)
         .and_then(|geometry| estimated_kv_pool_bytes(&geometry, incoming_pool));
     // A parked generation with the same id+path already holds these weights as
-    // resident, and the measured/estimated resident total counts them: charging
-    // the incoming estimate again would double-count and false-reject the
-    // evict→reload cycle. This holds for Add (republish) and equally for
-    // Replace, whose preflight runs before the load task retires the parked
-    // generation, so the measurement still includes it.
+    // resident, and the preflight's measured/estimated resident total counts
+    // them: charging the incoming estimate again would double-count and
+    // false-reject the evict→reload cycle. This holds for Add (republish, which
+    // reuses the parked worker) and equally for Replace: the load task retires
+    // the parked generation before it builds the replacement from the same path,
+    // so the baseline's parked contribution is exchanged one-for-one for the new
+    // build instead of being added to it.
+    //
+    // That ordering is load-bearing. If a build ever starts before the parked
+    // generation is retired, the peak becomes baseline + incoming and this must
+    // charge `incoming` again.
     let parked_same_id_resident = state.parked_live_matches(model_id, model_path);
     let incoming = if parked_same_id_resident {
         0

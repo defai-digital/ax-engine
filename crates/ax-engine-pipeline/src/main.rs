@@ -121,6 +121,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the gateway's health comparison against the topology will reject.
     let manifest_digest = ax_engine_pipeline::model_manifest_sha256(&artifacts)
         .ok_or("could not hash the native model manifest")?;
+    // Falls back to the manifest digest when the pack's tensors are materialized
+    // files rather than content-addressed symlinks (both the installer and the
+    // bootstrap downloader write real files). That fallback still binds the rank
+    // to the checkpoint it loaded well enough to reject a different manifest,
+    // but it cannot distinguish two checkpoints whose manifests are
+    // byte-identical — see `pipeline_model_artifact_digest`.
     let model_artifact_digest = ax_engine_pipeline::pipeline_model_artifact_digest(&artifacts)
         .unwrap_or_else(|| manifest_digest.clone());
     let processor = Arc::new(MlxRankProcessor::new(
@@ -249,6 +255,11 @@ async fn post_rank_observation(
     let observation = RankObservation {
         cluster_id: config.topology.cluster_id.clone(),
         generation: config.topology.generation,
+        // Echoes the topology's declared digest rather than hashing the manifest
+        // this rank loaded: the heartbeat identifies the gang generation, not the
+        // artifact. The loaded-artifact identity travels separately on `/health`
+        // as `model_artifact_digest`, which is the value the gateway preflight
+        // compares against the topology.
         manifest_digest: config.topology.manifest_digest.clone(),
         rank: config.rank,
         state,
