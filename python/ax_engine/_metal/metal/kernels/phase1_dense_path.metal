@@ -1882,11 +1882,12 @@ kernel void decode_projection_q4km(
     const uint row = tgpig.x * 2u + (uint)sgitg;
     if (row >= params.n_rows) return;
 
-    // Q4_K blocks hold 256 elements; a width that is not a positive multiple
-    // of 256 has no valid packing (the row stride floor(width/256)*144 would
-    // read the wrong region for row >= 1). Skip the row rather than copy from
-    // a malformed layout.
-    if (params.input_width == 0u || params.input_width % 256u != 0u) return;
+    // Q4_K blocks hold 256 elements; a width that is not a multiple of 256 has
+    // no valid packing (the row stride floor(width/256)*144 would read the
+    // wrong region for row >= 1). Skip the row rather than read from a
+    // malformed layout. A zero width keeps the previous behaviour: no blocks to
+    // accumulate, so the row is written as zeros.
+    if (params.input_width % 256u != 0u) return;
     const uint n_blocks = params.input_width / 256u;
     device const uint8_t* row_w = weights + row * n_blocks * 144u;
 
