@@ -363,6 +363,12 @@ pub struct RequestRecord {
     /// `MEMORY_BLOCKED_STEP_LIMIT` the request fails instead of retrying
     /// forever (a never-fitting request would otherwise wedge the queue).
     pub memory_blocked_step_count: u32,
+    /// Consecutive steps this request landed in `route_deferred_requests`
+    /// without being selected. Reset whenever the request is selected; the
+    /// scheduler orders same-mode candidates by descending count so a
+    /// route-incompatible sibling eventually anchors its own batch instead of
+    /// waiting for the current route anchor to stop generating.
+    pub route_deferred_step_count: u32,
 }
 
 impl RequestRecord {
@@ -392,6 +398,7 @@ impl RequestRecord {
             diffusion_commit_ready: false,
             diffusion_block_committed: false,
             memory_blocked_step_count: 0,
+            route_deferred_step_count: 0,
         }
     }
 
@@ -435,6 +442,7 @@ impl RequestRecord {
             diffusion_denoise_steps_in_block: self.diffusion_denoise_steps_in_block,
             diffusion_commit_ready: self.diffusion_commit_ready,
             diffusion_block_committed: self.diffusion_block_committed,
+            route_deferred_steps: self.route_deferred_step_count,
         }
     }
 
@@ -593,6 +601,10 @@ pub struct RequestSnapshot {
     pub diffusion_commit_ready: bool,
     /// Last diffusion block was committed; next unit restarts denoise.
     pub diffusion_block_committed: bool,
+    /// Consecutive steps this request was deferred for route incompatibility.
+    /// Higher counts sort earlier so the batch anchor rotates instead of one
+    /// route holding it until its anchor stops generating.
+    pub route_deferred_steps: u32,
 }
 
 impl RequestSnapshot {

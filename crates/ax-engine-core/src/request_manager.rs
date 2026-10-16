@@ -297,8 +297,19 @@ impl RequestManager {
         for request_id in &schedule_plan.selected_requests {
             if let Some(record) = self.records.get_mut(request_id) {
                 record.memory_blocked_step_count = 0;
+                record.route_deferred_step_count = 0;
             }
             self.transition_request(*request_id, RequestRecord::start_running)?;
+        }
+
+        // Route deferrals are transient, not a failure: the request stays
+        // Runnable and simply rotates to the front of the next step's
+        // same-mode ordering (see `Scheduler::plan`).
+        for request_id in &schedule_plan.route_deferred_requests {
+            if let Some(record) = self.records.get_mut(request_id) {
+                record.route_deferred_step_count =
+                    record.route_deferred_step_count.saturating_add(1);
+            }
         }
 
         for request_id in &schedule_plan.memory_blocked_requests {
@@ -859,6 +870,7 @@ mod tests {
             selected_requests: vec![RequestId(1)],
             deferred_requests: vec![],
             memory_blocked_requests: vec![RequestId(2)],
+            route_deferred_requests: vec![],
             execution_batch: None,
         };
 
@@ -871,6 +883,46 @@ mod tests {
         assert_eq!(
             manager.snapshot(RequestId(2)).unwrap().state,
             RequestState::BlockedOnMemory
+        );
+    }
+
+    #[test]
+    fn route_deferral_counter_rotates_then_resets_on_selection() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(1),
+                selected_requests: vec![],
+                deferred_requests: vec![RequestId(1)],
+                memory_blocked_requests: vec![],
+                route_deferred_requests: vec![RequestId(1)],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        // A route deferral is not a failure: the request stays Runnable and
+        // only accumulates rotation weight for the next step.
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Runnable);
+        assert_eq!(snapshot.route_deferred_steps, 1);
+
+        manager
+            .apply_schedule_plan(&SchedulePlan {
+                step_id: StepId(2),
+                selected_requests: vec![RequestId(1)],
+                deferred_requests: vec![],
+                memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
+                execution_batch: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            manager.snapshot(RequestId(1)).unwrap().route_deferred_steps,
+            0
         );
     }
 
@@ -1215,6 +1267,7 @@ mod tests {
                 selected_requests: vec![RequestId(1)],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap();
@@ -1253,6 +1306,7 @@ mod tests {
                 selected_requests: vec![RequestId(1)],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap();
@@ -1315,6 +1369,7 @@ mod tests {
                 selected_requests: vec![RequestId(1)],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap();
@@ -1373,6 +1428,7 @@ mod tests {
                 selected_requests: vec![RequestId(1)],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap();
@@ -1656,6 +1712,7 @@ mod tests {
                 selected_requests: vec![],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![RequestId(1)],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap();
@@ -1722,6 +1779,7 @@ mod tests {
                 selected_requests: vec![],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![RequestId(1)],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap();
@@ -1746,6 +1804,7 @@ mod tests {
                 selected_requests: vec![RequestId(1)],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap();
@@ -1826,6 +1885,7 @@ mod tests {
                 selected_requests: vec![RequestId(99)],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap_err();
@@ -1847,6 +1907,7 @@ mod tests {
                 selected_requests: vec![RequestId(1)],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap_err();
@@ -1872,6 +1933,7 @@ mod tests {
                 selected_requests: vec![RequestId(1)],
                 deferred_requests: vec![],
                 memory_blocked_requests: vec![],
+                route_deferred_requests: vec![],
                 execution_batch: None,
             })
             .unwrap();

@@ -562,12 +562,26 @@ impl EngineCore {
                         && !memory_blocked_requests.contains(request_id)
                 })
                 .collect::<BTreeSet<_>>();
+            // Route deferrals stay a subset of `deferred_requests` across the
+            // merge, so re-apply the same filter rather than trusting either
+            // retry's list.
+            let route_deferred_requests = resolved_plan
+                .route_deferred_requests
+                .iter()
+                .chain(fallback_plan.route_deferred_requests.iter())
+                .copied()
+                .filter(|request_id| {
+                    !selected_requests.contains(request_id)
+                        && !memory_blocked_requests.contains(request_id)
+                })
+                .collect::<BTreeSet<_>>();
 
             resolved_plan = SchedulePlan {
                 step_id: fallback_plan.step_id,
                 selected_requests,
                 deferred_requests: deferred_requests.into_iter().collect(),
                 memory_blocked_requests: memory_blocked_requests.into_iter().collect(),
+                route_deferred_requests: route_deferred_requests.into_iter().collect(),
                 execution_batch: fallback_plan.execution_batch,
             };
             prefix_hits += fallback_prefix_hits;
@@ -596,6 +610,12 @@ impl EngineCore {
         let mut selected_requests = Vec::new();
         let mut deferred_requests = schedule_plan.deferred_requests;
         let mut memory_blocked_requests = schedule_plan.memory_blocked_requests;
+        // Route deferrals were never in the batch, so the allocated/deferred
+        // split below leaves them alone. Preemption is the exception: it can
+        // pull a request out of `deferred_requests` and into
+        // `memory_blocked_requests`, so the route subset is re-derived from the
+        // final `deferred_requests` before this plan is returned.
+        let route_deferred_requests = schedule_plan.route_deferred_requests;
         let mut allocated_items: Vec<ExecutionItem> = Vec::new();
         let mut preempted: BTreeSet<RequestId> = BTreeSet::new();
         let mut preemption_metrics = PreemptionMetrics::default();
@@ -680,11 +700,19 @@ impl EngineCore {
         let execution_batch =
             Self::rebuild_execution_batch(execution_batch, allocated_items, &prefix_reuse);
 
+        // Re-derive the route subset from the final deferral list so the two
+        // cannot disagree, whichever path moved a request between them.
+        let route_deferred_requests = route_deferred_requests
+            .into_iter()
+            .filter(|request_id| deferred_requests.contains(request_id))
+            .collect();
+
         let resolved_plan = SchedulePlan {
             step_id: schedule_plan.step_id,
             selected_requests,
             deferred_requests,
             memory_blocked_requests,
+            route_deferred_requests,
             execution_batch,
         };
 
