@@ -412,6 +412,11 @@ impl MlxNativePrefixCache {
             && left.route_policy == right.route_policy
             && left.layer_layout == right.layer_layout
             && left.block_size_tokens == right.block_size_tokens
+            // Compare the media digests directly as well: `layer_layout` folds
+            // them in as `{base};media={key}`, which is not injective when the
+            // base embeds a path (the no-artifact-fingerprint case), so two
+            // different media sets could otherwise share a KV payload.
+            && left.media_key == right.media_key
     }
 
     /// Longest block-aligned token prefix available from any compatible live
