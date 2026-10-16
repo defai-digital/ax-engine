@@ -363,11 +363,12 @@ pub struct RequestRecord {
     /// `MEMORY_BLOCKED_STEP_LIMIT` the request fails instead of retrying
     /// forever (a never-fitting request would otherwise wedge the queue).
     pub memory_blocked_step_count: u32,
-    /// Consecutive steps this request landed in `route_deferred_requests`
-    /// without being selected. Reset whenever the request is selected; the
-    /// scheduler orders same-mode candidates by descending count so a
-    /// route-incompatible sibling eventually anchors its own batch instead of
-    /// waiting for the current route anchor to stop generating.
+    /// Route deferrals accumulated since the request was last selected: every
+    /// step it landed in `route_deferred_requests` adds one. Reset on selection
+    /// only, so a request whose route keeps losing the anchor keeps its place in
+    /// the rotation; the scheduler orders same-mode candidates by descending
+    /// count so a route-incompatible sibling eventually anchors its own batch
+    /// instead of waiting for the current route anchor to stop generating.
     pub route_deferred_step_count: u32,
 }
 

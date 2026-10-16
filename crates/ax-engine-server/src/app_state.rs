@@ -1149,6 +1149,14 @@ impl ServerMetrics {
             // on every decode step. Adding those snapshots as if they were
             // per-step deltas over-counts a request as the triangular series
             // n(n+1)/2. The EWMA remains a last-wins gauge.
+            //
+            // Exact only while a step serves one request. The runner sums the
+            // batch's per-request cumulative snapshots, so a multi-request step
+            // emits a value that is neither one request's running total nor a
+            // per-step delta, and the per-model `last` below cannot separate the
+            // batch members. Concurrent decode can therefore over-count these
+            // totals; fixing that needs per-request telemetry on the step report
+            // (EngineStepReport carries no request id today).
             for (total, last, key) in [
                 (
                     &mut entry.mtp_draft_tokens_total,

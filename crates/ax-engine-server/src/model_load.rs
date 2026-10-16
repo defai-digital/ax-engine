@@ -979,8 +979,9 @@ fn validate_load_memory_preflight(
     // so the baseline's parked contribution is exchanged one-for-one for the new
     // build instead of being added to it.
     //
-    // That ordering is load-bearing. If a build ever starts before the parked
-    // generation is retired, the peak becomes baseline + incoming and this must
+    // That ordering is load-bearing, and so is the retirement succeeding: a
+    // failed `retire` only logs a warning and the load proceeds, in which case
+    // the parked weights stay resident alongside the new build and this must
     // charge `incoming` again.
     let parked_same_id_resident = state.parked_live_matches(model_id, model_path);
     let incoming = if parked_same_id_resident {
