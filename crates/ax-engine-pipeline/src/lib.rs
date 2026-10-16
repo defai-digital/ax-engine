@@ -78,34 +78,14 @@ pub fn model_manifest_sha256(artifacts: &ax_engine_core::NativeModelArtifacts) -
     Some(format!("{:x}", hasher.finalize()))
 }
 
-/// Content fingerprint of the loaded artifact under the pipeline domain, or
-/// `None` when the artifact is not content-addressed (see `artifact_identity`).
-///
-/// Callers that must still report a digest (the pipeline rank) fall back to
-/// [`model_manifest_sha256`]. That fallback is not domain-separated and hashes
-/// only the manifest bytes, so two checkpoints with byte-identical manifests
-/// but different tensor content produce the same value: it detects a different
-/// *manifest*, never rewritten weights. Whoever produces the expected value on
-/// the other side of a comparison must derive it with this same function (or
-/// the same fallback) for a valid topology to pass.
-pub fn pipeline_model_artifact_digest(
-    artifacts: &ax_engine_core::NativeModelArtifacts,
-) -> Option<String> {
-    ax_engine_mlx::artifact_identity::artifact_fingerprint_sha256_with_domain(
-        artifacts,
-        ax_engine_mlx::artifact_identity::PIPELINE_ARTIFACT_DOMAIN,
-    )
-}
-
 pub struct MlxRankProcessor {
     topology: PipelineTopology,
     rank: u16,
     executor: Mutex<PipelineRankExecutor>,
     maximum_activation_bytes: u64,
-    /// Digests of the artifact this rank actually loaded (computed at startup),
-    /// not an echo of the topology's declared values.
+    /// SHA-256 of the model manifest this rank loaded, computed at startup from
+    /// its own artifacts rather than echoed from the topology.
     manifest_digest: String,
-    model_artifact_digest: String,
 }
 
 impl MlxRankProcessor {
@@ -115,7 +95,6 @@ impl MlxRankProcessor {
         executor: PipelineRankExecutor,
         maximum_activation_bytes: u64,
         manifest_digest: String,
-        model_artifact_digest: String,
     ) -> Self {
         Self {
             topology,
@@ -123,7 +102,6 @@ impl MlxRankProcessor {
             executor: Mutex::new(executor),
             maximum_activation_bytes,
             manifest_digest,
-            model_artifact_digest,
         }
     }
 
@@ -176,7 +154,11 @@ impl RankProcessor for MlxRankProcessor {
             generation: self.topology.generation,
             cluster_id: self.topology.cluster_id.clone(),
             manifest_digest: self.manifest_digest.clone(),
-            model_artifact_digest: self.model_artifact_digest.clone(),
+            // Declared by the topology and echoed back: only the topology
+            // producer can derive this pack-level digest, so the rank binds the
+            // identity it can compute itself (`manifest_digest`) and leaves this
+            // field to the producer's value.
+            model_artifact_digest: self.topology.model_artifact_digest.clone(),
         }
     }
 
