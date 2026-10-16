@@ -1,0 +1,21 @@
+--- a/scripts/probe_mlx_runtime_upgrade.py
++++ b/scripts/probe_mlx_runtime_upgrade.py
+@@ -28 +28 @@
+-        if baseline.get(field) != candidate.get(field):
++        if field not in baseline or field not in candidate or baseline[field] != candidate[field]:
+@@ -29,0 +30,4 @@
++    for field in ("python", "numpy"):
++        if (not baseline["runtime"].get(field)
++                or baseline["runtime"][field] != candidate["runtime"].get(field)):
++            raise ValueError(f"comparison requires matching runtime {field}")
+@@ -130,2 +134,8 @@
+-    kk, vv = mx.repeat(k, 2, axis=1), mx.repeat(v, 2, axis=1)
+-    expected = mx.softmax((q @ mx.swapaxes(kk, -1, -2)) * 0.125, axis=-1) @ vv
++    # GPU FP32 matmul can select reduced-precision NAX arithmetic on M5.
++    # Keep the accuracy oracle independent of that dispatch and its rounding.
++    kk = np.repeat(np.asarray(k).astype(np.float64), 2, axis=1)
++    vv = np.repeat(np.asarray(v).astype(np.float64), 2, axis=1)
++    scores = (np.asarray(q).astype(np.float64) @ kk.swapaxes(-1, -2)) * 0.125
++    probabilities = np.exp(scores - scores.max(axis=-1, keepdims=True))
++    probabilities /= probabilities.sum(axis=-1, keepdims=True)
++    expected = mx.array((probabilities @ vv).astype(np.float32))

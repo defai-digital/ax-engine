@@ -1,0 +1,308 @@
+{
+  "schema": "ax.mlx.runtime_upgrade_probe.v2",
+  "scope": "Synthetic upstream operations only; no model or MTP certification",
+  "probe_sha256": "1645612f26a3f663b51cadba72dbb150f6907364fad6296b122f5bd13b45bbec",
+  "host": {
+    "chip": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "macos": "27.0.1"
+  },
+  "runtime": {
+    "mlx": "0.32.3",
+    "mlx_metal": "0.32.3",
+    "python": "3.14.8",
+    "numpy": "2.5.4",
+    "asset_sha256": {
+      "libmlx.dylib": "ebc8a5f5465afb79d3d9c8f5b0929de1a9b277b7179db8672f92da77ae110a1e",
+      "libjaccl.dylib": "949e901df832d600a71ff2bc5f3738d55b010668102f36e071e1890807a965cd",
+      "mlx.metallib": "95974b7de464ec2be7833a914ca5a53d283a70789470fd84218738fc8fcea3e1"
+    }
+  },
+  "input_sha256": {
+    "small_x": "dbb991b4907438976d79d1e03714ccad6ec62bd5b06b4f6dc87d8b24136f8c29",
+    "small_w": "ad87ef59e1d1200796f1ab02823488b5ec1666ee54cd735bf5da850a7da04374",
+    "experts": "b0d26db7a072f90043c95613817d7726b7978106bbb6225e2bb279df8daa48da",
+    "q": "dd08c5d18963d1287922a401e87a8ffbde6a5e293c56a8014ae375f0c5762e51",
+    "k": "9f45db7410907c29b19f5d5e4fb83682c62d9b8fbef8618914265b4aaf06075e",
+    "v": "6ef9f263906906c7fe2836d62db1b538d53ee695836a43b0d6b3530f010e8e3d",
+    "splitk_w": "8428f4fe922e84320dd23c6ecd023278ebad95f7eae8fb7493bc5b022566c8af",
+    "splitk_x": "9ce035499150297a22bdfbae106f5e2347dd3f483ef62725ff7ae09717c890a9",
+    "sdpa_d256_s1_q": "afbb1da6a8d4867d954b0dd83709ce3342c9945ef7d908275ef80132d8261308",
+    "sdpa_d256_s1_k": "51a5521952cd6a4662ea1461022bca8960311a39c9635f201a18a2ed548f31d6",
+    "sdpa_d256_s1_v": "bdc0bbf844ea10dc431d0e8243ae80fb2ac3c79d9ce5ebdeae8d142ce2cfc8f1",
+    "sdpa_d256_s4_q": "784714801d3ff8fb88954416d74fee49f22545bdbc47eacaec5283a321ba35b0",
+    "sdpa_d256_s4_k": "ffed4e832fdad0280f948bafec38177bd894d72ae2605796709b4f6b816e5efa",
+    "sdpa_d256_s4_v": "99cd75fadfe84b9b14d3baf3abd79c6dc5f68d012e7b8a7b72af636f3bcc93f3",
+    "sdpa_d256_s5_q": "d6eb6b516ea66287e307f4feaf8fe22b0f94b9ccc73460259f39a033e6317cfd",
+    "sdpa_d256_s5_k": "8b02bb959dca1fa0970ec25a0d72bf8ee58bc34e385e86803e026c03c4e1dfcb",
+    "sdpa_d256_s5_v": "a8ff2d48925001ac475b293ed7e05088f937d788b3c5302dc5354363a161cdf6",
+    "sdpa_d256_s32_q": "8c58f328de0001eec51d43918ba48f0a434c62dcae5d4b3e6f75050fbd0a19a9",
+    "sdpa_d256_s32_k": "abc813a8e74f2426c5a3f31069b95e68bd5a8b4bf200a3ebd75841fcdcdbbdb8",
+    "sdpa_d256_s32_v": "1c77d8b7fb6bdbcb8583cff9592aae8c66f97b2574c04fafac7b25a665a52cbe",
+    "sdpa_d512_s1_q": "8f263d8b9389d7ebbc42f0da4c27c8a8ac56505835ee5ecafe087fafa0ce3664",
+    "sdpa_d512_s1_k": "de5b61e8860b2a276485820d322dbf9b3ebbd359fcaa104401a8082978f42928",
+    "sdpa_d512_s1_v": "05b58d3a68fe03e162c33c51cb90f6f510143c5ef460334ddc134a98ffb0be9a",
+    "sdpa_d512_s4_q": "cd5fc9bff43c114a34392c8b080b3575c5172bb0cf5b67182de59c2a3c594563",
+    "sdpa_d512_s4_k": "85d8a79f495d1a4cb583ba072f9f1c0731646c18f9b63ffe8ad643b923b0aef1",
+    "sdpa_d512_s4_v": "be40773228f1bca7c8e0a0075c463eec2f27b657776faf35f5eca2ed25e567c6",
+    "sdpa_d512_s5_q": "172ab1365dd4eb1e810265f3a67af0a2ba39c4b4f1772a1c80ed397e5f5143da",
+    "sdpa_d512_s5_k": "f9d7dfb9e8f06f7973f724041ba55d3ec533e91ae4fcbbd2c606fcc579b21a52",
+    "sdpa_d512_s5_v": "b2bfcd6555fef9d4d9e7ff0af3488c2034475020febc8ca5b854f230e80548ea",
+    "sdpa_d512_s32_q": "eb4038965b0a5f882c956c007cff239834edff371341ab0382533d680f0f8738",
+    "sdpa_d512_s32_k": "626d1342d2bbec78a91fad7d9301cb3b203e170be93b0fc02e746967f197bc0d",
+    "sdpa_d512_s32_v": "6c97ee15f38c32e7f7c58efa888226a156b830e345b6b308be5c1347030c37f2",
+    "foreign_buffer": "d4d10f84f2ce8d25524c4b9a00ebe3e5dcd2aa53e78d7d259822d43fe542a671",
+    "bench_w": "6a046333fd5c05341f7719ede31adab8b5be0c15b77c8cd171c7ef600fb4506b",
+    "bench_x": "c6aea0d1347331c5e5c1951563b45b473cb44f9a138a55d354fa208104835d4e"
+  },
+  "checks": [
+    {
+      "name": "affine_qmm_4bit",
+      "max_abs_error": 0.000255584716796875,
+      "tolerance": 0.002,
+      "passed": true
+    },
+    {
+      "name": "affine_qmm_6bit",
+      "max_abs_error": 0.000244140625,
+      "tolerance": 0.002,
+      "passed": true
+    },
+    {
+      "name": "affine_qmm_8bit",
+      "max_abs_error": 0.000244140625,
+      "tolerance": 0.002,
+      "passed": true
+    },
+    {
+      "name": "mxfp4_gather_sorted_False",
+      "max_abs_error": 0.0,
+      "tolerance": 0.008,
+      "passed": true
+    },
+    {
+      "name": "mxfp4_gather_sorted_True",
+      "max_abs_error": 0.0,
+      "tolerance": 0.008,
+      "passed": true
+    },
+    {
+      "name": "compiled_sigmoid",
+      "max_abs_error": 0.0,
+      "tolerance": 2e-07,
+      "passed": true
+    },
+    {
+      "name": "gqa_sdpa",
+      "max_abs_error": 1.8641352653503418e-05,
+      "tolerance": 2e-06,
+      "passed": false
+    },
+    {
+      "name": "mxfp4_bf16_rows_1",
+      "max_abs_error": 0.0009627938270568848,
+      "tolerance": 0.004,
+      "passed": true
+    },
+    {
+      "name": "mxfp4_bf16_rows_2",
+      "max_abs_error": 0.0009721517562866211,
+      "tolerance": 0.004,
+      "passed": true
+    },
+    {
+      "name": "mxfp4_bf16_rows_4",
+      "max_abs_error": 0.0009721517562866211,
+      "tolerance": 0.004,
+      "passed": true
+    },
+    {
+      "name": "mxfp4_bf16_rows_16",
+      "max_abs_error": 0.0009736120700836182,
+      "tolerance": 0.004,
+      "passed": true
+    },
+    {
+      "name": "mxfp4_bf16_rows_32",
+      "max_abs_error": 0.003130212426185608,
+      "tolerance": 0.004,
+      "passed": true
+    },
+    {
+      "name": "mxfp4_bf16_rows_128",
+      "max_abs_error": 0.00300714373588562,
+      "tolerance": 0.004,
+      "passed": true
+    },
+    {
+      "name": "sdpa_d256_s1",
+      "max_abs_error": 4.761852324008942e-06,
+      "tolerance": 5e-05,
+      "passed": true
+    },
+    {
+      "name": "sdpa_d256_s4",
+      "max_abs_error": 5.182810127735138e-06,
+      "tolerance": 5e-05,
+      "passed": true
+    },
+    {
+      "name": "sdpa_d256_s5",
+      "max_abs_error": 5.617737770080566e-06,
+      "tolerance": 5e-05,
+      "passed": true
+    },
+    {
+      "name": "sdpa_d256_s32",
+      "max_abs_error": 5.53671270608902e-06,
+      "tolerance": 5e-05,
+      "passed": true
+    },
+    {
+      "name": "sdpa_d512_s1",
+      "max_abs_error": 4.238449037075043e-06,
+      "tolerance": 5e-05,
+      "passed": true
+    },
+    {
+      "name": "sdpa_d512_s4",
+      "max_abs_error": 5.259178578853607e-06,
+      "tolerance": 5e-05,
+      "passed": true
+    },
+    {
+      "name": "sdpa_d512_s5",
+      "max_abs_error": 5.532987415790558e-06,
+      "tolerance": 5e-05,
+      "passed": true
+    },
+    {
+      "name": "sdpa_d512_s32",
+      "max_abs_error": 5.726702511310577e-06,
+      "tolerance": 5e-05,
+      "passed": true
+    },
+    {
+      "name": "foreign_buffer_preserved",
+      "max_abs_error": 0.0,
+      "tolerance": 0.0,
+      "passed": true
+    },
+    {
+      "name": "foreign_buffer_exp",
+      "max_abs_error": 2.384185791015625e-07,
+      "tolerance": 2e-06,
+      "passed": true
+    }
+  ],
+  "passed": false,
+  "mxfp4_memory": {
+    "k": 2560,
+    "n": 1024,
+    "dtype": "bfloat16",
+    "samples": [
+      {
+        "rows": 1,
+        "active_before_bytes": 18261524,
+        "active_after_bytes": 18255380,
+        "peak_bytes": 18255380,
+        "peak_increase_bytes": 0
+      },
+      {
+        "rows": 2,
+        "active_before_bytes": 18253332,
+        "active_after_bytes": 18257428,
+        "peak_bytes": 18257428,
+        "peak_increase_bytes": 4096
+      },
+      {
+        "rows": 4,
+        "active_before_bytes": 18253332,
+        "active_after_bytes": 18261524,
+        "peak_bytes": 18261524,
+        "peak_increase_bytes": 8192
+      },
+      {
+        "rows": 16,
+        "active_before_bytes": 18253332,
+        "active_after_bytes": 18286100,
+        "peak_bytes": 18286100,
+        "peak_increase_bytes": 32768
+      },
+      {
+        "rows": 32,
+        "active_before_bytes": 18253332,
+        "active_after_bytes": 19367444,
+        "peak_bytes": 19367444,
+        "peak_increase_bytes": 1114112
+      },
+      {
+        "rows": 128,
+        "active_before_bytes": 18253332,
+        "active_after_bytes": 19564052,
+        "peak_bytes": 19564052,
+        "peak_increase_bytes": 1310720
+      }
+    ]
+  },
+  "qmm": {
+    "m": 2048,
+    "k": 4096,
+    "n": 16384,
+    "bits": 4,
+    "group_size": 64,
+    "warmups": 5,
+    "trials": [
+      {
+        "latencies_ms": [
+          4.907707974780351,
+          4.901125037577003,
+          4.897833045106381,
+          4.917374986689538,
+          4.912165983114392,
+          4.943584033753723,
+          4.921625019051135,
+          4.908374976366758,
+          4.910957999527454,
+          4.961458034813404
+        ],
+        "median_ms": 4.911561991320923,
+        "tflops": 55.96547644715239
+      },
+      {
+        "latencies_ms": [
+          4.897790960967541,
+          4.895040998235345,
+          4.912167030852288,
+          4.888499970547855,
+          4.889584030024707,
+          4.956666962243617,
+          4.923124972265214,
+          4.922540974803269,
+          4.922083986457437,
+          4.905082983896136
+        ],
+        "median_ms": 4.908625007374212,
+        "tflops": 55.99896234302921
+      },
+      {
+        "latencies_ms": [
+          4.910957999527454,
+          4.903750028461218,
+          4.90008300403133,
+          4.9085000064224005,
+          4.9136250163428485,
+          4.8806670238263905,
+          4.905959009192884,
+          4.913665994536132,
+          4.903708002530038,
+          4.91954101016745
+        ],
+        "median_ms": 4.907229507807642,
+        "tflops": 56.01488711841494
+      }
+    ],
+    "median_ms": 4.908625007374212
+  },
+  "outputs_sha256": "febcb87c7899126ae9122ddf9394958e11666aaff73380f6125b99ac579c42ba"
+}

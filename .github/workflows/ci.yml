@@ -121,7 +121,7 @@ jobs:
         run: bash scripts/install-native-build-deps.sh
 
       - name: Install Python script dependencies
-        run: pip install httpx
+        run: pip install httpx numpy
 
       - name: Prepare CI log directory
         run: mkdir -p "$AX_CI_LOG_DIR"
