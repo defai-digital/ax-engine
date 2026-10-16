@@ -1834,3 +1834,47 @@ fn page_gc_aborts_the_sweep_when_a_manifest_is_unreadable() {
     assert!(page_store.blob_paths().is_empty());
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn entry_over_this_policys_limit_is_a_miss_not_a_deletion() {
+    // `max_entry_bytes` bounds what *this* process writes; it is not a property
+    // of an entry. A sibling process with a larger limit shares the cache
+    // directory, so a reader below the entry's size must report a plain miss and
+    // leave the file alone -- deleting it would destroy the sibling's usable
+    // entry and log it as unparseable.
+    let dir = unique_tempdir("oversized-miss");
+    let key = test_key("m", "p", "l", 16, 4, 0x11, &[1, 2, 3, 4]);
+    let payload = vec![7u8; 4096];
+    let permissive = DiskPrefixCachePolicy {
+        max_bytes: u64::MAX,
+        max_entries: usize::MAX,
+        max_entry_bytes: u64::MAX,
+        ..DiskPrefixCachePolicy::default()
+    };
+    {
+        let writer = DiskPrefixCache::with_policy(&dir, permissive).expect("writer open");
+        writer
+            .insert(&key, &payload_only(&payload))
+            .expect("insert oversized entry");
+    }
+
+    let strict = DiskPrefixCachePolicy {
+        max_bytes: u64::MAX,
+        max_entries: usize::MAX,
+        max_entry_bytes: 1024,
+        ..DiskPrefixCachePolicy::default()
+    };
+    let reader = DiskPrefixCache::with_policy(&dir, strict).expect("reader open");
+    let entry_path = reader.path_for(&key);
+    assert!(
+        entry_path.is_file(),
+        "writer entry should exist before the read"
+    );
+
+    assert!(reader.get_timed(&key).expect("read").is_none());
+    assert!(
+        entry_path.is_file(),
+        "a local write limit must not delete a healthy entry another process can serve"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
