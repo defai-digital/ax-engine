@@ -371,7 +371,9 @@ class AXEngineChatModel(BaseChatModel):
             "top_k": self.top_k,
             "min_p": self.min_p,
             "repetition_penalty": self.repetition_penalty,
-            "stop": self.stop,
+            # LangChain overwrites a `stop` key with the per-call argument
+            # (usually None), which would hide the constructor default.
+            "default_stop": self.stop,
             "seed": self.seed,
             "timeout": self.timeout,
         }
@@ -528,7 +530,9 @@ class AXEngineLLM(LLM):
             "top_k": self.top_k,
             "min_p": self.min_p,
             "repetition_penalty": self.repetition_penalty,
-            "stop": self.stop,
+            # LangChain overwrites a `stop` key with the per-call argument
+            # (usually None), which would hide the constructor default.
+            "default_stop": self.stop,
             "seed": self.seed,
             "timeout": self.timeout,
         }

@@ -748,6 +748,28 @@ class TestAXEngineLLM(unittest.TestCase):
             set_llm_cache(None)
             other.close()
 
+    def test_cache_isolates_constructor_stop(self):
+        # LangChain overwrites its cache key's `stop` entry with the per-call
+        # argument, so the constructor default needs a distinct key.
+        from ax_engine.langchain import AXEngineLLM
+        from langchain_core.caches import InMemoryCache
+        from langchain_core.globals import set_llm_cache
+
+        set_llm_cache(InMemoryCache())
+        try:
+            self.srv.set_response(_completion_response("first"))
+            first = AXEngineLLM(
+                base_url=self.srv.base_url, model="model-a", stop=["END"], timeout=5
+            )
+            self.assertEqual(first.invoke("same prompt"), "first")
+            self.srv.set_response(_completion_response("second"))
+            second = AXEngineLLM(
+                base_url=self.srv.base_url, model="model-a", stop=["STOP"], timeout=5
+            )
+            self.assertEqual(second.invoke("same prompt"), "second")
+        finally:
+            set_llm_cache(None)
+
     def test_invoke_returns_string(self):
         self.srv.set_response(_completion_response("world"))
         llm = self._make_llm(max_tokens=16)
