@@ -2,6 +2,9 @@
 
 `sdk/go/axengine` is the Go HTTP client for AX Engine.
 
+The gRPC client in `sdk/go/grpc` requires Go 1.26 or newer for its
+patched HTTP/2 dependencies. CI tests both clients with Go 1.26.
+
 It is intentionally thin:
 
 - it speaks to `ax-engine-server`, not directly to `ax-engine-core`

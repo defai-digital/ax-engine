@@ -33,16 +33,16 @@ ax-engine-server = "ax_engine._cli:server"
 
 [project.optional-dependencies]
 download = [
-    "huggingface-hub>=0.23",
-    "mlx-lm>=0.31",
+    "huggingface-hub>=1.33",
+    "mlx-lm>=0.31.3",
 ]
 openai = [
-    "fastapi>=0.110",
-    "tokenizers>=0.15",
-    "uvicorn[standard]>=0.29",
+    "fastapi>=0.143.3",
+    "tokenizers>=0.22.2",
+    "uvicorn[standard]>=0.54",
 ]
 multimodal = [
-    "pillow>=10",
+    "pillow>=12.3",
 ]
 
 [tool.maturin]
