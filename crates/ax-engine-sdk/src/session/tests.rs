@@ -652,6 +652,44 @@ fn low_level_submit_rejects_multimodal_prompt_over_max_batch_tokens() {
 }
 
 #[test]
+fn caller_chosen_request_ids_do_not_define_arrival_order() {
+    // A recycled or deliberately small id must not look older than an
+    // already-running request, and a large id must not preempt older ones.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(100, request.clone())
+        .expect("first stream");
+    session
+        .submit_generate_with_request_id(2, request)
+        .expect("second stream");
+
+    let first = session
+        .core()
+        .request_manager()
+        .snapshot(RequestId(100))
+        .expect("first snapshot");
+    let second = session
+        .core()
+        .request_manager()
+        .snapshot(RequestId(2))
+        .expect("second snapshot");
+    assert!(
+        first.arrival_sequence < second.arrival_sequence,
+        "arrival order must be session-local, got {first:?} and {second:?}"
+    );
+}
+
+#[test]
 fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
     let mut multimodal_inputs = sample_gemma4_multimodal_inputs();
     multimodal_inputs
@@ -1750,6 +1788,7 @@ fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 2,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -1925,6 +1964,7 @@ fn shared_stream_test_session(blocks: u32) -> EngineSession {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 1,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2165,6 +2205,7 @@ fn shared_native_step_advances_multiple_stream_states_once() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 1,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2280,6 +2321,7 @@ fn dropping_native_generate_stream_cancels_in_flight_request() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 1,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2398,6 +2440,7 @@ fn has_active_stepwise_requests_reflects_native_terminal_state() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 2,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2496,6 +2539,7 @@ fn native_generate_response_surfaces_runner_route_metadata() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 2,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),

@@ -263,6 +263,8 @@ pub struct EngineSession {
     #[cfg(feature = "mlx-native")]
     whisper: Option<ax_engine_mlx::WhisperModel>,
     next_request_id: u64,
+    /// Monotonic arrival order, independent of caller-chosen request ids.
+    next_arrival_sequence: u64,
     native_request_routes: BTreeMap<u64, GenerateRouteReport>,
     native_route_report_order: VecDeque<u64>,
     llama_requests: BTreeMap<u64, LlamaCppLifecycleRequestSlot>,
@@ -625,6 +627,7 @@ impl EngineSession {
             #[cfg(feature = "mlx-native")]
             whisper: None,
             next_request_id: 1,
+            next_arrival_sequence: 1,
             native_request_routes: BTreeMap::new(),
             native_route_report_order: VecDeque::new(),
             llama_requests: BTreeMap::new(),
@@ -663,6 +666,7 @@ impl EngineSession {
             #[cfg(feature = "mlx-native")]
             whisper,
             next_request_id: 1,
+            next_arrival_sequence: 1,
             native_request_routes: BTreeMap::new(),
             native_route_report_order: VecDeque::new(),
             llama_requests: BTreeMap::new(),
@@ -1014,6 +1018,11 @@ impl EngineSession {
 
         let request_id = RequestId(request_id);
         self.advance_request_id(request_id.0);
+        // Caller-chosen ids are not an arrival order: a recycled or
+        // deliberately small id must not look older than requests already in
+        // flight, and a large id must not preempt genuinely older ones.
+        let arrival_sequence = SequenceNo(self.next_arrival_sequence);
+        self.next_arrival_sequence = self.next_arrival_sequence.saturating_add(1);
 
         let submission = RequestSubmission {
             request_id,
@@ -1022,7 +1031,7 @@ impl EngineSession {
             multimodal_inputs: request.multimodal_inputs,
             sampling_params: request.sampling.into_core(self.config.deterministic),
             max_output_tokens: request.max_output_tokens,
-            arrival_sequence: SequenceNo(request_id.0),
+            arrival_sequence,
             metadata: request.metadata,
         };
 
