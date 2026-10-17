@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ax_engine_sdk::{
     EngineSessionError, EngineTokenizer, EngineTokenizerError, GenerateFinishReason,
-    GenerateRequest, GenerateRouteReport, GenerateStreamEvent, LlamaCppChatGenerateRequest,
-    LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle, RuntimeReport,
-    SelectedBackend, finish_reason_from_mlx_lm,
+    GenerateRequest, GenerateRouteReport, GenerateStatus, GenerateStreamEvent,
+    LlamaCppChatGenerateRequest, LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle,
+    RuntimeReport, SelectedBackend, finish_reason_from_mlx_lm,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -377,6 +377,20 @@ impl OpenAiStreamDriver {
                 self.process_text(tx, request_id, &model_id, content_text)
             }
             GenerateStreamEvent::Response(payload) => {
+                // A terminal Failed/Cancelled response is not a clean finish:
+                // emitting the normal final chunk with finish_reason null made
+                // a KV-starved request look like a successful empty completion.
+                if payload.response.status != GenerateStatus::Finished {
+                    let message = match payload.response.status {
+                        GenerateStatus::Failed => "generation failed before completion",
+                        GenerateStatus::Cancelled => "generation was cancelled before completion",
+                        GenerateStatus::Pending | GenerateStatus::Finished => {
+                            "generation stream ended before completion"
+                        }
+                    };
+                    send_stream_error(tx, ErrorResponse::server_error(message.to_string()));
+                    return false;
+                }
                 let request_id = payload.response.request_id;
                 let model_id = payload.response.model_id.clone();
                 if !self.emit_gemma4_reasoning(tx, request_id, &model_id) {
@@ -2689,6 +2703,43 @@ mod openai_stream_driver_tests {
             finish_reasons,
             vec!["tool_calls".to_string()],
             "the stream must finish tool_calls, never stop"
+        );
+    }
+
+    #[test]
+    fn failed_terminal_response_streams_an_error_not_a_clean_finish() {
+        // A terminal Failed response used to fall through to the normal final
+        // chunk with finish_reason null, so a KV-starved request looked like a
+        // successful empty completion.
+        let mut driver = chat_driver(&[]);
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut response = sample_response();
+        response.status = GenerateStatus::Failed;
+        response.finish_reason = Some(GenerateFinishReason::Error);
+        response.output_tokens.clear();
+        response.output_text = Some(String::new());
+
+        assert!(
+            !driver.handle_event(
+                &tx,
+                GenerateStreamEvent::Response(GenerateStreamResponseEvent { response })
+            ),
+            "a failed terminal response must stop the stream"
+        );
+        drop(tx);
+
+        let payloads = collect_chunk_payloads(&mut rx);
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload.get("error").is_some()),
+            "failed generation must emit an SSE error payload, got {payloads:?}"
+        );
+        assert!(
+            !payloads
+                .iter()
+                .any(|payload| payload.get("choices").is_some()),
+            "failed generation must not emit a normal completion chunk, got {payloads:?}"
         );
     }
 

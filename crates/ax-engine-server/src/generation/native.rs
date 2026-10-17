@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
-use ax_engine_sdk::{GenerateRequest, GenerateResponse};
+use ax_engine_sdk::{GenerateRequest, GenerateResponse, GenerateStatus};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 
 use crate::app_state::{AppState, LiveState};
-use crate::errors::{ErrorResponse, admission_error_response, map_generation_service_error};
+use crate::errors::{
+    ErrorResponse, admission_error_response, error_response, map_generation_service_error,
+};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::generation::service::GenerationServiceError;
 use crate::openai::validation::select_model;
@@ -72,4 +74,46 @@ pub(crate) async fn run_stateless_generate_request(
     };
 
     Ok((request_id, response))
+}
+
+/// Provider adapters must not render a terminal failure as a clean completion.
+/// The raw `/v1/generate` endpoint still returns the `GenerateResponse` status
+/// for SDK callers; the OpenAI/Anthropic/Ollama surfaces map it to an HTTP
+/// error instead of an empty 200.
+pub(crate) fn reject_failed_generate_status(
+    status: GenerateStatus,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    match status {
+        GenerateStatus::Failed => Err(error_response(
+            StatusCode::BAD_GATEWAY,
+            "generation_failed",
+            "generation failed before producing a response".to_string(),
+        )),
+        GenerateStatus::Cancelled => Err(error_response(
+            StatusCode::BAD_GATEWAY,
+            "generation_cancelled",
+            "generation was cancelled before completing".to_string(),
+        )),
+        GenerateStatus::Pending | GenerateStatus::Finished => Ok(()),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_or_cancelled_generation_status_is_a_bad_gateway() {
+        for (status, expected_code) in [
+            (GenerateStatus::Failed, "generation_failed"),
+            (GenerateStatus::Cancelled, "generation_cancelled"),
+        ] {
+            let (http_status, Json(body)) =
+                reject_failed_generate_status(status).expect_err("terminal failure");
+            assert_eq!(http_status, StatusCode::BAD_GATEWAY);
+            assert_eq!(body.error.code.as_deref(), Some(expected_code));
+        }
+        assert!(reject_failed_generate_status(GenerateStatus::Finished).is_ok());
+    }
 }
