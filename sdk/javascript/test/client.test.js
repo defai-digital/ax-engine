@@ -5,6 +5,43 @@ import http from "node:http";
 
 import { AxEngineClient, AxEngineHttpError, AxEngineStreamError } from "../index.js";
 
+test("base URLs normalize every trailing slash while preserving a path prefix", async () => {
+  for (const suffix of ["", "/", "//", "///"]) {
+    const urls = [];
+    const client = new AxEngineClient({
+      baseUrl: `http://localhost/proxy${suffix}`,
+      fetch: async (url) => {
+        urls.push(url);
+        return Response.json({ data: [] });
+      },
+    });
+    await client.models();
+    assert.deepEqual(urls, ["http://localhost/proxy/v1/models"]);
+  }
+});
+
+test("request IDs cannot change endpoint paths or lose integer precision", async () => {
+  const urls = [];
+  const client = new AxEngineClient({
+    fetch: async (url) => {
+      urls.push(url);
+      return Response.json({});
+    },
+  });
+  for (const id of ["a/b?c", "..", ".", "", "1#fragment", "1\n", "1\r", "1\u2028", -1, 1.5, NaN,
+    Infinity, Number.MAX_SAFE_INTEGER + 1, null, undefined, {}]) {
+    await assert.rejects(client.requestSnapshot(id), TypeError);
+    await assert.rejects(client.cancel(id), TypeError);
+  }
+  assert.deepEqual(urls, []);
+  for (const id of [0, 42, Number.MAX_SAFE_INTEGER, "18446744073709551615"]) {
+    await client.requestSnapshot(id);
+    await client.cancel(id);
+    assert.equal(urls.at(-2), `http://127.0.0.1:31418/v1/requests/${id}`);
+    assert.equal(urls.at(-1), `http://127.0.0.1:31418/v1/requests/${id}/cancel`);
+  }
+});
+
 test("type declarations expose multi-model lifecycle", async () => {
   const declarations = await readFile(new URL("../index.d.ts", import.meta.url), "utf8");
 

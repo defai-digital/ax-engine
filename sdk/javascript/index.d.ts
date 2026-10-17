@@ -638,7 +638,9 @@ export class AxEngineClient {
   models(options?: RequestOptions): Promise<ModelsResponse>;
   generate(request: PreviewGenerateRequest, options?: RequestOptions): Promise<GenerateResponse>;
   submit(request: PreviewGenerateRequest, options?: RequestOptions): Promise<RequestReport>;
+  /** Use a decimal string for IDs above Number.MAX_SAFE_INTEGER. */
   requestSnapshot(requestId: number | string, options?: RequestOptions): Promise<RequestReport>;
+  /** Use a decimal string for IDs above Number.MAX_SAFE_INTEGER. */
   cancel(requestId: number | string, options?: RequestOptions): Promise<RequestReport>;
   step(model?: string, options?: RequestOptions): Promise<StepReport>;
   completion(
