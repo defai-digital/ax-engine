@@ -139,6 +139,9 @@ impl ThinkTagScanner {
         let leftover = std::mem::take(&mut self.buffer);
         match self.state {
             ThinkScanState::InThink => step.reasoning.push_str(&leftover),
+            ThinkScanState::Lead if self.fallback_inside_think => {
+                step.reasoning.push_str(&leftover);
+            }
             ThinkScanState::Lead | ThinkScanState::Passed => step.content.push_str(&leftover),
         }
         self.state = ThinkScanState::Passed;
@@ -310,6 +313,25 @@ mod tests {
 #[cfg(test)]
 mod lead_or_inside_tests {
     use super::ThinkTagScanner;
+
+    #[test]
+    fn qwen_prefilled_think_flushes_pending_prefix_as_reasoning() {
+        for text in ["", " \n", "<", "<t", "<think", " \n<think"] {
+            let mut scanner = ThinkTagScanner::new_lead_or_inside_think();
+            let step = scanner.push(text);
+            assert!(step.content.is_empty());
+            assert!(step.reasoning.is_empty());
+            let tail = scanner.finish();
+            assert_eq!(tail.reasoning, text);
+            assert!(tail.content.is_empty());
+
+            let mut plain_scanner = ThinkTagScanner::new();
+            plain_scanner.push(text);
+            let tail = plain_scanner.finish();
+            assert_eq!(tail.content, text);
+            assert!(tail.reasoning.is_empty());
+        }
+    }
 
     #[test]
     fn qwen_prefilled_think_streams_reasoning_without_an_opener() {
