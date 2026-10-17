@@ -1887,13 +1887,34 @@ fn advance_shared_engine(
                                 }
                             }
                             Err(error) => {
-                                // The next tick's primary step retries and, if the
-                                // failure persists, detaches the streams; a burst
-                                // failure must still leave an operator-visible trace.
-                                tracing::warn!(
+                                // The core may already have failed and cleaned the
+                                // scheduled request. That request never reaches a
+                                // later `request_ids` list, so waiting for the next
+                                // tick to retry would leave the stream, job, and
+                                // permit parked forever. Detach like the primary
+                                // error arm.
+                                tracing::error!(
                                     %error,
-                                    "single-stream burst engine step failed; retrying on the next tick"
+                                    "single-stream burst engine step failed; detaching the stream"
                                 );
+                                for (request_id, stream) in active_streams.iter_mut() {
+                                    detach_stream_with_error(
+                                        session,
+                                        *request_id,
+                                        stream,
+                                        EngineSessionError::RequestReportInvariantViolation {
+                                            request_id: *request_id,
+                                            message: "single-stream burst engine step failed",
+                                        },
+                                        service_state,
+                                    );
+                                }
+                                let detached_streams = active_streams.len();
+                                active_streams.clear();
+                                for _ in 0..detached_streams {
+                                    complete_job(service_state);
+                                }
+                                cancel_all_stepwise(session, stepwise_permits, service_state);
                                 break;
                             }
                         }
