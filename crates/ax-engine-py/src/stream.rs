@@ -130,19 +130,20 @@ impl GenerateStreamIterator {
             drop_session_without_gil(session);
             return;
         };
-        match &*owner {
-            SessionSlot::Closed => {
-                // The owning Session was closed while this stream was live.
-                drop_session_without_gil(session);
-            }
-            SessionSlot::Streaming => {
-                *owner = SessionSlot::Ready(Box::new(session));
-            }
-            SessionSlot::Ready(_) => {
-                // Defensive: another session already owns the slot.
-                drop_session_without_gil(session);
-            }
+        // Decide while the mutex is held, then release it before tearing the
+        // session down: `drop_session_without_gil` reacquires the GIL, and a
+        // Python thread holding the GIL may be waiting for this same mutex
+        // (for example `Session.closed`). Holding it across the detach would
+        // deadlock both threads.
+        let return_session = matches!(&*owner, SessionSlot::Streaming);
+        if !return_session {
+            // The owning Session was closed (or another session already owns
+            // the slot) while this stream was live.
+            drop(owner);
+            drop_session_without_gil(session);
+            return;
         }
+        *owner = SessionSlot::Ready(Box::new(session));
     }
 }
 
