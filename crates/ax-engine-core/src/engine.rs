@@ -771,7 +771,7 @@ impl EngineCore {
     ///
     /// Candidates must:
     /// - hold KV blocks
-    /// - be in prefill stage (no decoded tokens)
+    /// - be in prefill stage (an incomplete prompt, no decoded tokens)
     /// - have a *strictly higher* arrival sequence than the stalled request
     ///   (preemption only flows from newer requests to older ones; older
     ///   requests are never sacrificed for newer ones)
@@ -804,7 +804,13 @@ impl EngineCore {
             if !record.generated_tokens.is_empty() {
                 continue;
             }
-            if record.processed_prompt_tokens == 0 {
+            // Prefill stage means an incomplete prompt. A block-diffusion
+            // request mid-denoise has completed its prompt and generated no
+            // token; preempting it would reset prompt progress while the
+            // runner-side denoise counters survive the replay.
+            if record.processed_prompt_tokens == 0
+                || record.processed_prompt_tokens >= record.prompt_tokens.len() as u32
+            {
                 continue;
             }
             if self.kv_manager.block_count_for(rid) == 0 {
@@ -3338,6 +3344,36 @@ mod tests {
         let snap = engine.request_manager().snapshot(RequestId(42)).unwrap();
         assert!(snap.diffusion_block_committed);
         assert_eq!(snap.generated_tokens, vec![77]);
+    }
+
+    #[test]
+    fn mid_denoise_diffusion_is_not_a_preemption_candidate() {
+        // A diffusion request between denoise steps has completed its prompt
+        // and generated no token, but it is not a prefill: preempting it would
+        // reset the prompt/block table while the runner-side block progress is
+        // released, then replay with stale denoise counters.
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            DiffusionScheduleProgressRunner::new(2),
+            PanicSampler,
+        );
+        engine.set_generation_kind(crate::GenerationKind::BlockDiffusion);
+        engine.submit(make_submission(2, 2, 2)).unwrap();
+        engine.step(4, true).unwrap();
+        engine.step(1, true).unwrap();
+        let snap = engine.request_manager().snapshot(RequestId(2)).unwrap();
+        assert_eq!(snap.processed_prompt_tokens, 4);
+        assert!(snap.generated_tokens.is_empty());
+
+        // Older arrival, submitted later: the diffusion request is newer and
+        // would be the candidate selected by the pre-fix predicate.
+        engine.set_generation_kind(crate::GenerationKind::Autoregressive);
+        engine.submit(make_submission(1, 1, 2)).unwrap();
+        assert_eq!(
+            engine.find_preemption_candidate(RequestId(1), &Default::default()),
+            None,
+            "a mid-denoise diffusion request must not be preempted as a prefill"
+        );
     }
 
     #[test]
