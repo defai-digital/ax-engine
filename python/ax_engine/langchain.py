@@ -358,6 +358,24 @@ class AXEngineChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "ax-engine"
 
+    @property
+    def _identifying_params(self) -> dict[str, Any]:
+        # LangChain's default cache key would otherwise be only `_type` and
+        # `stop`, sharing cached results across models and endpoints.
+        return {
+            "base_url": self.base_url.rstrip("/"),
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "min_p": self.min_p,
+            "repetition_penalty": self.repetition_penalty,
+            "stop": self.stop,
+            "seed": self.seed,
+            "timeout": self.timeout,
+        }
+
     def bind_tools(
         self,
         tools: Sequence[Any],
@@ -496,6 +514,24 @@ class AXEngineLLM(LLM):
     @property
     def _llm_type(self) -> str:
         return "ax-engine"
+
+    @property
+    def _identifying_params(self) -> dict[str, Any]:
+        # LangChain's default cache key would otherwise be only `_type` and
+        # `stop`, sharing cached results across models and endpoints.
+        return {
+            "base_url": self.base_url.rstrip("/"),
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "min_p": self.min_p,
+            "repetition_penalty": self.repetition_penalty,
+            "stop": self.stop,
+            "seed": self.seed,
+            "timeout": self.timeout,
+        }
 
     def _build_request(
         self,

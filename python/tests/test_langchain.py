@@ -728,6 +728,26 @@ class TestAXEngineLLM(unittest.TestCase):
 
         return AXEngineLLM(base_url=self.srv.base_url, timeout=5, **kwargs)
 
+    def test_cache_isolation_between_models_and_endpoints(self):
+        # The default LangChain cache key only carried `_type` and `stop`, so
+        # two instances pointed at different models/endpoints shared results.
+        from ax_engine.langchain import AXEngineLLM
+        from langchain_core.caches import InMemoryCache
+        from langchain_core.globals import set_llm_cache
+
+        other = _TestServer()
+        try:
+            self.srv.set_response(_completion_response("from-a"))
+            other.set_response(_completion_response("from-b"))
+            set_llm_cache(InMemoryCache())
+            first = AXEngineLLM(base_url=self.srv.base_url, model="model-a", timeout=5)
+            second = AXEngineLLM(base_url=other.base_url, model="model-b", timeout=5)
+            self.assertEqual(first.invoke("same prompt"), "from-a")
+            self.assertEqual(second.invoke("same prompt"), "from-b")
+        finally:
+            set_llm_cache(None)
+            other.close()
+
     def test_invoke_returns_string(self):
         self.srv.set_response(_completion_response("world"))
         llm = self._make_llm(max_tokens=16)
