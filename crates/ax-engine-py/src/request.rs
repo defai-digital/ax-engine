@@ -178,7 +178,21 @@ fn unlimited_ocr_inputs_from_py(
     }))
 }
 
+/// The multimodal schema is a handful of levels deep. A cap this generous
+/// rejects cycles (`d["gemma4_unified"] = d`) before they exhaust the Rust
+/// stack, which would abort the interpreter instead of raising.
+const MAX_MULTIMODAL_JSON_DEPTH: usize = 64;
+
 fn py_any_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
+    py_any_to_json_at_depth(value, 0)
+}
+
+fn py_any_to_json_at_depth(value: &Bound<'_, PyAny>, depth: usize) -> PyResult<Value> {
+    if depth > MAX_MULTIMODAL_JSON_DEPTH {
+        return Err(PyValueError::new_err(format!(
+            "multimodal_inputs nesting exceeds {MAX_MULTIMODAL_JSON_DEPTH} levels; check for a cycle"
+        )));
+    }
     if value.is_none() {
         return Ok(Value::Null);
     }
@@ -200,13 +214,13 @@ fn py_any_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
         return Ok(Value::String(value));
     }
     if let Ok(dict) = value.cast::<PyDict>() {
-        return py_dict_to_json(dict);
+        return py_dict_to_json_at_depth(dict, depth + 1);
     }
     if let Ok(list) = value.cast::<PyList>() {
-        return py_iterable_to_json_array(list.iter());
+        return py_iterable_to_json_array_at_depth(list.iter(), depth + 1);
     }
     if let Ok(tuple) = value.cast::<PyTuple>() {
-        return py_iterable_to_json_array(tuple.iter());
+        return py_iterable_to_json_array_at_depth(tuple.iter(), depth + 1);
     }
     Err(PyValueError::new_err(format!(
         "multimodal_inputs contains unsupported Python value of type {}",
@@ -218,21 +232,22 @@ fn py_any_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     )))
 }
 
-fn py_iterable_to_json_array<'py>(
+fn py_iterable_to_json_array_at_depth<'py>(
     iter: impl Iterator<Item = Bound<'py, PyAny>>,
+    depth: usize,
 ) -> PyResult<Value> {
-    iter.map(|item| py_any_to_json(&item))
+    iter.map(|item| py_any_to_json_at_depth(&item, depth))
         .collect::<PyResult<Vec<_>>>()
         .map(Value::Array)
 }
 
-fn py_dict_to_json(dict: &Bound<'_, PyDict>) -> PyResult<Value> {
+fn py_dict_to_json_at_depth(dict: &Bound<'_, PyDict>, depth: usize) -> PyResult<Value> {
     let mut map = Map::new();
     for (key, value) in dict.iter() {
         let key = key.extract::<String>().map_err(|_| {
             PyValueError::new_err("multimodal_inputs dictionaries must use string keys")
         })?;
-        map.insert(key, py_any_to_json(&value)?);
+        map.insert(key, py_any_to_json_at_depth(&value, depth)?);
     }
     Ok(Value::Object(map))
 }
@@ -241,6 +256,21 @@ fn py_dict_to_json(dict: &Bound<'_, PyDict>) -> PyResult<Value> {
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cyclic_multimodal_dict_is_rejected_before_stack_overflow() {
+        Python::attach(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("gemma4_unified", &dict)
+                .expect("self-referential dict");
+            let error = py_any_to_json(dict.as_any())
+                .expect_err("a cyclic dict must be rejected, not recurse");
+            assert!(
+                error.to_string().contains("nesting exceeds"),
+                "unexpected error: {error}"
+            );
+        });
+    }
 
     #[test]
     fn delegated_http_timeouts_reject_zero_values() {
