@@ -380,7 +380,9 @@ impl OpenAiStreamDriver {
                 // A terminal Failed/Cancelled response is not a clean finish:
                 // emitting the normal final chunk with finish_reason null made
                 // a KV-starved request look like a successful empty completion.
-                if payload.response.status != GenerateStatus::Finished {
+                if payload.response.status != GenerateStatus::Finished
+                    && payload.response.finish_reason != Some(GenerateFinishReason::ContentFilter)
+                {
                     let message = match payload.response.status {
                         GenerateStatus::Failed => "generation failed before completion",
                         GenerateStatus::Cancelled => "generation was cancelled before completion",
@@ -2740,6 +2742,42 @@ mod openai_stream_driver_tests {
                 .iter()
                 .any(|payload| payload.get("choices").is_some()),
             "failed generation must not emit a normal completion chunk, got {payloads:?}"
+        );
+    }
+
+    #[test]
+    fn content_filter_terminal_response_keeps_the_normal_finish() {
+        // The SDK reports content filtering as Failed; provider clients still
+        // expect a normal final chunk with finish_reason content_filter.
+        let mut driver = chat_driver(&[]);
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut response = sample_response();
+        response.status = GenerateStatus::Failed;
+        response.finish_reason = Some(GenerateFinishReason::ContentFilter);
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent { response })
+        ));
+        drop(tx);
+
+        let payloads = collect_chunk_payloads(&mut rx);
+        assert!(
+            !payloads
+                .iter()
+                .any(|payload| payload.get("error").is_some()),
+            "content filtering must not become a stream error, got {payloads:?}"
+        );
+        let reasons: Vec<_> = payloads
+            .iter()
+            .filter_map(|payload| payload.get("choices"))
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|choice| choice.get("finish_reason"))
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            reasons.contains(&"content_filter"),
+            "expected a content_filter finish, got {payloads:?}"
         );
     }
 

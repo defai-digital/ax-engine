@@ -182,7 +182,7 @@ pub(crate) async fn run_openai_text_generation(
 
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
-    reject_failed_generate_status(response.status)?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,
@@ -208,7 +208,7 @@ async fn stream_buffered_openai_tool_chat_response(
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
-    reject_failed_generate_status(response.status)?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,

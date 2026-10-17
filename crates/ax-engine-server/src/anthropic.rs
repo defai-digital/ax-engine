@@ -310,7 +310,7 @@ async fn run_anthropic_messages_generation(
     reject_unexpected_stream(stream)?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
-    reject_failed_generate_status(response.status)?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     populate_native_mlx_output_text(
         &live,
         &mut response,

@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ax_engine_core::json_number_is_nonzero;
 use ax_engine_sdk::{
-    EngineSessionError, EngineTokenizer, GenerateResponse, GenerateStatus, GenerateStreamEvent,
-    SelectedBackend,
+    EngineSessionError, EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateStatus,
+    GenerateStreamEvent, SelectedBackend,
 };
 use axum::Json;
 use axum::body::Body;
@@ -820,7 +820,9 @@ fn drive_ollama_native_events<N>(
             Ok(Some(GenerateStreamEvent::Response(payload))) => {
                 // A terminal failure must not become a clean `done: true`
                 // chunk with an empty response.
-                if payload.response.status != GenerateStatus::Finished {
+                if payload.response.status != GenerateStatus::Finished
+                    && payload.response.finish_reason != Some(GenerateFinishReason::ContentFilter)
+                {
                     let message = match payload.response.status {
                         GenerateStatus::Failed => "generation failed before completion",
                         GenerateStatus::Cancelled => "generation was cancelled before completion",
@@ -1600,7 +1602,7 @@ async fn run_ollama_chat_completion(
     enforce_ollama_num_ctx_prompt_budget(num_ctx, &generate_request.input_tokens)?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
-    reject_failed_generate_status(response.status)?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,
@@ -1632,7 +1634,7 @@ async fn run_ollama_completion(
     enforce_ollama_num_ctx_prompt_budget(num_ctx, &generate_request.input_tokens)?;
     let (_request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
-    reject_failed_generate_status(response.status)?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,

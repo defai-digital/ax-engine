@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ax_engine_sdk::{GenerateRequest, GenerateResponse, GenerateStatus};
+use ax_engine_sdk::{GenerateFinishReason, GenerateRequest, GenerateResponse, GenerateStatus};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -82,8 +82,14 @@ pub(crate) async fn run_stateless_generate_request(
 /// error instead of an empty 200.
 pub(crate) fn reject_failed_generate_status(
     status: GenerateStatus,
+    finish_reason: Option<GenerateFinishReason>,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     match status {
+        // The SDK reports content filtering as `Failed`, but provider clients
+        // expect a normal 200 completion with `finish_reason: content_filter`.
+        GenerateStatus::Failed if finish_reason == Some(GenerateFinishReason::ContentFilter) => {
+            Ok(())
+        }
         GenerateStatus::Failed => Err(error_response(
             StatusCode::BAD_GATEWAY,
             "generation_failed",
@@ -110,10 +116,18 @@ mod tests {
             (GenerateStatus::Cancelled, "generation_cancelled"),
         ] {
             let (http_status, Json(body)) =
-                reject_failed_generate_status(status).expect_err("terminal failure");
+                reject_failed_generate_status(status, None).expect_err("terminal failure");
             assert_eq!(http_status, StatusCode::BAD_GATEWAY);
             assert_eq!(body.error.code.as_deref(), Some(expected_code));
         }
-        assert!(reject_failed_generate_status(GenerateStatus::Finished).is_ok());
+        assert!(reject_failed_generate_status(GenerateStatus::Finished, None).is_ok());
+        assert!(
+            reject_failed_generate_status(
+                GenerateStatus::Failed,
+                Some(GenerateFinishReason::ContentFilter)
+            )
+            .is_ok(),
+            "content filtering is a normal provider finish, not a gateway failure"
+        );
     }
 }
