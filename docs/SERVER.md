@@ -342,6 +342,12 @@ than silently dropped.
   `true`. Other backends fall back to the scheduler count; the block is omitted
   when reuse was zero or unknown. Cache details describe the individual request,
   so identical cold and warm requests can report different `cached_tokens`.
+- **Terminal generation failures**: a request that reaches a terminal failed
+  state before producing a response returns `502 generation_failed` (or
+  `generation_cancelled`) on the OpenAI, Anthropic, and Ollama surfaces. A
+  content-filter termination remains a normal `200`/SSE finish with
+  `finish_reason: "content_filter"`. The raw `/v1/generate` endpoint keeps the
+  SDK status object.
 - **`response_format: json_object`** (completions and chat): non-streaming
   responses are validated server-side; output that is not a JSON object
   returns `502 invalid_output`. This is post-hoc validation, not constrained
