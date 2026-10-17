@@ -593,6 +593,48 @@ impl EngineCore {
             preemption_metrics = preemption_metrics.merge(fallback_preemption_metrics);
         }
 
+        // No batch, no starvation-bound candidate, and no allocatable block:
+        // fair-mode partial prefills can jointly own the whole pool while no
+        // decode exists to free one, and neither remaining prompt fits its
+        // partial block. Deferring them again would deadlock; preempt the
+        // newest partial prefill once and re-plan against the freed pool.
+        if resolved_plan.execution_batch.is_none()
+            && resolved_plan.memory_blocked_requests.is_empty()
+            && self.kv_manager.allocatable_block_count() == 0
+            && let Some(candidate) =
+                self.newest_deferred_partial_prefill(&resolved_plan.deferred_requests)
+        {
+            debug!(
+                step_id = resolved_plan.step_id.0,
+                request_id = candidate.0,
+                "preempting a partial prefill stalled by an exhausted pool"
+            );
+            self.preempt_request(candidate, &mut preemption_metrics)?;
+            // Keep the preempted request out of this step's candidate set.
+            // Its retained prefix can otherwise be re-adopted immediately and
+            // recreate the same full-pool state before the older prefill gets
+            // a chance to use the freed blocks.
+            let snapshots = self
+                .request_manager
+                .snapshots()
+                .into_iter()
+                .filter(|snapshot| snapshot.request_id != candidate)
+                .collect();
+            let replanned = self.scheduler.plan(&self.scheduler_input(
+                resolved_plan.step_id,
+                snapshots,
+                global_token_budget,
+            ));
+            let (mut replanned, replanned_hits, replanned_metrics) =
+                self.resolve_kv_schedule_plan_level(replanned, global_token_budget)?;
+            if !replanned.deferred_requests.contains(&candidate) {
+                replanned.deferred_requests.push(candidate);
+            }
+            resolved_plan = replanned;
+            prefix_hits = replanned_hits;
+            preemption_metrics = preemption_metrics.merge(replanned_metrics);
+        }
+
         Ok((resolved_plan, prefix_hits, preemption_metrics))
     }
 
@@ -780,6 +822,28 @@ impl EngineCore {
             }
         }
         best.map(|(_, rid)| rid)
+    }
+
+    /// Newest deferred request that owns KV blocks for an incomplete prefill.
+    /// Fair-mode partial prefills can jointly exhaust the pool with no decode
+    /// left to free one; preempting the newest preserves the older-first
+    /// policy and lets the pool move again.
+    fn newest_deferred_partial_prefill(&self, deferred: &[RequestId]) -> Option<RequestId> {
+        deferred
+            .iter()
+            .filter_map(|request_id| {
+                let record = self.request_manager.record(*request_id)?;
+                let prompt_len = record.prompt_tokens.len() as u32;
+                (matches!(
+                    record.state,
+                    RequestState::Runnable | RequestState::BlockedOnMemory
+                ) && record.processed_prompt_tokens > 0
+                    && record.processed_prompt_tokens < prompt_len
+                    && self.kv_manager.block_count_for(*request_id) > 0)
+                    .then_some((record.arrival_sequence, *request_id))
+            })
+            .max_by_key(|(arrival, request_id)| (*arrival, *request_id))
+            .map(|(_, request_id)| request_id)
     }
 
     /// Release a preempted request's KV blocks (promoting any full prompt
@@ -2905,6 +2969,38 @@ mod tests {
         assert_eq!(
             merged, after_refresh,
             "patched snapshots must equal a fresh snapshot taken after the bindings were applied"
+        );
+    }
+
+    #[test]
+    fn fair_partial_prefills_sharing_an_exhausted_pool_make_progress() {
+        // Two 100-token prefills in a 128-token pool: after each has run one
+        // 32-token fair chunk they own every block, their remaining prompts do
+        // not fit their partial blocks, and no decode exists to free one. The
+        // scheduler defers both forever unless the engine preempts a partial
+        // prefill.
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 16, 8));
+        engine.set_multi_prefill_fair(true, 32, 0);
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![1; 100], 1))
+            .unwrap();
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![2; 100], 1))
+            .unwrap();
+
+        for _ in 0..8 {
+            engine.step(64, true).unwrap();
+        }
+
+        let first = engine.request_manager().snapshot(RequestId(1)).unwrap();
+        let second = engine.request_manager().snapshot(RequestId(2)).unwrap();
+        assert!(
+            first.processed_prompt_tokens == 100
+                || second.processed_prompt_tokens == 100
+                || first.state != RequestState::Runnable
+                || second.state != RequestState::Runnable,
+            "partial prefills must not deadlock on an exhausted pool: {first:?} {second:?}"
         );
     }
 
