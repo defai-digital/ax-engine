@@ -399,7 +399,7 @@ pub enum Gemma4UnifiedError {
     },
 }
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum Gemma4UnifiedRuntimeInputError {
     #[error("invalid Gemma4 unified runtime input {field}: {message}")]
     InvalidField { field: String, message: String },

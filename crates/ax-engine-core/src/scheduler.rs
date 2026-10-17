@@ -565,6 +565,13 @@ impl Scheduler {
                     }
                     continue;
                 }
+                (ExecutionMode::Prefill, Some(_)) if snapshot.has_multimodal_inputs => {
+                    // Atomic media prefill cannot be chunked, so any positive
+                    // cap below the prompt would defer it forever while the
+                    // pressure lasts. Attempt the full remainder and let KV
+                    // allocation or the hard `Some(0)` policy bound the step.
+                    remaining_budget
+                }
                 (ExecutionMode::Prefill, Some(prefill_budget))
                     if fair_active && !snapshot.has_multimodal_inputs =>
                 {
@@ -1263,6 +1270,28 @@ mod tests {
         assert!(schedule_plan.selected_requests.is_empty());
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
         assert!(schedule_plan.execution_batch.is_none());
+    }
+
+    #[test]
+    fn soft_memory_pressure_does_not_defer_atomic_media_prefill() {
+        // The soft pressure cap (256 tokens) is below this prompt. Capping an
+        // atomic media prefill would make build_execution_item return None
+        // every step and leave the request Runnable forever.
+        let scheduler = Scheduler::new();
+        let prompt = vec![7u32; 300];
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(17),
+            vec![make_multimodal_snapshot(1, 1, "gemma4", &prompt, 0)],
+            Some("kv_low_free_blocks:1/8".into()),
+            1024,
+        ));
+
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
+        assert!(schedule_plan.deferred_requests.is_empty());
+        let batch = schedule_plan
+            .execution_batch
+            .expect("full media prompt runs in one item");
+        assert_eq!(batch.items[0].scheduled_token_count, 300);
     }
 
     #[test]

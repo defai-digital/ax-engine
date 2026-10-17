@@ -622,6 +622,36 @@ fn native_generate_validation_rejects_multimodal_prompt_over_max_batch_tokens() 
 }
 
 #[test]
+fn low_level_submit_rejects_multimodal_prompt_over_max_batch_tokens() {
+    // EngineSession::submit is public and bypasses the GenerateRequest
+    // validation path. With a fixed per-step budget, a multimodal prompt
+    // longer than that budget can never be scheduled atomically.
+    let mut session = shared_stream_test_session(4);
+    session.config.max_batch_tokens = 4;
+    let submission = RequestSubmission {
+        request_id: RequestId(1),
+        model_id: ModelId("gemma-4-12b-it".into()),
+        input_tokens: vec![10, 255999, 258880, 258882, 11],
+        multimodal_inputs: sample_gemma4_multimodal_inputs(),
+        sampling_params: SamplingParams::default(),
+        max_output_tokens: 1,
+        arrival_sequence: SequenceNo(1),
+        metadata: None,
+    };
+
+    let error = session
+        .submit(submission)
+        .expect_err("media prefill over the step budget must be rejected");
+    assert!(matches!(
+        error,
+        EngineSessionError::MultimodalPromptExceedsMaxBatchTokens {
+            prompt_len: 5,
+            max_batch_tokens: 4,
+        }
+    ));
+}
+
+#[test]
 fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
     let mut multimodal_inputs = sample_gemma4_multimodal_inputs();
     multimodal_inputs

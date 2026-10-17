@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::media_digest::{RuntimeMediaDigest, ordered_media_digests_key_or_empty};
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum Qwen3VlRuntimeInputError {
     #[error("qwen3_vl image placeholder_index {0} out of prompt range [0, {1})")]
     PlaceholderOutOfRange(usize, usize),
@@ -71,6 +71,18 @@ impl Qwen3VlImageRuntimeInput {
                 self.placeholder_index,
                 prompt_len,
             ));
+        }
+        let span_end = self
+            .placeholder_index
+            .checked_add(self.soft_token_count as usize)
+            .ok_or_else(|| {
+                Qwen3VlRuntimeInputError::InvalidGeometry("visual token range overflow".to_string())
+            })?;
+        if span_end > prompt_len {
+            return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
+                "placeholder_index {} + soft_token_count {} exceeds prompt length {prompt_len}",
+                self.placeholder_index, self.soft_token_count
+            )));
         }
         if self.num_patches == 0 || self.patch_dim == 0 {
             return Err(Qwen3VlRuntimeInputError::InvalidGeometry(
@@ -169,13 +181,20 @@ impl Qwen3VlRuntimeInputs {
         &self,
         prompt_len: usize,
     ) -> Result<(), Qwen3VlRuntimeInputError> {
-        let mut placeholders = std::collections::HashSet::with_capacity(self.images.len());
+        let mut spans = Vec::with_capacity(self.images.len());
         for image in &self.images {
             image.validate(prompt_len)?;
-            if !placeholders.insert(image.placeholder_index) {
+            spans.push((image.placeholder_index, image.soft_token_count as usize));
+        }
+        // Slices must not claim the same prompt tokens: later feature writes
+        // would clobber earlier ones. Sorting also catches a repeated start.
+        spans.sort_unstable();
+        for pair in spans.windows(2) {
+            let (previous_start, previous_count) = pair[0];
+            let (next_start, _) = pair[1];
+            if previous_start + previous_count > next_start {
                 return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
-                    "placeholder_index {} is used by more than one image",
-                    image.placeholder_index
+                    "placeholder_index span starting at {previous_start} overlaps the span starting at {next_start}"
                 )));
             }
         }
@@ -268,6 +287,30 @@ mod tests {
         };
         let error = image.validate(8).expect_err("grid product overflow");
         assert!(error.to_string().contains("overflow"), "{error}");
+    }
+
+    #[test]
+    fn spans_must_fit_and_must_not_overlap() {
+        // Placeholder start is in range, but the four-token span runs past the
+        // three-token prompt; the runner would otherwise encode the image
+        // before failing the scatter.
+        let error = sample_image()
+            .validate(3)
+            .expect_err("span past the prompt");
+        assert!(
+            error.to_string().contains("exceeds prompt length"),
+            "{error}"
+        );
+
+        let mut second = sample_image();
+        second.placeholder_index = 3;
+        let inputs = Qwen3VlRuntimeInputs {
+            images: vec![sample_image(), second],
+        };
+        let error = inputs
+            .validate_for_prompt_len(8)
+            .expect_err("overlapping spans");
+        assert!(error.to_string().contains("placeholder_index"), "{error}");
     }
 
     #[test]

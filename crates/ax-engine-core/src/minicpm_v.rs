@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::media_digest::{RuntimeMediaDigest, ordered_media_digests_key_or_empty};
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum MiniCpmV46RuntimeInputError {
     #[error("MiniCPM-V 4.6 image placeholder_index {0} out of prompt range [0, {1})")]
     PlaceholderOutOfRange(usize, usize),

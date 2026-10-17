@@ -1868,6 +1868,17 @@ fn validate_submission(submission: &RequestSubmission) -> Result<(), EngineCoreE
             message: "max_output_tokens must be greater than 0",
         });
     }
+    // Low-level submitters bypass the SDK's GenerateRequest validation, so the
+    // core is the last place that can reject media spans outside the prompt.
+    // The runner silently ignores an out-of-range Gemma span while still
+    // marking the media prefill complete, which would serve a text-only answer.
+    submission
+        .multimodal_inputs
+        .validate_for_prompt_tokens(&submission.input_tokens)
+        .map_err(|source| EngineCoreError::InvalidMultimodalInput {
+            request_id: submission.request_id,
+            source,
+        })?;
     Ok(())
 }
 
@@ -1910,6 +1921,12 @@ pub enum EngineCoreError {
     InvalidRequestSubmission {
         request_id: RequestId,
         message: &'static str,
+    },
+    #[error("invalid multimodal input for {request_id:?}: {source}")]
+    InvalidMultimodalInput {
+        request_id: RequestId,
+        #[source]
+        source: crate::request::RequestMultimodalInputError,
     },
     #[error("request manager error: {0}")]
     RequestManager(#[from] RequestManagerError),
@@ -4457,6 +4474,34 @@ mod tests {
             assert_eq!(item.prefix_tokens_reused, 0);
             assert_eq!(item.input_token_slice, vec![7; 8]);
         }
+    }
+
+    #[test]
+    fn submit_rejects_multimodal_spans_outside_the_prompt_before_registering() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+        let mut submission = make_multimodal_submission(1, 1, vec![7; 8], 1);
+        submission
+            .multimodal_inputs
+            .gemma4_unified
+            .as_mut()
+            .unwrap()
+            .images[0]
+            .span
+            .replacement_start = 8;
+
+        let error = engine
+            .submit(submission)
+            .expect_err("a media span past the prompt must be rejected");
+        assert!(matches!(
+            error,
+            EngineCoreError::InvalidMultimodalInput {
+                request_id: RequestId(1),
+                ..
+            }
+        ));
+        assert!(engine.request_manager().record(RequestId(1)).is_none());
+        assert!(engine.kv_manager.block_table(RequestId(1)).is_err());
     }
 
     #[test]

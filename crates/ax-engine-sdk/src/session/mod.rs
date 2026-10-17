@@ -687,6 +687,18 @@ impl EngineSession {
         &mut self,
         submission: RequestSubmission,
     ) -> Result<RequestId, EngineSessionError> {
+        // `step` always spends `max_batch_tokens`, and a multimodal prompt must
+        // fit in one execution item. A low-level submitter bypasses the
+        // GenerateRequest gate, so reject it here instead of deferring it
+        // forever.
+        if !submission.multimodal_inputs.is_empty()
+            && submission.input_tokens.len() > self.config.max_batch_tokens as usize
+        {
+            return Err(EngineSessionError::MultimodalPromptExceedsMaxBatchTokens {
+                prompt_len: submission.input_tokens.len() as u32,
+                max_batch_tokens: self.config.max_batch_tokens,
+            });
+        }
         let request_id = submission.request_id.0;
         let submitted = self
             .core

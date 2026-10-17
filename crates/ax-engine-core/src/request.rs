@@ -146,7 +146,7 @@ impl RequestMultimodalInputs {
     }
 }
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum RequestMultimodalInputError {
     #[error("multimodal request may select only one provider schema")]
     MultipleProviders,
