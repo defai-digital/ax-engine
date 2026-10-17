@@ -598,7 +598,8 @@ impl EngineCore {
         // decode exists to free one, and neither remaining prompt fits its
         // partial block. Deferring them again would deadlock; preempt the
         // newest partial prefill once and re-plan against the freed pool.
-        if resolved_plan.execution_batch.is_none()
+        if global_token_budget > 0
+            && resolved_plan.execution_batch.is_none()
             && resolved_plan.memory_blocked_requests.is_empty()
             && self.kv_manager.allocatable_block_count() == 0
             && let Some(candidate) =
@@ -830,12 +831,13 @@ impl EngineCore {
         best.map(|(_, rid)| rid)
     }
 
-    /// Newest deferred request that owns KV blocks for an incomplete prefill.
-    /// Fair-mode partial prefills can jointly exhaust the pool with no decode
-    /// left to free one; preempting the newest preserves the older-first
-    /// policy and lets the pool move again.
+    /// Newest deferred request that owns KV blocks for an incomplete prefill,
+    /// but only when an older partial prefill is also deferred and can spend
+    /// the freed blocks. Fair-mode partial prefills can jointly exhaust the
+    /// pool with no decode left to free one; preempting the newest preserves
+    /// the older-first policy and lets the pool move again.
     fn newest_deferred_partial_prefill(&self, deferred: &[RequestId]) -> Option<RequestId> {
-        deferred
+        let candidates: Vec<(crate::ids::SequenceNo, RequestId)> = deferred
             .iter()
             .filter_map(|request_id| {
                 let record = self.request_manager.record(*request_id)?;
@@ -848,8 +850,16 @@ impl EngineCore {
                     && self.kv_manager.block_count_for(*request_id) > 0)
                     .then_some((record.arrival_sequence, *request_id))
             })
-            .max_by_key(|(arrival, request_id)| (*arrival, *request_id))
-            .map(|(_, request_id)| request_id)
+            .collect();
+        let (newest_arrival, newest_id) = *candidates
+            .iter()
+            .max_by_key(|(arrival, request_id)| (*arrival, *request_id))?;
+        // Preempting the newest only helps if an older partial prefill can
+        // spend the freed blocks; otherwise it churns without progress.
+        candidates
+            .iter()
+            .any(|(arrival, _)| *arrival < newest_arrival)
+            .then_some(newest_id)
     }
 
     /// Release a preempted request's KV blocks (promoting any full prompt
@@ -3007,6 +3017,41 @@ mod tests {
                 || first.state != RequestState::Runnable
                 || second.state != RequestState::Runnable,
             "partial prefills must not deadlock on an exhausted pool: {first:?} {second:?}"
+        );
+    }
+
+    #[test]
+    fn zero_budget_step_does_not_preempt_partial_prefills() {
+        // A zero-token step cannot run any prefill; the deadlock recovery
+        // must not mistake it for an exhausted-pool stall and discard
+        // progress.
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 16, 8));
+        engine.set_multi_prefill_fair(true, 32, 0);
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![1; 100], 1))
+            .unwrap();
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![2; 100], 1))
+            .unwrap();
+        engine.step(64, true).unwrap();
+        engine.step(64, true).unwrap();
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .processed_prompt_tokens,
+            64
+        );
+        engine.step(0, true).unwrap();
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .processed_prompt_tokens,
+            64
         );
     }
 
