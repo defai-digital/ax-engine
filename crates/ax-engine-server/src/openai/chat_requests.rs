@@ -4677,6 +4677,90 @@ mod media_tests {
     use super::*;
     use serde_json::json;
 
+    fn inline_videos(count: usize) -> OpenAiChatContent {
+        serde_json::from_value(json!(vec![
+            json!({
+                "type": "video_url",
+                "video_url": {"url": "data:video/mp4;base64,AAAA"}
+            });
+            count
+        ]))
+        .expect("video content")
+    }
+
+    #[test]
+    fn inline_video_cap_accepts_limit_and_rejects_one_more() {
+        let mut collected = CollectedMedia::default();
+        let content = inline_videos(MAX_INLINE_VIDEOS_PER_REQUEST);
+        let rendered = render_content_collecting_media(
+            Some(&content),
+            "<image>",
+            "<audio>",
+            "<video>",
+            &mut collected,
+        )
+        .expect("exactly the video limit");
+        assert_eq!(collected.videos.len(), MAX_INLINE_VIDEOS_PER_REQUEST);
+        assert_eq!(rendered, "<video>".repeat(MAX_INLINE_VIDEOS_PER_REQUEST));
+
+        let mut collected = CollectedMedia::default();
+        let content = inline_videos(MAX_INLINE_VIDEOS_PER_REQUEST + 1);
+        let error = render_content_collecting_media(
+            Some(&content),
+            "<image>",
+            "<audio>",
+            "<video>",
+            &mut collected,
+        )
+        .expect_err("one video above the limit");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.error.message.contains("inline videos"));
+        assert_eq!(collected.videos.len(), MAX_INLINE_VIDEOS_PER_REQUEST);
+    }
+
+    #[test]
+    fn inline_video_cap_accumulates_messages_and_precedes_decoding() {
+        let mut collected = CollectedMedia::default();
+        for count in [MAX_INLINE_VIDEOS_PER_REQUEST - 1, 1] {
+            render_content_collecting_media(
+                Some(&inline_videos(count)),
+                "<image>",
+                "<audio>",
+                "<video>",
+                &mut collected,
+            )
+            .expect("videos across messages fit the request limit");
+        }
+        let malformed: OpenAiChatContent = serde_json::from_value(json!([{
+            "type": "input_video", "video_url": {"url": "invalid-data-uri"}
+        }]))
+        .expect("malformed payload still parses as content");
+        let error = render_content_collecting_media(
+            Some(&malformed),
+            "<image>",
+            "<audio>",
+            "<video>",
+            &mut collected,
+        )
+        .expect_err("video count must be checked before decoding the payload");
+        assert!(error.1.error.message.contains("inline videos"));
+        assert_eq!(collected.videos.len(), MAX_INLINE_VIDEOS_PER_REQUEST);
+        // Other modalities have independent counters.
+        let image: OpenAiChatContent = serde_json::from_value(json!([{
+            "type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}
+        }]))
+        .expect("image content");
+        render_content_collecting_media(
+            Some(&image),
+            "<image>",
+            "<audio>",
+            "<video>",
+            &mut collected,
+        )
+        .expect("video cap does not consume the image allowance");
+        assert_eq!(collected.images.len(), 1);
+    }
+
     #[test]
     fn nemotron_per_image_patch_budget_shares_the_context_across_images() {
         // Every image draws from the same context, so the per-image patch budget

@@ -173,6 +173,8 @@ pub struct KvManager {
     free_block_ids: Vec<BlockId>,
     block_tables: HashMap<RequestId, BlockTable>,
     prompt_tokens: HashMap<RequestId, Vec<u32>>,
+    /// Requests whose KV depends on inputs absent from the token-only keys.
+    prefix_reuse_disabled: BTreeSet<RequestId>,
     block_ref_counts: HashMap<BlockId, u32>,
     live_prefix_requests_by_first_block: HashMap<CachedBlockKey, BTreeSet<RequestId>>,
     /// Sum of the set sizes in `live_prefix_requests_by_first_block`; kept
@@ -207,6 +209,7 @@ impl KvManager {
             free_block_ids,
             block_tables: HashMap::new(),
             prompt_tokens: HashMap::new(),
+            prefix_reuse_disabled: BTreeSet::new(),
             block_ref_counts: HashMap::new(),
             live_prefix_requests_by_first_block: HashMap::new(),
             live_prefix_request_refs: 0,
@@ -232,6 +235,15 @@ impl KvManager {
         request_id: RequestId,
         prompt_tokens: Vec<u32>,
     ) -> Result<(), KvManagerError> {
+        self.register_request_with_prefix_reuse(request_id, prompt_tokens, true)
+    }
+
+    pub(crate) fn register_request_with_prefix_reuse(
+        &mut self,
+        request_id: RequestId,
+        prompt_tokens: Vec<u32>,
+        prefix_reuse_enabled: bool,
+    ) -> Result<(), KvManagerError> {
         if self.block_tables.contains_key(&request_id) {
             return Err(KvManagerError::DuplicateRequest(request_id));
         }
@@ -239,6 +251,9 @@ impl KvManager {
         self.block_tables
             .insert(request_id, BlockTable::empty(self.config.cache_group_id));
         self.prompt_tokens.insert(request_id, prompt_tokens);
+        if !prefix_reuse_enabled {
+            self.prefix_reuse_disabled.insert(request_id);
+        }
         Ok(())
     }
 
@@ -258,8 +273,9 @@ impl KvManager {
             target_table.logical_token_count,
             self.cached_blocks.len()
         );
-        if target_table.logical_token_count > 0 {
-            kv_diag!("lookup_prefix: EARLY MISS (target already has logical tokens)");
+        if target_table.logical_token_count > 0 || self.prefix_reuse_disabled.contains(&request_id)
+        {
+            kv_diag!("lookup_prefix: EARLY MISS (target has logical tokens or reuse is disabled)");
             return Ok(PrefixLookupResult::miss(self.config.cache_group_id));
         }
         if !self.prompt_tokens.contains_key(&request_id) {
@@ -462,6 +478,11 @@ impl KvManager {
         request_id: RequestId,
         lookup: &PrefixLookupResult,
     ) -> Result<(), KvManagerError> {
+        if self.prefix_reuse_disabled.contains(&request_id) {
+            return Err(KvManagerError::InvariantViolation(
+                "prefix reuse is disabled for this request",
+            ));
+        }
         if !lookup.hit {
             return Err(KvManagerError::InvariantViolation(
                 "prefix share requires a hit lookup",
@@ -685,7 +706,9 @@ impl KvManager {
                 "block refcount missing during free",
             ));
         }
-        self.promote_prompt_prefix_to_cache(&table, &prompt_tokens)?;
+        if !self.prefix_reuse_disabled.contains(&request_id) {
+            self.promote_prompt_prefix_to_cache(&table, &prompt_tokens)?;
+        }
         self.remove_live_prefix_index(request_id)?;
         let table = self
             .block_tables
@@ -695,6 +718,7 @@ impl KvManager {
             .prompt_tokens
             .remove(&request_id)
             .ok_or(KvManagerError::UnknownRequest(request_id))?;
+        self.prefix_reuse_disabled.remove(&request_id);
         let mut released_blocks = Vec::new();
 
         for block_id in table.block_ids.iter().rev().copied() {
@@ -1061,6 +1085,9 @@ impl KvManager {
     }
 
     fn insert_live_prefix_index(&mut self, request_id: RequestId) -> Result<(), KvManagerError> {
+        if self.prefix_reuse_disabled.contains(&request_id) {
+            return Ok(());
+        }
         let table = self
             .block_tables
             .get(&request_id)
@@ -1415,6 +1442,44 @@ mod tests {
                 "block_size_tokens must be in 1..=65535 and total_blocks must be > 0",
             ))
         );
+    }
+
+    #[test]
+    fn private_prefixes_neither_adopt_nor_publish_and_release_their_policy() {
+        let mut manager = make_manager(8, 4);
+        let tokens = vec![7; 8];
+        manager
+            .register_request_with_prefix_reuse(RequestId(1), tokens.clone(), false)
+            .unwrap();
+        manager.allocate(RequestId(1), 8).unwrap();
+        manager
+            .register_request(RequestId(2), tokens.clone())
+            .unwrap();
+        assert!(!manager.lookup_prefix(RequestId(2), &tokens).unwrap().hit);
+        assert_eq!(manager.telemetry().live_prefix_request_refs, 0);
+        manager.free(RequestId(1)).unwrap();
+        assert!(!manager.lookup_prefix(RequestId(2), &tokens).unwrap().hit);
+        assert_eq!(manager.telemetry().cached_blocks, 0);
+        assert!(manager.prefix_reuse_disabled.is_empty());
+
+        manager.allocate(RequestId(2), 8).unwrap();
+        manager
+            .register_request_with_prefix_reuse(RequestId(3), tokens.clone(), false)
+            .unwrap();
+        assert!(!manager.lookup_prefix(RequestId(3), &tokens).unwrap().hit);
+        manager.free(RequestId(2)).unwrap();
+        assert!(!manager.lookup_prefix(RequestId(3), &tokens).unwrap().hit);
+        manager.free(RequestId(3)).unwrap();
+        manager
+            .register_request(RequestId(3), tokens.clone())
+            .unwrap();
+        let lookup = manager.lookup_prefix(RequestId(3), &tokens).unwrap();
+        assert!(lookup.hit);
+        // A lookup for an eligible consumer cannot be applied to a private one.
+        manager
+            .register_request_with_prefix_reuse(RequestId(4), tokens, false)
+            .unwrap();
+        assert!(manager.share_prefix(RequestId(4), &lookup).is_err());
     }
 
     #[test]

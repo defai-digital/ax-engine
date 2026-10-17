@@ -716,11 +716,13 @@ Multimodal serving contract limits:
   only** (no remote `http(s)`, no bare filesystem paths). The frame cap is 24;
   Gemma video can also be disabled with `AX_MLX_GEMMA4_VIDEO=off`. Otherwise
   video is rejected with `unsupported_modality`.
-- **Caching.** Prefix caching is disabled for multimodal requests unless
-  `AX_MLX_MULTIMODAL_PREFIX_REUSE=1` is set (default off until fixtures
-  promote). With the gate off, every media request recomputes its full
-  prefill, including the vision-tower forward; no vision-feature cache is
-  wired into the serving path today.
+- **Caching.** Every multimodal request recomputes its full prefill, including
+  the vision-tower forward. Token-only prefix matches cannot skip media
+  processing. `AX_MLX_MULTIMODAL_PREFIX_REUSE=1` enables experimental media-keyed
+  snapshots (default off); it does not skip this full prefill. Runtime media
+  keys bind tensor geometry, positions, and placement. Older media snapshots
+  become misses; text-only cache keys are unchanged. No vision-feature cache
+  is wired into the serving path today.
 - **Chat output.** Gemma 4 thinking-channel framing (`<|channel>thought…`)
   is stripped from chat content; raw `/v1/completions` output stays
   verbatim.

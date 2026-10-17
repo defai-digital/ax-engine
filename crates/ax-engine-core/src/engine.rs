@@ -271,8 +271,13 @@ impl EngineCore {
         if self.request_manager.record(request_id).is_some() {
             return Err(RequestManagerError::DuplicateRequest(request_id).into());
         }
-        self.kv_manager
-            .register_request(request_id, submission.input_tokens.clone())?;
+        // Token-only block keys cannot prove media KV identity in either
+        // direction: media requests neither adopt nor publish these prefixes.
+        self.kv_manager.register_request_with_prefix_reuse(
+            request_id,
+            submission.input_tokens.clone(),
+            submission.multimodal_inputs.is_empty(),
+        )?;
         // Bind generation kind atomically with insert (ADR-038) so a failed
         // post-submit set cannot leave a request with the wrong strategy.
         if let Err(error) = self
@@ -785,17 +790,25 @@ impl EngineCore {
         request_id: RequestId,
         metrics: &mut PreemptionMetrics,
     ) -> Result<(), EngineCoreError> {
-        let prompt_tokens = self
+        let (prompt_tokens, prefix_reuse_enabled) = self
             .request_manager
             .record(request_id)
-            .map(|record| record.prompt_tokens.clone())
+            .map(|record| {
+                (
+                    record.prompt_tokens.clone(),
+                    record.multimodal_inputs.is_empty(),
+                )
+            })
             .ok_or(EngineCoreError::RequestManager(
                 RequestManagerError::UnknownRequest(request_id),
             ))?;
         self.runner.release_request_state(request_id);
         self.kv_manager.free(request_id)?;
-        self.kv_manager
-            .register_request(request_id, prompt_tokens)?;
+        self.kv_manager.register_request_with_prefix_reuse(
+            request_id,
+            prompt_tokens,
+            prefix_reuse_enabled,
+        )?;
         let forfeited = self.request_manager.preempt_for_recompute(request_id)?;
         self.sync_request_block_table(request_id)?;
         metrics.preempted_requests = metrics.preempted_requests.saturating_add(1);
@@ -4320,6 +4333,154 @@ mod tests {
             .expect("repeated request block table");
         assert!(block_table.block_ids.is_empty());
         assert_eq!(block_table.logical_token_count, 0);
+    }
+
+    #[test]
+    fn multimodal_prefix_matches_keep_full_prefill_and_text_reuse() {
+        // Exercise both live and retained sources, partial/full token matches,
+        // and identical/different media. Token equality never proves media KV.
+        for retained in [false, true] {
+            for prefix_len in [4, 8] {
+                for changed_media in [false, true] {
+                    let mut engine = EngineCore::with_kv_config(KvManagerConfig::validated(
+                        CacheGroupId(2),
+                        4,
+                        32,
+                    ));
+                    engine
+                        .submit(make_multimodal_submission(1, 1, vec![7; prefix_len], 1))
+                        .unwrap();
+                    engine.step(prefix_len as u32, true).unwrap();
+                    if retained {
+                        engine.step(1, true).unwrap();
+                    }
+                    let mut second = make_multimodal_submission(2, 2, vec![7; 8], 2);
+                    if changed_media {
+                        second
+                            .multimodal_inputs
+                            .gemma4_unified
+                            .as_mut()
+                            .unwrap()
+                            .images[0]
+                            .pixel_values[0] = 0.75;
+                    }
+                    engine.submit(second).unwrap();
+                    // An active seed may finish first due to route grouping.
+                    let mut outcome = engine.step(16, true).unwrap();
+                    if !outcome
+                        .schedule_plan
+                        .selected_requests
+                        .contains(&RequestId(2))
+                    {
+                        outcome = engine.step(16, true).unwrap();
+                    }
+                    let item = outcome
+                        .schedule_plan
+                        .execution_batch
+                        .as_ref()
+                        .unwrap()
+                        .items
+                        .iter()
+                        .find(|item| item.request_id == RequestId(2))
+                        .unwrap();
+                    assert_eq!(item.mode, ExecutionMode::Prefill);
+                    assert_eq!(item.input_token_slice, vec![7; 8]);
+                    assert_eq!(item.position_range.start, 0);
+                    assert_eq!(item.prefix_tokens_reused, 0);
+                    assert_eq!(item.prefix_blocks_reused, 0);
+                    assert!(item.reused_prefix_token_slice.is_empty());
+                    assert_eq!(outcome.metrics.prefix_hits, 0);
+                    // Normal decode after media prefill remains schedulable.
+                    let decode = engine.step(1, true).unwrap();
+                    assert_eq!(
+                        decode.schedule_plan.execution_batch.unwrap().items[0].mode,
+                        ExecutionMode::Decode
+                    );
+                }
+            }
+        }
+
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![7; 8], 1))
+            .unwrap();
+        engine.step(8, true).unwrap();
+        engine.step(1, true).unwrap();
+        let mut text = make_submission_with_prompt(2, 2, vec![7; 8], 1);
+        text.multimodal_inputs.gemma4_unified = Some(Default::default());
+        engine.submit(text).unwrap();
+        let outcome = engine.step(8, true).unwrap();
+        let item = &outcome
+            .schedule_plan
+            .execution_batch
+            .as_ref()
+            .unwrap()
+            .items[0];
+        assert_eq!(item.mode, ExecutionMode::Decode);
+        assert_eq!(item.prefix_tokens_reused, 8);
+    }
+
+    #[test]
+    fn text_requests_cannot_adopt_live_or_retained_media_prefixes() {
+        for retained in [false, true] {
+            let mut engine =
+                EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+            engine
+                .submit(make_multimodal_submission(1, 1, vec![7; 8], 1))
+                .unwrap();
+            engine.step(8, true).unwrap();
+            if retained {
+                engine.step(1, true).unwrap();
+            }
+            engine
+                .submit(make_submission_with_prompt(2, 2, vec![7; 8], 1))
+                .unwrap();
+            let mut outcome = engine.step(16, true).unwrap();
+            if !outcome
+                .schedule_plan
+                .selected_requests
+                .contains(&RequestId(2))
+            {
+                outcome = engine.step(16, true).unwrap();
+            }
+            let item = outcome
+                .schedule_plan
+                .execution_batch
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.request_id == RequestId(2))
+                .unwrap();
+            assert_eq!(item.mode, ExecutionMode::Prefill);
+            assert_eq!(item.prefix_tokens_reused, 0);
+            assert_eq!(item.input_token_slice, vec![7; 8]);
+        }
+    }
+
+    #[test]
+    fn multimodal_preemption_replays_full_prefill() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+        engine
+            .submit(make_multimodal_submission(1, 1, vec![7; 8], 2))
+            .unwrap();
+        engine.step(8, true).unwrap();
+        engine
+            .preempt_request(RequestId(1), &mut PreemptionMetrics::default())
+            .unwrap();
+        let outcome = engine.step(8, true).unwrap();
+        let item = &outcome
+            .schedule_plan
+            .execution_batch
+            .as_ref()
+            .unwrap()
+            .items[0];
+        assert_eq!(item.mode, ExecutionMode::Prefill);
+        assert_eq!(item.input_token_slice, vec![7; 8]);
+        assert_eq!(item.position_range.start, 0);
+        assert_eq!(item.prefix_tokens_reused, 0);
     }
 
     #[test]

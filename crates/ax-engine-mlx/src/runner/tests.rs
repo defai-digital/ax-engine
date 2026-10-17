@@ -3071,6 +3071,146 @@ fn multimodal_prefix_layout_folds_media_digest() {
     assert!(ka.contains(";media="));
 }
 
+#[test]
+fn multimodal_decode_requires_native_prefill_before_any_restore() {
+    let mut manifest = dense_manifest();
+    manifest.model_family = "qwen3".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    // The guard runs before any model forward. These weights deliberately have
+    // no projections, so reaching text warmup would fail this regression.
+    shared_weights.publish(Arc::new(runner_test_weights(vec![runner_test_layer()])));
+    let store = MlxPrefixCacheStore::memory_only_for_tests(MlxPrefixCachePolicy {
+        max_bytes: 4096,
+        max_entries: 4,
+    });
+    let runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        Some(store.clone()),
+        Some(&shared_weights),
+    )
+    .expect("runner with synthetic shared weights");
+    let inputs: RequestMultimodalInputs = serde_json::from_value(serde_json::json!({
+        "gemma4_unified": {"images": [{
+            "span": {"modality": "image", "placeholder_index": 1,
+                     "replacement_start": 1, "soft_token_count": 1,
+                     "replacement_token_count": 3},
+            "pixel_values": [0.25], "pixel_position_ids": [[0, 0]]
+        }]}
+    }))
+    .expect("media inputs");
+    let ocr: RequestMultimodalInputs = serde_json::from_value(serde_json::json!({
+        "unlimited_ocr": {"image_token_id": 7, "soft_token_count": 4,
+            "cropping": false, "images": [{"width": 1, "height": 1,
+                                         "rgb_bytes": [1, 2, 3]}]}
+    }))
+    .expect("undigested media inputs");
+    let mut item = scheduler_claim_item(vec![7; 8]);
+    item.mode = ExecutionMode::Decode;
+    item.input_token_slice = vec![7];
+    item.scheduled_token_count = 1;
+    let key = runner.prefix_cache_key_with_media(
+        "qwen3",
+        4,
+        &[7; 8],
+        &runner
+            .media_key_from_inputs(Some(&inputs))
+            .expect("media digest"),
+    );
+    assert!(
+        store
+            .prefix_cache
+            .lock()
+            .insert(key.clone(), test_prefix_snapshot(7, 8, 128))
+            .stored
+    );
+    assert!(store.prefix_cache.lock().get(&key, &[7; 8]).is_some());
+    let text_key = runner.prefix_cache_key_with_media("qwen3", 4, &[7; 8], "");
+    assert!(store.prefix_cache.lock().get(&text_key, &[7; 8]).is_none());
+    for media in [&inputs, &ocr] {
+        for (complete, native_tokens) in [(false, 0), (false, 8), (true, 0)] {
+            let mut state = RequestState::new(1, 99, None);
+            state.cache.set_seq_len(native_tokens);
+            state.multimodal_prefill_complete = complete;
+            runner.states.lock().insert(item.request_id, state);
+            let result = runner.run_item(&item, None, "qwen3", 4, Some(media), None);
+            assert_eq!(
+                result.update.error.as_deref(),
+                Some("multimodal decode requires a completed media prefill")
+            );
+            assert_eq!(result.update.tokens_executed, 0);
+            assert_eq!(result.prefix_cache.warmup_tokens, 0);
+            assert_eq!(result.prefix_cache.hits, 0);
+            assert!(!runner.states.lock().contains_key(&item.request_id));
+        }
+    }
+
+    // Exercise the shared successful-prefill tail and then the real Decode
+    // entry with a buffered first token; no numerical model claim is involved.
+    let mut state = RequestState::new(1, 99, None);
+    state.cache.set_seq_len(8);
+    runner.complete_multimodal_prefill(
+        &mut state,
+        &mut MlxPrefixCacheTelemetry::default(),
+        MultimodalPrefillTail {
+            full_prompt_tokens: vec![7; 8],
+            first_token: 5,
+            prefill_started: Instant::now(),
+            prefill_forward_wall_us: 0,
+            publish_prefix_snapshot: false,
+            model_id: "qwen3",
+            block_size_tokens: 4,
+            media_key: None,
+            ctx: None,
+            sampling: MlxSamplingParams::greedy(),
+            max_output: 1,
+            is_greedy: true,
+        },
+    );
+    assert!(state.multimodal_prefill_complete);
+    state.cached_prefill_output_token = Some(5);
+    runner.states.lock().insert(item.request_id, state);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None);
+    assert!(result.update.error.is_none(), "{:?}", result.update.error);
+    assert_eq!(result.update.output_token, Some(5));
+
+    // A new prefill clears the completion proof before attempting projection.
+    let mut state = RequestState::new(1, 99, None);
+    state.multimodal_prefill_complete = true;
+    state.cache.set_seq_len(8);
+    let prompt = begin_multimodal_prefill(&mut state, &item, &[9, 10]);
+    assert_eq!(prompt, [vec![7; 8], vec![9, 10]].concat());
+    assert!(!state.multimodal_prefill_complete);
+    runner.states.lock().insert(item.request_id, state);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None);
+    assert_eq!(
+        result.update.error.as_deref(),
+        Some("multimodal decode requires a completed media prefill")
+    );
+    assert_eq!(result.prefix_cache.warmup_tokens, 0);
+
+    // Empty provider envelopes remain text-only, including OCR's no-media case.
+    let empty: RequestMultimodalInputs = serde_json::from_value(serde_json::json!({
+        "gemma4_unified": {}, "qwen3_vl": {}, "minicpm_v46": {},
+        "nemotron_omni": {}, "unlimited_ocr": {
+            "image_token_id": 7, "soft_token_count": 4, "cropping": false, "images": []
+        }
+    }))
+    .expect("empty providers");
+    assert!(empty.is_empty());
+    let mut state = RequestState::new(1, 99, None);
+    state.cache.set_seq_len(8);
+    state.cached_prefill_output_token = Some(5);
+    runner.states.lock().insert(item.request_id, state);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&empty), None);
+    assert!(result.update.error.is_none(), "{:?}", result.update.error);
+    assert_eq!(result.update.output_token, Some(5));
+    fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
+}
+
 fn test_prefix_snapshot(token: u32, token_count: usize, bytes: u64) -> MlxPrefixSnapshot {
     let payload = MlxKVCache::new(2).serialize_to_bytes();
     MlxPrefixSnapshot {

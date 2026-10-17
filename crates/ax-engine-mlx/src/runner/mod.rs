@@ -355,6 +355,8 @@ struct Gemma4AssistantMtpRuntime {
 /// Per-request mutable state persisted across prefill → decode steps.
 struct RequestState {
     cache: MlxKVCache,
+    /// Set only by successful native media prefill, never by a prefix restore.
+    multimodal_prefill_complete: bool,
     prompt_prefix_tokens: Vec<u32>,
     generated_tokens: Vec<u32>,
     cached_prefill_output_token: Option<u32>,
@@ -1141,6 +1143,7 @@ impl RequestState {
         };
         Self {
             cache,
+            multimodal_prefill_complete: false,
             prompt_prefix_tokens: Vec::new(),
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
@@ -2847,6 +2850,7 @@ fn begin_multimodal_prefill(
     token_ids: &[u32],
 ) -> Vec<u32> {
     state.cache.reset();
+    state.multimodal_prefill_complete = false;
     state.prompt_prefix_tokens.clear();
     state.cached_prefill_output_token = None;
     state.mtp_prefill_hidden = None;
@@ -5960,6 +5964,7 @@ impl MlxRunner {
             is_greedy,
         } = tail;
         state.prompt_prefix_tokens = full_prompt_tokens;
+        state.multimodal_prefill_complete = true;
 
         let mut prefill_prefix_cache_wall_us = 0u32;
         if publish_prefix_snapshot && multimodal_prefix_reuse_enabled() {
@@ -6151,8 +6156,20 @@ impl MlxRunner {
                 )
             })
         };
-        // WS-M3: when multimodal prefix reuse is enabled, restore like text
-        // (media identity is folded into the prefix key via media_key).
+        // A fresh media request must project its media before decode, regardless
+        // of the reuse flag or a token-only scheduler claim. A cache miss here
+        // must never fall through to text-only prefix warmup.
+        if !is_prefill
+            && multimodal_provider_count > 0
+            && (!state.multimodal_prefill_complete || state.cache.seq_len() == 0)
+        {
+            return errored_item_run(
+                item.request_id,
+                "multimodal decode requires a completed media prefill",
+            );
+        }
+        // Experimental media-keyed snapshot lookup remains gated. The native
+        // media branches below still reset the cache and recompute full prefill.
         // `None` = media present without a digest; restore and store both
         // fail closed on it rather than using a text-only key.
         let media_key = self.media_key_from_inputs(multimodal_inputs);

@@ -1903,6 +1903,10 @@ mod tests {
                 .is_none()
         );
 
+        let mut wrong_media = key.clone();
+        wrong_media.media_key = "different-media-geometry".into();
+        assert!(cache.get_longest_prefix(&wrong_media, &tokens).is_none());
+
         // Sanity: the unmodified key still hits.
         assert!(cache.get_longest_prefix(&key, &tokens).is_some());
     }

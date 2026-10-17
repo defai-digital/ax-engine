@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::media_digest::{media_digest_f32, ordered_media_digests_key_or_empty};
+use crate::media_digest::{RuntimeMediaDigest, ordered_media_digests_key_or_empty};
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum Qwen3VlRuntimeInputError {
@@ -186,11 +186,20 @@ impl Qwen3VlRuntimeInputs {
     pub fn media_prefix_key(&self, model_fingerprint: &str) -> String {
         let mut digests = Vec::with_capacity(self.images.len());
         for image in &self.images {
-            digests.push(media_digest_f32(
-                &image.patches,
-                image.soft_token_count,
-                model_fingerprint,
-            ));
+            let mut digest = RuntimeMediaDigest::new("qwen3_vl.patches.f32", model_fingerprint);
+            digest.usize(image.placeholder_index);
+            digest.u32(image.soft_token_count);
+            digest.u32(image.num_patches);
+            digest.u32(image.patch_dim);
+            digest.u32(image.grid_t);
+            digest.u32(image.height);
+            digest.u32(image.width);
+            digest.u32(image.patch_size);
+            digest.u32(image.temporal_patch_size);
+            digest.u32(image.spatial_merge_size);
+            digest.u32(u32::from(image.is_video));
+            digest.f32s(&image.patches);
+            digests.push(digest.finish());
         }
         ordered_media_digests_key_or_empty(&digests)
     }

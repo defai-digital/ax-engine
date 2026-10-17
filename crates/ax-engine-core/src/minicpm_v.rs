@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::media_digest::{media_digest_f32, ordered_media_digests_key_or_empty};
+use crate::media_digest::{RuntimeMediaDigest, ordered_media_digests_key_or_empty};
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum MiniCpmV46RuntimeInputError {
@@ -157,11 +157,16 @@ impl MiniCpmV46RuntimeInputs {
             .images
             .iter()
             .map(|image| {
-                media_digest_f32(
-                    &image.pixel_values,
-                    image.soft_token_count,
-                    model_fingerprint,
-                )
+                let mut digest =
+                    RuntimeMediaDigest::new("minicpm_v46.image.nhwc.f32", model_fingerprint);
+                digest.usize(image.placeholder_index);
+                digest.u32(image.soft_token_count);
+                digest.u32(image.height);
+                digest.u32(image.width);
+                digest.u32(image.patch_size);
+                digest.u32(image.spatial_downsample_factor);
+                digest.f32s(&image.pixel_values);
+                digest.finish()
             })
             .collect();
         ordered_media_digests_key_or_empty(&digests)
