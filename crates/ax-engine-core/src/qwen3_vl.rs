@@ -17,9 +17,15 @@ pub enum Qwen3VlRuntimeInputError {
     EmptyPatches,
     #[error("qwen3_vl soft_token_count must be > 0")]
     ZeroSoftTokens,
+    #[error("qwen3_vl request carries {0} images, exceeding the {1} image limit")]
+    TooManyImages(usize, usize),
     #[error("qwen3_vl geometry invalid: {0}")]
     InvalidGeometry(String),
 }
+
+/// Matches the serving edge's image limit and bounds validation bookkeeping
+/// for native API and SDK-direct callers as well.
+const MAX_IMAGES_PER_REQUEST: usize = 40;
 
 /// One image for Qwen3-VL prefill (already patch-projected or raw patches).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -181,7 +187,14 @@ impl Qwen3VlRuntimeInputs {
         &self,
         prompt_len: usize,
     ) -> Result<(), Qwen3VlRuntimeInputError> {
-        let mut spans = Vec::with_capacity(self.images.len());
+        if self.images.len() > MAX_IMAGES_PER_REQUEST {
+            return Err(Qwen3VlRuntimeInputError::TooManyImages(
+                self.images.len(),
+                MAX_IMAGES_PER_REQUEST,
+            ));
+        }
+        // The count guard bounds growth before any validation bookkeeping.
+        let mut spans = Vec::new();
         for image in &self.images {
             image.validate(prompt_len)?;
             spans.push((image.placeholder_index, image.soft_token_count as usize));
@@ -324,5 +337,42 @@ mod tests {
         other.images[0].patches[0] = 0.9;
         assert_ne!(inputs.media_prefix_key("fp"), other.media_prefix_key("fp"));
         assert!(!inputs.media_prefix_key("fp").is_empty());
+    }
+
+    #[test]
+    fn rejects_excess_images_before_validating_geometry() {
+        let inputs = Qwen3VlRuntimeInputs {
+            images: vec![sample_image(); MAX_IMAGES_PER_REQUEST + 1],
+        };
+        // Even an invalid prompt must hit the count guard before image checks.
+        assert_eq!(
+            inputs.validate_for_prompt_len(0),
+            Err(Qwen3VlRuntimeInputError::TooManyImages(
+                MAX_IMAGES_PER_REQUEST + 1,
+                MAX_IMAGES_PER_REQUEST,
+            ))
+        );
+    }
+
+    #[test]
+    fn accepts_empty_inputs_and_the_image_count_boundary() {
+        assert!(
+            Qwen3VlRuntimeInputs::default()
+                .validate_for_prompt_len(0)
+                .is_ok()
+        );
+        let inputs = Qwen3VlRuntimeInputs {
+            images: (0..MAX_IMAGES_PER_REQUEST)
+                .map(|index| Qwen3VlImageRuntimeInput {
+                    placeholder_index: index * 4,
+                    ..sample_image()
+                })
+                .collect(),
+        };
+        assert!(
+            inputs
+                .validate_for_prompt_len(MAX_IMAGES_PER_REQUEST * 4)
+                .is_ok()
+        );
     }
 }
