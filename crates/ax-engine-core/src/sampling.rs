@@ -172,10 +172,18 @@ fn sample_argmax_with_logprob_and_logits_processors(
         logits
     };
 
-    let (best_index, &best_logit) = logits
-        .iter()
-        .enumerate()
-        .max_by(|(_, left), (_, right)| left.total_cmp(right))?;
+    let (best_index, &best_logit) =
+        logits
+            .iter()
+            .enumerate()
+            .max_by(|(left_index, left), (right_index, right)| {
+                // Match MLX's first-index argmax, including equal signed zeros.
+                if left == right {
+                    right_index.cmp(left_index)
+                } else {
+                    left.total_cmp(right)
+                }
+            })?;
     if !best_logit.is_finite() {
         return None;
     }
@@ -359,6 +367,25 @@ mod tests {
                 .logprob
                 .is_some_and(|logprob| logprob.is_finite() && logprob < 0.0)
         );
+    }
+
+    #[test]
+    fn deterministic_sampler_keeps_first_token_on_tied_logits() {
+        for logits in [vec![3.0, 3.0, 1.0], vec![-0.0, 0.0, -1.0]] {
+            let sampled = DeterministicSampler.sample(SamplerInput {
+                requests: vec![SamplerRequest {
+                    request_id: RequestId(1),
+                    previous_token: 99,
+                    logits: Some(logits),
+                    recent_tokens: Vec::new(),
+                    generated_len: 0,
+                    max_output_tokens: 4,
+                    sampling_params: SamplingParams::default(),
+                }],
+            });
+            assert_eq!(sampled[0].token_id, 0);
+            assert_eq!(sampled[0].stop_reason, None);
+        }
     }
 
     #[test]
