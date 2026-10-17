@@ -690,6 +690,46 @@ fn caller_chosen_request_ids_do_not_define_arrival_order() {
 }
 
 #[test]
+fn low_level_submit_advances_the_auto_arrival_sequence() {
+    // Mixing the public RequestSubmission entry with the auto-arrival path
+    // must not let the later request appear older than the first.
+    let mut session = shared_stream_test_session(8);
+    let mut submission = sample_submission();
+    submission.request_id = RequestId(100);
+    submission.arrival_sequence = SequenceNo(100);
+    session.submit(submission).expect("low-level submit");
+
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(101, request)
+        .expect("auto-arrival submit");
+
+    let first = session
+        .core()
+        .request_manager()
+        .snapshot(RequestId(100))
+        .expect("first snapshot");
+    let second = session
+        .core()
+        .request_manager()
+        .snapshot(RequestId(101))
+        .expect("second snapshot");
+    assert!(
+        second.arrival_sequence > first.arrival_sequence,
+        "the later request must not arrive first, got {first:?} and {second:?}"
+    );
+}
+
+#[test]
 fn max_explicit_request_id_does_not_stall_auto_allocation() {
     // `advance_request_id` used `saturating_add`, so one caller-chosen
     // u64::MAX id pinned the auto allocator to MAX and every later
@@ -713,6 +753,33 @@ fn max_explicit_request_id_does_not_stall_auto_allocation() {
         .expect("auto allocation must not reuse the max id");
     assert_ne!(auto_id, u64::MAX);
     assert_eq!(auto_id, 1);
+}
+
+#[test]
+fn auto_allocation_wraps_past_a_used_max_id() {
+    // MAX-1 pushes next_request_id to MAX. The first auto submit uses MAX;
+    // the next must skip the retained MAX id instead of failing duplicate.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(u64::MAX - 1, request.clone())
+        .expect("explicit max-1 id");
+    assert_eq!(
+        session
+            .submit_generate(request.clone())
+            .expect("first auto"),
+        u64::MAX
+    );
+    assert_eq!(session.submit_generate(request).expect("wrapped auto"), 1);
 }
 
 #[test]

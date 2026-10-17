@@ -709,10 +709,17 @@ impl EngineSession {
             });
         }
         let request_id = submission.request_id.0;
+        let arrival_sequence = submission.arrival_sequence.0;
         let submitted = self
             .core
             .submit(submission)
             .map_err(EngineSessionError::from)?;
+        // A low-level submitter supplies its own arrival order. Keep the
+        // auto-allocated sequence ahead of it so a later
+        // `submit_generate_with_request_id` cannot jump in front.
+        if let Some(next) = arrival_sequence.checked_add(1) {
+            self.next_arrival_sequence = self.next_arrival_sequence.max(next);
+        }
         // A caller may reuse a request id that an earlier request already used
         // (`submit_generate_with_request_id`). Stored routes are keyed by id
         // alone, so drop the previous request's entry: otherwise the new
@@ -975,8 +982,28 @@ impl EngineSession {
     }
 
     pub fn submit_generate(&mut self, request: GenerateRequest) -> Result<u64, EngineSessionError> {
-        let request_id = self.next_request_id;
+        let request_id = self.next_free_auto_request_id();
         self.submit_generate_with_request_id(request_id, request)
+    }
+
+    /// Next auto id not retained or live. Caller-chosen ids can reserve any
+    /// u64, including MAX, so the allocator wraps and skips used entries
+    /// instead of stalling on a duplicate.
+    fn next_free_auto_request_id(&self) -> u64 {
+        const SCAN_LIMIT: u64 = 1024;
+        let mut candidate = self.next_request_id;
+        for _ in 0..SCAN_LIMIT {
+            if self
+                .core
+                .request_manager()
+                .snapshot(RequestId(candidate))
+                .is_none()
+            {
+                return candidate;
+            }
+            candidate = candidate.checked_add(1).unwrap_or(1);
+        }
+        candidate
     }
 
     pub fn submit_generate_with_request_id(
