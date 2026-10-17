@@ -6172,7 +6172,17 @@ impl MlxRunner {
         // media branches below still reset the cache and recompute full prefill.
         // `None` = media present without a digest; restore and store both
         // fail closed on it rather than using a text-only key.
-        let media_key = self.media_key_from_inputs(multimodal_inputs);
+        //
+        // Decode with a materialized cache cannot restore or publish a
+        // snapshot, and re-hashing every media tensor per generated token is
+        // expensive (a 20.6 MB video tensor costs ~59 ms in release). The
+        // restore path returns before reading the key once `seq_len != 0`, so
+        // the empty text sentinel is never used as a media identity.
+        let media_key = if is_prefill || state.cache.seq_len() == 0 {
+            self.media_key_from_inputs(multimodal_inputs)
+        } else {
+            Some(String::new())
+        };
         let mut prefix_cache =
             if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
                 MlxPrefixCacheTelemetry::default()
