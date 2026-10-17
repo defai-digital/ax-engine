@@ -2036,7 +2036,11 @@ def _announced_serve_url(host: str, port: int, extra_server_args: Sequence[str])
     override_host, override_port = _passthrough_endpoint_overrides(extra_server_args)
     effective_host = host if override_host is None else override_host
     effective_port: str | int = port if override_port is None else override_port
-    bracketed = f"[{effective_host}]" if ":" in effective_host else effective_host
+    bracketed = effective_host
+    if ":" in effective_host and not (
+        effective_host.startswith("[") and effective_host.endswith("]")
+    ):
+        bracketed = f"[{effective_host}]"
     return f"http://{bracketed}:{effective_port}"
 
 
