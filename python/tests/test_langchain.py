@@ -159,7 +159,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
         else:
             # JSON response
-            payload = json.dumps(response).encode()
+            payload = response if isinstance(response, bytes) else json.dumps(response).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -655,9 +655,8 @@ class TestAXEngineChatModel(unittest.TestCase):
             ],
         )
 
-    def test_stream_flushes_trailing_event_without_blank_line(self):
-        # Server closes without a final \n\n: both the trailing content event
-        # and the [DONE] sentinel must still be read from the last buffer.
+    def test_stream_rejects_done_without_blank_line(self):
+        # A truncated sentinel is not a complete SSE event.
         trailing = (
             'data: {"id":"c1","object":"chat.completion.chunk","choices":'
             '[{"index":0,"delta":{"content":"tail"},"finish_reason":null}]}'
@@ -666,9 +665,49 @@ class TestAXEngineChatModel(unittest.TestCase):
         )
         self.srv.set_response(trailing)
         chat = self._make_chat()
-        chunks = list(chat.stream([HumanMessage(content="x")]))
-        text = "".join(c.content for c in chunks)
-        self.assertEqual(text, "tail")
+        with self.assertRaisesRegex(RuntimeError, "ended prematurely"):
+            list(chat.stream([HumanMessage(content="x")]))
+
+    def test_sse_line_endings_and_utf8_survive_every_chunk_boundary(self):
+        from ax_engine.langchain import _stream_sse
+
+        for ending in (b"\n", b"\r", b"\r\n", b"\n\r"):
+            wire = b"\xef\xbb\xbf" + ending.join(
+                [b"event: error", b"", b": keepalive", b'data: {"text":"\xce\xbb"}',
+                 b"", b"data: [DONE]", b"", b""]
+            )
+            for boundary in range(len(wire) + 1):
+                with self.subTest(ending=ending, boundary=boundary):
+                    response = mock.MagicMock()
+                    response.__enter__.return_value = response
+                    response.read1.side_effect = [
+                        part for part in (wire[:boundary], wire[boundary:]) if part
+                    ] + [b""]
+                    with mock.patch("urllib.request.urlopen", return_value=response):
+                        self.assertEqual(
+                            list(_stream_sse("http://localhost/test", {}, 1)),
+                            [{"text": "\u03bb"}],
+                        )
+
+    def test_sse_errors_and_incomplete_events_cannot_report_success(self):
+        from ax_engine.langchain import _stream_sse
+
+        cases = [
+            (b"event: error\ndata: [DONE]\n\n", "stream error"),
+            (b"data:  [DONE]\n\n", "non-JSON"),
+            (b"data: [DONE]", "ended prematurely"),
+            (b"data: [DONE]\n", "ended prematurely"),
+            (b'data: {"text":"partial"}\n', "ended prematurely"),
+            (b"data: null\n\ndata: [DONE]\n\n", "JSON object"),
+        ]
+        for wire, message in cases:
+            with self.subTest(wire=wire):
+                response = mock.MagicMock()
+                response.__enter__.return_value = response
+                response.read1.side_effect = [wire, b""]
+                with mock.patch("urllib.request.urlopen", return_value=response):
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        next(_stream_sse("http://localhost/test", {}, 1))
 
     def test_stream_eof_without_done_sentinel_raises(self):
         # A clean EOF before the [DONE] sentinel is a broken stream, not a
@@ -722,11 +761,18 @@ class TestAXEngineChatModel(unittest.TestCase):
         self.assertEqual(chat._llm_type, "ax-engine")
 
     def test_http_error_raises_runtime_error(self):
-        # server returns empty/invalid JSON -> will raise
+        # The server returns HTTP 500.
         self.srv.set_response(None)
         chat = self._make_chat()
         with self.assertRaises(RuntimeError):
             chat.invoke([HumanMessage(content="x")])
+
+    def test_invalid_success_response_raises_runtime_error(self):
+        for body in (b"", b"<html>bad gateway</html>", b"\xff", b"null", b"[]", b'"text"'):
+            with self.subTest(body=body):
+                self.srv.set_response(body)
+                with self.assertRaisesRegex(RuntimeError, "ax-engine HTTP 200"):
+                    self._make_chat().invoke([HumanMessage(content="x")])
 
     def test_stream_http_error_raises_runtime_error(self):
         # The streaming route must map a 5xx like the blocking route does.
@@ -758,6 +804,13 @@ class TestAXEngineLLM(unittest.TestCase):
         from ax_engine.langchain import AXEngineLLM
 
         return AXEngineLLM(base_url=self.srv.base_url, timeout=5, **kwargs)
+
+    def test_invalid_success_response_raises_runtime_error(self):
+        for body in (b"", b"<html>bad gateway</html>", b"\xff", b"null", b"[]", b'"text"'):
+            with self.subTest(body=body):
+                self.srv.set_response(body)
+                with self.assertRaisesRegex(RuntimeError, "ax-engine HTTP 200"):
+                    self._make_llm().invoke("x")
 
     def test_cache_isolation_between_models_and_endpoints(self):
         # The default LangChain cache key only carried `_type` and `stop`, so
