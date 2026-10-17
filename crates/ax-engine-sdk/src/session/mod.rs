@@ -404,7 +404,12 @@ impl EngineSession {
     }
 
     fn advance_request_id(&mut self, request_id: u64) {
-        self.next_request_id = self.next_request_id.max(request_id.saturating_add(1));
+        // Saturating at u64::MAX would pin the auto allocator to an id the
+        // caller may still hold. Leave the counter unchanged instead; reaching
+        // MAX by auto allocation would take 2^64 submissions.
+        if let Some(next) = request_id.checked_add(1) {
+            self.next_request_id = self.next_request_id.max(next);
+        }
     }
 
     fn llama_active_request_ids(&self) -> Vec<u64> {

@@ -690,6 +690,32 @@ fn caller_chosen_request_ids_do_not_define_arrival_order() {
 }
 
 #[test]
+fn max_explicit_request_id_does_not_stall_auto_allocation() {
+    // `advance_request_id` used `saturating_add`, so one caller-chosen
+    // u64::MAX id pinned the auto allocator to MAX and every later
+    // `submit_generate` collided with the retained request.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(u64::MAX, request.clone())
+        .expect("explicit max id");
+    let auto_id = session
+        .submit_generate(request)
+        .expect("auto allocation must not reuse the max id");
+    assert_ne!(auto_id, u64::MAX);
+    assert_eq!(auto_id, 1);
+}
+
+#[test]
 fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
     let mut multimodal_inputs = sample_gemma4_multimodal_inputs();
     multimodal_inputs
