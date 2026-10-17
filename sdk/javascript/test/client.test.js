@@ -20,6 +20,22 @@ test("base URLs normalize every trailing slash while preserving a path prefix", 
   }
 });
 
+test("base URLs preserve long runs of slashes inside a path prefix", async () => {
+  const prefix = `http://localhost/${"/".repeat(40000)}proxy`;
+  for (const baseUrl of [prefix, prefix + "/".repeat(40000)]) {
+    const urls = [];
+    const client = new AxEngineClient({
+      baseUrl,
+      fetch: async (url) => {
+        urls.push(url);
+        return Response.json({ data: [] });
+      },
+    });
+    await client.models();
+    assert.deepEqual(urls, [prefix + "/v1/models"]);
+  }
+});
+
 test("request IDs cannot change endpoint paths or lose integer precision", async () => {
   const urls = [];
   const client = new AxEngineClient({
