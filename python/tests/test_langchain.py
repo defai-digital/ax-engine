@@ -19,6 +19,7 @@ import unittest
 import warnings
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 
 # The Python source tree (parent of this test file).
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -49,14 +50,25 @@ _SKIP_REASON = "langchain-core not installed"
 # ---------------------------------------------------------------------------
 
 
+_MODULES_BEFORE_STUB: dict[str, types.ModuleType] | None = None
+_STUB_ADDED_SOURCE_PATH = False
+
+
 def _install_ax_engine_stub() -> None:
     """Insert a minimal stub for ax_engine._ax_engine so that ax_engine and
     ax_engine.langchain can be imported without the compiled PyO3 extension."""
+    global _MODULES_BEFORE_STUB, _STUB_ADDED_SOURCE_PATH
     if "ax_engine._ax_engine" in sys.modules:
         return
+    _MODULES_BEFORE_STUB = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "ax_engine" or name.startswith("ax_engine.")
+    }
     # Ensure the source tree is on the path.
     src = str(_SOURCE_ROOT)
-    if src not in sys.path:
+    _STUB_ADDED_SOURCE_PATH = src not in sys.path
+    if _STUB_ADDED_SOURCE_PATH:
         sys.path.insert(0, src)
     # Clear any stale ax_engine modules.
     for name in list(sys.modules):
@@ -73,14 +85,33 @@ def _install_ax_engine_stub() -> None:
 
 
 def _remove_ax_engine_stub() -> None:
-    """Remove the ax_engine stub from sys.modules and sys.path so that
-    subsequent tests that need the real extension can import it cleanly."""
+    """Restore imports owned by other tests after removing our native stub."""
+    global _MODULES_BEFORE_STUB, _STUB_ADDED_SOURCE_PATH
+    if _MODULES_BEFORE_STUB is None:
+        return
     for name in list(sys.modules):
         if name == "ax_engine" or name.startswith("ax_engine."):
             del sys.modules[name]
+    sys.modules.update(_MODULES_BEFORE_STUB)
+    _MODULES_BEFORE_STUB = None
     src = str(_SOURCE_ROOT)
-    if src in sys.path:
+    if _STUB_ADDED_SOURCE_PATH and src in sys.path:
         sys.path.remove(src)
+    _STUB_ADDED_SOURCE_PATH = False
+
+
+class BootstrapIsolationTests(unittest.TestCase):
+    def test_existing_native_import_and_source_path_survive_cleanup(self):
+        package = types.ModuleType("ax_engine")
+        native = types.ModuleType("ax_engine._ax_engine")
+        src = str(_SOURCE_ROOT)
+        with mock.patch.dict(sys.modules, {"ax_engine": package, "ax_engine._ax_engine": native}):
+            with mock.patch.object(sys, "path", [src, *(p for p in sys.path if p != src)]):
+                _install_ax_engine_stub()
+                _remove_ax_engine_stub()
+                self.assertIs(sys.modules.get("ax_engine"), package)
+                self.assertIs(sys.modules.get("ax_engine._ax_engine"), native)
+                self.assertIn(src, sys.path)
 
 
 # ---------------------------------------------------------------------------
