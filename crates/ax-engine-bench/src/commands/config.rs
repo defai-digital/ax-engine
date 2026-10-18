@@ -161,6 +161,7 @@ pub(crate) fn sampling_from_manifest(
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         seed: manifest.sampling.seed,
+        seed_explicit: manifest.sampling.seed != 0,
         deterministic: manifest.runtime.deterministic,
         ignore_eos: manifest.sampling.ignore_eos,
     })
@@ -186,6 +187,7 @@ pub(crate) fn generate_request_from_spec(
             no_repeat_ngram_size: 0,
             ngram_window: 128,
             seed: manifest.sampling.seed,
+            seed_explicit: manifest.sampling.seed != 0,
             deterministic: Some(manifest.runtime.deterministic),
             ignore_eos: manifest.sampling.ignore_eos,
         },

@@ -104,6 +104,7 @@ fn request_context(
         generated_len: 0,
         max_output_tokens: 1,
         seed: sampling.seed,
+        seed_explicit: sampling.seed != 0,
         deterministic_argmax_sampling: sampling.temperature <= 0.0
             && sampling.top_k == 0
             && sampling.top_p >= 1.0,

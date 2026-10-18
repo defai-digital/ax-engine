@@ -39,6 +39,7 @@ fn greedy_ctx(prompt_len: usize, generated_len: usize, max_output: usize) -> Run
         generated_len: generated_len as u32,
         max_output_tokens: max_output as u32,
         seed: 1,
+        seed_explicit: true,
         deterministic_argmax_sampling: true,
         temperature: 0.0,
         top_p: 1.0,

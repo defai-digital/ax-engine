@@ -455,6 +455,18 @@ fn batched_admission_only_blocks_on_exhausted_pressure() {
     )));
 }
 
+#[test]
+fn sampling_context_honors_explicit_zero_seed() {
+    let mut ctx = ctx_with_argmax(false);
+    ctx.temperature = 0.8;
+    ctx.seed = 0;
+    ctx.seed_explicit = true;
+    assert_eq!(sampling_params_from_context(&ctx).seed, Some(0));
+
+    ctx.seed_explicit = false;
+    assert_eq!(sampling_params_from_context(&ctx).seed, None);
+}
+
 fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext {
     RunnerRequestContext {
         request_id: RequestId(1),
@@ -463,6 +475,7 @@ fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext 
         generated_len: 0,
         max_output_tokens: 16,
         seed: 0,
+        seed_explicit: false,
         deterministic_argmax_sampling,
         temperature: 0.0,
         top_p: 1.0,
@@ -4134,6 +4147,7 @@ fn split_prefill_only_completes_on_final_prompt_chunk() {
         generated_len: 0,
         max_output_tokens: 24,
         seed: 0,
+        seed_explicit: false,
         deterministic_argmax_sampling: true,
         temperature: 0.0,
         top_p: 1.0,

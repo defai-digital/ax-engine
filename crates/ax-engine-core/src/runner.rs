@@ -33,6 +33,9 @@ pub struct RunnerRequestContext {
     pub generated_len: u32,
     pub max_output_tokens: u32,
     pub seed: u64,
+    /// True when `seed` was explicitly supplied (including zero). Non-zero
+    /// seeds are treated as explicit by runners even when this is false.
+    pub seed_explicit: bool,
     pub deterministic_argmax_sampling: bool,
     /// Temperature for token sampling. 0.0 means greedy argmax (same as
     /// `deterministic_argmax_sampling = true`). Runners that support
@@ -484,6 +487,7 @@ mod tests {
                     generated_len: 0,
                     max_output_tokens: 4,
                     seed: 0,
+                    seed_explicit: false,
                     deterministic_argmax_sampling: true,
                     temperature: 0.0,
                     top_p: 1.0,
@@ -506,6 +510,7 @@ mod tests {
                     generated_len: 0,
                     max_output_tokens: 4,
                     seed: 0,
+                    seed_explicit: false,
                     deterministic_argmax_sampling: true,
                     temperature: 0.0,
                     top_p: 1.0,
@@ -650,6 +655,7 @@ mod tests {
                 generated_len: 0,
                 max_output_tokens: 2,
                 seed: 0,
+                seed_explicit: false,
                 deterministic_argmax_sampling: true,
                 temperature: 0.0,
                 top_p: 1.0,

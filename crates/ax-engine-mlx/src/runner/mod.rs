@@ -2889,6 +2889,7 @@ fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams
         .with_min_p(ctx.min_p)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
+        .with_seed((ctx.seed != 0 || ctx.seed_explicit).then_some(ctx.seed))
 }
 
 fn seed_batched_session_and_reclaim_private_cache(
@@ -6116,9 +6117,9 @@ impl MlxRunner {
                     .with_min_p(c.min_p)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
-                    // `seed == 0` is the native no-seed default; only a non-zero
-                    // seed marks an explicitly reproducible request.
-                    .with_seed((c.seed != 0).then_some(c.seed))
+                    // Non-zero seeds are explicit for backward compatibility;
+                    // `seed_explicit` additionally makes seed 0 reproducible.
+                    .with_seed((c.seed != 0 || c.seed_explicit).then_some(c.seed))
             })
             .unwrap_or_default();
         // Prefer the engine's deterministic-argmax bit, but also treat

@@ -51,6 +51,7 @@ fn greedy_ctx(
         generated_len: generated_len as u32,
         max_output_tokens: max_output as u32,
         seed: 1 + request,
+        seed_explicit: true,
         deterministic_argmax_sampling: true,
         temperature: 0.0,
         top_p: 1.0,

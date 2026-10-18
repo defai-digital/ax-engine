@@ -3434,6 +3434,16 @@ class WrapperContractTests(unittest.TestCase):
             {"content": "line one\n\nline two"},
         )
 
+    def test_openai_mlx_shim_forwards_seed_presence(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+        self.assertIsNone(openai_server.session_generate_kwargs({"max_tokens": 4})["seed"])
+        self.assertEqual(
+            openai_server.session_generate_kwargs({"max_tokens": 4, "seed": 0})["seed"], 0
+        )
+        self.assertEqual(
+            openai_server.session_generate_kwargs({"max_tokens": 4, "seed": 7})["seed"], 7
+        )
+
     def test_openai_mlx_shim_treats_null_sampling_params_as_absent(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
         self.assertEqual(

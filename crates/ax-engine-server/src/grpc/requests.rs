@@ -113,6 +113,10 @@ pub(super) fn build_chat_generate_request(
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         seed: req.seed,
+        // proto3 has no presence bit; a non-zero value is the only explicit
+        // seed the wire can represent. Explicit zero stays an OpenAI/HTTP
+        // and in-process Rust SDK capability.
+        seed_explicit: req.seed != 0,
         deterministic: None,
         ignore_eos: false,
     };
@@ -158,6 +162,10 @@ pub(super) fn build_completion_generate_request(
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         seed: req.seed,
+        // proto3 has no presence bit; a non-zero value is the only explicit
+        // seed the wire can represent. Explicit zero stays an OpenAI/HTTP
+        // and in-process Rust SDK capability.
+        seed_explicit: req.seed != 0,
         deterministic: None,
         ignore_eos: false,
     };

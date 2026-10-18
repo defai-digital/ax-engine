@@ -72,14 +72,15 @@ pub(crate) fn batched_sampling_class(
     let temp_positive = sampling.temperature > 0.0;
     let uses_processors = sampling.uses_logits_processors();
     // Branch 1 (single decode): pure temperature → GPU `random_categorical`.
-    // Non-reproducible / not batchable token-exact → ineligible.
+    // A seeded request instead draws from its own Xorshift64 host stream, so
+    // it is batchable token-exactly; only unseeded requests stay per-item.
     if temp_positive
         && !uses_processors
         && sampling.top_k == 0
         && sampling.top_p >= 1.0
         && !sampling.uses_min_p()
     {
-        return None;
+        return sampling.seed.map(|_| BatchedSamplingClass::HostSampled);
     }
     // Branch 2 (single decode): host `sample_categorical_into` — but only
     // when single decode would take it too. With the GPU top-k / top-p
@@ -357,6 +358,15 @@ mod tests {
                 false
             ),
             None
+        );
+        // A seeded pure-temperature request draws from its own Xorshift64
+        // host stream, so it is batchable even though the unseeded form is not.
+        assert_eq!(
+            batched_sampling_class(
+                MlxSamplingParams::new(0.8, 1.0, 0).with_seed(Some(0)),
+                false
+            ),
+            Some(BatchedSamplingClass::HostSampled)
         );
     }
 }

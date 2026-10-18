@@ -1234,6 +1234,7 @@ impl EngineCore {
                     generated_len: record.generated_tokens.len() as u32,
                     max_output_tokens: record.max_output_tokens,
                     seed: record.sampling_params.seed,
+                    seed_explicit: record.sampling_params.seed_explicit,
                     deterministic_argmax_sampling:
                         sampling_params_allow_deterministic_argmax_fast_path(
                             &record.sampling_params,

@@ -189,7 +189,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, no_repeat_ngram_size=0, ngram_window=128, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, no_repeat_ngram_size=0, ngram_window=128, seed=None, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn generate<'py>(
         &mut self,
         py: Python<'py>,
@@ -205,7 +205,7 @@ impl Session {
         repetition_context_size: Option<u32>,
         no_repeat_ngram_size: u32,
         ngram_window: u32,
-        seed: u64,
+        seed: Option<u64>,
         deterministic: Option<bool>,
         ignore_eos: bool,
         stop_sequences: Option<Vec<String>>,
@@ -243,7 +243,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, no_repeat_ngram_size=0, ngram_window=128, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, no_repeat_ngram_size=0, ngram_window=128, seed=None, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn submit(
         &mut self,
         py: Python<'_>,
@@ -259,7 +259,7 @@ impl Session {
         repetition_context_size: Option<u32>,
         no_repeat_ngram_size: u32,
         ngram_window: u32,
-        seed: u64,
+        seed: Option<u64>,
         deterministic: Option<bool>,
         ignore_eos: bool,
         stop_sequences: Option<Vec<String>>,
@@ -322,7 +322,7 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, no_repeat_ngram_size=0, ngram_window=128, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, no_repeat_ngram_size=0, ngram_window=128, seed=None, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn stream_generate<'py>(
         &mut self,
         py: Python<'py>,
@@ -338,7 +338,7 @@ impl Session {
         repetition_context_size: Option<u32>,
         no_repeat_ngram_size: u32,
         ngram_window: u32,
-        seed: u64,
+        seed: Option<u64>,
         deterministic: Option<bool>,
         ignore_eos: bool,
         stop_sequences: Option<Vec<String>>,
@@ -590,7 +590,7 @@ fn sampling_from_params(
     repetition_context_size: Option<u32>,
     no_repeat_ngram_size: u32,
     ngram_window: u32,
-    seed: u64,
+    seed: Option<u64>,
     deterministic: Option<bool>,
     ignore_eos: bool,
 ) -> GenerateSampling {
@@ -603,7 +603,8 @@ fn sampling_from_params(
         repetition_context_size,
         no_repeat_ngram_size,
         ngram_window,
-        seed,
+        seed: seed.unwrap_or(0),
+        seed_explicit: seed.is_some(),
         deterministic,
         ignore_eos,
     }
@@ -783,7 +784,7 @@ mod tests {
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,
@@ -816,7 +817,7 @@ mod tests {
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,
@@ -1189,7 +1190,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,
@@ -1263,7 +1264,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,
@@ -1332,7 +1333,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,
@@ -1420,7 +1421,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,
@@ -1529,7 +1530,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,
@@ -1551,7 +1552,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,
@@ -1642,7 +1643,7 @@ sys.stdout.write(f"python::{prompt}")
                     None,
                     0,
                     128,
-                    0,
+                    None,
                     None,
                     false,
                     None,

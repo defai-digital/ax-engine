@@ -410,6 +410,11 @@ pub struct GenerateSampling {
     pub ngram_window: u32,
     #[serde(default)]
     pub seed: u64,
+    /// True when `seed` was explicitly supplied, including zero. Non-zero
+    /// seeds are treated as explicit without this flag; set it to make
+    /// `seed: 0` a reproducible request.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub seed_explicit: bool,
     /// Per-request deterministic override. `None` inherits the session default.
     /// This flag is independent from `seed`: a seed stabilizes the RNG stream
     /// for sampling-capable backends, while deterministic controls whether AX
@@ -436,6 +441,7 @@ impl Default for GenerateSampling {
             no_repeat_ngram_size: 0,
             ngram_window: 128,
             seed: 0,
+            seed_explicit: false,
             deterministic: None,
             ignore_eos: false,
         }
@@ -443,6 +449,13 @@ impl Default for GenerateSampling {
 }
 
 impl GenerateSampling {
+    /// Set `seed` and mark it explicit, so `seed: 0` is reproducible.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self.seed_explicit = true;
+        self
+    }
+
     pub(crate) fn effective_deterministic(&self, default_deterministic: bool) -> bool {
         self.deterministic.unwrap_or(default_deterministic)
     }
@@ -459,6 +472,7 @@ impl GenerateSampling {
             no_repeat_ngram_size: self.no_repeat_ngram_size,
             ngram_window: self.ngram_window,
             seed: self.seed,
+            seed_explicit: self.seed_explicit || self.seed != 0,
             deterministic,
             ignore_eos: self.ignore_eos,
         }
@@ -739,6 +753,29 @@ mod tests {
         assert_eq!(core.seed, 42);
         assert!(!sampling.effective_deterministic(false));
         assert!(!core.deterministic);
+    }
+
+    #[test]
+    fn sampling_with_seed_marks_zero_explicit() {
+        let sampling = GenerateSampling::default().with_seed(0);
+        assert_eq!(sampling.seed, 0);
+        assert!(sampling.seed_explicit);
+        let core = sampling.into_core(false);
+
+        assert_eq!(core.seed, 0);
+        assert!(core.seed_explicit);
+    }
+
+    #[test]
+    fn sampling_nonzero_seed_is_explicit_without_the_flag() {
+        let sampling = GenerateSampling {
+            seed: 7,
+            ..GenerateSampling::default()
+        };
+        let core = sampling.into_core(false);
+
+        assert_eq!(core.seed, 7);
+        assert!(core.seed_explicit);
     }
 
     #[test]

@@ -18,6 +18,10 @@ pub struct SamplingParams {
     pub no_repeat_ngram_size: u32,
     pub ngram_window: u32,
     pub seed: u64,
+    /// True when `seed` was explicitly supplied, including zero. Non-zero
+    /// seeds count as explicit even when this is false, preserving the
+    /// historical contract; set it to make `seed: 0` reproducible.
+    pub seed_explicit: bool,
     pub deterministic: bool,
     pub ignore_eos: bool,
 }
@@ -34,6 +38,7 @@ impl Default for SamplingParams {
             no_repeat_ngram_size: 0,
             ngram_window: 128,
             seed: 0,
+            seed_explicit: false,
             deterministic: true,
             ignore_eos: false,
         }

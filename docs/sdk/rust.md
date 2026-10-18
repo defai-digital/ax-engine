@@ -342,6 +342,8 @@ processed media tensors are rejected because the runtime spans are absolute
 token positions.
 
 `GenerateSampling` carries `temperature`, `top_p`, `seed`, and `repetition_penalty`.
+A non-zero `seed` is reproducible. Set `seed_explicit = true` (or use
+`GenerateSampling::with_seed`) to make `seed: 0` reproducible as well.
 When `session.config.deterministic = true`, `temperature` is forced to 0.0
 and `seed` is ignored.
 

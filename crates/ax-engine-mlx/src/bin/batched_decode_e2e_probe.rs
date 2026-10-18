@@ -162,6 +162,7 @@ fn ctx(
         // Distinct per-request seed so both runners advance identical RNGs and
         // the batched stream can be compared token-exact against the per-item one.
         seed: sampling.seed_base.wrapping_add(req),
+        seed_explicit: true,
         deterministic_argmax_sampling: sampling.deterministic,
         temperature: sampling.temperature,
         top_p: sampling.top_p,

@@ -12,8 +12,9 @@ QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK = "<|im_start|>assistant\n"
 MODEL_OWNER = "ax-engine"
 COMPLETION_REQUEST_ERROR = "invalid completion request"
 CHAT_COMPLETION_REQUEST_ERROR = "invalid chat completion request"
-# The native bindings take u32 for max_output_tokens/top_k and u64 for seed;
-# values outside those ranges must fail validation instead of overflowing.
+# The native bindings take u32 for max_output_tokens/top_k and Option<u64> for
+# seed (None means unseeded); values outside those ranges must fail validation
+# instead of overflowing.
 MAX_OUTPUT_TOKENS_LIMIT = 4294967295
 TOP_K_LIMIT = 4294967295
 # Prompt token ids reach the native binding as Vec<u32>; out-of-range ids fail
@@ -1169,13 +1170,14 @@ def session_generate_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     temperature = float(payload.get("temperature", 0.0))
     default_rp = 1.1 if temperature <= 0.0 else 1.0
     _max_tokens_key, max_tokens = requested_max_tokens(payload)
+    seed = payload.get("seed")
     kwargs: dict[str, Any] = {
         "max_output_tokens": int(max_tokens),
         "temperature": temperature,
         "top_p": float(payload.get("top_p", 1.0)),
         "top_k": int(payload.get("top_k", 0)),
         "repetition_penalty": float(payload.get("repetition_penalty", default_rp)),
-        "seed": int(payload.get("seed", 0)),
+        "seed": int(seed) if seed is not None else None,
         "stop_sequences": client_stop_sequences(payload) or None,
         "metadata": payload.get("metadata"),
     }

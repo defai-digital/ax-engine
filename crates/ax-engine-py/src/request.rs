@@ -298,6 +298,7 @@ mod tests {
                 top_k: 50,
                 min_p: Some(0.05),
                 seed: 42,
+                seed_explicit: false,
                 deterministic: Some(true),
                 repetition_penalty: 1.1,
                 repetition_context_size: Some(64),

@@ -29,6 +29,7 @@ fn context(id: u64, prompt_len: usize, budget: u32) -> RunnerRequestContext {
         generated_len: 0,
         max_output_tokens: budget,
         seed: 42,
+        seed_explicit: true,
         deterministic_argmax_sampling: true,
         temperature: 0.0,
         top_p: 1.0,

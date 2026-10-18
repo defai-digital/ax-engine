@@ -1110,6 +1110,8 @@ fn build_openai_sampling_with_default_repetition_penalty(
     default_repetition_penalty: f32,
 ) -> GenerateSampling {
     let temperature = params.temperature.unwrap_or(0.0);
+    let client_seed = params.seed;
+    let seed = client_seed.unwrap_or_else(|| default_openai_seed(temperature));
     GenerateSampling {
         temperature,
         top_p: params.top_p.unwrap_or(1.0),
@@ -1121,9 +1123,8 @@ fn build_openai_sampling_with_default_repetition_penalty(
         repetition_context_size: params.repetition_context_size,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
-        seed: params
-            .seed
-            .unwrap_or_else(|| default_openai_seed(temperature)),
+        seed,
+        seed_explicit: client_seed.is_some() || seed != 0,
         deterministic: None,
         ignore_eos: false,
     }
@@ -1614,6 +1615,45 @@ mod tests {
         // than routing to the lexicographically first declaration.
         assert_eq!(contract.canonical_tool_name("getweather"), "getweather");
     }
+
+    #[test]
+    fn explicit_openai_seed_zero_is_forwarded_as_explicit() {
+        let sampling = build_openai_sampling_with_default_repetition_penalty(
+            OpenAiSamplingParams {
+                temperature: Some(0.7),
+                top_p: None,
+                top_k: None,
+                min_p: None,
+                repetition_penalty: None,
+                repetition_context_size: None,
+                seed: Some(0),
+            },
+            1.0,
+        );
+
+        assert_eq!(sampling.seed, 0);
+        assert!(sampling.seed_explicit);
+    }
+
+    #[test]
+    fn omitted_openai_seed_stays_implicit_for_greedy_requests() {
+        let sampling = build_openai_sampling_with_default_repetition_penalty(
+            OpenAiSamplingParams {
+                temperature: Some(0.0),
+                top_p: None,
+                top_k: None,
+                min_p: None,
+                repetition_penalty: None,
+                repetition_context_size: None,
+                seed: None,
+            },
+            1.0,
+        );
+
+        assert_eq!(sampling.seed, 0);
+        assert!(!sampling.seed_explicit);
+    }
+
     use serde_json::json;
 
     #[test]
