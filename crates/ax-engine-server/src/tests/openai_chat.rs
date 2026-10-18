@@ -1,7 +1,8 @@
 use crate::chat;
 use crate::openai::chat_requests::{
-    ChatPromptRenderOptions, chat_template_kwargs_for_model_id, render_openai_chat_prompt,
-    render_openai_chat_prompt_with_options, render_openai_chat_prompt_with_tools,
+    ChatPromptRenderOptions, MAX_INLINE_AUDIOS_PER_REQUEST, chat_template_kwargs_for_model_id,
+    render_openai_chat_prompt, render_openai_chat_prompt_with_options,
+    render_openai_chat_prompt_with_tools,
 };
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
@@ -4922,4 +4923,35 @@ fn openai_chat_prompt_render_options_carry_deepseek_v4_framing() {
         !heuristic.contains(chat::DEEPSEEK_SYSTEM),
         "heuristic V4 framing must drop the system token: {heuristic}"
     );
+}
+
+#[tokio::test]
+async fn openai_chat_rejects_more_than_the_inline_audio_cap_before_decoding() {
+    // The cap has to fire while rendering: one clip past the bound is refused
+    // outright instead of being decoded and then rejected by the token budget.
+    // Mirrors the inline image bound (and the Ollama mapper's copy of it).
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-audio-cap");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+
+    let content: Vec<Value> = (0..=MAX_INLINE_AUDIOS_PER_REQUEST)
+        .map(|_| json!({"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}))
+        .collect();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 8,
+    }))
+    .expect("chat request should deserialize");
+
+    let error = build_openai_chat_request(&live, request)
+        .err()
+        .expect("one clip past the inline audio cap must be rejected");
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error.1.0.error.message.contains("inline audio clips"),
+        "expected the inline audio cap error, got {}",
+        error.1.0.error.message
+    );
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

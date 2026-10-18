@@ -1,7 +1,21 @@
 const DEFAULT_BASE_URL = "http://127.0.0.1:31418";
 
 function trimTrailingSlash(value) {
-  return value.endsWith("/") ? value.slice(0, -1) : value;
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
+function requestIdSegment(requestId) {
+  if (typeof requestId === "number" && Number.isSafeInteger(requestId) && requestId >= 0) {
+    return String(requestId);
+  }
+  if (typeof requestId === "string" && requestId.length > 0 && !/[^0-9]/.test(requestId)) {
+    return requestId;
+  }
+  throw new TypeError("requestId must be a non-negative safe integer or a decimal string");
 }
 
 function normalizeHeaders(input) {
@@ -179,14 +193,14 @@ export class AxEngineClient {
   }
 
   async requestSnapshot(requestId, options = {}) {
-    return this.#requestJson(`/v1/requests/${requestId}`, {
+    return this.#requestJson(`/v1/requests/${requestIdSegment(requestId)}`, {
       method: "GET",
       signal: options.signal,
     });
   }
 
   async cancel(requestId, options = {}) {
-    return this.#requestJson(`/v1/requests/${requestId}/cancel`, {
+    return this.#requestJson(`/v1/requests/${requestIdSegment(requestId)}/cancel`, {
       method: "POST",
       signal: options.signal,
     });

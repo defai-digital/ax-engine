@@ -39,7 +39,7 @@
     }
   },
   "devDependencies": {
-    "@langchain/core": "^1.2.3",
+    "@langchain/core": "^1.2.18",
     "typescript": "^7.0.2"
   },
   "keywords": ["llm", "inference", "mlx", "apple-silicon", "langchain"],

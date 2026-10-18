@@ -314,12 +314,17 @@ kernel void copy_blocks(
     uint pair_index = gid / elements_per_pair;
     uint block_offset = gid % elements_per_pair;
     uint2 pair = block_base_mapping[pair_index];
-    uint source_block_base = pair.x * params.head_size;
-    uint target_block_base = pair.y * params.head_size;
+    // A block occupies `numel_per_block_*` elements (block_size_tokens *
+    // head_size), not a single head_size slot; the base is the pair index
+    // times the per-block element count (see gather_kv_cache's slot layout).
     if (block_offset < params.numel_per_block_key) {
+        uint source_block_base = pair.x * params.numel_per_block_key;
+        uint target_block_base = pair.y * params.numel_per_block_key;
         key_target[target_block_base + block_offset] = key_source[source_block_base + block_offset];
     }
     if (block_offset < params.numel_per_block_value) {
+        uint source_block_base = pair.x * params.numel_per_block_value;
+        uint target_block_base = pair.y * params.numel_per_block_value;
         value_target[target_block_base + block_offset] =
             value_source[source_block_base + block_offset];
     }
@@ -1877,6 +1882,12 @@ kernel void decode_projection_q4km(
     const uint row = tgpig.x * 2u + (uint)sgitg;
     if (row >= params.n_rows) return;
 
+    // Q4_K blocks hold 256 elements; a width that is not a multiple of 256 has
+    // no valid packing (the row stride floor(width/256)*144 would read the
+    // wrong region for row >= 1). Skip the row rather than read from a
+    // malformed layout. A zero width keeps the previous behaviour: no blocks to
+    // accumulate, so the row is written as zeros.
+    if (params.input_width % 256u != 0u) return;
     const uint n_blocks = params.input_width / 256u;
     device const uint8_t* row_w = weights + row * n_blocks * 144u;
 

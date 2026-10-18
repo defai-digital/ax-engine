@@ -31,9 +31,9 @@ The shared host for the current headline local benchmark rows is:
 - 128 GB memory
 - macOS 26.x
 - Admitted MLX builds: the local MLX 0.31.2 build (behind the published v6.9.0
-  rows), the historical PyPI MLX 0.32.0, 0.32.1 and 0.32.2 wheels, and the current
-  PyPI MLX 0.32.3 wheel. Runtime admission is recorded in the
-  [MLX 0.32.3 record](performance/mlx-0.32.3-admission-2026-10-03.md); existing
+  rows), the historical PyPI MLX 0.32.0, 0.32.1, 0.32.2 and 0.32.3 wheels,
+  and the current PyPI MLX 0.32.4 wheel. Runtime admission is recorded in the
+  [MLX 0.32.4 record](performance/mlx-0.32.4-admission-2026-10-16.md); existing
   benchmark rows retain their original MLX versions. The 0.32.2 factory admission
   measured 16.12 TFLOP/s at the
   M=2048 qmm shape on an M2 Ultra; see the

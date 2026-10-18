@@ -1,0 +1,13 @@
+test_changed_checks_or_tolerances_are_rejected (scripts.test_probe_mlx_runtime_upgrade.ComparisonTests.test_changed_checks_or_tolerances_are_rejected) ... ok
+test_experiment_identity_mismatches_are_rejected (scripts.test_probe_mlx_runtime_upgrade.ComparisonTests.test_experiment_identity_mismatches_are_rejected) ... ok
+test_missing_outputs_and_shape_changes_are_rejected (scripts.test_probe_mlx_runtime_upgrade.ComparisonTests.test_missing_outputs_and_shape_changes_are_rejected) ... ok
+test_modified_baseline_arrays_are_rejected (scripts.test_probe_mlx_runtime_upgrade.ComparisonTests.test_modified_baseline_arrays_are_rejected) ... ok
+test_nonfinite_outputs_are_not_reported_as_valid_drift (scripts.test_probe_mlx_runtime_upgrade.ComparisonTests.test_nonfinite_outputs_are_not_reported_as_valid_drift) ... ok
+test_numerical_drift_is_reported_separately_from_reference_accuracy (scripts.test_probe_mlx_runtime_upgrade.ComparisonTests.test_numerical_drift_is_reported_separately_from_reference_accuracy) ... ok
+test_python_or_numpy_changes_are_rejected (scripts.test_probe_mlx_runtime_upgrade.ComparisonTests.test_python_or_numpy_changes_are_rejected) ... ok
+test_signed_zero_is_not_bit_identical (scripts.test_probe_mlx_runtime_upgrade.ComparisonTests.test_signed_zero_is_not_bit_identical) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.008s
+
+OK

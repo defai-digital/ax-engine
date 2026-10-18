@@ -711,6 +711,13 @@ impl DiskPrefixCache {
     }
 
     fn sweep_stale_temp_files(&self) -> Result<u32, DiskPrefixCacheError> {
+        // Reclaims every `.tmp.` file at open, including the calibration probe
+        // (`.calib.tmp.<pid>.<n>`): that probe path takes no directory lock, so a
+        // sibling process opening the same cache can delete a probe mid-read and
+        // leave that writer with `NoCostModel` until its first real write. The
+        // loss is bounded and self-healing, and gating this on file age instead
+        // would delay reclaiming temps genuinely leaked by a dead process, so
+        // the unconditional sweep stays.
         let _lock = self.lock_exclusive()?;
         let mut removed = 0u32;
         for entry in fs::read_dir(&self.dir)? {
@@ -915,8 +922,15 @@ impl DiskPrefixCache {
             .checked_add(key_len as u64)
             .and_then(|n| n.checked_add(payload_len))
             .ok_or(ReadEntryError::Invalid)?;
+        // An entry this process cannot serve because of its own write limit is
+        // intact, not corrupt: `max_entry_bytes` is a local admission bound, so
+        // a larger-limit sibling writing to the same directory can still serve
+        // it. Report it as unsupported (a plain miss) instead of invalid, which
+        // would delete the sibling's entry and log it as unparseable.
+        if payload_len > self.policy.max_entry_bytes {
+            return Err(ReadEntryError::Unsupported);
+        }
         if total_len != file_len
-            || payload_len > self.policy.max_entry_bytes
             || (flags == PAGE_MANIFEST_FLAG && payload_len > MAX_PAGE_MANIFEST_BYTES as u64)
             || payload_len > usize::MAX as u64
         {
@@ -1078,8 +1092,15 @@ impl DiskPrefixCache {
             .checked_add(key_len as u64)
             .and_then(|n| n.checked_add(payload_len))
             .ok_or(ReadEntryError::Invalid)?;
+        // An entry this process cannot serve because of its own write limit is
+        // intact, not corrupt: `max_entry_bytes` is a local admission bound, so
+        // a larger-limit sibling writing to the same directory can still serve
+        // it. Report it as unsupported (a plain miss) instead of invalid, which
+        // would delete the sibling's entry and log it as unparseable.
+        if payload_len > self.policy.max_entry_bytes {
+            return Err(ReadEntryError::Unsupported);
+        }
         if total_len != file_len
-            || payload_len > self.policy.max_entry_bytes
             || (flags == PAGE_MANIFEST_FLAG && payload_len > MAX_PAGE_MANIFEST_BYTES as u64)
             || payload_len > usize::MAX as u64
         {

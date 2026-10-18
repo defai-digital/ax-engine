@@ -271,8 +271,13 @@ impl EngineCore {
         if self.request_manager.record(request_id).is_some() {
             return Err(RequestManagerError::DuplicateRequest(request_id).into());
         }
-        self.kv_manager
-            .register_request(request_id, submission.input_tokens.clone())?;
+        // Token-only block keys cannot prove media KV identity in either
+        // direction: media requests neither adopt nor publish these prefixes.
+        self.kv_manager.register_request_with_prefix_reuse(
+            request_id,
+            submission.input_tokens.clone(),
+            submission.multimodal_inputs.is_empty(),
+        )?;
         // Bind generation kind atomically with insert (ADR-038) so a failed
         // post-submit set cannot leave a request with the wrong strategy.
         if let Err(error) = self
@@ -562,16 +567,73 @@ impl EngineCore {
                         && !memory_blocked_requests.contains(request_id)
                 })
                 .collect::<BTreeSet<_>>();
+            // Route deferrals stay a subset of `deferred_requests` across the
+            // merge, so re-apply the same filter rather than trusting either
+            // retry's list.
+            let route_deferred_requests = resolved_plan
+                .route_deferred_requests
+                .iter()
+                .chain(fallback_plan.route_deferred_requests.iter())
+                .copied()
+                .filter(|request_id| {
+                    !selected_requests.contains(request_id)
+                        && !memory_blocked_requests.contains(request_id)
+                })
+                .collect::<BTreeSet<_>>();
 
             resolved_plan = SchedulePlan {
                 step_id: fallback_plan.step_id,
                 selected_requests,
                 deferred_requests: deferred_requests.into_iter().collect(),
                 memory_blocked_requests: memory_blocked_requests.into_iter().collect(),
+                route_deferred_requests: route_deferred_requests.into_iter().collect(),
                 execution_batch: fallback_plan.execution_batch,
             };
             prefix_hits += fallback_prefix_hits;
             preemption_metrics = preemption_metrics.merge(fallback_preemption_metrics);
+        }
+
+        // No batch, no starvation-bound candidate, and no allocatable block:
+        // fair-mode partial prefills can jointly own the whole pool while no
+        // decode exists to free one, and neither remaining prompt fits its
+        // partial block. Deferring them again would deadlock; preempt the
+        // newest partial prefill once and re-plan against the freed pool.
+        if global_token_budget > 0
+            && resolved_plan.execution_batch.is_none()
+            && resolved_plan.memory_blocked_requests.is_empty()
+            && self.kv_manager.allocatable_block_count() == 0
+            && let Some(candidate) =
+                self.newest_deferred_partial_prefill(&resolved_plan.deferred_requests)
+        {
+            debug!(
+                step_id = resolved_plan.step_id.0,
+                request_id = candidate.0,
+                "preempting a partial prefill stalled by an exhausted pool"
+            );
+            self.preempt_request(candidate, &mut preemption_metrics)?;
+            // Keep the preempted request out of this step's candidate set.
+            // Its retained prefix can otherwise be re-adopted immediately and
+            // recreate the same full-pool state before the older prefill gets
+            // a chance to use the freed blocks.
+            let snapshots = self
+                .request_manager
+                .snapshots()
+                .into_iter()
+                .filter(|snapshot| snapshot.request_id != candidate)
+                .collect();
+            let replanned = self.scheduler.plan(&self.scheduler_input(
+                resolved_plan.step_id,
+                snapshots,
+                global_token_budget,
+            ));
+            let (mut replanned, replanned_hits, replanned_metrics) =
+                self.resolve_kv_schedule_plan_level(replanned, global_token_budget)?;
+            if !replanned.deferred_requests.contains(&candidate) {
+                replanned.deferred_requests.push(candidate);
+            }
+            resolved_plan = replanned;
+            prefix_hits = replanned_hits;
+            preemption_metrics = preemption_metrics.merge(replanned_metrics);
         }
 
         Ok((resolved_plan, prefix_hits, preemption_metrics))
@@ -596,6 +658,12 @@ impl EngineCore {
         let mut selected_requests = Vec::new();
         let mut deferred_requests = schedule_plan.deferred_requests;
         let mut memory_blocked_requests = schedule_plan.memory_blocked_requests;
+        // Route deferrals were never in the batch, so the allocated/deferred
+        // split below leaves them alone. Preemption is the exception: it can
+        // pull a request out of `deferred_requests` and into
+        // `memory_blocked_requests`, so the route subset is re-derived from the
+        // final `deferred_requests` before this plan is returned.
+        let route_deferred_requests = schedule_plan.route_deferred_requests;
         let mut allocated_items: Vec<ExecutionItem> = Vec::new();
         let mut preempted: BTreeSet<RequestId> = BTreeSet::new();
         let mut preemption_metrics = PreemptionMetrics::default();
@@ -680,11 +748,19 @@ impl EngineCore {
         let execution_batch =
             Self::rebuild_execution_batch(execution_batch, allocated_items, &prefix_reuse);
 
+        // Re-derive the route subset from the final deferral list so the two
+        // cannot disagree, whichever path moved a request between them.
+        let route_deferred_requests = route_deferred_requests
+            .into_iter()
+            .filter(|request_id| deferred_requests.contains(request_id))
+            .collect();
+
         let resolved_plan = SchedulePlan {
             step_id: schedule_plan.step_id,
             selected_requests,
             deferred_requests,
             memory_blocked_requests,
+            route_deferred_requests,
             execution_batch,
         };
 
@@ -696,7 +772,7 @@ impl EngineCore {
     ///
     /// Candidates must:
     /// - hold KV blocks
-    /// - be in prefill stage (no decoded tokens)
+    /// - be in prefill stage (an incomplete prompt, no decoded tokens)
     /// - have a *strictly higher* arrival sequence than the stalled request
     ///   (preemption only flows from newer requests to older ones; older
     ///   requests are never sacrificed for newer ones)
@@ -729,7 +805,13 @@ impl EngineCore {
             if !record.generated_tokens.is_empty() {
                 continue;
             }
-            if record.processed_prompt_tokens == 0 {
+            // Prefill stage means an incomplete prompt. A block-diffusion
+            // request mid-denoise has completed its prompt and generated no
+            // token; preempting it would reset prompt progress while the
+            // runner-side denoise counters survive the replay.
+            if record.processed_prompt_tokens == 0
+                || record.processed_prompt_tokens >= record.prompt_tokens.len() as u32
+            {
                 continue;
             }
             if self.kv_manager.block_count_for(rid) == 0 {
@@ -749,6 +831,37 @@ impl EngineCore {
         best.map(|(_, rid)| rid)
     }
 
+    /// Newest deferred request that owns KV blocks for an incomplete prefill,
+    /// but only when an older partial prefill is also deferred and can spend
+    /// the freed blocks. Fair-mode partial prefills can jointly exhaust the
+    /// pool with no decode left to free one; preempting the newest preserves
+    /// the older-first policy and lets the pool move again.
+    fn newest_deferred_partial_prefill(&self, deferred: &[RequestId]) -> Option<RequestId> {
+        let candidates: Vec<(crate::ids::SequenceNo, RequestId)> = deferred
+            .iter()
+            .filter_map(|request_id| {
+                let record = self.request_manager.record(*request_id)?;
+                let prompt_len = record.prompt_tokens.len() as u32;
+                (matches!(
+                    record.state,
+                    RequestState::Runnable | RequestState::BlockedOnMemory
+                ) && record.processed_prompt_tokens > 0
+                    && record.processed_prompt_tokens < prompt_len
+                    && self.kv_manager.block_count_for(*request_id) > 0)
+                    .then_some((record.arrival_sequence, *request_id))
+            })
+            .collect();
+        let (newest_arrival, newest_id) = *candidates
+            .iter()
+            .max_by_key(|(arrival, request_id)| (*arrival, *request_id))?;
+        // Preempting the newest only helps if an older partial prefill can
+        // spend the freed blocks; otherwise it churns without progress.
+        candidates
+            .iter()
+            .any(|(arrival, _)| *arrival < newest_arrival)
+            .then_some(newest_id)
+    }
+
     /// Release a preempted request's KV blocks (promoting any full prompt
     /// prefix blocks into the retained cache for cheap recompute) and reset
     /// its `RequestManager` progress so it can be replayed on a later step.
@@ -757,17 +870,25 @@ impl EngineCore {
         request_id: RequestId,
         metrics: &mut PreemptionMetrics,
     ) -> Result<(), EngineCoreError> {
-        let prompt_tokens = self
+        let (prompt_tokens, prefix_reuse_enabled) = self
             .request_manager
             .record(request_id)
-            .map(|record| record.prompt_tokens.clone())
+            .map(|record| {
+                (
+                    record.prompt_tokens.clone(),
+                    record.multimodal_inputs.is_empty(),
+                )
+            })
             .ok_or(EngineCoreError::RequestManager(
                 RequestManagerError::UnknownRequest(request_id),
             ))?;
         self.runner.release_request_state(request_id);
         self.kv_manager.free(request_id)?;
-        self.kv_manager
-            .register_request(request_id, prompt_tokens)?;
+        self.kv_manager.register_request_with_prefix_reuse(
+            request_id,
+            prompt_tokens,
+            prefix_reuse_enabled,
+        )?;
         let forfeited = self.request_manager.preempt_for_recompute(request_id)?;
         self.sync_request_block_table(request_id)?;
         metrics.preempted_requests = metrics.preempted_requests.saturating_add(1);
@@ -1827,6 +1948,17 @@ fn validate_submission(submission: &RequestSubmission) -> Result<(), EngineCoreE
             message: "max_output_tokens must be greater than 0",
         });
     }
+    // Low-level submitters bypass the SDK's GenerateRequest validation, so the
+    // core is the last place that can reject media spans outside the prompt.
+    // The runner silently ignores an out-of-range Gemma span while still
+    // marking the media prefill complete, which would serve a text-only answer.
+    submission
+        .multimodal_inputs
+        .validate_for_prompt_tokens(&submission.input_tokens)
+        .map_err(|source| EngineCoreError::InvalidMultimodalInput {
+            request_id: submission.request_id,
+            source,
+        })?;
     Ok(())
 }
 
@@ -1869,6 +2001,12 @@ pub enum EngineCoreError {
     InvalidRequestSubmission {
         request_id: RequestId,
         message: &'static str,
+    },
+    #[error("invalid multimodal input for {request_id:?}: {source}")]
+    InvalidMultimodalInput {
+        request_id: RequestId,
+        #[source]
+        source: crate::request::RequestMultimodalInputError,
     },
     #[error("request manager error: {0}")]
     RequestManager(#[from] RequestManagerError),
@@ -2851,6 +2989,73 @@ mod tests {
     }
 
     #[test]
+    fn fair_partial_prefills_sharing_an_exhausted_pool_make_progress() {
+        // Two 100-token prefills in a 128-token pool: after each has run one
+        // 32-token fair chunk they own every block, their remaining prompts do
+        // not fit their partial blocks, and no decode exists to free one. The
+        // scheduler defers both forever unless the engine preempts a partial
+        // prefill.
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 16, 8));
+        engine.set_multi_prefill_fair(true, 32, 0);
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![1; 100], 1))
+            .unwrap();
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![2; 100], 1))
+            .unwrap();
+
+        for _ in 0..8 {
+            engine.step(64, true).unwrap();
+        }
+
+        let first = engine.request_manager().snapshot(RequestId(1)).unwrap();
+        let second = engine.request_manager().snapshot(RequestId(2)).unwrap();
+        assert!(
+            first.processed_prompt_tokens == 100
+                || second.processed_prompt_tokens == 100
+                || first.state != RequestState::Runnable
+                || second.state != RequestState::Runnable,
+            "partial prefills must not deadlock on an exhausted pool: {first:?} {second:?}"
+        );
+    }
+
+    #[test]
+    fn zero_budget_step_does_not_preempt_partial_prefills() {
+        // A zero-token step cannot run any prefill; the deadlock recovery
+        // must not mistake it for an exhausted-pool stall and discard
+        // progress.
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 16, 8));
+        engine.set_multi_prefill_fair(true, 32, 0);
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![1; 100], 1))
+            .unwrap();
+        engine
+            .submit(make_submission_with_prompt(2, 2, vec![2; 100], 1))
+            .unwrap();
+        engine.step(64, true).unwrap();
+        engine.step(64, true).unwrap();
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .processed_prompt_tokens,
+            64
+        );
+        engine.step(0, true).unwrap();
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .processed_prompt_tokens,
+            64
+        );
+    }
+
+    #[test]
     fn scheduler_input_reflects_live_kv_state_across_calls() {
         // Regression for the design doc's own top-named risk on fair
         // multi-prefill (docs/designs/kv-weak-surfaces-2026-07-14.md §B.2:
@@ -3184,6 +3389,36 @@ mod tests {
         let snap = engine.request_manager().snapshot(RequestId(42)).unwrap();
         assert!(snap.diffusion_block_committed);
         assert_eq!(snap.generated_tokens, vec![77]);
+    }
+
+    #[test]
+    fn mid_denoise_diffusion_is_not_a_preemption_candidate() {
+        // A diffusion request between denoise steps has completed its prompt
+        // and generated no token, but it is not a prefill: preempting it would
+        // reset the prompt/block table while the runner-side block progress is
+        // released, then replay with stale denoise counters.
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 8),
+            DiffusionScheduleProgressRunner::new(2),
+            PanicSampler,
+        );
+        engine.set_generation_kind(crate::GenerationKind::BlockDiffusion);
+        engine.submit(make_submission(2, 2, 2)).unwrap();
+        engine.step(4, true).unwrap();
+        engine.step(1, true).unwrap();
+        let snap = engine.request_manager().snapshot(RequestId(2)).unwrap();
+        assert_eq!(snap.processed_prompt_tokens, 4);
+        assert!(snap.generated_tokens.is_empty());
+
+        // Older arrival, submitted later: the diffusion request is newer and
+        // would be the candidate selected by the pre-fix predicate.
+        engine.set_generation_kind(crate::GenerationKind::Autoregressive);
+        engine.submit(make_submission(1, 1, 2)).unwrap();
+        assert_eq!(
+            engine.find_preemption_candidate(RequestId(1), &Default::default()),
+            None,
+            "a mid-denoise diffusion request must not be preempted as a prefill"
+        );
     }
 
     #[test]
@@ -4292,6 +4527,182 @@ mod tests {
             .expect("repeated request block table");
         assert!(block_table.block_ids.is_empty());
         assert_eq!(block_table.logical_token_count, 0);
+    }
+
+    #[test]
+    fn multimodal_prefix_matches_keep_full_prefill_and_text_reuse() {
+        // Exercise both live and retained sources, partial/full token matches,
+        // and identical/different media. Token equality never proves media KV.
+        for retained in [false, true] {
+            for prefix_len in [4, 8] {
+                for changed_media in [false, true] {
+                    let mut engine = EngineCore::with_kv_config(KvManagerConfig::validated(
+                        CacheGroupId(2),
+                        4,
+                        32,
+                    ));
+                    engine
+                        .submit(make_multimodal_submission(1, 1, vec![7; prefix_len], 1))
+                        .unwrap();
+                    engine.step(prefix_len as u32, true).unwrap();
+                    if retained {
+                        engine.step(1, true).unwrap();
+                    }
+                    let mut second = make_multimodal_submission(2, 2, vec![7; 8], 2);
+                    if changed_media {
+                        second
+                            .multimodal_inputs
+                            .gemma4_unified
+                            .as_mut()
+                            .unwrap()
+                            .images[0]
+                            .pixel_values[0] = 0.75;
+                    }
+                    engine.submit(second).unwrap();
+                    // An active seed may finish first due to route grouping.
+                    let mut outcome = engine.step(16, true).unwrap();
+                    if !outcome
+                        .schedule_plan
+                        .selected_requests
+                        .contains(&RequestId(2))
+                    {
+                        outcome = engine.step(16, true).unwrap();
+                    }
+                    let item = outcome
+                        .schedule_plan
+                        .execution_batch
+                        .as_ref()
+                        .unwrap()
+                        .items
+                        .iter()
+                        .find(|item| item.request_id == RequestId(2))
+                        .unwrap();
+                    assert_eq!(item.mode, ExecutionMode::Prefill);
+                    assert_eq!(item.input_token_slice, vec![7; 8]);
+                    assert_eq!(item.position_range.start, 0);
+                    assert_eq!(item.prefix_tokens_reused, 0);
+                    assert_eq!(item.prefix_blocks_reused, 0);
+                    assert!(item.reused_prefix_token_slice.is_empty());
+                    assert_eq!(outcome.metrics.prefix_hits, 0);
+                    // Normal decode after media prefill remains schedulable.
+                    let decode = engine.step(1, true).unwrap();
+                    assert_eq!(
+                        decode.schedule_plan.execution_batch.unwrap().items[0].mode,
+                        ExecutionMode::Decode
+                    );
+                }
+            }
+        }
+
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+        engine
+            .submit(make_submission_with_prompt(1, 1, vec![7; 8], 1))
+            .unwrap();
+        engine.step(8, true).unwrap();
+        engine.step(1, true).unwrap();
+        let mut text = make_submission_with_prompt(2, 2, vec![7; 8], 1);
+        text.multimodal_inputs.gemma4_unified = Some(Default::default());
+        engine.submit(text).unwrap();
+        let outcome = engine.step(8, true).unwrap();
+        let item = &outcome
+            .schedule_plan
+            .execution_batch
+            .as_ref()
+            .unwrap()
+            .items[0];
+        assert_eq!(item.mode, ExecutionMode::Decode);
+        assert_eq!(item.prefix_tokens_reused, 8);
+    }
+
+    #[test]
+    fn text_requests_cannot_adopt_live_or_retained_media_prefixes() {
+        for retained in [false, true] {
+            let mut engine =
+                EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+            engine
+                .submit(make_multimodal_submission(1, 1, vec![7; 8], 1))
+                .unwrap();
+            engine.step(8, true).unwrap();
+            if retained {
+                engine.step(1, true).unwrap();
+            }
+            engine
+                .submit(make_submission_with_prompt(2, 2, vec![7; 8], 1))
+                .unwrap();
+            let mut outcome = engine.step(16, true).unwrap();
+            if !outcome
+                .schedule_plan
+                .selected_requests
+                .contains(&RequestId(2))
+            {
+                outcome = engine.step(16, true).unwrap();
+            }
+            let item = outcome
+                .schedule_plan
+                .execution_batch
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.request_id == RequestId(2))
+                .unwrap();
+            assert_eq!(item.mode, ExecutionMode::Prefill);
+            assert_eq!(item.prefix_tokens_reused, 0);
+            assert_eq!(item.input_token_slice, vec![7; 8]);
+        }
+    }
+
+    #[test]
+    fn submit_rejects_multimodal_spans_outside_the_prompt_before_registering() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+        let mut submission = make_multimodal_submission(1, 1, vec![7; 8], 1);
+        submission
+            .multimodal_inputs
+            .gemma4_unified
+            .as_mut()
+            .unwrap()
+            .images[0]
+            .span
+            .replacement_start = 8;
+
+        let error = engine
+            .submit(submission)
+            .expect_err("a media span past the prompt must be rejected");
+        assert!(matches!(
+            error,
+            EngineCoreError::InvalidMultimodalInput {
+                request_id: RequestId(1),
+                ..
+            }
+        ));
+        assert!(engine.request_manager().record(RequestId(1)).is_none());
+        assert!(engine.kv_manager.block_table(RequestId(1)).is_err());
+    }
+
+    #[test]
+    fn multimodal_preemption_replays_full_prefill() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 16));
+        engine
+            .submit(make_multimodal_submission(1, 1, vec![7; 8], 2))
+            .unwrap();
+        engine.step(8, true).unwrap();
+        engine
+            .preempt_request(RequestId(1), &mut PreemptionMetrics::default())
+            .unwrap();
+        let outcome = engine.step(8, true).unwrap();
+        let item = &outcome
+            .schedule_plan
+            .execution_batch
+            .as_ref()
+            .unwrap()
+            .items[0];
+        assert_eq!(item.mode, ExecutionMode::Prefill);
+        assert_eq!(item.input_token_slice, vec![7; 8]);
+        assert_eq!(item.position_range.start, 0);
+        assert_eq!(item.prefix_tokens_reused, 0);
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //!
 //! Cache keys must be identical across server, runner, and tests. Digests are
 //! domain-separated by soft-token budget and model fingerprint so a budget or
-//! weight change cannot serve stale features.
+//! weight change cannot serve stale features. Runtime prefix identity additionally
+//! binds the family, modality, geometry, and placement of each tensor.
 
 use sha2::{Digest, Sha256};
 
@@ -45,13 +46,63 @@ pub(crate) fn ordered_media_digests_key_or_empty(digests: &[String]) -> String {
     }
 }
 
-/// Digest f32 tensor bytes (little-endian) for runtime media identity.
+/// Digest raw f32 tensor bytes (little-endian). This v1 helper omits geometry
+/// and placement; runtime prefix keys must use the schema-specific v2 identity.
 pub fn media_digest_f32(values: &[f32], soft_token_budget: u32, model_fingerprint: &str) -> String {
     let mut bytes = Vec::with_capacity(values.len().saturating_mul(4));
     for v in values {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
     media_digest(&bytes, soft_token_budget, model_fingerprint)
+}
+
+/// Versioned runtime identity. Each schema supplies fields in a fixed order;
+/// lengths precede variable fields, and usize is encoded as u64 on every host.
+/// Keep the public v1 encoded-media helpers stable for feature-cache callers.
+pub(crate) struct RuntimeMediaDigest(Sha256);
+
+impl RuntimeMediaDigest {
+    pub(crate) fn new(schema: &str, model_fingerprint: &str) -> Self {
+        let mut digest = Self(Sha256::new());
+        digest.0.update(b"ax.media.runtime.v2\0");
+        for value in [schema, model_fingerprint] {
+            digest.usize(value.len());
+            digest.0.update(value.as_bytes());
+        }
+        digest
+    }
+
+    pub(crate) fn u32(&mut self, value: u32) {
+        self.0.update(value.to_le_bytes());
+    }
+
+    pub(crate) fn usize(&mut self, value: usize) {
+        self.0.update((value as u64).to_le_bytes());
+    }
+
+    pub(crate) fn positions(&mut self, values: &[[i32; 2]]) {
+        self.usize(values.len());
+        for [row, column] in values {
+            self.0.update(row.to_le_bytes());
+            self.0.update(column.to_le_bytes());
+        }
+    }
+
+    pub(crate) fn f32s(&mut self, values: &[f32]) {
+        self.usize(values.len());
+        // Hash LE bits without allocating another copy of a large media tensor.
+        let mut bytes = [0u8; 1024];
+        for chunk in values.chunks(bytes.len() / 4) {
+            for (value, output) in chunk.iter().zip(bytes.chunks_exact_mut(4)) {
+                output.copy_from_slice(&value.to_le_bytes());
+            }
+            self.0.update(&bytes[..chunk.len() * 4]);
+        }
+    }
+
+    pub(crate) fn finish(self) -> String {
+        format!("{:x}", self.0.finalize())
+    }
 }
 
 #[cfg(test)]

@@ -622,6 +622,167 @@ fn native_generate_validation_rejects_multimodal_prompt_over_max_batch_tokens() 
 }
 
 #[test]
+fn low_level_submit_rejects_multimodal_prompt_over_max_batch_tokens() {
+    // EngineSession::submit is public and bypasses the GenerateRequest
+    // validation path. With a fixed per-step budget, a multimodal prompt
+    // longer than that budget can never be scheduled atomically.
+    let mut session = shared_stream_test_session(4);
+    session.config.max_batch_tokens = 4;
+    let submission = RequestSubmission {
+        request_id: RequestId(1),
+        model_id: ModelId("gemma-4-12b-it".into()),
+        input_tokens: vec![10, 255999, 258880, 258882, 11],
+        multimodal_inputs: sample_gemma4_multimodal_inputs(),
+        sampling_params: SamplingParams::default(),
+        max_output_tokens: 1,
+        arrival_sequence: SequenceNo(1),
+        metadata: None,
+    };
+
+    let error = session
+        .submit(submission)
+        .expect_err("media prefill over the step budget must be rejected");
+    assert!(matches!(
+        error,
+        EngineSessionError::MultimodalPromptExceedsMaxBatchTokens {
+            prompt_len: 5,
+            max_batch_tokens: 4,
+        }
+    ));
+}
+
+#[test]
+fn caller_chosen_request_ids_do_not_define_arrival_order() {
+    // A recycled or deliberately small id must not look older than an
+    // already-running request, and a large id must not preempt older ones.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(100, request.clone())
+        .expect("first stream");
+    session
+        .submit_generate_with_request_id(2, request)
+        .expect("second stream");
+
+    let first = session
+        .core()
+        .request_manager()
+        .snapshot(RequestId(100))
+        .expect("first snapshot");
+    let second = session
+        .core()
+        .request_manager()
+        .snapshot(RequestId(2))
+        .expect("second snapshot");
+    assert!(
+        first.arrival_sequence < second.arrival_sequence,
+        "arrival order must be session-local, got {first:?} and {second:?}"
+    );
+}
+
+#[test]
+fn low_level_submit_advances_the_auto_arrival_sequence() {
+    // Mixing the public RequestSubmission entry with the auto-arrival path
+    // must not let the later request appear older than the first.
+    let mut session = shared_stream_test_session(8);
+    let mut submission = sample_submission();
+    submission.request_id = RequestId(100);
+    submission.arrival_sequence = SequenceNo(100);
+    session.submit(submission).expect("low-level submit");
+
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(101, request)
+        .expect("auto-arrival submit");
+
+    let first = session
+        .core()
+        .request_manager()
+        .snapshot(RequestId(100))
+        .expect("first snapshot");
+    let second = session
+        .core()
+        .request_manager()
+        .snapshot(RequestId(101))
+        .expect("second snapshot");
+    assert!(
+        second.arrival_sequence > first.arrival_sequence,
+        "the later request must not arrive first, got {first:?} and {second:?}"
+    );
+}
+
+#[test]
+fn max_explicit_request_id_does_not_stall_auto_allocation() {
+    // `advance_request_id` used `saturating_add`, so one caller-chosen
+    // u64::MAX id pinned the auto allocator to MAX and every later
+    // `submit_generate` collided with the retained request.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(u64::MAX, request.clone())
+        .expect("explicit max id");
+    let auto_id = session
+        .submit_generate(request)
+        .expect("auto allocation must not reuse the max id");
+    assert_ne!(auto_id, u64::MAX);
+    assert_eq!(auto_id, 1);
+}
+
+#[test]
+fn auto_allocation_wraps_past_a_used_max_id() {
+    // MAX-1 pushes next_request_id to MAX. The first auto submit uses MAX;
+    // the next must skip the retained MAX id instead of failing duplicate.
+    let mut session = shared_stream_test_session(8);
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(u64::MAX - 1, request.clone())
+        .expect("explicit max-1 id");
+    assert_eq!(
+        session
+            .submit_generate(request.clone())
+            .expect("first auto"),
+        u64::MAX
+    );
+    assert_eq!(session.submit_generate(request).expect("wrapped auto"), 1);
+}
+
+#[test]
 fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
     let mut multimodal_inputs = sample_gemma4_multimodal_inputs();
     multimodal_inputs
@@ -1720,6 +1881,7 @@ fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 2,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -1895,6 +2057,7 @@ fn shared_stream_test_session(blocks: u32) -> EngineSession {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 1,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2135,6 +2298,7 @@ fn shared_native_step_advances_multiple_stream_states_once() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 1,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2250,6 +2414,7 @@ fn dropping_native_generate_stream_cancels_in_flight_request() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 1,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2368,6 +2533,7 @@ fn has_active_stepwise_requests_reflects_native_terminal_state() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 2,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2466,6 +2632,7 @@ fn native_generate_response_surfaces_runner_route_metadata() {
         #[cfg(feature = "mlx-native")]
         whisper: None,
         next_request_id: 2,
+        next_arrival_sequence: 1,
         native_request_routes: BTreeMap::new(),
         native_route_report_order: VecDeque::new(),
         llama_requests: BTreeMap::new(),
@@ -2614,5 +2781,38 @@ fn shared_decode_reports_every_selected_read_delta_without_full_routes() {
     assert_eq!(
         report.route.attention_route.as_deref(),
         Some("test_attention")
+    );
+}
+
+#[test]
+fn resubmitting_a_recycled_request_id_drops_the_previous_route() {
+    // `submit_generate_with_request_id` lets a caller reuse an id once the
+    // previous request finished. Stored routes are keyed by id alone, so a
+    // recycled id must not inherit the dead request's counters by merging.
+    let mut session = shared_stream_test_session(4);
+    let mut stale = GenerateRouteReport::with_execution_plan("stale-route");
+    stale
+        .crossover_decisions
+        .insert("ax_mlx_prefill_tokens".to_string(), 4096);
+    session.store_native_request_route(7, stale, &[]);
+    assert!(session.native_request_routes.contains_key(&7));
+
+    let request = GenerateRequest {
+        model_id: "qwen3".into(),
+        input_tokens: vec![7; 8],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 4,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    session
+        .submit_generate_with_request_id(7, request)
+        .expect("resubmit with a recycled id");
+
+    assert!(
+        !session.native_request_routes.contains_key(&7),
+        "a recycled request id must start without the previous request's route"
     );
 }

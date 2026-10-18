@@ -601,7 +601,7 @@ fn summary_and_trusted_baseline_preserve_unmeasured_ttft() {
     );
     assert!(
         summary.contains("- ttft_ms: `unmeasured`"),
-        "summary must not report 0.00 for an unmeasured TTFT: {summary}"
+        "summary must not report 0.00 for an unmeasured TTFT"
     );
 
     let metrics = build_metrics_json("run-unmeasured-ttft", &execution);
@@ -623,7 +623,7 @@ fn summary_and_trusted_baseline_preserve_unmeasured_ttft() {
     let baseline_markdown = build_trusted_baseline_summary_markdown(&baseline);
     assert!(
         baseline_markdown.contains("- ttft_ms: `unmeasured`"),
-        "trusted baseline markdown must not report 0.00 for an unmeasured TTFT: {baseline_markdown}"
+        "trusted baseline markdown must not report 0.00 for an unmeasured TTFT"
     );
 }
 

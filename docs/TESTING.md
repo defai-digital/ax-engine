@@ -187,7 +187,7 @@ carries `mtp_verifier`; the direct arm is unaffected.
 The ignored real-pack test writes four tokens, full F32 logit fingerprints,
 serialized cache fingerprints, and memory/table-read counters. Use a private
 copy of an audited pack; ordinary auto-conversion may create its manifest.
-Run on an adequately sized Apple Silicon development host with MLX 0.32.3:
+Run on an adequately sized Apple Silicon development host with the admitted MLX wheel pinned in `mlx.version`:
 
 ```bash
 AX_STREAM_EXPERTS=on AX_STREAM_EXPERT_LAYERS=1 \

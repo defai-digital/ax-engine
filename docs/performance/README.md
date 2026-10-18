@@ -10,7 +10,7 @@ decide which result table, method, or investigation note applies to a claim.
 | Headline dense 27B peer: Qwen 3.8 27B AXQ vs MTPLX and OMLX | [Root README: Qwen performance](../../README.md#qwen-performance) |
 | Tiel / Cyber-Tiel vs MTPLX on M5 Max, M4 Pro, M2 Ultra and M3 Ultra | [Four-machine results, latency and memory](tiel-vs-mtplx-2026-09-20.md) · [README Tiel section](../../README.md#tiel-performance) |
 | Current public result tables and charts | [Performance Results](../PERFORMANCE-RESULTS.md) |
-| Current MLX runtime admission | [MLX 0.32.3 admission](mlx-0.32.3-admission-2026-10-03.md) |
+| Current MLX runtime admission | [MLX 0.32.4 admission](mlx-0.32.4-admission-2026-10-16.md) |
 | Opt-in MLX GDN prefill experiment | [Kernel comparison and limits](mlx-gdn-prefill-2026-10-03.md) |
 | Flash Next prefill and decode against the pinned MLX-VLM reference | [Findings, changes, kill switches and measurements](flash-next-prefill-decode-2026-10-05.md) |
 | Qwen 3.8 27B MXFP4 on pre-M3 GPUs: fp16 activations, dense-GEMM prefill, exact-MTP lm_head window | [Host-adaptive policies; M2 Ultra, M4 Pro and M5 Max measurements](qwen38-27b-pre-m3-prefill-2026-10-10.md) |

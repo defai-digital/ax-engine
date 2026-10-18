@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::app_state::AppState;
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
-use crate::generation::native::run_stateless_generate_request;
+use crate::generation::native::{reject_failed_generate_status, run_stateless_generate_request};
 use crate::openai::generation::populate_native_mlx_output_text;
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
@@ -310,6 +310,7 @@ async fn run_anthropic_messages_generation(
     reject_unexpected_stream(stream)?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     populate_native_mlx_output_text(
         &live,
         &mut response,

@@ -1,0 +1,7 @@
+warning: libmlx.dylib targets macOS 26.2 while the wheel tag claims 26.0; the effective runtime floor is 26.2
+warning: libjaccl.dylib targets macOS 26.2 while the wheel tag claims 26.0; the effective runtime floor is 26.2
+Staged pinned MLX 0.32.4 (macosx_26_0_arm64) release runtime from ${REPO_ROOT}/.venv/lib/python3.12/site-packages/mlx/lib
+  ${STAGED_RUNTIME}/libmlx.dylib
+  ${STAGED_RUNTIME}/libjaccl.dylib
+  ${STAGED_RUNTIME}/mlx.metallib
+  ${STAGED_RUNTIME}/MLX-LICENSE.txt

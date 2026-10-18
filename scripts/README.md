@@ -190,6 +190,12 @@ throughput baselines.
   files plus license and rejects Homebrew, non-arm64, mismatched `mlx` /
   `mlx-metal` wheel platforms, or dylib `minos` values that disagree with the
   selected wheel tag.
+- `probe_mlx_runtime_upgrade.py`: checks published runtime candidates against
+  independent numerical references, records MXFP4 device-allocation peaks and
+  optionally measures qmm latency. Use `--skip-timing` for software checks;
+  use `--compare-to <old.json>` with the old report's adjacent NPZ to report
+  same-host numerical drift. Probe/input/output hashes and unchanged check
+  thresholds bind the comparison. Failed checks retain evidence and exit nonzero.
 - `prepare-standalone-release.sh`: removes builder-host rpaths and prepares the
   dual direct-extraction/Homebrew relative layout. Codesigning happens after
   this mutation.

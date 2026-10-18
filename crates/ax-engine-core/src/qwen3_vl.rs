@@ -7,9 +7,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::media_digest::{media_digest_f32, ordered_media_digests_key_or_empty};
+use crate::media_digest::{RuntimeMediaDigest, ordered_media_digests_key_or_empty};
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum Qwen3VlRuntimeInputError {
     #[error("qwen3_vl image placeholder_index {0} out of prompt range [0, {1})")]
     PlaceholderOutOfRange(usize, usize),
@@ -17,9 +17,15 @@ pub enum Qwen3VlRuntimeInputError {
     EmptyPatches,
     #[error("qwen3_vl soft_token_count must be > 0")]
     ZeroSoftTokens,
+    #[error("qwen3_vl request carries {0} images, exceeding the {1} image limit")]
+    TooManyImages(usize, usize),
     #[error("qwen3_vl geometry invalid: {0}")]
     InvalidGeometry(String),
 }
+
+/// Matches the serving edge's image limit and bounds validation bookkeeping
+/// for native API and SDK-direct callers as well.
+const MAX_IMAGES_PER_REQUEST: usize = 40;
 
 /// One image for Qwen3-VL prefill (already patch-projected or raw patches).
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -71,6 +77,18 @@ impl Qwen3VlImageRuntimeInput {
                 self.placeholder_index,
                 prompt_len,
             ));
+        }
+        let span_end = self
+            .placeholder_index
+            .checked_add(self.soft_token_count as usize)
+            .ok_or_else(|| {
+                Qwen3VlRuntimeInputError::InvalidGeometry("visual token range overflow".to_string())
+            })?;
+        if span_end > prompt_len {
+            return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
+                "placeholder_index {} + soft_token_count {} exceeds prompt length {prompt_len}",
+                self.placeholder_index, self.soft_token_count
+            )));
         }
         if self.num_patches == 0 || self.patch_dim == 0 {
             return Err(Qwen3VlRuntimeInputError::InvalidGeometry(
@@ -169,13 +187,27 @@ impl Qwen3VlRuntimeInputs {
         &self,
         prompt_len: usize,
     ) -> Result<(), Qwen3VlRuntimeInputError> {
-        let mut placeholders = std::collections::HashSet::with_capacity(self.images.len());
+        if self.images.len() > MAX_IMAGES_PER_REQUEST {
+            return Err(Qwen3VlRuntimeInputError::TooManyImages(
+                self.images.len(),
+                MAX_IMAGES_PER_REQUEST,
+            ));
+        }
+        // The count guard bounds growth before any validation bookkeeping.
+        let mut spans = Vec::new();
         for image in &self.images {
             image.validate(prompt_len)?;
-            if !placeholders.insert(image.placeholder_index) {
+            spans.push((image.placeholder_index, image.soft_token_count as usize));
+        }
+        // Slices must not claim the same prompt tokens: later feature writes
+        // would clobber earlier ones. Sorting also catches a repeated start.
+        spans.sort_unstable();
+        for pair in spans.windows(2) {
+            let (previous_start, previous_count) = pair[0];
+            let (next_start, _) = pair[1];
+            if previous_start + previous_count > next_start {
                 return Err(Qwen3VlRuntimeInputError::InvalidGeometry(format!(
-                    "placeholder_index {} is used by more than one image",
-                    image.placeholder_index
+                    "placeholder_index span starting at {previous_start} overlaps the span starting at {next_start}"
                 )));
             }
         }
@@ -186,11 +218,20 @@ impl Qwen3VlRuntimeInputs {
     pub fn media_prefix_key(&self, model_fingerprint: &str) -> String {
         let mut digests = Vec::with_capacity(self.images.len());
         for image in &self.images {
-            digests.push(media_digest_f32(
-                &image.patches,
-                image.soft_token_count,
-                model_fingerprint,
-            ));
+            let mut digest = RuntimeMediaDigest::new("qwen3_vl.patches.f32", model_fingerprint);
+            digest.usize(image.placeholder_index);
+            digest.u32(image.soft_token_count);
+            digest.u32(image.num_patches);
+            digest.u32(image.patch_dim);
+            digest.u32(image.grid_t);
+            digest.u32(image.height);
+            digest.u32(image.width);
+            digest.u32(image.patch_size);
+            digest.u32(image.temporal_patch_size);
+            digest.u32(image.spatial_merge_size);
+            digest.u32(u32::from(image.is_video));
+            digest.f32s(&image.patches);
+            digests.push(digest.finish());
         }
         ordered_media_digests_key_or_empty(&digests)
     }
@@ -262,6 +303,30 @@ mod tests {
     }
 
     #[test]
+    fn spans_must_fit_and_must_not_overlap() {
+        // Placeholder start is in range, but the four-token span runs past the
+        // three-token prompt; the runner would otherwise encode the image
+        // before failing the scatter.
+        let error = sample_image()
+            .validate(3)
+            .expect_err("span past the prompt");
+        assert!(
+            error.to_string().contains("exceeds prompt length"),
+            "{error}"
+        );
+
+        let mut second = sample_image();
+        second.placeholder_index = 3;
+        let inputs = Qwen3VlRuntimeInputs {
+            images: vec![sample_image(), second],
+        };
+        let error = inputs
+            .validate_for_prompt_len(8)
+            .expect_err("overlapping spans");
+        assert!(error.to_string().contains("placeholder_index"), "{error}");
+    }
+
+    #[test]
     fn validate_and_media_key() {
         let inputs = Qwen3VlRuntimeInputs {
             images: vec![sample_image()],
@@ -272,5 +337,42 @@ mod tests {
         other.images[0].patches[0] = 0.9;
         assert_ne!(inputs.media_prefix_key("fp"), other.media_prefix_key("fp"));
         assert!(!inputs.media_prefix_key("fp").is_empty());
+    }
+
+    #[test]
+    fn rejects_excess_images_before_validating_geometry() {
+        let inputs = Qwen3VlRuntimeInputs {
+            images: vec![sample_image(); MAX_IMAGES_PER_REQUEST + 1],
+        };
+        // Even an invalid prompt must hit the count guard before image checks.
+        assert_eq!(
+            inputs.validate_for_prompt_len(0),
+            Err(Qwen3VlRuntimeInputError::TooManyImages(
+                MAX_IMAGES_PER_REQUEST + 1,
+                MAX_IMAGES_PER_REQUEST,
+            ))
+        );
+    }
+
+    #[test]
+    fn accepts_empty_inputs_and_the_image_count_boundary() {
+        assert!(
+            Qwen3VlRuntimeInputs::default()
+                .validate_for_prompt_len(0)
+                .is_ok()
+        );
+        let inputs = Qwen3VlRuntimeInputs {
+            images: (0..MAX_IMAGES_PER_REQUEST)
+                .map(|index| Qwen3VlImageRuntimeInput {
+                    placeholder_index: index * 4,
+                    ..sample_image()
+                })
+                .collect(),
+        };
+        assert!(
+            inputs
+                .validate_for_prompt_len(MAX_IMAGES_PER_REQUEST * 4)
+                .is_ok()
+        );
     }
 }

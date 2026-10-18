@@ -205,6 +205,7 @@ bash scripts/check-qa.sh
   scripts/test_check_mlx_eval_sites.py \
   scripts/test_check_mlx_version.py \
   scripts/probe_mlx_runtime_upgrade.py \
+  scripts/test_probe_mlx_runtime_upgrade.py \
   scripts/repair_mlx_metallib_wheel.py \
   scripts/test_repair_mlx_metallib_wheel.py \
   scripts/test_build_pypi_wheel_minos.py \
@@ -347,6 +348,7 @@ bash scripts/check-qa.sh
   scripts/test_check_mlx_eval_sites.py \
   scripts/test_check_mlx_version.py \
   scripts/test_repair_mlx_metallib_wheel.py \
+  scripts/test_probe_mlx_runtime_upgrade.py \
   scripts/test_build_pypi_wheel_minos.py \
   scripts/test_check_mla_prefix_restore_evidence.py \
   scripts/test_long_context_comparison_artifact.py \

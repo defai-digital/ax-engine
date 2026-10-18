@@ -1,0 +1,6 @@
+ax-metal-build
+manifest=${REPO_ROOT}/metal/phase1-kernels.json
+output_dir=${TEMP_PATH}
+status=skipped_toolchain_unavailable
+reused_existing_artifacts=false
+reason=Metal toolchain is incomplete on this machine

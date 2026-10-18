@@ -1,0 +1,226 @@
+{
+  "schema": "ax.mlx.runtime_admission_validation.v1",
+  "date": "2026-10-16",
+  "repository_base_commit": "d6db4f0511294c15785f2a2b0a2f03440925c75b",
+  "runtime_pin": "0.32.4",
+  "upstream_tag_commit": "36969c094354086e15d2a327a9c50feb20b9cf11",
+  "rust": "1.97.1",
+  "python": "3.12.13",
+  "local_hardware": "Mac Studio M2 Ultra 192 GB",
+  "local_macos": "27.0.1",
+  "scope": "Published runtime dependency admission; no model or MTP certification",
+  "probe_sha256": "0f7b3498933f80409e07bc63dd947a2884cf91d8249871f491764e6b368a8bad",
+  "initial_probe_sha256": "1645612f26a3f663b51cadba72dbb150f6907364fad6296b122f5bd13b45bbec",
+  "checks": [
+    {
+      "name": "fmt",
+      "command": [
+        "bash",
+        "scripts/cargo-pinned.sh",
+        "fmt",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "scripts",
+      "command": [
+        "bash",
+        "scripts/check-scripts.sh"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "qwen27-dry-run",
+      "command": [
+        ".venv/bin/python",
+        "scripts/qualify_qwen38_27b.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "flash-next-dry-run",
+      "command": [
+        ".venv/bin/python",
+        "scripts/qualify_qwen38_flash_next.py",
+        "--dry-run"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "primary-claims",
+      "command": [
+        ".venv/bin/python",
+        "scripts/check_qwen38_primary_claims.py"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "version",
+      "command": [
+        "bash",
+        "scripts/check-mlx-version.sh"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "bash",
+        "scripts/cargo-pinned.sh",
+        "clippy",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "rust-tests",
+      "command": [
+        "bash",
+        "scripts/cargo-pinned.sh",
+        "test",
+        "--quiet",
+        "--no-fail-fast"
+      ],
+      "exit_code": 0,
+      "passed": 4029,
+      "failed": 0,
+      "ignored": 67
+    },
+    {
+      "name": "maturin",
+      "command": [
+        "maturin",
+        "develop"
+      ],
+      "exit_code": 0,
+      "profile": "release-pyext"
+    },
+    {
+      "name": "python-tests",
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "python/tests",
+        "-q"
+      ],
+      "exit_code": 0,
+      "passed": 264,
+      "skipped": 54,
+      "subtests_passed": 261
+    },
+    {
+      "name": "probe-tests",
+      "command": [
+        "python",
+        "-m",
+        "unittest",
+        "scripts.test_probe_mlx_runtime_upgrade",
+        "-v"
+      ],
+      "exit_code": 0,
+      "passed": 8
+    },
+    {
+      "name": "staging",
+      "command": [
+        "bash",
+        "scripts/prepare-mlx-release-runtime.sh",
+        "<candidate-wheel>/mlx/lib",
+        "<temporary-output>"
+      ],
+      "exit_code": 0,
+      "effective_macos_floor": "26.2"
+    },
+    {
+      "name": "metal-contract",
+      "command": [
+        "bash",
+        "scripts/check-metal-kernel-contract.sh"
+      ],
+      "exit_code": 0,
+      "asset_compilation": "skipped_toolchain_unavailable"
+    }
+  ],
+  "logs": [
+    {
+      "path": "logs/fmt.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "logs/clippy.log",
+      "raw_sha256": "9ba33005d70cdcc5061846de5dd245162a3d60cd195fe1be884957c66ccef6cf",
+      "sha256": "8c86db950a180ad49048b356be53e45d8b81bd7ddfec02d54735044de07fd62d"
+    },
+    {
+      "path": "logs/rust-tests.log",
+      "raw_sha256": "aba6c41c2d61dc7cbf489056511676d9c7911e36e8a503625e815b282d53eb60",
+      "sha256": "aba6c41c2d61dc7cbf489056511676d9c7911e36e8a503625e815b282d53eb60"
+    },
+    {
+      "path": "logs/maturin.log",
+      "raw_sha256": "2256b23d108c62fe4c36b49e4f5cef65a9dc10e21099bdf68c3fb84886a7829d",
+      "sha256": "634b9c9f5f707d2e7df2c26778128351534cadca3ae2e89b77d449209d754bdc"
+    },
+    {
+      "path": "logs/python-tests.log",
+      "raw_sha256": "16ac8d52b507b7520c106de63d66c408c25297b5737e27c1f20d5518e2e38345",
+      "sha256": "16ac8d52b507b7520c106de63d66c408c25297b5737e27c1f20d5518e2e38345"
+    },
+    {
+      "path": "logs/scripts.log",
+      "raw_sha256": "ea2161efc4b7b02a3cde04364b9657b706d66b5c05913a50d47a45bfb3ea0ce8",
+      "sha256": "4d410358afd24e4211f2de046d3d9a285c57a59afb2c0b058f9f3e7fa115c02b"
+    },
+    {
+      "path": "logs/probe-tests.log",
+      "raw_sha256": "50e1144b8a6d4203aa7d5443d5ad2c4db3c768c102f4661b3a50e52225766bab",
+      "sha256": "50e1144b8a6d4203aa7d5443d5ad2c4db3c768c102f4661b3a50e52225766bab"
+    },
+    {
+      "path": "logs/version.log",
+      "raw_sha256": "f31d27d144ed0b1187a3d2c5ae9780673e3235871b12ab58795585cc4337569d",
+      "sha256": "c864b327b38ba4df8951c623d43370dfc7337b37123481b7aefad7bcbadbb4e3"
+    },
+    {
+      "path": "logs/staging.log",
+      "raw_sha256": "6bb4cbe8de243098a03f85cbb8a6b49a07a125e885de7c3cd6363400651782d1",
+      "sha256": "f1173e5c7fecde317984e94efceac4ef8ba3e4028d16bf0bb4745949b215fba4"
+    },
+    {
+      "path": "logs/qwen27-dry-run.log",
+      "raw_sha256": "8d3aad0d4313438de362ee397be32d65835a2018e1c702e29d40e4e21c4bf53e",
+      "sha256": "8d3aad0d4313438de362ee397be32d65835a2018e1c702e29d40e4e21c4bf53e"
+    },
+    {
+      "path": "logs/flash-next-dry-run.log",
+      "raw_sha256": "0bec487b6563cfc3159c349fb27943cb095fb6cc84e6a87ca743b5cdf0fbd787",
+      "sha256": "0bec487b6563cfc3159c349fb27943cb095fb6cc84e6a87ca743b5cdf0fbd787"
+    },
+    {
+      "path": "logs/primary-claims.log",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "logs/metal-contract.log",
+      "raw_sha256": "b811401d33be12c59e4bf5b31d9b676da54a686cb34c1070fdefea97240e628d",
+      "sha256": "0438cdde0bcc79ca44e94b17f75ba02db3938c5f0a613b45d27eb22d3909b017"
+    }
+  ],
+  "log_redactions": [
+    "Repository path, user home and temporary paths replaced by descriptive placeholders"
+  ],
+  "limitations": [
+    "No M4 Pro 64 GB qualification run; configured endpoint resolves to other hardware",
+    "No real-weight model qualification, MTP-S/P/D, model throughput or endurance claim",
+    "Standalone Metal asset compilation unavailable; official MLX metallib staged and native MLX tests passed"
+  ]
+}

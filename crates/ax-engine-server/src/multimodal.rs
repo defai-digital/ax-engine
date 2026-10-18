@@ -110,6 +110,12 @@ pub(crate) const DEFAULT_VIDEO_FPS: f32 = 2.0;
 const FFMPEG_VIDEO_MAX_FRAME_SIDE: u32 = 1600;
 const FFMPEG_VIDEO_MAX_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Per-frame cost charged against `FFMPEG_VIDEO_MAX_OUTPUT_BYTES` beyond the
+/// frame's pixels: the `VideoFrame` slot, its `ImageBuffer` allocation, and the
+/// per-frame timestamp/geometry entries built from it. A GIF frame can encode a
+/// single pixel in ~16 bytes, so this term is what bounds a frame-flooded file.
+const VIDEO_FRAME_OVERHEAD_BYTES: u64 = 256;
+
 /// Strict decode bounds for client-supplied still images and GIF frames. The
 /// patchify resize target is far below this side length, so quality is
 /// unaffected; without a strict dimension cap a small highly-compressed file
@@ -515,7 +521,13 @@ fn decode_gif_video_frames(
         let frame = frame.map_err(|error| {
             MediaError::Decode(format!("failed to decode video frames: {error}"))
         })?;
-        decoded_bytes += frame.buffer().as_raw().len() as u64;
+        // Charge the frame's own bookkeeping, not just its pixels: a greedy GIF
+        // of 1x1 frames spends ~16 bytes of file per frame, so the Vec and
+        // ImageBuffer overheads dominate and a pixel-only budget lets a frame
+        // flood buffer far past `FFMPEG_VIDEO_MAX_OUTPUT_BYTES`. Counting a
+        // conservative per-frame cost keeps "sample from the decoded prefix"
+        // bounded for tiny-frame files too.
+        decoded_bytes += frame.buffer().as_raw().len() as u64 + VIDEO_FRAME_OVERHEAD_BYTES;
         frames.push(frame);
         if decoded_bytes > FFMPEG_VIDEO_MAX_OUTPUT_BYTES {
             break;

@@ -23,7 +23,6 @@ Example::
 
 from __future__ import annotations
 
-import contextlib
 import json
 import urllib.error
 import urllib.request
@@ -196,7 +195,15 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
+            try:
+                decoded = json.loads(resp.read())
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise RuntimeError(
+                    f"ax-engine HTTP {resp.status}: invalid JSON response"
+                ) from exc
+            if not isinstance(decoded, dict):
+                raise RuntimeError(f"ax-engine HTTP {resp.status}: expected a JSON object")
+            return decoded
     except urllib.error.HTTPError as exc:
         raise _http_error_to_runtime(exc) from exc
 
@@ -217,15 +224,41 @@ def _parse_sse_block(block: bytes) -> tuple[str | None, str] | None:
     # concatenated with a newline; keeping only the last one would drop content.
     data_lines: list[str] = []
     event_type: str | None = None
-    for raw_line in block.splitlines():
-        line = raw_line.decode()
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-        elif line.startswith("event:"):
-            event_type = line[len("event:") :].lstrip()
+    for raw_line in block.split(b"\n"):
+        line = raw_line.decode("utf-8", errors="replace")
+        field, _, value = line.partition(":")
+        value = value.removeprefix(" ")
+        if field == "data":
+            data_lines.append(value)
+        elif field == "event":
+            event_type = value
     if not data_lines:
         return None
     return event_type, "\n".join(data_lines)
+
+
+def _sse_lines(response: Any) -> Iterator[bytes]:
+    """Yield complete CR, LF, or CRLF lines without buffering live events."""
+    line = bytearray()
+    skip_lf = False
+    first_line = True
+    while chunk := response.read1(4096):
+        for byte in chunk:
+            if skip_lf:
+                skip_lf = False
+                if byte == 10:
+                    continue
+            if byte not in (10, 13):
+                line.append(byte)
+                continue
+            skip_lf = byte == 13
+            complete = bytes(line)
+            line.clear()
+            if first_line:
+                complete = complete.removeprefix(b"\xef\xbb\xbf")
+                first_line = False
+            yield complete
+    # EOF cannot terminate a partial line or dispatch a pending event.
 
 
 def _sse_error_message(raw_data: str) -> str:
@@ -260,63 +293,29 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
         raise _http_error_to_runtime(exc) from exc
     # A clean EOF without the [DONE] sentinel means the server died
     # mid-stream; that must surface as an error, never a short success.
-    seen_done = False
     with resp:
-        buffer = b""
-        while True:
-            # HTTPResponse.read(n) waits for n bytes or EOF, which can buffer a
-            # live SSE stream indefinitely. read1() performs at most one socket
-            # read and returns as soon as an event frame is available.
-            chunk = resp.read1(4096)
-            if not chunk:
-                break
-            buffer += chunk
-            while True:
-                separators = [
-                    (idx, separator)
-                    for separator in (b"\r\n\r\n", b"\n\n")
-                    if (idx := buffer.find(separator)) != -1
-                ]
-                if not separators:
-                    break
-                idx, separator = min(separators, key=lambda match: match[0])
-                block, buffer = buffer[:idx], buffer[idx + len(separator) :]
-                parsed = _parse_sse_block(block)
-                if parsed is None:
-                    continue
-                event_type, raw_data = parsed
-                if raw_data == "[DONE]":
-                    seen_done = True
-                    break
-                # Surface mid-stream error events to the caller, matching the
-                # JavaScript SDK's AxEngineStreamError behavior.
-                if event_type == "error":
-                    raise RuntimeError(f"ax-engine stream error: {_sse_error_message(raw_data)}")
-                try:
-                    yield json.loads(raw_data)
-                except json.JSONDecodeError as exc:
-                    # A non-JSON data frame is a broken stream, not a keepalive
-                    # (those are `:` comment lines); do not report success.
-                    raise RuntimeError(
-                        f"ax-engine stream returned a non-JSON event: {raw_data[:120]!r}"
-                    ) from exc
-            if seen_done:
-                break
-
-        # Flush a trailing event if the server closed without a final blank line.
-        if not seen_done and buffer.strip():
-            parsed = _parse_sse_block(buffer)
-            if parsed is not None:
-                event_type, raw_data = parsed
-                if raw_data == "[DONE]":
-                    seen_done = True
-                elif event_type == "error":
-                    raise RuntimeError(f"ax-engine stream error: {_sse_error_message(raw_data)}")
-                else:
-                    with contextlib.suppress(json.JSONDecodeError):
-                        yield json.loads(raw_data)
-    if not seen_done:
-        raise RuntimeError("ax-engine stream ended prematurely")
+        lines: list[bytes] = []
+        for line in _sse_lines(resp):
+            if line:
+                lines.append(line)
+                continue
+            parsed = _parse_sse_block(b"\n".join(lines))
+            lines.clear()
+            if parsed is None:
+                continue
+            event_type, raw_data = parsed
+            if event_type == "error":
+                raise RuntimeError(f"ax-engine stream error: {_sse_error_message(raw_data)}")
+            if raw_data == "[DONE]":
+                return
+            try:
+                decoded = json.loads(raw_data)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("ax-engine stream returned a non-JSON event") from exc
+            if not isinstance(decoded, dict):
+                raise RuntimeError("ax-engine stream expected a JSON object")
+            yield decoded
+    raise RuntimeError("ax-engine stream ended prematurely")
 
 
 class AXEngineChatModel(BaseChatModel):
@@ -357,6 +356,26 @@ class AXEngineChatModel(BaseChatModel):
     @property
     def _llm_type(self) -> str:
         return "ax-engine"
+
+    @property
+    def _identifying_params(self) -> dict[str, Any]:
+        # LangChain's default cache key would otherwise be only `_type` and
+        # `stop`, sharing cached results across models and endpoints.
+        return {
+            "base_url": self.base_url.rstrip("/"),
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "min_p": self.min_p,
+            "repetition_penalty": self.repetition_penalty,
+            # LangChain overwrites a `stop` key with the per-call argument
+            # (usually None), which would hide the constructor default.
+            "default_stop": self.stop,
+            "seed": self.seed,
+            "timeout": self.timeout,
+        }
 
     def bind_tools(
         self,
@@ -496,6 +515,26 @@ class AXEngineLLM(LLM):
     @property
     def _llm_type(self) -> str:
         return "ax-engine"
+
+    @property
+    def _identifying_params(self) -> dict[str, Any]:
+        # LangChain's default cache key would otherwise be only `_type` and
+        # `stop`, sharing cached results across models and endpoints.
+        return {
+            "base_url": self.base_url.rstrip("/"),
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "min_p": self.min_p,
+            "repetition_penalty": self.repetition_penalty,
+            # LangChain overwrites a `stop` key with the per-call argument
+            # (usually None), which would hide the constructor default.
+            "default_stop": self.stop,
+            "seed": self.seed,
+            "timeout": self.timeout,
+        }
 
     def _build_request(
         self,

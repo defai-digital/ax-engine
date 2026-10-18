@@ -270,6 +270,11 @@ pub struct SchedulePlan {
     pub selected_requests: Vec<RequestId>,
     pub deferred_requests: Vec<RequestId>,
     pub memory_blocked_requests: Vec<RequestId>,
+    /// Subset of `deferred_requests`: requests deferred specifically because
+    /// their route seed could not join this step's batch. These stay Runnable
+    /// (unlike `memory_blocked_requests`) but bump a per-request rotation
+    /// counter so the next step prefers them as the batch anchor.
+    pub route_deferred_requests: Vec<RequestId>,
     pub execution_batch: Option<ExecutionBatch>,
 }
 
@@ -379,6 +384,7 @@ impl Scheduler {
                 selected_requests: Vec::new(),
                 deferred_requests: Vec::new(),
                 memory_blocked_requests: Vec::new(),
+                route_deferred_requests: Vec::new(),
                 execution_batch: None,
             };
         }
@@ -392,6 +398,7 @@ impl Scheduler {
                     .map(|snapshot| snapshot.request_id)
                     .collect(),
                 memory_blocked_requests: Vec::new(),
+                route_deferred_requests: Vec::new(),
                 execution_batch: None,
             };
         }
@@ -412,6 +419,7 @@ impl Scheduler {
         let mut selected_requests = Vec::new();
         let mut deferred_requests = Vec::new();
         let mut memory_blocked_requests = Vec::new();
+        let mut route_deferred_requests = Vec::new();
         let mut items = Vec::new();
         // Generation kind of the first selected item (for batch telemetry).
         let mut selected_generation_kind: Option<GenerationKind> = None;
@@ -465,9 +473,16 @@ impl Scheduler {
             candidates.push((snapshot, mode));
         }
 
+        // Same-mode ordering. The route-deferral count rotates the batch
+        // anchor: a request that lost this step to a route-incompatible anchor
+        // sorts ahead of it next step, so `deferred_requests` stays FIFO by
+        // route without letting one route hold the anchor for a whole
+        // generation. Every count is 0 until a route conflict actually defers
+        // someone, so the ordering degenerates to (mode, arrival, id).
         candidates.sort_by_key(|(snapshot, mode)| {
             (
                 execution_mode_priority(*mode),
+                std::cmp::Reverse(snapshot.route_deferred_steps),
                 snapshot.arrival_sequence,
                 snapshot.request_id,
             )
@@ -550,6 +565,13 @@ impl Scheduler {
                     }
                     continue;
                 }
+                (ExecutionMode::Prefill, Some(_)) if snapshot.has_multimodal_inputs => {
+                    // Atomic media prefill cannot be chunked, so any positive
+                    // cap below the prompt would defer it forever while the
+                    // pressure lasts. Attempt the full remainder and let KV
+                    // allocation or the hard `Some(0)` policy bound the step.
+                    remaining_budget
+                }
                 (ExecutionMode::Prefill, Some(prefill_budget))
                     if fair_active && !snapshot.has_multimodal_inputs =>
                 {
@@ -591,9 +613,11 @@ impl Scheduler {
             if !can_join {
                 // Same skip accounting as the other defer paths above: the
                 // requested tokens were schedulable in principle but
-                // route-incompatible with this step's batch.
+                // route-incompatible with this step's batch. Record it as a
+                // route deferral so the anchor rotates next step.
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
+                route_deferred_requests.push(snapshot.request_id);
                 continue;
             }
 
@@ -676,6 +700,7 @@ impl Scheduler {
             selected_requests,
             deferred_requests,
             memory_blocked_requests,
+            route_deferred_requests,
             execution_batch,
         }
     }
@@ -1001,6 +1026,7 @@ mod tests {
             diffusion_denoise_steps_in_block: 0,
             diffusion_commit_ready: false,
             diffusion_block_committed: false,
+            route_deferred_steps: 0,
         }
     }
 
@@ -1244,6 +1270,73 @@ mod tests {
         assert!(schedule_plan.selected_requests.is_empty());
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
         assert!(schedule_plan.execution_batch.is_none());
+    }
+
+    #[test]
+    fn soft_memory_pressure_does_not_defer_atomic_media_prefill() {
+        // The soft pressure cap (256 tokens) is below this prompt. Capping an
+        // atomic media prefill would make build_execution_item return None
+        // every step and leave the request Runnable forever.
+        let scheduler = Scheduler::new();
+        let prompt = vec![7u32; 300];
+        let schedule_plan = scheduler.plan(&SchedulerInput::new(
+            StepId(17),
+            vec![make_multimodal_snapshot(1, 1, "gemma4", &prompt, 0)],
+            Some("kv_low_free_blocks:1/8".into()),
+            1024,
+        ));
+
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
+        assert!(schedule_plan.deferred_requests.is_empty());
+        let batch = schedule_plan
+            .execution_batch
+            .expect("full media prompt runs in one item");
+        assert_eq!(batch.items[0].scheduled_token_count, 300);
+    }
+
+    #[test]
+    fn defers_a_route_incompatible_sibling_and_records_the_deferral() {
+        // Same model, same mode, different execution plans: only the anchor's
+        // route can join the batch, so the sibling is deferred *and* reported
+        // as a route deferral so the next step rotates the anchor.
+        let mut anchor = make_snapshot(1, 1, "qwen3", &[1, 2, 3, 4], 4, &[9], 16);
+        anchor.execution_plan_ref = Some("phase1.plan_a".into());
+        let mut sibling = make_snapshot(2, 2, "qwen3", &[1, 2, 3, 4], 4, &[9], 16);
+        sibling.execution_plan_ref = Some("phase1.plan_b".into());
+
+        let schedule_plan = Scheduler::new().plan(&SchedulerInput::new(
+            StepId(1),
+            vec![anchor, sibling],
+            None,
+            4,
+        ));
+
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(2)]);
+        assert_eq!(schedule_plan.route_deferred_requests, vec![RequestId(2)]);
+    }
+
+    #[test]
+    fn route_deferral_count_rotates_the_batch_anchor() {
+        // The later arrival lost the previous step to a route conflict; its
+        // higher deferral count must let it anchor this step so one route
+        // cannot hold the anchor for a whole generation.
+        let mut first = make_snapshot(1, 1, "qwen3", &[1, 2, 3, 4], 4, &[9], 16);
+        first.execution_plan_ref = Some("phase1.plan_a".into());
+        let mut second = make_snapshot(2, 2, "qwen3", &[1, 2, 3, 4], 4, &[9], 16);
+        second.execution_plan_ref = Some("phase1.plan_b".into());
+        second.route_deferred_steps = 1;
+
+        let schedule_plan = Scheduler::new().plan(&SchedulerInput::new(
+            StepId(2),
+            vec![first, second],
+            None,
+            4,
+        ));
+
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+        assert_eq!(schedule_plan.route_deferred_requests, vec![RequestId(1)]);
     }
 
     #[test]

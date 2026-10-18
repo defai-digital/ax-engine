@@ -392,10 +392,12 @@ build. The published v6.9.0 rows were measured on **MLX 0.31.2**; the affected
 Homebrew 0.32.0 bottle and source builds targeting macOS below 26.2 omit the
 M5 neural-accelerator GEMM path. The historical PyPI MLX 0.32.0 wheel was not
 affected by that packaging defect and passed at 56.3 TFLOP/s. The current repo
-pin is PyPI **MLX 0.32.3**. Its same-host qmm admission comparison measured
-40.4446 ms on M4 Pro and 16.9287 ms on M2 Ultra, within 0.2% of the 0.32.2
-controls; see the
-[MLX 0.32.3 admission record](performance/mlx-0.32.3-admission-2026-10-03.md).
+pin is PyPI **MLX 0.32.4**; see the
+[MLX 0.32.4 admission record](performance/mlx-0.32.4-admission-2026-10-16.md).
+Its correctness probes and benchmark-host qmm measurements are runtime
+admission evidence, not model throughput or SKU qualification. Historical
+0.32.3 comparisons retain their original runtime identity in the
+[0.32.3 record](performance/mlx-0.32.3-admission-2026-10-03.md).
 The historical 0.32.2 factory admission measured 16.12 TFLOP/s on M2 Ultra
 on 2026-08-29.
 The 56 TFLOP/s expectation below is specific to M5 Max; do not use it as an M2

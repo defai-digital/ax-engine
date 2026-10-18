@@ -195,7 +195,7 @@ fn validate_image(
     Ok(())
 }
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum UnlimitedOcrRuntimeInputError {
     #[error("invalid Unlimited-OCR runtime input {field}: {message}")]
     InvalidField { field: String, message: String },

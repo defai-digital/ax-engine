@@ -116,11 +116,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ModelConfig::from_manifest(artifacts.manifest());
     let weights = load_pipeline_stage_weights(&artifacts, assignment)?;
     let executor = PipelineRankExecutor::new(topology.clone(), args.rank, config, weights)?;
+    // Bind the reported identity to the manifest this rank actually loaded, so a
+    // rank holding a different checkpoint (same layer_count) is rejected by the
+    // gateway's health comparison against the topology. Manifest bytes are the
+    // only artifact identity a rank can compute identically on any host: the
+    // content-addressed fingerprint needs CAS symlinks that the installer and
+    // the bootstrap downloader both materialize, and the pack-level
+    // `model_artifact_digest` is the topology producer's declaration (echoed by
+    // `health`), not something a rank can derive.
+    let manifest_digest = ax_engine_pipeline::model_manifest_sha256(&artifacts)
+        .ok_or("could not hash the native model manifest")?;
     let processor = Arc::new(MlxRankProcessor::new(
         topology.clone(),
         args.rank,
         executor,
         args.maximum_activation_bytes,
+        manifest_digest,
     ));
     let body_limit = usize::try_from(args.maximum_activation_bytes)
         .unwrap_or(usize::MAX)
@@ -240,6 +251,11 @@ async fn post_rank_observation(
     let observation = RankObservation {
         cluster_id: config.topology.cluster_id.clone(),
         generation: config.topology.generation,
+        // Echoes the topology's declared digest rather than hashing the manifest
+        // this rank loaded: the heartbeat identifies the gang generation, not the
+        // artifact. The loaded-artifact identity travels separately on `/health`
+        // as `model_artifact_digest`, which is the value the gateway preflight
+        // compares against the topology.
         manifest_digest: config.topology.manifest_digest.clone(),
         rank: config.rank,
         state,

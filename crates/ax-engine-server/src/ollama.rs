@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ax_engine_core::json_number_is_nonzero;
 use ax_engine_sdk::{
-    EngineSessionError, EngineTokenizer, GenerateResponse, GenerateStreamEvent, SelectedBackend,
+    EngineSessionError, EngineTokenizer, GenerateFinishReason, GenerateResponse, GenerateStatus,
+    GenerateStreamEvent, SelectedBackend,
 };
 use axum::Json;
 use axum::body::Body;
@@ -22,7 +23,7 @@ use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::chat::ChatPromptTemplate;
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
-use crate::generation::native::run_stateless_generate_request;
+use crate::generation::native::{reject_failed_generate_status, run_stateless_generate_request};
 use crate::generation::streaming::{StreamStateSource, build_stream_state};
 use crate::metadata::{
     MODEL_OWNER, context_length, model_supports_image, model_supports_reasoning,
@@ -817,6 +818,21 @@ fn drive_ollama_native_events<N>(
                 }
             }
             Ok(Some(GenerateStreamEvent::Response(payload))) => {
+                // A terminal failure must not become a clean `done: true`
+                // chunk with an empty response.
+                if payload.response.status != GenerateStatus::Finished
+                    && payload.response.finish_reason != Some(GenerateFinishReason::ContentFilter)
+                {
+                    let message = match payload.response.status {
+                        GenerateStatus::Failed => "generation failed before completion",
+                        GenerateStatus::Cancelled => "generation was cancelled before completion",
+                        GenerateStatus::Pending | GenerateStatus::Finished => {
+                            "generation stream ended before completion"
+                        }
+                    };
+                    let _ = send_ollama_ndjson_line(tx, &json!({ "error": message }));
+                    return;
+                }
                 // The model can leave its entire answer inside an unclosed
                 // thinking channel; serve that body before the final chunk.
                 if let Some(filter) = channel_filter.as_mut()
@@ -1586,6 +1602,7 @@ async fn run_ollama_chat_completion(
     enforce_ollama_num_ctx_prompt_budget(num_ctx, &generate_request.input_tokens)?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,
@@ -1617,6 +1634,7 @@ async fn run_ollama_completion(
     enforce_ollama_num_ctx_prompt_budget(num_ctx, &generate_request.input_tokens)?;
     let (_request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,

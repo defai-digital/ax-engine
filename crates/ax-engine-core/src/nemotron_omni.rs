@@ -7,9 +7,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::media_digest::{media_digest_f32, ordered_media_digests_key_or_empty};
+use crate::media_digest::{RuntimeMediaDigest, ordered_media_digests_key_or_empty};
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum NemotronOmniRuntimeInputError {
     #[error("Nemotron Omni placeholder_index {0} out of prompt range [0, {1})")]
     PlaceholderOutOfRange(usize, usize),
@@ -198,14 +198,24 @@ impl NemotronOmniRuntimeInputs {
     pub fn media_prefix_key(&self, model_fingerprint: &str) -> String {
         let mut digests = Vec::with_capacity(self.images.len() + self.audios.len());
         digests.extend(self.images.iter().map(|image| {
-            media_digest_f32(
-                &image.pixel_values,
-                image.soft_token_count,
-                model_fingerprint,
-            )
+            let mut digest =
+                RuntimeMediaDigest::new("nemotron_omni.image.nchw.f32", model_fingerprint);
+            digest.usize(image.placeholder_index);
+            digest.u32(image.soft_token_count);
+            digest.u32(image.height);
+            digest.u32(image.width);
+            digest.u32(image.patch_size);
+            digest.u32(image.spatial_downsample_factor);
+            digest.f32s(&image.pixel_values);
+            digest.finish()
         }));
         digests.extend(self.audios.iter().map(|audio| {
-            media_digest_f32(&audio.samples, audio.soft_token_count, model_fingerprint)
+            let mut digest = RuntimeMediaDigest::new("nemotron_omni.audio.f32", model_fingerprint);
+            digest.usize(audio.placeholder_index);
+            digest.u32(audio.soft_token_count);
+            digest.u32(audio.sample_rate);
+            digest.f32s(&audio.samples);
+            digest.finish()
         }));
         ordered_media_digests_key_or_empty(&digests)
     }

@@ -15,7 +15,7 @@ use crate::chat::{
     decode_glm_chat_output,
 };
 use crate::errors::{ErrorResponse, admission_error_response, error_response, map_session_error};
-use crate::generation::native::run_stateless_generate_request;
+use crate::generation::native::{reject_failed_generate_status, run_stateless_generate_request};
 use crate::generation::streaming::{StreamEvent, build_keep_alive_stream};
 use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk_with_finish_reason, chat_tool_calls_delta_chunk,
@@ -182,6 +182,7 @@ pub(crate) async fn run_openai_text_generation(
 
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,
@@ -207,6 +208,7 @@ async fn stream_buffered_openai_tool_chat_response(
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let (request_id, mut response) =
         run_stateless_generate_request(&state, &live, generate_request).await?;
+    reject_failed_generate_status(response.status, response.finish_reason)?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,

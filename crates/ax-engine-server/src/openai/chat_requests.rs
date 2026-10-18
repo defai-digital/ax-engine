@@ -107,6 +107,19 @@ pub(crate) fn is_nemotron_omni_model_dir(model_dir: &Path) -> bool {
 /// an unbounded content-part Vec.
 pub(crate) const MAX_INLINE_IMAGES_PER_REQUEST: usize = 40;
 
+/// Per-request cap on inline audio across all messages, for the same reason as
+/// the image cap: each clip is decoded (up to the model's audio window) before
+/// the media token budget is checked, so an unbounded clip list would let one
+/// request monopolize CPU and memory first. Aligned with the core's
+/// per-modality media cap.
+pub(crate) const MAX_INLINE_AUDIOS_PER_REQUEST: usize = 40;
+
+/// Per-request cap on inline video across all messages: each item spawns an
+/// ffmpeg decode or buffers GIF frames before any token budget applies, so the
+/// bound has to come before decoding. Aligned with the core's per-modality
+/// media cap.
+pub(crate) const MAX_INLINE_VIDEOS_PER_REQUEST: usize = 40;
+
 /// Fail-safe defaults for unified Qwen vision checkpoints. The renderer reads
 /// the actual processor/config files before preprocessing.
 const QWEN3_VL_DEFAULT_PATCH_SIZE: u32 = 16;
@@ -3427,12 +3440,17 @@ fn nemotron_omni_per_image_patch_budget(
                 "Nemotron H Nano Omni downsample factor overflowed".to_string(),
             )
         })?;
-    let budget = tokens_available
-        .saturating_mul(factor_sq)
-        .max(config.min_num_patches.saturating_mul(image_count));
+    // The budget returned here is for ONE image, and every image draws from the
+    // same context, so the pool is shared across them. The earlier
+    // `.max(min_num_patches * image_count)` form mixed a whole-request quantity
+    // into a per-image bound and let N images each claim the full pool; the
+    // request was then rejected by the context gate only after every image had
+    // been decoded and normalized.
+    let image_count = image_count.max(1);
+    let budget = (tokens_available / image_count).saturating_mul(factor_sq);
     Ok(budget
-        .min(config.max_num_patches)
-        .max(config.min_num_patches))
+        .max(config.min_num_patches)
+        .min(config.max_num_patches))
 }
 
 /// Probe and decode image bytes to RGB, failing closed as `invalid_request`
@@ -4309,10 +4327,30 @@ inline images; split the conversation or drop older images"
                         rendered.push_str(image_placeholder);
                     }
                     OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio) => {
+                        if collected.audios.len() >= MAX_INLINE_AUDIOS_PER_REQUEST {
+                            return Err(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request",
+                                format!(
+                                    "request carries more than {MAX_INLINE_AUDIOS_PER_REQUEST} \
+inline audio clips; split the conversation or drop older clips"
+                                ),
+                            ));
+                        }
                         collected.audios.push(audio_part_bytes(part)?);
                         rendered.push_str(audio_placeholder);
                     }
                     OpenAiChatContentPartKind::Video => {
+                        if collected.videos.len() >= MAX_INLINE_VIDEOS_PER_REQUEST {
+                            return Err(error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request",
+                                format!(
+                                    "request carries more than {MAX_INLINE_VIDEOS_PER_REQUEST} \
+inline videos; split the conversation or drop older videos"
+                                ),
+                            ));
+                        }
                         collected.videos.push(video_part_bytes(part)?);
                         rendered.push_str(video_placeholder);
                     }
@@ -4638,6 +4676,125 @@ fn gemma4_unified_error_response(error: Gemma4UnifiedError) -> HttpErrorResponse
 mod media_tests {
     use super::*;
     use serde_json::json;
+
+    fn inline_videos(count: usize) -> OpenAiChatContent {
+        serde_json::from_value(json!(vec![
+            json!({
+                "type": "video_url",
+                "video_url": {"url": "data:video/mp4;base64,AAAA"}
+            });
+            count
+        ]))
+        .expect("video content")
+    }
+
+    #[test]
+    fn inline_video_cap_accepts_limit_and_rejects_one_more() {
+        let mut collected = CollectedMedia::default();
+        let content = inline_videos(MAX_INLINE_VIDEOS_PER_REQUEST);
+        let rendered = render_content_collecting_media(
+            Some(&content),
+            "<image>",
+            "<audio>",
+            "<video>",
+            &mut collected,
+        )
+        .expect("exactly the video limit");
+        assert_eq!(collected.videos.len(), MAX_INLINE_VIDEOS_PER_REQUEST);
+        assert_eq!(rendered, "<video>".repeat(MAX_INLINE_VIDEOS_PER_REQUEST));
+
+        let mut collected = CollectedMedia::default();
+        let content = inline_videos(MAX_INLINE_VIDEOS_PER_REQUEST + 1);
+        let error = render_content_collecting_media(
+            Some(&content),
+            "<image>",
+            "<audio>",
+            "<video>",
+            &mut collected,
+        )
+        .expect_err("one video above the limit");
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.error.message.contains("inline videos"));
+        assert_eq!(collected.videos.len(), MAX_INLINE_VIDEOS_PER_REQUEST);
+    }
+
+    #[test]
+    fn inline_video_cap_accumulates_messages_and_precedes_decoding() {
+        let mut collected = CollectedMedia::default();
+        for count in [MAX_INLINE_VIDEOS_PER_REQUEST - 1, 1] {
+            render_content_collecting_media(
+                Some(&inline_videos(count)),
+                "<image>",
+                "<audio>",
+                "<video>",
+                &mut collected,
+            )
+            .expect("videos across messages fit the request limit");
+        }
+        let malformed: OpenAiChatContent = serde_json::from_value(json!([{
+            "type": "input_video", "video_url": {"url": "invalid-data-uri"}
+        }]))
+        .expect("malformed payload still parses as content");
+        let error = render_content_collecting_media(
+            Some(&malformed),
+            "<image>",
+            "<audio>",
+            "<video>",
+            &mut collected,
+        )
+        .expect_err("video count must be checked before decoding the payload");
+        assert!(error.1.error.message.contains("inline videos"));
+        assert_eq!(collected.videos.len(), MAX_INLINE_VIDEOS_PER_REQUEST);
+        // Other modalities have independent counters.
+        let image: OpenAiChatContent = serde_json::from_value(json!([{
+            "type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}
+        }]))
+        .expect("image content");
+        render_content_collecting_media(
+            Some(&image),
+            "<image>",
+            "<audio>",
+            "<video>",
+            &mut collected,
+        )
+        .expect("video cap does not consume the image allowance");
+        assert_eq!(collected.images.len(), 1);
+    }
+
+    #[test]
+    fn nemotron_per_image_patch_budget_shares_the_context_across_images() {
+        // Every image draws from the same context, so the per-image patch budget
+        // has to shrink with the image count: N images each claiming the whole
+        // pool were only rejected by the context gate after all of them had been
+        // decoded and normalized.
+        let config = NemotronOmniProcessorConfig {
+            patch_size: 16,
+            downsample_factor: 2,
+            min_num_patches: 1024,
+            max_num_patches: 13_312,
+            max_model_len: 16_384,
+            audio_sampling_rate: 16_000,
+            audio_hop_length: 160,
+            audio_subsampling_factor: 1,
+            audio_subsampling_kernel: 3,
+            audio_subsampling_stride: 1,
+            mean: [0.0; 3],
+            std: [1.0; 3],
+        };
+
+        let one = nemotron_omni_per_image_patch_budget(&config, 1).expect("one image");
+        let five = nemotron_omni_per_image_patch_budget(&config, 5).expect("five images");
+        assert_eq!(one, 13_312, "a single image may use the whole pool");
+        assert_eq!(five, 13_104);
+        let patches_per_token = config.downsample_factor * config.downsample_factor;
+        assert!(
+            u64::from(five / patches_per_token) * 5 <= u64::from(config.max_model_len - 4),
+            "five per-image budgets must fit the shared context together"
+        );
+        // A zero-image call must not divide by zero (the caller may render an
+        // audio-only prompt through the same path).
+        assert!(nemotron_omni_per_image_patch_budget(&config, 0).is_ok());
+    }
 
     fn processor_config() -> Gemma4UnifiedProcessorConfig {
         let model = json!({

@@ -328,7 +328,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
     def test_macos_sdk_gate_uses_supported_go_toolchain_and_all_modules(self) -> None:
         workflow = CI_WORKFLOW.read_text()
 
-        self.assertIn('go-version: "1.25"', workflow)
+        self.assertIn('go-version: "1.26"', workflow)
         self.assertIn("sdk/go/axengine/go.mod", workflow)
         self.assertIn("sdk/go/grpc/go.mod", workflow)
         self.assertIn("working-directory: sdk/go/axengine", workflow)

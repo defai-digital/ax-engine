@@ -1057,6 +1057,17 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--host") + 1], "::1")
         self.assertNotIn("127.0.0.1", argv)
 
+    def test_serve_url_preserves_bracketed_ipv6_host(self) -> None:
+        for host in ("::1", "[::1]"):
+            with self.subTest(host=host):
+                self.assertEqual(
+                    _cli._announced_serve_url(host, 31418, []), "http://[::1]:31418"
+                )
+                self.assertEqual(
+                    _cli._announced_serve_url("127.0.0.1", 31418, ["--host", host]),
+                    "http://[::1]:31418",
+                )
+
     def test_serve_argv_carries_cli_endpoint_once_without_passthrough(self) -> None:
         with (
             tempfile.TemporaryDirectory() as cache,

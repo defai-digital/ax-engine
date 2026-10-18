@@ -1,0 +1,13 @@
+Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed; MTP gates open).
+family: qwen4_exp
+alias:  qwen3.8-flash-next:mxfp4
+repo:   AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP
+host:   Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+
+target admission: MXFP4/group32 loads without an env var; certification stays Candidate (direct-default release gates passed; MTP gates open)
+release scope: Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in (--mlx-mtp-policy required). MTP-S, MTP-P and MTP-D are not promoted and no MTP speedup is claimed.
+standalone affine packs retired; MXFP8 pack audit and admission pending
+fail-closed: convert must not remap onto qwen3_5
+MTP gates (metadata preflight assesses none):
+  MTP-S [not_assessed]: Shipping safety: every accepted draft equals the same-state verifier greedy decision, with zero invalid acceptances; not assessed by cross-route parity
+  MTP-P [not_assessed]: Scoped acceleration claims: weighted >= 1.20x and prompt-median >= 1.10x on two named authorizing workloads, a negative control, full source/build/pack/SKU/runtime evidence and divergence indices/logit-margin disclosures; passing does not change defaults
+  MTP-D [not_assessed]: Separate promotion decision and release tag after MTP-S/P; default-product-path greedy parity with shared deterministic tie-breaking, quality, endurance and long-context decode-at-depth; diagnostic arithmetic profiles do not qualify

@@ -1,0 +1,5 @@
+==> admitted MLX pin: 0.32.4
+==> resolved: 0.32.4 ${REPO_ROOT}/.venv/lib/python3.12/site-packages/mlx dylib=yes
+==> libmlx.dylib: ${REPO_ROOT}/.venv/lib/python3.12/site-packages/mlx/lib/libmlx.dylib
+==> libmlx.dylib LC_BUILD_VERSION minos: 26.2 (informational)
+==> MLX toolchain OK (0.32.4)

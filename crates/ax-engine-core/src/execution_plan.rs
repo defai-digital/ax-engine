@@ -111,6 +111,7 @@ mod tests {
             diffusion_denoise_steps_in_block: 0,
             diffusion_commit_ready: false,
             diffusion_block_committed: false,
+            route_deferred_steps: 0,
         }
     }
 

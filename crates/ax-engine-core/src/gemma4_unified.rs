@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::media_digest::{RuntimeMediaDigest, ordered_media_digests_key_or_empty};
+
 /// Default audio soft-token cap when `preprocessor_config.json` omits
 /// `audio_seq_length`, matching the reference Gemma4UnifiedProcessor.
 const DEFAULT_AUDIO_SEQ_LENGTH: u32 = 750;
@@ -226,6 +228,20 @@ pub struct Gemma4UnifiedTokenSpan {
     pub replacement_token_count: u32,
 }
 
+impl Gemma4UnifiedTokenSpan {
+    fn update_media_digest(&self, digest: &mut RuntimeMediaDigest) {
+        digest.u32(match self.modality {
+            Gemma4UnifiedModality::Image => 0,
+            Gemma4UnifiedModality::Audio => 1,
+            Gemma4UnifiedModality::Video => 2,
+        });
+        digest.usize(self.placeholder_index);
+        digest.usize(self.replacement_start);
+        digest.u32(self.soft_token_count);
+        digest.u32(self.replacement_token_count);
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Gemma4UnifiedSoftTokenRange {
     pub start: usize,
@@ -258,31 +274,37 @@ impl Gemma4UnifiedRuntimeInputs {
 
     /// Ordered media digests for prefix-cache identity (WS-M3).
     ///
-    /// Domain-separated by soft-token budget and `model_fingerprint` so a
-    /// budget change or weight reload cannot hit stale KV.
+    /// Binds modality, tensor geometry, positions, and scatter spans as well as
+    /// soft-token count and model identity.
     pub fn media_prefix_key(&self, model_fingerprint: &str) -> String {
-        use crate::media_digest::{media_digest_f32, ordered_media_digests_key_or_empty};
         let mut digests = Vec::new();
         for image in &self.images {
-            digests.push(media_digest_f32(
-                &image.pixel_values,
-                image.span.soft_token_count,
-                model_fingerprint,
-            ));
+            let mut digest = RuntimeMediaDigest::new("gemma4_unified.image.f32", model_fingerprint);
+            image.span.update_media_digest(&mut digest);
+            digest.positions(&image.pixel_position_ids);
+            digest.f32s(&image.pixel_values);
+            digests.push(digest.finish());
         }
         for audio in &self.audios {
-            digests.push(media_digest_f32(
-                &audio.input_features,
-                audio.span.soft_token_count,
-                model_fingerprint,
-            ));
+            let mut digest = RuntimeMediaDigest::new("gemma4_unified.audio.f32", model_fingerprint);
+            audio.span.update_media_digest(&mut digest);
+            digest.u32(audio.frame_count);
+            digest.u32(audio.feature_count);
+            digest.f32s(&audio.input_features);
+            digests.push(digest.finish());
         }
         for video in &self.videos {
-            digests.push(media_digest_f32(
-                &video.pixel_values,
-                video.span.soft_token_count,
-                model_fingerprint,
-            ));
+            let mut digest = RuntimeMediaDigest::new("gemma4_unified.video.f32", model_fingerprint);
+            video.span.update_media_digest(&mut digest);
+            digest.u32(video.frame_count);
+            digest.usize(video.soft_token_ranges.len());
+            for range in &video.soft_token_ranges {
+                digest.usize(range.start);
+                digest.u32(range.soft_token_count);
+            }
+            digest.positions(&video.pixel_position_ids);
+            digest.f32s(&video.pixel_values);
+            digests.push(digest.finish());
         }
         ordered_media_digests_key_or_empty(&digests)
     }
@@ -377,7 +399,7 @@ pub enum Gemma4UnifiedError {
     },
 }
 
-#[derive(Debug, Error, Eq, PartialEq)]
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum Gemma4UnifiedRuntimeInputError {
     #[error("invalid Gemma4 unified runtime input {field}: {message}")]
     InvalidField { field: String, message: String },

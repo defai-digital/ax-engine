@@ -24,6 +24,11 @@ pyo3 = { version = "0.29", features = ["abi3-py312"] }
 serde.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+# Unit tests exercise the Python-value conversion directly; the extension
+# build itself never initializes an interpreter.
+pyo3 = { version = "0.29", features = ["auto-initialize"] }
+
 [lints]
 workspace = true
 
