@@ -160,6 +160,11 @@ def _message_additional_kwargs(message: dict[str, Any]) -> dict[str, Any]:
     function_call = message.get("function_call")
     if isinstance(function_call, dict):
         additional_kwargs["function_call"] = function_call
+    reasoning = message.get("reasoning_content")
+    if reasoning is None:
+        reasoning = message.get("reasoning")
+    if isinstance(reasoning, str) and reasoning:
+        additional_kwargs["reasoning_content"] = reasoning
     return additional_kwargs
 
 

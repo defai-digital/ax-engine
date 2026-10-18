@@ -344,6 +344,50 @@ class TestAXEngineChatModel(unittest.TestCase):
         result = chat.invoke([HumanMessage(content="x")])
         self.assertEqual(result.content, "")
 
+    def test_response_preserves_reasoning_content(self):
+        for field in ("reasoning_content", "reasoning"):
+            with self.subTest(field=field):
+                response = _chat_response("The answer")
+                response["choices"][0]["message"][field] = "Reasoning text"
+                self.srv.set_response(response)
+                result = self._make_chat().invoke([HumanMessage(content="x")])
+                self.assertEqual(result.content, "The answer")
+                self.assertEqual(result.additional_kwargs["reasoning_content"], "Reasoning text")
+
+    def test_stream_preserves_and_aggregates_reasoning_content(self):
+        for field in ("reasoning_content", "reasoning"):
+            with self.subTest(field=field):
+                deltas = [{field: "First"}, {field: " second"}, {"content": "Answer"}]
+                frames = [
+                    {"choices": [{"index": 0, "delta": delta, "finish_reason": None}]}
+                    for delta in deltas
+                ]
+                frames[-1]["choices"][0]["delta"][field] = "\nFinally"
+                frames[-1]["choices"][0]["finish_reason"] = "stop"
+                self.srv.set_response(
+                    "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames)
+                    + "data: [DONE]\n\n"
+                )
+                chunks = list(self._make_chat().stream([HumanMessage(content="x")]))
+                combined = sum(chunks[1:], chunks[0])
+                self.assertEqual(combined.content, "Answer")
+                self.assertEqual(
+                    combined.additional_kwargs["reasoning_content"], "First second\nFinally"
+                )
+
+    def test_reasoning_field_precedence_and_types(self):
+        from ax_engine.langchain import _message_additional_kwargs
+
+        cases = [(None, "alias"), ("native", "native"), ("", None), ([], None), (7, None)]
+        for native, expected in cases:
+            with self.subTest(native=native):
+                message = {"reasoning_content": native, "reasoning": "alias"}
+                original = dict(message)
+                additional = _message_additional_kwargs(message)
+                self.assertEqual(additional, {"reasoning_content": expected} if expected else {})
+                self.assertEqual(message, original)
+        self.assertEqual(_message_additional_kwargs({}), {})
+
     def test_response_preserves_tool_calls(self):
         self.srv.set_response(
             {
