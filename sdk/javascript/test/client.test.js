@@ -36,6 +36,45 @@ test("base URLs preserve long runs of slashes inside a path prefix", async () =>
   }
 });
 
+test("base URLs preserve query strings and fragments while appending paths", async () => {
+  for (const [baseUrl, expected] of [
+    ["http://localhost/proxy?token=abc", "http://localhost/proxy/v1/models?token=abc"],
+    ["http://localhost/proxy/?token=abc", "http://localhost/proxy/v1/models?token=abc"],
+    ["http://localhost/proxy?token=abc/", "http://localhost/proxy/v1/models?token=abc/"],
+    [
+      "http://localhost/proxy/?token=abc/#section",
+      "http://localhost/proxy/v1/models?token=abc/#section",
+    ],
+    ["http://localhost/proxy#section", "http://localhost/proxy/v1/models#section"],
+  ]) {
+    const urls = [];
+    const client = new AxEngineClient({
+      baseUrl,
+      fetch: async (url) => {
+        urls.push(String(url));
+        return Response.json({ data: [] });
+      },
+    });
+    await client.models();
+    assert.deepEqual(urls, [expected]);
+  }
+});
+
+test("base URL query parameters merge with endpoint queries", async () => {
+  const urls = [];
+  const client = new AxEngineClient({
+    baseUrl: "http://localhost/proxy?token=abc",
+    fetch: async (url) => {
+      urls.push(String(url));
+      return Response.json({ scheduled_requests: 0 });
+    },
+  });
+  await client.step("mlx-community/Qwen3.8-27B");
+  assert.deepEqual(urls, [
+    "http://localhost/proxy/v1/step?token=abc&model=mlx-community%2FQwen3.8-27B",
+  ]);
+});
+
 test("request IDs cannot change endpoint paths or lose integer precision", async () => {
   const urls = [];
   const client = new AxEngineClient({

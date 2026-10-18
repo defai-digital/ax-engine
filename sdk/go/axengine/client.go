@@ -55,7 +55,7 @@ func NewClient(opts *ClientOptions) *Client {
 	if opts == nil {
 		opts = &ClientOptions{}
 	}
-	baseURL := strings.TrimRight(opts.BaseURL, "/")
+	baseURL := trimBaseURLPath(opts.BaseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
@@ -68,6 +68,46 @@ func NewClient(opts *ClientOptions) *Client {
 		httpClient: httpClient,
 		headers:    opts.Headers,
 	}
+}
+
+// trimBaseURLPath removes trailing slashes from the pathname only; a
+// trailing slash inside a query value is data.
+func trimBaseURLPath(baseURL string) string {
+	if i := strings.IndexAny(baseURL, "?#"); i >= 0 {
+		return strings.TrimRight(baseURL[:i], "/") + baseURL[i:]
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+// endpoint appends an API path to the base URL, preserving base query
+// parameters and merging any query carried by the path.
+func (c *Client) endpoint(path string) string {
+	base := c.baseURL
+	if i := strings.IndexByte(base, '#'); i >= 0 {
+		base = base[:i]
+	}
+	baseQuery := ""
+	if i := strings.IndexByte(base, '?'); i >= 0 {
+		baseQuery = base[i+1:]
+		base = base[:i]
+	}
+	base = strings.TrimRight(base, "/")
+	pathQuery := ""
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		pathQuery = path[i+1:]
+		path = path[:i]
+	}
+	query := baseQuery
+	if pathQuery != "" {
+		if query != "" {
+			query += "&"
+		}
+		query += pathQuery
+	}
+	if query == "" {
+		return base + path
+	}
+	return base + path + "?" + query
 }
 
 // HTTPError is returned when the server responds with a non-2xx status.
@@ -91,7 +131,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}, 
 		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint(path), bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("ax-engine: build request: %w", err)
 	}

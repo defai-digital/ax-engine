@@ -393,6 +393,33 @@ class TestAXEngineChatModel(unittest.TestCase):
         chat.invoke([HumanMessage(content="x")])
         self.assertEqual(self.srv.last_path, "/v1/chat/completions")
 
+    def test_base_url_path_and_query_are_preserved(self):
+        from ax_engine.langchain import _endpoint_url
+
+        self.assertEqual(
+            _endpoint_url("http://localhost/proxy///?token=abc/", "/v1/chat/completions"),
+            "http://localhost/proxy/v1/chat/completions?token=abc/",
+        )
+        self.assertEqual(
+            _endpoint_url("http://[::1]:31418", "/v1/completions"),
+            "http://[::1]:31418/v1/completions",
+        )
+        self.assertEqual(
+            _endpoint_url("http://localhost/proxy#section", "/v1/completions"),
+            "http://localhost/proxy/v1/completions#section",
+        )
+
+    def test_request_path_preserves_base_prefix_and_query(self):
+        from ax_engine.langchain import AXEngineChatModel
+
+        self.srv.set_response(_chat_response())
+        chat = AXEngineChatModel(
+            base_url=self.srv.base_url + "/proxy?token=abc",
+            timeout=5,
+        )
+        chat.invoke([HumanMessage(content="x")])
+        self.assertEqual(self.srv.last_path, "/proxy/v1/chat/completions?token=abc")
+
     def test_request_body_messages(self):
         self.srv.set_response(_chat_response())
         chat = self._make_chat()

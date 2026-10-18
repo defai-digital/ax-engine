@@ -53,6 +53,34 @@ func TestHealthOK(t *testing.T) {
 	})
 }
 
+func TestBaseURLPathAndQueryArePreserved(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/proxy/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("token"); got != "abc/" {
+			t.Errorf("token query: got %q want %q", got, "abc/")
+		}
+		writeJSON(w, ModelsResponse{Object: "list", Data: []ModelCard{}})
+	})
+	mux.HandleFunc("/proxy/v1/step", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("model"); got != "mlx-community/Qwen3.8-27B" {
+			t.Errorf("model query: got %q", got)
+		}
+		if got := r.URL.Query().Get("token"); got != "abc/" {
+			t.Errorf("token query: got %q want %q", got, "abc/")
+		}
+		writeJSON(w, StepReport{})
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL + "/proxy///?token=abc/"})
+		if _, err := client.Models(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.StepModel(context.Background(), "mlx-community/Qwen3.8-27B"); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestMultiModelLifecycle(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/step", func(w http.ResponseWriter, r *http.Request) {

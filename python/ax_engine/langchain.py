@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 import warnings
 from collections.abc import Iterator, Sequence
@@ -185,6 +186,19 @@ def _tool_call_chunks(message: dict[str, Any]) -> list[Any]:
     return chunks
 
 
+def _endpoint_url(base_url: str, path: str) -> str:
+    """Append an API path, keeping the base path prefix and query string."""
+    try:
+        base = urllib.parse.urlsplit(base_url)
+    except ValueError:
+        return base_url.rstrip("/") + path
+    pathname, _, path_query = path.partition("?")
+    query = "&".join(part for part in (base.query, path_query) if part)
+    return urllib.parse.urlunsplit(
+        (base.scheme, base.netloc, base.path.rstrip("/") + pathname, query, base.fragment)
+    )
+
+
 def _post_json(url: str, payload: dict, timeout: int) -> dict:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -198,9 +212,7 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
             try:
                 decoded = json.loads(resp.read())
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise RuntimeError(
-                    f"ax-engine HTTP {resp.status}: invalid JSON response"
-                ) from exc
+                raise RuntimeError(f"ax-engine HTTP {resp.status}: invalid JSON response") from exc
             if not isinstance(decoded, dict):
                 raise RuntimeError(f"ax-engine HTTP {resp.status}: expected a JSON object")
             return decoded
@@ -430,7 +442,7 @@ class AXEngineChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        url = self.base_url.rstrip("/") + "/v1/chat/completions"
+        url = _endpoint_url(self.base_url, "/v1/chat/completions")
         resp = _post_json(url, self._build_request(messages, stop, **kwargs), self.timeout)
         choices = resp.get("choices", [])
         if not choices:
@@ -460,7 +472,7 @@ class AXEngineChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        url = self.base_url.rstrip("/") + "/v1/chat/completions"
+        url = _endpoint_url(self.base_url, "/v1/chat/completions")
         req = {**self._build_request(messages, stop, **kwargs), "stream": True}
         for chunk_data in _stream_sse(url, req, self.timeout):
             choice = (chunk_data.get("choices") or [{}])[0]
@@ -573,7 +585,7 @@ class AXEngineLLM(LLM):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> str:
-        url = self.base_url.rstrip("/") + "/v1/completions"
+        url = _endpoint_url(self.base_url, "/v1/completions")
         resp = _post_json(url, self._build_request(prompt, stop, **kwargs), self.timeout)
         choices = resp.get("choices", [])
         if not choices:
@@ -588,7 +600,7 @@ class AXEngineLLM(LLM):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[GenerationChunk]:
-        url = self.base_url.rstrip("/") + "/v1/completions"
+        url = _endpoint_url(self.base_url, "/v1/completions")
         req = {**self._build_request(prompt, stop, **kwargs), "stream": True}
         for chunk_data in _stream_sse(url, req, self.timeout):
             text = (chunk_data.get("choices") or [{}])[0].get("text") or ""

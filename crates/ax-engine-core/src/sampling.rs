@@ -172,6 +172,13 @@ fn sample_argmax_with_logprob_and_logits_processors(
         logits
     };
 
+    // NaN is unordered; reject it by value so the sign bit cannot decide
+    // whether a corrupted logits vector errors or silently drops entries.
+    // -inf stays legal: the n-gram ban writes it.
+    if logits.iter().any(|value| value.is_nan()) {
+        return None;
+    }
+
     let (best_index, &best_logit) =
         logits
             .iter()
@@ -396,6 +403,26 @@ mod tests {
                 request_id: RequestId(1),
                 previous_token: 99,
                 logits: Some(vec![f32::NAN, f32::INFINITY]),
+                recent_tokens: Vec::new(),
+                generated_len: 0,
+                max_output_tokens: 4,
+                sampling_params: SamplingParams::default(),
+            }],
+        });
+
+        assert_eq!(sampled[0].token_id, 0);
+        assert_eq!(sampled[0].stop_reason, Some(StopReason::Error));
+        assert_eq!(sampled[0].logprob, None);
+    }
+
+    #[test]
+    fn deterministic_sampler_rejects_negative_nan_logits() {
+        let negative_nan = f32::from_bits(0xfffc_0000);
+        let sampled = DeterministicSampler.sample(SamplerInput {
+            requests: vec![SamplerRequest {
+                request_id: RequestId(1),
+                previous_token: 99,
+                logits: Some(vec![1.0, negative_nan]),
                 recent_tokens: Vec::new(),
                 generated_len: 0,
                 max_output_tokens: 4,

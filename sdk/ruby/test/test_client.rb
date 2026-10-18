@@ -107,6 +107,36 @@ class TestClient < Minitest::Test
     assert_equal "/health", @srv.last_path
   end
 
+  def test_base_url_path_and_query_are_preserved
+    client = AxEngine::Client.new(
+      base_url: "#{@srv.base_url}/proxy///?token=abc/",
+      timeout: 5
+    )
+    @srv.set_response(body: { object: "list", data: [] })
+    client.models
+    assert_equal "/proxy/v1/models?token=abc/", @srv.last_path
+  end
+
+  def test_base_url_query_merges_with_step_query
+    client = AxEngine::Client.new(
+      base_url: "#{@srv.base_url}/proxy?token=abc",
+      timeout: 5
+    )
+    @srv.set_response(body: { scheduled_requests: 0 })
+    client.step(model: "mlx-community/Qwen3.8-27B")
+    assert_equal "/proxy/v1/step?token=abc&model=mlx-community%2FQwen3.8-27B", @srv.last_path
+  end
+
+  def test_request_ids_cannot_change_endpoint_paths
+    ["a/b?c", "..", ".", "", "1#fragment", "1\n", -1, 1.5, nil].each do |id|
+      assert_raises(ArgumentError) { @client.request_snapshot(id) }
+      assert_raises(ArgumentError) { @client.cancel(id) }
+    end
+    @srv.set_response(body: { request_id: 42 })
+    @client.request_snapshot("42")
+    assert_equal "/v1/requests/42", @srv.last_path
+  end
+
   # --- completion ---
 
   def test_completion

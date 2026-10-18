@@ -51,6 +51,10 @@ export async function smokeTypes(client = new AxEngineClient({ baseUrl: "http://
   };
   const chatResponse = await client.chatCompletion(chatRequest);
   const chatText: string | null = chatResponse.choices[0]?.message.content ?? null;
+  const chatLogprob: number | undefined =
+    chatResponse.choices[0]?.logprobs?.content[0]?.logprob;
+  void chatText;
+  void chatLogprob;
 
   const loaded = await client.loadModel({
     model_id: "qwen3.6-27b",

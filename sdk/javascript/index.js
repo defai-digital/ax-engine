@@ -1,11 +1,42 @@
 const DEFAULT_BASE_URL = "http://127.0.0.1:31418";
 
-function trimTrailingSlash(value) {
+function trimPathSlashes(value) {
   let end = value.length;
   while (end > 0 && value.charCodeAt(end - 1) === 47) {
     end -= 1;
   }
   return value.slice(0, end);
+}
+
+function trimTrailingSlash(value) {
+  const hashStart = value.indexOf("#");
+  const hash = hashStart === -1 ? "" : value.slice(hashStart);
+  const withoutHash = hashStart === -1 ? value : value.slice(0, hashStart);
+  const queryStart = withoutHash.indexOf("?");
+  if (queryStart === -1) {
+    return trimPathSlashes(withoutHash) + hash;
+  }
+  return (
+    trimPathSlashes(withoutHash.slice(0, queryStart)) +
+    withoutHash.slice(queryStart) +
+    hash
+  );
+}
+
+function joinUrl(baseUrl, path) {
+  const hashStart = baseUrl.indexOf("#");
+  const hash = hashStart === -1 ? "" : baseUrl.slice(hashStart);
+  const withoutHash = hashStart === -1 ? baseUrl : baseUrl.slice(0, hashStart);
+  const queryStart = withoutHash.indexOf("?");
+  const baseQuery = queryStart === -1 ? "" : withoutHash.slice(queryStart + 1);
+  const prefix = trimPathSlashes(
+    queryStart === -1 ? withoutHash : withoutHash.slice(0, queryStart),
+  );
+  const pathQueryStart = path.indexOf("?");
+  const pathname = pathQueryStart === -1 ? path : path.slice(0, pathQueryStart);
+  const pathQuery = pathQueryStart === -1 ? "" : path.slice(pathQueryStart + 1);
+  const query = [baseQuery, pathQuery].filter(Boolean).join("&");
+  return `${prefix}${pathname}${query ? `?${query}` : ""}${hash}`;
 }
 
 function requestIdSegment(requestId) {
@@ -297,7 +328,7 @@ export class AxEngineClient {
       body = JSON.stringify(body);
     }
 
-    const response = await this.fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetch(joinUrl(this.baseUrl, path), {
       ...init,
       headers,
       body,

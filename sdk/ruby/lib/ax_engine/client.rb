@@ -19,7 +19,7 @@ module AxEngine
     # @param headers  [Hash]  default headers added to every request
     # @param timeout  [Integer] open/read timeout in seconds (default 300)
     def initialize(base_url: DEFAULT_BASE_URL, headers: {}, timeout: 300)
-      @base_url = base_url.chomp("/")
+      @base_url = normalize_base_url(base_url)
       @headers  = headers
       @timeout  = timeout
     end
@@ -51,12 +51,12 @@ module AxEngine
 
     # GET /v1/requests/:id
     def request_snapshot(request_id)
-      get("/v1/requests/#{request_id}")
+      get("/v1/requests/#{request_id_segment(request_id)}")
     end
 
     # POST /v1/requests/:id/cancel
     def cancel(request_id)
-      post("/v1/requests/#{request_id}/cancel", {})
+      post("/v1/requests/#{request_id_segment(request_id)}/cancel", {})
     end
 
     # POST /v1/step
@@ -138,15 +138,47 @@ module AxEngine
       end
     end
 
+    # Trim only pathname slashes; a trailing slash inside a query value is data.
+    def normalize_base_url(base_url)
+      uri = URI(base_url)
+      uri.path = uri.path.sub(%r{/+\z}, "")
+      uri.to_s
+    rescue URI::InvalidURIError
+      base_url.chomp("/")
+    end
+
+    # Append an API path while preserving the base path prefix and query.
+    def build_uri(path)
+      base = URI(@base_url)
+      rel = URI(path)
+      base.path = "#{base.path.sub(%r{/+\z}, "")}#{rel.path}"
+      if rel.query && !rel.query.empty?
+        base.query = base.query.nil? || base.query.empty? ? rel.query : "#{base.query}&#{rel.query}"
+      end
+      base
+    rescue URI::InvalidURIError
+      URI("#{@base_url}#{path}")
+    end
+
+    def request_id_segment(request_id)
+      if request_id.is_a?(Integer) && request_id >= 0
+        request_id.to_s
+      elsif request_id.is_a?(String) && request_id.match?(/\A[0-9]+\z/)
+        request_id
+      else
+        raise ArgumentError, "request_id must be a non-negative integer or a decimal string"
+      end
+    end
+
     def get(path)
-      uri = URI("#{@base_url}#{path}")
+      uri = build_uri(path)
       req = Net::HTTP::Get.new(uri)
       apply_headers(req)
       execute(uri, req)
     end
 
     def post(path, body)
-      uri = URI("#{@base_url}#{path}")
+      uri = build_uri(path)
       req = Net::HTTP::Post.new(uri)
       apply_headers(req)
       req["Content-Type"] = "application/json"
@@ -155,7 +187,7 @@ module AxEngine
     end
 
     def stream(path, body, requires_done: false)
-      uri = URI("#{@base_url}#{path}")
+      uri = build_uri(path)
       req = Net::HTTP::Post.new(uri)
       apply_headers(req)
       req["Content-Type"] = "application/json"

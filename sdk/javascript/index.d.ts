@@ -234,9 +234,21 @@ export interface OpenAiChatMessageResponse {
   tool_calls?: OpenAiToolCall[];
 }
 
+export interface OpenAiChatTokenLogprob {
+  token: string;
+  logprob: number;
+  bytes?: number[];
+  top_logprobs: unknown[];
+}
+
+export interface OpenAiChatLogprobs {
+  content: OpenAiChatTokenLogprob[];
+}
+
 export interface OpenAiChatCompletionChoice {
   index: number;
   message: OpenAiChatMessageResponse;
+  logprobs?: OpenAiChatLogprobs;
   finish_reason: OpenAiFinishReason | null;
 }
 
