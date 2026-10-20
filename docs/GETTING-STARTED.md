@@ -154,6 +154,18 @@ repositories. If you already have model weights on disk, skip the Hub and this
 helper environment entirely — `ax-engine download /path/to/model` validates the
 directory and writes `model-manifest.json` offline, without `huggingface-hub`.
 
+An optional personal `hf auth login` or `HF_TOKEN` can increase request limits
+for public downloads. A 429 response means rate limiting; wait for the server's
+retry interval. A 401/403 response requires checking the login and repository
+access, rather than silently retrying with another identity. An invalid pinned
+revision must be corrected explicitly, never substituted with `main`.
+
+When `HF_ENDPOINT` points to a custom Hub-compatible endpoint, the download
+helper explicitly disables official HF credentials, including cached logins.
+Use that path only for anonymously accessible mirrors; R2 object storage is not
+a drop-in Hub API replacement. Cache paths selected through `HF_HOME` or
+`HF_HUB_CACHE` remain unchanged.
+
 #### Homebrew troubleshooting
 
 Artifacts produced by the self-contained release pipeline bundle the pinned

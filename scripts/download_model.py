@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import errno
 import importlib.util
 import json
 import os
@@ -1287,7 +1288,7 @@ def _total_repo_bytes(repo_id: str, revision: str | None = None) -> int | None:
     except ImportError:
         return None
     try:
-        kwargs = {"repo_id": repo_id, "files_metadata": True}
+        kwargs = {"repo_id": repo_id, "files_metadata": True, **_hub_auth_kwargs()}
         if revision is not None:
             kwargs["revision"] = revision
         info = HfApi().repo_info(**kwargs)
@@ -1326,7 +1327,7 @@ def _snapshot_matches_hub_listing(
     except ImportError:
         return None
     try:
-        info = HfApi().repo_info(repo_id=repo_id, revision=revision, files_metadata=True)
+        info = HfApi().repo_info(repo_id=repo_id, revision=revision, files_metadata=True, **_hub_auth_kwargs())
     except Exception:
         return None
     listed = []
@@ -1451,6 +1452,83 @@ def _prefer_classic_hf_transfer() -> None:
         os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 
+def _hub_auth_kwargs() -> dict:
+    """A custom endpoint must not receive the user's official Hub login."""
+    value = os.environ.get("HF_ENDPOINT", "").strip()
+    if not value:
+        return {}
+    try:
+        endpoint = urlsplit(value)
+        official = (
+            not re.search(r"[\\\x00-\x20\x7f]", value)
+            and endpoint.scheme == "https" and endpoint.hostname == "huggingface.co"
+            and endpoint.port in (None, 443) and not endpoint.username and not endpoint.password
+            and endpoint.path in ("", "/") and not endpoint.query and not endpoint.fragment
+        )
+    except ValueError:
+        official = False
+    return {} if official else {"token": False}
+
+
+def _redact_hub_error(value: str) -> str:
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        if token := os.environ.get(name):
+            value = value.replace(token, "[redacted]")
+    value = re.sub(r"\bhf_[A-Za-z0-9]{8,}\b", "[redacted]", value)
+    value = re.sub(r"(?i)(authorization:\s*(?:bearer|basic)\s+)\S+", r"\1[redacted]", value)
+    value = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^/\s:@]*:[^/\s@]+@", r"\1[redacted]@", value)
+    def redact_query(match: re.Match) -> str:
+        name = unquote(match[2].replace("+", " "))
+        if re.search(r"(?i)(token|auth|signature|credential|password|secret|key)$", name):
+            return f"{match[1]}{match[2]}=[redacted]"
+        return match[0]
+    value = re.sub(r"([?&])([^=?&#\s]+)=([^&#\s\"'<>]*)", redact_query, value)
+    return value[:8192]
+
+
+def _hub_failure_details(error: Exception) -> dict:
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if not isinstance(status, int) or isinstance(status, bool):
+        status = None
+    text = str(error).lower()
+    names = {base.__name__ for base in type(error).__mro__}
+    retryable = False
+    if status == 429 or "429 client error" in text:
+        code, retryable = "RATE_LIMITED", True
+    elif "RevisionNotFoundError" in names or "revisionnotfound" in text or "revision not found" in text:
+        code = "REVISION_NOT_FOUND"
+    elif "GatedRepoError" in names or "is restricted" in text or "gated repo" in text:
+        code = "ACCESS_DENIED"
+    elif status == 401 or any(term in text for term in ("expired token", "token has expired", "exp claim timestamp", "401 client error")):
+        code = "AUTH_FAILED"
+    elif status == 403:
+        code = "ACCESS_DENIED"
+    elif status == 404 or "RepositoryNotFoundError" in names or "repository not found" in text:
+        code = "REPOSITORY_NOT_FOUND"
+    elif "LocalEntryNotFoundError" in names:
+        code = "LOCAL_CACHE_MISSING"
+    elif isinstance(error, OSError) and error.errno in (errno.ENOSPC, errno.EDQUOT):
+        code = "DISK_INSUFFICIENT"
+    elif "ssl" in text or "certificate verify failed" in text:
+        code = "TLS_ERROR"
+    elif status == 408 or (status is not None and 500 <= status <= 599):
+        code, retryable = "NETWORK_ERROR", True
+    elif names.intersection({"TimeoutError", "TimeoutException", "ReadTimeout", "ConnectTimeout", "ConnectError", "ConnectionError", "ProxyError"}) or any(
+        term in text for term in ("max retries exceeded", "connection", "timed out", "timeout", "temporary failure in name resolution", "network is unreachable", "proxyerror")
+    ):
+        code, retryable = "NETWORK_ERROR", True
+    else:
+        code = "DOWNLOAD_FAILED"
+    return {"code": code, "retryable": retryable, **({"http_status": status} if status is not None else {})}
+
+
+class HubDownloadError(RuntimeError):
+    def __init__(self, repo_id: str, error: Exception) -> None:
+        self.failure = _hub_failure_details(error)
+        super().__init__(_hub_failure_message(repo_id, error))
+
+
 def _hub_failure_message(repo_id: str, error: Exception) -> str:
     """Classify a Hub client failure into one actionable message.
 
@@ -1460,7 +1538,7 @@ def _hub_failure_message(repo_id: str, error: Exception) -> str:
     credentials. Reporting the raw blob leaves the operator unable to tell
     which fix applies, so classify before reporting.
     """
-    detail = str(error)
+    detail = _redact_hub_error(str(error))
     lowered = detail.lower()
 
     def has(*needles: str) -> bool:
@@ -1470,6 +1548,25 @@ def _hub_failure_message(repo_id: str, error: Exception) -> str:
         "If you already have the weights on disk, skip the Hub entirely:\n"
         "  ax-engine download /path/to/local/model-dir\n"
     )
+
+    failure = _hub_failure_details(error)
+    if failure["code"] == "RATE_LIMITED":
+        return (
+            f"Hugging Face Hub rate limited the download for {repo_id} (HTTP 429).\n"
+            "Wait for the server's retry interval before trying again. Public repos "
+            "need no account; an optional personal HF login provides higher limits.\n"
+            f"{offline_hint}Original error: {detail}"
+        )
+    if failure["code"] == "REVISION_NOT_FOUND":
+        return (
+            f"Hugging Face Hub has no requested revision for {repo_id}. "
+            "Check the exact pinned commit; do not substitute another revision.\n"
+            f"{offline_hint}Original error: {detail}"
+        )
+    if failure["code"] == "LOCAL_CACHE_MISSING":
+        return f"The requested {repo_id} files are not available in the local Hub cache. Check offline settings and the requested revision.\n{offline_hint}Original error: {detail}"
+    if failure["code"] == "DISK_INSUFFICIENT":
+        return f"Insufficient disk space while downloading {repo_id}.\n{offline_hint}Original error: {detail}"
 
     # An expired token is checked first: it also masks public repositories, and
     # the Hub's own message additionally claims the repository does not exist.
@@ -1486,7 +1583,7 @@ def _hub_failure_message(repo_id: str, error: Exception) -> str:
             f"{offline_hint}"
             f"Original error: {detail}"
         )
-    if has("gated", "is restricted", "awaiting a review", "you have been granted access"):
+    if has("gated repo", "gatedrepoerror", "is restricted", "awaiting a review", "you have been granted access"):
         return (
             f"{repo_id} is a gated repository on Hugging Face Hub.\n"
             "An HF account is required and the model terms must be accepted on "
@@ -1535,7 +1632,8 @@ def _hub_failure_message(repo_id: str, error: Exception) -> str:
         return (
             f"could not reach Hugging Face Hub for {repo_id}: this is a network or "
             "proxy failure, not an authentication problem.\n"
-            "Behind a mirror, set HF_ENDPOINT to its base URL. On a host with no "
+            "For a trusted Hub-compatible mirror, set HF_ENDPOINT to its base URL; "
+            "official Hub credentials are withheld from custom endpoints. On a host with no "
             "egress, use weights already on disk instead.\n"
             f"{offline_hint}"
             f"Original error: {detail}"
@@ -1588,7 +1686,7 @@ def _run_hf_snapshot_download(
         if progress_json:
             done, message = _download_progress_message(repo_id, started_at, revision)
             _emit_progress(done, 100, message)
-        kwargs = {"repo_id": repo_id}
+        kwargs = {"repo_id": repo_id, **_hub_auth_kwargs()}
         if revision:
             kwargs["revision"] = revision
         if force_download:
@@ -1609,7 +1707,7 @@ def _run_hf_snapshot_download(
             _emit_progress(85, 100, "Downloaded Hugging Face Hub snapshot")
         return snapshot
     except Exception as error:
-        raise RuntimeError(f"Hugging Face Hub download failed for {repo_id}: {error}") from error
+        raise HubDownloadError(repo_id, error) from error
     finally:
         if suppress_hub_bars:
             if previous_progress is None:
@@ -2432,6 +2530,7 @@ def _summary(
     revision: str | None,
     status: str,
     errors: list[str] | None = None,
+    failure: dict | None = None,
 ) -> dict:
     manifest_path = dest / MODEL_MANIFEST_FILE
     try:
@@ -2457,6 +2556,7 @@ def _summary(
         "config_present": config_present,
         "status": status,
         "errors": errors or [],
+        **({"failure": failure} if failure is not None else {}),
         "server_command": _server_command(dest),
     }
 
@@ -2601,7 +2701,8 @@ def main() -> int:
                 summary_dest,
                 revision=revision,
                 status=DOWNLOAD_FAILED_STATUS,
-                errors=[str(error)],
+                errors=[_redact_hub_error(str(error))],
+                failure=error.failure if isinstance(error, HubDownloadError) else _hub_failure_details(error),
             )
             emit_summary(summary)
         else:

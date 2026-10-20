@@ -2944,5 +2944,91 @@ class ManifestHeaderBindingTest(unittest.TestCase):
             self.assertTrue(download_model._manifest_needs_rebuild(model_dir))
 
 
+class HubDownloadBoundaryTests(unittest.TestCase):
+    def test_real_snapshot_failure_uses_actionable_redacted_classification(self) -> None:
+        token = "hf_" + "a" * 32
+        error = RuntimeError("429 Client Error: token " + token)
+        fake = types.ModuleType("huggingface_hub")
+        def fail(**kwargs):
+            raise error
+        fake.snapshot_download = fail
+        with patch.dict(sys.modules, {"huggingface_hub": fake}), patch.dict(os.environ, {"HF_TOKEN": token}):
+            with self.assertRaises(download_model.HubDownloadError) as raised:
+                download_model._run_hf_snapshot_download("owner/repo")
+        self.assertEqual(raised.exception.failure["code"], "RATE_LIMITED")
+        self.assertTrue(raised.exception.failure["retryable"])
+        self.assertIn("need no account", str(raised.exception))
+        self.assertNotIn(token, str(raised.exception))
+
+    def test_custom_endpoint_disables_tokens_for_snapshot_and_metadata(self) -> None:
+        calls = []
+        fake = types.ModuleType("huggingface_hub")
+        def snapshot(**kwargs):
+            calls.append(kwargs)
+            return "/fixture/model"
+        class Api:
+            def repo_info(self, **kwargs):
+                calls.append(kwargs)
+                return types.SimpleNamespace(siblings=[])
+        fake.snapshot_download = snapshot
+        fake.HfApi = Api
+        for endpoint in ("https://mirror.example", "http://huggingface.co", "https://huggingface.co.evil.example"):
+            with self.subTest(endpoint=endpoint), patch.dict(sys.modules, {"huggingface_hub": fake}), patch.dict(os.environ, {"HF_ENDPOINT": endpoint, "HF_TOKEN": "synthetic-token"}):
+                calls.clear()
+                download_model._run_hf_snapshot_download("owner/repo")
+                download_model._total_repo_bytes("owner/repo")
+                self.assertEqual(len(calls), 2)
+                self.assertTrue(all(call["token"] is False for call in calls))
+
+    def test_official_hub_keeps_user_auth_policy_and_never_retries_denied_access(self) -> None:
+        calls = []
+        fake = types.ModuleType("huggingface_hub")
+        class Denied(RuntimeError):
+            response = types.SimpleNamespace(status_code=403)
+        def fail(**kwargs):
+            calls.append(kwargs)
+            raise Denied("Forbidden")
+        fake.snapshot_download = fail
+        with patch.dict(sys.modules, {"huggingface_hub": fake}), patch.dict(os.environ, {"HF_ENDPOINT": "https://huggingface.co"}):
+            with self.assertRaises(download_model.HubDownloadError) as raised:
+                download_model._run_hf_snapshot_download("owner/repo")
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("token", calls[0])
+        self.assertEqual(raised.exception.failure, {"code": "ACCESS_DENIED", "retryable": False, "http_status": 403})
+
+    def test_machine_summary_keeps_the_actual_failure_when_stderr_has_a_warning(self) -> None:
+        error = download_model.HubDownloadError("owner/repo", TimeoutError("connection timed out"))
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HF_HOME": tmp, "HF_ENDPOINT": "https://huggingface.co"}), patch.object(download_model, "download", side_effect=error), patch.object(sys, "argv", ["download_model.py", "owner/repo", "--json"]), redirect_stdout(output):
+            code = download_model.main()
+        self.assertEqual(code, 1)
+        summary = json.loads(output.getvalue())
+        self.assertEqual(summary["status"], "download_failed")
+        self.assertEqual(summary["failure"]["code"], "NETWORK_ERROR")
+        self.assertTrue(summary["failure"]["retryable"])
+        self.assertIn("connection timed out", summary["errors"][0])
+
+    def test_revision_and_disk_failures_are_not_authentication_errors(self) -> None:
+        import errno
+        RevisionNotFoundError = type("RevisionNotFoundError", (RuntimeError,), {})
+        self.assertEqual(download_model._hub_failure_details(RevisionNotFoundError("not found"))["code"], "REVISION_NOT_FOUND")
+        self.assertEqual(download_model._hub_failure_details(OSError(errno.ENOSPC, "No space"))["code"], "DISK_INSUFFICIENT")
+        message = download_model._redact_hub_error("https://user:pass@example.com/file?X-Amz-%53ignature=secret-value&token=another-secret")
+        for secret in ("user:pass", "secret-value", "another-secret"):
+            self.assertNotIn(secret, message)
+
+
+class HubFailureClassificationTests(unittest.TestCase):
+    def test_missing_local_cache_is_not_a_retryable_connection_failure(self):
+        LocalEntryNotFoundError = type("LocalEntryNotFoundError", (RuntimeError,), {})
+        error = LocalEntryNotFoundError("Cannot find files in the local cache. Check your connection.")
+        self.assertEqual(download_model._hub_failure_details(error), {"code": "LOCAL_CACHE_MISSING", "retryable": False})
+
+    def test_official_endpoint_canonical_forms_keep_auth(self):
+        for endpoint in ("https://huggingface.co", "https://HUGGINGFACE.CO:443/"):
+            with self.subTest(endpoint=endpoint), patch.dict(os.environ, {"HF_ENDPOINT": endpoint}):
+                self.assertEqual(download_model._hub_auth_kwargs(), {})
+
+
 if __name__ == "__main__":
     unittest.main()
