@@ -207,6 +207,15 @@ pub(crate) fn load_with_paging_policy(
     load_with_schedule_admission(root, manifest, mode, budget_layers, audited_mxfp4)
 }
 
+/// Bytes of the n-gram lexical table, which this loader never makes resident.
+fn never_loaded_ngram_bytes(tensors: &[NativeTensorSpec]) -> u64 {
+    tensors
+        .iter()
+        .filter(|spec| spec.role == NativeTensorRole::NgramEmbedding)
+        .map(|spec| spec.length_bytes)
+        .fold(0u64, u64::saturating_add)
+}
+
 fn load_with_schedule_admission(
     root: &Path,
     manifest: &NativeModelManifest,
@@ -225,14 +234,26 @@ fn load_with_schedule_admission(
             "qwen4_exp does not support weight_sanitize=HfLayerNormsOnly".to_string(),
         ));
     }
+    // The n-gram table is served by row gathers and never loaded; opt-in
+    // admission prices only what is resident (see the fastpath flag).
+    let never_loaded_bytes = if crate::fastpath::expert_stream_discount_ngram_enabled() {
+        never_loaded_ngram_bytes(&manifest.tensors)
+    } else {
+        0
+    };
     let stream_manifest = crate::expert_stream::resolve_expert_stream(
         mode,
-        crate::expert_stream::ExpertStreamManifest::read_from_dir(root)?,
+        crate::expert_stream::ExpertStreamManifest::read_from_dir(root)?.map(|file| {
+            crate::expert_stream::discount_never_loaded_bytes(file, never_loaded_bytes)
+        }),
         || {
             crate::expert_stream::infer_layer_stack_manifest(
                 &manifest.tensors,
                 manifest.moe.experts_per_token.unwrap_or(1),
             )
+            .map(|inferred| {
+                crate::expert_stream::discount_never_loaded_bytes(inferred, never_loaded_bytes)
+            })
         },
         crate::expert_stream::unified_memory_bytes(),
     )?;

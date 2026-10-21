@@ -93,7 +93,119 @@ pub(crate) struct MlxPrefixCachePolicy {
     pub(crate) max_entries: usize,
 }
 
+/// Snapshots a default-sized cache should be able to hold at once.
+const MODEL_AWARE_PREFIX_CACHE_SNAPSHOTS: u64 = 6;
+/// Context length the default-sized cache budgets each snapshot for: a long
+/// agent preamble (system prompt + tool schemas + early turns).
+const MODEL_AWARE_PREFIX_CACHE_CONTEXT_TOKENS: u64 = 8192;
+/// Default capacity never exceeds this fraction of unified memory.
+const MODEL_AWARE_PREFIX_CACHE_MEMORY_DIVISOR: u64 = 8;
+
+/// Dimensions that decide the size of one portable prefix snapshot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PrefixSnapshotShape {
+    /// Layers that keep a per-token KV cache.
+    pub(crate) kv_layers: u64,
+    pub(crate) kv_heads: u64,
+    pub(crate) head_dim: u64,
+    /// Bytes per K or V element (2 for bf16/fp16 caches).
+    pub(crate) kv_elem_bytes: u64,
+    /// Fixed-size recurrent + convolution state summed over all linear layers.
+    pub(crate) linear_state_bytes: u64,
+}
+
+impl PrefixSnapshotShape {
+    pub(crate) fn from_config(cfg: &ModelConfig) -> Self {
+        let linear = cfg.linear_attention.as_ref();
+        let linear_layers = (0..cfg.layer_count)
+            .filter(|&layer| cfg.is_linear_attention_layer(layer))
+            .count() as u64;
+        let linear_state_per_layer = linear.map_or(0, |linear| {
+            // Recurrent state is f32 [Hv, Dv, Dk]; the conv tail keeps
+            // `kernel - 1` rows of `conv_dim` activations.
+            let recurrent = (linear.num_value_heads as u64)
+                .saturating_mul(linear.value_head_dim as u64)
+                .saturating_mul(linear.key_head_dim as u64)
+                .saturating_mul(size_of::<f32>() as u64);
+            let conv = (linear.conv_kernel_dim.saturating_sub(1) as u64)
+                .saturating_mul(linear.conv_dim() as u64)
+                .saturating_mul(2);
+            recurrent.saturating_add(conv)
+        });
+        Self {
+            kv_layers: (cfg.layer_count as u64).saturating_sub(linear_layers),
+            kv_heads: cfg.n_kv_heads as u64,
+            head_dim: cfg.head_dim as u64,
+            kv_elem_bytes: 2,
+            linear_state_bytes: linear_state_per_layer.saturating_mul(linear_layers),
+        }
+    }
+
+    /// Upper-bound payload bytes of one snapshot covering `tokens` positions
+    /// (K and V for every KV layer plus the fixed linear state). Quantized or
+    /// windowed KV only makes the real snapshot smaller.
+    pub(crate) fn snapshot_bytes(self, tokens: u64) -> u64 {
+        let kv_per_token = self
+            .kv_layers
+            .saturating_mul(self.kv_heads)
+            .saturating_mul(self.head_dim)
+            .saturating_mul(self.kv_elem_bytes)
+            .saturating_mul(2);
+        kv_per_token
+            .saturating_mul(tokens)
+            .saturating_add(self.linear_state_bytes)
+    }
+}
+
 impl MlxPrefixCachePolicy {
+    /// Capacity that lets a default-configured cache hold
+    /// [`MODEL_AWARE_PREFIX_CACHE_SNAPSHOTS`] snapshots of an
+    /// [`MODEL_AWARE_PREFIX_CACHE_CONTEXT_TOKENS`]-token prompt for this
+    /// model, bounded above by a fraction of unified memory and below by the
+    /// flat default. The flat 512 MiB default rejects every snapshot past
+    /// ~6k tokens for a 27B hybrid (each token costs 64 KiB of KV plus
+    /// ~147 MiB of fixed recurrent state), so multi-turn agent sessions never
+    /// reused anything.
+    pub(crate) fn model_aware_max_bytes(
+        shape: PrefixSnapshotShape,
+        unified_memory_bytes: Option<u64>,
+    ) -> u64 {
+        let wanted = shape
+            .snapshot_bytes(MODEL_AWARE_PREFIX_CACHE_CONTEXT_TOKENS)
+            .saturating_mul(MODEL_AWARE_PREFIX_CACHE_SNAPSHOTS);
+        let ceiling = unified_memory_bytes.map_or(DEFAULT_PREFIX_CACHE_MAX_BYTES, |memory| {
+            memory / MODEL_AWARE_PREFIX_CACHE_MEMORY_DIVISOR
+        });
+        wanted.min(ceiling).max(DEFAULT_PREFIX_CACHE_MAX_BYTES)
+    }
+
+    /// Replace the flat default capacity with the model-aware one. An explicit
+    /// `AX_MLX_PREFIX_CACHE_MAX_BYTES` (any value, including 0) or a
+    /// caller-supplied non-default policy is never touched.
+    pub(crate) fn with_model_aware_default(
+        self,
+        shape: PrefixSnapshotShape,
+        unified_memory_bytes: Option<u64>,
+    ) -> Self {
+        self.with_model_aware_default_unless(
+            shape,
+            unified_memory_bytes,
+            std::env::var_os("AX_MLX_PREFIX_CACHE_MAX_BYTES").is_some(),
+        )
+    }
+
+    fn with_model_aware_default_unless(
+        mut self,
+        shape: PrefixSnapshotShape,
+        unified_memory_bytes: Option<u64>,
+        capacity_explicit: bool,
+    ) -> Self {
+        if !capacity_explicit && self.max_bytes == DEFAULT_PREFIX_CACHE_MAX_BYTES {
+            self.max_bytes = Self::model_aware_max_bytes(shape, unified_memory_bytes);
+        }
+        self
+    }
+
     pub(crate) fn from_env() -> Self {
         Self {
             max_bytes: std::env::var("AX_MLX_PREFIX_CACHE_MAX_BYTES")
@@ -2222,5 +2334,87 @@ mod tests {
         assert_ne!(a, b, "concurrent writers must not share a probe path");
         assert!(a.starts_with(".calib.tmp."));
         assert!(b.starts_with(".calib.tmp."));
+    }
+
+    /// Qwen3.8 27B: 16 full-attention layers (4 KV heads x 256) and 48
+    /// gated-delta layers (48 value heads x 128 x 128 f32 state, conv dim
+    /// 10240 x 3 tail rows in bf16).
+    fn qwen38_27b_shape() -> PrefixSnapshotShape {
+        let recurrent = 48u64 * 128 * 128 * 4;
+        let conv = 3u64 * 10240 * 2;
+        PrefixSnapshotShape {
+            kv_layers: 16,
+            kv_heads: 4,
+            head_dim: 256,
+            kv_elem_bytes: 2,
+            linear_state_bytes: 48 * (recurrent + conv),
+        }
+    }
+
+    #[test]
+    fn snapshot_shape_matches_the_27b_hybrid_layout() {
+        let shape = qwen38_27b_shape();
+        // 64 KiB of K+V per token and ~146.8 MiB of fixed recurrent state.
+        assert_eq!(shape.snapshot_bytes(1) - shape.snapshot_bytes(0), 64 * 1024);
+        assert_eq!(shape.snapshot_bytes(0), 153_944_064);
+        // A 6k-token snapshot already exceeds the flat 512 MiB default.
+        assert!(shape.snapshot_bytes(6144) > DEFAULT_PREFIX_CACHE_MAX_BYTES);
+    }
+
+    #[test]
+    fn model_aware_capacity_admits_long_hybrid_prompts() {
+        let shape = qwen38_27b_shape();
+        let gib = 1024u64 * 1024 * 1024;
+        // 64 GB Mac mini: six 8k snapshots (~3.9 GiB) fit under the 8 GiB cap.
+        let mini = MlxPrefixCachePolicy::model_aware_max_bytes(shape, Some(64 * gib));
+        assert_eq!(mini, shape.snapshot_bytes(8192) * 6);
+        assert!(mini > shape.snapshot_bytes(16_384));
+        // 16 GB machines cap at one eighth of memory.
+        let small = MlxPrefixCachePolicy::model_aware_max_bytes(shape, Some(16 * gib));
+        assert_eq!(small, 2 * gib);
+        // Unknown memory keeps the flat default.
+        assert_eq!(
+            MlxPrefixCachePolicy::model_aware_max_bytes(shape, None),
+            DEFAULT_PREFIX_CACHE_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn model_aware_capacity_never_drops_below_the_flat_default() {
+        let tiny = PrefixSnapshotShape {
+            kv_layers: 2,
+            kv_heads: 2,
+            head_dim: 64,
+            kv_elem_bytes: 2,
+            linear_state_bytes: 0,
+        };
+        assert_eq!(
+            MlxPrefixCachePolicy::model_aware_max_bytes(tiny, Some(64 * 1024 * 1024 * 1024)),
+            DEFAULT_PREFIX_CACHE_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn explicit_capacity_is_never_overridden() {
+        let shape = qwen38_27b_shape();
+        let memory = Some(64u64 * 1024 * 1024 * 1024);
+        let default_policy = MlxPrefixCachePolicy::default();
+        let resized = default_policy.with_model_aware_default_unless(shape, memory, false);
+        assert!(resized.max_bytes > DEFAULT_PREFIX_CACHE_MAX_BYTES);
+        assert_eq!(resized.max_entries, default_policy.max_entries);
+        // Operator set the env var: untouched, even to the default value.
+        let explicit = default_policy.with_model_aware_default_unless(shape, memory, true);
+        assert_eq!(explicit.max_bytes, DEFAULT_PREFIX_CACHE_MAX_BYTES);
+        // A caller-supplied non-default policy is untouched, including disabled.
+        for max_bytes in [0, 123_456_789] {
+            let custom = MlxPrefixCachePolicy {
+                max_bytes,
+                max_entries: 8,
+            };
+            assert_eq!(
+                custom.with_model_aware_default_unless(shape, memory, false),
+                custom
+            );
+        }
     }
 }

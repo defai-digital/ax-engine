@@ -59,6 +59,67 @@ fn mmap_weights_env_requires_a_nonzero_nonempty_value() {
 }
 
 #[test]
+fn default_draft_head_requantizes_dense_and_wide_quantized_heads() {
+    // Dense head: requantized when the dense switch is on.
+    assert_eq!(
+        default_draft_lm_head_bits(None, 5120, true, true, true, 3),
+        Some(3)
+    );
+    assert_eq!(
+        default_draft_lm_head_bits(None, 5120, true, false, true, 3),
+        None
+    );
+    // 8-bit head (27B MXFP4 / affine-4bit packs): requantized to the draft width.
+    assert_eq!(
+        default_draft_lm_head_bits(Some(8), 5120, true, true, true, 3),
+        Some(3)
+    );
+    assert_eq!(
+        default_draft_lm_head_bits(Some(8), 5120, true, true, true, 4),
+        Some(4)
+    );
+    assert_eq!(
+        default_draft_lm_head_bits(Some(8), 5120, true, true, false, 3),
+        None
+    );
+    // A head already at or below the draft width keeps drafting on itself.
+    assert_eq!(
+        default_draft_lm_head_bits(Some(4), 5120, true, true, true, 4),
+        None
+    );
+    assert_eq!(
+        default_draft_lm_head_bits(Some(3), 5120, true, true, true, 3),
+        None
+    );
+    // Heads narrower than 6 bits (the 35B-A3B 4-bit head) are left alone.
+    assert_eq!(
+        default_draft_lm_head_bits(Some(4), 5120, true, true, true, 3),
+        None
+    );
+    assert_eq!(
+        default_draft_lm_head_bits(Some(5), 5120, true, true, true, 3),
+        None
+    );
+    assert_eq!(
+        default_draft_lm_head_bits(Some(6), 5120, true, true, true, 3),
+        Some(3)
+    );
+    // Shapes the 64-wide draft group cannot tile are refused.
+    assert_eq!(
+        default_draft_lm_head_bits(Some(8), 5121, true, true, true, 3),
+        None
+    );
+    assert_eq!(
+        default_draft_lm_head_bits(None, 0, true, true, true, 3),
+        None
+    );
+    assert_eq!(
+        default_draft_lm_head_bits(Some(8), 5120, false, true, true, 3),
+        None
+    );
+}
+
+#[test]
 fn draft_lm_head_spec_matches_mlx_affine_contract() {
     for bits in [2, 3, 4, 5, 6, 8] {
         for group_size in [32, 64, 128] {

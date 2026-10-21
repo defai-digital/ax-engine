@@ -3168,6 +3168,35 @@ fn runtime_draft_lm_head_spec_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Width of the automatically derived draft-only lm_head, or `None` to draft
+/// on the target head itself. `quantized_bits` is `None` for a dense head.
+/// A dense head is requantized when `dense_enabled`; a quantized head only
+/// when `quantized_enabled`, it is at least [`MIN_REQUANTIZED_HEAD_BITS`]
+/// wide, and wider than `draft_bits`. The 8-bit 27B head gained +9.8% MTP
+/// decode; the 4-bit 35B-A3B head gained nothing measurable (M5 Max), so
+/// narrow heads keep drafting on themselves. The logical input width must
+/// divide the draft group size (64).
+fn default_draft_lm_head_bits(
+    quantized_bits: Option<i32>,
+    input_dim: i32,
+    is_matrix: bool,
+    dense_enabled: bool,
+    quantized_enabled: bool,
+    draft_bits: i32,
+) -> Option<i32> {
+    if !is_matrix || input_dim <= 0 || input_dim % 64 != 0 {
+        return None;
+    }
+    match quantized_bits {
+        None => dense_enabled.then_some(draft_bits),
+        Some(bits) => (quantized_enabled && bits >= MIN_REQUANTIZED_HEAD_BITS && bits > draft_bits)
+            .then_some(draft_bits),
+    }
+}
+
+/// Narrowest quantized target head worth requantizing for drafting.
+const MIN_REQUANTIZED_HEAD_BITS: i32 = 6;
+
 fn valid_draft_lm_head_spec(bits: i32, group_size: i32) -> Option<DraftLmHeadSpec> {
     // Keep this in lockstep with MLX's affine quantizer. Passing an unsupported
     // width or group size through the C API turns bad configuration into an
@@ -4427,16 +4456,41 @@ fn load_mtp(
                 // accepted tokens per cycle and greedy identity unchanged),
                 // unlike the 2-bit decode overlay whose acceptance collapse
                 // tripped the MTP bypass gate in the 2026-08-19 M5 A/B.
+                // A quantized head wider than the draft width (the 8-bit
+                // head of the 27B MXFP4 pack) gets the same treatment; see
+                // `mtp_quantized_head_draft_enabled`.
                 let head_shape = lm_head.weight.shape();
-                if lm_head.scales.is_none()
-                    && crate::fastpath::mtp_dense_head_draft_q4_enabled()
-                    && head_shape.len() == 2
-                    && head_shape.last().is_some_and(|last| last % 64 == 0)
-                {
-                    valid_draft_lm_head_spec(crate::fastpath::mtp_dense_head_draft_bits(), 64)
-                } else {
-                    None
-                }
+                let input_dim = head_shape.last().copied().unwrap_or(0);
+                let logical_input_dim = match &lm_head.scales {
+                    None => input_dim,
+                    Some(scales) => {
+                        // Packed uint32 columns and per-group scales must agree
+                        // on the logical width; a head whose recorded bits or
+                        // group size are only defaults fails this and keeps
+                        // drafting on itself.
+                        let from_packed = input_dim.saturating_mul(32) / lm_head.bits.max(1);
+                        let from_scales = scales
+                            .shape()
+                            .last()
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_mul(lm_head.group_size);
+                        if from_packed == from_scales {
+                            from_packed
+                        } else {
+                            0
+                        }
+                    }
+                };
+                default_draft_lm_head_bits(
+                    lm_head.scales.is_some().then_some(lm_head.bits),
+                    logical_input_dim,
+                    head_shape.len() == 2,
+                    crate::fastpath::mtp_dense_head_draft_q4_enabled(),
+                    crate::fastpath::mtp_quantized_head_draft_enabled(),
+                    crate::fastpath::mtp_dense_head_draft_bits(),
+                )
+                .and_then(|bits| valid_draft_lm_head_spec(bits, 64))
             })
             .and_then(|spec| build_draft_lm_head(lm_head, spec)),
         pre_fc_norm_embedding,

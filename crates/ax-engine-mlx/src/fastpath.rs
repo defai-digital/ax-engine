@@ -1530,6 +1530,39 @@ env_flag_default_on!(
     "AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4"
 );
 
+env_flag!(
+    /// `AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM` - price Flash Next Auto expert
+    /// streaming on the bytes the loader actually makes resident, excluding
+    /// the disk-served n-gram table (about 53.6 GiB of the 132 GB pinned
+    /// MXFP4 pack; about 69.5 GiB stays resident). With it a 128 GiB host
+    /// loads the pack resident instead of paging.
+    ///
+    /// **Default: OFF.** The AGENTS.md / ADR-034 rule that Flash Next streams
+    /// under Auto stays in force until an ADR admits an M5 Max 128 GiB tier
+    /// (PRD-MAC-INFERENCE-LEADERSHIP WS4); this flag exists for that
+    /// resident-arm measurement.
+    expert_stream_discount_ngram_enabled,
+    "AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_MTP_QUANTIZED_HEAD_DRAFT` - requantize a quantized target
+    /// lm_head of at least 6 bits that is wider than the draft width (the
+    /// 8-bit g64 head of the
+    /// Qwen 3.8 27B MXFP4 / affine-4bit MTP packs) into a draft-only head at
+    /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS` (default 3, group 64). The draft head
+    /// reads the vocabulary projection once per draft step (1.35 GB at 8 bits
+    /// on the 27B, three times per depth-3 round); verify still decides every
+    /// token on the target head. M5 Max 128 GB, 27B MXFP4, 17 real prompts,
+    /// greedy depth 3: 70.3 -> 77.2 tok/s at 3 bits (75.7 at 4 bits), 17/17
+    /// outputs token-identical. The 4-bit Qwen 3.6 35B-A3B head is left
+    /// alone: 3 bits measured +0.3% there.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_MTP_QUANTIZED_HEAD_DRAFT=0`).
+    mtp_quantized_head_draft_enabled,
+    "AX_MLX_MTP_QUANTIZED_HEAD_DRAFT"
+);
+
 /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS` - width of the requantized draft-only
 /// lm_head built for dense (unquantized) targets. Defaults to 3 (group 64);
 /// accepts only `3` or `4`, and any other value falls back to the default.
