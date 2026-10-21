@@ -265,6 +265,7 @@ const ENV_VAR_ALLOWED_OWNERS: &[(&str, &str)] = &[
     ),
     ("src/runner/mtp_profitability.rs", "env_u32"),
     ("src/runner/mtp_profitability.rs", "env_f64"),
+    ("src/runner/mtp_step_trace.rs", "trace_sink"),
     (
         "src/runner/mtp_profitability.rs",
         "mtp_profitability_config_from_env",
