@@ -738,6 +738,40 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Readiness fixture on the real pinned Flash Next exporter manifest, when
+    /// `AX_ENGINE_FLASH_NEXT_PACK_DIR` points at the pack (skipped otherwise).
+    /// The pin matches the audited tuple; a renamed checkpoint of the same
+    /// architecture fails closed until its exporter declares the layout, and
+    /// loads once it does.
+    #[test]
+    fn pinned_flash_next_manifest_readiness_under_a_new_checkpoint_id() {
+        let Some(pack) = std::env::var_os("AX_ENGINE_FLASH_NEXT_PACK_DIR") else {
+            return;
+        };
+        let path = std::path::Path::new(&pack).join("axquant_manifest.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let pinned: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(matches_audited_legacy_tuple(&pinned));
+
+        let mut renamed = pinned.clone();
+        renamed["source_model"]["model_id"] = serde_json::json!("Qwen/Qwen4-Preview");
+        renamed["source_model"]["revision"] = serde_json::json!("0000000000000000");
+        assert!(!matches_audited_legacy_tuple(&renamed));
+        assert!(
+            !matches_declared_layout(&renamed),
+            "no declaration: fail closed"
+        );
+
+        renamed["runtime"]["ax_engine"]["weight_sanitize"] = serde_json::json!(HF_NORM_ONLY);
+        renamed["runtime"]["ax_engine"]["weight_layout"] = serde_json::json!({
+            "norm_weights": DECLARED_NORM_WEIGHTS_RAW_DELTA,
+            "conv1d_axes": DECLARED_CONV1D_AXES_MLX,
+        });
+        assert!(matches_declared_layout(&renamed));
+    }
+
     #[test]
     fn declared_layout_requires_every_declared_field() {
         for path in [
