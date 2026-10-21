@@ -89,10 +89,24 @@ sets the width; `AX_MLX_MTP_DRAFT_LM_HEAD_BITS` overrides both). Verification
 still uses the target head, so committed tokens are decided as before. On an
 M5 Max 128 GB with the 27B MXFP4 pack (17 real prompts, greedy, depth 3) MTP
 decode rose from 70.3 to 77.2 tok/s with all 17 outputs token-identical to
-MTP with the full-width head (not to direct decode: on the OpenAI chat route,
-5 of the same 17 MTP outputs differ from direct decode with or without
-`AX_MLX_QWEN_LINEAR_MTP_EXACT=1`; still under investigation); the
+MTP with the full-width head, not to direct decode (see the next paragraph);
+the
 4-bit Qwen 3.6 35B-A3B head is left unchanged (3 bits measured +0.3% there).
+
+Default Qwen linear MTP is not token-identical to direct decode. Since
+d9a45f77 (2026-08-26) an explicitly requested Qwen linear MTP session uses the
+throughput profile (`AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP`, default on): depth 3,
+projected-replay rollback and a relaxed target verifier built from stock MLX
+arithmetic. A multi-row verify forward does not reproduce single-row decode
+arithmetic, so near-tie tokens can flip. On an M5 Max with 17 real prompts,
+greedy, 256 tokens: 27B MXFP4 MTP output differed from direct decode on 5
+prompts, and 35B-A3B AXQ-4bit on 9. Forcing the exact profile on the MXFP4
+27B (`AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP=0`,
+`AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE=1`,
+`AX_MLX_QWEN_LINEAR_MTP_EXACT=1`) is slower (47 vs 61 tok/s on the streaming
+chat route) and still differed on 7 prompts: MXFP4 has no certified
+row-exact verifier. n-gram verification matched direct decode on all 17.
+Treat throughput-MTP rows as relaxed, not as an exact path.
 
 `AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
 JSON line per verified MTP cycle (verify window, accepted prefix, context
