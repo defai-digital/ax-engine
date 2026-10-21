@@ -2637,6 +2637,23 @@ impl MlxRunner {
         let (prefix_cache, disk_prefix_cache, disk_prefix_writer) = prefix_cache_store
             .unwrap_or_else(MlxPrefixCacheStore::from_env)
             .into_parts();
+        {
+            // Size the default capacity for this model so long hybrid-model
+            // prompts are admitted (see `model_aware_max_bytes`).
+            let mut cache = prefix_cache.lock();
+            let previous_max_bytes = cache.policy.max_bytes;
+            cache.policy = cache.policy.with_model_aware_default(
+                PrefixSnapshotShape::from_config(&cfg),
+                crate::expert_stream::unified_memory_bytes(),
+            );
+            if cache.policy.max_bytes != previous_max_bytes {
+                tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    prefix_cache_max_mib = cache.policy.max_bytes / (1024 * 1024),
+                    "sized the prefix cache for this model (AX_MLX_PREFIX_CACHE_MAX_BYTES overrides)"
+                );
+            }
+        }
         let native_prefix_cache_policy = prefix_cache.lock().policy;
 
         let cfg_arc = Arc::new(cfg.clone());

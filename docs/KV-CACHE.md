@@ -276,6 +276,8 @@ The disk layer is additive:
 
 | Environment variable | Default | Meaning |
 |---|---:|---|
+| `AX_MLX_PREFIX_CACHE_MAX_BYTES` | model-aware | In-memory (L1) snapshot byte budget. Unset: room for six snapshots of an 8,192-token prompt for the loaded model (about 3.9 GiB for Qwen 3.8 27B: 64 KiB/token of KV plus ~147 MiB of linear state), capped at one eighth of unified memory, never below 512 MiB. Any explicit value, including `0`, is used as is. |
+| `AX_MLX_PREFIX_CACHE_MAX_ENTRIES` | 64 | In-memory (L1) snapshot entry budget. |
 | `AX_MLX_PREFIX_CACHE_DIR` | unset | Enables the disk tier and selects the local cache directory. Empty or unset disables the disk tier. |
 | `AX_MLX_PREFIX_CACHE_DISK_DISABLED` | unset | Kill switch. When truthy, disables the disk tier even if `AX_MLX_PREFIX_CACHE_DIR` is set. |
 | `AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES` | 8 GiB | Aggregate byte budget. Invalid/blank → default; explicit `0` disables the tier. |

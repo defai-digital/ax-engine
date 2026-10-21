@@ -81,6 +81,16 @@ drop-on-block behavior remains available as
 `ax_mlx_flash_next_mtp_cursor_paused_steps` /
 `ax_mlx_flash_next_mtp_cursor_resumed` route keys.
 
+Qwen MTP drafts read the vocabulary projection once per draft step. When the
+target head is quantized at 6 bits or more (the 8-bit head of the Qwen 3.8
+27B MXFP4 pack), AX builds a draft-only 3-bit copy at load
+(`AX_MLX_MTP_QUANTIZED_HEAD_DRAFT=0` disables it; `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS`
+sets the width; `AX_MLX_MTP_DRAFT_LM_HEAD_BITS` overrides both). Verification
+still uses the target head, so committed tokens are decided as before. On an
+M5 Max 128 GB with the 27B MXFP4 pack (17 real prompts, greedy, depth 3) MTP
+decode rose from 70.3 to 77.2 tok/s with all 17 outputs token-identical; the
+4-bit Qwen 3.6 35B-A3B head is left unchanged (3 bits measured +0.3% there).
+
 `AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
 JSON line per verified MTP cycle (verify window, accepted prefix, context
 length, draft log-probs when the draft path computed them, timestamp). It adds
