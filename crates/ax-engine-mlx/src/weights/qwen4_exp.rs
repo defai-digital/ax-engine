@@ -449,13 +449,21 @@ fn load_with_schedule_admission(
     } else {
         Some(resolve_eos_token(root, manifest.vocab_size)?)
     };
-    let ple_embed_dim = require_u32(cfg.ple_embed_dim, "ple_embed_dim")?;
-    let ple_kernel = as_usize(
-        require_u32(cfg.ple_conv_kernel_size, "ple_conv_kernel_size")?,
-        "ple_conv_kernel_size",
-    )?;
-    let ngram_size = require_u32(cfg.ngram_size, "ngram_size")?;
-    let heads_per_ngram = require_u32(cfg.heads_per_ngram, "heads_per_ngram")?;
+    // PLE / n-gram geometry is only required when some layer carries a PLE
+    // bundle; a checkpoint with an empty `ple_layer_ids` needs none of it.
+    let ple_params = if ple_layer_ids.is_empty() {
+        None
+    } else {
+        Some((
+            require_u32(cfg.ple_embed_dim, "ple_embed_dim")?,
+            as_usize(
+                require_u32(cfg.ple_conv_kernel_size, "ple_conv_kernel_size")?,
+                "ple_conv_kernel_size",
+            )?,
+            require_u32(cfg.ngram_size, "ngram_size")?,
+            require_u32(cfg.heads_per_ngram, "heads_per_ngram")?,
+        ))
+    };
 
     let token_embedding = take_weight(
         specs,
@@ -562,6 +570,12 @@ fn load_with_schedule_admission(
         )?;
 
         let ple = if ple_layer_ids.contains(&(layer + 1)) {
+            let (ple_embed_dim, ple_kernel, ngram_size, heads_per_ngram) =
+                ple_params.ok_or_else(|| {
+                    WeightLoadError::InvalidLayer(format!(
+                        "qwen4_exp layer {layer}: ple layer has no PLE geometry"
+                    ))
+                })?;
             let eos = eos.ok_or_else(|| {
                 WeightLoadError::InvalidLayer(format!(
                     "qwen4_exp layer {layer}: ple layer requires an eos token but none was resolved"
