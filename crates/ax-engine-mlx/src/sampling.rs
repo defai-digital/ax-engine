@@ -83,6 +83,9 @@ pub struct MlxSamplingParams {
     pub min_p: Option<f32>,
     pub repetition_penalty: f32,
     pub repetition_context_size: Option<u32>,
+    /// OpenAI-style additive penalties over generated tokens (0 disables).
+    pub presence_penalty: f32,
+    pub frequency_penalty: f32,
     pub no_repeat_ngram_size: u32,
     pub ngram_window: u32,
     /// Explicit sampling seed. `Some(seed)` marks a reproducible request whose
@@ -100,6 +103,8 @@ impl MlxSamplingParams {
             min_p: None,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
             seed: None,
@@ -133,6 +138,34 @@ impl MlxSamplingParams {
         self
     }
 
+    pub(crate) const fn with_presence_frequency_penalty(
+        mut self,
+        presence_penalty: f32,
+        frequency_penalty: f32,
+    ) -> Self {
+        self.presence_penalty = presence_penalty;
+        self.frequency_penalty = frequency_penalty;
+        self
+    }
+
+    pub(crate) fn uses_presence_frequency_penalty(self) -> bool {
+        ax_engine_core::presence_frequency_penalty_active(
+            self.presence_penalty,
+            self.frequency_penalty,
+        )
+    }
+
+    /// Whether the repetition history handed to the sampler holds generated
+    /// tokens only: true when presence/frequency penalties are the only
+    /// history-dependent processors (OpenAI / vLLM semantics). With a
+    /// repetition penalty or n-gram ban active the history also covers the
+    /// prompt window and the additive penalties apply over that window.
+    pub(crate) fn history_is_generated_only(self) -> bool {
+        self.uses_presence_frequency_penalty()
+            && !self.uses_repetition_penalty()
+            && !self.uses_no_repeat_ngram()
+    }
+
     pub(crate) const fn with_min_p(mut self, min_p: Option<f32>) -> Self {
         self.min_p = min_p;
         self
@@ -164,7 +197,9 @@ impl MlxSamplingParams {
     }
 
     pub(crate) fn uses_logits_processors(self) -> bool {
-        self.uses_repetition_penalty() || self.uses_no_repeat_ngram()
+        self.uses_repetition_penalty()
+            || self.uses_no_repeat_ngram()
+            || self.uses_presence_frequency_penalty()
     }
 }
 
@@ -285,6 +320,14 @@ pub(crate) fn sample_categorical_into(
             sampling.ngram_window,
             repetition_tokens,
         );
+        if sampling.uses_presence_frequency_penalty() {
+            ax_engine_core::apply_presence_frequency_penalty_in_place(
+                logits_buf,
+                sampling.presence_penalty,
+                sampling.frequency_penalty,
+                repetition_tokens,
+            );
+        }
         logits_buf.as_slice()
     } else {
         logits
@@ -1427,6 +1470,37 @@ mod tests {
         let mut rng = Xorshift64::new(99);
         let tok = sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &[], &mut rng);
         assert!((tok as usize) < logits.len());
+    }
+
+    #[test]
+    fn presence_penalty_steers_greedy_sampling_away_from_generated_tokens() {
+        let logits = vec![4.0, 3.0, 0.0];
+        let mut rng = Xorshift64::new(7);
+        let sampling = MlxSamplingParams::greedy().with_presence_frequency_penalty(2.0, 0.0);
+        assert!(sampling.uses_logits_processors());
+        assert!(sampling.history_is_generated_only());
+        // Token 0 was generated before: 4.0 - 2.0 < 3.0.
+        assert_eq!(sample_categorical(&logits, sampling, &[0], &mut rng), 1);
+        // Nothing generated yet: no penalty.
+        assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 0);
+        // Frequency penalty scales with the count.
+        let frequency = MlxSamplingParams::greedy().with_presence_frequency_penalty(0.0, 0.6);
+        assert_eq!(sample_categorical(&logits, frequency, &[0, 0], &mut rng), 1);
+        assert_eq!(sample_categorical(&logits, frequency, &[0], &mut rng), 0);
+    }
+
+    #[test]
+    fn combined_processors_keep_the_prompt_window_history() {
+        let sampling = MlxSamplingParams::greedy()
+            .with_presence_frequency_penalty(1.0, 0.0)
+            .with_repetition_penalty(1.1, None);
+        assert!(!sampling.history_is_generated_only());
+        assert!(!MlxSamplingParams::greedy().history_is_generated_only());
+        assert!(
+            !MlxSamplingParams::greedy()
+                .with_presence_frequency_penalty(f32::NAN, 0.0)
+                .uses_logits_processors()
+        );
     }
 
     #[test]

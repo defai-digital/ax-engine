@@ -785,6 +785,8 @@ fn build_llama_cpp_completion_request<'a>(
         min_p: request.sampling.min_p,
         repeat_penalty: request.sampling.repetition_penalty,
         repeat_last_n: request.sampling.repetition_context_size,
+        presence_penalty: request.sampling.presence_penalty,
+        frequency_penalty: request.sampling.frequency_penalty,
         seed: request.sampling.seed,
         n_predict: request.max_output_tokens,
         stream,
@@ -808,6 +810,8 @@ fn build_llama_cpp_chat_completion_request(
         min_p: request.sampling.min_p,
         repeat_penalty: request.sampling.repetition_penalty,
         repeat_last_n: request.sampling.repetition_context_size,
+        presence_penalty: request.sampling.presence_penalty,
+        frequency_penalty: request.sampling.frequency_penalty,
         seed: request.sampling.seed,
         stream,
         stop: request.stop_sequences.clone(),
@@ -982,6 +986,10 @@ struct LlamaCppCompletionRequest<'a> {
     /// Number of tokens to look back when applying repeat penalty (llama.cpp: repeat_last_n).
     #[serde(skip_serializing_if = "Option::is_none")]
     repeat_last_n: Option<u32>,
+    #[serde(skip_serializing_if = "is_zero_penalty")]
+    presence_penalty: f32,
+    #[serde(skip_serializing_if = "is_zero_penalty")]
+    frequency_penalty: f32,
     seed: u64,
     n_predict: u32,
     stream: bool,
@@ -1004,6 +1012,10 @@ struct LlamaCppChatCompletionRequest<'a> {
     repeat_penalty: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     repeat_last_n: Option<u32>,
+    #[serde(skip_serializing_if = "is_zero_penalty")]
+    presence_penalty: f32,
+    #[serde(skip_serializing_if = "is_zero_penalty")]
+    frequency_penalty: f32,
     seed: u64,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1141,6 +1153,10 @@ fn llama_cpp_server_completion_route(
     route
 }
 
+fn is_zero_penalty(value: &f32) -> bool {
+    *value == 0.0
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -1153,6 +1169,40 @@ mod tests {
             &BackendPolicy::allow_llama_cpp(),
             &ResolvedBackend::llama_cpp(SelectedBackend::LlamaCpp, "test delegated route"),
         )
+    }
+
+    #[test]
+    fn completion_payload_carries_penalties_only_when_set() {
+        let mut request = GenerateRequest {
+            model_id: "qwen3".to_string(),
+            input_tokens: Vec::new(),
+            input_text: Some("hi".to_string()),
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 3,
+            sampling: crate::generate::GenerateSampling::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        };
+        let value = serde_json::to_value(build_llama_cpp_completion_request(
+            LlamaCppPrompt::Text("hi"),
+            &request,
+            false,
+            false,
+        ))
+        .expect("payload serializes");
+        assert!(value.get("presence_penalty").is_none());
+        assert!(value.get("frequency_penalty").is_none());
+        request.sampling.presence_penalty = 1.5;
+        request.sampling.frequency_penalty = 0.25;
+        let value = serde_json::to_value(build_llama_cpp_completion_request(
+            LlamaCppPrompt::Text("hi"),
+            &request,
+            false,
+            false,
+        ))
+        .expect("payload serializes");
+        assert_eq!(value["presence_penalty"], 1.5);
+        assert_eq!(value["frequency_penalty"], 0.25);
     }
 
     #[test]

@@ -302,6 +302,8 @@ mod tests {
                 deterministic: Some(true),
                 repetition_penalty: 1.1,
                 repetition_context_size: Some(64),
+                presence_penalty: 0.0,
+                frequency_penalty: 0.0,
                 no_repeat_ngram_size: 35,
                 ngram_window: 128,
                 ignore_eos: true,

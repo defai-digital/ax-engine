@@ -482,6 +482,8 @@ fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext 
         top_k: 0,
         repetition_penalty: 1.0,
         repetition_context_size: None,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: false,
@@ -4154,6 +4156,8 @@ fn split_prefill_only_completes_on_final_prompt_chunk() {
         top_k: 0,
         repetition_penalty: 1.0,
         repetition_context_size: None,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: false,
@@ -8566,4 +8570,31 @@ fn block_aligned_prefix_hashes_match_full_rehash_per_boundary() {
     // Unaligned tails contribute no boundary; empty input has none.
     assert_eq!(block_aligned_prefix_hashes(&tokens[..39], 4).len(), 9);
     assert!(block_aligned_prefix_hashes(&[], 4).is_empty());
+}
+
+#[test]
+fn presence_penalty_history_holds_generated_tokens_only() {
+    let mut state = RequestState::new(2, 1, None);
+    state.prompt_prefix_tokens = vec![10, 11, 12];
+    state.generated_tokens = vec![20, 21];
+    let presence = MlxSamplingParams::greedy().with_presence_frequency_penalty(1.5, 0.0);
+    assert_eq!(state.repetition_history(&[13], presence), vec![20, 21]);
+    // With a repetition penalty the history keeps its prompt + output window.
+    let combined = presence.with_repetition_penalty(1.1, Some(4));
+    assert_eq!(
+        state.repetition_history(&[13], combined),
+        vec![12, 13, 20, 21]
+    );
+    // Logits processors route MTP requests to direct decode.
+    assert_eq!(
+        mtp_request_route(
+            true,
+            true,
+            true,
+            false,
+            false,
+            presence.uses_logits_processors()
+        ),
+        MtpRequestRoute::DirectFallback
+    );
 }

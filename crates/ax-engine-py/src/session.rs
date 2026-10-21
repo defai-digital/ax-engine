@@ -601,6 +601,8 @@ fn sampling_from_params(
         min_p,
         repetition_penalty,
         repetition_context_size,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
         no_repeat_ngram_size,
         ngram_window,
         seed: seed.unwrap_or(0),

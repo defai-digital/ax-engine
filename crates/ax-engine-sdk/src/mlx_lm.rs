@@ -442,6 +442,8 @@ fn build_mlx_lm_completion_request<'a>(
         min_p: request.sampling.min_p,
         repetition_penalty: request.sampling.repetition_penalty,
         repetition_context_size: request.sampling.repetition_context_size,
+        presence_penalty: request.sampling.presence_penalty,
+        frequency_penalty: request.sampling.frequency_penalty,
         seed: request.sampling.seed,
         stream,
         stop: request.stop_sequences.clone(),
@@ -475,6 +477,8 @@ fn build_mlx_lm_chat_completion_request(
         min_p: request.sampling.min_p,
         repetition_penalty: request.sampling.repetition_penalty,
         repetition_context_size: request.sampling.repetition_context_size,
+        presence_penalty: request.sampling.presence_penalty,
+        frequency_penalty: request.sampling.frequency_penalty,
         seed: request.sampling.seed,
         stream,
         stop: request.stop_sequences.clone(),
@@ -534,6 +538,10 @@ struct MlxLmCompletionRequest<'a> {
     repetition_penalty: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     repetition_context_size: Option<u32>,
+    #[serde(skip_serializing_if = "is_zero_penalty")]
+    presence_penalty: f32,
+    #[serde(skip_serializing_if = "is_zero_penalty")]
+    frequency_penalty: f32,
     seed: u64,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -556,6 +564,10 @@ struct MlxLmChatCompletionRequest<'a> {
     repetition_penalty: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     repetition_context_size: Option<u32>,
+    #[serde(skip_serializing_if = "is_zero_penalty")]
+    presence_penalty: f32,
+    #[serde(skip_serializing_if = "is_zero_penalty")]
+    frequency_penalty: f32,
     seed: u64,
     stream: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -619,6 +631,10 @@ struct MlxLmChatCompletionResponse {
     choices: Vec<MlxLmChatCompletionChoice>,
     #[serde(default)]
     usage: Option<MlxLmCompletionUsage>,
+}
+
+fn is_zero_penalty(value: &f32) -> bool {
+    *value == 0.0
 }
 
 #[cfg(test)]
@@ -933,6 +949,22 @@ mod tests {
             &BackendPolicy::allow_mlx_lm_delegated(),
             &ResolvedBackend::mlx_lm_delegated("test delegated route"),
         )
+    }
+
+    #[test]
+    fn completion_payload_carries_penalties_only_when_set() {
+        let plain = text_request("hi");
+        let value = serde_json::to_value(build_mlx_lm_completion_request(&plain, "hi", false))
+            .expect("payload serializes");
+        assert!(value.get("presence_penalty").is_none());
+        assert!(value.get("frequency_penalty").is_none());
+        let mut penalised = text_request("hi");
+        penalised.sampling.presence_penalty = 1.5;
+        penalised.sampling.frequency_penalty = -0.5;
+        let value = serde_json::to_value(build_mlx_lm_completion_request(&penalised, "hi", false))
+            .expect("payload serializes");
+        assert_eq!(value["presence_penalty"], 1.5);
+        assert_eq!(value["frequency_penalty"], -0.5);
     }
 
     fn text_request(prompt: &str) -> GenerateRequest {
