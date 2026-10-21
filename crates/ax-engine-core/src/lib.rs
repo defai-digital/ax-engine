@@ -114,11 +114,12 @@ pub use runner::{
     DeterministicRunner, DiffusionScheduleUpdate, EmbeddingMatrix, EmbeddingPooling,
     ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelBindingSummary,
     RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable, RunnerInput, RunnerOutput,
-    RunnerRequestMultimodalInput,
+    RunnerRequestLogitBias, RunnerRequestMultimodalInput,
 };
 pub use sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, StopReason,
-    TokenSampler, apply_presence_frequency_penalty_in_place, presence_frequency_penalty_active,
+    TokenSampler, apply_logit_bias_in_place, apply_presence_frequency_penalty_in_place,
+    presence_frequency_penalty_active,
 };
 pub use scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, PositionRange,

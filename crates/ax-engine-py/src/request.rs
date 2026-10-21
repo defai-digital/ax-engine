@@ -306,6 +306,7 @@ mod tests {
                 frequency_penalty: 0.0,
                 no_repeat_ngram_size: 35,
                 ngram_window: 128,
+                logit_bias: Default::default(),
                 ignore_eos: true,
             },
             vec!["stop".to_string()],

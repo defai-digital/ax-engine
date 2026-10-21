@@ -414,6 +414,10 @@ pub struct GenerateSampling {
     /// Maximum recent token history inspected for repeated n-grams.
     #[serde(default = "default_ngram_window")]
     pub ngram_window: u32,
+    /// OpenAI-style `logit_bias`: token id -> bias added to its logit
+    /// (JSON keys are token-id strings). Empty disables it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub logit_bias: std::collections::BTreeMap<u32, f32>,
     #[serde(default)]
     pub seed: u64,
     /// True when `seed` was explicitly supplied, including zero. Non-zero
@@ -448,6 +452,7 @@ impl Default for GenerateSampling {
             frequency_penalty: 0.0,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
+            logit_bias: std::collections::BTreeMap::new(),
             seed: 0,
             seed_explicit: false,
             deterministic: None,
@@ -481,6 +486,7 @@ impl GenerateSampling {
             frequency_penalty: self.frequency_penalty,
             no_repeat_ngram_size: self.no_repeat_ngram_size,
             ngram_window: self.ngram_window,
+            logit_bias: self.logit_bias.into_iter().collect(),
             seed: self.seed,
             seed_explicit: self.seed_explicit || self.seed != 0,
             deterministic,

@@ -48,15 +48,19 @@ These are not in the current compatibility contract:
 - stateful Responses conversations (`store=true`, `previous_response_id`, or
   `conversation`), streamed Responses events, background responses, hosted
   prompts, built-in web/file/computer tools, and MCP tools
-- full OpenAI parameter parity such as logprobs or `n`; non-default `n`,
-  `best_of`, and `logit_bias` values fail closed with an
-  `unsupported_parameter` error instead of being silently ignored.
+- full OpenAI parameter parity such as logprobs or `n`; non-default `n` and
+  `best_of` values fail closed with an `unsupported_parameter` error instead
+  of being silently ignored. `logit_bias` is supported as an object of
+  token-id strings to a bias in [-100, 100] (at most 1,024 entries; the array
+  form and non-numeric keys are rejected with `invalid_request_error`; ids
+  outside the vocabulary are ignored). It is added to the raw logits before
+  the other processors and is forwarded to llama.cpp and mlx-lm backends.
   `presence_penalty` and `frequency_penalty` are supported (range -2.0 to 2.0,
   counted over generated tokens as in vLLM; when combined with
   `repetition_penalty` or `no_repeat_ngram_size` they count that processor's
   history window). A request that sets either one gets `repetition_penalty`
-  1.0 unless it sends its own. Like any logits processor they run on direct
-  decode, not inside MTP or n-gram speculation. On `/v1/chat/completions`, effort levels do the same:
+  1.0 unless it sends its own. Like any logits processor, these and
+  `logit_bias` run on direct decode, not inside MTP or n-gram speculation. On `/v1/chat/completions`, effort levels do the same:
   `reasoning_effort`, `reasoning.effort` and a `reasoning` string that is not
   an on/off switch (for example `"high"`) are rejected, because thinking is a
   switch plus a token budget, not a level; use
