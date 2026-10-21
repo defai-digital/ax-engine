@@ -67,6 +67,69 @@ fn parse_eos_token_id(config: &serde_json::Value) -> Option<u32> {
     })
 }
 
+/// Pre-tokenizer split regex shipped by the Qwen2-era tokenizers: a word is a
+/// run of `\p{L}` only, so a combining mark ends the word.
+const LEGACY_QWEN2_PRETOKENIZER_SPLIT: &str = concat!(
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}|",
+    r" ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+);
+
+/// The regex the Qwen3.5-generation models (and the official Qwen3.5 / 3.6 /
+/// 3.8 `tokenizer.json`) were trained with: letters and their combining marks
+/// (`\p{M}`) stay in one word. Latin, CJK and code tokenize identically;
+/// Devanagari, Thai and vowelled Arabic no longer split at every mark.
+const QWEN3_PRETOKENIZER_SPLIT: &str = concat!(
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}|",
+    r" ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+);
+
+/// Whether `config.json` describes a Qwen3.5-generation (or later) text model.
+/// Plain `qwen3` / `qwen2` and the earlier `qwen3_next` keep their own regex.
+fn is_qwen3_pretokenizer_family(config: &serde_json::Value) -> bool {
+    let model_types = [
+        config.get("model_type"),
+        config
+            .get("text_config")
+            .and_then(|text| text.get("model_type")),
+    ];
+    model_types
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .any(|model_type| model_type.starts_with("qwen3_5") || model_type.starts_with("qwen4"))
+}
+
+/// Swap the legacy Qwen2 split regex for the Qwen3 one inside raw
+/// `tokenizer.json` text. Matches the whole quoted JSON string, so any other
+/// regex (including a tokenizer that already carries the Qwen3 one) is left
+/// untouched. Returns `None` when nothing needed rewriting.
+fn restore_qwen3_pretokenizer(tokenizer_json: &str) -> Option<String> {
+    let legacy = serde_json::to_string(LEGACY_QWEN2_PRETOKENIZER_SPLIT).ok()?;
+    if !tokenizer_json.contains(&legacy) {
+        return None;
+    }
+    let current = serde_json::to_string(QWEN3_PRETOKENIZER_SPLIT).ok()?;
+    Some(tokenizer_json.replace(&legacy, &current))
+}
+
+/// Load `tokenizer.json`, restoring the Qwen3 pre-tokenizer regex when a
+/// Qwen3.5-generation pack shipped the legacy one (the model was trained on
+/// the Qwen3 regex, so the legacy split changes token ids for scripts with
+/// combining marks). A rewrite that fails to load falls back to the file.
+fn load_tokenizer(
+    tok_path: &Path,
+    config: Option<&serde_json::Value>,
+) -> Result<Tokenizer, EngineTokenizerError> {
+    if config.is_some_and(is_qwen3_pretokenizer_family)
+        && let Ok(text) = std::fs::read_to_string(tok_path)
+        && let Some(fixed) = restore_qwen3_pretokenizer(&text)
+        && let Ok(tokenizer) = Tokenizer::from_bytes(fixed.as_bytes())
+    {
+        return Ok(tokenizer);
+    }
+    Tokenizer::from_file(tok_path).map_err(|e| EngineTokenizerError::Load(e.to_string()))
+}
+
 impl EngineTokenizer {
     /// Load from a `tokenizer.json` file. `model_dir` is the model
     /// artifacts directory; this looks for `tokenizer.json` inside it.
@@ -80,13 +143,11 @@ impl EngineTokenizer {
                 tok_path.display().to_string(),
             ));
         }
-        let inner = Tokenizer::from_file(&tok_path)
-            .map_err(|e| EngineTokenizerError::Load(e.to_string()))?;
-
-        let eos_token_id = std::fs::read_to_string(model_dir.join("config.json"))
+        let config = std::fs::read_to_string(model_dir.join("config.json"))
             .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| parse_eos_token_id(&v));
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let inner = load_tokenizer(&tok_path, config.as_ref())?;
+        let eos_token_id = config.as_ref().and_then(parse_eos_token_id);
 
         Ok(Self {
             inner,
@@ -277,6 +338,140 @@ mod tests {
 
     use super::*;
     use std::path::Path;
+
+    /// Minimal `tokenizer.json` whose pre-tokenizer is the given split regex;
+    /// the word-level model is irrelevant to the split boundaries under test.
+    fn tokenizer_json_with_split(regex: &str) -> String {
+        serde_json::json!({
+            "version": "1.0",
+            "truncation": null,
+            "padding": null,
+            "added_tokens": [],
+            "normalizer": null,
+            "pre_tokenizer": {
+                "type": "Sequence",
+                "pretokenizers": [
+                    {"type": "Split", "pattern": {"Regex": regex}, "behavior": "Isolated", "invert": false},
+                    {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": false, "use_regex": false}
+                ]
+            },
+            "post_processor": null,
+            "decoder": null,
+            "model": {"type": "WordLevel", "vocab": {"[UNK]": 0}, "unk_token": "[UNK]"}
+        })
+        .to_string()
+    }
+
+    fn split_count(tokenizer: &Tokenizer, text: &str) -> usize {
+        use tokenizers::{OffsetReferential, OffsetType, PreTokenizedString, PreTokenizer};
+        let mut pretokenized = PreTokenizedString::from(text);
+        tokenizer
+            .get_pre_tokenizer()
+            .expect("pre-tokenizer")
+            .pre_tokenize(&mut pretokenized)
+            .expect("pre-tokenize");
+        pretokenized
+            .get_splits(OffsetReferential::Original, OffsetType::Byte)
+            .len()
+    }
+
+    #[test]
+    fn qwen3_regex_keeps_combining_marks_in_one_word() {
+        let legacy_json = tokenizer_json_with_split(LEGACY_QWEN2_PRETOKENIZER_SPLIT);
+        let fixed_json = restore_qwen3_pretokenizer(&legacy_json).expect("legacy regex rewritten");
+        assert!(!fixed_json.contains(
+            &serde_json::to_string(LEGACY_QWEN2_PRETOKENIZER_SPLIT).expect("json string")
+        ));
+
+        let legacy = Tokenizer::from_bytes(legacy_json.as_bytes()).expect("legacy tokenizer");
+        let fixed = Tokenizer::from_bytes(fixed_json.as_bytes()).expect("fixed tokenizer");
+
+        // Hindi and Thai words carry Mn/Mc marks: the legacy regex splits at
+        // every mark, the Qwen3 regex keeps each word whole.
+        let hindi = "नमस्ते दुनिया";
+        assert_eq!(split_count(&fixed, hindi), 2);
+        assert!(split_count(&legacy, hindi) > 2);
+        let thai = "สวัสดีครับ";
+        assert_eq!(split_count(&fixed, thai), 1);
+        assert!(split_count(&legacy, thai) > 1);
+
+        // Latin, CJK, digits and code split identically under both.
+        for text in [
+            "Hello, world! It's 2026.",
+            "你好，世界",
+            "fn main() { println!(\"hi\"); }",
+            "line one\n\nline two",
+        ] {
+            assert_eq!(
+                split_count(&fixed, text),
+                split_count(&legacy, text),
+                "split boundaries changed for {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_leaves_other_regexes_and_already_fixed_tokenizers_alone() {
+        assert!(restore_qwen3_pretokenizer("{}").is_none());
+        let other = tokenizer_json_with_split(r"\w+");
+        assert!(restore_qwen3_pretokenizer(&other).is_none());
+        let already = tokenizer_json_with_split(QWEN3_PRETOKENIZER_SPLIT);
+        assert!(restore_qwen3_pretokenizer(&already).is_none());
+    }
+
+    #[test]
+    fn pretokenizer_family_gate_is_limited_to_qwen3_5_and_later() {
+        let family = |config: serde_json::Value| is_qwen3_pretokenizer_family(&config);
+        assert!(family(serde_json::json!({"model_type": "qwen3_5"})));
+        assert!(family(serde_json::json!({
+            "model_type": "qwen3_5_moe",
+            "text_config": {"model_type": "qwen3_5_moe_text"}
+        })));
+        assert!(family(
+            serde_json::json!({"text_config": {"model_type": "qwen3_5_text"}})
+        ));
+        assert!(!family(serde_json::json!({"model_type": "qwen3_next"})));
+        assert!(family(serde_json::json!({"model_type": "qwen4_exp"})));
+        assert!(!family(serde_json::json!({"model_type": "qwen3"})));
+        assert!(!family(serde_json::json!({"model_type": "qwen2"})));
+        assert!(!family(serde_json::json!({"model_type": "gemma4"})));
+        assert!(!family(serde_json::json!({})));
+    }
+
+    #[test]
+    fn load_tokenizer_restores_regex_only_for_qwen3_5_family() {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-tokenizer-regex-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let tok_path = dir.join("tokenizer.json");
+        std::fs::write(
+            &tok_path,
+            tokenizer_json_with_split(LEGACY_QWEN2_PRETOKENIZER_SPLIT),
+        )
+        .expect("write tokenizer");
+        let hindi = "नमस्ते दुनिया";
+
+        let qwen35 = load_tokenizer(
+            &tok_path,
+            Some(&serde_json::json!({"model_type": "qwen3_5"})),
+        )
+        .expect("load");
+        assert_eq!(split_count(&qwen35, hindi), 2);
+
+        let qwen3 = load_tokenizer(&tok_path, Some(&serde_json::json!({"model_type": "qwen3"})))
+            .expect("load");
+        assert!(split_count(&qwen3, hindi) > 2);
+
+        let unknown = load_tokenizer(&tok_path, None).expect("load");
+        assert!(split_count(&unknown, hindi) > 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn prewarm_model_dir_reports_missing_tokenizer() {
