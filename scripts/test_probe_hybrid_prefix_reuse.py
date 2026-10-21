@@ -55,6 +55,15 @@ class FindRouteTests(unittest.TestCase):
         self.assertEqual(probe.find_route({"items": [{"x": 1}]}), {})
 
 
+class FindOutputTokensTests(unittest.TestCase):
+    def test_reads_top_level_output_tokens(self):
+        self.assertEqual(probe.find_output_tokens({"output_tokens": [3, "4"]}), [3, 4])
+
+    def test_missing_output_tokens_is_empty(self):
+        self.assertEqual(probe.find_output_tokens({"output_tokens": None}), [])
+        self.assertEqual(probe.find_output_tokens({}), [])
+
+
 class PositiveIntTests(unittest.TestCase):
     def test_rejects_non_positive(self):
         with self.assertRaises(argparse.ArgumentTypeError):

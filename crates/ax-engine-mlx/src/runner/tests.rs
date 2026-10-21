@@ -3512,6 +3512,49 @@ fn prefix_cache_exact_membership_rejects_collision_tokens_without_touching_lru()
 }
 
 #[test]
+fn linear_grid_rung_head_len_lands_on_the_restore_grid() {
+    let rung = MlxRunner::linear_grid_rung_head_len;
+    // Cold 5500-token prompt, 1024 grid: rung 5120, distinct from the
+    // block boundary 5488.
+    assert_eq!(rung(16, 1024, 1024, 0, 5500), Some(5120));
+    // The rung sits strictly before the final token: a grid-aligned prompt
+    // end steps back one rung (the singleton tail keeps its own step).
+    assert_eq!(rung(16, 1024, 1024, 0, 6144), Some(5120));
+    assert_eq!(rung(16, 1024, 1024, 0, 6160), Some(6144));
+    // 6145 and 6150 have block boundary 6144 == rung: the boundary capture
+    // already stores it.
+    assert_eq!(rung(16, 1024, 1024, 0, 6145), None);
+    assert_eq!(rung(16, 1024, 1024, 0, 6150), None);
+    // Prompt inside the first chunk has no rung.
+    assert_eq!(rung(16, 1024, 1024, 0, 1024), None);
+    assert_eq!(rung(16, 1024, 1024, 0, 700), None);
+    // An item that starts on the rung (scheduler-split final item, or a
+    // warm extension from a restored rung) captures before prefilling; the
+    // next rung appears only if the tail crosses another chunk.
+    assert_eq!(rung(16, 1024, 1024, 5120, 900), Some(0));
+    assert_eq!(rung(16, 2048, 2048, 6144, 64), Some(0));
+    assert_eq!(rung(16, 1024, 1024, 5120, 2000), Some(1024));
+    // Off-grid prior context or a clamped request chunk would change the
+    // chunk trajectory: no rung.
+    assert_eq!(rung(16, 1024, 1024, 5488, 2000), None);
+    assert_eq!(rung(16, 2048, 512, 0, 9000), None);
+    // Degenerate inputs.
+    assert_eq!(rung(0, 1024, 1024, 0, 5500), None);
+    assert_eq!(rung(16, 0, 0, 0, 5500), None);
+    assert_eq!(rung(16, 1024, 1024, 0, 0), None);
+    assert_eq!(rung(48, 1000, 1000, 0, 5500), None);
+    // The rung is always a whole number of request chunks and never passes
+    // the block-aligned boundary.
+    for total in 1..=5000usize {
+        if let Some(head) = rung(16, 1024, 1024, 0, total) {
+            assert!(head.is_multiple_of(1024), "total={total}");
+            assert!(head < total, "total={total}");
+            assert!(head <= total - total % 16, "total={total}");
+        }
+    }
+}
+
+#[test]
 fn linear_boundary_capture_head_len_covers_alignment_cases() {
     let head = MlxRunner::linear_boundary_capture_head_len;
     // Single-item unaligned prompt: capture at floor16.
@@ -3846,10 +3889,21 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
             prefix_tokens_reused: prefix_len as u32,
             prefix_blocks_reused: 1,
         };
-        let selected = grid_aligned_prefix_restore_len(&item, prefix_len, chunk);
+        let selected = grid_aligned_prefix_restore_len(&item, prefix_len, chunk, false);
         assert_eq!(
             selected, expected,
             "prefix={prefix_len}, suffix={suffix_len}"
+        );
+        // Gap replay keeps a non-zero rung below the claim; a zero rung
+        // still replays the whole prompt.
+        let gap_expected = match expected {
+            None if prefix_len / chunk * chunk > 0 => Some(prefix_len / chunk * chunk),
+            other => other,
+        };
+        assert_eq!(
+            grid_aligned_prefix_restore_len(&item, prefix_len, chunk, true),
+            gap_expected,
+            "gap replay prefix={prefix_len}, suffix={suffix_len}"
         );
         if selected.is_none() {
             let telemetry = MlxPrefixCacheTelemetry {
@@ -3867,9 +3921,55 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
             assert_eq!(replay, [vec![1; prefix_len], vec![2; suffix_len]].concat());
         }
         if prefix_len == 0 {
-            assert_eq!(grid_aligned_prefix_restore_len(&item, 12, chunk), Some(8));
+            assert_eq!(
+                grid_aligned_prefix_restore_len(&item, 12, chunk, false),
+                Some(8)
+            );
         }
     }
+}
+
+#[test]
+fn scheduler_gap_replay_runs_claimed_tokens_past_the_restored_rung() {
+    let item = ax_engine_core::ExecutionItem {
+        request_id: RequestId(23),
+        mode: ExecutionMode::Prefill,
+        planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+        input_token_slice: vec![9, 9],
+        reused_prefix_token_slice: (0..12).collect(),
+        position_range: PositionRange {
+            start: 12,
+            end_exclusive: 14,
+        },
+        scheduled_token_count: 2,
+        block_table_ref: RequestId(23),
+        prefix_tokens_reused: 12,
+        prefix_blocks_reused: 3,
+    };
+    let mut state = RequestState::new(2, 23, None);
+    // Nothing restored: the warmup fallback owns this case.
+    assert!(scheduler_gap_replay_tokens(&item, &item.input_token_slice, &state).is_none());
+
+    state.cache.advance(8);
+    state.prompt_prefix_tokens = (0..8).collect();
+    assert_eq!(
+        scheduler_gap_replay_tokens(&item, &item.input_token_slice, &state),
+        Some(vec![8, 9, 10, 11, 9, 9])
+    );
+
+    // A restored prefix that disagrees with the claim never splices.
+    state.prompt_prefix_tokens = vec![0; 8];
+    assert!(scheduler_gap_replay_tokens(&item, &item.input_token_slice, &state).is_none());
+
+    // A restore that covers the claim, or a decode item, needs no gap.
+    let mut covered = RequestState::new(2, 23, None);
+    covered.cache.advance(12);
+    covered.prompt_prefix_tokens = (0..12).collect();
+    assert!(scheduler_gap_replay_tokens(&item, &item.input_token_slice, &covered).is_none());
+    let mut decode = item.clone();
+    decode.mode = ExecutionMode::Decode;
+    state.prompt_prefix_tokens = (0..8).collect();
+    assert!(scheduler_gap_replay_tokens(&decode, &decode.input_token_slice, &state).is_none());
 }
 
 #[test]

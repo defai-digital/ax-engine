@@ -367,6 +367,10 @@ struct RequestState {
     /// state does not roll back). `(boundary_token_len, cache_at_boundary)`;
     /// consumed by `store_prompt_prefix_snapshots` after the prefill item.
     prefill_boundary_snapshot: Option<(usize, MlxKVCache)>,
+    /// Lazy cache clone at the last prefill-chunk grid rung of a completed
+    /// linear-attention prompt (`linear_grid_rung_head_len`), the restore
+    /// point of a sibling prompt or follow-up turn.
+    prefill_grid_snapshot: Option<(usize, MlxKVCache)>,
     ngram: NgramTable,
     /// Per-request PRNG for sampling-capable paths. Seeded from the request's
     /// sampling seed so repeated deterministic requests are reproducible.
@@ -1149,6 +1153,7 @@ impl RequestState {
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
             prefill_boundary_snapshot: None,
+            prefill_grid_snapshot: None,
             ngram: NgramTable::new(),
             rng: crate::sampling::request_rng(explicit_seed, fallback_seed),
             sampling_probs_buf: Vec::new(),
@@ -6547,7 +6552,16 @@ impl MlxRunner {
                         &prefix_cache,
                         &state,
                     );
-                    let prefill_tokens_base = full_recompute_tokens.as_deref().unwrap_or(token_ids);
+                    // A restore floored to the chunk grid below the
+                    // scheduler claim: replay the claimed gap on top of it.
+                    let gap_replay_tokens = full_recompute_tokens
+                        .is_none()
+                        .then(|| scheduler_gap_replay_tokens(item, token_ids, &state))
+                        .flatten();
+                    let prefill_tokens_base = full_recompute_tokens
+                        .as_deref()
+                        .or(gap_replay_tokens.as_deref())
+                        .unwrap_or(token_ids);
                     if full_recompute_tokens.is_some() {
                         state.cache.reset();
                         state.prompt_prefix_tokens.clear();
@@ -6561,11 +6575,12 @@ impl MlxRunner {
                     // slicing them off, chunked_prefill would write
                     // duplicate K/V past the existing seq_len. Detect
                     // that gap and skip the leading reused portion.
-                    let probe_over_claim = if full_recompute_tokens.is_some() {
-                        0
-                    } else {
-                        runner_probe_over_claim(state.cache.seq_len(), item)
-                    };
+                    let probe_over_claim =
+                        if full_recompute_tokens.is_some() || gap_replay_tokens.is_some() {
+                            0
+                        } else {
+                            runner_probe_over_claim(state.cache.seq_len(), item)
+                        };
                     let prefill_tokens = if probe_over_claim < prefill_tokens_base.len() {
                         &prefill_tokens_base[probe_over_claim..]
                     } else {
@@ -6626,6 +6641,50 @@ impl MlxRunner {
                     // below prefill the remainder. The clone is handle-only;
                     // its one real cost is a single non-donated full-attention
                     // K/V append on the following chunk.
+                    // Restore floors a multi-token warm extension to the
+                    // prefill-chunk grid, and linear state cannot be trimmed
+                    // down to it, so the block-aligned boundary snapshot
+                    // alone never serves a sibling prompt or a follow-up
+                    // turn. Split once more at the last grid rung of the
+                    // completed prompt: the head is whole chunks the cold
+                    // trajectory already runs, so no chunk shape changes and
+                    // a warm restore at the rung replays the same tail.
+                    let rung_head = if self.cfg.linear_attention.is_some()
+                        && !flash_next_mtp_prefill
+                        && prefill_completes_prompt
+                        && crate::fastpath::linear_prefix_grid_rung_enabled()
+                        && self.prefix_cache.lock().enabled()
+                    {
+                        Self::linear_grid_rung_head_len(
+                            block_size_tokens as usize,
+                            self.prefill_chunk,
+                            prefill_chunk_for_request,
+                            state.cache.seq_len(),
+                            prefill_tokens.len(),
+                        )
+                        // A rung this item just restored is already stored.
+                        .filter(|&head| head > 0 || prefix_cache.hits == 0)
+                    } else {
+                        None
+                    };
+                    let prefill_tokens = if let Some(head) = rung_head {
+                        if head > 0 {
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                &prefill_tokens[..head],
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                CacheOnlyPrefillLayout::Batched,
+                                crate::generate::CacheOnlyBarrier::Blocking,
+                            );
+                        }
+                        state.prefill_grid_snapshot =
+                            Some((state.cache.seq_len(), state.cache.clone()));
+                        &prefill_tokens[head..]
+                    } else {
+                        prefill_tokens
+                    };
                     let prefill_tokens = if self.cfg.linear_attention.is_some()
                         && self.prefix_cache.lock().enabled()
                         && let Some(head) = Self::linear_boundary_capture_head_len(
@@ -6890,6 +6949,8 @@ impl MlxRunner {
                     let prefill_token_count = effective_prefill_token_count;
                     if let Some(tokens) = full_recompute_tokens {
                         state.prompt_prefix_tokens = tokens;
+                    } else if let Some(tokens) = gap_replay_tokens.as_deref() {
+                        state.prompt_prefix_tokens.extend_from_slice(tokens);
                     } else {
                         extend_prompt_prefix_tokens(&mut state, item, token_ids);
                     }
@@ -6929,6 +6990,22 @@ impl MlxRunner {
                             },
                         ),
                     );
+                    if let Some((rung_len, rung_cache)) = state.prefill_grid_snapshot.take()
+                        && let Some(media_key) = media_key.as_deref()
+                        && rung_cache.seq_len() == rung_len
+                        && rung_len <= state.prompt_prefix_tokens.len()
+                        && !rung_cache.has_rotated_sliding_layers()
+                    {
+                        prefix_cache.merge_from(self.store_linear_boundary_snapshot(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            rung_len,
+                            &rung_cache,
+                            u64::from(cold_prefill_us),
+                            media_key,
+                        ));
+                    }
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
                     // Record pure prefill wall time before initialize_generation_state.
                     // MTP warmup and generation-state init are decode preparation, not
@@ -7396,6 +7473,44 @@ impl MlxRunner {
         (boundary > prior_seq_len).then(|| boundary - prior_seq_len)
     }
 
+    /// Relative length of the cache-only head that ends on the last
+    /// prefill-chunk grid rung strictly before the final prompt token, the
+    /// length a later warm extension restores (`grid_aligned_prefix_restore_len`).
+    /// `Some(0)` when the item starts on that rung (capture before any
+    /// prefill). `None` unless the request chunk equals the restore grid (so
+    /// a warm replay runs the same chunks), the prior context sits on the
+    /// grid, the rung is block-aligned, non-zero and not inside the prior
+    /// context, and the rung is not already the block-aligned boundary
+    /// capture.
+    pub fn linear_grid_rung_head_len(
+        block_size: usize,
+        grid: usize,
+        request_chunk: usize,
+        prior_seq_len: usize,
+        item_len: usize,
+    ) -> Option<usize> {
+        if block_size == 0 || grid == 0 || item_len == 0 || request_chunk != grid {
+            return None;
+        }
+        if !prior_seq_len.is_multiple_of(grid) || !grid.is_multiple_of(block_size) {
+            return None;
+        }
+        let total = prior_seq_len + item_len;
+        let rung = (total - 1) / grid * grid;
+        if rung == 0 || rung < prior_seq_len {
+            return None;
+        }
+        if rung == prior_seq_len {
+            // A scheduler-split prompt reaches its final item already on the
+            // rung: capture the cache as it stands, no split needed.
+            return Some(0);
+        }
+        let boundary_capture =
+            Self::linear_boundary_capture_head_len(block_size, prior_seq_len, item_len)
+                .map(|head| prior_seq_len + head);
+        (boundary_capture != Some(rung)).then(|| rung - prior_seq_len)
+    }
+
     fn longest_block_aligned_prefix_by_probe<F>(
         block_size_tokens: u32,
         input: &[u32],
@@ -7695,9 +7810,13 @@ impl MlxRunner {
         // under one chunk is cheaper than any drift risk. Restores that
         // need no multi-token extension (warm_repeat tails of <=1 token)
         // keep their full length.
-        let Some(restore_len) =
-            grid_aligned_prefix_restore_len(item, reused_tokens.len(), self.prefill_chunk.max(1))
-        else {
+        let Some(restore_len) = grid_aligned_prefix_restore_len(
+            item,
+            reused_tokens.len(),
+            self.prefill_chunk.max(1),
+            self.cfg.linear_attention.is_some()
+                && crate::fastpath::linear_prefix_grid_rung_enabled(),
+        ) else {
             // The scheduler already removed this prefix from the input slice.
             // Recompute prefix+suffix together instead of leaving a context gap.
             telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
@@ -16006,10 +16125,17 @@ fn extend_prompt_prefix_tokens(
 }
 
 /// Select a cold-grid restore boundary, or require a full scheduler-prefix replay.
+///
+/// With `allow_gap_replay`, a Prefill restore that floors below the
+/// scheduler claim keeps its grid rung: the prefill then replays the claimed
+/// tokens past the rung ahead of the item's own input
+/// (`scheduler_gap_replay_tokens`), which is the cold trajectory from the
+/// rung on. A rung of zero still falls back to the full replay.
 fn grid_aligned_prefix_restore_len(
     item: &ax_engine_core::ExecutionItem,
     candidate_len: usize,
     chunk: usize,
+    allow_gap_replay: bool,
 ) -> Option<usize> {
     let scheduler_claim = item.reused_prefix_token_slice.len();
     let extension_tokens = if item.mode == ExecutionMode::Prefill && scheduler_claim > 0 {
@@ -16023,11 +16149,38 @@ fn grid_aligned_prefix_restore_len(
     } else {
         candidate_len
     };
-    if item.mode == ExecutionMode::Prefill && restore_len < scheduler_claim {
+    if item.mode == ExecutionMode::Prefill
+        && restore_len < scheduler_claim
+        && !(allow_gap_replay && restore_len > 0)
+    {
         None
     } else {
         Some(restore_len)
     }
+}
+
+/// Tokens a Prefill item must run after a restore that stopped short of the
+/// scheduler claim: the claimed tokens past the restored length, then the
+/// item's own input. `None` when the restore covered the claim (or did not
+/// happen) or the restored prefix does not match the claim.
+fn scheduler_gap_replay_tokens(
+    item: &ax_engine_core::ExecutionItem,
+    token_ids: &[u32],
+    state: &RequestState,
+) -> Option<Vec<u32>> {
+    let claim = &item.reused_prefix_token_slice;
+    let restored = state.cache.seq_len();
+    if item.mode != ExecutionMode::Prefill
+        || restored == 0
+        || restored >= claim.len()
+        || state.prompt_prefix_tokens.as_slice() != &claim[..restored]
+    {
+        return None;
+    }
+    let mut tokens = Vec::with_capacity(claim.len() - restored + token_ids.len());
+    tokens.extend_from_slice(&claim[restored..]);
+    tokens.extend_from_slice(token_ids);
+    Some(tokens)
 }
 
 fn full_prefill_recompute_tokens_for_warmup_fallback(

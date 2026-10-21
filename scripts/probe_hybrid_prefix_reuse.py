@@ -2,7 +2,7 @@
 """Probe prefix-cache reuse on a hybrid (linear-attention) model server.
 
 Starts `ax-engine-server` on the repo-owned MLX path and sends deterministic
-token-id requests (`/v1/generate`, `max_output_tokens=1`, greedy) shaped like
+token-id requests (`/v1/generate`, greedy, one output token by default) shaped like
 the traffic that matters for agents:
 
 * `cold`     shared prefix P plus suffix S1 (nothing cached yet)
@@ -121,6 +121,21 @@ def find_route(response: dict[str, Any]) -> dict[str, int]:
     return {}
 
 
+def find_output_tokens(response: dict[str, Any]) -> list[int]:
+    """Generated token ids, compared across runs as a token-identity check."""
+    tokens = response.get("output_tokens")
+    return [int(t) for t in tokens] if isinstance(tokens, list) else []
+
+
+def stop_server(server: subprocess.Popen[bytes]) -> None:
+    server.terminate()
+    try:
+        server.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        server.kill()
+        server.wait()
+
+
 def run_probe(args: argparse.Namespace) -> dict[str, Any]:
     env = {**os.environ, "AX_MLX_NATIVE_CONFIRM": "1"}
     env.pop("AX_MLX_PREFIX_CACHE_MAX_BYTES", None)
@@ -140,11 +155,22 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "disabled",
         *args.server_arg,
     ]
-    server = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def start_server() -> subprocess.Popen[bytes]:
+        server = subprocess.Popen(
+            cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        try:
+            wait_ready(args.port, args.ready_timeout)
+        except BaseException:
+            stop_server(server)
+            raise
+        return server
+
     rows: list[dict[str, Any]] = []
+    url = f"http://127.0.0.1:{args.port}/v1/generate"
+    server = None if args.fresh_server_per_request else start_server()
     try:
-        wait_ready(args.port, args.ready_timeout)
-        url = f"http://127.0.0.1:{args.port}/v1/generate"
         for round_index in range(args.rounds):
             for name, tokens in build_requests(
                 args.prefix_tokens, args.suffix_tokens, args.middle_tokens
@@ -152,15 +178,27 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 if round_index > 0 and name == "cold":
                     # Fresh prefix per round so rounds do not contaminate each other.
                     tokens = [t + 7 * round_index for t in tokens]
+                if args.fresh_server_per_request:
+                    # True cold reference: no prefix state of any kind survives.
+                    server = start_server()
                 payload = {
                     "model": args.model_id,
                     "input_tokens": tokens,
-                    "max_output_tokens": 1,
-                    "sampling": {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "seed": 1},
+                    "max_output_tokens": args.max_output_tokens,
+                    "sampling": {
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                        "top_k": 0,
+                        "seed": 1,
+                        "ignore_eos": args.ignore_eos,
+                    },
                 }
                 started = time.perf_counter()
                 response = post_json(url, payload, args.request_timeout)
                 wall_ms = (time.perf_counter() - started) * 1000.0
+                if args.fresh_server_per_request and server is not None:
+                    stop_server(server)
+                    server = None
                 route = find_route(response)
                 rows.append(
                     {
@@ -168,6 +206,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                         "request": name,
                         "prompt_tokens": len(tokens),
                         "wall_ms": round(wall_ms, 1),
+                        "output_tokens": find_output_tokens(response),
                         "route": {k: route[k] for k in COUNTER_KEYS if k in route},
                     }
                 )
@@ -180,18 +219,18 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                     file=sys.stderr,
                 )
     finally:
-        server.terminate()
-        try:
-            server.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            server.kill()
+        if server is not None:
+            stop_server(server)
     return {
         "schema_version": SCHEMA_VERSION,
         "model_id": args.model_id,
         "prefix_tokens": args.prefix_tokens,
         "suffix_tokens": args.suffix_tokens,
         "middle_tokens": args.middle_tokens,
+        "max_output_tokens": args.max_output_tokens,
         "cache_max_bytes": args.cache_max_bytes,
+        "fresh_server_per_request": args.fresh_server_per_request,
+        "ignore_eos": args.ignore_eos,
         "rows": rows,
     }
 
@@ -207,6 +246,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--middle-tokens", type=positive_int, default=96)
     parser.add_argument("--rounds", type=positive_int, default=1)
     parser.add_argument(
+        "--max-output-tokens",
+        type=positive_int,
+        default=1,
+        help="Greedy tokens per request; >1 makes `output_tokens` a useful identity check "
+        "between a run with prefix reuse and one without.",
+    )
+    parser.add_argument(
         "--cache-max-bytes",
         type=int,
         default=None,
@@ -218,6 +264,18 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Extra ax-engine-server argument (repeatable), e.g. --server-arg=--total-blocks "
         "--server-arg=4096.",
+    )
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help="Generate exactly --max-output-tokens even past EOS, so a model that "
+        "ends synthetic prompts at once still yields a useful identity check.",
+    )
+    parser.add_argument(
+        "--fresh-server-per-request",
+        action="store_true",
+        help="Start a new server for every request: the true cold reference for "
+        "`output_tokens`, free of any prefix restore or recompute fallback.",
     )
     parser.add_argument("--ready-timeout", type=float, default=600.0)
     parser.add_argument("--request-timeout", type=float, default=1800.0)

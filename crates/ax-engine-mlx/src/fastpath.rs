@@ -1563,6 +1563,20 @@ env_flag_default_on!(
     "AX_MLX_MTP_QUANTIZED_HEAD_DRAFT"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_LINEAR_PREFIX_GRID_RUNG` - on hybrid linear-attention models,
+    /// also capture a prefix snapshot at the last prefill-chunk boundary of a
+    /// completed prompt. Restore floors every multi-token warm extension to
+    /// that chunk grid and linear state cannot be trimmed, so without this
+    /// rung a sibling prompt or a follow-up turn finds only the block-aligned
+    /// boundary snapshot and misses. The rung splits the cold prefill exactly
+    /// on a chunk boundary it already crosses, so no chunk shape changes.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_LINEAR_PREFIX_GRID_RUNG=0`).
+    linear_prefix_grid_rung_enabled,
+    "AX_MLX_LINEAR_PREFIX_GRID_RUNG"
+);
+
 /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS` - width of the requantized draft-only
 /// lm_head built for dense (unquantized) targets. Defaults to 3 (group 64);
 /// accepts only `3` or `4`, and any other value falls back to the default.
