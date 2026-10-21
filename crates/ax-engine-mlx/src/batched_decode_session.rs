@@ -382,7 +382,14 @@ impl BatchedDecodeSession {
     /// physical `row_len` only and does not apply `mrope_decode_position`, so
     /// seeding a visual-prefilled cache would desync rope offsets.
     pub(crate) fn can_seed(&self, prefill: &MlxKVCache) -> bool {
-        if prefill.mrope_position_delta() != 0 {
+        // qwen4_exp image requests keep their MRoPE positions in the request
+        // state (cache delta stays 0), so check that state as well.
+        if prefill.mrope_position_delta() != 0
+            || prefill
+                .qwen4_exp
+                .as_ref()
+                .is_some_and(crate::model::qwen4_exp::Qwen4ExpState::has_media)
+        {
             return false;
         }
         let logical_len = prefill.seq_len() as i32;

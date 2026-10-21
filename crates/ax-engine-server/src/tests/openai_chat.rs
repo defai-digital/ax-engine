@@ -3315,7 +3315,7 @@ async fn openai_chat_image_against_text_only_checkpoint_reports_missing_vision_s
 }
 
 #[tokio::test]
-async fn flash_next_chat_rejects_inline_media_before_gemma_preprocessing() {
+async fn flash_next_chat_routes_images_to_qwen_visual_and_rejects_audio() {
     let artifact_dir = minimal_tokenizer_artifact("flash-next-media-boundary");
     fs::write(
         artifact_dir.join("model-manifest.json"),
@@ -3345,10 +3345,41 @@ async fn flash_next_chat_rejects_inline_media_before_gemma_preprocessing() {
             );
             state.swap_live(live);
         }
+        // Audio has no Flash Next path and is refused before any media
+        // preprocessing.
+        let request = serde_json::from_value(json!({
+            "model":"flash-next-candidate",
+            "messages":[{"role":"user","content":[
+                {"type":"text","text":"hello"},
+                {"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}
+            ]}],
+            "max_tokens":8,
+        }))
+        .unwrap();
+        let error = build_openai_chat_request(&state.snapshot(), request)
+            .err()
+            .unwrap();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_modality")
+        );
+        assert!(error.1.0.error.message.contains("audio"));
+        assert!(!error.1.0.error.message.contains("Gemma4"));
+        assert!(
+            !error
+                .1
+                .0
+                .error
+                .message
+                .contains(&artifact_dir.display().to_string())
+        );
+        // Images take the Qwen visual renderer, never the Gemma4 adapter and
+        // never the audio/video gate (this fixture has no real image or
+        // processor, so the request still fails, but further along).
         for part in [
             json!({"type":"image_url","image_url":{"url":"https://example.com/image.png"}}),
             json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}),
-            json!({"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}),
         ] {
             let request = serde_json::from_value(json!({
                 "model":"flash-next-candidate",
@@ -3356,24 +3387,18 @@ async fn flash_next_chat_rejects_inline_media_before_gemma_preprocessing() {
                 "max_tokens":8,
             }))
             .unwrap();
-            let error = build_openai_chat_request(&state.snapshot(), request)
-                .err()
-                .unwrap();
-            assert_eq!(error.0, StatusCode::BAD_REQUEST);
-            assert_eq!(
-                error.1.0.error.code.as_deref(),
-                Some("unsupported_modality")
-            );
-            assert!(error.1.0.error.message.contains("text-only"));
-            assert!(!error.1.0.error.message.contains("Gemma4"));
-            assert!(
-                !error
-                    .1
-                    .0
-                    .error
-                    .message
-                    .contains(&artifact_dir.display().to_string())
-            );
+            if let Err(error) = build_openai_chat_request(&state.snapshot(), request) {
+                assert!(
+                    !error.1.0.error.message.contains("Gemma4"),
+                    "{:?}",
+                    error.1.0.error
+                );
+                assert!(
+                    !error.1.0.error.message.contains("audio and video"),
+                    "{:?}",
+                    error.1.0.error
+                );
+            }
         }
     }
     fs::remove_dir_all(artifact_dir).unwrap();

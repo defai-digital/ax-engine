@@ -1244,6 +1244,20 @@ pub(crate) fn load_weights_with_session_budget(
         let lm_head = dedicated.lm_head.clone();
         let expert_stream = dedicated.expert_stream.clone();
         let qwen4_exp_mtp = load_flash_next_mtp_candidate(artifacts, &dedicated);
+        // The tower only serves image requests: a pack whose tower does not
+        // load keeps serving text, and image requests then fail with a
+        // missing-tower error.
+        let qwen3_vl_vision = match qwen4_exp::load_vision_tower(artifacts.root_dir()) {
+            Ok(tower) => tower,
+            Err(error) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::weights",
+                    error = %error,
+                    "qwen4_exp vision tower not loaded; serving text only",
+                );
+                None
+            }
+        };
         return Ok(ModelWeights {
             token_embedding,
             final_norm: None,
@@ -1266,7 +1280,7 @@ pub(crate) fn load_weights_with_session_budget(
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
             unlimited_ocr_vision: None,
-            qwen3_vl_vision: None,
+            qwen3_vl_vision,
             minicpm_v46_vision: None,
             nemotron_omni: None,
             expert_stream,

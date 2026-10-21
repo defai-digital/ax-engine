@@ -570,8 +570,8 @@ mod tests {
         // - `src/model_load.rs`: load-path readers outside the agreed
         //   request-path boundary (AX_SERVER_LOAD_MEMORY_PREFLIGHT,
         //   AX_SERVER_MULTI_MODEL_PREFILL_ISOLATION); follow-up work.
-        // - `src/metadata.rs`: model-family probe (AX_MLX_GEMMA4_VIDEO)
-        //   with its own OnceLock cache; follow-up work.
+        // - `src/metadata.rs`: model capability probes (AX_MLX_GEMMA4_VIDEO,
+        //   AX_MLX_QWEN4_EXP_VISION) mirroring runtime flags; follow-up work.
         let allowed = |relative: &str| {
             matches!(
                 relative,

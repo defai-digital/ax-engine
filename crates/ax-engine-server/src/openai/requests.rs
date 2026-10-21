@@ -27,10 +27,10 @@ pub(crate) use crate::openai::chat_requests::delegated_chat_template_kwargs;
 use crate::openai::chat_requests::{
     ChatPromptRenderOptions, is_minicpm_v46_model_id, is_nemotron_omni_model_dir,
     is_nemotron_omni_model_id, is_qwen3_vl_model_id, messages_contain_inline_media,
-    openai_tool_choice_disables_tools, reject_video_chat_content,
-    render_gemma4_unified_chat_with_media, render_minicpm_v46_chat_with_media,
-    render_nemotron_omni_chat_with_media, render_openai_chat_prompt_with_family,
-    render_qwen3_vl_chat_with_media,
+    messages_contain_inline_non_image_media, openai_tool_choice_disables_tools,
+    reject_video_chat_content, render_gemma4_unified_chat_with_media,
+    render_minicpm_v46_chat_with_media, render_nemotron_omni_chat_with_media,
+    render_openai_chat_prompt_with_family, render_qwen3_vl_chat_with_media,
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
@@ -538,14 +538,28 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         .as_ref()
         .map(|model| model.model_family.as_str())
         .or(artifact_family.as_deref());
+    // Flash Next accepts images through its Qwen3-VL style tower; audio and
+    // video have no AX path for it.
     if live.runtime_report.selected_backend == SelectedBackend::Mlx
         && native_family == Some("qwen4_exp")
+        && messages_contain_inline_non_image_media(&request.messages)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_modality",
+            "Flash Next chat in AX Engine accepts text and images; inline audio and video are not supported".to_string(),
+        ));
+    }
+    if live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && native_family == Some("qwen4_exp")
+        && !crate::metadata::qwen4_exp_vision_enabled()
         && messages_contain_inline_media(&request.messages)
     {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "unsupported_modality",
-            "Flash Next currently supports text-only chat in AX Engine; inline image and audio media are not supported".to_string(),
+            "Flash Next image input is disabled on this server (AX_MLX_QWEN4_EXP_VISION=0)"
+                .to_string(),
         ));
     }
     let streaming_reasoning_supported = live.runtime_report.selected_backend
@@ -608,7 +622,16 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 }
             };
             let model_id = live.model_id.as_ref();
-            let artifact_family = crate::metadata::model_family_from_artifacts(live);
+            // The loaded runtime identity wins over on-disk metadata, as in
+            // the Flash Next modality gate above: an auto-converted snapshot
+            // need not persist a manifest.
+            let artifact_family = live
+                .runtime_report
+                .mlx_model
+                .as_ref()
+                .map(|model| model.model_family.clone())
+                .filter(|family| family == "qwen4_exp")
+                .or_else(|| crate::metadata::model_family_from_artifacts(live));
             if is_minicpm_v46_model_id(model_id)
                 || artifact_family.as_deref() == Some("minicpmv4_6")
             {
@@ -635,12 +658,19 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 || artifact_family.as_deref().is_some_and(|f| {
                     matches!(
                         f,
-                        "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5" | "qwen3_5_moe" | "qwen3_next"
+                        "qwen3_vl"
+                            | "qwen3_vl_moe"
+                            | "qwen3_5"
+                            | "qwen3_5_moe"
+                            | "qwen3_next"
+                            // Qwen 3.8 Flash Next ships the same tower.
+                            | "qwen4_exp"
                     )
                 })
             {
                 if let Some(prompt) = render_qwen3_vl_chat_with_media(
                     model_id,
+                    artifact_family.as_deref(),
                     model_dir,
                     &request.messages,
                     request.tools.as_ref(),
