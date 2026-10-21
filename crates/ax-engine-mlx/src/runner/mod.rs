@@ -116,6 +116,7 @@ mod mtp_model_policy;
 mod mtp_ngram_gates;
 mod mtp_profitability;
 mod mtp_routing;
+mod mtp_step_trace;
 mod mtp_tuning;
 mod pipeline;
 mod prefix_cache;
@@ -12321,6 +12322,22 @@ impl MlxRunner {
             }
         }
 
+        // The verified draft's log-probs are overwritten by the next draft
+        // below, so the trace copies them here and writes after the draft.
+        let step_trace =
+            (mtp_step_trace::mtp_step_trace_enabled() && !pending.is_empty()).then(|| {
+                (
+                    state
+                        .mtp_pending_draft_log_probs
+                        .iter()
+                        .take(pending.len())
+                        .copied()
+                        .collect::<Vec<f32>>(),
+                    state.generated_tokens.len(),
+                    state.mtp_adaptive_max_depth,
+                )
+            });
+
         mtp_timings.ngram_submitted_tokens = saturating_u32(
             state
                 .mtp_pending_draft_sources
@@ -13132,6 +13149,22 @@ impl MlxRunner {
             state
                 .gemma4_assistant_mtp_telemetry
                 .record_submitted(gemma4_assistant_submitted, mtp_timings.draft_wall_us);
+        }
+        if let Some((draft_log_probs, generated, depth)) = step_trace {
+            mtp_step_trace::record_mtp_step_trace(&mtp_step_trace::MtpStepTraceRecord {
+                t_us: mtp_step_trace::mtp_step_trace_now_us(),
+                ctx: token_offset,
+                generated,
+                depth,
+                used: pending.len(),
+                accepted: accept_count,
+                pure_mtp: pure_qwen_mtp_pending,
+                temperature: sampling.temperature,
+                verify_forward_us: mtp_timings.verify_forward_wall_us,
+                verify_eval_us: mtp_timings.verify_eval_wall_us,
+                draft_us: mtp_timings.draft_wall_us,
+                draft_log_probs: &draft_log_probs,
+            });
         }
         state.mtp_telemetry.record_timings(mtp_timings);
         if std::env::var_os("AX_MLX_MTP_DEBUG_FINAL_SUMMARY").is_some()

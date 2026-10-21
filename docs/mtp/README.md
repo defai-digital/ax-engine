@@ -81,6 +81,23 @@ drop-on-block behavior remains available as
 `ax_mlx_flash_next_mtp_cursor_paused_steps` /
 `ax_mlx_flash_next_mtp_cursor_resumed` route keys.
 
+`AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
+JSON line per verified MTP cycle (verify window, accepted prefix, context
+length, draft log-probs when the draft path computed them, timestamp). It adds
+no device synchronization. `scripts/simulate_mtp_verify_prefix.py` replays
+such traces to price verify-window truncation policies (confidence threshold,
+calibrated cost model, oracle) against measured fixed-depth cycle costs before
+any runtime change. Pass a fixed-depth trace per verify width with
+`--cost-trace`, and a calibration trace captured with a non-zero
+`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` of at least `0.001` (smaller values round to
+a zero gate and keep the lazy draft path, which records no log-probs). On an
+M5 Max 128 GB with Qwen 3.8 27B MXFP4 and Qwen 3.6 35B-A3B 4-bit (depth 3,
+greedy, 17 real prompts), even oracle truncation was worth at most +4.3% and
++3.3% respectively, the synchronous gated draft path that truncation needs
+cost about 5% and 8% decode by itself, and real threshold truncation at gates
+0.70 / 0.80 lost 14-27%. Full-window verification with a zero gate remains
+the default, and simulated gains should be read as upper bounds.
+
 ## Where To Go
 
 | Need | Read |
