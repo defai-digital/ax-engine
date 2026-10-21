@@ -1555,7 +1555,8 @@ env_flag_default_on!(
     /// on the 27B, three times per depth-3 round); verify still decides every
     /// token on the target head. M5 Max 128 GB, 27B MXFP4, 17 real prompts,
     /// greedy depth 3: 70.3 -> 77.2 tok/s at 3 bits (75.7 at 4 bits), 17/17
-    /// outputs token-identical. The 4-bit Qwen 3.6 35B-A3B head is left
+    /// outputs token-identical to MTP with the full-width head. The 4-bit
+    /// Qwen 3.6 35B-A3B head is left
     /// alone: 3 bits measured +0.3% there.
     ///
     /// **Default: ON** (kill-switch via `AX_MLX_MTP_QUANTIZED_HEAD_DRAFT=0`).
