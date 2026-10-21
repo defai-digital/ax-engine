@@ -402,6 +402,12 @@ pub struct GenerateSampling {
     /// None lets each backend use its own default (typically 64 for llama.cpp, 20 for mlx-lm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repetition_context_size: Option<u32>,
+    /// OpenAI-style presence penalty over generated tokens (0 disables).
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub presence_penalty: f32,
+    /// OpenAI-style frequency penalty over generated tokens (0 disables).
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub frequency_penalty: f32,
     /// N-gram size that must not repeat. Zero disables the processor.
     #[serde(default)]
     pub no_repeat_ngram_size: u32,
@@ -438,6 +444,8 @@ impl Default for GenerateSampling {
             min_p: None,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
             seed: 0,
@@ -469,6 +477,8 @@ impl GenerateSampling {
             min_p: self.min_p,
             repetition_penalty: self.repetition_penalty,
             repetition_context_size: self.repetition_context_size,
+            presence_penalty: self.presence_penalty,
+            frequency_penalty: self.frequency_penalty,
             no_repeat_ngram_size: self.no_repeat_ngram_size,
             ngram_window: self.ngram_window,
             seed: self.seed,
@@ -676,6 +686,10 @@ impl GenerateFinishReason {
 
 const fn default_top_p() -> f32 {
     1.0
+}
+
+fn is_zero_f32(value: &f32) -> bool {
+    *value == 0.0
 }
 
 const fn default_repetition_penalty() -> f32 {

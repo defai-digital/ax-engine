@@ -175,8 +175,6 @@ async fn openai_completion_request_rejects_unsupported_sampling_params() {
     for (field, value) in [
         ("n", json!(2)),
         ("best_of", json!(2)),
-        ("frequency_penalty", json!(0.5)),
-        ("presence_penalty", json!(-0.2)),
         ("logit_bias", json!({"50256": -100})),
     ] {
         let mut body = json!({

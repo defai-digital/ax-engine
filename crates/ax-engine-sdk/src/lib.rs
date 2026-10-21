@@ -26,6 +26,7 @@ pub use ax_engine_core::gemma4_unified::{
     Gemma4UnifiedVideoInput, Gemma4UnifiedVideoRuntimeInput, Gemma4UnifiedVisionProcessor,
     is_standard_gemma4_encoder_model_type,
 };
+pub use ax_engine_core::presence_frequency_penalty_active;
 pub use ax_engine_core::qwen3_vl::{
     Qwen3VlImageRuntimeInput, Qwen3VlRuntimeInputError, Qwen3VlRuntimeInputs,
 };

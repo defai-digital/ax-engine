@@ -118,7 +118,7 @@ pub use runner::{
 };
 pub use sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, StopReason,
-    TokenSampler,
+    TokenSampler, apply_presence_frequency_penalty_in_place, presence_frequency_penalty_active,
 };
 pub use scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, PositionRange,

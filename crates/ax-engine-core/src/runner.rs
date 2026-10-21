@@ -53,6 +53,9 @@ pub struct RunnerRequestContext {
     pub repetition_penalty: f32,
     /// Number of most-recent prompt/generated tokens considered by repetition penalty.
     pub repetition_context_size: Option<u32>,
+    /// OpenAI-style additive penalties over generated tokens (0 disables).
+    pub presence_penalty: f32,
+    pub frequency_penalty: f32,
     /// N-gram size that must not be generated twice. Zero disables the processor.
     pub no_repeat_ngram_size: u32,
     /// Maximum recent history inspected by the no-repeat n-gram processor.
@@ -494,6 +497,8 @@ mod tests {
                     top_k: 0,
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
+                    presence_penalty: 0.0,
+                    frequency_penalty: 0.0,
                     no_repeat_ngram_size: 0,
                     ngram_window: 128,
                     ignore_eos: false,
@@ -517,6 +522,8 @@ mod tests {
                     top_k: 0,
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
+                    presence_penalty: 0.0,
+                    frequency_penalty: 0.0,
                     no_repeat_ngram_size: 0,
                     ngram_window: 128,
                     ignore_eos: false,
@@ -662,6 +669,8 @@ mod tests {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                presence_penalty: 0.0,
+                frequency_penalty: 0.0,
                 no_repeat_ngram_size: 0,
                 ngram_window: 128,
                 ignore_eos: false,

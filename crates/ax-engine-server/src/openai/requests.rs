@@ -337,6 +337,8 @@ struct OpenAiSamplingParams {
     min_p: Option<f32>,
     repetition_penalty: Option<f32>,
     repetition_context_size: Option<u32>,
+    presence_penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
     seed: Option<u64>,
 }
 
@@ -349,6 +351,8 @@ impl OpenAiSamplingParams {
             min_p: request.min_p,
             repetition_penalty: request.repetition_penalty,
             repetition_context_size: request.repetition_context_size,
+            presence_penalty: request.presence_penalty,
+            frequency_penalty: request.frequency_penalty,
             seed: request.seed,
         }
     }
@@ -361,6 +365,8 @@ impl OpenAiSamplingParams {
             min_p: request.min_p,
             repetition_penalty: request.repetition_penalty,
             repetition_context_size: request.repetition_context_size,
+            presence_penalty: request.presence_penalty,
+            frequency_penalty: request.frequency_penalty,
             seed: request.seed,
         }
     }
@@ -1112,6 +1118,17 @@ fn build_openai_sampling_with_default_repetition_penalty(
     let temperature = params.temperature.unwrap_or(0.0);
     let client_seed = params.seed;
     let seed = client_seed.unwrap_or_else(|| default_openai_seed(temperature));
+    let presence_penalty = params.presence_penalty.unwrap_or(0.0);
+    let frequency_penalty = params.frequency_penalty.unwrap_or(0.0);
+    // A client that asks for OpenAI-style penalties (Qwen's published
+    // sampling settings use `presence_penalty`) gets them instead of, not on
+    // top of, the server's mild default repetition penalty.
+    let default_repetition_penalty =
+        if ax_engine_sdk::presence_frequency_penalty_active(presence_penalty, frequency_penalty) {
+            1.0
+        } else {
+            default_repetition_penalty
+        };
     GenerateSampling {
         temperature,
         top_p: params.top_p.unwrap_or(1.0),
@@ -1121,6 +1138,8 @@ fn build_openai_sampling_with_default_repetition_penalty(
             .repetition_penalty
             .unwrap_or(default_repetition_penalty),
         repetition_context_size: params.repetition_context_size,
+        presence_penalty,
+        frequency_penalty,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         seed,
@@ -1353,9 +1372,10 @@ fn openai_response_format_is_json_object(response_format: Option<&Value>) -> boo
     }
 }
 
-/// OpenAI sampling params AX does not implement. Non-default values fail
-/// closed instead of being silently dropped, so a caller relying on them
-/// learns immediately — same policy as the logprobs handling below.
+/// OpenAI sampling params AX does not implement fail closed instead of being
+/// silently dropped, so a caller relying on them learns immediately — same
+/// policy as the logprobs handling below. `presence_penalty` and
+/// `frequency_penalty` are implemented and only range-checked here.
 fn reject_unsupported_sampling_params(
     n: Option<u32>,
     best_of: Option<u32>,
@@ -1378,15 +1398,19 @@ fn reject_unsupported_sampling_params(
             "best_of above 1 is not supported; AX generates one choice per request",
         );
     }
-    if frequency_penalty.unwrap_or(0.0) != 0.0 {
-        return unsupported(
-            "frequency_penalty is not supported; use the repetition_penalty extension instead",
-        );
-    }
-    if presence_penalty.unwrap_or(0.0) != 0.0 {
-        return unsupported(
-            "presence_penalty is not supported; use the repetition_penalty extension instead",
-        );
+    for (name, value) in [
+        ("frequency_penalty", frequency_penalty),
+        ("presence_penalty", presence_penalty),
+    ] {
+        if let Some(value) = value
+            && !(value.is_finite() && (-2.0..=2.0).contains(&value))
+        {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                format!("{name} must be a number between -2.0 and 2.0, got {value}"),
+            ));
+        }
     }
     let logit_bias_requested = logit_bias.is_some_and(|value| match value {
         Value::Null => false,
@@ -1626,6 +1650,8 @@ mod tests {
                 min_p: None,
                 repetition_penalty: None,
                 repetition_context_size: None,
+                presence_penalty: None,
+                frequency_penalty: None,
                 seed: Some(0),
             },
             1.0,
@@ -1645,6 +1671,8 @@ mod tests {
                 min_p: None,
                 repetition_penalty: None,
                 repetition_context_size: None,
+                presence_penalty: None,
+                frequency_penalty: None,
                 seed: None,
             },
             1.0,

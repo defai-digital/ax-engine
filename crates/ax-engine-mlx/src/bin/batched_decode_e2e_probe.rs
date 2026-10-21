@@ -169,6 +169,8 @@ fn ctx(
         top_k: sampling.top_k,
         repetition_penalty: sampling.repetition_penalty,
         repetition_context_size: None,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: true, // fixed-length streams for comparison

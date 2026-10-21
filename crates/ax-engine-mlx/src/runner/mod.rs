@@ -1224,6 +1224,10 @@ impl RequestState {
         if !sampling.uses_logits_processors() {
             return Vec::new();
         }
+        if sampling.history_is_generated_only() {
+            // Presence/frequency penalties alone count generated tokens only.
+            return self.generated_tokens.clone();
+        }
 
         let total_len = self
             .prompt_prefix_tokens
@@ -2906,6 +2910,7 @@ fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams
     MlxSamplingParams::new(ctx.temperature, ctx.top_p, ctx.top_k)
         .with_min_p(ctx.min_p)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
+        .with_presence_frequency_penalty(ctx.presence_penalty, ctx.frequency_penalty)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
         .with_seed((ctx.seed != 0 || ctx.seed_explicit).then_some(ctx.seed))
 }
@@ -6134,6 +6139,7 @@ impl MlxRunner {
                 MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
                     .with_min_p(c.min_p)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
+                    .with_presence_frequency_penalty(c.presence_penalty, c.frequency_penalty)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
                     // Non-zero seeds are explicit for backward compatibility;
                     // `seed_explicit` additionally makes seed 0 reproducible.

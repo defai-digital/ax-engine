@@ -1245,6 +1245,8 @@ impl EngineCore {
                     min_p: record.sampling_params.min_p,
                     repetition_penalty: record.sampling_params.repetition_penalty,
                     repetition_context_size: record.sampling_params.repetition_context_size,
+                    presence_penalty: record.sampling_params.presence_penalty,
+                    frequency_penalty: record.sampling_params.frequency_penalty,
                     no_repeat_ngram_size: record.sampling_params.no_repeat_ngram_size,
                     ngram_window: record.sampling_params.ngram_window,
                     ignore_eos: record.sampling_params.ignore_eos,
