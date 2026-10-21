@@ -22,6 +22,10 @@ pub struct SamplingParams {
     pub frequency_penalty: f32,
     pub no_repeat_ngram_size: u32,
     pub ngram_window: u32,
+    /// OpenAI-style `logit_bias`: `(token_id, bias)` pairs added to the raw
+    /// logits before any other processor, sorted by token id with no
+    /// duplicates. Empty disables it.
+    pub logit_bias: Vec<(u32, f32)>,
     pub seed: u64,
     /// True when `seed` was explicitly supplied, including zero. Non-zero
     /// seeds count as explicit even when this is false, preserving the
@@ -44,6 +48,7 @@ impl Default for SamplingParams {
             frequency_penalty: 0.0,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
+            logit_bias: Vec::new(),
             seed: 0,
             seed_explicit: false,
             deterministic: true,
@@ -62,6 +67,19 @@ pub(crate) fn sampling_params_allow_deterministic_argmax_fast_path(
         && params.repetition_penalty == 1.0
         && !presence_frequency_penalty_active(params.presence_penalty, params.frequency_penalty)
         && params.no_repeat_ngram_size == 0
+        && params.logit_bias.is_empty()
+}
+
+/// Add OpenAI-style `logit_bias` entries to `logits` in place. Out-of-range
+/// token ids and non-finite biases are ignored.
+pub fn apply_logit_bias_in_place(logits: &mut [f32], logit_bias: &[(u32, f32)]) {
+    for &(token, bias) in logit_bias {
+        if bias.is_finite()
+            && let Some(logit) = logits.get_mut(token as usize)
+        {
+            *logit += bias;
+        }
+    }
 }
 
 /// Whether either OpenAI-style additive penalty is in effect.
@@ -216,8 +234,10 @@ fn sample_argmax_with_logprob_and_logits_processors(
     let logits = if repetition_penalty_applies(sampling.repetition_penalty, penalty_tokens)
         || no_repeat_ngram_applies(sampling.no_repeat_ngram_size, recent_tokens)
         || presence_frequency
+        || !sampling.logit_bias.is_empty()
     {
         adjusted_logits_buf = logits.to_vec();
+        apply_logit_bias_in_place(&mut adjusted_logits_buf, &sampling.logit_bias);
         if repetition_penalty_applies(sampling.repetition_penalty, penalty_tokens) {
             apply_repetition_penalty_in_place(
                 &mut adjusted_logits_buf,
@@ -403,6 +423,30 @@ mod tests {
         assert_eq!(untouched, [1.0, 2.0]);
         assert!(!presence_frequency_penalty_active(0.0, 0.0));
         assert!(presence_frequency_penalty_active(0.0, -0.5));
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn logit_bias_shifts_the_argmax_and_disables_the_fast_path() {
+        let mut logits = [1.0f32, 2.0, 3.0];
+        apply_logit_bias_in_place(&mut logits, &[(0, 5.0), (2, f32::NAN), (9, 1.0)]);
+        assert_eq!(
+            logits,
+            [6.0, 2.0, 3.0],
+            "NaN bias and out-of-range ids ignored"
+        );
+
+        let sampling = SamplingParams {
+            logit_bias: vec![(2, -100.0)],
+            ..SamplingParams::default()
+        };
+        assert!(!sampling_params_allow_deterministic_argmax_fast_path(
+            &sampling
+        ));
+        let (token, _) =
+            sample_argmax_with_logprob_and_logits_processors(&[1.0, 2.0, 3.0], &sampling, &[], 0)
+                .expect("sample");
+        assert_eq!(token, 1, "banned argmax falls to the runner-up");
     }
 
     #[test]

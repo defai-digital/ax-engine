@@ -1226,7 +1226,7 @@ impl RequestState {
         additional_prompt_tokens: &[u32],
         sampling: MlxSamplingParams,
     ) -> Vec<u32> {
-        if !sampling.uses_logits_processors() {
+        if !sampling.uses_history_processors() {
             return Vec::new();
         }
         if sampling.history_is_generated_only() {
@@ -2916,6 +2916,7 @@ fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams
         .with_min_p(ctx.min_p)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
         .with_presence_frequency_penalty(ctx.presence_penalty, ctx.frequency_penalty)
+        .with_logit_bias_active(ctx.logit_bias_active)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
         .with_seed((ctx.seed != 0 || ctx.seed_explicit).then_some(ctx.seed))
 }
@@ -4738,6 +4739,9 @@ impl ExecutionRunner for MlxRunner {
                 .iter()
                 .find(|c| c.request_id == item.request_id);
 
+            // The request's `logit_bias` (if any) for the host sampler.
+            let _logit_bias_scope =
+                crate::sampling::scoped_logit_bias(input.request_logit_bias(item.request_id));
             let result = self.run_item(
                 item,
                 ctx,
@@ -6145,6 +6149,7 @@ impl MlxRunner {
                     .with_min_p(c.min_p)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
                     .with_presence_frequency_penalty(c.presence_penalty, c.frequency_penalty)
+                    .with_logit_bias_active(c.logit_bias_active)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
                     // Non-zero seeds are explicit for backward compatibility;
                     // `seed_explicit` additionally makes seed 0 reproducible.
@@ -6161,8 +6166,7 @@ impl MlxRunner {
                     || (c.temperature <= 0.0
                         && c.top_k == 0
                         && c.top_p >= 1.0
-                        && (c.repetition_penalty - 1.0).abs() < f32::EPSILON
-                        && c.no_repeat_ngram_size == 0)
+                        && !sampling.uses_logits_processors())
             })
             .unwrap_or(sampling == MlxSamplingParams::greedy());
 
@@ -9197,6 +9201,9 @@ impl MlxRunner {
             || flash_next_blocked_greedy
             || (!state.think_soft_close_armed
                 && !think_hard_close_due
+                // The double buffer is argmax-only: repetition, presence /
+                // frequency penalties and logit_bias need the host sampler.
+                && !sampling.uses_logits_processors()
                 && should_use_session_direct_pipeline(
                     self.disable_ngram_acceleration,
                     is_greedy || sampling.temperature <= 0.0,
@@ -13781,6 +13788,7 @@ impl MlxRunner {
             && !think_close_due_at_first_token
             && !gemma_moe_long_mt_singleton
             && !flash_next_cursor_owns_decode
+            && !sampling.uses_logits_processors()
             && (is_greedy || (self.disable_ngram_acceleration && sampling.temperature <= 0.0))
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token

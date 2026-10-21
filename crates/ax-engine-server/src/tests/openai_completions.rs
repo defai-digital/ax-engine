@@ -172,11 +172,7 @@ async fn openai_completion_request_rejects_unsupported_sampling_params() {
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
     let live = state.snapshot();
 
-    for (field, value) in [
-        ("n", json!(2)),
-        ("best_of", json!(2)),
-        ("logit_bias", json!({"50256": -100})),
-    ] {
+    for (field, value) in [("n", json!(2)), ("best_of", json!(2))] {
         let mut body = json!({
             "model": "qwen3",
             "prompt": "hello",

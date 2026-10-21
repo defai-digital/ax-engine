@@ -2062,7 +2062,8 @@ async fn openai_chat_request_rejects_unsupported_sampling_params() {
     });
     let live = state.snapshot();
 
-    for (field, value) in [("n", json!(2)), ("logit_bias", json!({"50256": -100}))] {
+    {
+        let (field, value) = ("n", json!(2));
         let mut body = json!({
             "messages": [{"role": "user", "content": "Hello"}],
             "max_tokens": 8
@@ -3889,6 +3890,58 @@ async fn openai_qwen_chat_sampled_default_penalty_follows_mtp_policy() {
 
         fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
     }
+}
+
+#[tokio::test]
+async fn openai_chat_logit_bias_reaches_sampling_and_is_validated() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-logit-bias");
+    let state = native_mlx_openai_builder_state_with_mtp_policy(
+        "Qwen3.6-27B-4bit",
+        &artifact_dir,
+        MlxMtpPolicy::Auto,
+    );
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [{"role": "user", "content": "hello openai chat"}],
+        "max_tokens": 8,
+        "logit_bias": {"50256": -100, "7": 2.5}
+    }))
+    .expect("sample chat request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
+    let bias = &built.generate_request.sampling.logit_bias;
+    assert_eq!(bias.get(&50256), Some(&-100.0));
+    assert_eq!(bias.get(&7), Some(&2.5));
+    assert_eq!(bias.len(), 2);
+
+    for (value, why) in [
+        (json!({"50256": -101}), "bias below -100"),
+        (json!({"50256": "high"}), "non-numeric bias"),
+        (json!({"hello": 1}), "non-numeric token id"),
+        (json!({"-3": 1}), "negative token id"),
+        (json!([[50256, -100]]), "array form"),
+        (json!({" 7 ": 1}), "padded token id"),
+        (json!({"7": 1, "+7": 2}), "duplicate token id"),
+    ] {
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "model": "Qwen3.6-27B-4bit",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 8,
+            "logit_bias": value
+        }))
+        .expect("sample chat request should deserialize");
+        let error = match build_openai_chat_request(&live, request) {
+            Ok(_) => panic!("{why} must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{why}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("invalid_request_error"),
+            "{why}"
+        );
+    }
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]

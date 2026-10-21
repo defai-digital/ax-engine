@@ -329,7 +329,7 @@ impl OpenAiResponseOptions {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct OpenAiSamplingParams {
     temperature: Option<f32>,
     top_p: Option<f32>,
@@ -339,6 +339,7 @@ struct OpenAiSamplingParams {
     repetition_context_size: Option<u32>,
     presence_penalty: Option<f32>,
     frequency_penalty: Option<f32>,
+    logit_bias: std::collections::BTreeMap<u32, f32>,
     seed: Option<u64>,
 }
 
@@ -353,6 +354,8 @@ impl OpenAiSamplingParams {
             repetition_context_size: request.repetition_context_size,
             presence_penalty: request.presence_penalty,
             frequency_penalty: request.frequency_penalty,
+            // Validated by `reject_unsupported_sampling_params` first.
+            logit_bias: parse_openai_logit_bias(request.logit_bias.as_ref()).unwrap_or_default(),
             seed: request.seed,
         }
     }
@@ -367,6 +370,8 @@ impl OpenAiSamplingParams {
             repetition_context_size: request.repetition_context_size,
             presence_penalty: request.presence_penalty,
             frequency_penalty: request.frequency_penalty,
+            // Validated by `reject_unsupported_sampling_params` first.
+            logit_bias: parse_openai_logit_bias(request.logit_bias.as_ref()).unwrap_or_default(),
             seed: request.seed,
         }
     }
@@ -1142,6 +1147,7 @@ fn build_openai_sampling_with_default_repetition_penalty(
         frequency_penalty,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
+        logit_bias: params.logit_bias,
         seed,
         seed_explicit: client_seed.is_some() || seed != 0,
         deterministic: None,
@@ -1374,8 +1380,9 @@ fn openai_response_format_is_json_object(response_format: Option<&Value>) -> boo
 
 /// OpenAI sampling params AX does not implement fail closed instead of being
 /// silently dropped, so a caller relying on them learns immediately — same
-/// policy as the logprobs handling below. `presence_penalty` and
-/// `frequency_penalty` are implemented and only range-checked here.
+/// policy as the logprobs handling below. `presence_penalty`,
+/// `frequency_penalty` and `logit_bias` are implemented and only validated
+/// here.
 fn reject_unsupported_sampling_params(
     n: Option<u32>,
     best_of: Option<u32>,
@@ -1412,15 +1419,50 @@ fn reject_unsupported_sampling_params(
             ));
         }
     }
-    let logit_bias_requested = logit_bias.is_some_and(|value| match value {
-        Value::Null => false,
-        Value::Object(map) => !map.is_empty(),
-        _ => true,
-    });
-    if logit_bias_requested {
-        return unsupported("logit_bias is not supported");
-    }
+    parse_openai_logit_bias(logit_bias).map_err(|message| {
+        error_response(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+    })?;
     Ok(())
+}
+
+/// Most `logit_bias` entries one request may set.
+const MAX_LOGIT_BIAS_ENTRIES: usize = 1024;
+
+/// Parse OpenAI `logit_bias`: an object mapping token-id strings to a bias in
+/// [-100, 100]. `null` and `{}` mean none. Token ids outside the model
+/// vocabulary are ignored at sampling time.
+fn parse_openai_logit_bias(
+    value: Option<&Value>,
+) -> Result<std::collections::BTreeMap<u32, f32>, String> {
+    let map = match value {
+        None | Some(Value::Null) => return Ok(Default::default()),
+        Some(Value::Object(map)) => map,
+        Some(_) => return Err("logit_bias must be an object of token id to bias".to_string()),
+    };
+    if map.len() > MAX_LOGIT_BIAS_ENTRIES {
+        return Err(format!(
+            "logit_bias has {} entries; at most {MAX_LOGIT_BIAS_ENTRIES} are allowed",
+            map.len()
+        ));
+    }
+    let mut parsed = std::collections::BTreeMap::new();
+    for (key, bias) in map {
+        let token = key
+            .parse::<u32>()
+            .map_err(|_| format!("logit_bias key {key:?} is not a token id"))?;
+        let bias = bias
+            .as_f64()
+            .filter(|bias| bias.is_finite() && (-100.0..=100.0).contains(bias))
+            .ok_or_else(|| {
+                format!("logit_bias for token {token} must be a number between -100 and 100")
+            })?;
+        // "7" and "+7" name the same token; refuse instead of letting the
+        // key order decide which bias wins.
+        if parsed.insert(token, bias as f32).is_some() {
+            return Err(format!("logit_bias sets token {token} more than once"));
+        }
+    }
+    Ok(parsed)
 }
 
 /// AX has no effort levels: thinking is an on/off switch plus a token budget.
@@ -1652,6 +1694,7 @@ mod tests {
                 repetition_context_size: None,
                 presence_penalty: None,
                 frequency_penalty: None,
+                logit_bias: Default::default(),
                 seed: Some(0),
             },
             1.0,
@@ -1673,6 +1716,7 @@ mod tests {
                 repetition_context_size: None,
                 presence_penalty: None,
                 frequency_penalty: None,
+                logit_bias: Default::default(),
                 seed: None,
             },
             1.0,

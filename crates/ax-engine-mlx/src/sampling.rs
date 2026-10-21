@@ -88,6 +88,11 @@ pub struct MlxSamplingParams {
     pub frequency_penalty: f32,
     pub no_repeat_ngram_size: u32,
     pub ngram_window: u32,
+    /// The request sets an OpenAI-style `logit_bias`. The entries are not
+    /// `Copy`; the runner installs them with [`scoped_logit_bias`] for the
+    /// item, and [`sample_categorical_into`] applies them. Routing treats the
+    /// bias as a logits processor, so it always reaches that host sampler.
+    pub logit_bias_active: bool,
     /// Explicit sampling seed. `Some(seed)` marks a reproducible request whose
     /// pure-temperature draw must go through the seeded host path; `None`
     /// keeps the unseeded stream so pure-temperature sampling stays on the GPU.
@@ -107,6 +112,7 @@ impl MlxSamplingParams {
             frequency_penalty: 0.0,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
+            logit_bias_active: false,
             seed: None,
         }
     }
@@ -196,11 +202,58 @@ impl MlxSamplingParams {
         self.no_repeat_ngram_size > 0
     }
 
-    pub(crate) fn uses_logits_processors(self) -> bool {
+    pub(crate) const fn with_logit_bias_active(mut self, logit_bias_active: bool) -> Self {
+        self.logit_bias_active = logit_bias_active;
+        self
+    }
+
+    /// Whether any processor reads the token history (`logit_bias` does not).
+    pub(crate) fn uses_history_processors(self) -> bool {
         self.uses_repetition_penalty()
             || self.uses_no_repeat_ngram()
             || self.uses_presence_frequency_penalty()
     }
+
+    pub(crate) fn uses_logits_processors(self) -> bool {
+        self.uses_history_processors() || self.logit_bias_active
+    }
+}
+
+thread_local! {
+    /// `logit_bias` of the request whose item this thread is executing.
+    static LOGIT_BIAS_SCOPE: std::cell::RefCell<Vec<(u32, f32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Restores the previous `logit_bias` scope on drop.
+#[must_use]
+pub(crate) struct LogitBiasScope {
+    previous: Vec<(u32, f32)>,
+}
+
+impl Drop for LogitBiasScope {
+    fn drop(&mut self) {
+        let previous = std::mem::take(&mut self.previous);
+        LOGIT_BIAS_SCOPE.with(|current| *current.borrow_mut() = previous);
+    }
+}
+
+/// Install `logit_bias` for the item executed while the guard lives.
+pub(crate) fn scoped_logit_bias(logit_bias: &[(u32, f32)]) -> LogitBiasScope {
+    let previous = LOGIT_BIAS_SCOPE
+        .with(|current| std::mem::replace(&mut *current.borrow_mut(), logit_bias.to_vec()));
+    LogitBiasScope { previous }
+}
+
+fn apply_scoped_logit_bias(logits: &mut [f32]) {
+    LOGIT_BIAS_SCOPE.with(|current| {
+        let bias = current.borrow();
+        debug_assert!(
+            !bias.is_empty(),
+            "logit_bias_active request sampled without a logit_bias scope"
+        );
+        ax_engine_core::apply_logit_bias_in_place(logits, &bias);
+    });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -304,9 +357,14 @@ pub(crate) fn sample_categorical_into(
     if logits.is_empty() {
         return 0;
     }
-    let logits = if sampling.uses_logits_processors() && !repetition_tokens.is_empty() {
+    let logits = if (sampling.uses_history_processors() && !repetition_tokens.is_empty())
+        || sampling.logit_bias_active
+    {
         logits_buf.clear();
         logits_buf.extend_from_slice(logits);
+        if sampling.logit_bias_active {
+            apply_scoped_logit_bias(logits_buf);
+        }
         if sampling.uses_repetition_penalty() {
             logits_with_repetition_penalty_in_place(
                 logits_buf,
@@ -426,6 +484,7 @@ pub(crate) fn sample_categorical_with_topk_gpu(
         || sampling.temperature <= 0.0
         || sampling.top_k == 0
         || sampling.uses_min_p()
+        || sampling.logit_bias_active
         || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
@@ -468,6 +527,7 @@ pub(crate) fn sample_categorical_with_topp_gpu(
         || sampling.top_k != 0
         || !(sampling.top_p > 0.0 && sampling.top_p < 1.0)
         || sampling.uses_min_p()
+        || sampling.logit_bias_active
         || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
@@ -1487,6 +1547,36 @@ mod tests {
         let frequency = MlxSamplingParams::greedy().with_presence_frequency_penalty(0.0, 0.6);
         assert_eq!(sample_categorical(&logits, frequency, &[0, 0], &mut rng), 1);
         assert_eq!(sample_categorical(&logits, frequency, &[0], &mut rng), 0);
+    }
+
+    #[test]
+    fn scoped_logit_bias_steers_host_sampling_without_history() {
+        let logits = vec![4.0, 3.0, 0.0];
+        let mut rng = Xorshift64::new(7);
+        let sampling = MlxSamplingParams::greedy().with_logit_bias_active(true);
+        assert!(sampling.uses_logits_processors());
+        assert!(!sampling.uses_history_processors());
+        {
+            let _scope = scoped_logit_bias(&[(0, -100.0), (2, 2.0)]);
+            // Applied with an empty history, unlike the history processors.
+            assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 1);
+            {
+                let _inner = scoped_logit_bias(&[(2, 10.0)]);
+                assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 2);
+            }
+            // The inner scope restores the outer bias on drop.
+            assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 1);
+        }
+        // Without the flag the scope is never consulted.
+        assert_eq!(
+            sample_categorical(&logits, MlxSamplingParams::greedy(), &[], &mut rng),
+            0
+        );
+        // Biased requests never take the batched path.
+        assert_eq!(
+            crate::batched_sampling::batched_sampling_class(sampling, false),
+            None
+        );
     }
 
     #[test]

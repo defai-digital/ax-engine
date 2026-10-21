@@ -171,6 +171,7 @@ fn ctx(
         repetition_context_size: None,
         presence_penalty: 0.0,
         frequency_penalty: 0.0,
+        logit_bias_active: false,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: true, // fixed-length streams for comparison
@@ -221,6 +222,7 @@ fn runner_input(
         block_tables: Vec::new(),
         request_contexts: contexts,
         request_multimodal_inputs: Vec::new(),
+        request_logit_biases: Vec::new(),
     }
 }
 

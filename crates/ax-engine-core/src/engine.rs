@@ -18,7 +18,7 @@ use crate::request_manager::{RequestManager, RequestManagerError, RunnerApplySum
 use crate::runner::RequestLogitsOutput;
 use crate::runner::{
     DeterministicRunner, ExecutionRunner, ResolvedBlockTable, RunnerInput, RunnerOutput,
-    RunnerRequestContext, RunnerRequestMultimodalInput,
+    RunnerRequestContext, RunnerRequestLogitBias, RunnerRequestMultimodalInput,
 };
 use crate::sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, TokenSampler,
@@ -1210,6 +1210,7 @@ impl EngineCore {
         self.scratch_seen_request_ids.clear();
         let mut request_contexts = Vec::with_capacity(execution_batch.items.len());
         let mut request_multimodal_inputs = Vec::new();
+        let mut request_logit_biases = Vec::new();
 
         for item in &execution_batch.items {
             block_tables.push(ResolvedBlockTable {
@@ -1225,6 +1226,12 @@ impl EngineCore {
                     request_multimodal_inputs.push(RunnerRequestMultimodalInput {
                         request_id: item.request_id,
                         inputs: record.multimodal_inputs.clone(),
+                    });
+                }
+                if !record.sampling_params.logit_bias.is_empty() {
+                    request_logit_biases.push(RunnerRequestLogitBias {
+                        request_id: item.request_id,
+                        logit_bias: record.sampling_params.logit_bias.clone(),
                     });
                 }
                 request_contexts.push(RunnerRequestContext {
@@ -1247,6 +1254,7 @@ impl EngineCore {
                     repetition_context_size: record.sampling_params.repetition_context_size,
                     presence_penalty: record.sampling_params.presence_penalty,
                     frequency_penalty: record.sampling_params.frequency_penalty,
+                    logit_bias_active: !record.sampling_params.logit_bias.is_empty(),
                     no_repeat_ngram_size: record.sampling_params.no_repeat_ngram_size,
                     ngram_window: record.sampling_params.ngram_window,
                     ignore_eos: record.sampling_params.ignore_eos,
@@ -1265,6 +1273,7 @@ impl EngineCore {
             block_tables,
             request_contexts,
             request_multimodal_inputs,
+            request_logit_biases,
         })
     }
 
