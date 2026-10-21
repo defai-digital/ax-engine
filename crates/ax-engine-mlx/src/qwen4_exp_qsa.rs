@@ -28,6 +28,94 @@ use thiserror::Error;
 
 use crate::weights::QuantizedWeight;
 
+/// Multimodal (MRoPE) positions of one qwen4_exp request with image input.
+///
+/// Inside the prompt, a token's `(t, h, w)` comes from the image layout;
+/// past it every axis is `physical + delta`. Rotary frequency `i` reads its
+/// position from the axis the interleaved `sections` assign to it (axis
+/// `i % 3` within that axis' section, else the temporal axis).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Qwen4ExpMediaPositions {
+    prompt: Vec<[i32; 3]>,
+    delta: i32,
+    sections: [usize; 3],
+}
+
+impl Qwen4ExpMediaPositions {
+    pub(crate) fn new(prompt: Vec<[i32; 3]>, delta: i32, sections: &[usize]) -> Result<Self> {
+        let sections: [usize; 3] = sections
+            .try_into()
+            .map_err(|_| QsaError::InvalidScalar("mrope_section must have three entries"))?;
+        if prompt.is_empty() {
+            return Err(QsaError::InvalidScalar("media positions are empty"));
+        }
+        Ok(Self {
+            prompt,
+            delta,
+            sections,
+        })
+    }
+
+    /// `(t, h, w)` of the token at physical position `physical`.
+    pub(crate) fn at(&self, physical: usize) -> [i32; 3] {
+        match self.prompt.get(physical) {
+            Some(position) => *position,
+            None => {
+                let position = i32::try_from(physical)
+                    .unwrap_or(i32::MAX)
+                    .saturating_add(self.delta);
+                [position; 3]
+            }
+        }
+    }
+
+    /// Source axis of each of the `half` rotary frequencies.
+    fn source_axes(&self, half: usize) -> Vec<usize> {
+        let mut axes = vec![0usize; half];
+        for (axis, section) in self.sections.iter().copied().enumerate().skip(1) {
+            let mut index = axis;
+            while index < section.saturating_mul(3) && index < half {
+                axes[index] = axis;
+                index += 3;
+            }
+        }
+        axes
+    }
+}
+
+thread_local! {
+    /// Media positions of the qwen4_exp request whose forward is running on
+    /// this thread; `None` for text-only requests.
+    static MEDIA_SCOPE: std::cell::RefCell<Option<std::sync::Arc<Qwen4ExpMediaPositions>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Restores the previous media scope on drop.
+#[must_use]
+pub(crate) struct Qwen4ExpMediaScope {
+    previous: Option<std::sync::Arc<Qwen4ExpMediaPositions>>,
+}
+
+impl Drop for Qwen4ExpMediaScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        MEDIA_SCOPE.with(|current| *current.borrow_mut() = previous);
+    }
+}
+
+/// Make `media` the rotary positions of every QSA / attention rotary call
+/// while the guard lives. `None` keeps plain 1D rotary.
+pub(crate) fn scoped_media(
+    media: Option<std::sync::Arc<Qwen4ExpMediaPositions>>,
+) -> Qwen4ExpMediaScope {
+    let previous = MEDIA_SCOPE.with(|current| std::mem::replace(&mut *current.borrow_mut(), media));
+    Qwen4ExpMediaScope { previous }
+}
+
+fn current_media() -> Option<std::sync::Arc<Qwen4ExpMediaPositions>> {
+    MEDIA_SCOPE.with(|current| current.borrow().clone())
+}
+
 type Result<T> = std::result::Result<T, QsaError>;
 
 #[derive(Debug, Error)]
@@ -681,11 +769,23 @@ pub(crate) fn apply_qsa_rotary(
     positions: &MlxArray,
     seq_axis: i32,
 ) -> MlxArray {
+    let (cos, sin) = qsa_rotary_cos_sin(positions, rotary_dim, rope_base, x.dtype());
+    apply_rotary_trig(x, rotary_dim, cos, sin, seq_axis)
+}
+
+/// Rotate the first `rotary_dim` channels of `x` with `[seq, rotary_dim]`
+/// cos/sin already in `x`'s dtype; later channels pass through.
+fn apply_rotary_trig(
+    x: &MlxArray,
+    rotary_dim: i32,
+    cos: MlxArray,
+    sin: MlxArray,
+    seq_axis: i32,
+) -> MlxArray {
     let shape = x.shape();
     let ndim = shape.len();
     let head_dim = shape[ndim - 1];
     let seq = shape[seq_axis as usize];
-    let (cos, sin) = qsa_rotary_cos_sin(positions, rotary_dim, rope_base, x.dtype());
     let mut trig_shape = vec![1i32; ndim];
     trig_shape[seq_axis as usize] = seq;
     trig_shape[ndim - 1] = rotary_dim;
@@ -716,6 +816,11 @@ pub(crate) fn apply_qsa_rotary_offset(
     seq_axis: i32,
 ) -> MlxArray {
     let seq = x.shape()[seq_axis as usize];
+    if let Some(media) = current_media() {
+        let start = usize::try_from(offset).unwrap_or(0);
+        let positions: Vec<[i32; 3]> = (0..seq as usize).map(|i| media.at(start + i)).collect();
+        return apply_qsa_mrope(x, rotary_dim, rope_base, &positions, &media, seq_axis);
+    }
     let positions = arange(
         f64::from(offset),
         f64::from(offset) + f64::from(seq),
@@ -743,6 +848,38 @@ fn qsa_rotary_cos_sin(
     let cos = concatenate(&[&cos_h, &cos_h], -1, None);
     let sin = concatenate(&[&sin_h, &sin_h], -1, None);
     (astype(&cos, dtype, None), astype(&sin, dtype, None))
+}
+
+/// Interleaved MRoPE with the official QSA rounding: float32 angles, cos and
+/// sin cast to `x`'s dtype once. Each frequency's angle is its own axis
+/// position times the inverse frequency, the same single float32 product the
+/// 1D path computes, so equal axes reproduce [`apply_qsa_rotary`].
+fn apply_qsa_mrope(
+    x: &MlxArray,
+    rotary_dim: i32,
+    rope_base: f32,
+    positions: &[[i32; 3]],
+    media: &Qwen4ExpMediaPositions,
+    seq_axis: i32,
+) -> MlxArray {
+    let half = (rotary_dim / 2) as usize;
+    let inv: Vec<f32> = (0..half)
+        .map(|index| 1.0 / rope_base.powf((2 * index) as f32 / rotary_dim as f32))
+        .collect();
+    let axes = media.source_axes(half);
+    let mut theta = Vec::with_capacity(positions.len() * half);
+    for position in positions {
+        for (index, &inv_freq) in inv.iter().enumerate() {
+            theta.push(position[axes[index]] as f32 * inv_freq);
+        }
+    }
+    let theta = MlxArray::from_f32_slice(&theta);
+    let theta = reshape(&theta, &[positions.len() as i32, half as i32], None);
+    let cos_h = cos(&theta, None);
+    let sin_h = sin(&theta, None);
+    let cos_full = astype(&concatenate(&[&cos_h, &cos_h], -1, None), x.dtype(), None);
+    let sin_full = astype(&concatenate(&[&sin_h, &sin_h], -1, None), x.dtype(), None);
+    apply_rotary_trig(x, rotary_dim, cos_full, sin_full, seq_axis)
 }
 
 fn rotate_half_last(x: &MlxArray) -> MlxArray {
@@ -792,6 +929,13 @@ fn pooled_block_keys(
 
 fn rope_block_starts(blocks: &MlxArray, rotary_dim: i32, rope_base: f32, ratio: i32) -> MlxArray {
     let n_blocks = blocks.shape()[1];
+    if let Some(media) = current_media() {
+        // A pooled block key rotates with its first token's 3D position.
+        let positions: Vec<[i32; 3]> = (0..n_blocks as usize)
+            .map(|block| media.at(block * ratio as usize))
+            .collect();
+        return apply_qsa_mrope(blocks, rotary_dim, rope_base, &positions, &media, 1);
+    }
     let starts = arange(
         0.0,
         f64::from(n_blocks) * f64::from(ratio),
@@ -1343,6 +1487,87 @@ fn validate_projection(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn media(prompt: Vec<[i32; 3]>, delta: i32) -> std::sync::Arc<Qwen4ExpMediaPositions> {
+        std::sync::Arc::new(Qwen4ExpMediaPositions::new(prompt, delta, &[11, 11, 10]).unwrap())
+    }
+
+    #[test]
+    fn media_positions_follow_the_prompt_table_then_the_delta() {
+        let positions = media(
+            vec![[0, 0, 0], [1, 1, 1], [1, 1, 2], [1, 2, 1], [3, 3, 3]],
+            -1,
+        );
+        assert_eq!(positions.at(2), [1, 1, 2]);
+        assert_eq!(positions.at(4), [3, 3, 3]);
+        // Past the prompt every axis is physical + delta.
+        assert_eq!(positions.at(5), [4, 4, 4]);
+        assert_eq!(positions.at(9), [8, 8, 8]);
+        assert!(Qwen4ExpMediaPositions::new(Vec::new(), 0, &[11, 11, 10]).is_err());
+        assert!(Qwen4ExpMediaPositions::new(vec![[0, 0, 0]], 0, &[16, 16]).is_err());
+    }
+
+    #[test]
+    fn interleaved_sections_assign_t_h_w_like_the_reference() {
+        let axes = media(vec![[0; 3]], 0).source_axes(32);
+        for (index, axis) in axes.iter().enumerate() {
+            let expected = match index % 3 {
+                1 if index < 33 => 1,
+                2 if index < 30 => 2,
+                _ => 0,
+            };
+            assert_eq!(*axis, expected, "frequency {index}");
+        }
+        assert_eq!(axes.iter().filter(|&&axis| axis == 1).count(), 11);
+        assert_eq!(axes.iter().filter(|&&axis| axis == 2).count(), 10);
+    }
+
+    #[test]
+    fn mrope_with_equal_axes_is_bit_identical_to_plain_rotary() {
+        let values: Vec<f32> = (0..(2 * 3 * 64))
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) / 7.0)
+            .collect();
+        let x = astype(
+            &reshape(&MlxArray::from_f32_slice(&values), &[1, 2, 3, 64], None),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let plain = apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 5, 2);
+        let text_like: Vec<[i32; 3]> = (0..12).map(|p| [p; 3]).collect();
+        let rotated = {
+            let _scope = scoped_media(Some(media(text_like, 0)));
+            apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 5, 2)
+        };
+        let plain = astype(&plain, MlxDtype::Float32, None);
+        let rotated = astype(&rotated, MlxDtype::Float32, None);
+        eval(&[&plain, &rotated]);
+        assert_eq!(plain.data_f32(), rotated.data_f32());
+        // The scope ended: the plain path is back.
+        assert!(current_media().is_none());
+    }
+
+    #[test]
+    fn mrope_reads_each_frequency_from_its_axis() {
+        let values = vec![1.0f32; 64];
+        let x = reshape(&MlxArray::from_f32_slice(&values), &[1, 1, 1, 64], None);
+        // One token whose H axis differs: only H frequencies may change.
+        let rotated = {
+            let _scope = scoped_media(Some(media(vec![[3, 9, 3]], 0)));
+            apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 0, 2)
+        };
+        let plain = apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 3, 2);
+        eval(&[&rotated, &plain]);
+        let axes = media(vec![[0; 3]], 0).source_axes(32);
+        let (rotated, plain) = (rotated.data_f32(), plain.data_f32());
+        for channel in 0..64 {
+            let frequency = channel % 32;
+            if axes[frequency] == 1 {
+                continue;
+            }
+            assert_eq!(rotated[channel], plain[channel], "channel {channel}");
+        }
+        assert_ne!(rotated, plain);
+    }
 
     #[test]
     fn partial_selection_matches_full_sort_including_boundary_ties() {

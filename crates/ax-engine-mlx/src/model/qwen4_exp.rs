@@ -125,6 +125,10 @@ pub(crate) struct Qwen4ExpState {
     owner: u64,
     position: usize,
     layers: Vec<LayerState>,
+    /// MRoPE positions of a request with image input; `None` for text.
+    /// Rotary calls read them through [`crate::qwen4_exp_qsa::scoped_media`]
+    /// for the duration of each forward over this state.
+    media: Option<std::sync::Arc<crate::qwen4_exp_qsa::Qwen4ExpMediaPositions>>,
 }
 
 impl Qwen4ExpState {
@@ -132,6 +136,7 @@ impl Qwen4ExpState {
         Self {
             owner,
             position: 0,
+            media: None,
             layers: weights
                 .layers
                 .iter()
@@ -153,6 +158,22 @@ impl Qwen4ExpState {
 
     pub(crate) fn position(&self) -> usize {
         self.position
+    }
+
+    /// Attach image MRoPE positions to a fresh request state.
+    pub(crate) fn with_media(
+        mut self,
+        media: std::sync::Arc<crate::qwen4_exp_qsa::Qwen4ExpMediaPositions>,
+    ) -> Self {
+        self.media = Some(media);
+        self
+    }
+
+    /// Whether this request carries image positions. Such state has no
+    /// portable snapshot encoding: restoring it as text would rotate later
+    /// tokens at the wrong positions.
+    pub(crate) fn has_media(&self) -> bool {
+        self.media.is_some()
     }
 
     pub(crate) fn arrays(&self) -> Vec<&MlxArray> {
@@ -289,6 +310,7 @@ impl Qwen4ExpState {
         Some(Self {
             owner,
             position,
+            media: None,
             layers: vec![LayerState {
                 attention: AttentionState::Qsa(cache),
                 ple: None,
@@ -478,6 +500,7 @@ impl Qwen4ExpState {
         let state = Self {
             owner,
             position,
+            media: None,
             layers: built,
         };
         state
@@ -821,6 +844,30 @@ pub(crate) fn advance_prepared_qsa_cache(
     Ok(next)
 }
 
+/// Run the trunk from token embeddings the caller prepared (image features
+/// already scattered over their placeholder tokens). PLE still hashes the
+/// raw `tokens`, placeholders included.
+pub(crate) fn forward_embedded_rows(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
+    embedded: &MlxArray,
+    state: &Qwen4ExpState,
+    owner: u64,
+    rows: LogitRows,
+) -> Result<Qwen4ExpOutput, String> {
+    let hidden = weights.layout.expand(embedded).map_err(|e| e.to_string())?;
+    forward_prepared_rows(
+        weights,
+        tokens,
+        hidden,
+        state,
+        owner,
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::Shared,
+        rows,
+    )
+}
+
 /// Run AX-owned layers from an explicitly prepared packed residual. The MTP
 /// candidate uses this boundary with its separately owned one-layer graph.
 pub(crate) fn forward_prepared(
@@ -867,6 +914,8 @@ fn forward_prepared_rows(
     rows: LogitRows,
 ) -> Result<Qwen4ExpOutput, String> {
     let (end, vocabulary) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
+    // Image requests rotate attention and QSA keys at their MRoPE positions.
+    let _media_scope = crate::qwen4_exp_qsa::scoped_media(state.media.clone());
     #[cfg(test)]
     profiling::begin_chunk(state.position, tokens.len());
     #[cfg(test)]
@@ -1166,6 +1215,7 @@ mod tests {
         let populated = Qwen4ExpState {
             owner,
             position: 2,
+            media: None,
             layers: vec![
                 LayerState {
                     attention: AttentionState::Gdn(Some(Qwen4ExpGdnState {
@@ -1194,6 +1244,7 @@ mod tests {
         let fresh = Qwen4ExpState {
             owner,
             position: 0,
+            media: None,
             layers: vec![
                 LayerState {
                     attention: AttentionState::Gdn(None),
@@ -1355,6 +1406,7 @@ mod tests {
         let empty_layer = Qwen4ExpState {
             owner: 1,
             position: 3,
+            media: None,
             layers: vec![LayerState {
                 attention: AttentionState::Gdn(None),
                 ple: None,
@@ -1367,6 +1419,7 @@ mod tests {
         let populated_layer = Qwen4ExpState {
             owner: 1,
             position: 3,
+            media: None,
             layers: vec![LayerState {
                 attention: AttentionState::Gdn(Some(Qwen4ExpGdnState {
                     conv: array_f32(&[0.0], &[1, 1, 1]),

@@ -97,6 +97,21 @@ other storage, other hosts, endurance, multi-model residency and multimodal use.
 16,384-token default KV pool is unchanged; use `--total-blocks 4096` for contexts up
 to 65,536 tokens.
 
+Image input is a functional preview outside this certification. The pack's
+Qwen3-VL style vision tower (333 BF16 `vision_tower.*` tensors, about 0.85 GB)
+loads by default (`AX_MLX_QWEN4_EXP_VISION=0` keeps the pack text-only), and
+`/v1/chat/completions` accepts `image_url` parts; audio and video are refused.
+Attention and QSA keys rotate at interleaved MRoPE positions (sections
+[11, 11, 10]); decode continues at `position + delta`. Image requests skip the
+prefix cache and decode without model MTP. Evidence (M2 Ultra 192 GB, greedy,
+thinking off), against the pinned MLX-VLM reference on the same pack: prompt
+token counts match on two synthetic images (161 and 168 tokens), the first
+answer is identical to its end of sequence, and the second agrees for about
+45 tokens before a near-tie split (the two engines' text trunks already split
+at tokens 1, 12 and 34 on three plain prompts). Text-only output on this pack
+is unchanged token for token with model MTP on and off, also after an image
+request on the same server.
+
 ## Current target and open gates
 
 The target is

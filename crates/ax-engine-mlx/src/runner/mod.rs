@@ -6373,7 +6373,9 @@ impl MlxRunner {
                             first_token: tok,
                             prefill_started,
                             prefill_forward_wall_us,
-                            publish_prefix_snapshot: true,
+                            // qwen4_exp image state has no portable
+                            // snapshot (its MRoPE positions stay request-local).
+                            publish_prefix_snapshot: self.cfg.model_family != "qwen4_exp",
                             model_id,
                             block_size_tokens,
                             media_key: media_key.as_deref(),
@@ -6383,6 +6385,11 @@ impl MlxRunner {
                             is_greedy,
                         },
                     );
+                    if self.cfg.model_family == "qwen4_exp" {
+                        // The Flash Next draft cursor has no image positions;
+                        // decode this request on the trunk alone.
+                        state.mtp_bypassed = true;
+                    }
                     Some(tok)
                 } else if let Some(inputs) = minicpm_v46_inputs {
                     if !prefill_completes_prompt {

@@ -572,3 +572,19 @@ pub(crate) fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u
         .min(context_length)
         .max(1)
 }
+
+/// Mirrors the runtime's `AX_MLX_QWEN4_EXP_VISION` (default on; once set,
+/// only `1`, `true`, `yes` or `on` keep it on), which decides whether the
+/// Flash Next vision tower was loaded. Read once per process, like the
+/// runtime's own flag.
+pub(crate) fn qwen4_exp_vision_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_MLX_QWEN4_EXP_VISION").map_or(true, |raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+    })
+}

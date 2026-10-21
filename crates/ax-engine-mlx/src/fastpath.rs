@@ -1565,6 +1565,17 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_QWEN4_EXP_VISION` - load the Qwen3-VL style vision tower a
+    /// qwen4_exp pack ships (about 0.85 GB of BF16 on Qwen 3.8 Flash Next)
+    /// so chat requests may carry images.
+    ///
+    /// **Default: ON** (`AX_MLX_QWEN4_EXP_VISION=0` keeps the pack text-only
+    /// and skips the tower).
+    qwen4_exp_vision_enabled,
+    "AX_MLX_QWEN4_EXP_VISION"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_LINEAR_PREFIX_GRID_RUNG` - on hybrid linear-attention models,
     /// also capture a prefix snapshot at the last prefill-chunk boundary of a
     /// completed prompt. Restore floors every multi-token warm extension to
