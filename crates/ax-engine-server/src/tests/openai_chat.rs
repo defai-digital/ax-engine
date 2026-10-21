@@ -458,9 +458,13 @@ fn tiel_tool_contract_uses_publisher_xml_grammar_for_calls_and_history() {
     }}]);
     for model_id in [
         "tiel-coder-35b-axq-mxfp4",
+        "tiel-coder-35b-axq-mxfp8",
         "cyber-tiel-coder-35b-axq-mxfp4",
+        "cyber-tiel-coder-35b-axq-mxfp8",
         "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP8-MTP",
         "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Cyber-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP8-MTP",
     ] {
         let prompt = render_openai_chat_prompt_with_tools(
             model_id,
