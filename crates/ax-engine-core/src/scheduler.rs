@@ -28,6 +28,11 @@ pub struct SchedulerInput {
     pub available_kv_blocks: u32,
     /// Total blocks in the pool, also used to identify impossible prefills.
     pub total_kv_blocks: u32,
+    /// Time-targeted prefill while decodes run (`None` = off). When a decode
+    /// is scheduled this step, `Some(n)` caps each text prefill item to `n`
+    /// tokens and `Some(0)` defers every prefill (the engine is repaying
+    /// decode debt). Steps without a decode ignore it.
+    pub prefill_cap_while_decoding: Option<u32>,
 }
 
 impl SchedulerInput {
@@ -49,6 +54,7 @@ impl SchedulerInput {
             block_size_tokens: 16,
             available_kv_blocks: u32::MAX,
             total_kv_blocks: u32::MAX,
+            prefill_cap_while_decoding: None,
         }
     }
 }
@@ -150,6 +156,10 @@ pub(crate) const ROUTE_DECISION_AX_SCHEDULER_SKIPPED_DECODE_TOKENS: &str =
     "ax_scheduler_skipped_decode_tokens";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_MIXED_PREFILL_DECODE_BATCHES: &str =
     "ax_scheduler_mixed_prefill_decode_batches";
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_PREFILL_CAP_WHILE_DECODING_TOKENS: &str =
+    "ax_scheduler_prefill_cap_while_decoding_tokens";
+pub(crate) const ROUTE_DECISION_AX_SCHEDULER_PREFILL_DEFERRED_FOR_DECODE_DEBT: &str =
+    "ax_scheduler_prefill_deferred_for_decode_debt";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_ENABLED: &str =
     "ax_scheduler_fair_multi_prefill_enabled";
 pub(crate) const ROUTE_DECISION_AX_SCHEDULER_FAIR_MULTI_PREFILL_CHUNK_TOKENS: &str =
@@ -497,8 +507,22 @@ impl Scheduler {
             })
             .count() as u32;
 
+        // Time-targeted prefill applies only when this step also decodes.
+        let decode_cap = input.prefill_cap_while_decoding.filter(|_| {
+            candidates
+                .iter()
+                .any(|(_, mode)| *mode == ExecutionMode::Decode)
+        });
+        let mut deferred_for_decode_debt: u32 = 0;
+
         for (snapshot, mode) in candidates {
             let requested_tokens = schedulable_token_count(snapshot, mode);
+            if mode == ExecutionMode::Prefill && decode_cap == Some(0) {
+                token_budget.record_skipped(mode, requested_tokens);
+                deferred_requests.push(snapshot.request_id);
+                deferred_for_decode_debt = deferred_for_decode_debt.saturating_add(1);
+                continue;
+            }
             if remaining_budget == 0 {
                 token_budget.record_skipped(mode, requested_tokens);
                 deferred_requests.push(snapshot.request_id);
@@ -591,6 +615,14 @@ impl Scheduler {
                 }
                 _ => remaining_budget,
             };
+            // Atomic multimodal prefills cannot be split; only text prefills
+            // take the time-targeted cap.
+            let candidate_budget = match decode_cap {
+                Some(cap) if mode == ExecutionMode::Prefill && !snapshot.has_multimodal_inputs => {
+                    candidate_budget.min(cap)
+                }
+                _ => candidate_budget,
+            };
 
             let Some(item) = self.build_execution_item(snapshot, candidate_budget) else {
                 // Same accounting as the zero-budget and admission-cap defer
@@ -668,6 +700,18 @@ impl Scheduler {
                 route_metadata_for_batch(route_seed_anchor.as_ref(), batch_mixes_prefill_decode);
             token_budget.append_route_decisions(&mut route_metadata);
             fair_telemetry.append_route_decisions(&mut route_metadata);
+            if let Some(cap) = decode_cap {
+                route_metadata.crossover_decisions.extend([
+                    (
+                        ROUTE_DECISION_AX_SCHEDULER_PREFILL_CAP_WHILE_DECODING_TOKENS.into(),
+                        cap,
+                    ),
+                    (
+                        ROUTE_DECISION_AX_SCHEDULER_PREFILL_DEFERRED_FOR_DECODE_DEBT.into(),
+                        deferred_for_decode_debt,
+                    ),
+                ]);
+            }
             // ADR-038: surface planned work units and generation kind on the batch.
             if let Some(first) = items.first() {
                 upsert_route_decision(
@@ -1028,6 +1072,65 @@ mod tests {
             diffusion_block_committed: false,
             route_deferred_steps: 0,
         }
+    }
+
+    #[test]
+    fn prefill_cap_while_decoding_applies_only_next_to_a_decode() {
+        let scheduler = Scheduler::new();
+        let prompt: Vec<u32> = (0..4000).collect();
+        let decoding = make_snapshot(1, 1, "m", &[1, 2, 3], 3, &[7], 64);
+        let prefilling = make_snapshot(2, 2, "m", &prompt, 0, &[], 64);
+        let plan_with = |cap: Option<u32>, snapshots: Vec<RequestSnapshot>| {
+            let mut input = SchedulerInput::new(StepId(1), snapshots, None, 8192);
+            input.prefill_cap_while_decoding = cap;
+            scheduler.plan(&input)
+        };
+        let prefill_tokens = |plan: &SchedulePlan| {
+            plan.execution_batch
+                .as_ref()
+                .map(|batch| {
+                    batch
+                        .items
+                        .iter()
+                        .filter(|item| item.mode == ExecutionMode::Prefill)
+                        .map(|item| item.scheduled_token_count)
+                        .sum::<u32>()
+                })
+                .unwrap_or(0)
+        };
+
+        // A decode is running: the prefill takes at most the cap.
+        let plan = plan_with(Some(512), vec![decoding.clone(), prefilling.clone()]);
+        assert_eq!(prefill_tokens(&plan), 512);
+        let decisions = &plan
+            .execution_batch
+            .as_ref()
+            .unwrap()
+            .route_metadata
+            .crossover_decisions;
+        assert!(decisions.contains(&(
+            ROUTE_DECISION_AX_SCHEDULER_PREFILL_CAP_WHILE_DECODING_TOKENS.into(),
+            512
+        )));
+
+        // Decode debt: the prefill waits, the decode still runs.
+        let plan = plan_with(Some(0), vec![decoding.clone(), prefilling.clone()]);
+        assert_eq!(prefill_tokens(&plan), 0);
+        assert!(plan.deferred_requests.contains(&RequestId(2)));
+        assert!(plan.selected_requests.contains(&RequestId(1)));
+
+        // Nothing decodes: the cap is ignored.
+        let plan = plan_with(Some(0), vec![prefilling.clone()]);
+        assert_eq!(prefill_tokens(&plan), 4000);
+        let plan = plan_with(Some(512), vec![prefilling]);
+        assert_eq!(prefill_tokens(&plan), 4000);
+
+        // Off: today's schedule.
+        let plan = plan_with(
+            None,
+            vec![decoding, make_snapshot(2, 2, "m", &prompt, 0, &[], 64)],
+        );
+        assert_eq!(prefill_tokens(&plan), 4000);
     }
 
     #[test]

@@ -254,6 +254,13 @@ pub struct ServerArgs {
     #[arg(long = "max-prefill-tokens-per-request-per-step", default_value_t = 0)]
     pub max_prefill_tokens_per_request_per_step: u32,
 
+    /// Time-targeted prefill while other requests decode: size each text
+    /// prefill step to about this many milliseconds (from the measured
+    /// prefill rate, at least 256 tokens) and let decodes repay half of each
+    /// such step before the next chunk. `0` (default) keeps today's schedule.
+    #[arg(long = "prefill-stall-target-ms", default_value_t = 0)]
+    pub prefill_stall_target_ms: u32,
+
     /// Max concurrent text prefills per step when fair mode is on.
     /// `0` (default) means unlimited (still subject to free-block headroom).
     #[arg(long = "max-inflight-prefill-requests", default_value_t = 0)]

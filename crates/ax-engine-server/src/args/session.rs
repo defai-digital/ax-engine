@@ -133,6 +133,7 @@ impl ServerArgs {
             multi_prefill_fair: self.multi_prefill_fair,
             max_prefill_tokens_per_request_per_step: self.max_prefill_tokens_per_request_per_step,
             max_inflight_prefill_requests: self.max_inflight_prefill_requests,
+            prefill_stall_target_ms: self.prefill_stall_target_ms,
         })
         .map_err(|error| error.to_string())
     }

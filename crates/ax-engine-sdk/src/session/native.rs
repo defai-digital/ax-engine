@@ -39,6 +39,7 @@ fn apply_scheduler_policy(core: &mut EngineCore, config: &EngineSessionConfig) {
         config.max_prefill_tokens_per_request_per_step,
         config.max_inflight_prefill_requests,
     );
+    core.set_prefill_stall_target_ms(config.prefill_stall_target_ms);
 }
 
 #[cfg(feature = "mlx-native")]

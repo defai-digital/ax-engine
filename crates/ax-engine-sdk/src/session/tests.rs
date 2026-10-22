@@ -929,6 +929,7 @@ fn resolved_session_config_factory_preserves_supplied_runtime_fields() {
         multi_prefill_fair: true,
         max_prefill_tokens_per_request_per_step: 16,
         max_inflight_prefill_requests: 3,
+        prefill_stall_target_ms: 0,
     })
     .expect("valid config constants");
 

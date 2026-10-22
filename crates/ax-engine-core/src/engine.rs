@@ -107,6 +107,8 @@ pub struct EngineCore {
     multi_prefill_fair: bool,
     max_prefill_tokens_per_request_per_step: u32,
     max_inflight_prefill_requests: u32,
+    /// Time-targeted prefill while decodes run (default off).
+    prefill_stall: crate::prefill_stall::PrefillStallPolicy,
     /// Default generation paradigm applied to new submissions (ADR-038).
     generation_kind: GenerationKind,
     next_step_id: u64,
@@ -169,6 +171,7 @@ impl EngineCore {
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
+            prefill_stall: crate::prefill_stall::PrefillStallPolicy::default(),
             generation_kind: GenerationKind::Autoregressive,
             next_step_id: 0,
             consecutive_runner_panics: 0,
@@ -210,6 +213,13 @@ impl EngineCore {
         self.multi_prefill_fair = fair;
         self.max_prefill_tokens_per_request_per_step = max_tokens_per_request_per_step;
         self.max_inflight_prefill_requests = max_inflight_prefill_requests;
+    }
+
+    /// Size text prefill chunks to about `target_ms` per step while other
+    /// requests decode, with decode-debt repayment between chunks (see
+    /// [`crate::prefill_stall`]). `0` turns it off (the default).
+    pub fn set_prefill_stall_target_ms(&mut self, target_ms: u32) {
+        self.prefill_stall = crate::prefill_stall::PrefillStallPolicy::new(target_ms);
     }
 
     /// Set the generation paradigm applied to newly submitted requests (ADR-038).
@@ -380,6 +390,22 @@ impl EngineCore {
             .as_ref()
             .map(|batch| batch.total_scheduled_tokens)
             .unwrap_or(0);
+        if self.prefill_stall.enabled()
+            && let Some(batch) = schedule_plan.execution_batch.as_ref()
+        {
+            let prefill_tokens = batch
+                .items
+                .iter()
+                .filter(|item| item.mode == crate::scheduler::ExecutionMode::Prefill)
+                .map(|item| item.scheduled_token_count)
+                .sum();
+            let decoded = batch
+                .items
+                .iter()
+                .any(|item| item.mode == crate::scheduler::ExecutionMode::Decode);
+            self.prefill_stall
+                .record_step(prefill_tokens, decoded, runner_time_us);
+        }
 
         let cpu_time_us = step_started.elapsed().as_micros() as u64;
         let kv_telemetry = self.kv_manager.telemetry();
@@ -1029,6 +1055,7 @@ impl EngineCore {
         input.block_size_tokens = kv_config.block_size_tokens;
         input.available_kv_blocks = allocatable_blocks;
         input.total_kv_blocks = kv_config.total_blocks;
+        input.prefill_cap_while_decoding = self.prefill_stall.cap();
         input
     }
 
