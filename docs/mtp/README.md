@@ -122,6 +122,23 @@ real prompts, 256 tokens) Qwen's sampled settings with presence penalty 1.5
 decode at 47.7 tok/s against 29.3 on the direct route. Greedy penalised
 requests and no-repeat n-gram bans still decode directly.
 
+MXFP4 verify windows of 3 to 8 rows use a fused matmul
+(`AX_MLX_MTP_VERIFY_QMM_MXFP4`, default on; `=0` restores MLX's own quantized
+matmul, `AX_MLX_MTP_VERIFY_QMM_MXFP4_MIN_N` sets an output-width floor). MLX's
+quantized matmul pays 2.4 to 5.6 ms per extra row on the 27B FFN chain and
+switches kernels at 13 rows; the fused kernel reads and decodes each weight
+once and applies it to every row. On an M5 Max the 64-layer FFN chain at eight
+rows drops from 46.2 to 29.6 ms and at four rows from 24.7 to 18.8 ms. With the
+27B MXFP4 pack, depth-3 MTP, greedy, 256 tokens and 17 real prompts it decodes
+1.138x faster than the stock route (median 1.151x, every prompt between 1.046x
+and 1.206x; a repeat of the stock arm agreed within 0.2%), 2.32x direct decode
+against 2.04x. The sum order differs from MLX's, so outputs change: 11 of 17
+prompts match the stock MTP route, and against direct decode 12 of 17 match
+with the fused route and 11 of 17 with the stock one, so it is no further from
+direct decode than the route it replaces. It applies to dense MXFP4 weights
+during a throughput-profile verify forward only; the exact profile, Flash Next
+and MoE experts are unchanged.
+
 `AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
 JSON line per verified MTP cycle (verify window, accepted prefix, context
 length, draft log-probs when the draft path computed them, timestamp). It adds
