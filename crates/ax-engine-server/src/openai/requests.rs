@@ -16,8 +16,8 @@ use crate::errors::{ErrorResponse, error_response};
 use crate::metadata::context_length;
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
 use crate::openai::schema::{
-    OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiCompletionHttpRequest,
-    OpenAiPromptInput, OpenAiStopInput,
+    OpenAiChatCompletionHttpRequest, OpenAiChatContent, OpenAiChatMessage,
+    OpenAiCompletionHttpRequest, OpenAiPromptInput, OpenAiStopInput,
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
@@ -493,7 +493,7 @@ pub(crate) fn build_openai_chat_request(
 
 fn build_openai_chat_request_with_control(
     live: &LiveState,
-    request: OpenAiChatCompletionHttpRequest,
+    mut request: OpenAiChatCompletionHttpRequest,
     control: Option<&BlockingTaskControl>,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_video_chat_content(
@@ -502,6 +502,19 @@ fn build_openai_chat_request_with_control(
     )?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    // Masking constrains what the model may write, not what it plans: tell
+    // it the format too, so it does not plan past the schema's limits.
+    if let Some(schema) = native_json_constraint(live, &response_options) {
+        let instruction = if response_options.json_schema.is_some() {
+            format!(
+                "Respond only with JSON that conforms to this JSON Schema, with no code fences \
+                 or other text:\n{schema}"
+            )
+        } else {
+            "Respond only with a JSON object, with no code fences or other text.".to_string()
+        };
+        add_system_instruction(&mut request.messages, &instruction);
+    }
     let prompt_options = openai_chat_prompt_render_options_for_live(&request, live);
     // Reasoning extraction must follow the prompt's resolved thinking state.
     // The prompt falls back to the live model id when `model` is omitted; a
@@ -931,6 +944,33 @@ fn build_openai_generate_request(
         stream: payload.stream,
         response_options,
     })
+}
+
+/// Append `instruction` to a leading text system message, or add one.
+/// A leading multi-part system message is left alone.
+fn add_system_instruction(messages: &mut Vec<OpenAiChatMessage>, instruction: &str) {
+    match messages.first_mut() {
+        Some(OpenAiChatMessage {
+            role,
+            content: Some(OpenAiChatContent::Text(text)),
+            ..
+        }) if role == "system" => {
+            text.push_str("\n\n");
+            text.push_str(instruction);
+        }
+        Some(OpenAiChatMessage { role, .. }) if role == "system" => {}
+        _ => messages.insert(
+            0,
+            OpenAiChatMessage {
+                role: "system".to_string(),
+                content: Some(OpenAiChatContent::Text(instruction.to_string())),
+                tool_calls: None,
+                reasoning_content: None,
+                _tool_call_id: None,
+                _name: None,
+            },
+        ),
+    }
 }
 
 /// The schema the native MLX backend constrains decoding to for a

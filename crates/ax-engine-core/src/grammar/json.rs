@@ -8,10 +8,10 @@
 
 use serde_json::Value;
 
-/// Longest whitespace run accepted between JSON tokens: room for
-/// pretty-printed indentation, not for a sampled model that keeps emitting
-/// whitespace instead of content.
-pub const MAX_WHITESPACE_RUN: u16 = 24;
+/// Longest whitespace run accepted between JSON tokens: room for deep
+/// pretty-printed indentation. A run holds at most one newline, as its first
+/// byte, so a sampled model cannot drift into blank lines.
+pub const MAX_WHITESPACE_RUN: u16 = 64;
 /// Whitespace accepted before the top-level value (a newline after
 /// `</think>`, say).
 pub const MAX_LEADING_WHITESPACE: u16 = 2;
@@ -354,7 +354,7 @@ fn is_whitespace(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\n')
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ObjectState {
     AfterOpen,
     /// Inside a key: names `lo..hi` of the sorted list still share its
@@ -374,14 +374,14 @@ enum ObjectState {
     AfterComma,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ArrayState {
     Open,
     Value,
     Comma,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum NumberState {
     Minus,
     Zero,
@@ -393,7 +393,7 @@ enum NumberState {
     ExpDigits,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Frame {
     Value {
         node: NodeId,
@@ -440,7 +440,7 @@ enum Step {
 }
 
 /// Incremental matcher state. Clone it to explore alternatives.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct JsonMatcher {
     stack: Vec<Frame>,
     whitespace_run: u16,
@@ -454,6 +454,24 @@ impl JsonMatcher {
             [only] => frame_can_end(grammar, only),
             _ => false,
         }
+    }
+
+    /// A copy that accepts exactly the same continuations, with counters
+    /// that no longer matter folded away: the character count of a string
+    /// with no `maxLength` once it has reached `minLength`. Equal keys mean
+    /// equal allowed-token masks, so masks can be cached by key.
+    pub fn mask_key(&self) -> JsonMatcher {
+        let mut key = self.clone();
+        for frame in &mut key.stack {
+            if let Frame::Str {
+                min, max, chars, ..
+            } = frame
+                && *max == u32::MAX
+            {
+                *chars = (*chars).min(*min);
+            }
+        }
+        key
     }
 
     /// No further byte can be accepted.
@@ -525,6 +543,9 @@ impl JsonMatcher {
                 Step::Reject => return false,
             }
             if is_whitespace(byte) && !content {
+                if byte == b'\n' && self.whitespace_run > 0 && !leading {
+                    return false;
+                }
                 self.whitespace_run += 1;
                 let limit = if leading {
                     MAX_LEADING_WHITESPACE
@@ -1087,6 +1108,10 @@ mod tests {
         let spaces = " ".repeat(usize::from(MAX_WHITESPACE_RUN));
         assert!(prefix_ok(&grammar, &format!("{{{spaces}")));
         assert!(!prefix_ok(&grammar, &format!("{{{spaces} ")));
+        // A run holds one newline, first: indentation, not blank lines.
+        assert!(prefix_ok(&grammar, "{\n        \"a\":\n\t1"));
+        assert!(!prefix_ok(&grammar, "{\n\n"));
+        assert!(!prefix_ok(&grammar, "{ \n"));
         // Before the top-level value only a short run is accepted, and a
         // carriage return never is.
         assert!(prefix_ok(&grammar, "\n\n{"));

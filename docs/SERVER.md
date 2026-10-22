@@ -371,15 +371,17 @@ than silently dropped.
   answer is well-formed JSON with the schema's types, `enum` / `const`
   values, `required` and closed (`additionalProperties: false`) properties,
   and string and array length bounds. Numeric bounds stay with the post-hoc
-  check. Whitespace between JSON tokens is limited to runs of 24 bytes (2
-  before the top-level value, no carriage returns), and
-  property names that would need JSON escapes, objects with more than 128
-  properties and enums with more than 64 options fall back to post-hoc
-  validation only. The model never sees the schema: put its limits (item
-  counts, lengths, enum values) in the prompt, or a model that planned more
-  than the schema allows is forced into an unnatural continuation and may
-  run to the token budget (the post-hoc check then reports it). Reasoning
-  models think freely: the grammar starts after `</think>`, and the post-hoc
+  check. Whitespace between JSON tokens comes in runs of at most 64 bytes
+  with at most one newline, as the run's first byte (2 bytes before the
+  top-level value, no carriage returns). End of sequence is allowed only once
+  the value is complete. Property names that would need JSON escapes, objects
+  with more than 128 properties and enums with more than 64 options fall back
+  to post-hoc validation only. Chat requests also get a system instruction
+  with the schema (appended to a leading text system message), because
+  masking limits what the model writes, not what it plans: a model that
+  planned past the schema's limits would be forced into an unnatural
+  continuation. Reasoning models think freely: the grammar starts after
+  `</think>`, and the post-hoc
   check reads the answer after the thinking block. Tool-calling requests are not constrained (the tool span is
   not the answer). Qwen linear MTP keeps speculating: each verify row is
   masked at the grammar position its preceding drafts reach, so greedy and
