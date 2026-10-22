@@ -83,6 +83,13 @@ fn parse_bool_value(raw: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("on")
 }
 
+/// Flash Next reads the next prefill chunk's n-gram rows while the current
+/// chunk computes. Kill switch: `AX_FLASH_NEXT_NGRAM_PREFETCH=0`.
+pub(crate) fn flash_next_ngram_prefetch_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_PREFETCH"))
+}
+
 /// `AX_FLASH_NEXT_HC_COMPILE=1` compiles the elementwise stretches of Flash
 /// Next's gated residual (default off while it is being measured).
 pub(crate) fn flash_next_hc_compile_enabled() -> bool {

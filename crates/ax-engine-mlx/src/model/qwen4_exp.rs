@@ -7,6 +7,71 @@ use std::io::Read;
 #[cfg(test)]
 pub(crate) mod profiling;
 
+/// The prompt a chunked prefill is working through, so the n-gram rows of the
+/// next chunk can be read while this chunk computes. Row IDs depend only on
+/// token IDs, never on activations, which is what makes the read-ahead exact.
+pub(crate) mod lookahead {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    thread_local! {
+        static PROMPT: RefCell<Option<(usize, Arc<[u32]>)>> = const { RefCell::new(None) };
+    }
+
+    /// Clears the lookahead when the prefill that installed it ends.
+    pub(crate) struct Scope;
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            PROMPT.with_borrow_mut(|prompt| *prompt = None);
+        }
+    }
+
+    /// `prompt` is what the prefill is about to feed, starting at cache
+    /// position `base_position`.
+    pub(crate) fn scope(base_position: usize, prompt: &[u32]) -> Scope {
+        PROMPT.with_borrow_mut(|slot| *slot = Some((base_position, Arc::from(prompt))));
+        Scope
+    }
+
+    /// The tokens expected in the chunk after one that ends at `end_position`
+    /// and was `chunk_len` long. Prefill feeds the last prompt token alone, so
+    /// the prefetched chunk stops one short of the prompt end. A guess that
+    /// does not match the real next chunk costs a synchronous read, nothing
+    /// else.
+    pub(crate) fn next_chunk(end_position: usize, chunk_len: usize) -> Option<Vec<u32>> {
+        PROMPT.with_borrow(|slot| {
+            let (base, prompt) = slot.as_ref()?;
+            let start = end_position.checked_sub(*base)?;
+            let prefix_end = prompt.len().saturating_sub(1);
+            if chunk_len < 2 || start >= prefix_end {
+                return None;
+            }
+            let end = start.saturating_add(chunk_len).min(prefix_end);
+            Some(prompt[start..end].to_vec())
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn next_chunk_follows_the_prompt_and_stops_before_the_last_token() {
+            let prompt: Vec<u32> = (0..10).collect();
+            assert_eq!(next_chunk(4, 4), None, "no scope installed");
+            let scope = scope(100, &prompt);
+            assert_eq!(next_chunk(104, 4), Some(vec![4, 5, 6, 7]));
+            assert_eq!(next_chunk(108, 4), Some(vec![8]), "stops at the singleton");
+            assert_eq!(next_chunk(109, 4), None);
+            assert_eq!(next_chunk(100 - 1, 4), None, "before the prompt");
+            assert_eq!(next_chunk(104, 1), None, "decode steps never read ahead");
+            drop(scope);
+            assert_eq!(next_chunk(104, 4), None, "scope cleared on drop");
+        }
+    }
+}
+
 use mlx_sys::{MlxArray, MlxDtype, add, astype, reshape};
 
 use super::shared::qwen4_exp_attention::Qwen4ExpAttentionCache;
@@ -931,6 +996,13 @@ fn forward_prepared_rows(
                 #[cfg(test)]
                 profiling::mark("ngram_lookup", &[]);
                 let rows = ple.table.gather(&lookup.rows)?;
+                // Read the next prefill chunk's rows while this chunk computes.
+                if let Some(next) =
+                    lookahead::next_chunk(state.position + tokens.len(), tokens.len())
+                    && let Ok(next) = ple.layout.plan(&lookup.next_history, &next)
+                {
+                    ple.table.prefetch(next.rows);
+                }
                 #[cfg(test)]
                 {
                     profiling::dump_ngram_lookup(tokens.len(), &lookup.rows, &rows);

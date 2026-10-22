@@ -6693,6 +6693,17 @@ impl MlxRunner {
                         &[][..]
                     };
                     let mut effective_prefill_token_count = prefill_tokens.len();
+                    // Flash Next reads each chunk's n-gram rows while the
+                    // previous chunk computes; this tells the trunk which
+                    // tokens come next.
+                    let _flash_next_lookahead = (self.weights.qwen4_exp.is_some()
+                        && crate::fastpath::flash_next_ngram_prefetch_enabled())
+                    .then(|| {
+                        crate::model::qwen4_exp::lookahead::scope(
+                            state.cache.seq_len(),
+                            prefill_tokens,
+                        )
+                    });
                     let repetition_history = state.repetition_history(prefill_tokens, sampling);
                     if crate::fastpath::should_clear_mlx_cache_before_cold_prefill(
                         state.cache.seq_len(),
