@@ -1,5 +1,9 @@
 # Qwen / Gemma M5 Max peer campaign — 2026-09-21 (AX Engine 7.5.3)
 
+> **Superseded in part (2026-10-22):** the Qwen 3.6 35B-A3B 6-bit rows (MTPLX 127.87 tok/s,
+> OMLX unsupported) are replaced by the [2026-10-22 rerun](qwen36-35b-6bit-peer-m5-2026-10-22.md):
+> MTPLX 2.12.2 reads 202.7 and OMLX runs on an AXQuant-exported pack. The rest of this page stands.
+
 > Dated campaign record on one Apple M5 Max 128 GB host (Mac17,6, macOS 27.0).
 > This is a clean campaign snapshot, not a universal
 > engine ranking, not SKU certification (the 27B qualification SKU is the
