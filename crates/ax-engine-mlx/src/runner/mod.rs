@@ -1624,23 +1624,14 @@ impl fmt::Debug for MlxRunner {
     }
 }
 
-/// Loads the DFlash2 drafter named by `AX_MLX_DFLASH2_DIR` when it fits this
-/// target (Qwen 3.8 hybrid dense: same hidden width and vocabulary, capture
-/// layers inside the stack). Any mismatch or load failure leaves the runner on
-/// its normal decode routes.
+/// Loads the DFlash2 drafter in `dir` when it fits this target (Qwen 3.8 hybrid
+/// dense: same hidden width and vocabulary, capture layers inside the stack).
+/// Any mismatch or load failure leaves the runner on its normal decode routes.
 fn load_dflash2_drafter(
     cfg: &ModelConfig,
     weights: &ModelWeights,
+    dir: &std::path::Path,
 ) -> Option<Arc<crate::dflash2::Dflash2Weights>> {
-    let dir = crate::fastpath::dflash2_dir()?;
-    if cfg.model_family != "qwen3_5" || cfg.linear_attention.is_none() || cfg.moe_expert_count > 0 {
-        tracing::warn!(
-            target: "ax_engine_mlx::runner",
-            model_family = %cfg.model_family,
-            "AX_MLX_DFLASH2_DIR is set but DFlash2 serves only the Qwen 3.8 hybrid dense target; ignoring it"
-        );
-        return None;
-    }
     let precision = if crate::fastpath::dflash2_bf16_enabled() {
         crate::dflash2::DrafterPrecision::Bf16
     } else {
@@ -1678,6 +1669,7 @@ fn load_dflash2_drafter(
         target: "ax_engine_mlx::runner",
         ?precision,
         block = drafter.config().block_size,
+        dir = %dir.display(),
         "DFlash2 drafter loaded (greedy text requests)"
     );
     Some(drafter)
@@ -2150,6 +2142,46 @@ impl MlxRunner {
         token
     }
 
+    /// Attaches the DFlash2 block drafter (ADR-045) to a Qwen 3.8 27B hybrid dense
+    /// session when one can be found: `AX_MLX_DFLASH2_DIR`, else `dflash2/` in the
+    /// model directory, else the Hugging Face cache snapshot of
+    /// `z-lab/Qwen3.8-27B-DFlash2`. On by default; `AX_MLX_DFLASH2=0`, the
+    /// process-wide speculation kill switch, a direct-baseline session and a
+    /// missing or mismatched drafter leave the session on its normal routes.
+    /// Returns whether a drafter is now attached.
+    pub fn attach_dflash2(&mut self, model_dir: &std::path::Path) -> bool {
+        if !crate::fastpath::dflash2_enabled()
+            || self.disable_ngram_acceleration
+            || self.cfg.model_family != "qwen3_5"
+            || self.cfg.linear_attention.is_none()
+            || self.cfg.moe_expert_count > 0
+        {
+            return false;
+        }
+        let explicit = crate::fastpath::dflash2_dir();
+        let Some(dir) = crate::dflash2::locate_drafter(
+            explicit,
+            model_dir,
+            crate::fastpath::hf_hub_cache_roots(),
+        ) else {
+            if let Some(dir) = explicit {
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    dir = %dir.display(),
+                    "AX_MLX_DFLASH2_DIR does not hold a DFlash2 drafter (config.json and model.safetensors); decoding without it"
+                );
+            } else {
+                tracing::debug!(
+                    target: "ax_engine_mlx::runner",
+                    "no DFlash2 drafter found; decoding without it"
+                );
+            }
+            return false;
+        };
+        self.dflash2 = load_dflash2_drafter(&self.cfg, &self.weights, &dir);
+        self.dflash2.is_some()
+    }
+
     /// Request or suppress model-based MTP independently from the n-gram
     /// speculation switch. The process-wide `AX_NO_SPEC` kill switch remains
     /// authoritative and cannot be re-enabled through this setter.
@@ -2520,7 +2552,6 @@ impl MlxRunner {
             crate::fastpath::scoped_qwen_linear_mtp_exact(qwen_linear_mtp_exact_enabled);
         let (gemma4_assistant_mtp_status, gemma4_assistant_mtp) =
             load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
-        let dflash2 = load_dflash2_drafter(&cfg, &weights);
         let qwen_linear_certification_env_opt_in =
             qwen_linear_mtp_certification_candidate_from_env();
         let qwen_linear_projected_replay_enabled =
@@ -2965,7 +2996,7 @@ impl MlxRunner {
             disk_prefix_writer,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
-            dflash2,
+            dflash2: None,
             weight_layout_telemetry,
             affine_quant_telemetry,
             embed_compile_cache: Mutex::new(HashMap::new()),
@@ -6382,33 +6413,28 @@ impl MlxRunner {
             Some(String::new())
         };
         // DFlash2 conditions on hidden states captured while the prompt runs
-        // through the target, which a restored snapshot cannot supply: such a
-        // request prefills its whole prompt (a scheduler-claimed reuse is
-        // recomputed, like a failed warm-up).
+        // through the target. A request whose prefix is restored from a snapshot
+        // has no such rows and decodes on the normal routes: prefix reuse keeps
+        // its time to first token.
         let dflash2_prefill = is_prefill
             && !has_native_multimodal_prefill
             && self.dflash2_request_eligible(sampling, is_greedy, false);
-        let mut prefix_cache = if dflash2_prefill {
-            let mut telemetry = MlxPrefixCacheTelemetry::default();
-            if state.cache.seq_len() == 0 {
-                telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
-            }
-            telemetry
-        } else if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
-            MlxPrefixCacheTelemetry::default()
-        } else {
-            self.restore_reused_prefix_state(
-                &mut state,
-                item,
-                ctx,
-                model_id,
-                block_size_tokens,
-                sampling,
-                !has_native_multimodal_prefill
-                    && self.flash_next_mtp_prefill_eligible(is_greedy, sampling),
-                media_key.as_deref(),
-            )
-        };
+        let mut prefix_cache =
+            if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
+                MlxPrefixCacheTelemetry::default()
+            } else {
+                self.restore_reused_prefix_state(
+                    &mut state,
+                    item,
+                    ctx,
+                    model_id,
+                    block_size_tokens,
+                    sampling,
+                    !has_native_multimodal_prefill
+                        && self.flash_next_mtp_prefill_eligible(is_greedy, sampling),
+                    media_key.as_deref(),
+                )
+            };
         self.reclaim_native_prefix_capacity(
             &state.cache,
             item.input_token_slice.len(),
@@ -6737,9 +6763,11 @@ impl MlxRunner {
                     // captured across every forward of this item and read back
                     // right after the prefill forward (before generation-state
                     // setup, whose warm-up forwards are not prompt rows).
-                    let dflash2_capture = (dflash2_prefill && state.dflash2_prefill_open())
-                        .then(|| self.dflash2_begin_prefill_capture())
-                        .flatten();
+                    let dflash2_capture = (dflash2_prefill
+                        && state.dflash2_prefill_open()
+                        && (state.cache.seq_len() == 0 || state.dflash2.is_some()))
+                    .then(|| self.dflash2_begin_prefill_capture())
+                    .flatten();
                     let full_recompute_tokens = full_prefill_recompute_tokens_for_warmup_fallback(
                         item,
                         token_ids,

@@ -139,24 +139,29 @@ direct decode than the route it replaces. It applies to dense MXFP4 weights
 during a throughput-profile verify forward only; the exact profile, Flash Next
 and MoE experts are unchanged.
 
-DFlash2 block drafting (`AX_MLX_DFLASH2_DIR=<drafter directory>`, default off)
-serves greedy text requests on the Qwen 3.8 27B hybrid dense target with the
-Apache-2.0 `z-lab/Qwen3.8-27B-DFlash2` checkpoint (`config.json` and
-`model.safetensors`, not part of the model pack; about 3.6 GB in bf16 and held as
-MXFP4 in memory, `AX_MLX_DFLASH2_BF16=1` keeps bf16). A five-layer drafter
-conditions on the target's hidden states at layers 5, 19, 33, 47 and 61 and
-proposes seven tokens per round; the target verifies the first few of them in one
-forward with the same fused multi-row matmul and the same rollback as MTP. The
-verify window (3 to 8 rows) follows the request: drafts that keep being accepted
-earn the full window and prose settles at four rows (`AX_MLX_DFLASH2_WINDOW=N`
-pins it). On an M5 Max with the 27B MXFP4 pack (17 real prompts, 256 tokens, greedy)
-it decodes 1.28x faster than fused depth-3 MTP on the 11 code prompts (1.08x to
-1.40x, up to 127 tok/s) and 1.02x on the 6 prose and chat prompts (0.99x to
-1.07x), 90.8 against 79.0 tok/s over the suite. Outputs are approximate like MTP's:
-11 of 17 prompts match direct decode, against 12 of 17 for MTP. A DFlash2 request
-does not use the prefix cache, because the drafter needs the hidden states of the
-whole prompt. Sampled requests, requests with logits processors or a grammar,
-image input and other models use the normal routes.
+DFlash2 block drafting is on by default for greedy text requests on the Qwen 3.8
+27B hybrid dense target whenever the Apache-2.0 `z-lab/Qwen3.8-27B-DFlash2`
+checkpoint (`config.json` and `model.safetensors`, about 3.6 GB in bf16, held as
+MXFP4 in memory) can be found: `AX_MLX_DFLASH2_DIR`, else a `dflash2/` directory
+inside the model directory, else the Hugging Face cache (`HF_HUB_CACHE`,
+`HF_HOME/hub`, `~/.cache/huggingface/hub`). The checkpoint is not part of the
+model pack and is never downloaded by the server; without it nothing changes.
+`AX_MLX_DFLASH2=0`, `--mlx-mtp-policy disabled`, `--disable-ngram-acceleration`
+and `AX_NO_SPEC` keep it off; `AX_MLX_DFLASH2_BF16=1` keeps the weights in bf16.
+A five-layer drafter conditions on the target's hidden states at layers 5, 19, 33,
+47 and 61 and proposes seven tokens per round; the target verifies the first few
+of them in one forward with the same fused multi-row matmul and the same rollback
+as MTP. The verify window (3 to 8 rows) follows the request: drafts that keep
+being accepted earn the full window and prose settles at four rows
+(`AX_MLX_DFLASH2_WINDOW=N` pins it). On an M5 Max with the 27B MXFP4 pack (17 real
+prompts, 256 tokens, greedy) it decodes 1.28x faster than fused depth-3 MTP on the
+11 code prompts (1.08x to 1.40x, up to 127 tok/s) and 1.02x on the 6 prose and chat
+prompts (0.99x to 1.07x), 90.8 against 79.0 tok/s over the suite. Outputs are
+approximate like MTP's: 11 of 17 prompts match direct decode, against 12 of 17 for
+MTP. The drafter needs the hidden states of the whole prompt, so a request whose
+prefix is restored from the prefix cache decodes on the normal routes; only a
+request that prefills its prompt itself uses it. Sampled requests, requests with
+logits processors or a grammar, image input and other models use the normal routes.
 
 `AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
 JSON line per verified MTP cycle (verify window, accepted prefix, context

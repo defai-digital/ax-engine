@@ -975,6 +975,52 @@ impl Dflash2Drafter {
     }
 }
 
+/// Directory name of the drafter's Hugging Face cache entry.
+const DRAFTER_HF_ENTRY: &str = "models--z-lab--Qwen3.8-27B-DFlash2";
+
+/// Whether `dir` holds a drafter checkpoint.
+fn is_drafter_dir(dir: &Path) -> bool {
+    dir.join("config.json").is_file() && dir.join("model.safetensors").is_file()
+}
+
+/// Finds the drafter checkpoint to load: the explicit directory (which is never
+/// substituted when it is wrong), else `dflash2/` inside the model directory,
+/// else the newest valid snapshot of `z-lab/Qwen3.8-27B-DFlash2` in the first
+/// Hugging Face cache root that has one.
+pub(crate) fn locate_drafter(
+    explicit: Option<&Path>,
+    model_dir: &Path,
+    hf_cache_roots: &[std::path::PathBuf],
+) -> Option<std::path::PathBuf> {
+    if let Some(dir) = explicit {
+        return is_drafter_dir(dir).then(|| dir.to_path_buf());
+    }
+    let bundled = model_dir.join("dflash2");
+    if is_drafter_dir(&bundled) {
+        return Some(bundled);
+    }
+    for root in hf_cache_roots {
+        let snapshots = root.join(DRAFTER_HF_ENTRY).join("snapshots");
+        let Ok(entries) = std::fs::read_dir(&snapshots) else {
+            continue;
+        };
+        let mut valid: Vec<std::path::PathBuf> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| is_drafter_dir(path))
+            .collect();
+        valid.sort_by_key(|path| {
+            std::fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .ok()
+        });
+        if let Some(newest) = valid.pop() {
+            return Some(newest);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -1435,5 +1481,73 @@ mod tests {
                 time(rows, true)
             );
         }
+    }
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ax-dflash2-locate-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn make_drafter(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("config.json"), "{}").unwrap();
+        std::fs::write(dir.join("model.safetensors"), b"x").unwrap();
+    }
+
+    #[test]
+    fn explicit_directory_is_used_or_nothing() {
+        let root = scratch_dir("explicit");
+        let model = root.join("model");
+        make_drafter(&model.join("dflash2"));
+        let good = root.join("good");
+        make_drafter(&good);
+        let bad = root.join("bad");
+        std::fs::create_dir_all(&bad).unwrap();
+        assert_eq!(locate_drafter(Some(&good), &model, &[]), Some(good));
+        // A wrong explicit directory is not replaced by the bundled one.
+        assert_eq!(locate_drafter(Some(&bad), &model, &[]), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_drafter_beats_the_hub_cache() {
+        let root = scratch_dir("bundled");
+        let model = root.join("model");
+        make_drafter(&model.join("dflash2"));
+        let hub = root.join("hub");
+        make_drafter(&hub.join(DRAFTER_HF_ENTRY).join("snapshots").join("abc"));
+        assert_eq!(
+            locate_drafter(None, &model, std::slice::from_ref(&hub)),
+            Some(model.join("dflash2"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hub_cache_snapshot_is_found_and_incomplete_ones_are_skipped() {
+        let root = scratch_dir("hub");
+        let model = root.join("model");
+        std::fs::create_dir_all(&model).unwrap();
+        let hub = root.join("hub");
+        let snapshots = hub.join(DRAFTER_HF_ENTRY).join("snapshots");
+        // A snapshot without weights is not a drafter.
+        std::fs::create_dir_all(snapshots.join("partial")).unwrap();
+        std::fs::write(snapshots.join("partial").join("config.json"), "{}").unwrap();
+        assert_eq!(
+            locate_drafter(None, &model, std::slice::from_ref(&hub)),
+            None
+        );
+        make_drafter(&snapshots.join("complete"));
+        assert_eq!(
+            locate_drafter(None, &model, &[root.join("missing"), hub]),
+            Some(snapshots.join("complete"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
