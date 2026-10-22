@@ -118,6 +118,41 @@ Telemetry (on `RouteMetadata.crossover_decisions` when fair is active):
 | `ax_scheduler_fair_multi_prefill_admitted` | Prefills selected |
 | `ax_scheduler_fair_multi_prefill_deferred_by_admission` | Prefills deferred solely by admission cap |
 
+### Time-targeted prefill while decoding (optional, default OFF)
+
+A long prompt that arrives while other requests decode stalls every decoding
+request for each prefill step it takes. `--prefill-stall-target-ms <ms>`
+(session `prefill_stall_target_ms`) bounds that stall:
+
+1. While a decode is scheduled in the same step, each text prefill item is
+   capped to `target / measured prefill cost per token`, at least 256 tokens.
+   The cost is smoothed from prefill-only steps and from mixed steps net of
+   a decode-only step (`ax_engine_core::prefill_stall`).
+2. Every mixed step adds half its wall time as decode debt; decode-only steps
+   repay it, and prefills wait (`SchedulerInput.prefill_cap_while_decoding =
+   Some(0)`) until the debt is gone. Steps without a decode clear the debt.
+3. Multimodal prefills stay atomic: they are never capped, only deferred
+   while debt is outstanding.
+
+Telemetry: `ax_scheduler_prefill_cap_while_decoding_tokens` (cap applied this
+step) and `ax_scheduler_prefill_deferred_for_decode_debt`.
+
+Measured on an M5 Max (two streaming decodes, a ~7k-token prompt arriving
+after 4 s, two runs each, `--mlx-mtp-policy disabled`): the trade is decode
+smoothness for the long request's time to first token.
+
+| Model | Target | Long-request TTFT | Decode gap p99 | Decode gap max |
+|---|---:|---:|---:|---:|
+| Qwen 3.8 27B MXFP4 | off | 11.8 s | 2.59 s | 2.59 s |
+| Qwen 3.8 27B MXFP4 | 250 ms | 24.7 s | 0.43 s | 0.64 s |
+| Qwen 3.8 27B MXFP4 | 500 ms | 26.8 s | 0.61 s | 0.63 s |
+| Qwen 3.6 35B-A3B AXQ-4bit | off | 2.2 s | 0.47 s | 0.47 s |
+| Qwen 3.6 35B-A3B AXQ-4bit | 250 ms | 6.0 s | 0.25 s | 0.27 s |
+| Qwen 3.6 35B-A3B AXQ-4bit | 500 ms | 5.1 s | 0.33 s | 0.39 s |
+
+It stays off by default: it suits interactive mixes where decode latency
+matters more than how fast a long prompt starts answering.
+
 ### Memory pressure throttle
 
 When `memory_pressure` is `Some("kv_low_free_blocks:<free>/<total>")`, prefill
