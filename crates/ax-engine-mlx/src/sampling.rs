@@ -93,6 +93,10 @@ pub struct MlxSamplingParams {
     /// item, and [`sample_categorical_into`] applies them. Routing treats the
     /// bias as a logits processor, so it always reaches that host sampler.
     pub logit_bias_active: bool,
+    /// Every token must follow the request's grammar. The runner installs the
+    /// allowed-token mask of each sampled row with [`scoped_token_mask`];
+    /// like `logit_bias` this always routes to the host sampler.
+    pub json_grammar_active: bool,
     /// Explicit sampling seed. `Some(seed)` marks a reproducible request whose
     /// pure-temperature draw must go through the seeded host path; `None`
     /// keeps the unseeded stream so pure-temperature sampling stays on the GPU.
@@ -113,6 +117,7 @@ impl MlxSamplingParams {
             no_repeat_ngram_size: 0,
             ngram_window: 128,
             logit_bias_active: false,
+            json_grammar_active: false,
             seed: None,
         }
     }
@@ -207,6 +212,16 @@ impl MlxSamplingParams {
         self
     }
 
+    pub(crate) const fn with_json_grammar_active(mut self, json_grammar_active: bool) -> Self {
+        self.json_grammar_active = json_grammar_active;
+        self
+    }
+
+    /// Processors that need no token history but a per-item scope.
+    pub(crate) const fn uses_scoped_processors(self) -> bool {
+        self.logit_bias_active || self.json_grammar_active
+    }
+
     /// Whether any processor reads the token history (`logit_bias` does not).
     pub(crate) fn uses_history_processors(self) -> bool {
         self.uses_repetition_penalty()
@@ -215,7 +230,7 @@ impl MlxSamplingParams {
     }
 
     pub(crate) fn uses_logits_processors(self) -> bool {
-        self.uses_history_processors() || self.logit_bias_active
+        self.uses_history_processors() || self.uses_scoped_processors()
     }
 }
 
@@ -243,6 +258,42 @@ pub(crate) fn scoped_logit_bias(logit_bias: &[(u32, f32)]) -> LogitBiasScope {
     let previous = LOGIT_BIAS_SCOPE
         .with(|current| std::mem::replace(&mut *current.borrow_mut(), logit_bias.to_vec()));
     LogitBiasScope { previous }
+}
+
+thread_local! {
+    /// Allowed-token mask of the row being sampled for a grammar-constrained
+    /// request; `None` leaves the row unconstrained (for example while the
+    /// model is still thinking).
+    static TOKEN_MASK_SCOPE: std::cell::RefCell<Option<Vec<u64>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Restores the previous token-mask scope on drop.
+#[must_use]
+pub(crate) struct TokenMaskScope {
+    previous: Option<Vec<u64>>,
+}
+
+impl Drop for TokenMaskScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        TOKEN_MASK_SCOPE.with(|current| *current.borrow_mut() = previous);
+    }
+}
+
+/// Install the allowed-token mask for samples drawn while the guard lives.
+pub(crate) fn scoped_token_mask(mask: Option<Vec<u64>>) -> TokenMaskScope {
+    let previous =
+        TOKEN_MASK_SCOPE.with(|current| std::mem::replace(&mut *current.borrow_mut(), mask));
+    TokenMaskScope { previous }
+}
+
+fn apply_scoped_token_mask(logits: &mut [f32]) {
+    TOKEN_MASK_SCOPE.with(|current| {
+        if let Some(mask) = current.borrow().as_deref() {
+            ax_engine_core::grammar::apply_token_mask(logits, mask);
+        }
+    });
 }
 
 fn apply_scoped_logit_bias(logits: &mut [f32]) {
@@ -357,12 +408,15 @@ pub(crate) fn processed_logits<'a>(
     logits_buf: &'a mut Vec<f32>,
 ) -> &'a [f32] {
     if (sampling.uses_history_processors() && !repetition_tokens.is_empty())
-        || sampling.logit_bias_active
+        || sampling.uses_scoped_processors()
     {
         logits_buf.clear();
         logits_buf.extend_from_slice(logits);
         if sampling.logit_bias_active {
             apply_scoped_logit_bias(logits_buf);
+        }
+        if sampling.json_grammar_active {
+            apply_scoped_token_mask(logits_buf);
         }
         if sampling.uses_repetition_penalty() {
             logits_with_repetition_penalty_in_place(
@@ -498,7 +552,7 @@ pub(crate) fn sample_categorical_with_topk_gpu(
         || sampling.temperature <= 0.0
         || sampling.top_k == 0
         || sampling.uses_min_p()
-        || sampling.logit_bias_active
+        || sampling.uses_scoped_processors()
         || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
@@ -541,7 +595,7 @@ pub(crate) fn sample_categorical_with_topp_gpu(
         || sampling.top_k != 0
         || !(sampling.top_p > 0.0 && sampling.top_p < 1.0)
         || sampling.uses_min_p()
-        || sampling.logit_bias_active
+        || sampling.uses_scoped_processors()
         || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
@@ -1122,7 +1176,7 @@ fn argmax_index_f32(logits: &[f32]) -> Option<usize> {
         .or((!logits.is_empty()).then_some(0))
 }
 
-fn argmax_f32(logits: &[f32]) -> u32 {
+pub(crate) fn argmax_f32(logits: &[f32]) -> u32 {
     argmax_index_f32(logits).map_or(0, |index| index as u32)
 }
 
@@ -1589,6 +1643,36 @@ mod tests {
         // Biased requests never take the batched path.
         assert_eq!(
             crate::batched_sampling::batched_sampling_class(sampling, false),
+            None
+        );
+    }
+
+    #[test]
+    fn scoped_token_mask_restricts_greedy_and_sampled_rows() {
+        let logits = vec![4.0, 3.0, 0.0, 1.0];
+        let mut rng = Xorshift64::new(11);
+        let greedy = MlxSamplingParams::greedy().with_json_grammar_active(true);
+        let sampled = MlxSamplingParams::new(1.0, 1.0, 0).with_json_grammar_active(true);
+        assert!(greedy.uses_logits_processors() && greedy.uses_scoped_processors());
+        // Only tokens 2 and 3 are allowed.
+        let mask = vec![0b1100u64];
+        {
+            let _scope = scoped_token_mask(Some(mask));
+            assert_eq!(sample_categorical(&logits, greedy, &[], &mut rng), 3);
+            for _ in 0..32 {
+                let token = sample_categorical(&logits, sampled, &[], &mut rng);
+                assert!(token == 2 || token == 3, "{token}");
+            }
+            {
+                // A `None` scope (inside a think block) leaves rows free.
+                let _inner = scoped_token_mask(None);
+                assert_eq!(sample_categorical(&logits, greedy, &[], &mut rng), 0);
+            }
+            assert_eq!(sample_categorical(&logits, greedy, &[], &mut rng), 3);
+        }
+        assert_eq!(sample_categorical(&logits, greedy, &[], &mut rng), 0);
+        assert_eq!(
+            crate::batched_sampling::batched_sampling_class(greedy, false),
             None
         );
     }

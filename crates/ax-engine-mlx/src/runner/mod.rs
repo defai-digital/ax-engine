@@ -110,6 +110,7 @@ use crate::unlimited_ocr::preprocess_document_rgb_u8;
 use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
 
+mod grammar;
 mod manifest_validation;
 mod mtp_depth_controller;
 mod mtp_model_policy;
@@ -559,6 +560,8 @@ struct RequestState {
     /// Initialized from prompt tokens. Used to gate n-gram acceleration to think
     /// regions only, where repetition density is high for reasoning models.
     ngram_in_think: bool,
+    /// Grammar progress of a `response_format`-constrained request.
+    json_grammar: Option<grammar::RequestGrammar>,
     /// Tokens emitted while inside an open think block (budget controller).
     think_emitted_tokens: u32,
     /// Recomputed each decode step: inside an open think block within the
@@ -1209,6 +1212,7 @@ impl RequestState {
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
+            json_grammar: None,
             think_emitted_tokens: 0,
             think_soft_close_armed: false,
             ngram_self_tune: NgramSelfTuneState::default(),
@@ -1427,6 +1431,8 @@ pub struct MlxRunner {
     kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
     terminal_token_ids: Vec<u32>,
+    /// Byte vocabulary for grammar-constrained requests, loaded on first use.
+    grammar_vocab: OnceLock<Option<Arc<ax_engine_core::grammar::TokenVocab>>>,
     /// Canonicalized model artifacts directory, folded into the disk
     /// prefix-cache key (see `prefix_cache_layer_layout`). A hot-swap via
     /// `POST /v1/model/load` can reuse the same caller-supplied `model_id`
@@ -1932,12 +1938,50 @@ impl MlxRunner {
             && self.weights.qwen4_exp_mtp.is_some()
     }
 
-    /// Sampled Qwen linear MTP request whose logits processors the verifier
-    /// applies on the host (`AX_MLX_MTP_PENALIZED_VERIFY`): temperature above
-    /// zero, deterministic-delta drafts, and no no-repeat n-gram ban.
+    /// Grammar masks of the MTP verify rows after `drafts` (one more row
+    /// than drafts); empty for unconstrained requests.
+    fn grammar_row_masks(
+        &self,
+        request_grammar: Option<&grammar::RequestGrammar>,
+        in_think: bool,
+        drafts: &[u32],
+        sampling: MlxSamplingParams,
+    ) -> Vec<Option<Vec<u64>>> {
+        if !sampling.json_grammar_active {
+            return Vec::new();
+        }
+        match self.grammar_vocab().zip(request_grammar) {
+            Some((vocab, request_grammar)) => request_grammar
+                .cursor(
+                    vocab,
+                    self.think_token_ids(),
+                    in_think,
+                    &self.terminal_token_ids,
+                )
+                .row_masks(drafts),
+            None => Vec::new(),
+        }
+    }
+
+    fn think_token_ids(&self) -> (Option<u32>, Option<u32>) {
+        (self.cfg.think_start_token_id, self.cfg.think_end_token_id)
+    }
+
+    fn grammar_vocab(&self) -> Option<&Arc<ax_engine_core::grammar::TokenVocab>> {
+        self.grammar_vocab
+            .get_or_init(|| {
+                grammar::load_token_vocab(&self.model_artifacts_root, self.cfg.vocab_size)
+            })
+            .as_ref()
+    }
+
+    /// Qwen linear MTP request whose logits processors the verifier applies
+    /// on the host (`AX_MLX_MTP_PENALIZED_VERIFY`): temperature above zero
+    /// (or any grammar-constrained request, greedy included),
+    /// deterministic-delta drafts, and no no-repeat n-gram ban.
     fn penalized_mtp_verify(&self, sampling: MlxSamplingParams) -> bool {
         crate::fastpath::mtp_penalized_verify_enabled()
-            && sampling.temperature > 0.0
+            && (sampling.temperature > 0.0 || sampling.json_grammar_active)
             && sampling.uses_logits_processors()
             && !sampling.uses_no_repeat_ngram()
             && self.weights.mtp.is_some()
@@ -2818,6 +2862,7 @@ impl MlxRunner {
             kv_layer_windows,
             binding_summary,
             terminal_token_ids,
+            grammar_vocab: OnceLock::new(),
             model_artifacts_root: artifacts.root_dir().to_string_lossy().into_owned(),
             artifact_fingerprint: crate::artifact_identity::artifact_fingerprint_sha256_with_domain(
                 artifacts,
@@ -2930,6 +2975,7 @@ fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
         .with_presence_frequency_penalty(ctx.presence_penalty, ctx.frequency_penalty)
         .with_logit_bias_active(ctx.logit_bias_active)
+        .with_json_grammar_active(ctx.json_grammar_active)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
         .with_seed((ctx.seed != 0 || ctx.seed_explicit).then_some(ctx.seed))
 }
@@ -4762,6 +4808,7 @@ impl ExecutionRunner for MlxRunner {
                 input.block_size_tokens,
                 input.request_multimodal_inputs(item.request_id),
                 staged_prefill.remove(&item.request_id.0),
+                input.request_json_grammar(item.request_id),
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
@@ -6054,6 +6101,7 @@ impl MlxRunner {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_item(
         &self,
         item: &ax_engine_core::ExecutionItem,
@@ -6062,6 +6110,7 @@ impl MlxRunner {
         block_size_tokens: u32,
         multimodal_inputs: Option<&RequestMultimodalInputs>,
         mut staged_batched_prefill: Option<StagedBatchedPrefill>,
+        json_grammar: Option<&Arc<ax_engine_core::grammar::JsonGrammar>>,
     ) -> MlxItemRun {
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
@@ -6163,6 +6212,7 @@ impl MlxRunner {
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
                     .with_presence_frequency_penalty(c.presence_penalty, c.frequency_penalty)
                     .with_logit_bias_active(c.logit_bias_active)
+                    .with_json_grammar_active(c.json_grammar_active)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
                     // Non-zero seeds are explicit for backward compatibility;
                     // `seed_explicit` additionally makes seed 0 reproducible.
@@ -6203,6 +6253,38 @@ impl MlxRunner {
                 )
             })
         };
+        // Grammar-constrained requests sample every row through the host
+        // sampler with the mask of the current grammar position.
+        let grammar_vocab = sampling
+            .json_grammar_active
+            .then(|| self.grammar_vocab())
+            .flatten();
+        if let Some(grammar) = json_grammar.filter(|_| sampling.json_grammar_active)
+            && state
+                .json_grammar
+                .as_ref()
+                .is_none_or(|current| !current.is_for(grammar))
+        {
+            state.json_grammar = Some(grammar::RequestGrammar::new(grammar.clone()));
+        }
+        let _token_mask_scope = crate::sampling::scoped_token_mask(
+            grammar_vocab
+                .zip(state.json_grammar.as_ref())
+                .and_then(|(vocab, request_grammar)| {
+                    // A prefill samples after the whole prompt; decode
+                    // continues from the tracked think state.
+                    let in_think = if is_prefill {
+                        let before =
+                            compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
+                        compute_think_state(&self.cfg, before, token_ids)
+                    } else {
+                        state.ngram_in_think
+                    };
+                    request_grammar
+                        .cursor(vocab, self.think_token_ids(), in_think, terminal_token_ids)
+                        .mask()
+                }),
+        );
         // A fresh media request must project its media before decode, regardless
         // of the reuse flag or a token-only scheduler claim. A cache miss here
         // must never fall through to text-only prefix warmup.
@@ -7195,6 +7277,17 @@ impl MlxRunner {
             // under-count the budget. A single-token step is unchanged.
             for &sampled_token in &sampled_tokens {
                 let in_think = state.ngram_in_think;
+                if let Some((vocab, request_grammar)) =
+                    grammar_vocab.zip(state.json_grammar.as_mut())
+                {
+                    request_grammar.commit(
+                        vocab,
+                        self.think_token_ids(),
+                        in_think,
+                        terminal_token_ids,
+                        sampled_token,
+                    );
+                }
                 state.generated_tokens.push(sampled_token);
                 update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
                 if in_think {
@@ -11010,7 +11103,10 @@ impl MlxRunner {
                     replay_kill_switch,
                     self.qwen_linear_mtp_force_replay,
                 );
+                // Replay recomputes the correction with an unmasked argmax,
+                // so grammar-constrained requests keep the verifier rows.
                 let exact_linear_replay = !projected_replay
+                    && !sampling.json_grammar_active
                     && linear_mtp_requires_singleton_replay(
                         pending.len(),
                         crate::fastpath::qwen_linear_mtp_exact_enabled(),
@@ -11164,13 +11260,14 @@ impl MlxRunner {
                 // `predicted` download. The async-draft window compares
                 // against the lazy device tokens because host `pending` still
                 // holds placeholders here.
-                let device_greedy_accept = mtp_device_greedy_accept_allowed(
-                    crate::fastpath::mtp_device_greedy_accept_enabled(),
-                    sampling.temperature,
-                    exact_linear_replay,
-                    pending.len(),
-                    &state.mtp_pending_draft_sources,
-                );
+                let device_greedy_accept = !penalized_verify
+                    && mtp_device_greedy_accept_allowed(
+                        crate::fastpath::mtp_device_greedy_accept_enabled(),
+                        sampling.temperature,
+                        exact_linear_replay,
+                        pending.len(),
+                        &state.mtp_pending_draft_sources,
+                    );
                 let device_accept_packed = if device_greedy_accept {
                     let drafts_dev = if let Some(lazy) = deferred_lazy_draft.as_ref() {
                         if lazy.tokens.len() == 1 {
@@ -11269,8 +11366,32 @@ impl MlxRunner {
                 };
                 let target_softmax_extract_started = Instant::now();
                 let penalized_rows = penalized_history.as_deref().map(|history| {
-                    penalized_mtp_target_rows(&logits_all, history, &pending, vocab, sampling)
+                    // Grammar masks follow the drafts row by row, like the
+                    // history does.
+                    let row_masks = self.grammar_row_masks(
+                        state.json_grammar.as_ref(),
+                        state.ngram_in_think,
+                        &pending,
+                        sampling,
+                    );
+                    penalized_mtp_target_rows(
+                        &logits_all,
+                        history,
+                        &pending,
+                        vocab,
+                        sampling,
+                        &row_masks,
+                    )
                 });
+                // Greedy constrained rows accept against the masked argmax.
+                if sampling.temperature <= 0.0
+                    && let Some(rows) = penalized_rows.as_ref()
+                {
+                    predicted = rows
+                        .iter()
+                        .map(|row| crate::sampling::argmax_f32(row))
+                        .collect();
+                }
                 let penalized_target_probs: Option<Vec<f32>> =
                     penalized_rows.as_ref().map(|rows| {
                         pending
@@ -12406,6 +12527,16 @@ impl MlxRunner {
             // processors see them as history, as direct decode would.
             let mut history = state.repetition_history(&[], sampling);
             history.extend_from_slice(&pending[..accept_count]);
+            let _token_mask_scope = crate::sampling::scoped_token_mask(
+                self.grammar_row_masks(
+                    state.json_grammar.as_ref(),
+                    state.ngram_in_think,
+                    &pending[..accept_count],
+                    sampling,
+                )
+                .pop()
+                .flatten(),
+            );
             let position = accept_count as i32;
             let row = astype(
                 &slice(
@@ -15271,6 +15402,7 @@ fn penalized_mtp_target_rows(
     pending: &[u32],
     vocab: i32,
     sampling: MlxSamplingParams,
+    row_masks: &[Option<Vec<u64>>],
 ) -> Vec<Vec<f32>> {
     let logits = astype(logits_all, MlxDtype::Float32, None);
     eval(&[&logits]);
@@ -15282,6 +15414,8 @@ fn penalized_mtp_target_rows(
     let mut out = Vec::with_capacity(rows);
     for row in 0..rows {
         let raw = &data[row * vocab..(row + 1) * vocab];
+        let _token_mask_scope =
+            crate::sampling::scoped_token_mask(row_masks.get(row).cloned().flatten());
         out.push(crate::sampling::processed_logits(raw, sampling, &history, &mut buffer).to_vec());
         if let Some(&token) = pending.get(row) {
             history.push(token);

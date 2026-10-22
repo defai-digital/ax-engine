@@ -418,6 +418,12 @@ pub struct GenerateSampling {
     /// (JSON keys are token-id strings). Empty disables it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub logit_bias: std::collections::BTreeMap<u32, f32>,
+    /// JSON Schema every generated answer must follow (`response_format`
+    /// json_schema; `{"type":"object"}` for json_object). Native MLX
+    /// sessions constrain decoding to it; a schema the grammar compiler
+    /// cannot enforce exactly is left to the caller's post-hoc validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<serde_json::Value>,
     #[serde(default)]
     pub seed: u64,
     /// True when `seed` was explicitly supplied, including zero. Non-zero
@@ -453,6 +459,7 @@ impl Default for GenerateSampling {
             no_repeat_ngram_size: 0,
             ngram_window: 128,
             logit_bias: std::collections::BTreeMap::new(),
+            json_schema: None,
             seed: 0,
             seed_explicit: false,
             deterministic: None,
@@ -487,6 +494,11 @@ impl GenerateSampling {
             no_repeat_ngram_size: self.no_repeat_ngram_size,
             ngram_window: self.ngram_window,
             logit_bias: self.logit_bias.into_iter().collect(),
+            json_grammar: self
+                .json_schema
+                .as_ref()
+                .and_then(|schema| ax_engine_core::grammar::JsonGrammar::from_schema(schema).ok())
+                .map(std::sync::Arc::new),
             seed: self.seed,
             seed_explicit: self.seed_explicit || self.seed != 0,
             deterministic,

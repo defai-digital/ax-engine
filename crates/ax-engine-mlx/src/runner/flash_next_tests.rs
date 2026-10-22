@@ -40,6 +40,7 @@ fn context(id: u64, prompt_len: usize, budget: u32) -> RunnerRequestContext {
         presence_penalty: 0.0,
         frequency_penalty: 0.0,
         logit_bias_active: false,
+        json_grammar_active: false,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: true,
@@ -78,6 +79,7 @@ fn execute_with_block_size(
         request_contexts: vec![ctx],
         request_multimodal_inputs: Vec::new(),
         request_logit_biases: Vec::new(),
+        request_json_grammars: Vec::new(),
         execution_batch: ExecutionBatch {
             step_id: StepId(u64::from(position)),
             model_id: "flash-next-candidate-test".into(),

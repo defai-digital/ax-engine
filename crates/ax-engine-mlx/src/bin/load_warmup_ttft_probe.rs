@@ -49,6 +49,7 @@ fn greedy_ctx(prompt_len: usize, generated_len: usize, max_output: usize) -> Run
         presence_penalty: 0.0,
         frequency_penalty: 0.0,
         logit_bias_active: false,
+        json_grammar_active: false,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: true,
@@ -97,6 +98,7 @@ fn single_item_input(
         request_contexts: vec![context],
         request_multimodal_inputs: Vec::new(),
         request_logit_biases: Vec::new(),
+        request_json_grammars: Vec::new(),
     }
 }
 

@@ -26,6 +26,9 @@ pub struct SamplingParams {
     /// logits before any other processor, sorted by token id with no
     /// duplicates. Empty disables it.
     pub logit_bias: Vec<(u32, f32)>,
+    /// Grammar every generated token must follow (`response_format`
+    /// json_object / json_schema). `None` disables it.
+    pub json_grammar: Option<std::sync::Arc<crate::grammar::JsonGrammar>>,
     pub seed: u64,
     /// True when `seed` was explicitly supplied, including zero. Non-zero
     /// seeds count as explicit even when this is false, preserving the
@@ -49,6 +52,7 @@ impl Default for SamplingParams {
             no_repeat_ngram_size: 0,
             ngram_window: 128,
             logit_bias: Vec::new(),
+            json_grammar: None,
             seed: 0,
             seed_explicit: false,
             deterministic: true,
@@ -68,6 +72,7 @@ pub(crate) fn sampling_params_allow_deterministic_argmax_fast_path(
         && !presence_frequency_penalty_active(params.presence_penalty, params.frequency_penalty)
         && params.no_repeat_ngram_size == 0
         && params.logit_bias.is_empty()
+        && params.json_grammar.is_none()
 }
 
 /// Add OpenAI-style `logit_bias` entries to `logits` in place. Out-of-range
