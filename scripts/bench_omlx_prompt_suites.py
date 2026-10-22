@@ -127,6 +127,60 @@ def mtp_settings_kwargs(
     return kwargs
 
 
+def stream_trial_metrics(
+    started: float,
+    first_at: float | None,
+    finished_at: float,
+    completion_tokens: int,
+    prompt_tokens: int,
+) -> dict[str, Any]:
+    """Timing of one generation: prefill, decode after the first token, wall.
+
+    ``decode_tok_s`` stays the whole-call rate (prefill included) that earlier
+    artifacts recorded; ``decode_only_tok_s`` is the rate after the first token
+    and ``prefill_tok_s`` is prompt tokens over the client time to first token.
+    An engine that cannot stream (``first_at`` is None) reports neither.
+    """
+    elapsed = finished_at - started
+    metrics: dict[str, Any] = {
+        "elapsed_s": elapsed,
+        "ttft_s": None,
+        "decode_tok_s": completion_tokens / elapsed,
+        "decode_only_tok_s": None,
+        "prefill_tok_s": None,
+    }
+    if first_at is None:
+        return metrics
+    ttft = first_at - started
+    decode_s = finished_at - first_at
+    metrics["ttft_s"] = ttft
+    if ttft > 0:
+        metrics["prefill_tok_s"] = prompt_tokens / ttft
+    if completion_tokens > 1 and decode_s > 0:
+        metrics["decode_only_tok_s"] = (completion_tokens - 1) / decode_s
+    return metrics
+
+
+async def generate_timed(engine: Any, tokens: list[int], **kwargs: Any) -> tuple[Any, float | None]:
+    """Run one generation; return the final output and the first-token time.
+
+    Streams when the engine can, so the time to first token is observable; an
+    engine without ``stream_generate`` falls back to one blocking call.
+    """
+    stream = getattr(engine, "stream_generate", None)
+    if stream is None:
+        return await engine.generate(tokens, **kwargs), None
+    first_at: float | None = None
+    output = None
+    async for chunk in stream(tokens, **kwargs):
+        if first_at is None and (chunk.new_text or chunk.completion_tokens):
+            first_at = time.perf_counter()
+        output = chunk
+    if output is None:
+        raise SystemExit("OMLX streamed no output")
+    return output, first_at
+
+
 def omlx_engine_kind(model_type: str | None, requested: str) -> str:
     """Choose the OMLX engine for a checkpoint.
 
@@ -177,6 +231,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--enable-thinking", action="store_true")
+    parser.add_argument(
+        "--keep-text",
+        action="store_true",
+        help="store the first measured repetition's text for output comparison",
+    )
     parser.add_argument(
         "--engine",
         choices=("auto", "batched", "vlm"),
@@ -238,11 +297,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             )
             trials: list[dict[str, Any]] = []
             output_hashes: set[str] = set()
+            sample_texts: list[str] = []
             for measured in (False, True):
                 count = args.repetitions if measured else args.warmup_repetitions
                 for repetition in range(count):
                     started = time.perf_counter()
-                    output = await engine.generate(
+                    output, first_at = await generate_timed(
+                        engine,
                         tokens,
                         max_tokens=min(args.max_tokens, int(case["max_tokens"])),
                         temperature=args.temperature,
@@ -250,21 +311,31 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                         top_k=args.top_k,
                         seed=args.seed,
                     )
-                    elapsed = time.perf_counter() - started
+                    finished_at = time.perf_counter()
+                    metrics = stream_trial_metrics(
+                        started, first_at, finished_at, output.completion_tokens, len(tokens)
+                    )
+                    elapsed = metrics["elapsed_s"]
                     if measured:
                         trials.append(
                             {
-                                "elapsed_s": elapsed,
+                                **metrics,
                                 "completion_tokens": output.completion_tokens,
-                                "decode_tok_s": output.completion_tokens / elapsed,
+                                "cached_tokens": output.cached_tokens,
+                                "engine_prompt_tps": output.prompt_tps,
+                                "engine_generation_tps": output.generation_tps,
                             }
                         )
                         output_hashes.add(hashlib.sha256(output.text.encode()).hexdigest())
+                        if args.keep_text and repetition == 0:
+                            sample_texts.append(output.text)
                     phase = "measure" if measured else "warmup"
                     print(
                         f"{case['id']} {phase} {repetition + 1}/{count}: "
                         f"tokens={output.completion_tokens} "
-                        f"tok_s={output.completion_tokens / elapsed:.2f}",
+                        f"tok_s={output.completion_tokens / elapsed:.2f} "
+                        f"ttft_ms={(metrics['ttft_s'] or 0) * 1000:.0f} "
+                        f"cached={output.cached_tokens}",
                         flush=True,
                     )
                     if measured and args.cooldown > 0:
@@ -287,6 +358,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     },
                     "completion_tokens": sorted({trial["completion_tokens"] for trial in trials}),
                     "output_text_sha256": sorted(output_hashes),
+                    **({"sample_text": sample_texts[0]} if sample_texts else {}),
                 }
             )
     finally:
