@@ -2142,8 +2142,8 @@ impl MlxRunner {
         token
     }
 
-    /// Attaches the DFlash2 block drafter (ADR-045) to a Qwen 3.8 27B hybrid dense
-    /// session when one can be found: `AX_MLX_DFLASH2_DIR`, else `dflash2/` in the
+    /// Attaches the DFlash2 block drafter (ADR-045) to a Qwen 3.8 27B session
+    /// (identified by the pack's recorded source model) when one can be found: `AX_MLX_DFLASH2_DIR`, else `dflash2/` in the
     /// model directory, else the Hugging Face cache snapshot of
     /// `z-lab/Qwen3.8-27B-DFlash2`. On by default; `AX_MLX_DFLASH2=0`, the
     /// process-wide speculation kill switch, a direct-baseline session and a
@@ -2159,6 +2159,15 @@ impl MlxRunner {
             return false;
         }
         let explicit = crate::fastpath::dflash2_dir();
+        // An explicit directory is the user's choice; discovery only serves the
+        // target the drafter was trained for.
+        if explicit.is_none() && !crate::dflash2::target_is_qwen38_27b(model_dir) {
+            tracing::debug!(
+                target: "ax_engine_mlx::runner",
+                "the DFlash2 drafter serves Qwen 3.8 27B only; this model is something else"
+            );
+            return false;
+        }
         let Some(dir) = crate::dflash2::locate_drafter(
             explicit,
             model_dir,

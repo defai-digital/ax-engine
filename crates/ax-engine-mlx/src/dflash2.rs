@@ -983,6 +983,35 @@ fn is_drafter_dir(dir: &Path) -> bool {
     dir.join("config.json").is_file() && dir.join("model.safetensors").is_file()
 }
 
+/// Whether `model_dir` holds the Qwen 3.8 27B target the drafter was trained
+/// for. The drafter's shapes (hidden 5120, 64 layers, 248,320 vocabulary) also
+/// fit Qwen 3.6 27B and fine-tunes of 3.8, whose weights it never saw, so the
+/// source model recorded in the pack decides: `axquant_manifest.json`
+/// `source_model.model_id`, else `config.json` `_name_or_path`.
+pub(crate) fn target_is_qwen38_27b(model_dir: &Path) -> bool {
+    const TARGET: &str = "qwen/qwen3.8-27b";
+    let read = |name: &str| {
+        std::fs::read_to_string(model_dir.join(name))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    };
+    if let Some(manifest) = read("axquant_manifest.json") {
+        return manifest
+            .get("source_model")
+            .and_then(|source| source.get("model_id"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| id.trim().eq_ignore_ascii_case(TARGET));
+    }
+    read("config.json")
+        .and_then(|config| {
+            config
+                .get("_name_or_path")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase)
+        })
+        .is_some_and(|name| name.trim_end_matches('/').ends_with("qwen3.8-27b"))
+}
+
 /// Finds the drafter checkpoint to load: the explicit directory (which is never
 /// substituted when it is wrong), else `dflash2/` inside the model directory,
 /// else the newest valid snapshot of `z-lab/Qwen3.8-27B-DFlash2` in the first
@@ -1548,6 +1577,49 @@ mod tests {
             locate_drafter(None, &model, &[root.join("missing"), hub]),
             Some(snapshots.join("complete"))
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_the_qwen38_27b_source_model_matches_the_drafter() {
+        let root = scratch_dir("target");
+        let write = |dir: &std::path::Path, name: &str, text: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(name), text).unwrap();
+        };
+        let manifest = |id: &str| format!(r#"{{"source_model": {{"model_id": "{id}"}}}}"#);
+        let a = root.join("a");
+        write(&a, "axquant_manifest.json", &manifest("Qwen/Qwen3.8-27B"));
+        assert!(target_is_qwen38_27b(&a));
+        // Same shapes, different weights: Qwen 3.6 27B and a 3.8 fine-tune.
+        let b = root.join("b");
+        write(&b, "axquant_manifest.json", &manifest("Qwen/Qwen3.6-27B"));
+        assert!(!target_is_qwen38_27b(&b));
+        let c = root.join("c");
+        write(
+            &c,
+            "axquant_manifest.json",
+            &manifest("ukisai/Swift-1.5-Qwen3.8-27b"),
+        );
+        assert!(!target_is_qwen38_27b(&c));
+        // A manifest that names another source wins over a matching config.
+        write(
+            &b,
+            "config.json",
+            r#"{"_name_or_path": "Qwen/Qwen3.8-27B"}"#,
+        );
+        assert!(!target_is_qwen38_27b(&b));
+        // Without a manifest the config's name decides; without either, no.
+        let d = root.join("d");
+        write(
+            &d,
+            "config.json",
+            r#"{"_name_or_path": "mlx-community/Qwen3.8-27B"}"#,
+        );
+        assert!(target_is_qwen38_27b(&d));
+        let e = root.join("e");
+        std::fs::create_dir_all(&e).unwrap();
+        assert!(!target_is_qwen38_27b(&e));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -140,7 +140,8 @@ during a throughput-profile verify forward only; the exact profile, Flash Next
 and MoE experts are unchanged.
 
 DFlash2 block drafting is on by default for greedy text requests on the Qwen 3.8
-27B hybrid dense target whenever the Apache-2.0 `z-lab/Qwen3.8-27B-DFlash2`
+27B target (the pack's recorded source model must be `Qwen/Qwen3.8-27B`: Qwen 3.6
+27B has the same shapes but other weights) whenever the Apache-2.0 `z-lab/Qwen3.8-27B-DFlash2`
 checkpoint (`config.json` and `model.safetensors`, about 3.6 GB in bf16, held as
 MXFP4 in memory) can be found: `AX_MLX_DFLASH2_DIR`, else a `dflash2/` directory
 inside the model directory, else the Hugging Face cache (`HF_HUB_CACHE`,
