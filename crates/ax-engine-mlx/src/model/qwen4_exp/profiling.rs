@@ -36,6 +36,9 @@ struct Sample {
     layer: Option<usize>,
     stage: &'static str,
     seconds: f64,
+    /// MLX op wrappers invoked on this thread since the previous mark: the
+    /// graph-construction cost a stage adds regardless of device time.
+    ops: u64,
     chunk_offset: usize,
     chunk_len: usize,
 }
@@ -104,6 +107,7 @@ pub(crate) fn layer_loaded(layer: u32, materialized_payload_bytes: usize, second
 struct Capture {
     layer: Option<usize>,
     previous: Instant,
+    previous_ops: u64,
     samples: Vec<Sample>,
     paging: Vec<PagingSample>,
 }
@@ -151,6 +155,7 @@ pub(crate) fn begin_chunk(offset: usize, len: usize) {
     CAPTURE.with_borrow_mut(|capture| {
         if let Some(capture) = capture {
             capture.previous = Instant::now();
+            capture.previous_ops = mlx_sys::op_count_snapshot();
         }
     });
 }
@@ -517,14 +522,17 @@ pub(crate) fn mark(stage: &'static str, arrays: &[&MlxArray]) {
             eval(arrays);
             note_eval();
             let now = Instant::now();
+            let ops_now = mlx_sys::op_count_snapshot();
             capture.samples.push(Sample {
                 layer: capture.layer,
                 stage,
                 seconds: now.duration_since(capture.previous).as_secs_f64(),
+                ops: ops_now.saturating_sub(capture.previous_ops),
                 chunk_offset: DUMP_OFFSET.get(),
                 chunk_len: DUMP_CHUNK_LEN.get(),
             });
             capture.previous = now;
+            capture.previous_ops = ops_now;
         }
     });
 }
@@ -739,6 +747,7 @@ fn layer_stage_records_split_qsa_gdn_moe_and_ple() {
                 layer,
                 stage,
                 seconds,
+                ops: 0,
                 chunk_offset: offset,
                 chunk_len: len,
             }
@@ -823,6 +832,7 @@ fn flash_next_synchronized_operator_profile() {
         ("prefill", &tokens[..tokens.len() - 1], &initial),
         ("singleton", tail, &prefix.state),
     ] {
+        let control_ops_start = mlx_sys::op_count_snapshot();
         let start = Instant::now();
         let control = forward(
             trunk,
@@ -833,11 +843,13 @@ fn flash_next_synchronized_operator_profile() {
         )
         .unwrap();
         let control_seconds = start.elapsed().as_secs_f64();
+        let control_ops = mlx_sys::op_count_take(control_ops_start);
         CAPTURE.with_borrow_mut(|capture| {
             assert!(capture.is_none());
             *capture = Some(Capture {
                 layer: None,
                 previous: Instant::now(),
+                previous_ops: mlx_sys::op_count_snapshot(),
                 samples: Vec::new(),
                 paging: Vec::new(),
             });
@@ -861,6 +873,7 @@ fn flash_next_synchronized_operator_profile() {
         }
         records.push(serde_json::json!({
             "name": name, "tokens": input.len(), "control_seconds": control_seconds,
+            "control_ops": control_ops,
             "stage_seconds": totals, "samples": capture.samples,
             "expert_paging": capture.paging,
             "logits_exact": true, "state_bytes_exact": true,
@@ -1024,6 +1037,7 @@ fn run_chunked_prefill(
             *slot = Some(Capture {
                 layer: None,
                 previous: Instant::now(),
+                previous_ops: mlx_sys::op_count_snapshot(),
                 samples: Vec::new(),
                 paging: Vec::new(),
             });
@@ -1246,6 +1260,7 @@ fn paging_capture_preserves_context_without_evaluation() {
         *slot = Some(Capture {
             layer: None,
             previous: Instant::now(),
+            previous_ops: mlx_sys::op_count_snapshot(),
             samples: Vec::new(),
             paging: Vec::new(),
         });
