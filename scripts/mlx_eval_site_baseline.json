@@ -11,6 +11,9 @@
   "crates/ax-engine-mlx/src/batched_sampling.rs": {
     "eval": 2
   },
+  "crates/ax-engine-mlx/src/dflash2.rs": {
+    "eval": 3
+  },
   "crates/ax-engine-mlx/src/diffusion.rs": {
     "eval": 8
   },
