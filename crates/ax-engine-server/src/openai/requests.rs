@@ -571,7 +571,7 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "unsupported_modality",
-            "Flash Next image input is disabled on this server (AX_MLX_QWEN4_EXP_VISION=0)"
+            "Flash Next image input is an opt-in preview; start the server with AX_MLX_QWEN4_EXP_VISION=1"
                 .to_string(),
         ));
     }

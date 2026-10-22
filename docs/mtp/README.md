@@ -106,7 +106,11 @@ prompts, and 35B-A3B AXQ-4bit on 9. Forcing the exact profile on the MXFP4
 `AX_MLX_QWEN_LINEAR_MTP_EXACT=1`) is slower (47 vs 61 tok/s on the streaming
 chat route) and still differed on 7 prompts: MXFP4 has no certified
 row-exact verifier. n-gram verification matched direct decode on all 17.
-Treat throughput-MTP rows as relaxed, not as an exact path.
+Treat throughput MTP as an approximate mode, not an exact path: greedy output
+can differ from direct decode. MTP stays explicit opt-in, and no flag here is
+named or documented as exact until a row-exact MXFP4 verifier is certified.
+When token identity with direct decode matters, use direct decode or n-gram
+verification.
 
 Sampled requests with a repetition, presence or frequency penalty or a
 `logit_bias` keep Qwen linear MTP (`AX_MLX_MTP_PENALIZED_VERIFY`, default on).

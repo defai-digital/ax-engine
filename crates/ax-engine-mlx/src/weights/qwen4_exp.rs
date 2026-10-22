@@ -994,7 +994,7 @@ pub(super) fn resolve_in_root(
 /// Load the Qwen3-VL style `vision_tower.*` tensors a qwen4_exp pack ships
 /// next to the trunk. They are not listed in `model-manifest.json`, so they
 /// are read from the safetensors index directly. `None` when the pack has no
-/// tower or `AX_MLX_QWEN4_EXP_VISION=0`. A tower that needs DeepStack fails
+/// tower or `AX_MLX_QWEN4_EXP_VISION` is not set. A tower that needs DeepStack fails
 /// closed: the qwen4_exp forward has no DeepStack injection.
 pub(crate) fn load_vision_tower(
     root: &Path,

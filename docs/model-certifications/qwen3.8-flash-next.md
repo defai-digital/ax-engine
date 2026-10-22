@@ -99,7 +99,8 @@ to 65,536 tokens.
 
 Image input is a functional preview outside this certification. The pack's
 Qwen3-VL style vision tower (333 BF16 `vision_tower.*` tensors, about 0.85 GB)
-loads by default (`AX_MLX_QWEN4_EXP_VISION=0` keeps the pack text-only), and
+loads only with `AX_MLX_QWEN4_EXP_VISION=1` (off by default while the preview
+is uncertified, which also keeps the tower out of the memory budget), and then
 `/v1/chat/completions` accepts `image_url` parts; audio and video are refused.
 Attention and QSA keys rotate at interleaved MRoPE positions (sections
 [11, 11, 10]); decode continues at `position + delta`. Image requests skip the

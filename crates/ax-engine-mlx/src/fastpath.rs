@@ -1583,13 +1583,13 @@ env_flag_default_on!(
     "AX_MLX_MTP_PENALIZED_VERIFY"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MLX_QWEN4_EXP_VISION` - load the Qwen3-VL style vision tower a
     /// qwen4_exp pack ships (about 0.85 GB of BF16 on Qwen 3.8 Flash Next)
     /// so chat requests may carry images.
     ///
-    /// **Default: ON** (`AX_MLX_QWEN4_EXP_VISION=0` keeps the pack text-only
-    /// and skips the tower).
+    /// **Default: OFF** while image input is an uncertified preview
+    /// (`AX_MLX_QWEN4_EXP_VISION=1` loads the tower).
     qwen4_exp_vision_enabled,
     "AX_MLX_QWEN4_EXP_VISION"
 );
