@@ -912,6 +912,8 @@ fn build_openai_generate_request(
         max_output_tokens,
         response_options.fit_max_tokens_to_context,
     )?;
+    let mut payload = payload;
+    payload.sampling.json_schema = native_json_constraint(live, &response_options);
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
@@ -929,6 +931,30 @@ fn build_openai_generate_request(
         stream: payload.stream,
         response_options,
     })
+}
+
+/// The schema the native MLX backend constrains decoding to for a
+/// `response_format` request. Tool-calling requests keep post-hoc validation
+/// only, because a tool-call span is not the JSON answer. Schemas the
+/// grammar cannot enforce exactly also stay post-hoc only.
+fn native_json_constraint(
+    live: &LiveState,
+    response_options: &OpenAiResponseOptions,
+) -> Option<serde_json::Value> {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx
+        || response_options.parse_tool_calls
+        || !crate::metadata::json_constrained_decoding_enabled()
+    {
+        return None;
+    }
+    let schema = match response_options.json_schema.as_ref() {
+        Some(contract) => contract.schema.clone(),
+        None if response_options.validate_json_object => serde_json::json!({"type": "object"}),
+        None => return None,
+    };
+    ax_engine_core::grammar::JsonGrammar::from_schema(&schema)
+        .is_ok()
+        .then_some(schema)
 }
 
 fn fit_openai_max_output_tokens_to_context(
@@ -1178,6 +1204,7 @@ fn build_openai_sampling_with_default_repetition_penalty(
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         logit_bias: params.logit_bias,
+        json_schema: None,
         seed,
         seed_explicit: client_seed.is_some() || seed != 0,
         deterministic: None,

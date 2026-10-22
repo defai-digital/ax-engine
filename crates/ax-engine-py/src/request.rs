@@ -307,6 +307,7 @@ mod tests {
                 no_repeat_ngram_size: 35,
                 ngram_window: 128,
                 logit_bias: Default::default(),
+                json_schema: None,
                 ignore_eos: true,
             },
             vec!["stop".to_string()],

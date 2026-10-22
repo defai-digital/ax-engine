@@ -9,6 +9,7 @@ pub mod engine;
 pub mod execution_plan;
 pub mod gemma4_unified;
 pub mod generation;
+pub mod grammar;
 pub mod ids;
 pub mod kv;
 pub mod loop_detection;
@@ -115,7 +116,7 @@ pub use runner::{
     DeterministicRunner, DiffusionScheduleUpdate, EmbeddingMatrix, EmbeddingPooling,
     ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelBindingSummary,
     RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable, RunnerInput, RunnerOutput,
-    RunnerRequestLogitBias, RunnerRequestMultimodalInput,
+    RunnerRequestJsonGrammar, RunnerRequestLogitBias, RunnerRequestMultimodalInput,
 };
 pub use sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, StopReason,

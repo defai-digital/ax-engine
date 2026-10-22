@@ -324,9 +324,10 @@ fn streaming_delegated_tool_calls_error() -> (StatusCode, Json<ErrorResponse>) {
     )
 }
 
-/// Post-hoc `response_format` validation for `json_object` and Phase A
-/// `json_schema` (ADR-040 D3: validated, not constrained — Phase B upgrades
-/// this to guided decoding without changing the request shape).
+/// Post-hoc `response_format` validation for `json_object` and
+/// `json_schema` (ADR-040 D3). It runs even when the native backend also
+/// constrained decoding, and checks the visible answer: a thinking block is
+/// not part of the response format.
 pub(crate) fn validate_openai_response_format(
     response: &GenerateResponse,
     options: &OpenAiResponseOptions,
@@ -334,7 +335,11 @@ pub(crate) fn validate_openai_response_format(
     if !options.validate_json_object && options.json_schema.is_none() {
         return Ok(());
     }
-    let text = response.output_text.as_deref().unwrap_or("").trim();
+    let (content, _) = crate::openai::responses::split_reasoning_content(
+        response.output_text.as_deref().unwrap_or(""),
+        options.include_reasoning,
+    );
+    let text = content.trim();
     let value = serde_json::from_str::<serde_json::Value>(text).map_err(|error| {
         error_response(
             StatusCode::BAD_GATEWAY,

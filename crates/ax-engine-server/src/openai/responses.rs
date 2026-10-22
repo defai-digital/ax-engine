@@ -283,7 +283,10 @@ fn sampled_token_logprobs(response: &GenerateResponse) -> Option<Vec<Option<f32>
     .then(|| response.output_token_logprobs.clone())
 }
 
-fn split_reasoning_content(text: &str, include_reasoning: bool) -> (String, Option<String>) {
+pub(crate) fn split_reasoning_content(
+    text: &str,
+    include_reasoning: bool,
+) -> (String, Option<String>) {
     if !include_reasoning {
         return (text.to_string(), None);
     }

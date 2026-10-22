@@ -350,8 +350,8 @@ than silently dropped.
   SDK status object.
 - **`response_format: json_object`** (completions and chat): non-streaming
   responses are validated server-side; output that is not a JSON object
-  returns `502 invalid_output`. This is post-hoc validation, not constrained
-  decoding.
+  returns `502 invalid_output`. On the native MLX backend decoding is also
+  constrained to a JSON object (see constrained decoding below).
 - **`response_format: json_schema`** (completions and chat): the OpenAI
   `{"type":"json_schema","json_schema":{"name","schema","strict"?}}` shape is
   accepted for non-streaming requests and the output is validated server-side
@@ -365,8 +365,28 @@ than silently dropped.
   enforced (for example a string `minimum`, a non-array `required`, a
   draft-04 boolean `exclusiveMinimum`, or a non-string `type`), is rejected
   up front with `400 unsupported_json_schema` — never silently ignored or
-  partially validated. Like `json_object`, this is post-hoc validation, not
-  constrained decoding: output is checked, not guaranteed.
+  partially validated. The post-hoc check always runs.
+- **Constrained decoding** (native MLX, `json_object` and `json_schema`):
+  every sampled token is masked to the bytes the schema still allows, so the
+  answer is well-formed JSON with the schema's types, `enum` / `const`
+  values, `required` and closed (`additionalProperties: false`) properties,
+  and string and array length bounds. Numeric bounds stay with the post-hoc
+  check. Whitespace between JSON tokens is limited to runs of 24 bytes (2
+  before the top-level value, no carriage returns), and
+  property names that would need JSON escapes, objects with more than 128
+  properties and enums with more than 64 options fall back to post-hoc
+  validation only. The model never sees the schema: put its limits (item
+  counts, lengths, enum values) in the prompt, or a model that planned more
+  than the schema allows is forced into an unnatural continuation and may
+  run to the token budget (the post-hoc check then reports it). Reasoning
+  models think freely: the grammar starts after `</think>`, and the post-hoc
+  check reads the answer after the thinking block. Tool-calling requests are not constrained (the tool span is
+  not the answer). Qwen linear MTP keeps speculating: each verify row is
+  masked at the grammar position its preceding drafts reach, so greedy and
+  sampled constrained requests stay on MTP. Masks come from the model's
+  `tokenizer.json` (ByteLevel or Metaspace decoders). Set
+  `AX_ENGINE_JSON_CONSTRAINED_DECODING=0` to fall back to post-hoc
+  validation only.
 - **`stop`** (completions and chat, all backends): client stop sequences are
   honored everywhere. Delegated backends forward them upstream; the native
   MLX backend enforces them server-side over decoded text with OpenAI

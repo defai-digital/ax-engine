@@ -606,6 +606,7 @@ fn sampling_from_params(
         no_repeat_ngram_size,
         ngram_window,
         logit_bias: Default::default(),
+        json_schema: None,
         seed: seed.unwrap_or(0),
         seed_explicit: seed.is_some(),
         deterministic,

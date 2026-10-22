@@ -485,6 +485,7 @@ fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext 
         presence_penalty: 0.0,
         frequency_penalty: 0.0,
         logit_bias_active: false,
+        json_grammar_active: false,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: false,
@@ -3152,7 +3153,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
             state.cache.set_seq_len(native_tokens);
             state.multimodal_prefill_complete = complete;
             runner.states.lock().insert(item.request_id, state);
-            let result = runner.run_item(&item, None, "qwen3", 4, Some(media), None);
+            let result = runner.run_item(&item, None, "qwen3", 4, Some(media), None, None);
             assert_eq!(
                 result.update.error.as_deref(),
                 Some("multimodal decode requires a completed media prefill")
@@ -3189,7 +3190,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     assert!(state.multimodal_prefill_complete);
     state.cached_prefill_output_token = Some(5);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None);
     assert!(result.update.error.is_none(), "{:?}", result.update.error);
     assert_eq!(result.update.output_token, Some(5));
 
@@ -3201,7 +3202,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     assert_eq!(prompt, [vec![7; 8], vec![9, 10]].concat());
     assert!(!state.multimodal_prefill_complete);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None);
     assert_eq!(
         result.update.error.as_deref(),
         Some("multimodal decode requires a completed media prefill")
@@ -3221,7 +3222,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     state.cache.set_seq_len(8);
     state.cached_prefill_output_token = Some(5);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&empty), None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&empty), None, None);
     assert!(result.update.error.is_none(), "{:?}", result.update.error);
     assert_eq!(result.update.output_token, Some(5));
     fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
@@ -4260,6 +4261,7 @@ fn split_prefill_only_completes_on_final_prompt_chunk() {
         presence_penalty: 0.0,
         frequency_penalty: 0.0,
         logit_bias_active: false,
+        json_grammar_active: false,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: false,
@@ -8712,7 +8714,7 @@ fn penalized_mtp_rows_see_the_drafts_before_them() {
     let logits = mlx_sys::reshape(&logits, &[3, 4], None);
     let sampling = MlxSamplingParams::new(0.7, 1.0, 0).with_presence_frequency_penalty(2.0, 0.0);
     // History holds token 3; drafts are [2, 1].
-    let rows = penalized_mtp_target_rows(&logits, &[3], &[2, 1], 4, sampling);
+    let rows = penalized_mtp_target_rows(&logits, &[3], &[2, 1], 4, sampling, &[]);
     assert_eq!(rows.len(), 3);
     // Row 0: only the committed history (token 3) is penalised.
     assert_eq!(rows[0], vec![0.0, 0.0, 5.0, 2.0]);

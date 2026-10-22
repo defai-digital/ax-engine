@@ -588,3 +588,19 @@ pub(crate) fn qwen4_exp_vision_enabled() -> bool {
         })
     })
 }
+
+/// `AX_ENGINE_JSON_CONSTRAINED_DECODING` (default on; `0`, `false`, `no` or
+/// `off` turn it off): native MLX `response_format` requests constrain
+/// decoding to their grammar instead of relying on post-hoc validation
+/// alone. Read once per process.
+pub(crate) fn json_constrained_decoding_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_ENGINE_JSON_CONSTRAINED_DECODING").map_or(true, |raw| {
+            !matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+    })
+}
