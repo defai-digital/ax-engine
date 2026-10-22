@@ -110,6 +110,7 @@ use crate::unlimited_ocr::preprocess_document_rgb_u8;
 use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
 
+mod dflash2_decode;
 mod grammar;
 mod manifest_validation;
 mod mtp_depth_controller;
@@ -582,6 +583,9 @@ struct RequestState {
     /// portable prefix snapshots (via
     /// `Qwen4ExpDraftCursor::prefix_snapshot_parts`).
     flash_next_mtp: FlashNextMtpRequestState,
+    /// Request-local DFlash2 drafter state (ADR-045). `None` until a prefill
+    /// under an eligible request captured hidden states.
+    dflash2: Option<dflash2_decode::Dflash2RequestState>,
 }
 
 /// Draft history for the Flash Next candidate plus its route counters.
@@ -1218,6 +1222,7 @@ impl RequestState {
             ngram_self_tune: NgramSelfTuneState::default(),
             mtp_ngram_utility_hysteresis_remaining: 0,
             flash_next_mtp: FlashNextMtpRequestState::default(),
+            dflash2: None,
         }
     }
 
@@ -1409,6 +1414,9 @@ pub struct MlxRunner {
     cfg: ModelConfig,
     cfg_arc: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
+    /// DFlash2 block drafter (ADR-045), loaded only when `AX_MLX_DFLASH2_DIR`
+    /// names a drafter that matches this target. Greedy text requests only.
+    dflash2: Option<Arc<crate::dflash2::Dflash2Weights>>,
     /// Chunk size used for warm-extend prefill (snapshot restore + suffix).
     /// MLA models force this to `MLA_DEFAULT_PREFILL_CHUNK` (16) so the
     /// SDPA shape sequence matches the cold-of-full equivalence path.
@@ -1614,6 +1622,65 @@ impl fmt::Debug for MlxRunner {
             .field("vocab", &self.cfg.vocab_size)
             .finish()
     }
+}
+
+/// Loads the DFlash2 drafter named by `AX_MLX_DFLASH2_DIR` when it fits this
+/// target (Qwen 3.8 hybrid dense: same hidden width and vocabulary, capture
+/// layers inside the stack). Any mismatch or load failure leaves the runner on
+/// its normal decode routes.
+fn load_dflash2_drafter(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+) -> Option<Arc<crate::dflash2::Dflash2Weights>> {
+    let dir = crate::fastpath::dflash2_dir()?;
+    if cfg.model_family != "qwen3_5" || cfg.linear_attention.is_none() || cfg.moe_expert_count > 0 {
+        tracing::warn!(
+            target: "ax_engine_mlx::runner",
+            model_family = %cfg.model_family,
+            "AX_MLX_DFLASH2_DIR is set but DFlash2 serves only the Qwen 3.8 hybrid dense target; ignoring it"
+        );
+        return None;
+    }
+    let precision = if crate::fastpath::dflash2_bf16_enabled() {
+        crate::dflash2::DrafterPrecision::Bf16
+    } else {
+        crate::dflash2::DrafterPrecision::Mxfp4
+    };
+    let drafter = match crate::dflash2::Dflash2Weights::load(dir, precision) {
+        Ok(drafter) => drafter,
+        Err(error) => {
+            tracing::warn!(
+                target: "ax_engine_mlx::runner",
+                %error,
+                "failed to load the DFlash2 drafter; decoding without it"
+            );
+            return None;
+        }
+    };
+    let drafter_cfg = drafter.config();
+    let fits = drafter_cfg.hidden_size as usize == cfg.hidden_size
+        && drafter_cfg.vocab_size as usize == cfg.vocab_size
+        && drafter_cfg
+            .target_layer_ids
+            .iter()
+            .all(|&layer| layer < cfg.layer_count);
+    if !fits {
+        tracing::warn!(
+            target: "ax_engine_mlx::runner",
+            "the DFlash2 drafter does not match this target's hidden width, vocabulary or depth; ignoring it"
+        );
+        return None;
+    }
+    drafter.materialize();
+    let drafter = Arc::new(drafter);
+    crate::dflash2::Dflash2Drafter::new(Arc::clone(&drafter)).warm_up(weights);
+    tracing::info!(
+        target: "ax_engine_mlx::runner",
+        ?precision,
+        block = drafter.config().block_size,
+        "DFlash2 drafter loaded (greedy text requests)"
+    );
+    Some(drafter)
 }
 
 fn load_gemma4_assistant_mtp_runtime(
@@ -2453,6 +2520,7 @@ impl MlxRunner {
             crate::fastpath::scoped_qwen_linear_mtp_exact(qwen_linear_mtp_exact_enabled);
         let (gemma4_assistant_mtp_status, gemma4_assistant_mtp) =
             load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
+        let dflash2 = load_dflash2_drafter(&cfg, &weights);
         let qwen_linear_certification_env_opt_in =
             qwen_linear_mtp_certification_candidate_from_env();
         let qwen_linear_projected_replay_enabled =
@@ -2897,6 +2965,7 @@ impl MlxRunner {
             disk_prefix_writer,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
+            dflash2,
             weight_layout_telemetry,
             affine_quant_telemetry,
             embed_compile_cache: Mutex::new(HashMap::new()),
@@ -6312,22 +6381,34 @@ impl MlxRunner {
         } else {
             Some(String::new())
         };
-        let mut prefix_cache =
-            if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
-                MlxPrefixCacheTelemetry::default()
-            } else {
-                self.restore_reused_prefix_state(
-                    &mut state,
-                    item,
-                    ctx,
-                    model_id,
-                    block_size_tokens,
-                    sampling,
-                    !has_native_multimodal_prefill
-                        && self.flash_next_mtp_prefill_eligible(is_greedy, sampling),
-                    media_key.as_deref(),
-                )
-            };
+        // DFlash2 conditions on hidden states captured while the prompt runs
+        // through the target, which a restored snapshot cannot supply: such a
+        // request prefills its whole prompt (a scheduler-claimed reuse is
+        // recomputed, like a failed warm-up).
+        let dflash2_prefill = is_prefill
+            && !has_native_multimodal_prefill
+            && self.dflash2_request_eligible(sampling, is_greedy, false);
+        let mut prefix_cache = if dflash2_prefill {
+            let mut telemetry = MlxPrefixCacheTelemetry::default();
+            if state.cache.seq_len() == 0 {
+                telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
+            }
+            telemetry
+        } else if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
+            MlxPrefixCacheTelemetry::default()
+        } else {
+            self.restore_reused_prefix_state(
+                &mut state,
+                item,
+                ctx,
+                model_id,
+                block_size_tokens,
+                sampling,
+                !has_native_multimodal_prefill
+                    && self.flash_next_mtp_prefill_eligible(is_greedy, sampling),
+                media_key.as_deref(),
+            )
+        };
         self.reclaim_native_prefix_capacity(
             &state.cache,
             item.input_token_slice.len(),
@@ -6652,6 +6733,13 @@ impl MlxRunner {
                     );
                     Some(tok)
                 } else {
+                    // Hidden states of the prompt rows for the DFlash2 drafter,
+                    // captured across every forward of this item and read back
+                    // right after the prefill forward (before generation-state
+                    // setup, whose warm-up forwards are not prompt rows).
+                    let dflash2_capture = (dflash2_prefill && state.dflash2_prefill_open())
+                        .then(|| self.dflash2_begin_prefill_capture())
+                        .flatten();
                     let full_recompute_tokens = full_prefill_recompute_tokens_for_warmup_fallback(
                         item,
                         token_ids,
@@ -7052,6 +7140,11 @@ impl MlxRunner {
                         ))
                     };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
+                    if let Some(capture) = dflash2_capture {
+                        // Read the rows while the scope is still open.
+                        self.dflash2_finish_prefill_capture(&mut state);
+                        drop(capture);
+                    }
                     let prefill_token_count = effective_prefill_token_count;
                     if let Some(tokens) = full_recompute_tokens {
                         state.prompt_prefix_tokens = tokens;
@@ -9285,6 +9378,15 @@ impl MlxRunner {
         if self.flash_next_mtp_session()
             && let Some(tokens) =
                 self.try_flash_next_mtp_decode(state, input_tokens, sampling, is_greedy, &options)
+        {
+            return tokens;
+        }
+        // DFlash2 block speculation (ADR-045): eligible greedy requests whose
+        // prompt hidden states were captured. Ineligible steps fall through to
+        // the generic routes, which never see the drafter.
+        if self.dflash2.is_some()
+            && let Some(tokens) =
+                self.try_dflash2_decode(state, input_tokens, sampling, is_greedy, &options)
         {
             return tokens;
         }

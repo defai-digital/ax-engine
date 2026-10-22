@@ -614,6 +614,13 @@ impl Dflash2Drafter {
         self.reset();
     }
 
+    /// Sets the absolute position of the first context row when the prompt rows
+    /// before it were dropped by the window cap. Only valid on a fresh drafter.
+    pub(crate) fn seed_offset(&mut self, skipped_rows: i32) {
+        debug_assert_eq!(self.offset, 0, "seed_offset needs a fresh drafter");
+        self.offset = skipped_rows;
+    }
+
     pub(crate) fn reset(&mut self) {
         for cache in &mut self.caches {
             *cache = LayerCache::default();
