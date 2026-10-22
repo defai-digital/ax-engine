@@ -581,6 +581,53 @@ impl SafetensorsRowReader {
             meta.dtype,
         ))
     }
+
+    /// Read one axis-zero row of `tensor` into `dst` with the same bounds
+    /// checks and payload accounting as [`Self::gather_rows`].
+    ///
+    /// `&self` only: positional reads share no cursor, so callers may issue
+    /// many rows concurrently from scoped threads. `dst` must be exactly one
+    /// row long. The caller owns any output budget.
+    pub fn read_row_into(&self, tensor: &str, row: u64, dst: &mut [u8]) -> Result<(), String> {
+        let meta = self
+            .tensors
+            .get(tensor)
+            .ok_or_else(|| format!("unknown tensor {tensor}"))?;
+        if dst.len() != meta.row_bytes {
+            return Err(format!(
+                "read {tensor}: destination {} bytes != row size {} bytes",
+                dst.len(),
+                meta.row_bytes
+            ));
+        }
+        if row >= meta.rows as u64 {
+            return Err(format!(
+                "read {tensor}: row id {row} out of bounds (rows {})",
+                meta.rows
+            ));
+        }
+        let row_bytes = meta.row_bytes as u64;
+        let abs = row
+            .checked_mul(row_bytes)
+            .and_then(|off| meta.data_start.checked_add(off))
+            .ok_or_else(|| format!("read {tensor}: absolute offset overflows for row {row}"))?;
+        let abs_end = abs
+            .checked_add(row_bytes)
+            .ok_or_else(|| format!("read {tensor}: absolute end overflows for row {row}"))?;
+        if abs_end > self.file_len || abs < meta.data_start || abs_end > meta.data_end {
+            return Err(format!(
+                "read {tensor}: row {row} range [{abs},{abs_end}] outside the tensor or file \
+                 ({} bytes; file may be truncated)",
+                self.file_len
+            ));
+        }
+        pread_exact(&self.file, dst, abs).map_err(|e| {
+            format!("read {tensor}: row {row} at file offset {abs}: {e} (file may be truncated)")
+        })?;
+        self.payload_bytes_read
+            .fetch_add(row_bytes, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1127,6 +1174,48 @@ mod tests {
         assert_eq!(empty.shape(), vec![0, 4]);
         assert_eq!(empty.nbytes(), 0);
         assert_eq!(reader.payload_bytes_read(), 80);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_row_into_matches_gather_and_checks_every_bound() {
+        let dir = test_dir("read-row");
+        let path = dir.join("t.safetensors");
+        let rows: Vec<Vec<f32>> = (0..4)
+            .map(|r| (0..4).map(|c| (r * 10 + c) as f32).collect())
+            .collect();
+        let payload = f32_rows_payload(&rows);
+        let header = serde_json::json!({
+            "w": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 64]}
+        });
+        write_st_file(&path, header, &payload);
+        let reader = SafetensorsRowReader::open(&path).unwrap();
+
+        let mut row = [0u8; 16];
+        reader.read_row_into("w", 2, &mut row).unwrap();
+        assert_eq!(row.as_slice(), &payload[32..48]);
+        assert_eq!(reader.payload_bytes_read(), 16);
+
+        // Concurrent readers share one handle without a cursor.
+        std::thread::scope(|scope| {
+            for id in 0..4u64 {
+                let reader = &reader;
+                let payload = &payload;
+                scope.spawn(move || {
+                    let mut row = [0u8; 16];
+                    reader.read_row_into("w", id, &mut row).unwrap();
+                    let start = id as usize * 16;
+                    assert_eq!(row.as_slice(), &payload[start..start + 16]);
+                });
+            }
+        });
+        assert_eq!(reader.payload_bytes_read(), 16 + 4 * 16);
+
+        let before = reader.payload_bytes_read();
+        assert!(reader.read_row_into("w", 4, &mut row).is_err());
+        assert!(reader.read_row_into("missing", 0, &mut row).is_err());
+        assert!(reader.read_row_into("w", 0, &mut [0u8; 8]).is_err());
+        assert_eq!(reader.payload_bytes_read(), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

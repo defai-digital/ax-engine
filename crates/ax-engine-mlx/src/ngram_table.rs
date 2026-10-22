@@ -4,7 +4,10 @@
 //! a full table. Open reads only bounded JSON headers through
 //! [`mlx_sys::SafetensorsRowReader::open_selected`]; gather reads only the
 //! requested rows via positional reads and converts them to F32 with the
-//! existing MLX dequantize and cast ops. Design notes that shaped this file:
+//! existing MLX dequantize and cast ops. When every shard shares one row
+//! format, a gather issues all of its reads concurrently and dequantizes the
+//! rows in one lazy batch; mixed tables keep the per-shard path. Design notes
+//! that shaped this file:
 //! full-tensor lazy Load would still move whole payloads on eval, so it is
 //! avoided here; returned rows own their storage so later gathers cannot
 //! overwrite them; payload bytes are counted so tests can prove that only
@@ -351,6 +354,119 @@ pub struct NgramTable {
     total_rows: u64,
     embedding_width: usize,
     max_gather_bytes: usize,
+    /// Set when every shard shares one on-disk row format, so a gather can
+    /// read all rows concurrently and dequantize them in a single batch.
+    batch: Option<BatchLayout>,
+}
+
+/// One tensor's per-row byte layout, identical across the shards it covers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlaneLayout {
+    dtype: MlxDtype,
+    row_bytes: usize,
+    shape: Vec<i32>,
+}
+
+impl PlaneLayout {
+    fn of(meta: &RowTensorMeta) -> Self {
+        Self {
+            dtype: meta.dtype,
+            row_bytes: meta.row_bytes,
+            shape: meta.shape.clone(),
+        }
+    }
+
+    fn shape_for(&self, rows: i32) -> Vec<i32> {
+        let mut shape = self.shape.clone();
+        shape[0] = rows;
+        shape
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BatchLayout {
+    Dense(PlaneLayout),
+    Quantized {
+        bits: i32,
+        group_size: i32,
+        weight: PlaneLayout,
+        scales: PlaneLayout,
+        biases: PlaneLayout,
+    },
+}
+
+/// Present only when all shards agree on encoding and row layout; any
+/// mismatch keeps the per-shard path, which handles mixed tables.
+fn uniform_batch_layout(shards: &[Shard]) -> Option<BatchLayout> {
+    let mut found: Option<BatchLayout> = None;
+    for shard in shards {
+        let layout = match &shard.encoding {
+            ShardEncoding::Dense => BatchLayout::Dense(PlaneLayout::of(&shard.weight_meta)),
+            ShardEncoding::Quantized {
+                bits,
+                group_size,
+                scales_meta,
+                biases_meta,
+                ..
+            } => BatchLayout::Quantized {
+                bits: i32::try_from(*bits).ok()?,
+                group_size: i32::try_from(*group_size).ok()?,
+                weight: PlaneLayout::of(&shard.weight_meta),
+                scales: PlaneLayout::of(scales_meta),
+                biases: PlaneLayout::of(biases_meta),
+            },
+        };
+        match &found {
+            None => found = Some(layout),
+            Some(first) if *first == layout => {}
+            Some(_) => return None,
+        }
+    }
+    found
+}
+
+/// One positional row read into its slot of a staging plane.
+struct RowRead<'a> {
+    reader: &'a SafetensorsRowReader,
+    tensor: &'a str,
+    row: u64,
+    dst: &'a mut [u8],
+}
+
+/// Concurrent positional reads. A decode token touches 48 scattered rows of
+/// a table far larger than memory, so each read is a cold random SSD access;
+/// issuing them together costs about one access instead of 48.
+const MAX_READ_THREADS: usize = 16;
+
+fn run_row_reads(reads: &mut [RowRead<'_>]) -> Result<(), NgramTableError> {
+    fn run(chunk: &mut [RowRead<'_>]) -> Result<(), String> {
+        for read in chunk {
+            read.reader.read_row_into(read.tensor, read.row, read.dst)?;
+        }
+        Ok(())
+    }
+    let threads = reads.len().min(MAX_READ_THREADS);
+    if threads <= 1 {
+        return run(reads).map_err(NgramTableError::Gather);
+    }
+    let per_thread = reads.len().div_ceil(threads);
+    let mut chunks = reads.chunks_mut(per_thread);
+    let first = chunks.next();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .map(|chunk| scope.spawn(move || run(chunk)))
+            .collect();
+        let mut result = first.map_or(Ok(()), run);
+        for handle in handles {
+            let joined = handle
+                .join()
+                .unwrap_or_else(|_| Err("n-gram row read thread panicked".to_string()));
+            if result.is_ok() {
+                result = joined;
+            }
+        }
+        result.map_err(NgramTableError::Gather)
+    })
 }
 
 struct SelectedShard {
@@ -797,12 +913,14 @@ impl NgramTable {
                 .ok_or_else(|| NgramTableError::Overflow("total rows".to_string()))?;
             shards.push(shard);
         }
+        let batch = uniform_batch_layout(&shards);
         Ok(Self {
             shards,
             readers,
             total_rows,
             embedding_width,
             max_gather_bytes,
+            batch,
         })
     }
 
@@ -922,6 +1040,9 @@ impl NgramTable {
                 budget: self.max_gather_bytes,
             });
         }
+        if let Some(layout) = &self.batch {
+            return self.gather_batched(layout, row_ids, &assignment);
+        }
         let mut per_shard: Vec<Vec<(usize, u64)>> = Vec::new();
         per_shard
             .try_reserve_exact(self.shards.len())
@@ -1020,6 +1141,112 @@ impl NgramTable {
         );
         mlx_sys::try_eval(&[&out_array]).map_err(NgramTableError::Gather)?;
         Ok(out_array)
+    }
+
+    /// Read every requested row concurrently into caller-ordered staging
+    /// planes, then build one lazy dequantize over all of them. Equal to the
+    /// per-shard path element for element (the same dequantize runs on the
+    /// same bytes), without a device round trip per shard.
+    fn gather_batched(
+        &self,
+        layout: &BatchLayout,
+        row_ids: &[u64],
+        assignment: &[usize],
+    ) -> Result<MlxArray, NgramTableError> {
+        let count = row_ids.len();
+        let count_i32 = i32::try_from(count)
+            .map_err(|_| NgramTableError::Overflow("count to i32".to_string()))?;
+        let plane_bytes = |plane: &PlaneLayout| {
+            count
+                .checked_mul(plane.row_bytes)
+                .ok_or_else(|| NgramTableError::Overflow("staging plane bytes".to_string()))
+        };
+        let planes: Vec<&PlaneLayout> = match layout {
+            BatchLayout::Dense(weight) => vec![weight],
+            BatchLayout::Quantized {
+                weight,
+                scales,
+                biases,
+                ..
+            } => vec![weight, scales, biases],
+        };
+        let mut staging: Vec<Vec<u8>> = Vec::with_capacity(planes.len());
+        for plane in &planes {
+            staging.push(vec![0u8; plane_bytes(plane)?]);
+        }
+        {
+            let mut reads: Vec<RowRead<'_>> = Vec::with_capacity(count * planes.len());
+            let mut cursors: Vec<_> = staging
+                .iter_mut()
+                .zip(&planes)
+                .map(|(bytes, plane)| bytes.chunks_exact_mut(plane.row_bytes))
+                .collect();
+            for (row, &shard_idx) in row_ids.iter().zip(assignment) {
+                let shard = self.shards.get(shard_idx).ok_or_else(|| {
+                    NgramTableError::Internal("batched shard missing".to_string())
+                })?;
+                let local = row
+                    .checked_sub(shard.global_start)
+                    .ok_or_else(|| NgramTableError::Overflow("local row".to_string()))?;
+                let mut sources: Vec<(&PathBuf, &str)> =
+                    vec![(&shard.weight_file, &shard.weight_name)];
+                if let ShardEncoding::Quantized {
+                    scales_name,
+                    scales_file,
+                    biases_name,
+                    biases_file,
+                    ..
+                } = &shard.encoding
+                {
+                    sources.push((scales_file, scales_name));
+                    sources.push((biases_file, biases_name));
+                }
+                for ((file, tensor), cursor) in sources.into_iter().zip(cursors.iter_mut()) {
+                    let reader = self.readers.get(file).ok_or_else(|| {
+                        NgramTableError::Internal("batched reader missing".to_string())
+                    })?;
+                    let dst = cursor.next().ok_or_else(|| {
+                        NgramTableError::Internal("staging row missing".to_string())
+                    })?;
+                    reads.push(RowRead {
+                        reader,
+                        tensor,
+                        row: local,
+                        dst,
+                    });
+                }
+            }
+            run_row_reads(&mut reads)?;
+        }
+        let array_of = |bytes: &Vec<u8>, plane: &PlaneLayout| {
+            MlxArray::from_raw_data(
+                bytes.as_ptr(),
+                bytes.len(),
+                &plane.shape_for(count_i32),
+                plane.dtype,
+            )
+        };
+        match layout {
+            BatchLayout::Dense(weight) => Ok(mlx_sys::astype(
+                &array_of(&staging[0], weight),
+                MlxDtype::Float32,
+                None,
+            )),
+            BatchLayout::Quantized {
+                bits,
+                group_size,
+                weight,
+                scales,
+                biases,
+            } => {
+                let w = array_of(&staging[0], weight);
+                let s = array_of(&staging[1], scales);
+                let b = array_of(&staging[2], biases);
+                let deq =
+                    mlx_sys::dequantize(&w, &s, Some(&b), Some(*group_size), Some(*bits), None);
+                Ok(mlx_sys::astype(&deq, MlxDtype::Float32, None))
+            }
+        }
     }
 
     fn gather_shard_block(
@@ -1376,6 +1603,22 @@ mod tests {
             assert_eq!(got, want, "parity failed for {bits}-bit");
             let per_row = packed_cols * 4 + groups * 4 + groups * 4;
             assert_eq!(table.payload_bytes_read(), (rows.len() * per_row) as u64);
+            // Uniform shards take the concurrent batched path; it must match
+            // the per-shard path, including past one row per reader thread.
+            assert!(table.batch.is_some(), "uniform shards must batch");
+            let many: Vec<u64> = (0..61u64).map(|i| (i * 7 + 3) % 4).collect();
+            let batched = table.gather(&many).unwrap();
+            mlx_sys::eval(&[&batched]);
+            let mut per_shard = table;
+            per_shard.batch = None;
+            let slow = per_shard.gather(&many).unwrap();
+            mlx_sys::eval(&[&slow]);
+            assert_eq!(batched.shape(), slow.shape());
+            assert_eq!(
+                batched.data_f32().to_vec(),
+                slow.data_f32().to_vec(),
+                "batched vs per-shard mismatch for {bits}-bit"
+            );
         }
     }
 
