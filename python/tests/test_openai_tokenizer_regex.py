@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import tempfile
+import unittest
 from pathlib import Path
 
-import pytest
 from ax_engine import openai_server
 
-tokenizers = pytest.importorskip("tokenizers")
+try:
+    import tokenizers
+except ImportError:  # pragma: no cover - optional dependency
+    tokenizers = None
 
 
 def tokenizer_json(regex: str) -> str:
@@ -43,9 +47,9 @@ def tokenizer_json(regex: str) -> str:
     )
 
 
-def write_pack(tmp_path: Path, model_type: str) -> Path:
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}))
-    path = tmp_path / "tokenizer.json"
+def write_pack(root: Path, model_type: str) -> Path:
+    (root / "config.json").write_text(json.dumps({"model_type": model_type}))
+    path = root / "tokenizer.json"
     path.write_text(tokenizer_json(openai_server._LEGACY_QWEN2_PRETOKENIZER_SPLIT))
     return path
 
@@ -54,27 +58,37 @@ def split_count(tokenizer, text: str) -> int:
     return len(tokenizer.pre_tokenizer.pre_tokenize_str(text))
 
 
-def test_restore_only_rewrites_the_legacy_regex() -> None:
-    assert openai_server.restore_qwen3_pretokenizer("{}") is None
-    already = tokenizer_json(openai_server._QWEN3_PRETOKENIZER_SPLIT)
-    assert openai_server.restore_qwen3_pretokenizer(already) is None
-    fixed = openai_server.restore_qwen3_pretokenizer(
-        tokenizer_json(openai_server._LEGACY_QWEN2_PRETOKENIZER_SPLIT)
-    )
-    assert fixed is not None and "\\\\p{M}" in fixed
+class RestoreQwen3PretokenizerTests(unittest.TestCase):
+    def test_restore_only_rewrites_the_legacy_regex(self) -> None:
+        self.assertIsNone(openai_server.restore_qwen3_pretokenizer("{}"))
+        already = tokenizer_json(openai_server._QWEN3_PRETOKENIZER_SPLIT)
+        self.assertIsNone(openai_server.restore_qwen3_pretokenizer(already))
+        fixed = openai_server.restore_qwen3_pretokenizer(
+            tokenizer_json(openai_server._LEGACY_QWEN2_PRETOKENIZER_SPLIT)
+        )
+        self.assertIsNotNone(fixed)
+        self.assertIn("\\\\p{M}", fixed)
 
 
-def test_qwen35_pack_keeps_combining_marks_in_one_word(tmp_path: Path) -> None:
-    path = write_pack(tmp_path, "qwen3_5")
-    tokenizer = openai_server.load_tokenizer(path, tokenizers.Tokenizer)
-    assert split_count(tokenizer, "नमस्ते दुनिया") == 2
-    assert split_count(tokenizer, "Hello, world!") == split_count(
-        tokenizers.Tokenizer.from_file(str(path)), "Hello, world!"
-    )
+@unittest.skipIf(tokenizers is None, "tokenizers not installed")
+class LoadTokenizerTests(unittest.TestCase):
+    def test_qwen35_pack_keeps_combining_marks_in_one_word(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_pack(Path(tmp), "qwen3_5")
+            tokenizer = openai_server.load_tokenizer(path, tokenizers.Tokenizer)
+            self.assertEqual(split_count(tokenizer, "नमस्ते दुनिया"), 2)
+            self.assertEqual(
+                split_count(tokenizer, "Hello, world!"),
+                split_count(tokenizers.Tokenizer.from_file(str(path)), "Hello, world!"),
+            )
+
+    def test_other_families_keep_the_shipped_regex(self) -> None:
+        for model_type in ("qwen3", "qwen3_next", "gemma4"):
+            with self.subTest(model_type=model_type), tempfile.TemporaryDirectory() as tmp:
+                path = write_pack(Path(tmp), model_type)
+                tokenizer = openai_server.load_tokenizer(path, tokenizers.Tokenizer)
+                self.assertGreater(split_count(tokenizer, "नमस्ते दुनिया"), 2)
 
 
-@pytest.mark.parametrize("model_type", ["qwen3", "qwen3_next", "gemma4"])
-def test_other_families_keep_the_shipped_regex(tmp_path: Path, model_type: str) -> None:
-    path = write_pack(tmp_path, model_type)
-    tokenizer = openai_server.load_tokenizer(path, tokenizers.Tokenizer)
-    assert split_count(tokenizer, "नमस्ते दुनिया") > 2
+if __name__ == "__main__":
+    unittest.main()
