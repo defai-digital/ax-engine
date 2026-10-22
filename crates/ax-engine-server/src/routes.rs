@@ -67,6 +67,10 @@ pub(crate) fn build_router_with_rate_limit(state: AppState, rate_limited: bool) 
         .route("/v1/audio/translations", post(audio_translations))
         .route("/v1/embedding_records", post(embedding_records))
         .route("/v1/messages", post(anthropic_messages))
+        .route(
+            "/v1/messages/count_tokens",
+            post(crate::anthropic_bridge::anthropic_count_tokens),
+        )
         .route("/v1/completions", post(openai_completions))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/chat/completions", post(openai_chat_completions))

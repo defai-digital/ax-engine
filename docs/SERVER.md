@@ -383,6 +383,15 @@ than silently dropped.
   misalign with the truncated text. The Anthropic surface reports the
   matched sequence as `stop_sequence` with `stop_reason:"stop_sequence"`.
   gRPC requests do not get server-side native stop enforcement yet.
+- **Anthropic Messages** (`/v1/messages`): plain text requests take the
+  direct native path; requests that stream or carry tools, thinking, images,
+  `tool_use` or `tool_result` blocks are translated onto the OpenAI chat
+  builder, so the tool, thinking and media rules below apply unchanged and the
+  response is translated back into Anthropic content blocks or SSE events.
+  System blocks starting with `x-anthropic-billing-header:` (sent by Claude
+  Code with per-request random values) are dropped so they neither change the
+  answer nor defeat prefix reuse. `/v1/messages/count_tokens` renders and
+  tokenizes the same prompt on the native backend and reports its length.
 - **`tools` / `tool_choice`** (chat): experimental. Native Qwen ChatML
   sessions, including Qwen inline-media chat, native Gemma 4 text sessions,
   and native GLM 4.7 sessions
