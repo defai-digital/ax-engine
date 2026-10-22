@@ -8700,3 +8700,24 @@ fn presence_penalty_history_holds_generated_tokens_only() {
         MtpRequestRoute::DirectFallback
     );
 }
+
+#[test]
+fn penalized_mtp_rows_see_the_drafts_before_them() {
+    // Three verify rows over a 4-token vocabulary, all preferring token 2.
+    let logits = MlxArray::from_f32_slice(&[
+        0.0, 0.0, 5.0, 4.0, //
+        0.0, 0.0, 5.0, 4.0, //
+        0.0, 0.0, 5.0, 4.0,
+    ]);
+    let logits = mlx_sys::reshape(&logits, &[3, 4], None);
+    let sampling = MlxSamplingParams::new(0.7, 1.0, 0).with_presence_frequency_penalty(2.0, 0.0);
+    // History holds token 3; drafts are [2, 1].
+    let rows = penalized_mtp_target_rows(&logits, &[3], &[2, 1], 4, sampling);
+    assert_eq!(rows.len(), 3);
+    // Row 0: only the committed history (token 3) is penalised.
+    assert_eq!(rows[0], vec![0.0, 0.0, 5.0, 2.0]);
+    // Row 1: draft 2 is now history too.
+    assert_eq!(rows[1], vec![0.0, 0.0, 3.0, 2.0]);
+    // Row 2 (bonus): drafts 2 and 1.
+    assert_eq!(rows[2], vec![0.0, -2.0, 3.0, 2.0]);
+}

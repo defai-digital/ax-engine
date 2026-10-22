@@ -108,6 +108,16 @@ chat route) and still differed on 7 prompts: MXFP4 has no certified
 row-exact verifier. n-gram verification matched direct decode on all 17.
 Treat throughput-MTP rows as relaxed, not as an exact path.
 
+Sampled requests with a repetition, presence or frequency penalty or a
+`logit_bias` keep Qwen linear MTP (`AX_MLX_MTP_PENALIZED_VERIFY`, default on).
+Drafts stay unpenalised; every verify row is sampled on the host from the
+target logits processed with the committed history plus the drafts before
+it, which is the law direct decode samples from, and the rejection residual
+and bonus token use the same rows. On an M5 Max with the 27B MXFP4 pack (17
+real prompts, 256 tokens) Qwen's sampled settings with presence penalty 1.5
+decode at 47.7 tok/s against 29.3 on the direct route. Greedy penalised
+requests and no-repeat n-gram bans still decode directly.
+
 `AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
 JSON line per verified MTP cycle (verify window, accepted prefix, context
 length, draft log-probs when the draft path computed them, timestamp). It adds
