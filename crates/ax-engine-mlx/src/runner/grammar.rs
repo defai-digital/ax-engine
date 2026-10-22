@@ -5,14 +5,24 @@
 //! Think blocks are not constrained: think markers and the tokens between
 //! them pass through, and the grammar applies to the answer after `</think>`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ax_engine_core::grammar::{JsonGrammar, JsonMatcher, MaskWorkspace, TokenVocab};
+use parking_lot::Mutex;
+
+/// Masks a request keeps by grammar position. Positions repeat a lot (every
+/// step inside one long string, the same separators between array items),
+/// so most masks are looked up rather than walked.
+const MASK_CACHE_ENTRIES: usize = 64;
+
+type MaskCache = Mutex<HashMap<JsonMatcher, Arc<[u64]>>>;
 
 #[derive(Clone, Debug)]
 pub(super) struct RequestGrammar {
     grammar: Arc<JsonGrammar>,
     matcher: JsonMatcher,
+    masks: Arc<MaskCache>,
     /// A committed token the matcher refused. Masking stops; the server's
     /// post-hoc validation reports the output.
     dead: bool,
@@ -22,6 +32,7 @@ pub(super) struct RequestGrammar {
 #[derive(Clone, Debug)]
 pub(super) struct GrammarCursor<'a> {
     grammar: &'a JsonGrammar,
+    masks: &'a MaskCache,
     vocab: &'a TokenVocab,
     think: (Option<u32>, Option<u32>),
     terminal: &'a [u32],
@@ -36,6 +47,7 @@ impl RequestGrammar {
         Self {
             grammar,
             matcher,
+            masks: Arc::default(),
             dead: false,
         }
     }
@@ -53,6 +65,7 @@ impl RequestGrammar {
     ) -> GrammarCursor<'a> {
         GrammarCursor {
             grammar: &self.grammar,
+            masks: &self.masks,
             vocab,
             think,
             terminal,
@@ -109,11 +122,15 @@ impl GrammarCursor<'_> {
     }
 
     /// Allowed tokens at this position; `None` leaves the row unconstrained
-    /// (inside a think block, after a refused token, or when nothing at all
-    /// would be allowed).
+    /// (inside a think block, after a refused token, or at a dead end, which
+    /// the post-hoc check then reports).
     pub(super) fn mask(&self) -> Option<Vec<u64>> {
         if self.in_think || self.dead {
             return None;
+        }
+        let key = self.matcher.mask_key();
+        if let Some(mask) = self.masks.lock().get(&key) {
+            return Some(mask.to_vec());
         }
         let mut out = Vec::new();
         self.vocab.allowed_tokens(
@@ -123,7 +140,18 @@ impl GrammarCursor<'_> {
             &mut MaskWorkspace::default(),
             &mut out,
         );
-        out.iter().any(|word| *word != 0).then_some(out)
+        if out.iter().all(|word| *word == 0) {
+            tracing::warn!(
+                "grammar reached a position no token can continue; row left unconstrained"
+            );
+            return None;
+        }
+        let mut masks = self.masks.lock();
+        if masks.len() >= MASK_CACHE_ENTRIES {
+            masks.clear();
+        }
+        masks.insert(key, Arc::from(out.as_slice()));
+        Some(out)
     }
 
     /// Masks for every verify row of an MTP window: row `i` follows

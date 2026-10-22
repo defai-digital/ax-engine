@@ -299,8 +299,9 @@ impl TokenVocab {
     }
 
     /// Fill `out` (one bit per token) with the tokens the grammar allows
-    /// next. `eos` tokens are allowed once the value is complete. Never
-    /// returns an empty mask: a dead end allows `eos` so generation stops.
+    /// next. `eos` tokens are allowed only once the value is complete; a dead
+    /// end leaves the mask empty for the caller to handle (it is a grammar
+    /// error, not a stop).
     pub fn allowed_tokens(
         &self,
         grammar: &JsonGrammar,
@@ -335,7 +336,7 @@ impl TokenVocab {
             workspace.states[0].clone_from(matcher);
         }
         walk(trie, grammar, 0, 0, workspace, out);
-        if matcher.is_complete(grammar) || out.iter().all(|word| *word == 0) {
+        if matcher.is_complete(grammar) {
             for &token in eos {
                 if let Some(word) = out.get_mut(token as usize / 64) {
                     *word |= 1u64 << (token % 64);

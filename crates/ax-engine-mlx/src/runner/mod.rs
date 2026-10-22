@@ -11365,24 +11365,43 @@ impl MlxRunner {
                         .unwrap_or_default()
                 };
                 let target_softmax_extract_started = Instant::now();
-                let penalized_rows = penalized_history.as_deref().map(|history| {
-                    // Grammar masks follow the drafts row by row, like the
-                    // history does.
+                // A greedy request constrained only by its grammar masks the
+                // verify rows on the device and reads back token ids, not
+                // full-vocabulary rows.
+                let device_grammar_argmax = sampling.temperature <= 0.0
+                    && sampling.json_grammar_active
+                    && !sampling.uses_history_processors()
+                    && !sampling.logit_bias_active;
+                if device_grammar_argmax {
                     let row_masks = self.grammar_row_masks(
                         state.json_grammar.as_ref(),
                         state.ngram_in_think,
                         &pending,
                         sampling,
                     );
-                    penalized_mtp_target_rows(
-                        &logits_all,
-                        history,
-                        &pending,
-                        vocab,
-                        sampling,
-                        &row_masks,
-                    )
-                });
+                    predicted = grammar_masked_argmax(&logits_all, &row_masks, vocab);
+                }
+                let penalized_rows = penalized_history
+                    .as_deref()
+                    .filter(|_| !device_grammar_argmax)
+                    .map(|history| {
+                        // Grammar masks follow the drafts row by row, like the
+                        // history does.
+                        let row_masks = self.grammar_row_masks(
+                            state.json_grammar.as_ref(),
+                            state.ngram_in_think,
+                            &pending,
+                            sampling,
+                        );
+                        penalized_mtp_target_rows(
+                            &logits_all,
+                            history,
+                            &pending,
+                            vocab,
+                            sampling,
+                            &row_masks,
+                        )
+                    });
                 // Greedy constrained rows accept against the masked argmax.
                 if sampling.temperature <= 0.0
                     && let Some(rows) = penalized_rows.as_ref()
@@ -15422,6 +15441,39 @@ fn penalized_mtp_target_rows(
         }
     }
     out
+}
+
+/// Greedy tokens of every verify row with each row's grammar mask applied on
+/// the device; a row without a mask is unconstrained.
+fn grammar_masked_argmax(
+    logits_all: &MlxArray,
+    row_masks: &[Option<Vec<u64>>],
+    vocab: i32,
+) -> Vec<u32> {
+    let shape = logits_all.shape();
+    let vocab = vocab.max(1) as usize;
+    let rows = shape.iter().map(|dim| *dim as usize).product::<usize>() / vocab;
+    let mut allowed = vec![1u8; rows * vocab];
+    for (row, mask) in row_masks.iter().enumerate().take(rows) {
+        let Some(mask) = mask else { continue };
+        for (token, byte) in allowed[row * vocab..(row + 1) * vocab]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = u8::from(ax_engine_core::grammar::mask_allows(mask, token as u32));
+        }
+    }
+    let condition =
+        MlxArray::from_raw_data(allowed.as_ptr(), allowed.len(), &shape, MlxDtype::Bool);
+    let masked = mlx_sys::ops::where_cond(
+        &condition,
+        logits_all,
+        &mlx_sys::ops::cached_scalar(f32::NEG_INFINITY, logits_all.dtype()),
+        None,
+    );
+    let tokens = argmax(&masked, None);
+    eval(&[&tokens]);
+    tokens.data_u32().to_vec()
 }
 
 fn sample_exact_mtp_delta_rejection_correction(
