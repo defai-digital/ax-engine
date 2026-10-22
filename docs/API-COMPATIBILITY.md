@@ -59,8 +59,12 @@ These are not in the current compatibility contract:
   counted over generated tokens as in vLLM; when combined with
   `repetition_penalty` or `no_repeat_ngram_size` they count that processor's
   history window). A request that sets either one gets `repetition_penalty`
-  1.0 unless it sends its own. Like any logits processor, these and
-  `logit_bias` run on direct decode, not inside MTP or n-gram speculation. On `/v1/chat/completions`, effort levels do the same:
+  1.0 unless it sends its own. These and `logit_bias` run on direct
+  decode, except that sampled requests (temperature above 0) on Qwen linear
+  MTP keep speculating: each verify row is sampled from the target logits
+  processed with the committed history plus the drafts before it
+  (`AX_MLX_MTP_PENALIZED_VERIFY`, default on). Greedy requests, no-repeat
+  n-gram bans and n-gram speculation keep the direct route. On `/v1/chat/completions`, effort levels do the same:
   `reasoning_effort`, `reasoning.effort` and a `reasoning` string that is not
   an on/off switch (for example `"high"`) are rejected, because thinking is a
   switch plus a token budget, not a level; use

@@ -345,19 +345,18 @@ pub(crate) fn sample_categorical(
     )
 }
 
-pub(crate) fn sample_categorical_into(
-    logits: &[f32],
+/// Apply the request's logits processors (logit bias, repetition penalty,
+/// no-repeat n-gram ban, presence/frequency penalties) the way the host
+/// sampler does, against `repetition_tokens` as the history. Returns the
+/// input unchanged when no processor applies. Shared by the direct sampler
+/// and the penalised MTP verifier so both see the same target law.
+pub(crate) fn processed_logits<'a>(
+    logits: &'a [f32],
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
-    rng: &mut Xorshift64,
-    probs_buf: &mut Vec<f32>,
-    logits_buf: &mut Vec<f32>,
-    candidates_buf: &mut Vec<(usize, f32)>,
-) -> u32 {
-    if logits.is_empty() {
-        return 0;
-    }
-    let logits = if (sampling.uses_history_processors() && !repetition_tokens.is_empty())
+    logits_buf: &'a mut Vec<f32>,
+) -> &'a [f32] {
+    if (sampling.uses_history_processors() && !repetition_tokens.is_empty())
         || sampling.logit_bias_active
     {
         logits_buf.clear();
@@ -389,7 +388,22 @@ pub(crate) fn sample_categorical_into(
         logits_buf.as_slice()
     } else {
         logits
-    };
+    }
+}
+
+pub(crate) fn sample_categorical_into(
+    logits: &[f32],
+    sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
+    rng: &mut Xorshift64,
+    probs_buf: &mut Vec<f32>,
+    logits_buf: &mut Vec<f32>,
+    candidates_buf: &mut Vec<(usize, f32)>,
+) -> u32 {
+    if logits.is_empty() {
+        return 0;
+    }
+    let logits = processed_logits(logits, sampling, repetition_tokens, logits_buf);
     if sampling.temperature <= 0.0 {
         return argmax_f32(logits);
     }

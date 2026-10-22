@@ -1565,6 +1565,25 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_MTP_PENALIZED_VERIFY` - keep Qwen linear MTP on for sampled
+    /// requests (temperature > 0) that carry a repetition, presence or
+    /// frequency penalty or a logit_bias. Each verify row is sampled on the
+    /// host from the target logits processed with the committed history plus
+    /// the drafts before it (the law direct decode samples from); the
+    /// rejection residual and the bonus token use the same processed rows.
+    /// No-repeat n-gram bans and greedy requests keep the direct route.
+    /// M5 Max, 27B MXFP4, 17 real prompts, 256 tokens: Qwen's sampled
+    /// settings (T 0.7, top_p 0.8, top_k 20, presence 1.5) decode at 47.7
+    /// vs 29.3 tok/s on the direct route; at T 0.01 with presence 1.5 and
+    /// repetition 1.05, 56.9 vs 33.5 tok/s, and the share of outputs equal to
+    /// direct decode (10/17) matches unpenalised MTP against direct (10/17).
+    ///
+    /// **Default: ON** (kill-switch `AX_MLX_MTP_PENALIZED_VERIFY=0`).
+    mtp_penalized_verify_enabled,
+    "AX_MLX_MTP_PENALIZED_VERIFY"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_QWEN4_EXP_VISION` - load the Qwen3-VL style vision tower a
     /// qwen4_exp pack ships (about 0.85 GB of BF16 on Qwen 3.8 Flash Next)
     /// so chat requests may carry images.

@@ -1932,6 +1932,19 @@ impl MlxRunner {
             && self.weights.qwen4_exp_mtp.is_some()
     }
 
+    /// Sampled Qwen linear MTP request whose logits processors the verifier
+    /// applies on the host (`AX_MLX_MTP_PENALIZED_VERIFY`): temperature above
+    /// zero, deterministic-delta drafts, and no no-repeat n-gram ban.
+    fn penalized_mtp_verify(&self, sampling: MlxSamplingParams) -> bool {
+        crate::fastpath::mtp_penalized_verify_enabled()
+            && sampling.temperature > 0.0
+            && sampling.uses_logits_processors()
+            && !sampling.uses_no_repeat_ngram()
+            && self.weights.mtp.is_some()
+            && self.cfg.linear_attention.is_some()
+            && crate::mtp::mtp_draft_mode_from_env() == crate::mtp::MtpDraftMode::Greedy
+    }
+
     /// Prefill may carry draft history only for requests the cursor can
     /// decode: argmax sampling without logits processors.
     fn flash_next_mtp_prefill_eligible(
@@ -10642,11 +10655,14 @@ impl MlxRunner {
         // (otherwise we need to verify the pending draft first).
         let (skip_logits, skip_argmax, skip_hidden) =
             take_mtp_skip_state(state, forced_greedy_replay);
+        // The skip-state primary is sampled without the request's history,
+        // so penalised verification never takes it.
         let can_skip_qwen = skip_logits.is_some()
             && skip_hidden.is_some()
             && pending.is_empty()
             && self.weights.mtp.is_some()
-            && self.mtp_skip_state;
+            && self.mtp_skip_state
+            && !self.penalized_mtp_verify(sampling);
         let can_skip_gemma = skip_logits.is_some()
             && skip_hidden.is_some()
             && pending.is_empty()
@@ -11107,6 +11123,11 @@ impl MlxRunner {
                 // Target probabilities for rejection-sampling acceptance.
                 // Full-vocab softmax by default; top-k approximation when
                 // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
+                // Committed history for penalised verification, taken before
+                // the target-probability workspace borrows the request state.
+                let penalized_history = self
+                    .penalized_mtp_verify(sampling)
+                    .then(|| state.repetition_history(&[], sampling));
                 let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
                 let target_prob_workspace =
                     if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
@@ -11115,16 +11136,23 @@ impl MlxRunner {
                         &mut local_target_prob_workspace
                     };
                 let target_softmax_started = Instant::now();
-                let lazy_target_probs = compute_mtp_target_probs(
-                    &logits_all,
-                    &pending,
-                    acceptance_log_probs,
-                    vocab,
-                    sampling,
-                    self.mtp_target_softmax_topk,
-                    target_filter,
-                    target_prob_workspace,
-                );
+                // Penalised verification samples every row on the host from
+                // processed logits instead of the device softmax.
+                let penalized_verify = self.penalized_mtp_verify(sampling);
+                let lazy_target_probs = if penalized_verify {
+                    None
+                } else {
+                    compute_mtp_target_probs(
+                        &logits_all,
+                        &pending,
+                        acceptance_log_probs,
+                        vocab,
+                        sampling,
+                        self.mtp_target_softmax_topk,
+                        target_filter,
+                        target_prob_workspace,
+                    )
+                };
                 mtp_timings.target_softmax_wall_us = mtp_timings
                     .target_softmax_wall_us
                     .saturating_add(elapsed_us(target_softmax_started));
@@ -11197,6 +11225,9 @@ impl MlxRunner {
                 if let Some(ref packed) = device_accept_packed {
                     accept_targets.push(packed);
                 }
+                if penalized_verify {
+                    accept_targets.push(&logits_all);
+                }
                 let verify_eval_started = Instant::now();
                 if split_verify_hidden_eval {
                     // MTPLX's lazy-logits verifier deliberately fences the
@@ -11237,9 +11268,26 @@ impl MlxRunner {
                         .unwrap_or_default()
                 };
                 let target_softmax_extract_started = Instant::now();
-                let target_probs_cpu = lazy_target_probs
-                    .as_ref()
-                    .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                let penalized_rows = penalized_history.as_deref().map(|history| {
+                    penalized_mtp_target_rows(&logits_all, history, &pending, vocab, sampling)
+                });
+                let penalized_target_probs: Option<Vec<f32>> =
+                    penalized_rows.as_ref().map(|rows| {
+                        pending
+                            .iter()
+                            .zip(rows)
+                            .map(|(&token, row)| {
+                                token_distribution(row, sampling)
+                                    .map_or(0.0, |target| target.probability(token))
+                            })
+                            .collect()
+                    });
+                let target_probs_cpu = match penalized_target_probs.as_deref() {
+                    Some(probs) => Some(probs),
+                    None => lazy_target_probs
+                        .as_ref()
+                        .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace)),
+                };
                 mtp_timings.target_softmax_wall_us = mtp_timings
                     .target_softmax_wall_us
                     .saturating_add(elapsed_us(target_softmax_extract_started));
@@ -11279,15 +11327,21 @@ impl MlxRunner {
                 let all_accepted = accept.all_accepted;
                 let exact_rejection_correction = (!all_accepted
                     && proposal_law == MtpProposalLaw::DeterministicDelta)
-                    .then(|| {
-                        sample_exact_mtp_delta_rejection_correction(
+                    .then(|| match penalized_rows.as_ref() {
+                        // The residual of the processed target row.
+                        Some(rows) => token_distribution(&rows[ac], sampling)
+                            .zip(TokenDistribution::new(vec![(pending[ac], 1.0)]))
+                            .and_then(|(target, draft)| {
+                                sample_residual_token_distribution(&target, &draft, &mut state.rng)
+                            }),
+                        None => sample_exact_mtp_delta_rejection_correction(
                             &logits_all,
                             ac,
                             vocab,
                             sampling,
                             pending[ac],
                             &mut state.rng,
-                        )
+                        ),
                     })
                     .flatten();
                 let exact_residual_correction_applied = exact_rejection_correction.is_some();
@@ -12347,6 +12401,33 @@ impl MlxRunner {
                 .residual_correction_tokens
                 .saturating_add(1);
             correction_argmax_tok
+        } else if self.penalized_mtp_verify(sampling) {
+            // The bonus row continues after the accepted drafts, so its
+            // processors see them as history, as direct decode would.
+            let mut history = state.repetition_history(&[], sampling);
+            history.extend_from_slice(&pending[..accept_count]);
+            let position = accept_count as i32;
+            let row = astype(
+                &slice(
+                    &logits_all,
+                    &[position, 0],
+                    &[position + 1, vocab],
+                    &[1, 1],
+                    None,
+                ),
+                MlxDtype::Float32,
+                None,
+            );
+            eval(&[&row]);
+            sample_categorical_into(
+                row.data_f32(),
+                sampling,
+                &history,
+                &mut state.rng,
+                &mut state.sampling_probs_buf,
+                &mut state.sampling_logits_buf,
+                &mut state.sampling_candidates_buf,
+            )
         } else {
             sample_logit_row(
                 &logits_all,
@@ -13714,7 +13795,9 @@ impl MlxRunner {
             self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
         ) && (self.mtp_optimistic
             || mtp_auto_optimistic_enabled_from_env());
-        let exact_supported = mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
+        let penalized_verify = self.penalized_mtp_verify(sampling);
+        let exact_supported = mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk)
+            || penalized_verify;
         let mtp_uses_direct_pipeline = mtp_fallback_primes_direct_pipeline(
             mtp_request_route(
                 self.has_generic_mtp(),
@@ -13722,7 +13805,7 @@ impl MlxRunner {
                 exact_supported,
                 approximate_profile,
                 false,
-                sampling.uses_logits_processors(),
+                sampling.uses_logits_processors() && !penalized_verify,
             ),
             is_greedy,
             sampling.uses_logits_processors(),
@@ -13876,8 +13959,10 @@ impl MlxRunner {
             self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
         ) && (self.mtp_optimistic
             || mtp_auto_optimistic_enabled_from_env());
+        let penalized_verify = self.penalized_mtp_verify(sampling);
         let exact_supported = state.mtp_pending_draft_distributions.is_empty()
-            && mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
+            && (mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk)
+                || penalized_verify);
         let mtp_direct_only = state.mtp_bypassed || state.mtp_suspended_for_batched_decode;
         match mtp_request_route(
             self.has_generic_mtp(),
@@ -13885,7 +13970,7 @@ impl MlxRunner {
             exact_supported,
             approximate_profile,
             mtp_direct_only,
-            sampling.uses_logits_processors(),
+            sampling.uses_logits_processors() && !penalized_verify,
         ) {
             MtpRequestRoute::DirectFallback => {
                 // Mixed batches keep the outer exact-verifier scope enabled
@@ -15174,6 +15259,35 @@ fn compute_mtp_target_probs(
             None,
         )))
     }
+}
+
+/// Processed target logits of every verify row of a penalised sampled MTP
+/// window (`AX_MLX_MTP_PENALIZED_VERIFY`): row `i` is processed with the
+/// committed history plus `pending[..i]`, the history direct decode would
+/// have at that position.
+fn penalized_mtp_target_rows(
+    logits_all: &MlxArray,
+    base_history: &[u32],
+    pending: &[u32],
+    vocab: i32,
+    sampling: MlxSamplingParams,
+) -> Vec<Vec<f32>> {
+    let logits = astype(logits_all, MlxDtype::Float32, None);
+    eval(&[&logits]);
+    let data = logits.data_f32();
+    let vocab = vocab as usize;
+    let rows = data.len() / vocab.max(1);
+    let mut history = base_history.to_vec();
+    let mut buffer = Vec::new();
+    let mut out = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let raw = &data[row * vocab..(row + 1) * vocab];
+        out.push(crate::sampling::processed_logits(raw, sampling, &history, &mut buffer).to_vec());
+        if let Some(&token) = pending.get(row) {
+            history.push(token);
+        }
+    }
+    out
 }
 
 fn sample_exact_mtp_delta_rejection_correction(
