@@ -19,7 +19,22 @@ Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+
 Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. The
 M5 Max 128 GB evidence recorded below remains historical evidence for the
 Auto expert-paging code path; it does not by itself qualify the corrected
-target. Last reviewed: **2026-10-05**.
+target. Last reviewed: **2026-10-22**.
+
+**MacBook Pro M5 Max 128 GB, single-stream resident tier (2026-10-22).** The
+pinned pack's 53.6 GiB n-gram table is read from disk row by row and never
+loaded, so Auto now prices only the ~69.5 GiB the loader makes resident
+(`AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM`, default on; `=0` restores pricing on the
+whole file set). On an M5 Max 128 GB with the pack on the internal SSD, one
+request at a time with MTP off: decode 32.4 / 32.0 / 27.9 tok/s and TTFT
+7.2 / 24.0 / 103 s at 2,048 / 8,192 / 32,768 input tokens, server footprint at
+most 91 GiB, no swap, normal memory pressure, and a flat 32.1 tok/s across a
+10-minute sustained run. Two concurrent 8,192-token requests pushed the
+footprint to 104 GiB with 6 GiB of compressor growth, and required MTP at
+32,768 tokens touched swap, so the tier is one request at a time
+(`--max-concurrent-requests 1`), MTP off, contexts up to 32k. This is
+signal-level evidence on one machine, not a certification record; the
+Ultra-class target above is unchanged.
 
 On 2026-09-23 the MXFP4 MTP direct-fallback behaviour was root-caused and
 instrumented. The draft cursor is created only on a genuine cold-start prefill,

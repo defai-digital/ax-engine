@@ -234,8 +234,8 @@ fn load_with_schedule_admission(
             "qwen4_exp does not support weight_sanitize=HfLayerNormsOnly".to_string(),
         ));
     }
-    // The n-gram table is served by row gathers and never loaded; opt-in
-    // admission prices only what is resident (see the fastpath flag).
+    // The n-gram table is served by row gathers and never loaded, so
+    // admission prices only what is resident (ADR-044; see the fastpath flag).
     let never_loaded_bytes = if crate::fastpath::expert_stream_discount_ngram_enabled() {
         never_loaded_ngram_bytes(&manifest.tensors)
     } else {

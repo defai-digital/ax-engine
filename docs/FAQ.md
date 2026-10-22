@@ -70,6 +70,7 @@ configurations:
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
 | Mac mini M4 Pro | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
+| MacBook Pro M5 Max | 128 GB RAM | Qwen 3.8 Flash Next MXFP4 resident, one request at a time: start the server with `--max-concurrent-requests 1`, keep MTP off (the default) and contexts at or below 32k. Measured 32 / 32 / 28 tok/s decode at 2k / 8k / 32k context; two concurrent long requests or MTP at 32k push memory past the safe margin. Signal-level evidence, not a certification record. |
 | Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. |
 
 ## What model stack should I run on high-memory Apple Silicon?
