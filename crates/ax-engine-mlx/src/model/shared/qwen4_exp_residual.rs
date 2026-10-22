@@ -49,12 +49,201 @@ pub(crate) fn sigmoid_projection_dtype(input: &MlxArray) -> MlxArray {
 }
 
 fn stream_mean(input: &MlxArray, streams: i32) -> MlxArray {
+    stream_mean_with(input, &cached_scalar(streams as f32, MlxDtype::Float32))
+}
+
+/// [`stream_mean`] with the stream count supplied as an f32 scalar array, so a
+/// compiled closure can take it as an input instead of capturing it.
+fn stream_mean_with(input: &MlxArray, streams: &MlxArray) -> MlxArray {
     let mean = divide(
         &sum_axis(&astype(input, MlxDtype::Float32, None), 2, false, None),
-        &cached_scalar(streams as f32, MlxDtype::Float32),
+        streams,
         None,
     );
     astype(&mean, input.dtype(), None)
+}
+
+/// Compiled elementwise stretches of the gated residual.
+///
+/// A decode step builds about 10k MLX ops, and at roughly 2.7 us of host work
+/// per op the step is bound by graph construction, not by the device. The read
+/// and write of a gated residual are chains of tiny elementwise ops between
+/// three projections; each chain compiles to one fused call. Projections stay
+/// outside the closures so every exactness policy keeps its own kernels.
+/// Closures take weights and scalars as inputs (MLX rejects captured arrays),
+/// are compiled on the thread that applies them, and fall back to the eager
+/// path on any failure. Opt in with `AX_FLASH_NEXT_HC_COMPILE=1`.
+mod fused {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use mlx_sys::{MlxArray, MlxClosure, MlxVectorArray, divide, multiply, reshape};
+
+    use super::{
+        Qwen4ExpStreamLayout, add, astype, qwen4_exp_grouped_rms_norm, sigmoid_projection_dtype,
+        silu_projection_dtype, stream_mean_with,
+    };
+
+    pub(super) struct Kernels {
+        norm: MlxClosure,
+        low: MlxClosure,
+        mix: MlxClosure,
+        gate: MlxClosure,
+        write: MlxClosure,
+    }
+
+    /// Keyed by `(stream_count, hidden_size, eps bits)`; `None` records a
+    /// geometry whose closures failed to compile so it is not retried.
+    type KernelCache = HashMap<(i32, i32, u32), Option<Rc<Kernels>>>;
+
+    thread_local! {
+        static KERNELS: RefCell<KernelCache> = RefCell::new(HashMap::new());
+    }
+
+    /// `[b, s, C*H]` residual + per-stream gate `[b, s, C]` + branch `[b, s, H]`.
+    pub(super) fn write_graph(
+        residual: &MlxArray,
+        gate: &MlxArray,
+        branch: &MlxArray,
+        layout: Qwen4ExpStreamLayout,
+    ) -> MlxArray {
+        let shape = residual.shape();
+        let (batch, seq) = (shape[0], shape[1]);
+        let (streams, hidden) = (layout.stream_count, layout.hidden_size);
+        let gate = reshape(gate, &[batch, seq, streams, 1], None);
+        let branch = reshape(branch, &[batch, seq, 1, hidden], None);
+        let delta = reshape(
+            &multiply(&gate, &branch, None),
+            &[batch, seq, layout.packed_width],
+            None,
+        );
+        add(residual, &astype(&delta, residual.dtype(), None), None)
+    }
+
+    fn compile(
+        body: impl FnMut(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
+    ) -> Option<MlxClosure> {
+        MlxClosure::new_dyn(body).compile(false).ok()
+    }
+
+    fn build(layout: Qwen4ExpStreamLayout, eps: f32) -> Option<Kernels> {
+        let norm = compile(move |inputs| {
+            let (packed, gain) = (inputs.get(0), inputs.get(1));
+            qwen4_exp_grouped_rms_norm(layout, &packed, &gain, eps)
+                .map(|normalized| vec![normalized])
+                .unwrap_or_default()
+        })?;
+        let low = compile(|inputs| {
+            let (down, streams) = (inputs.get(0), inputs.get(1));
+            vec![silu_projection_dtype(&divide(&down, &streams, None))]
+        })?;
+        let mix = compile(move |inputs| {
+            let (up, normalized, streams_f32) = (inputs.get(0), inputs.get(1), inputs.get(2));
+            let shape = normalized.shape();
+            let stream_shape = [shape[0], shape[1], layout.stream_count, layout.hidden_size];
+            let gated = multiply(
+                &reshape(&sigmoid_projection_dtype(&up), &stream_shape, None),
+                &reshape(&normalized, &stream_shape, None),
+                None,
+            );
+            let mean = stream_mean_with(&gated, &streams_f32);
+            vec![astype(&mean, normalized.dtype(), None)]
+        })?;
+        let gate = compile(|inputs| {
+            let (logits, streams, scale) = (inputs.get(0), inputs.get(1), inputs.get(2));
+            let scaled = divide(&logits, &streams, None);
+            vec![multiply(&sigmoid_projection_dtype(&scaled), &scale, None)]
+        })?;
+        let write = compile(move |inputs| {
+            let (residual, gate, branch) = (inputs.get(0), inputs.get(1), inputs.get(2));
+            vec![write_graph(&residual, &gate, &branch, layout)]
+        })?;
+        Some(Kernels {
+            norm,
+            low,
+            mix,
+            gate,
+            write,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn build_for_test(layout: Qwen4ExpStreamLayout, eps: f32) -> Option<Kernels> {
+        build(layout, eps)
+    }
+
+    pub(super) fn enabled() -> bool {
+        crate::fastpath::flash_next_hc_compile_enabled()
+    }
+
+    /// Kernels for this geometry on the calling thread, or `None` when the
+    /// flag is off or compilation failed once (never retried).
+    pub(super) fn kernels(layout: Qwen4ExpStreamLayout, eps: f32) -> Option<Rc<Kernels>> {
+        if !enabled() {
+            return None;
+        }
+        let key = (layout.stream_count, layout.hidden_size, eps.to_bits());
+        KERNELS.with(|cache| {
+            cache
+                .borrow_mut()
+                .entry(key)
+                .or_insert_with(|| {
+                    let built = build(layout, eps).map(Rc::new);
+                    if built.is_none() {
+                        tracing::warn!("Flash Next gated-residual compile failed; using eager ops");
+                    }
+                    built
+                })
+                .clone()
+        })
+    }
+
+    fn apply(closure: &MlxClosure, inputs: &[&MlxArray]) -> Option<MlxArray> {
+        let mut outputs = crate::per_layer_compile::try_apply_with_abort_safety(closure, inputs)?;
+        if outputs.len() == 1 {
+            outputs.pop()
+        } else {
+            None
+        }
+    }
+
+    impl Kernels {
+        pub(super) fn norm(&self, packed: &MlxArray, gain: &MlxArray) -> Option<MlxArray> {
+            apply(&self.norm, &[packed, gain])
+        }
+
+        pub(super) fn low(&self, down: &MlxArray, streams: &MlxArray) -> Option<MlxArray> {
+            apply(&self.low, &[down, streams])
+        }
+
+        pub(super) fn mix(
+            &self,
+            up: &MlxArray,
+            normalized: &MlxArray,
+            streams_f32: &MlxArray,
+        ) -> Option<MlxArray> {
+            apply(&self.mix, &[up, normalized, streams_f32])
+        }
+
+        pub(super) fn gate(
+            &self,
+            logits: &MlxArray,
+            streams: &MlxArray,
+            scale: &MlxArray,
+        ) -> Option<MlxArray> {
+            apply(&self.gate, &[logits, streams, scale])
+        }
+
+        pub(super) fn write(
+            &self,
+            residual: &MlxArray,
+            gate: &MlxArray,
+            branch: &MlxArray,
+        ) -> Option<MlxArray> {
+            apply(&self.write, &[residual, gate, branch])
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -260,6 +449,11 @@ impl Qwen4ExpGatedResidual {
                 operation: "branch read",
             });
         };
+        if let Some(kernels) = fused::kernels(self.layout, self.eps)
+            && let Some(read) = self.read_fused(&kernels, packed, inject, policy)
+        {
+            return Ok(read);
+        }
         let normalized = self.normalize(packed)?;
         let shape = packed.shape();
         let (batch, seq) = (shape[0], shape[1]);
@@ -279,6 +473,48 @@ impl Qwen4ExpGatedResidual {
         }
         Ok(Qwen4ExpResidualRead {
             layout: self.layout,
+            eps: self.eps,
+            batch,
+            seq,
+            residual: packed.clone(),
+            branch_input,
+            write_gate,
+        })
+    }
+
+    /// [`Self::read`] with each elementwise stretch compiled to one call. Same
+    /// op sequence and projection order as the eager path; `None` when a
+    /// closure cannot be built or applied, and the caller then runs eager.
+    fn read_fused(
+        &self,
+        kernels: &fused::Kernels,
+        packed: &MlxArray,
+        inject: &QuantizedWeight,
+        policy: ProjectionBatchPolicy,
+    ) -> Option<Qwen4ExpResidualRead> {
+        let (batch, seq) = self
+            .layout
+            .rank3_dims("grouped norm input", packed, self.layout.packed_width)
+            .ok()?;
+        let normalized = kernels.norm(packed, &self.norm_gain)?;
+        let down = qw_with_policy(&normalized, &self.read_down, policy);
+        let low = kernels.low(&down, &self.layout.streams_scalar(down.dtype()))?;
+        let up = qw_with_policy(&low, &self.read_up, policy);
+        let branch_input = kernels.mix(
+            &up,
+            &normalized,
+            &cached_scalar(self.layout.stream_count as f32, MlxDtype::Float32),
+        )?;
+        let logits = qw_with_policy(&normalized, inject, policy);
+        let dtype = logits.dtype();
+        let write_gate = kernels.gate(
+            &logits,
+            &self.layout.streams_scalar(dtype),
+            &cached_scalar(WRITE_GATE_SCALE, dtype),
+        )?;
+        Some(Qwen4ExpResidualRead {
+            layout: self.layout,
+            eps: self.eps,
             batch,
             seq,
             residual: packed.clone(),
@@ -353,6 +589,7 @@ impl Qwen4ExpGatedResidual {
 /// its residual handle. Nothing is updated in place.
 pub(crate) struct Qwen4ExpResidualRead {
     layout: Qwen4ExpStreamLayout,
+    eps: f32,
     batch: i32,
     seq: i32,
     residual: MlxArray,
@@ -392,6 +629,11 @@ impl Qwen4ExpResidualRead {
             });
         }
         ensure_floating("branch output", branch_output.dtype())?;
+        if let Some(kernels) = fused::kernels(self.layout, self.eps)
+            && let Some(written) = kernels.write(&self.residual, &self.write_gate, branch_output)
+        {
+            return Ok(written);
+        }
         let gate = reshape(&self.write_gate, &[batch, seq, streams, 1], None);
         let branch = reshape(branch_output, &[batch, seq, 1, hidden], None);
         let delta = reshape(
@@ -598,6 +840,82 @@ mod tests {
         broken = valid;
         broken.bits = 7;
         assert!(validate_projection("test", &broken, 4, 64).is_err());
+    }
+
+    #[test]
+    fn fused_gated_residual_is_bit_identical_to_eager() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/flash_next/residual.json"
+        ))
+        .unwrap();
+        fn values(value: &serde_json::Value) -> Vec<f32> {
+            match value {
+                serde_json::Value::Array(items) => items.iter().flat_map(values).collect(),
+                _ => vec![value.as_f64().unwrap() as f32],
+            }
+        }
+        let w = &fixture["weights"];
+        let weights = Qwen4ExpGatedResidualWeights {
+            norm_gain: array_f32(
+                &values(&w["hc_norm.weight"])
+                    .iter()
+                    .map(|v| v + 1.0)
+                    .collect::<Vec<_>>(),
+                &[64],
+            ),
+            read_down: dense(&values(&w["input_mix_weight_down.weight"]), 8, 64),
+            read_up: dense(&values(&w["input_mix_weight_up.weight"]), 64, 8),
+            write_inject: Some(dense(&values(&w["block_inject_weight.weight"]), 4, 64)),
+        };
+        let layout = Qwen4ExpStreamLayout::new(4, 16).unwrap();
+        let module = Qwen4ExpGatedResidual::new(layout, 8, EPS, weights).unwrap();
+        let kernels = fused::build_for_test(layout, EPS).expect("closures compile");
+        let input = values(&fixture["input"]);
+        let branch = values(&fixture["branch"]);
+        let bits = |array: &MlxArray| -> Vec<u32> {
+            eval_f32(&astype(array, MlxDtype::Float32, None))
+                .iter()
+                .map(|v| v.to_bits())
+                .collect()
+        };
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            for seq in [1usize, 3] {
+                let packed = astype(
+                    &array_f32(&input[..seq * 64], &[1, seq as i32, 64]),
+                    dtype,
+                    None,
+                );
+                let branch = astype(
+                    &array_f32(&branch[..seq * 16], &[1, seq as i32, 16]),
+                    dtype,
+                    None,
+                );
+                let eager = shared_read(&module, &packed);
+                let inject = module.write_inject.as_ref().unwrap();
+                let fused_read = module
+                    .read_fused(&kernels, &packed, inject, ProjectionBatchPolicy::Shared)
+                    .expect("fused read applies");
+                assert_eq!(
+                    bits(eager.branch_input()),
+                    bits(fused_read.branch_input()),
+                    "branch input {dtype:?} seq {seq}"
+                );
+                assert_eq!(
+                    bits(eager.write_gate()),
+                    bits(fused_read.write_gate()),
+                    "write gate {dtype:?} seq {seq}"
+                );
+                let eager_written = eager.write(&branch).unwrap();
+                let fused_written = kernels
+                    .write(fused_read.residual(), fused_read.write_gate(), &branch)
+                    .expect("fused write applies");
+                assert_eq!(
+                    bits(&eager_written),
+                    bits(&fused_written),
+                    "written residual {dtype:?} seq {seq}"
+                );
+            }
+        }
     }
 
     #[test]
