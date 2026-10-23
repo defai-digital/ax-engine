@@ -1738,28 +1738,29 @@ pub(crate) mod mtp_parity {
         expected: &Qwen4ExpState,
     ) -> Vec<MtpStateArrayRecord> {
         assert_eq!(actual.position(), expected.position());
-        let actual_arrays = actual.arrays();
-        let expected_arrays = expected.arrays();
-        let descriptors = actual.array_descriptors();
+        // Logical tensors: K/V histories are compared flattened, because a
+        // batched window and singleton steps may seal at different rows.
+        let actual_arrays = actual.logical_arrays();
+        let expected_arrays = expected.logical_arrays();
         assert_eq!(actual_arrays.len(), expected_arrays.len());
-        assert_eq!(descriptors.len(), actual_arrays.len());
-        assert_eq!(expected.array_descriptors(), descriptors);
         actual_arrays
-            .iter()
-            .zip(&expected_arrays)
-            .zip(descriptors)
-            .map(|((actual_array, expected_array), descriptor)| {
-                assert_eq!(actual_array.shape(), expected_array.shape());
-                assert_eq!(actual_array.dtype(), expected_array.dtype());
-                MtpStateArrayRecord {
-                    index: descriptor.index,
-                    layer: descriptor.layer,
-                    kind: descriptor.kind,
-                    dtype: format!("{:?}", actual_array.dtype()),
-                    shape: actual_array.shape(),
-                    divergence: mtp_logits_divergence(actual_array, expected_array),
-                }
-            })
+            .into_iter()
+            .zip(expected_arrays)
+            .map(
+                |((descriptor, actual_array), (expected_descriptor, expected_array))| {
+                    assert_eq!(descriptor, expected_descriptor);
+                    assert_eq!(actual_array.shape(), expected_array.shape());
+                    assert_eq!(actual_array.dtype(), expected_array.dtype());
+                    MtpStateArrayRecord {
+                        index: descriptor.index,
+                        layer: descriptor.layer,
+                        kind: descriptor.kind,
+                        dtype: format!("{:?}", actual_array.dtype()),
+                        shape: actual_array.shape(),
+                        divergence: mtp_logits_divergence(&actual_array, &expected_array),
+                    }
+                },
+            )
             .collect()
     }
 

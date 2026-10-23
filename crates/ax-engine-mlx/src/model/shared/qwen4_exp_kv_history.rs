@@ -12,13 +12,18 @@
 //! plus a short tail. A step copies only the tail (at most `seal_tokens` rows)
 //! and every `seal_tokens` steps the tail is folded into the sealed prefix
 //! once, so the full-history copy happens once per seal instead of once per
-//! step. [`KvHistory::flat`] still rebuilds the logical tensor for callers
-//! that need one contiguous array.
+//! step. Selected attention does not flatten at all: [`SegmentRows::gather`]
+//! reads the chosen rows straight from the segment that owns them.
+//! [`KvHistory::flat`] still rebuilds the logical tensor for the dense kernels
+//! and the durable snapshot writer.
 //!
 //! Segmentation is off below `min_tokens` rows, where a full copy is cheap,
 //! and can be switched off with `AX_FLASH_NEXT_KV_SEGMENTS=0`.
 
-use mlx_sys::{MlxArray, concatenate, contiguous};
+use mlx_sys::{
+    MlxArray, MlxDtype, astype, concatenate, contiguous, less, maximum, minimum, reshape, slice,
+    subtract, take, where_cond,
+};
 
 /// Logical rows below which the history stays a single flat array.
 const DEFAULT_MIN_TOKENS: usize = 4096;
@@ -99,8 +104,35 @@ impl KvHistory {
             (None, None) => None,
             (Some(only), None) | (None, Some(only)) => Some(only.clone()),
             (Some(sealed), Some(tail)) => {
+                #[cfg(test)]
+                FLAT_CONCATS.with(|counter| counter.set(counter.get().saturating_add(1)));
                 Some(contiguous(&concatenate(&[sealed, tail], 1, None), None))
             }
+        }
+    }
+
+    /// One batch row per physical segment, for gathers straight from the
+    /// segments. Each present segment is sliced exactly like the flat history
+    /// would be, so a single-segment history emits the same ops as before.
+    pub(crate) fn batch_slice(&self, batch_index: i32) -> SegmentRows {
+        SegmentRows {
+            sealed: self
+                .sealed
+                .as_ref()
+                .map(|segment| batch_row(segment, batch_index)),
+            tail: self
+                .tail
+                .as_ref()
+                .map(|segment| batch_row(segment, batch_index)),
+        }
+    }
+
+    /// Sealed-prefix rows, or `None` when this history is one segment. A
+    /// history that only has a tail (no seal yet) is also one segment.
+    pub(crate) fn sealed_rows(&self) -> Option<i32> {
+        match (&self.sealed, &self.tail) {
+            (Some(sealed), Some(_)) => rows_i32(sealed),
+            _ => None,
         }
     }
 
@@ -152,6 +184,165 @@ impl KvHistory {
 /// Rows on the token axis; a history only ever holds 4-d tensors.
 fn rows(array: &MlxArray) -> usize {
     array.shape().get(1).map_or(0, |rows| (*rows).max(0)) as usize
+}
+
+fn rows_i32(array: &MlxArray) -> Option<i32> {
+    array.shape().get(1).copied()
+}
+
+/// Slice `batch_index` out of one physical segment: `[1, tokens, heads, dim]`.
+fn batch_row(segment: &MlxArray, batch_index: i32) -> MlxArray {
+    let shape = segment.shape();
+    slice(
+        segment,
+        &[batch_index, 0, 0, 0],
+        &[batch_index + 1, shape[1], shape[2], shape[3]],
+        &[1, 1, 1, 1],
+        None,
+    )
+}
+
+/// One batch row of a [`KvHistory`], still split across its segments.
+pub(crate) struct SegmentRows {
+    sealed: Option<MlxArray>,
+    tail: Option<MlxArray>,
+}
+
+impl SegmentRows {
+    /// Gather `idx` rows as `[1, idx_len, kv_heads, head_dim]`, the layout of
+    /// `take(&rows, idx, 1, None)`. `None` for an empty row set.
+    ///
+    /// A single segment gathers exactly like the flat history. With both
+    /// segments the rows are read from whichever owns them: a gather is a pure
+    /// copy, so the result is bit-identical to gathering from the
+    /// concatenation without materializing it.
+    pub(crate) fn gather(&self, idx: &MlxArray) -> Option<MlxArray> {
+        match (&self.sealed, &self.tail) {
+            (Some(only), None) | (None, Some(only)) => Some(take(only, idx, 1, None)),
+            (Some(sealed), Some(tail)) => {
+                let sealed_rows = rows_i32(sealed)?;
+                if sealed_rows <= 0 {
+                    return Some(take(tail, idx, 1, None));
+                }
+                let split = SplitIndex::new(idx, sealed_rows)?;
+                #[cfg(test)]
+                SEGMENTED_GATHERS.with(|counter| counter.set(counter.get().saturating_add(1)));
+                Some(split.merge(sealed, tail))
+            }
+            (None, None) => None,
+        }
+    }
+
+    /// Sealed-prefix rows when this row set is split, `None` otherwise.
+    fn split_rows(&self) -> Option<i32> {
+        match (&self.sealed, &self.tail) {
+            (Some(sealed), Some(_)) => rows_i32(sealed),
+            _ => None,
+        }
+    }
+}
+
+/// Gather the same rows from a K/V row pair, computing the split index
+/// arithmetic once for both.
+///
+/// Both histories advance in lockstep, so their segment boundaries agree; when
+/// they do not, the pair falls back to two independent gathers (still
+/// correct, just not shared).
+pub(crate) fn gather_selected(
+    keys: &SegmentRows,
+    values: &SegmentRows,
+    idx: &MlxArray,
+) -> Option<(MlxArray, MlxArray)> {
+    let shared = keys
+        .split_rows()
+        .filter(|&sealed_rows| sealed_rows > 0 && values.split_rows() == Some(sealed_rows));
+    let Some(sealed_rows) = shared else {
+        return Some((keys.gather(idx)?, values.gather(idx)?));
+    };
+    let split = SplitIndex::new(idx, sealed_rows)?;
+    let (Some(k_sealed), Some(k_tail), Some(v_sealed), Some(v_tail)) = (
+        keys.sealed.as_ref(),
+        keys.tail.as_ref(),
+        values.sealed.as_ref(),
+        values.tail.as_ref(),
+    ) else {
+        return Some((keys.gather(idx)?, values.gather(idx)?));
+    };
+    #[cfg(test)]
+    SEGMENTED_GATHERS.with(|counter| counter.set(counter.get().saturating_add(1)));
+    Some((split.merge(k_sealed, k_tail), split.merge(v_sealed, v_tail)))
+}
+
+/// Per-row index arithmetic shared by a K/V gather over two segments.
+///
+/// `sealed` and `tail` are the clamped per-segment indices: every index is
+/// kept inside the range of both segments, and the segment a row really
+/// belongs to is chosen afterwards by `mask` (broadcast over heads and
+/// head_dim). Indices are absolute positions in `[0, total)`.
+struct SplitIndex {
+    sealed: MlxArray,
+    tail: MlxArray,
+    mask: MlxArray,
+}
+
+impl SplitIndex {
+    fn new(idx: &MlxArray, sealed_rows: i32) -> Option<Self> {
+        let idx_len = *idx.shape().first()?;
+        // Comparisons and subtraction need a signed index; the one-segment
+        // path keeps whatever dtype the caller supplied.
+        let signed = match idx.dtype() {
+            MlxDtype::Int32 => None,
+            _ => Some(astype(idx, MlxDtype::Int32, None)),
+        };
+        let idx = signed.as_ref().unwrap_or(idx);
+        let boundary = i32_scalar(sealed_rows);
+        let last_sealed = i32_scalar(sealed_rows - 1);
+        let zero = i32_scalar(0);
+        Some(Self {
+            sealed: minimum(idx, &last_sealed, None),
+            tail: maximum(&subtract(idx, &boundary, None), &zero, None),
+            mask: reshape(&less(idx, &boundary, None), &[1, idx_len, 1, 1], None),
+        })
+    }
+
+    fn merge(&self, sealed: &MlxArray, tail: &MlxArray) -> MlxArray {
+        let from_sealed = take(sealed, &self.sealed, 1, None);
+        let from_tail = take(tail, &self.tail, 1, None);
+        where_cond(&self.mask, &from_sealed, &from_tail, None)
+    }
+}
+
+fn i32_scalar(value: i32) -> MlxArray {
+    MlxArray::from_raw_data(
+        (&value as *const i32).cast(),
+        std::mem::size_of::<i32>(),
+        &[1],
+        MlxDtype::Int32,
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Two-segment gathers executed on this thread.
+    static SEGMENTED_GATHERS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Whole-history concatenations executed on this thread.
+    static FLAT_CONCATS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn segmented_gathers_for_test() -> u64 {
+    SEGMENTED_GATHERS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn flat_concats_for_test() -> u64 {
+    FLAT_CONCATS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_counters_for_test() {
+    SEGMENTED_GATHERS.with(|counter| counter.set(0));
+    FLAT_CONCATS.with(|counter| counter.set(0));
 }
 
 fn segment_limits() -> Option<SegmentLimits> {
@@ -457,5 +648,139 @@ mod tests {
                 );
             }
         });
+    }
+
+    /// `[1, rows, 2, 8]` with a distinct value per element, so a gather that
+    /// reads the wrong row cannot compare equal. `base` keeps the two segments
+    /// of one logical history in disjoint value ranges.
+    fn ramp(rows: i32, dtype: MlxDtype, base: f32) -> MlxArray {
+        let data: Vec<f32> = (0..(rows as usize * 2 * 8))
+            .map(|i| base + i as f32)
+            .collect();
+        let array = MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1, rows, 2, 8],
+            MlxDtype::Float32,
+        );
+        astype(&array, dtype, None)
+    }
+
+    fn int32_index(values: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            values.as_ptr().cast(),
+            std::mem::size_of_val(values),
+            &[i32::try_from(values.len()).unwrap()],
+            MlxDtype::Int32,
+        )
+    }
+
+    fn assert_rows_match(actual: &MlxArray, expected: &MlxArray, label: &str) {
+        assert_eq!(actual.shape(), expected.shape(), "{label}: shape");
+        assert_eq!(f32_bits(actual), f32_bits(expected), "{label}: row bits");
+    }
+
+    /// Gather from the segments must be bit-identical to a gather from the
+    /// concatenation, for every shape of index list.
+    #[test]
+    fn segment_gather_matches_take_on_concatenation() {
+        let sealed_rows = 300i32;
+        let tail_rows = 17i32;
+        let total = sealed_rows + tail_rows;
+        let cases: Vec<(&str, Vec<i32>)> = vec![
+            ("ascending", (0..total).collect()),
+            // 149 is coprime with 317, so this visits every row exactly once.
+            ("shuffled", (0..total).map(|i| (i * 149) % total).collect()),
+            (
+                "repeated",
+                vec![0, 0, 299, 300, 300, 7, 7, 316, 316, 5, 5, 5],
+            ),
+            ("all sealed", (0..sealed_rows).rev().collect()),
+            ("all tail", (sealed_rows..total).collect()),
+            (
+                "seal boundary",
+                vec![sealed_rows - 1, sealed_rows, sealed_rows + 1],
+            ),
+            ("single", vec![150]),
+            ("long", (0..2100).map(|i| (i * 13) % total).collect()),
+        ];
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float32] {
+            let sealed = ramp(sealed_rows, dtype, 0.0);
+            let tail = ramp(tail_rows, dtype, 6_000.0);
+            // A seal bound above `tail_rows` keeps the second append in the
+            // tail, while the first append of 300 rows still seals at once.
+            let history = with_kv_segments(Some((8, 64)), || {
+                KvHistory::empty().append(&sealed).append(&tail)
+            });
+            assert_eq!(
+                history.segments().0.map(|array| array.shape()[1]),
+                Some(sealed_rows)
+            );
+            assert_eq!(
+                history.segments().1.map(|array| array.shape()[1]),
+                Some(tail_rows)
+            );
+            let rows = history.batch_slice(0);
+            let flat = history.flat().unwrap();
+            for (label, indices) in &cases {
+                let idx = int32_index(indices);
+                let gathered = rows.gather(&idx).unwrap();
+                let expected = take(&flat, &idx, 1, None);
+                assert_rows_match(&gathered, &expected, &format!("{dtype:?} {label}"));
+            }
+        }
+    }
+
+    /// One-segment histories (no tail, or a tail that never sealed) gather
+    /// exactly the rows of the single array.
+    #[test]
+    fn single_segment_gather_matches_take() {
+        let rows = 17i32;
+        let indices = vec![16, 0, 8, 8, 3];
+        let idx = int32_index(&indices);
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float32] {
+            let array = ramp(rows, dtype, 0.0);
+
+            let sealed_only = KvHistory::from_flat(array.clone());
+            assert!(sealed_only.segments().1.is_none());
+            assert!(sealed_only.sealed_rows().is_none());
+
+            // `min_tokens` reached but the tail stays under the seal bound, so
+            // the history has one segment and it is the tail.
+            let tail_only = with_kv_segments(Some((8, 64)), || KvHistory::empty().append(&array));
+            assert!(tail_only.segments().0.is_none());
+            assert!(tail_only.segments().1.is_some());
+
+            for (label, history) in [("sealed only", &sealed_only), ("tail only", &tail_only)] {
+                let gathered = history.batch_slice(0).gather(&idx).unwrap();
+                assert_rows_match(
+                    &gathered,
+                    &take(&array, &idx, 1, None),
+                    &format!("{dtype:?} {label}"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn counters_see_the_segmented_and_flat_paths() {
+        let dtype = MlxDtype::Float32;
+        let sealed = ramp(9, dtype, 0.0);
+        let tail = ramp(3, dtype, 6_000.0);
+        let history = with_kv_segments(Some((8, 4)), || KvHistory::empty().append(&sealed));
+        assert!(history.segments().1.is_none());
+        let history = with_kv_segments(Some((8, 4)), || history.append(&tail));
+        assert!(history.segments().1.is_some());
+
+        reset_counters_for_test();
+        let idx = int32_index(&[0, 8, 11]);
+        assert!(history.batch_slice(0).gather(&idx).is_some());
+        assert_eq!(segmented_gathers_for_test(), 1);
+        assert_eq!(flat_concats_for_test(), 0);
+
+        reset_counters_for_test();
+        assert!(history.flat().is_some());
+        assert_eq!(flat_concats_for_test(), 1);
+        assert_eq!(segmented_gathers_for_test(), 0);
     }
 }

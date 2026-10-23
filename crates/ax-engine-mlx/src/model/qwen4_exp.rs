@@ -335,6 +335,47 @@ impl Qwen4ExpState {
         result
     }
 
+    /// Request state as logical tensors: every QSA K/V history is flattened to
+    /// one tensor, so two states with the same content compare equal whatever
+    /// their segmentation (a batched window and a run of singleton steps seal
+    /// at different rows). Names match [`Self::array_descriptors`] of an
+    /// unsegmented state.
+    #[cfg(test)]
+    pub(crate) fn logical_arrays(&self) -> Vec<(Qwen4ExpStateArray, MlxArray)> {
+        let mut result: Vec<(Qwen4ExpStateArray, MlxArray)> = Vec::new();
+        let push = |result: &mut Vec<(Qwen4ExpStateArray, MlxArray)>,
+                    layer: usize,
+                    kind: &'static str,
+                    array: MlxArray| {
+            let descriptor = Qwen4ExpStateArray::new(result.len(), layer, kind);
+            result.push((descriptor, array));
+        };
+        for (layer, layer_state) in self.layers.iter().enumerate() {
+            match &layer_state.attention {
+                AttentionState::Gdn(Some(state)) => {
+                    push(&mut result, layer, "gdn.conv", state.conv.clone());
+                    push(&mut result, layer, "gdn.recurrent", state.recurrent.clone());
+                }
+                AttentionState::Gdn(None) => {}
+                AttentionState::Qsa(state) => {
+                    if let Some(keys) = state.keys().flat() {
+                        push(&mut result, layer, "qsa.k", keys);
+                    }
+                    if let Some(values) = state.values().flat() {
+                        push(&mut result, layer, "qsa.v", values);
+                    }
+                    if let Some(index) = state.index().keys() {
+                        push(&mut result, layer, "qsa.index", index.clone());
+                    }
+                }
+            }
+            if let Some(conv) = layer_state.ple.as_ref().and_then(|s| s.conv.as_ref()) {
+                push(&mut result, layer, "ple.conv", conv.array().clone());
+            }
+        }
+        result
+    }
+
     #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
         self.arrays()
@@ -1491,11 +1532,24 @@ mod tests {
         );
         assert!(segmented.values().segments().1.is_some());
         assert!(flat.keys().segments().1.is_none());
+        let (flat_state, segmented_state) = (state(flat), state(segmented));
         assert_eq!(
-            wire(&state(flat)),
-            wire(&state(segmented)),
+            wire(&flat_state),
+            wire(&segmented_state),
             "wire bytes must not depend on the in-memory segmentation"
         );
+        // Physical enumeration differs (the segmented state has more arrays),
+        // but the logical view used by the parity diagnostics must not.
+        assert_ne!(flat_state.arrays().len(), segmented_state.arrays().len());
+        let flat_logical = flat_state.logical_arrays();
+        let segmented_logical = segmented_state.logical_arrays();
+        assert_eq!(flat_logical.len(), segmented_logical.len());
+        for ((flat_descriptor, flat_array), (segmented_descriptor, segmented_array)) in
+            flat_logical.iter().zip(&segmented_logical)
+        {
+            assert_eq!(flat_descriptor, segmented_descriptor);
+            assert_eq!(flat_array.shape(), segmented_array.shape());
+        }
     }
 
     #[test]

@@ -18,7 +18,7 @@ use mlx_sys::{
 };
 use thiserror::Error;
 
-use super::qwen4_exp_kv_history::KvHistory;
+use super::qwen4_exp_kv_history::{KvHistory, gather_selected};
 use super::qwen4_exp_residual::{
     Qwen4ExpResidualError, sigmoid_projection_dtype, validate_projection,
 };
@@ -588,32 +588,31 @@ impl Qwen4ExpAttention {
         crate::model::qwen4_exp::profiling::mark("qsa_b_prep", &[&queries, &keys, &values]);
         let staged_keys = cache.keys().append(&keys);
         let staged_values = cache.values().append(&values);
+        // No flattening on the selected path: the gather reads rows straight
+        // from the sealed prefix and the tail. The dense kernels and the test
+        // dumps still need one contiguous array, built only where used.
         #[cfg(test)]
         {
             let mut staged = Vec::new();
             staged.extend(staged_keys.arrays());
             staged.extend(staged_values.arrays());
             crate::model::qwen4_exp::profiling::mark("qsa_c_append", &staged);
-        }
-        // Rebuilt once per call: the attention kernels and the test dumps
-        // share this single flattening of the two segments.
-        let key_rows = staged_keys
-            .flat()
-            .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
-        let value_rows = staged_values
-            .flat()
-            .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
-        #[cfg(test)]
-        for (stage, array) in [
-            ("qsa_queries", &queries),
-            ("qsa_keys", &key_rows),
-            ("qsa_values", &value_rows),
-        ] {
-            crate::model::qwen4_exp::profiling::dump(stage, &[array]);
+            crate::model::qwen4_exp::profiling::dump("qsa_queries", &[&queries]);
+            // `dump` writes one tensor per stage, so the two segments are
+            // flattened, and only when this stage is actually being dumped.
+            for (stage, history) in [("qsa_keys", &staged_keys), ("qsa_values", &staged_values)] {
+                if crate::model::qwen4_exp::profiling::dump_requested(stage)
+                    && let Some(rows) = history.flat()
+                {
+                    crate::model::qwen4_exp::profiling::dump(stage, &[&rows]);
+                }
+            }
         }
 
         let attn = match &selection {
-            Some(selection) => attend_selected(&queries, &key_rows, &value_rows, selection, cfg)?,
+            Some(selection) => {
+                attend_selected(&queries, &staged_keys, &staged_values, selection, cfg)?
+            }
             // Short verifier windows replay each query row through the
             // singleton dense kernel so the batched window matches the
             // per-token decode arithmetic bit for bit.
@@ -621,9 +620,13 @@ impl Qwen4ExpAttention {
                 && seq > 1
                 && seq <= VERIFY_ROWWISE_MAX_QUERIES =>
             {
+                let (key_rows, value_rows) = flat_pair(&staged_keys, &staged_values)?;
                 attend_dense_rowwise(&queries, &key_rows, &value_rows, cfg)
             }
-            None => attend_dense(&queries, &key_rows, &value_rows, cfg),
+            None => {
+                let (key_rows, value_rows) = flat_pair(&staged_keys, &staged_values)?;
+                attend_dense(&queries, &key_rows, &value_rows, cfg)
+            }
         };
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("qsa_d_attend", &[&attn]);
@@ -836,17 +839,62 @@ fn attend_dense_rowwise(
     concatenate(&refs, 2, None)
 }
 
+/// One contiguous array per history, for the dense kernels. Costs one
+/// full-history copy, which is why only the dense arms call it.
+fn flat_pair(keys: &KvHistory, values: &KvHistory) -> Result<(MlxArray, MlxArray)> {
+    let keys = keys.flat().ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
+    let values = values
+        .flat()
+        .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
+    Ok((keys, values))
+}
+
+/// Rows a selected-attention call gathers from: a segmented [`KvHistory`], or a
+/// caller-built single array (tests that compare whole tensors directly).
+trait SelectedRows {
+    fn history(&self) -> std::borrow::Cow<'_, KvHistory>;
+}
+
+impl SelectedRows for KvHistory {
+    fn history(&self) -> std::borrow::Cow<'_, KvHistory> {
+        std::borrow::Cow::Borrowed(self)
+    }
+}
+
+impl SelectedRows for MlxArray {
+    fn history(&self) -> std::borrow::Cow<'_, KvHistory> {
+        std::borrow::Cow::Owned(KvHistory::from_flat(self.clone()))
+    }
+}
+
 fn attend_selected(
     queries: &MlxArray,
-    keys: &MlxArray,
-    values: &MlxArray,
+    keys: &impl SelectedRows,
+    values: &impl SelectedRows,
     selection: &QsaSelection,
     cfg: Qwen4ExpAttentionConfig,
 ) -> Result<MlxArray> {
+    let keys = keys.history();
+    let values = values.history();
     let q_shape = queries.shape();
-    let k_shape = keys.shape();
     let (batch, q_heads, seq, dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
-    let tokens = k_shape[1];
+    let tokens = i32::try_from(keys.token_count())
+        .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("cache token count"))?;
+    // K and V advance in lockstep, so their segment boundaries must agree;
+    // a difference would mix rows from different positions silently.
+    if keys.sealed_rows() != values.sealed_rows() {
+        return Err(Qwen4ExpAttentionError::InvalidScalar("kv history segments"));
+    }
+    let batched = selection.device_tokens().is_none()
+        && seq >= BATCHED_ATTENTION_MIN_QUERIES
+        && batched_attention_enabled();
+    // Padded sub-batches reshape one contiguous array per batch row; the
+    // per-query decode path gathers straight from the segments.
+    let flat = if batched {
+        Some(flat_pair(&keys, &values)?)
+    } else {
+        None
+    };
     let mut batch_out = Vec::new();
     batch_out
         .try_reserve_exact(batch as usize)
@@ -859,29 +907,28 @@ fn attend_selected(
             &[1, 1, 1, 1],
             None,
         );
-        let k_b = slice(
-            keys,
-            &[b, 0, 0, 0],
-            &[b + 1, tokens, cfg.kv_heads, dim],
-            &[1, 1, 1, 1],
-            None,
-        );
-        let v_b = slice(
-            values,
-            &[b, 0, 0, 0],
-            &[b + 1, tokens, cfg.kv_heads, dim],
-            &[1, 1, 1, 1],
-            None,
-        );
-        if selection.device_tokens().is_none()
-            && seq >= BATCHED_ATTENTION_MIN_QUERIES
-            && batched_attention_enabled()
-        {
+        if let Some((key_rows, value_rows)) = &flat {
+            let k_b = slice(
+                key_rows,
+                &[b, 0, 0, 0],
+                &[b + 1, tokens, cfg.kv_heads, dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let v_b = slice(
+                value_rows,
+                &[b, 0, 0, 0],
+                &[b + 1, tokens, cfg.kv_heads, dim],
+                &[1, 1, 1, 1],
+                None,
+            );
             batch_out.push(attend_selected_batched(
                 &q_b, &k_b, &v_b, selection, b as usize, cfg,
             )?);
             continue;
         }
+        let key_rows = keys.batch_slice(b);
+        let value_rows = values.batch_slice(b);
         let mut seq_out = Vec::new();
         seq_out
             .try_reserve_exact(seq as usize)
@@ -910,8 +957,10 @@ fn attend_selected(
                 }
                 index_array(chosen)?
             };
-            let k_sel = transpose(&take(&k_b, &idx, 1, None), &[0, 2, 1, 3], None);
-            let v_sel = transpose(&take(&v_b, &idx, 1, None), &[0, 2, 1, 3], None);
+            let (k_sel, v_sel) = gather_selected(&key_rows, &value_rows, &idx)
+                .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
+            let k_sel = transpose(&k_sel, &[0, 2, 1, 3], None);
+            let v_sel = transpose(&v_sel, &[0, 2, 1, 3], None);
             let q_s = slice(
                 &q_b,
                 &[0, 0, s, 0],
@@ -1895,5 +1944,274 @@ mod tests {
         let array = contiguous(array, None);
         eval(&[&array]);
         array.data_f32().len()
+    }
+
+    // ------------------------------------------------------------------
+    // Segment gather parity (sealed prefix + tail vs one flat array)
+    // ------------------------------------------------------------------
+
+    const SEG_Q_HEADS: i32 = 4;
+    const SEG_KV_HEADS: i32 = 2;
+    const SEG_HEAD_DIM: i32 = 8;
+    const SEG_HIDDEN: i32 = 16;
+    /// Tokens already in the index/KV cache when a window starts.
+    const SEG_PREFIX: i32 = 8;
+    /// Queries in one verifier window.
+    const SEG_WINDOW: i32 = 3;
+
+    fn seg_cfg() -> Qwen4ExpAttentionConfig {
+        Qwen4ExpAttentionConfig::new(
+            (SEG_Q_HEADS * SEG_HEAD_DIM) as usize,
+            SEG_Q_HEADS as usize,
+            SEG_KV_HEADS as usize,
+            SEG_HEAD_DIM as usize,
+            4,
+            BASE,
+            EPS,
+        )
+        .unwrap()
+    }
+
+    fn seg_indexer() -> QsaIndexer {
+        QsaIndexer::new(
+            QsaConfig::new(
+                2,
+                1,
+                4,
+                4,
+                SEG_PREFIX as usize,
+                SEG_PREFIX as usize,
+                SEG_HIDDEN as usize,
+                EPS,
+                BASE,
+            )
+            .unwrap(),
+            QsaIndexerWeights {
+                qk_proj: QuantizedWeight::new(
+                    array_f32(
+                        &(0..(12 * SEG_HIDDEN))
+                            .map(|i| (i as f32 * 0.017).sin())
+                            .collect::<Vec<_>>(),
+                        &[12, SEG_HIDDEN],
+                    ),
+                    None,
+                    None,
+                ),
+                q_norm: array_f32(&[1.0; 4], &[4]),
+                k_norm: array_f32(&[1.0; 4], &[4]),
+            },
+        )
+        .unwrap()
+    }
+
+    fn seg_hidden(rows: i32, seed: f32) -> MlxArray {
+        array_f32(
+            &(0..(rows as usize * SEG_HIDDEN as usize))
+                .map(|i| (i as f32 * 0.031 + seed).cos())
+                .collect::<Vec<_>>(),
+            &[1, rows, SEG_HIDDEN],
+        )
+    }
+
+    /// `[1, rows, kv_heads, head_dim]` queries or K/V with a distinct value
+    /// per element, so a wrong row changes every output.
+    fn seg_queries(rows: i32, dtype: MlxDtype, seed: f32) -> MlxArray {
+        astype(
+            &array_f32(
+                &(0..(rows as usize * SEG_Q_HEADS as usize * SEG_HEAD_DIM as usize))
+                    .map(|i| (i as f32 * 0.023 + seed).sin())
+                    .collect::<Vec<_>>(),
+                &[1, SEG_Q_HEADS, rows, SEG_HEAD_DIM],
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    fn seg_kv(rows: i32, dtype: MlxDtype, seed: f32) -> MlxArray {
+        astype(
+            &array_f32(
+                &(0..(rows as usize * SEG_KV_HEADS as usize * SEG_HEAD_DIM as usize))
+                    .map(|i| (i as f32 * 0.05 + seed).sin())
+                    .collect::<Vec<_>>(),
+                &[1, rows, SEG_KV_HEADS, SEG_HEAD_DIM],
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    /// The same logical rows as one sealed prefix plus a live tail.
+    fn segmented_history(full: &MlxArray, sealed: i32) -> KvHistory {
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        let shape = full.shape();
+        let rows = shape[1];
+        let head = slice(
+            full,
+            &[0, 0, 0, 0],
+            &[1, sealed, shape[2], shape[3]],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let tail = slice(
+            full,
+            &[0, sealed, 0, 0],
+            &[1, rows, shape[2], shape[3]],
+            &[1, 1, 1, 1],
+            None,
+        );
+        // `seal_tokens == sealed` makes the first append seal and the second
+        // one land in the tail, so the history is really split.
+        with_kv_segments(Some((2, sealed as usize)), || {
+            KvHistory::empty().append(&head).append(&tail)
+        })
+    }
+
+    /// A singleton device selection, a multi-query device window and a
+    /// host-indexed window over the same `SEG_PREFIX`-token index cache.
+    fn seg_selections() -> Vec<(&'static str, QsaSelection, i32, bool)> {
+        use crate::qwen4_exp_qsa::{with_device_select, with_device_select_multi};
+
+        let indexer = seg_indexer();
+        let prefix = indexer
+            .select(&seg_hidden(SEG_PREFIX, 0.0), &QsaIndexKeyCache::empty(), 0)
+            .unwrap();
+        let singleton = with_device_select(true, || {
+            indexer
+                .select(
+                    &seg_hidden(1, 1.0),
+                    prefix.next_cache(),
+                    SEG_PREFIX as usize,
+                )
+                .unwrap()
+        });
+        let device_window = with_device_select_multi(true, || {
+            indexer
+                .select(
+                    &seg_hidden(SEG_WINDOW, 2.0),
+                    prefix.next_cache(),
+                    SEG_PREFIX as usize,
+                )
+                .unwrap()
+        });
+        let host_window = with_device_select_multi(false, || {
+            indexer
+                .select(
+                    &seg_hidden(SEG_WINDOW, 3.0),
+                    prefix.next_cache(),
+                    SEG_PREFIX as usize,
+                )
+                .unwrap()
+        });
+        vec![
+            ("singleton device", singleton, 1, true),
+            ("window device", device_window, SEG_WINDOW, true),
+            ("window host", host_window, SEG_WINDOW, false),
+        ]
+    }
+
+    /// Selected attention over a segmented history must be bit-identical to
+    /// the same rows in one flat array: the gather is a pure copy either way.
+    #[test]
+    fn segmented_attention_matches_flat_attention() {
+        use crate::model::shared::qwen4_exp_kv_history::{
+            flat_concats_for_test, reset_counters_for_test, segmented_gathers_for_test,
+        };
+
+        let cfg = seg_cfg();
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            for (label, selection, seq, device) in seg_selections() {
+                assert_eq!(
+                    selection.device_tokens().is_some(),
+                    device,
+                    "{label}: selection kind"
+                );
+                let total = SEG_PREFIX + seq;
+                let queries = seg_queries(seq, dtype, 0.5);
+                let keys = seg_kv(total, dtype, 0.75);
+                let values = seg_kv(total, dtype, 1.25);
+                let flat_keys = KvHistory::from_flat(keys.clone());
+                let flat_values = KvHistory::from_flat(values.clone());
+                let split_keys = segmented_history(&keys, SEG_PREFIX);
+                let split_values = segmented_history(&values, SEG_PREFIX);
+                assert!(
+                    split_keys.segments().1.is_some() && split_values.segments().1.is_some(),
+                    "{label}: expected a live tail"
+                );
+
+                let flat =
+                    attend_selected(&queries, &flat_keys, &flat_values, &selection, cfg).unwrap();
+                reset_counters_for_test();
+                let split =
+                    attend_selected(&queries, &split_keys, &split_values, &selection, cfg).unwrap();
+                assert_eq!(
+                    flat_concats_for_test(),
+                    0,
+                    "{label}: selected attention must not flatten the history"
+                );
+                assert!(
+                    segmented_gathers_for_test() > 0,
+                    "{label}: expected at least one two-segment gather"
+                );
+                assert_eq!(
+                    f32_value_bits(&flat),
+                    f32_value_bits(&split),
+                    "{dtype:?} {label}: attention bits"
+                );
+            }
+        }
+    }
+
+    /// A decode step on a segmented history gathers from the segments and
+    /// never rebuilds the whole tensor; only the dense kernel may flatten.
+    #[test]
+    fn segmented_decode_step_never_flattens() {
+        use crate::model::shared::qwen4_exp_kv_history::{
+            flat_concats_for_test, reset_counters_for_test, segmented_gathers_for_test,
+            with_kv_segments,
+        };
+
+        let (f, module) = oracle();
+        let input = array(&f["input"], &[1, 19, 16]);
+        let prefix = slice(&input, &[0, 0, 0], &[1, 4, 16], &[1, 1, 1], None);
+        let row = slice(&input, &[0, 4, 0], &[1, 5, 16], &[1, 1, 1], None);
+        with_kv_segments(Some((2, 4)), || {
+            with_dense_attention(false, || {
+                let first = run(&module, &prefix, &Qwen4ExpAttentionCache::empty(), 0);
+                let cache = first.into_next_state();
+                assert!(
+                    cache.keys().segments().1.is_none(),
+                    "a four-row prefill seals with no tail"
+                );
+
+                reset_counters_for_test();
+                let step = run(&module, &row, &cache, 4);
+                assert_eq!(
+                    flat_concats_for_test(),
+                    0,
+                    "a selected decode must not rebuild the history"
+                );
+                assert!(
+                    segmented_gathers_for_test() > 0,
+                    "a selected decode must gather from the two segments"
+                );
+                assert!(
+                    step.next_state().keys().segments().1.is_some(),
+                    "the decode row lands in the tail"
+                );
+
+                // Five logical rows sit inside the oracle's dense window
+                // (`token_budget + ratio - 1`), so the dense kernel still
+                // consumes one contiguous copy of the same history.
+                reset_counters_for_test();
+                let dense = with_dense_attention(true, || run(&module, &row, &cache, 4));
+                assert!(
+                    flat_concats_for_test() > 0,
+                    "the dense kernel needs one contiguous array"
+                );
+                assert_eq!(dense.delta().shape(), step.delta().shape());
+            });
+        });
     }
 }

@@ -420,6 +420,12 @@ fn dump_selected(root: &Path, stage: &str, array: &MlxArray, wanted: &BTreeSet<u
     }
 }
 
+/// Whether `dump(stage, ..)` would write anything right now, so a caller can
+/// skip building an expensive array (such as a flattened K/V history).
+pub(crate) fn dump_requested(stage: &str) -> bool {
+    dump_root().is_some() && should_dump(stage)
+}
+
 pub(crate) fn dump(stage: &'static str, arrays: &[&MlxArray]) {
     let Some(root) = dump_root() else {
         return;
@@ -1847,6 +1853,9 @@ fn flash_next_kv_segments_match_flat_on_real_pack() {
     let mut flat_state = flat_prefix.clone();
     let mut seg_state = seg_prefix.clone();
     let (mut flat_secs, mut seg_secs) = (0.0f64, 0.0f64);
+    // Proof that the decode chain really gathers from the two segments and
+    // never rebuilds the whole history (snapshots below are outside the loop).
+    crate::model::shared::qwen4_exp_kv_history::reset_counters_for_test();
     for step in 0..chain_steps {
         let token = [tokens[split + step]];
         let started = Instant::now();
@@ -1865,6 +1874,14 @@ fn flash_next_kv_segments_match_flat_on_real_pack() {
         flat_state = flat.state;
         seg_state = seg.state;
     }
+    let segmented_gathers =
+        crate::model::shared::qwen4_exp_kv_history::segmented_gathers_for_test();
+    let flat_concats = crate::model::shared::qwen4_exp_kv_history::flat_concats_for_test();
+    assert!(
+        segmented_gathers >= 12 * (chain_steps as u64 / 2),
+        "segmented gathers only {segmented_gathers} times over the chain"
+    );
+    assert_eq!(flat_concats, 0, "the decode chain rebuilt a flat history");
     assert_eq!(snapshot(flat_state), snapshot(seg_state), "chain state");
     eprintln!(
         "KV_SEGMENTS_VS_FLAT limits={min_tokens},{seal_tokens} chain{chain_steps} flat_ms={:.1} segmented_ms={:.1}",
