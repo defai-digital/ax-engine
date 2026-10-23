@@ -83,11 +83,8 @@
   "crates/ax-engine-mlx/src/model/shared/qwen4_exp_native_gdn.rs": {
     "try_eval": 4
   },
-  "crates/ax-engine-mlx/src/model/shared/qwen4_exp_native_hc.rs": {
-    "try_eval": 3
-  },
-  "crates/ax-engine-mlx/src/model/shared/qwen4_exp_residual.rs": {
-    "try_eval": 1
+  "crates/ax-engine-mlx/src/model/shared/qwen4_exp_native_hc_gemv.rs": {
+    "try_eval": 4
   },
   "crates/ax-engine-mlx/src/model/shared/utils.rs": {
     "async_eval": 1,

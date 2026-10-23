@@ -42,9 +42,10 @@ compiled decode stretches, each with a kill switch), first-seen prompts on the s
 host measured TTFT 2.5 s at 2,207 tokens, 14.0 s at 8,976 and 76.4 s at 39,225, and
 decode 37.9-42.4 tok/s with identical generated text. Record:
 [Flash Next n-gram reads and fused decode stretches, 2026-10-22](../performance/flash-next-ngram-reads-and-fused-decode-2026-10-22.md).
-Follow-ups on 2026-10-23 (21 fused or native stretches, a sealed-prefix-plus-tail K/V history, cached QSA pooled keys
-and rotary tables, the native GDN kernels on by default and cached weight views) measured decode 45.4, 44.0 and
-42.6 tok/s at 2,207, 8,976 and 39,225 tokens, with identical generated text; record:
+Follow-ups on 2026-10-23 (22 fused or native stretches including a native hyper-connection read, a
+sealed-prefix-plus-tail K/V history, cached QSA pooled keys and rotary tables, the native GDN kernels on by default
+and cached weight views) measured decode 47.3, 45.7 and 44.5 tok/s at 2,207, 8,976 and 39,225 tokens, with identical
+generated text; record:
 [Flash Next long-context decode, 2026-10-23](../performance/flash-next-long-context-decode-2026-10-23.md).
 
 On 2026-09-23 the MXFP4 MTP direct-fallback behaviour was root-caused and

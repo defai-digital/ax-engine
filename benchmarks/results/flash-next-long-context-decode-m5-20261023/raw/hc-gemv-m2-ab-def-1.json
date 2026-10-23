@@ -1,0 +1,36 @@
+{
+ "label": "m2def1",
+ "bin": "<home>/build/ax-fn-m2-target/release/ax-engine-server",
+ "rows": [
+  {
+   "file": "p1.txt",
+   "prompt_tokens": 2207,
+   "completion_tokens": 128,
+   "ttft_s": 6.012,
+   "prefill_tok_s": 367.1,
+   "decode_tok_s": 31.43,
+   "text_head": "This Rust code implements a **backend adapter layer** for an LLM (Large Language",
+   "text_sha": "6189ecc27de45897"
+  },
+  {
+   "file": "p3.txt",
+   "prompt_tokens": 1905,
+   "completion_tokens": 128,
+   "ttft_s": 3.558,
+   "prefill_tok_s": 535.4,
+   "decode_tok_s": 33.51,
+   "text_head": "This Rust code implements the **input handling and editing logic for a chat inte",
+   "text_sha": "8c0545060f84c30b"
+  },
+  {
+   "file": "long1.txt",
+   "prompt_tokens": 8976,
+   "completion_tokens": 128,
+   "ttft_s": 26.412,
+   "prefill_tok_s": 339.8,
+   "decode_tok_s": 30.48,
+   "text_head": "This codebase implements a **distributed LLM inference gateway** (likely for a m",
+   "text_sha": "7b3b5f352c35a434"
+  }
+ ]
+}

@@ -123,7 +123,8 @@ pub(crate) enum Stretch {
     GdnNativeDecay,
     /// Native q/k inverse-norm scale of the GDN L2 normalisation.
     GdnNativeQk,
-    /// Native low-rank activation and write gate of a hyper-connection read.
+    /// Native hyper-connection read: two GEMV kernels with the low-rank
+    /// activation, write gate and stream mean fused into their epilogues.
     HcNativeLowGate,
 }
 
@@ -185,12 +186,6 @@ impl Stretch {
         }
     }
 
-    /// Whether the stretch runs in the shipping default (variable unset).
-    /// Opt-in stretches run only when the list names them or `all` is set.
-    pub(crate) fn default_on(self) -> bool {
-        !matches!(self, Stretch::HcNativeLowGate)
-    }
-
     /// Whether this stretch is a hand-written Metal kernel rather than a
     /// compiled closure. Native stretches use [`native_allowed`].
     pub(crate) fn is_native(self) -> bool {
@@ -210,7 +205,7 @@ impl Stretch {
                 Some(Stretch::GdnNativeDecay)
             }
             Stretch::GdnQScale | Stretch::GdnKScale => Some(Stretch::GdnNativeQk),
-            Stretch::HcLow | Stretch::HcGate => Some(Stretch::HcNativeLowGate),
+            Stretch::HcLow | Stretch::HcMix | Stretch::HcGate => Some(Stretch::HcNativeLowGate),
             _ => None,
         }
     }
@@ -233,7 +228,7 @@ impl Stretch {
 fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; Stretch::COUNT] {
     let mut mask = [false; Stretch::COUNT];
     let Some(raw) = raw else {
-        return std::array::from_fn(|index| unset_means_all && Stretch::ALL[index].default_on());
+        return [unset_means_all; Stretch::COUNT];
     };
     let raw = raw.trim();
     if raw.is_empty() {
@@ -788,16 +783,8 @@ mod tests {
     fn unset_variable_follows_the_default_policy() {
         assert_eq!(
             parse_mask(None, true),
-            Stretch::ALL.map(Stretch::default_on),
-            "shipping default is on for every default-on stretch"
-        );
-        assert!(
-            !parse_mask(None, true)[Stretch::HcNativeLowGate as usize],
-            "the measured-slower native HC read stays opt-in"
-        );
-        assert!(
-            parse_mask(Some("all"), true)[Stretch::HcNativeLowGate as usize],
-            "`all` still enables the opt-in stretches"
+            [true; Stretch::COUNT],
+            "shipping default is on for every stretch, native ones included"
         );
         assert_eq!(
             parse_mask(None, false),

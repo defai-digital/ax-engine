@@ -405,7 +405,7 @@
  },
  "hc_native_read_vs_previous_build": {
   "arm_a": "previous build",
-  "arm_b": "opt-in hc_native_low_gate on",
+  "arm_b": "first-version hc_native_low_gate on (opt-in)",
   "prompts": [
    {
     "file": "p1.txt",
@@ -467,7 +467,8 @@
     "text_identical": true,
     "decode_delta_pct": -0.74
    }
-  ]
+  ],
+  "version": "first version (merged GEMV + ax_hc_low_gate_v1), later replaced by hc_gemv_epilogue_read"
  },
  "hc_native_read_same_binary": {
   "arm_a": "mask without hc_native_low_gate",
@@ -513,7 +514,8 @@
     "text_identical": true,
     "decode_delta_pct": -0.81
    }
-  ]
+  ],
+  "version": "first version (merged GEMV + ax_hc_low_gate_v1), later replaced by hc_gemv_epilogue_read"
  },
  "hc_native_read_ballast_control": {
   "old_vs_ballast": [
@@ -599,6 +601,140 @@
     "text_identical": true,
     "decode_delta_pct": -0.75
    }
-  ]
+  ],
+  "version": "first version (merged GEMV + ax_hc_low_gate_v1), later replaced by hc_gemv_epilogue_read"
+ },
+ "hc_gemv_epilogue_read": {
+  "what": "ax_hc_down_gate_v1 + ax_hc_up_mix_v1: MLX-gemv-equivalent kernels with the low/gate and mix epilogues fused; default-on",
+  "m5_same_binary_ab": {
+   "arm_a": "default mask without hc_native_low_gate",
+   "arm_b": "default mask with hc_native_low_gate",
+   "rounds": 3,
+   "prompts": [
+    {
+     "file": "p1.txt",
+     "prompt_tokens": 2207,
+     "base": {
+      "decode_tok_s": [
+       45.19,
+       45.04,
+       44.93
+      ]
+     },
+     "hc": {
+      "decode_tok_s": [
+       47.03,
+       47.0,
+       46.99
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 4.34
+    },
+    {
+     "file": "p3.txt",
+     "prompt_tokens": 1905,
+     "base": {
+      "decode_tok_s": [
+       47.44,
+       47.58,
+       47.18
+      ]
+     },
+     "hc": {
+      "decode_tok_s": [
+       49.81,
+       49.76,
+       49.71
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 4.98
+    },
+    {
+     "file": "long1.txt",
+     "prompt_tokens": 8976,
+     "base": {
+      "decode_tok_s": [
+       43.9,
+       43.87,
+       43.76
+      ]
+     },
+     "hc": {
+      "decode_tok_s": [
+       45.82,
+       45.71,
+       45.77
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 4.39
+    }
+   ]
+  },
+  "m2_ultra_same_binary_ab": {
+   "arm_a": "default mask without hc_native_low_gate",
+   "arm_b": "default (kernels on)",
+   "rounds": 2,
+   "prompts": [
+    {
+     "file": "p1.txt",
+     "nohc": {
+      "decode_tok_s": [
+       31.31,
+       31.39
+      ]
+     },
+     "default": {
+      "decode_tok_s": [
+       31.43,
+       31.6
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 0.53
+    },
+    {
+     "file": "p3.txt",
+     "nohc": {
+      "decode_tok_s": [
+       33.28,
+       33.24
+      ]
+     },
+     "default": {
+      "decode_tok_s": [
+       33.51,
+       33.58
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 0.86
+    },
+    {
+     "file": "long1.txt",
+     "nohc": {
+      "decode_tok_s": [
+       30.49,
+       30.37
+      ]
+     },
+     "default": {
+      "decode_tok_s": [
+       30.48,
+       30.57
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 0.31
+    }
+   ]
+  },
+  "ops_per_step": {
+   "before": 3712,
+   "after": 3040,
+   "census": "raw/op-census-m2-dev-shipping-hcgemv.json"
+  }
  }
 }

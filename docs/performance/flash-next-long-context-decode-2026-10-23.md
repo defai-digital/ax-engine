@@ -37,11 +37,11 @@ function, with source lines in a dev build. The first census of one decode step 
 stretches and 5,331 with the 15 stretches of the earlier note, and two things nobody had written down: the
 production decode ran the 26-op portable GDN recurrence (the native kernel validated in September was still
 default-off), and 290 `transpose` ops per step rebuilt the same weight views. After all the changes below the step is
-3,712 ops, of which about 900 are fused or native elementwise dispatches and about 900 are GEMMs.
+3,040 ops (3,712 before the native hyper-connection read), of which about 800 are fused or native elementwise dispatches and about 900 are GEMMs.
 
 ## What changed
 
-All changes are bit-identical to the previous behaviour by construction or by gate, and each has a kill switch. The default build runs 21 compiled or native stretches; one more (the hyper-connection read) is opt-in.
+All changes are bit-identical to the previous behaviour by construction or by gate, and each has a kill switch. The default build runs 22 compiled or native stretches.
 
 | Change | Where | Kill switch |
 | --- | --- | --- |
@@ -53,7 +53,7 @@ All changes are bit-identical to the previous behaviour by construction or by ga
 | `QuantizedWeight` caches the transposed **view** of an unquantized weight (metadata only, so the same strided operand reaches the same GEMM); a clone starts empty and replacing the weight invalidates the view | `weights.rs`, `model/shared/utils.rs` | none (view only) |
 | RMS norm gains of the QSA and indexer layers are cast to f32 once; full-range slices are skipped when batch or sequence is one | `qwen4_exp_qsa.rs`, `qwen4_exp_attention.rs` | none |
 | Two **native pointwise Metal kernels** for the GDN gates: `ax_gdn_decay_beta_v1` (beta, decay pre/post and the eager `log1p`: four dispatches become one) and `ax_gdn_qkv_scale_v1` (inverse-norm scaling of q and k through `precise::pow` and the f32 cast of v: two eager `power` ops, two scale stretches and a cast become one). The sums of squares stay MLX reductions. Each kernel copies MLX's own Sigmoid, Minimum/Maximum, log1p and Power definitions, spells the math functions `precise::`, disables contraction, and runs a raw-bit self-check per dtype on first use that disables it for the process on any mismatch or rejected launch | `qwen4_exp_native_gdn.rs`, `qwen4_exp_gdn.rs` | `AX_FLASH_NEXT_FUSE` (`gdn_native_decay`, `gdn_native_qk`) |
-| A **native hyper-connection read** (`ax_hc_low_gate_v1`): one GEMV over the concatenation of `read_down` and `write_inject` (MLX picks identical GEMV tiles for 4, 320 and 324 rows, proven per layer at first use) feeds one kernel that returns the low-rank activation and the write gate. Built, exact, and **opt-in**: measured 0.8% slower end to end (see below) | `qwen4_exp_native_hc.rs`, `qwen4_exp_residual.rs` | on only with `AX_FLASH_NEXT_FUSE=hc_native_low_gate` (or `all`) |
+| A **native hyper-connection read**: two Metal kernels that reproduce MLX's own `gemv` arithmetic and carry the elementwise work in the projection epilogue. `ax_hc_down_gate_v1` computes the `read_down` and `write_inject` rows straight from the two stored weights (no merged copy) and ends with `silu(down / C)` or `sigmoid(logits / C) * scale`; `ax_hc_up_mix_v1` computes `read_up` with one simdgroup per hidden column (its four accumulators are the column's four streams), ends with `sigmoid(up) * normalized` and the stream mean in MLX's reduction order. Six dispatches (two projections, the low and gate stretches, the up projection, the mix) become two. The accumulation order (per-lane sequential f32 over the K stripes, `simd_shuffle_down` 16..1, sequential threadgroup sum, leftover zero padding) is MLX's, each kernel is only used for the shapes where MLX is known to pick that `gemv` variant, and each layer proves itself on its real weights at first use | `qwen4_exp_native_hc_gemv.rs`, `qwen4_exp_residual.rs` | `AX_FLASH_NEXT_FUSE` (`hc_native_low_gate`) |
 
 ## Numerics
 
@@ -93,7 +93,8 @@ text SHA-256 is identical in every arm and round of every comparison below.
 | --- | ---: | ---: | ---: |
 | main at the start of this campaign | 31.2 | 30.4 | 26.9 |
 | after the n-gram reads and 7 stretches (earlier note) | 40.1 | 37.9 | 31.6 |
-| final build, all of the above | 45.4 | 44.0 | 42.6 |
+| the build before the native hyper-connection read | 45.4 | 44.0 | 42.6 |
+| final build, with the native hyper-connection read | 47.3 | 45.7 | 44.5 |
 | final build with today's kill switches set (flat K/V, portable GDN, no pooled or rotary cache, 15 stretches) | 41.7 | 39.5 | 32.4 |
 
 Individual steps, each against the same build with only that switch changed (two rounds): K/V segments 42.3 -> 42.3
@@ -103,10 +104,16 @@ Individual steps, each against the same build with only that switch changed (two
 
 Under canonical MTP (`--mlx-mtp-policy required`) the same switches give 40.8 -> 43.3, 36.1 -> 40.1 and 28.6 -> 39.0
 tok/s (+6.2%, +10.9%, +36%) at 1.9k, 9k and 39k tokens, and under the opt-in batched verifier 35.7 -> 36.4, 31.4 ->
-32.9 and 31.9 -> 39.0, text identical to the unchanged build in every case. A request cancelled mid-prefill leaves
+32.9 and 31.9 -> 39.0, text identical to the unchanged build in every case. With the native hyper-connection read the same
+switches give 40.6 -> 45.5, 36.1 -> 41.7 and 28.4 -> 40.7 tok/s under canonical MTP and 35.7 -> 36.2, 31.5 -> 32.7 and
+32.3 -> 39.0 under the batched verifier, text identical to the build with the switches set and to the build before
+the read in every case. A request cancelled mid-prefill leaves
 the server producing the same text for the next request, 16 back-to-back 9k requests give one text with steady
 decode (43.8-44.2 tok/s) and flat resident memory (72.33 -> 72.08 GB), 30 short requests stay at 48.9-49.2 tok/s with
 flat memory, and the streamed-experts and image-prefill smoke requests produce the same text as the previous builds.
+The same lanes on the final build: one text for all 16 back-to-back 9k requests (45.7-46.2 tok/s, resident memory
+72.43 -> 72.10 GB) and for all 30 short requests (51.2-51.7 tok/s, 71.42 -> 71.40 GB), the same text after a cancelled
+prefill, and the same streamed-experts and image-prefill hashes.
 
 After the changes the synchronized step (sum of all stages, which is larger than the real step because every stage
 is evaluated on its own) grows by 5.2 ms from 2.6k to 39k tokens of context, where it grew by 20.9 ms before: the
@@ -118,15 +125,26 @@ flat. The raw profiles are in the benchmark record.
 - **GDN gates (kernels A and B): shipped default-on.** Server A/B, same binary with the two stretches in the mask or
   not, three rounds, text identical: +0.79% (2,207 tokens), +0.87% (1,905), +0.83% (8,976). The 16-step real-pack
   chain is 351.6 -> 342.2 ms on the M5 and 503 -> 497 ms on the M2.
-- **Hyper-connection read: built, exact, measured slower, left opt-in.** In isolation, a decode-row read is cheaper
-  (24.6 -> 23.0 us per read when 384 reads are submitted back to back, 190.5 -> 180.3 us when each is synchronised,
-  M5; 32.9 -> 31.0 on the M2), and one native launch costs 1.6 us of host time against 0.5 us for two plain
-  elementwise ops. End to end it is slower: -1.0% and -0.8% (same binary, mask on versus off, three rounds, p1 and
-  p3), -0.7% to -1.0% against the previous build. An allocation-only control (the merged weights built and kept, never
-  used) is -0.4% and -0.2%, so about a third of the loss is the 637 MB of duplicated weights (96 residuals x 6.6 MB)
-  and the rest is the native path itself; the serialised merged GEMV also removes the overlap the write-gate
-  GEMV had with the low-rank chain. The mask therefore has an opt-in class (`Stretch::default_on`): the stretch runs
-  only when `AX_FLASH_NEXT_FUSE` names it or says `all`.
+- **Hyper-connection read: first version slower, second version shipped default-on.** The first version fused only
+  the elementwise tail (`ax_hc_low_gate_v1` behind one GEMV over the concatenated `read_down` and `write_inject`). It
+  was exact and cheaper in isolation (24.6 -> 23.0 us per read when 384 reads are submitted back to back, M5), but
+  end to end it was slower: -1.0% and -0.8% (same binary, mask on versus off, three rounds, p1 and p3). An
+  allocation-only control (the merged weights built and kept, never used) was -0.4% and -0.2%, so about a third of
+  the loss was the 637 MB of duplicated weights and the rest the native path itself; the serialised merged GEMV also
+  removed the overlap the write-gate GEMV had with the low-rank chain. The conclusion was that a fusion which keeps
+  MLX's GEMVs and only shortens the tail cannot win, so the second version moves the elementwise work **into** the
+  GEMV epilogues and reads the stored weights directly (no merged copy, no extra dispatch between the projection
+  and its tail). It is exact against MLX's own `gemv`: 64 random seeds at production geometry with overflowing,
+  cancelling, NaN, infinity, signed-zero and subnormal inputs; every one of the 65,536 bf16 patterns through each
+  epilogue in each role, one stream at a time so a NaN in one stream cannot hide an error in another; a
+  tie-engineered stream-mean case in which the four candidate associations round differently; and mutation checks
+  (reversed shuffle or threadgroup order, a different mean association, a dropped `+ 0.0f`, an unrounded sigmoid
+  each make a test fail). The real-pack gates (prefill, verifier windows of 1/2/3/4/8 rows under Shared and
+  RowExact, a 16-step chain, final state) are raw-bit identical to the eager baseline on the M2 Ultra and the M5 Max,
+  with the stretch's counter proving it ran on every one of the 1,536 reads of the chain. Server A/B, same binary,
+  the stretch in the mask or not, three rounds, text identical: 45.05 -> 47.01 tok/s (+4.3%, 2,207 tokens), 47.40 ->
+  49.76 (+5.0%, 1,905), 43.84 -> 45.77 (+4.4%, 8,976); TTFT unchanged. On the M2 Ultra the same A/B is +0.5%, +0.9%
+  and +0.3% (two rounds, text identical); the gain there is small and the cause was not investigated.
 - The router's `softmax`, `argpartition` and `take_along_axis` are primitives, not fusable glue.
 
 ## Limits
