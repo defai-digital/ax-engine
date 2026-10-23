@@ -1562,3 +1562,201 @@ fn flash_next_fused_matches_eager_on_real_pack() {
             .join(",")
     );
 }
+
+/// The QSA rotary table cache builds each cos/sin table once per decode step
+/// instead of once per layer and call. The cached arrays are the outputs of the
+/// same ops, so logits and the retained state must match the uncached run bit
+/// for bit. Use a prompt long enough (> 2,200 ids) that the selected-attention
+/// path and its pooled block keys are active for the last rows, so the block
+/// table cache is exercised as well as the query/key tables.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,200 ids)"]
+fn flash_next_rope_cache_matches_uncached_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::qwen4_exp_qsa::with_rope_cache;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(tokens.len() > 2_200, "need more than 2,200 prompt ids");
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+        forward(trunk, input, state, owner, policy).unwrap()
+    };
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+
+    let initial = Qwen4ExpState::new(trunk, owner);
+    let split = tokens.len() - 17;
+    // Prefill chunks use the same cached tables (many rows, one table per key).
+    let prefix_uncached = with_rope_cache(false, || {
+        run(&tokens[..split], &initial, ProjectionBatchPolicy::Shared)
+    });
+    let prefix = with_rope_cache(true, || {
+        run(&tokens[..split], &initial, ProjectionBatchPolicy::Shared)
+    });
+    assert_eq!(bits(&prefix_uncached), bits(&prefix), "prefill logits");
+    assert_eq!(
+        snapshot(prefix_uncached.state.clone()),
+        snapshot(prefix.state.clone()),
+        "prefill state"
+    );
+
+    for policy in [
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::RowExact,
+    ] {
+        for rows in [1usize, 2, 3, 4, 8] {
+            let window = &tokens[split..split + rows];
+            let uncached = with_rope_cache(false, || run(window, &prefix.state, policy));
+            let cached = with_rope_cache(true, || run(window, &prefix.state, policy));
+            assert_eq!(bits(&uncached), bits(&cached), "{policy:?} rows {rows}");
+            assert_eq!(
+                snapshot(uncached.state),
+                snapshot(cached.state),
+                "{policy:?} rows {rows}: retained state"
+            );
+        }
+    }
+
+    let mut uncached_state = prefix.state.clone();
+    let mut cached_state = prefix.state.clone();
+    let (mut uncached_secs, mut cached_secs) = (0.0f64, 0.0f64);
+    for step in 0..16 {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let uncached = with_rope_cache(false, || {
+            run(&token, &uncached_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&uncached.logits]);
+        uncached_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let cached = with_rope_cache(true, || {
+            run(&token, &cached_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&cached.logits]);
+        cached_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&uncached), bits(&cached), "singleton step {step}");
+        uncached_state = uncached.state;
+        cached_state = cached.state;
+    }
+    assert_eq!(
+        snapshot(uncached_state),
+        snapshot(cached_state),
+        "chain state"
+    );
+    eprintln!(
+        "ROPE_CACHE_VS_UNCACHED chain16 uncached_ms={:.1} cached_ms={:.1}",
+        uncached_secs * 1e3,
+        cached_secs * 1e3
+    );
+}
+
+/// Synchronized decode attribution at long context: chunked prefill of all but
+/// the last `AX_FLASH_NEXT_PROFILE_STEPS` (default 8) ids, then that many
+/// singleton decode steps, each replayed once as an unmeasured control and once
+/// under capture. Reports per-step averages of the stage seconds and MLX ops,
+/// so QSA cost can be compared between a short and a long prompt.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS; synchronized attribution only"]
+fn flash_next_decode_context_stage_profile() {
+    use crate::model::ModelConfig;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    let steps = env_usize("AX_FLASH_NEXT_PROFILE_STEPS").unwrap_or(8);
+    assert!(
+        steps >= 1 && tokens.len() > steps + 1,
+        "need more ids than steps"
+    );
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+
+    let prefix_len = tokens.len() - steps;
+    let mut state = Qwen4ExpState::new(trunk, owner);
+    // The QSA score workspace (256 MiB) caps chunk x context; 1,024-token chunks
+    // stay inside it up to about 70k tokens.
+    let chunk_size = env_usize("AX_FLASH_NEXT_PREFILL_CHUNK_SIZE").unwrap_or(1024);
+    for (offset, end) in chunk_ranges(prefix_len, chunk_size) {
+        let output = forward(
+            trunk,
+            &tokens[offset..end],
+            &state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        eval(&[&output.logits]);
+        state = output.state;
+    }
+    // Serializing evaluates every cache array, so the first measured step does
+    // not pay for the prefill graph.
+    drop(snapshot(state.clone()));
+
+    let mut stage_seconds: BTreeMap<&'static str, f64> = BTreeMap::new();
+    let mut stage_ops: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut control_seconds = 0.0f64;
+    for step in 0..steps {
+        let input = [tokens[prefix_len + step]];
+        let started = Instant::now();
+        let control = forward(trunk, &input, &state, owner, ProjectionBatchPolicy::Shared).unwrap();
+        eval(&[&control.logits]);
+        control_seconds += started.elapsed().as_secs_f64();
+        CAPTURE.with_borrow_mut(|capture| {
+            assert!(capture.is_none());
+            *capture = Some(Capture {
+                layer: None,
+                previous: Instant::now(),
+                previous_ops: mlx_sys::op_count_snapshot(),
+                samples: Vec::new(),
+                paging: Vec::new(),
+            });
+        });
+        let guard = CaptureGuard;
+        let measured =
+            forward(trunk, &input, &state, owner, ProjectionBatchPolicy::Shared).unwrap();
+        let capture = CAPTURE.with_borrow_mut(Option::take).unwrap();
+        drop(guard);
+        assert_eq!(measured.logits.data_f32(), control.logits.data_f32());
+        for sample in &capture.samples {
+            *stage_seconds.entry(sample.stage).or_insert(0.0) += sample.seconds;
+            *stage_ops.entry(sample.stage).or_insert(0) += sample.ops;
+        }
+        state = measured.state;
+    }
+    let per_step = |total: f64| total / steps as f64;
+    let evidence = serde_json::json!({
+        "qualification": false,
+        "method": "synchronized per-step stage attribution at long context",
+        "context_tokens": prefix_len,
+        "steps": steps,
+        "control_seconds_per_step": per_step(control_seconds),
+        "stage_seconds_per_step": stage_seconds
+            .iter()
+            .map(|(stage, seconds)| (stage.to_string(), per_step(*seconds)))
+            .collect::<BTreeMap<_, _>>(),
+        "stage_ops_per_step": stage_ops
+            .iter()
+            .map(|(stage, ops)| (stage.to_string(), *ops / steps as u64))
+            .collect::<BTreeMap<_, _>>(),
+    });
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+    eprintln!("{evidence}");
+}

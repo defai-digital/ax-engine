@@ -103,6 +103,14 @@ pub(crate) fn flash_next_ngram_prefetch_enabled() -> bool {
     *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_PREFETCH"))
 }
 
+/// Flash Next builds the QSA rotary cos/sin tables once per decode step
+/// instead of once per layer and call. Kill switch:
+/// `AX_FLASH_NEXT_ROPE_CACHE=0`.
+pub(crate) fn flash_next_qsa_rope_cache_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_ROPE_CACHE"))
+}
+
 /// Flash Next pre-reads the n-gram scales and biases planes into the OS page
 /// cache after the model weights finish loading, so first-seen row gathers
 /// need about one cold read instead of three. Running it earlier would let

@@ -755,6 +755,88 @@ fn rms_with_gain(x: &MlxArray, weight: &MlxArray, eps: f32) -> MlxArray {
     astype(&rms_norm(&x32, Some(&scale), eps, None), dtype, None)
 }
 
+/// Identity of one QSA rotary cos/sin table. The floats compare by raw bits:
+/// equal-bit arguments rebuild byte-identical tables.
+#[derive(Clone, Copy, PartialEq)]
+struct TrigKey {
+    /// `f64::to_bits` of the first position.
+    start: u64,
+    /// `f64::to_bits` of the position step.
+    step: u64,
+    count: i32,
+    rotary_dim: i32,
+    /// `f32::to_bits` of the rotary base.
+    rope_base: u32,
+    dtype: MlxDtype,
+    ndim: usize,
+    seq_axis: i32,
+}
+
+/// One cached cos/sin pair, already reshaped to the broadcast shape of the
+/// caller's tensor.
+struct TrigEntry {
+    key: TrigKey,
+    cos: MlxArray,
+    sin: MlxArray,
+}
+
+thread_local! {
+    /// Rotary cos/sin tables shared by every QSA layer of one decode step.
+    /// `MlxArray` clone is a refcount bump, so hits are cheap.
+    static TRIG_CACHE: std::cell::RefCell<Vec<TrigEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// FIFO capacity of [`TRIG_CACHE`]; a decode step needs one entry per distinct
+/// `(offset, dtype, shape)` rotary table and seldom more.
+const TRIG_CACHE_ENTRIES: usize = 8;
+
+fn rope_cache_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = ROPE_CACHE_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+    crate::fastpath::flash_next_qsa_rope_cache_enabled()
+}
+
+#[cfg(test)]
+thread_local! {
+    static ROPE_CACHE_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `action` with the rotary table cache forced on or off on this thread.
+#[cfg(test)]
+pub(crate) fn with_rope_cache<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ROPE_CACHE_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(ROPE_CACHE_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+#[cfg(test)]
+fn reset_rope_cache_for_test() {
+    TRIG_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+#[cfg(test)]
+fn rope_cache_len_for_test() -> usize {
+    TRIG_CACHE.with(|cache| cache.borrow().len())
+}
+
+/// Broadcast shape of the cos/sin table for `x`: ones except the sequence axis
+/// (`count`) and the last axis (`rotary_dim`).
+fn trig_shape(x: &MlxArray, rotary_dim: i32, seq_axis: i32) -> Vec<i32> {
+    let mut shape = vec![1i32; x.ndim()];
+    shape[seq_axis as usize] = x.shape()[seq_axis as usize];
+    shape[x.ndim() - 1] = rotary_dim;
+    shape
+}
+
 /// Official Flash Next QSA rotary.
 ///
 /// Inverse frequencies and angles stay float32. Cos and sin are cast to the
@@ -762,6 +844,7 @@ fn rms_with_gain(x: &MlxArray, weight: &MlxArray, eps: f32) -> MlxArray {
 /// dtype on the first `rotary_dim` channels; later channels pass through.
 /// Certification notes must record this as a production-math correction with
 /// M2 evidence.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn apply_qsa_rotary(
     x: &MlxArray,
     rotary_dim: i32,
@@ -782,19 +865,27 @@ fn apply_rotary_trig(
     sin: MlxArray,
     seq_axis: i32,
 ) -> MlxArray {
+    let trig = trig_shape(x, rotary_dim, seq_axis);
+    let cos = reshape(&cos, &trig, None);
+    let sin = reshape(&sin, &trig, None);
+    apply_rotary_trig_shaped(x, rotary_dim, &cos, &sin)
+}
+
+/// Rotate the first `rotary_dim` channels with cos/sin already reshaped to
+/// [`trig_shape`]; later channels pass through.
+fn apply_rotary_trig_shaped(
+    x: &MlxArray,
+    rotary_dim: i32,
+    cos: &MlxArray,
+    sin: &MlxArray,
+) -> MlxArray {
     let shape = x.shape();
     let ndim = shape.len();
     let head_dim = shape[ndim - 1];
-    let seq = shape[seq_axis as usize];
-    let mut trig_shape = vec![1i32; ndim];
-    trig_shape[seq_axis as usize] = seq;
-    trig_shape[ndim - 1] = rotary_dim;
-    let cos = reshape(&cos, &trig_shape, None);
-    let sin = reshape(&sin, &trig_shape, None);
     let rope_part = slice_last_dim(x, 0, rotary_dim, None);
     let rotated = add(
-        &multiply(&rope_part, &cos, None),
-        &multiply(&rotate_half_last(&rope_part), &sin, None),
+        &multiply(&rope_part, cos, None),
+        &multiply(&rotate_half_last(&rope_part), sin, None),
         None,
     );
     if rotary_dim < head_dim {
@@ -821,14 +912,16 @@ pub(crate) fn apply_qsa_rotary_offset(
         let positions: Vec<[i32; 3]> = (0..seq as usize).map(|i| media.at(start + i)).collect();
         return apply_qsa_mrope(x, rotary_dim, rope_base, &positions, &media, seq_axis);
     }
-    let positions = arange(
+    let (cos, sin) = cached_rotary_trig(
+        x,
+        rotary_dim,
+        rope_base,
         f64::from(offset),
-        f64::from(offset) + f64::from(seq),
         1.0,
-        MlxDtype::Float32,
-        None,
+        seq,
+        seq_axis,
     );
-    apply_qsa_rotary(x, rotary_dim, rope_base, &positions, seq_axis)
+    apply_rotary_trig_shaped(x, rotary_dim, &cos, &sin)
 }
 
 fn qsa_rotary_cos_sin(
@@ -848,6 +941,72 @@ fn qsa_rotary_cos_sin(
     let cos = concatenate(&[&cos_h, &cos_h], -1, None);
     let sin = concatenate(&[&sin_h, &sin_h], -1, None);
     (astype(&cos, dtype, None), astype(&sin, dtype, None))
+}
+
+/// Cos/sin for `count` positions from `start` in steps of `step`, reshaped to
+/// [`trig_shape`] of `x`.
+///
+/// The table depends only on the key's arguments, and every operation below is
+/// the same one the uncached path always ran, so a cache hit is bit-identical
+/// to a rebuild.
+fn cached_rotary_trig(
+    x: &MlxArray,
+    rotary_dim: i32,
+    rope_base: f32,
+    start: f64,
+    step: f64,
+    count: i32,
+    seq_axis: i32,
+) -> (MlxArray, MlxArray) {
+    let key = TrigKey {
+        start: start.to_bits(),
+        step: step.to_bits(),
+        count,
+        rotary_dim,
+        rope_base: rope_base.to_bits(),
+        dtype: x.dtype(),
+        ndim: x.ndim(),
+        seq_axis,
+    };
+    let enabled = rope_cache_enabled();
+    if enabled {
+        // Clone the pair out and drop the borrow before any MLX call.
+        let cached = TRIG_CACHE.with(|cache| {
+            cache
+                .borrow()
+                .iter()
+                .find(|entry| entry.key == key)
+                .map(|entry| (entry.cos.clone(), entry.sin.clone()))
+        });
+        if let Some((cos, sin)) = cached {
+            return (cos, sin);
+        }
+    }
+    let positions = arange(
+        start,
+        start + f64::from(count) * step,
+        step,
+        MlxDtype::Float32,
+        None,
+    );
+    let (cos, sin) = qsa_rotary_cos_sin(&positions, rotary_dim, rope_base, x.dtype());
+    let trig = trig_shape(x, rotary_dim, seq_axis);
+    let cos = reshape(&cos, &trig, None);
+    let sin = reshape(&sin, &trig, None);
+    if enabled {
+        TRIG_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= TRIG_CACHE_ENTRIES {
+                cache.remove(0);
+            }
+            cache.push(TrigEntry {
+                key,
+                cos: cos.clone(),
+                sin: sin.clone(),
+            });
+        });
+    }
+    (cos, sin)
 }
 
 /// Interleaved MRoPE with the official QSA rounding: float32 angles, cos and
@@ -936,14 +1095,16 @@ fn rope_block_starts(blocks: &MlxArray, rotary_dim: i32, rope_base: f32, ratio: 
             .collect();
         return apply_qsa_mrope(blocks, rotary_dim, rope_base, &positions, &media, 1);
     }
-    let starts = arange(
+    let (cos, sin) = cached_rotary_trig(
+        blocks,
+        rotary_dim,
+        rope_base,
         0.0,
-        f64::from(n_blocks) * f64::from(ratio),
         f64::from(ratio),
-        MlxDtype::Float32,
-        None,
+        n_blocks,
+        1,
     );
-    apply_qsa_rotary(blocks, rotary_dim, rope_base, &starts, 1)
+    apply_rotary_trig_shaped(blocks, rotary_dim, &cos, &sin)
 }
 
 fn block_scores(queries: &MlxArray, blocks: &MlxArray) -> MlxArray {
@@ -2369,5 +2530,220 @@ mod tests {
                 .iter()
                 .all(|token| *token <= 3)
         );
+    }
+
+    /// Deterministic rotary input: a slow sine of an arange ramp, so every
+    /// value sits in `[-1, 1]` without any RNG.
+    fn rotary_input(shape: &[i32], dtype: MlxDtype) -> MlxArray {
+        let len: i32 = shape.iter().product();
+        let ramp = arange(0.0, f64::from(len), 1.0, MlxDtype::Float32, None);
+        let wave = sin(&multiply(&ramp, &MlxArray::from_f32(0.017), None), None);
+        astype(&reshape(&wave, shape, None), dtype, None)
+    }
+
+    /// Widen to float32, evaluate, and compare the raw bit patterns: the cache
+    /// must reproduce the uncached table exactly, not approximately.
+    fn raw_bits(array: &MlxArray) -> Vec<u32> {
+        let widened = astype(array, MlxDtype::Float32, None);
+        eval(&[&widened]);
+        widened
+            .data_f32()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    #[test]
+    fn rope_cache_matches_uncached_bits() {
+        reset_rope_cache_for_test();
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for offset in [0, 1, 5, 4093] {
+                for seq in [1, 3] {
+                    for (shape, seq_axis) in [(vec![1, 4, seq, 256], 2), (vec![1, seq, 4, 128], 1)]
+                    {
+                        let x = rotary_input(&shape, dtype);
+                        let uncached = with_rope_cache(false, || {
+                            apply_qsa_rotary_offset(&x, 64, 10_000_000.0, offset, seq_axis)
+                        });
+                        let miss = with_rope_cache(true, || {
+                            apply_qsa_rotary_offset(&x, 64, 10_000_000.0, offset, seq_axis)
+                        });
+                        let hit = with_rope_cache(true, || {
+                            apply_qsa_rotary_offset(&x, 64, 10_000_000.0, offset, seq_axis)
+                        });
+                        let expected = raw_bits(&uncached);
+                        let label =
+                            format!("dtype={dtype:?} offset={offset} seq={seq} axis={seq_axis}");
+                        assert_eq!(raw_bits(&miss), expected, "miss: {label}");
+                        assert_eq!(raw_bits(&hit), expected, "hit: {label}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rope_cache_hit_skips_table_ops() {
+        reset_rope_cache_for_test();
+        let x = rotary_input(&[1, 4, 1, 256], MlxDtype::Bfloat16);
+        let start = mlx_sys::op_count_snapshot();
+        let _first = with_rope_cache(true, || apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 7, 2));
+        let first = mlx_sys::op_count_take(start);
+        let start = mlx_sys::op_count_snapshot();
+        let _second = with_rope_cache(true, || apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 7, 2));
+        let second = mlx_sys::op_count_take(start);
+        assert!(second + 8 <= first, "first={first} second={second}");
+    }
+
+    #[test]
+    fn rope_cache_keys_do_not_cross_contaminate() {
+        reset_rope_cache_for_test();
+        let cases: Vec<(&str, MlxArray, i32, f32, i32, i32)> = vec![
+            (
+                "baseline",
+                rotary_input(&[1, 4, 2, 256], MlxDtype::Float32),
+                64,
+                10_000_000.0,
+                3,
+                2,
+            ),
+            (
+                "dtype",
+                rotary_input(&[1, 4, 2, 256], MlxDtype::Bfloat16),
+                64,
+                10_000_000.0,
+                3,
+                2,
+            ),
+            (
+                "rotary-dim",
+                rotary_input(&[1, 4, 2, 256], MlxDtype::Float32),
+                32,
+                10_000_000.0,
+                3,
+                2,
+            ),
+            (
+                "rope-base",
+                rotary_input(&[1, 4, 2, 256], MlxDtype::Float32),
+                64,
+                1_000_000.0,
+                3,
+                2,
+            ),
+            (
+                "seq-axis",
+                rotary_input(&[1, 2, 4, 128], MlxDtype::Float32),
+                64,
+                10_000_000.0,
+                3,
+                1,
+            ),
+            (
+                "offset",
+                rotary_input(&[1, 4, 2, 256], MlxDtype::Float32),
+                64,
+                10_000_000.0,
+                9,
+                2,
+            ),
+        ];
+        let uncached: Vec<Vec<u32>> = cases
+            .iter()
+            .map(|(_, x, rotary_dim, base, offset, seq_axis)| {
+                let rotated = with_rope_cache(false, || {
+                    apply_qsa_rotary_offset(x, *rotary_dim, *base, *offset, *seq_axis)
+                });
+                raw_bits(&rotated)
+            })
+            .collect();
+        for (index, (name, x, rotary_dim, base, offset, seq_axis)) in cases.iter().enumerate() {
+            let cached = with_rope_cache(true, || {
+                apply_qsa_rotary_offset(x, *rotary_dim, *base, *offset, *seq_axis)
+            });
+            assert_eq!(raw_bits(&cached), uncached[index], "{name}");
+        }
+        assert_eq!(rope_cache_len_for_test(), cases.len());
+        // Interleave two keys: every hit must reuse only its own entry.
+        for _ in 0..2 {
+            for index in 0..2 {
+                let (name, x, rotary_dim, base, offset, seq_axis) = &cases[index];
+                let cached = with_rope_cache(true, || {
+                    apply_qsa_rotary_offset(x, *rotary_dim, *base, *offset, *seq_axis)
+                });
+                assert_eq!(raw_bits(&cached), uncached[index], "{name} interleaved");
+            }
+        }
+        assert_eq!(rope_cache_len_for_test(), cases.len());
+    }
+
+    #[test]
+    fn rope_cache_evicts_oldest_beyond_capacity() {
+        reset_rope_cache_for_test();
+        let x = rotary_input(&[1, 4, 1, 256], MlxDtype::Bfloat16);
+        let call = |offset: i32| {
+            with_rope_cache(true, || {
+                apply_qsa_rotary_offset(&x, 64, 10_000_000.0, offset, 2)
+            })
+        };
+        let start = mlx_sys::op_count_snapshot();
+        let first = call(0);
+        let first_ops = mlx_sys::op_count_take(start);
+        for offset in 1..=TRIG_CACHE_ENTRIES as i32 {
+            let _ = call(offset);
+        }
+        assert_eq!(rope_cache_len_for_test(), TRIG_CACHE_ENTRIES);
+        let expected = raw_bits(&first);
+        let start = mlx_sys::op_count_snapshot();
+        let rebuilt = call(0);
+        assert_eq!(mlx_sys::op_count_take(start), first_ops);
+        assert_eq!(raw_bits(&rebuilt), expected);
+    }
+
+    #[test]
+    fn rope_cache_is_bypassed_under_media_scope() {
+        reset_rope_cache_for_test();
+        let x = rotary_input(&[1, 2, 3, 64], MlxDtype::Bfloat16);
+        let text_like: Vec<[i32; 3]> = (0..12).map(|p| [p; 3]).collect();
+        let uncached = with_rope_cache(false, || {
+            let _scope = scoped_media(Some(media(text_like.clone(), 0)));
+            apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 5, 2)
+        });
+        let before = rope_cache_len_for_test();
+        let cached = with_rope_cache(true, || {
+            let _scope = scoped_media(Some(media(text_like, 0)));
+            apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 5, 2)
+        });
+        assert_eq!(rope_cache_len_for_test(), before);
+        assert_eq!(raw_bits(&cached), raw_bits(&uncached));
+    }
+
+    #[test]
+    fn block_starts_cache() {
+        reset_rope_cache_for_test();
+        let blocks = rotary_input(&[1, 5, 64], MlxDtype::Bfloat16);
+        let uncached = with_rope_cache(false, || rope_block_starts(&blocks, 64, 10_000_000.0, 4));
+        let miss = with_rope_cache(true, || rope_block_starts(&blocks, 64, 10_000_000.0, 4));
+        let hit = with_rope_cache(true, || rope_block_starts(&blocks, 64, 10_000_000.0, 4));
+        assert_eq!(raw_bits(&miss), raw_bits(&uncached));
+        assert_eq!(raw_bits(&hit), raw_bits(&uncached));
+        assert_eq!(rope_cache_len_for_test(), 1);
+        let longer = rotary_input(&[1, 6, 64], MlxDtype::Bfloat16);
+        let other = with_rope_cache(true, || rope_block_starts(&longer, 64, 10_000_000.0, 4));
+        let other_uncached =
+            with_rope_cache(false, || rope_block_starts(&longer, 64, 10_000_000.0, 4));
+        assert_eq!(raw_bits(&other), raw_bits(&other_uncached));
+        assert_eq!(rope_cache_len_for_test(), 2);
+    }
+
+    #[test]
+    fn explicit_positions_match_the_offset_path() {
+        reset_rope_cache_for_test();
+        let x = rotary_input(&[1, 4, 2, 256], MlxDtype::Bfloat16);
+        let positions = arange(5.0, 7.0, 1.0, MlxDtype::Float32, None);
+        let explicit = apply_qsa_rotary(&x, 64, 10_000_000.0, &positions, 2);
+        let offset_path =
+            with_rope_cache(true, || apply_qsa_rotary_offset(&x, 64, 10_000_000.0, 5, 2));
+        assert_eq!(raw_bits(&explicit), raw_bits(&offset_path));
     }
 }

@@ -515,6 +515,8 @@ impl Qwen4ExpAttention {
         ] {
             crate::model::qwen4_exp::profiling::dump(stage, &[array]);
         }
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_a_proj", &[&q_packed, &k_raw, &v_raw]);
 
         let packed = reshape(
             &q_packed,
@@ -554,8 +556,12 @@ impl Qwen4ExpAttention {
         let dtype = hidden.dtype();
         let keys = astype(&keys, dtype, None);
         let values = astype(&values, dtype, None);
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_b_prep", &[&queries, &keys, &values]);
         let staged_keys = append_cache(cache.keys(), &keys)?;
         let staged_values = append_cache(cache.values(), &values)?;
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_c_append", &[&staged_keys, &staged_values]);
         #[cfg(test)]
         for (stage, array) in [
             ("qsa_queries", &queries),
@@ -580,6 +586,8 @@ impl Qwen4ExpAttention {
             }
             None => attend_dense(&queries, &staged_keys, &staged_values, cfg),
         };
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_d_attend", &[&attn]);
         let attn = reshape(
             &transpose(&attn, &[0, 2, 1, 3], None),
             &[batch, seq, cfg.query_width],
