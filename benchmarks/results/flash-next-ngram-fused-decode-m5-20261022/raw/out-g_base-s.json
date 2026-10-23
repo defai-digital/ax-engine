@@ -1,0 +1,46 @@
+{
+ "label": "g_base-s",
+ "bin": "~/build/fn-baseline/ax-engine-server",
+ "rows": [
+  {
+   "file": "p1.txt",
+   "prompt_tokens": 2207,
+   "completion_tokens": 128,
+   "ttft_s": 5.445,
+   "prefill_tok_s": 405.3,
+   "decode_tok_s": 31.25,
+   "text_head": "This Rust code implements a **backend adapter layer** for an LLM (Large Language",
+   "text_sha": "6189ecc27de45897"
+  },
+  {
+   "file": "p3.txt",
+   "prompt_tokens": 1905,
+   "completion_tokens": 128,
+   "ttft_s": 4.386,
+   "prefill_tok_s": 434.3,
+   "decode_tok_s": 33.1,
+   "text_head": "This Rust code implements the **input handling and editing logic for a chat inte",
+   "text_sha": "8c0545060f84c30b"
+  },
+  {
+   "file": "p5.txt",
+   "prompt_tokens": 2560,
+   "completion_tokens": 128,
+   "ttft_s": 7.29,
+   "prefill_tok_s": 351.2,
+   "decode_tok_s": 31.61,
+   "text_head": "This Rust code implements **attention masking logic for Large Language Models (L",
+   "text_sha": "71fe3d02ce66dd14"
+  },
+  {
+   "file": "p6.txt",
+   "prompt_tokens": 1773,
+   "completion_tokens": 128,
+   "ttft_s": 3.793,
+   "prefill_tok_s": 467.5,
+   "decode_tok_s": 33.62,
+   "text_head": "This Rust code implements an **asynchronous HTTP API gateway** (likely using the",
+   "text_sha": "d2c7085efba28918"
+  }
+ ]
+}

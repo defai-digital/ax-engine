@@ -36,6 +36,13 @@ footprint to 104 GiB with 6 GiB of compressor growth, and required MTP at
 signal-level evidence on one machine, not a certification record; the
 Ultra-class target above is unchanged.
 
+Those TTFT figures were dominated by cold reads of the n-gram table, one row at a
+time. After the 2026-10-22 changes (concurrent row reads, next-chunk read-ahead, and
+compiled decode stretches, each with a kill switch), first-seen prompts on the same
+host measured TTFT 2.5 s at 2,207 tokens, 14.0 s at 8,976 and 76.4 s at 39,225, and
+decode 37.9-42.4 tok/s with identical generated text. Record:
+[Flash Next n-gram reads and fused decode stretches, 2026-10-22](../performance/flash-next-ngram-reads-and-fused-decode-2026-10-22.md).
+
 On 2026-09-23 the MXFP4 MTP direct-fallback behaviour was root-caused and
 instrumented. The draft cursor is created only on a genuine cold-start prefill,
 so a request whose prefill reuses a cached prefix decodes direct for its whole
