@@ -1,0 +1,166 @@
+{
+  "gates": [
+    {
+      "gate": "delivery",
+      "passed": true,
+      "detail": "49 members, 132261877478 bytes verified from an empty cache after 1 failed attempt(s) that were resumed (transport override {'AX_ENGINE_HF_MAX_WORKERS': '2', 'HF_HUB_DOWNLOAD_TIMEOUT': '60'})",
+      "download_seconds": 116.308,
+      "failed_attempts": 1
+    },
+    {
+      "gate": "integrity",
+      "passed": true,
+      "detail": "one server binary and one pack inventory across all results; hardware is the target SKU"
+    },
+    {
+      "gate": "quality",
+      "passed": true,
+      "detail": "105/105 complete in both arms, default text equals direct text, every AX failure also fails on the reference (['format_csv_pair', 'format_status_colon', 'instruction_alphabet_first', 'knowledge_water_formula', 'science_gravity_earth'])",
+      "ax_failures": {
+        "disabled": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ],
+        "default": [
+          "format_status_colon",
+          "instruction_alphabet_first",
+          "knowledge_water_formula",
+          "science_gravity_earth"
+        ]
+      },
+      "reference_failures": [
+        "format_csv_pair",
+        "format_status_colon",
+        "instruction_alphabet_first",
+        "knowledge_water_formula",
+        "science_gravity_earth"
+      ],
+      "ax_only_failures": {
+        "disabled": [],
+        "default": []
+      }
+    },
+    {
+      "gate": "lifecycle",
+      "passed": true,
+      "detail": "7 actions in each of ['disabled', 'default'] with drained counters"
+    },
+    {
+      "gate": "memory",
+      "passed": true,
+      "detail": "peak server RSS {disabled: 78.1, default: 78.0} GiB within 96 GiB",
+      "peaks_gib": {
+        "disabled": 78.083,
+        "default": 77.977
+      }
+    },
+    {
+      "gate": "readiness",
+      "passed": true,
+      "detail": "first load after delivery 48.507s; staged-pack worst 50.505s",
+      "delivered": {
+        "disabled": 48.507,
+        "required": 59.604,
+        "default": 60.614
+      }
+    },
+    {
+      "gate": "long_lookup",
+      "passed": true,
+      "detail": "29774-token lookup took {'disabled': 55.891, 'default': 55.395} s (limit 400 s)",
+      "seconds": {
+        "disabled": 55.891,
+        "default": 55.395
+      }
+    },
+    {
+      "gate": "reference_relative",
+      "passed": true,
+      "detail": "all 6 AX-arm cells within decode >= 0.9 and TTFT <= 1.15 of the reference",
+      "cells": {
+        "512/disabled": {
+          "decode_ratio": 3.6746,
+          "ttft_ratio": 0.0829,
+          "ax_decode_tok_s": 50.796,
+          "reference_decode_tok_s": 13.824,
+          "ax_ttft_s": 0.48,
+          "reference_ttft_s": 5.797
+        },
+        "512/default": {
+          "decode_ratio": 3.6755,
+          "ttft_ratio": 0.0826,
+          "ax_decode_tok_s": 50.81,
+          "reference_decode_tok_s": 13.824,
+          "ax_ttft_s": 0.479,
+          "reference_ttft_s": 5.797
+        },
+        "2048/disabled": {
+          "decode_ratio": 3.6678,
+          "ttft_ratio": 0.1005,
+          "ax_decode_tok_s": 47.33,
+          "reference_decode_tok_s": 12.904,
+          "ax_ttft_s": 1.573,
+          "reference_ttft_s": 15.642
+        },
+        "2048/default": {
+          "decode_ratio": 3.6673,
+          "ttft_ratio": 0.1008,
+          "ax_decode_tok_s": 47.324,
+          "reference_decode_tok_s": 12.904,
+          "ax_ttft_s": 1.577,
+          "reference_ttft_s": 15.642
+        },
+        "8192/disabled": {
+          "decode_ratio": 6.1386,
+          "ttft_ratio": 0.1269,
+          "ax_decode_tok_s": 45.698,
+          "reference_decode_tok_s": 7.444,
+          "ax_ttft_s": 12.173,
+          "reference_ttft_s": 95.923
+        },
+        "8192/default": {
+          "decode_ratio": 6.1661,
+          "ttft_ratio": 0.1253,
+          "ax_decode_tok_s": 45.902,
+          "reference_decode_tok_s": 7.444,
+          "ax_ttft_s": 12.021,
+          "reference_ttft_s": 95.923
+        }
+      }
+    },
+    {
+      "gate": "mtp_policy",
+      "passed": true,
+      "detail": "default mode never activated the drafter in any harness; required MTP stays an explicit opt-in and MTP-S/P/D remain not_assessed",
+      "default_verified_steps": {
+        "qa": 0.0,
+        "matrix": 0.0,
+        "lifecycle": 0.0
+      }
+    }
+  ],
+  "release_ready": true,
+  "schema": "ax-engine.flash-next.release-verdict.v1",
+  "release_scope": "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in (--mlx-mtp-policy required). MTP-S, MTP-P and MTP-D are not promoted and no MTP speedup is claimed.",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "thresholds_sha256": "17a39e0229cf734dca04ffa5abb4718a6c7b1c9c773891385a37396a1625345b",
+  "evidence_sha256": {
+    "delivery": "d41c49453e3337fe0037c1cf13e214539b55759d165abd7eb676d86642b02f8c",
+    "qa": "5668a1bdcc9d3c08b149b10acb8e08e97f2e8e4abfaadf70d62269e95de8deaf",
+    "lifecycle": "69085aeb3e8a72c6020f7eff1b227d7db045bfbaec58459e9c1a74581c30998d",
+    "matrix": "6e0bd6755f249d05a13e48e03246ad074e919bf03de223efa7f31048035348dc",
+    "reference": "95982fd4a12a899d422fb4f9621b11781a62b4b19187e18f910c19431de4c9ef"
+  },
+  "mtp_certification": {
+    "MTP-S": "not_assessed",
+    "MTP-P": "not_assessed",
+    "MTP-D": "not_assessed"
+  },
+  "source": {
+    "commit": "a3655fd03e6f731968d75c2b97afb4e64718db4a",
+    "tracked_tree_dirty": false
+  },
+  "disclosure": "The memory, readiness and long-lookup bounds were set after observing the single measurements named above and are therefore descriptive guard rails, not independently pre-registered limits. The reference-relative, quality and identity bounds were frozen before any reference or product-default data were collected."
+}

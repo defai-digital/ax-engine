@@ -38,10 +38,9 @@ STATUS_OPEN = (
 STATUS_RELEASED = (
     "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
     "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
-    "MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one larger host "
-    "and do not certify this standard by themselves; model MTP is an explicit experimental opt-in. "
-    "MTP Tier 2 pending. "
-    "AX certification record: Candidate (standard host MacBook Pro M5 Max 128 GB; MTP gates open)."
+    "MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; "
+    "model MTP is an explicit experimental opt-in. MTP Tier 2 pending. "
+    "AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open)."
 )
 RELEASE_SCOPE = (
     "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in "
@@ -49,7 +48,7 @@ RELEASE_SCOPE = (
 )
 RELEASE_VERDICT = (
     Path(__file__).resolve().parents[1]
-    / "benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-release-gates/release-verdict.json"
+    / "benchmarks/results/qualification/2026-10-23-flash-next-mxfp4-m5max-release-gates/release-verdict.json"
 )
 MTP_NOT_ASSESSED = {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")}
 

@@ -1,0 +1,56 @@
+{
+ "schema_version": 1,
+ "purpose": "direct-default release-gate evidence on the ADR-049 standard host: fresh-cache delivery, product-default QA/lifecycle/matrix and the pinned reference on one binary set",
+ "server_source_commit": "a3655fd03e6f731968d75c2b97afb4e64718db4a",
+ "server_source_tree_clean": true,
+ "harness_commit": "a3655fd0",
+ "rust_source_unchanged_between_server_commit_and_evidence_commit": true,
+ "executed_harness_changed_after_harness_commit": [],
+ "build_profile": "release-server",
+ "rust_toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13) (Homebrew)",
+ "toolchain_disclosure": "The build host's PATH resolved the Homebrew Rust 1.99.1 instead of the repository's 1.97.1 pin; the evidence is for these binaries as built.",
+ "binaries_sha256": {
+  "ax-engine-server": "8b19d1f32225b29d354868cede448542fd76b118d05c8389286b893cb99f0173",
+  "ax-engine": "4816da376c9213327ae6fd2f8a45bf4a78b3a5a9f30c8de25d9e3d0134775865",
+  "ax-engine-bench": "183c45a49635461bc09eab3969c92a9b202f45c659888572a82fa66b83db0600"
+ },
+ "mlx_runtime_version_reported": "0.32.4",
+ "mlx_assets_sha256": {
+  "libmlx.dylib": "d8c9393d584e781393c3effccfccd8ba85ad0c70264edaf9f897dca9875375c6",
+  "libjaccl.dylib": "7890e84a96e3121c8c1c2f351e41e46ba4d92e7b7bc6275fc2b38c2773891032",
+  "mlx.metallib": "c6d7a3facb83568f6e4cb2cf4a8c736ee29302571a48343cb9a3a4d1cd3e3893"
+ },
+ "reference_runtime": {
+  "runtime": "mlx-vlm",
+  "commit": "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb",
+  "versions": {
+   "mlx": "0.32.2",
+   "mlx-metal": "0.32.2",
+   "mlx-vlm": "0.7.0rc0",
+   "transformers": "5.18.0.dev0",
+   "tokenizers": "0.23.2"
+  },
+  "language_sha256": "30f059d6289451bde0f5ef816090ff946ebc857d1b557f83415e2ba867d76199",
+  "runtime_files_bound": 1750
+ },
+ "executed_harness_sha256": {
+  "check_flash_next_native_support.py": "8bfe9ccd2377bde1a26a4f8a691a27376591c78d77bc803ac306b1af4529d7d7",
+  "run_flash_next_qa_cohort.py": "ff58d08eab9167c9825ba8a615b7065c3b9186f2e0a2db429993436fc118c10a",
+  "run_flash_next_lifecycle.py": "a21e4ee9ff86e0d197a5c06276a133d5eead10392606abb863d75d1b2a56e982",
+  "run_flash_next_generate_matrix.py": "e962a8c9b41f4002966ff8ec3d8f3d341619d5517833afe41154e40322a255cf",
+  "run_flash_next_reference.py": "aeb263356dcd2da3f70052e880b599f2e8da30127197f42afc3f92d4f26a0f64",
+  "run_flash_next_delivery.py": "44363e620383791155a66a6c883c65cdbcd920ca4f6fa37fe18678383287329e",
+  "check_flash_next_release_gates.py": "1d652536da7a9292418236c0e2579828d169c9866a3a705a861c090f22218d87",
+  "flash_next_release_thresholds.json": "17a39e0229cf734dca04ffa5abb4718a6c7b1c9c773891385a37396a1625345b"
+ },
+ "frozen_qa_items_sha256": "346ca5678f293462c865a94821d4d3a8f075962a379af6c5d4ee27dde9f667ad",
+ "pack_inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+ "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+ "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+ "published_members": 49,
+ "published_bytes": 132261877478,
+ "hardware": "MacBook Pro, Apple M5 Max, 128 GB, internal NVMe SSD (Apple Fabric), macOS 27.0.1",
+ "qualification": false,
+ "release_ready": false,
+ "note": "Harness results carry qualification=false by design; the verdict is in release-verdict.json."
+}

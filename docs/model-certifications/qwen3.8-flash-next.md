@@ -8,9 +8,9 @@ retired; MXFP8 pack audit and native admission are pending. Older affine
 receipts below are historical and do not qualify MX packs.
 See [format policy](../QWEN38-FORMAT-POLICY.md).
 
-Status: **Candidate; direct-default release gates passed (one host); MTP gates open**
+Status: **Candidate; direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open**
 
-Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one larger host and do not certify this standard by themselves; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (standard host MacBook Pro M5 Max 128 GB; MTP gates open).
+Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open).
 
 Standard host: **MacBook Pro M5 Max 128 GB** (ADR-049, 2026-10-23). ADR-037
 had corrected the target from this machine to Mac Studio, Ultra-class Apple
@@ -18,7 +18,8 @@ Silicon (M2 Ultra or newer), 192 GB+; ADR-049 restores this machine as the
 qualification and certification standard, inside the single-stream resident
 envelope. Target pack: **MXFP4 MTP**. Historical affine real-pack evidence is
 from **Apple M2 Ultra, 192 GB**. The 2026-10-05 direct-default release gates
-were measured on that larger host and stay bound to it. Last reviewed:
+were measured on that larger host and stay bound to it; the gates were re-run on
+the standard host on 2026-10-23 and pass there (below). Last reviewed:
 **2026-10-23**.
 
 **MacBook Pro M5 Max 128 GB, single-stream resident tier (2026-10-22).** The
@@ -82,7 +83,23 @@ promotion) are evidenced separately. For this SKU all three are open. Default
 admission remains fail-closed; the opt-in experimental evidence below does not
 by itself close any gate.
 
-## Direct-default release gates (2026-10-05)
+## Direct-default release gates on the standard host (2026-10-23)
+
+For the same release scope, on one MacBook Pro M5 Max 128 GB with the pack on the
+internal SSD and every server started with `--max-concurrent-requests 1`, the pinned
+pack passes all nine gates in the
+[M5 Max release-gate evidence](../../benchmarks/results/qualification/2026-10-23-flash-next-mxfp4-m5max-release-gates/README.md)
+(verdict: `release_ready = true`): fresh-cache delivery (one Hub-timeout attempt
+resumed), 101/105 in every mode with the same four retained failures and identical text
+across modes, peak server RSS 78.1 GiB within the 96 GiB bound, readiness 48.5 s after
+delivery and at most 50.5 s staged, a 29,774-token lookup in 56 s, decode 50.8 / 47.3 /
+45.7 tok/s at 512 / 2,048 / 8,192 tokens, and the default path never activating the
+drafter. The pinned reference is memory-constrained on 128 GB (it materializes the
+n-gram table), so the reference-relative floor passes with a wide margin that is not a
+speedup claim. The status sentence and the qualifier's release flags now derive from
+this verdict.
+
+## Direct-default release gates on the larger host (2026-10-05)
 
 Release scope: direct decoding is the default product path; model MTP stays an
 explicit, experimental opt-in (`--mlx-mtp-policy required`). MTP-S, MTP-P and MTP-D
@@ -485,7 +502,7 @@ return migration errors.
 | Numerical and MTP | Canonical source `bf06cbb2` passes the original two-prompt M5 diagnostic (90/133 positions to EOS) and four-prompt holdout (64 outputs each), including compared state/hidden/logits and complete integrity checks. Broader checkpoint/default/MTP qualification remains open. All `cd207324` failures and incomplete M2 SIGBUS remain retained |
 | Installed QA and lifecycle | Source `5d028881` passes installation and all 14 lifecycle actions with original pre/post integrity checks. New 105-input-per-mode QA is launched, without a result yet. Historical installed85 QA failures and both bf06 lifecycle failures remain retained |
 | Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
-| Release | Direct-default release gates passed on one host (see above); no default-MTP promotion, MTP-S/P/D not assessed |
+| Release | Direct-default release gates passed on the MacBook Pro M5 Max 128 GB standard host (2026-10-23; also on the larger host 2026-10-05); no default-MTP promotion, MTP-S/P/D not assessed |
 
 ## Existing affine implementation and historical evidence
 

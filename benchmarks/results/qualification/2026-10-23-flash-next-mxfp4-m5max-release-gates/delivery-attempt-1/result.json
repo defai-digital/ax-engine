@@ -1,0 +1,48 @@
+{
+  "schema": "ax-engine.flash-next.fresh-delivery.v2",
+  "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "alias": "qwen3.8-flash-next:mxfp4",
+  "published_members": 49,
+  "published_bytes": 132261877478,
+  "control_modes": [
+    "disabled",
+    "required",
+    "default"
+  ],
+  "downloader": "ax-engine download <alias> --progress-json (product CLI and helper)",
+  "page_cache": "not controlled",
+  "qualification": false,
+  "release_ready": false,
+  "scope": "delivery integrity and functional controls on the delivered copy; quality, performance and MTP-S/P/D not assessed",
+  "completed": false,
+  "fresh_cache": true,
+  "previous_attempts": [],
+  "resumed": false,
+  "transport_override": {
+    "AX_ENGINE_HF_MAX_WORKERS": "2",
+    "HF_HUB_DOWNLOAD_TIMEOUT": "60"
+  },
+  "download": {
+    "exit_code": 1,
+    "elapsed_seconds": 1487.967,
+    "hub_client_version": "2.2.0",
+    "ax_engine_sha256": "4816da376c9213327ae6fd2f8a45bf4a78b3a5a9f30c8de25d9e3d0134775865",
+    "helper_sha256": "c63a8dba78cbee6fb2527d7f9d24abc1402f1e28796099827dfcacfbcd1e410c",
+    "bench_sha256": "183c45a49635461bc09eab3969c92a9b202f45c659888572a82fa66b83db0600"
+  },
+  "hardware": {
+    "form_factor": "MacBook Pro",
+    "soc": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "storage": {
+      "declared": "internal NVMe SSD",
+      "internal": true,
+      "solid_state": true,
+      "bus_protocol": "Apple Fabric"
+    },
+    "os": "27.0.1"
+  },
+  "server_sha256": "8b19d1f32225b29d354868cede448542fd76b118d05c8389286b893cb99f0173",
+  "inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6"
+}
