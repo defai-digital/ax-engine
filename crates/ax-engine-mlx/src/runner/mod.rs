@@ -2690,6 +2690,21 @@ impl MlxRunner {
                 mtp_dummy_cache.reset();
             }
         }
+        // Flash Next n-gram aux-plane page-cache warm-up. It must run after the
+        // weights are fully read (the generation warm-up above materialises
+        // them): the ~70 GB weight read would otherwise evict the ~6 GB of
+        // scales/biases planes, which then save a cold read per first-seen row.
+        // Best-effort and off the request path; `AX_FLASH_NEXT_NGRAM_WARM_AUX=0`
+        // disables it.
+        if crate::fastpath::flash_next_ngram_warm_aux_enabled()
+            && let Some(qwen4) = weights.qwen4_exp.as_ref()
+        {
+            for layer in &qwen4.layers {
+                if let Some(ple) = layer.ple.as_ref() {
+                    ple.table.warm_aux_in_background();
+                }
+            }
+        }
         let _ = take_gemma4_moe_profile_snapshot();
         let _ = take_moe_profile_snapshot();
         let _ = take_linear_attention_profile_snapshot();

@@ -440,6 +440,39 @@ impl NgramTable {
         }
     }
 
+    /// Best-effort background warm-up of the quantization aux planes.
+    ///
+    /// Spawns a thread that sequentially pre-reads every quantized shard's
+    /// scales and biases planes into the OS page cache, so a first-seen row
+    /// gather needs about one cold read (the packed weight plane) instead of
+    /// three. Call this only after the main weights finish loading: the ~6 GB
+    /// of aux planes only stay resident if the ~70 GB weight read is done
+    /// competing for the page cache. Never blocks the caller and never
+    /// panics; a failed spawn just skips the warm-up.
+    pub(crate) fn warm_aux_in_background(&self) {
+        let core = Arc::clone(&self.core);
+        let spawned = std::thread::Builder::new()
+            .name("ax-flash-next-ngram-warm".to_string())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                match core.warm_aux_planes() {
+                    Ok(bytes) => tracing::info!(
+                        target: "ax_engine_mlx::ngram_table",
+                        bytes,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "n-gram scales/biases planes warmed into page cache"
+                    ),
+                    Err(error) => tracing::warn!(
+                        target: "ax_engine_mlx::ngram_table",
+                        %error,
+                        "n-gram aux-plane warm-up failed; row gathers stay fully functional"
+                    ),
+                }
+            });
+        // A failed spawn only skips the warm-up; gathers do not depend on it.
+        let _ = spawned;
+    }
+
     /// Staged planes for exactly `row_ids`, if a matching prefetch succeeded.
     fn take_prefetched(&self, row_ids: &[u64]) -> Option<Vec<Vec<u8>>> {
         let pending = self.pending.lock().ok()?.take()?;
@@ -539,10 +572,14 @@ struct RowRead<'a> {
     dst: &'a mut [u8],
 }
 
-/// Concurrent positional reads. A decode token touches 48 scattered rows of
-/// a table far larger than memory, so each read is a cold random SSD access;
-/// issuing them together costs about one access instead of 48.
-const MAX_READ_THREADS: usize = 16;
+/// Reader threads per gather (`AX_FLASH_NEXT_NGRAM_READ_THREADS`, see fastpath).
+///
+/// A decode token touches 48 scattered rows of a table far larger than memory,
+/// so each read is a cold random SSD access; issuing them together costs about
+/// one access instead of 48.
+fn max_read_threads() -> usize {
+    crate::fastpath::flash_next_ngram_read_threads()
+}
 
 fn run_row_reads(reads: &mut [RowRead<'_>]) -> Result<(), NgramTableError> {
     fn run(chunk: &mut [RowRead<'_>]) -> Result<(), String> {
@@ -551,7 +588,7 @@ fn run_row_reads(reads: &mut [RowRead<'_>]) -> Result<(), NgramTableError> {
         }
         Ok(())
     }
-    let threads = reads.len().min(MAX_READ_THREADS);
+    let threads = reads.len().min(max_read_threads());
     if threads <= 1 {
         return run(reads).map_err(NgramTableError::Gather);
     }
@@ -1041,6 +1078,35 @@ impl Core {
             total = total.saturating_add(reader.payload_bytes_read());
         }
         total
+    }
+
+    /// Sequentially pre-read every quantized shard's scales and biases planes
+    /// so first-seen row gathers hit the page cache (about one cold read per
+    /// row instead of three). The packed weight plane stays on-demand: it is
+    /// the large region gathers already stream by row. Dense shards
+    /// contribute nothing. Returns the total bytes read.
+    fn warm_aux_planes(&self) -> Result<u64, String> {
+        let mut total: u64 = 0;
+        for shard in &self.shards {
+            if let ShardEncoding::Quantized {
+                scales_name,
+                scales_file,
+                biases_name,
+                biases_file,
+                ..
+            } = &shard.encoding
+            {
+                let scales_reader = self.readers.get(scales_file).ok_or_else(|| {
+                    format!("warm scales: reader missing for {}", scales_file.display())
+                })?;
+                total = total.saturating_add(scales_reader.warm_tensor(scales_name)?);
+                let biases_reader = self.readers.get(biases_file).ok_or_else(|| {
+                    format!("warm biases: reader missing for {}", biases_file.display())
+                })?;
+                total = total.saturating_add(biases_reader.warm_tensor(biases_name)?);
+            }
+        }
+        Ok(total)
     }
 
     fn shard_for_row(&self, row: u64) -> Result<usize, NgramTableError> {
@@ -1757,6 +1823,137 @@ mod tests {
                 "batched vs per-shard mismatch for {bits}-bit"
             );
         }
+    }
+
+    #[test]
+    fn warm_aux_reads_exactly_the_scales_and_biases_planes() {
+        let bits = 4u32;
+        let group = 32u32;
+        let width = 64usize;
+        let (packed, scales, biases, packed_cols, groups) = quant_fixture(bits, group, width);
+        assert_eq!(packed_cols, width * (bits as usize) / 32);
+        assert_eq!(groups, width / (group as usize));
+        let dir = test_dir("warm_aux");
+        let n0 = "model.layers.1.ple.ngram_embedding.shard_0.weight".to_string();
+        let n1 = "model.layers.1.ple.ngram_embedding.shard_1.weight".to_string();
+        let b0 = n0.strip_suffix(".weight").unwrap();
+        let b1 = n1.strip_suffix(".weight").unwrap();
+        let half = 2usize;
+        let pack_row = packed_cols;
+        let side_row = groups;
+        let p0 = packed[0..half * pack_row].to_vec();
+        let p1 = packed[half * pack_row..].to_vec();
+        let s0 = scales[0..half * side_row].to_vec();
+        let s1 = scales[half * side_row..].to_vec();
+        let q0 = biases[0..half * side_row].to_vec();
+        let q1 = biases[half * side_row..].to_vec();
+        write_st(
+            &dir.join("a.safetensors"),
+            vec![
+                (
+                    n0.clone(),
+                    "U32".to_string(),
+                    vec![2, packed_cols as u64],
+                    u32_to_bytes(&p0),
+                ),
+                (
+                    format!("{b0}.scales"),
+                    "F32".to_string(),
+                    vec![2, groups as u64],
+                    f32_to_bytes(&s0),
+                ),
+                (
+                    format!("{b0}.biases"),
+                    "F32".to_string(),
+                    vec![2, groups as u64],
+                    f32_to_bytes(&q0),
+                ),
+            ],
+        );
+        write_st(
+            &dir.join("b.safetensors"),
+            vec![
+                (
+                    n1.clone(),
+                    "U32".to_string(),
+                    vec![2, packed_cols as u64],
+                    u32_to_bytes(&p1),
+                ),
+                (
+                    format!("{b1}.scales"),
+                    "F32".to_string(),
+                    vec![2, groups as u64],
+                    f32_to_bytes(&s1),
+                ),
+                (
+                    format!("{b1}.biases"),
+                    "F32".to_string(),
+                    vec![2, groups as u64],
+                    f32_to_bytes(&q1),
+                ),
+            ],
+        );
+        let specs = vec![
+            quant_spec(&n0, 1, "a.safetensors", 2, packed_cols as u64, bits, group),
+            quant_spec(&n1, 1, "b.safetensors", 2, packed_cols as u64, bits, group),
+        ];
+        let table = NgramTable::open(&dir, &specs, 1, 2, width, 1 << 24).unwrap();
+        assert_eq!(table.rows(), 4);
+
+        // Two shards; each f32 aux plane holds rows_per_shard * groups
+        // elements of 4 bytes, once for scales and once for biases. The
+        // packed weight plane is never warmed.
+        let shards = 2usize;
+        let expected = shards * (half * groups * 4 * 2);
+        assert_eq!(table.core.warm_aux_planes().unwrap(), expected as u64);
+        // Warm reads are gather-evidence-free: the payload counter only moves
+        // for gathered rows.
+        assert_eq!(table.payload_bytes_read(), 0);
+
+        // Warm-up must not change gather behavior (bits=4 parity check).
+        let full_w = MlxArray::from_raw_data(
+            packed.as_ptr() as *const u8,
+            packed.len() * 4,
+            &[4, packed_cols as i32],
+            MlxDtype::Uint32,
+        );
+        let full_s = MlxArray::from_raw_data(
+            scales.as_ptr() as *const u8,
+            scales.len() * 4,
+            &[4, groups as i32],
+            MlxDtype::Float32,
+        );
+        let full_b = MlxArray::from_raw_data(
+            biases.as_ptr() as *const u8,
+            biases.len() * 4,
+            &[4, groups as i32],
+            MlxDtype::Float32,
+        );
+        let full_d = mlx_sys::dequantize(
+            &full_w,
+            &full_s,
+            Some(&full_b),
+            Some(group as i32),
+            Some(bits as i32),
+            None,
+        );
+        let full_f = mlx_sys::astype(&full_d, MlxDtype::Float32, None);
+        mlx_sys::eval(&[&full_f]);
+        let full = full_f.data_f32().to_vec();
+        let rows = vec![3u64, 0, 3, 1, 2];
+        let out = table.gather(&rows).unwrap();
+        mlx_sys::eval(&[&out]);
+        assert_eq!(out.shape(), vec![5, width as i32]);
+        let got = out.data_f32().to_vec();
+        let mut want = Vec::new();
+        for r in &rows {
+            let start = (*r as usize) * width;
+            want.extend_from_slice(&full[start..start + width]);
+        }
+        assert_eq!(got, want);
+        let per_row = packed_cols * 4 + groups * 4 + groups * 4;
+        assert_eq!(table.payload_bytes_read(), (rows.len() * per_row) as u64);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn tiny_dense_dir(name: &str) -> (PathBuf, Vec<NativeTensorSpec>) {

@@ -83,11 +83,34 @@ fn parse_bool_value(raw: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("on")
 }
 
+/// Reader threads per Flash Next n-gram gather. 32 and 64 beat 16 by 2-5% of
+/// cold TTFT on the M5 Max (random-read IOPS scale to about 32 threads);
+/// `AX_FLASH_NEXT_NGRAM_READ_THREADS` overrides it, clamped to 1..=128, read once.
+pub(crate) fn flash_next_ngram_read_threads() -> usize {
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THREADS.get_or_init(|| {
+        std::env::var("AX_FLASH_NEXT_NGRAM_READ_THREADS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .map_or(32, |n| n.clamp(1, 128))
+    })
+}
+
 /// Flash Next reads the next prefill chunk's n-gram rows while the current
 /// chunk computes. Kill switch: `AX_FLASH_NEXT_NGRAM_PREFETCH=0`.
 pub(crate) fn flash_next_ngram_prefetch_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_PREFETCH"))
+}
+
+/// Flash Next pre-reads the n-gram scales and biases planes into the OS page
+/// cache after the model weights finish loading, so first-seen row gathers
+/// need about one cold read instead of three. Running it earlier would let
+/// the ~70 GB weight read evict the ~6 GB of aux planes again. Kill switch:
+/// `AX_FLASH_NEXT_NGRAM_WARM_AUX=0`.
+pub(crate) fn flash_next_ngram_warm_aux_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_WARM_AUX"))
 }
 
 /// Read `name` as an opt-in flag. Only the [`parse_bool_value`] truthy
