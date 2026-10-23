@@ -70,7 +70,7 @@ Every change is checked bit for bit rather than to a tolerance:
   without a registry reset, failure injection per stretch, the row cap, the grouped GDN kernel against the
   expanded kernel and the portable recurrence (groups 1-3, batch 1-2, subnormal inputs, eight state-feedback
   steps), and a stale-weight-view regression;
-- the native kernels are proven rather than sampled: on an Apple M2 Ultra, every positive finite f32 bit pattern goes
+- the native kernels are proven rather than sampled: on both an Apple M2 Ultra and an M5 Max, every positive finite f32 bit pattern goes
   through `pow(s, -0.5)` (kernel B against MLX's `power`), every f32 bit pattern through the whole decay chain (three
   `exp_a_log` values) and the f32 sigmoid, and every bf16 and f16 pattern through the beta path; the hyper-connection
   kernel takes all 65,536 bf16 and f16 patterns in both the low-rank and the gate role. All compare raw bits, NaN
