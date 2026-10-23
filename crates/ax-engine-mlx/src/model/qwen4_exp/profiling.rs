@@ -1349,10 +1349,10 @@ fn flash_next_fused_matches_eager_on_real_pack() {
     // Every stretch. Aggregate counters cannot prove that each one ran, so all
     // checks below are per stretch; stretches outside the enabled set must not
     // run at all.
-    const WATCH: [Stretch; 7] = Stretch::ALL;
+    const WATCH: [Stretch; 13] = Stretch::ALL;
     let enabled_in_fused: Vec<Stretch> = only.clone().unwrap_or_else(|| WATCH.to_vec());
     let snapshot_counts = || {
-        let mut counts = [0u64; 7];
+        let mut counts = [0u64; 13];
         for (index, stretch) in WATCH.iter().enumerate() {
             counts[index] = applied_for_test(*stretch);
         }
@@ -1444,7 +1444,7 @@ fn flash_next_fused_matches_eager_on_real_pack() {
     }
     assert_eq!(snapshot(eager_state), snapshot(fused_state), "chain state");
     let after_chain = snapshot_counts();
-    let mut hc_applied = [0u64; 7];
+    let mut hc_applied = [0u64; 13];
     for (index, stretch) in WATCH.iter().enumerate() {
         let applied = after_chain[index] - before_chain[index];
         hc_applied[index] = applied;
@@ -1473,6 +1473,83 @@ fn flash_next_fused_matches_eager_on_real_pack() {
         fused_secs * 1e3,
         hc_applied.iter().sum::<u64>(),
         hc_applied
+            .iter()
+            .map(|count| count.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    // The same 16-step chain under the verifier RowExact projection policy:
+    // per-row exact projections trace a different eager graph, so the fused
+    // stretches must still match bit for bit and hit the same per-stretch
+    // floors.
+    let mut rowexact_eager_state = prefix.state.clone();
+    let mut rowexact_fused_state = prefix.state.clone();
+    let before_rowexact = snapshot_counts();
+    let (mut rowexact_eager_secs, mut rowexact_fused_secs) = (0.0f64, 0.0f64);
+    for step in 0..16 {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let eager = {
+            let _mode = force_for_test(Some(false));
+            run(
+                &token,
+                &rowexact_eager_state,
+                ProjectionBatchPolicy::RowExact,
+            )
+        };
+        eval(&[&eager.logits]);
+        rowexact_eager_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let fused = {
+            let _mode = fused_mode();
+            run(
+                &token,
+                &rowexact_fused_state,
+                ProjectionBatchPolicy::RowExact,
+            )
+        };
+        eval(&[&fused.logits]);
+        rowexact_fused_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&eager), bits(&fused), "RowExact step {step}: logits");
+        rowexact_eager_state = eager.state;
+        rowexact_fused_state = fused.state;
+    }
+    assert_eq!(
+        snapshot(rowexact_eager_state),
+        snapshot(rowexact_fused_state),
+        "RowExact chain state"
+    );
+    let after_rowexact = snapshot_counts();
+    let mut rowexact_applied = [0u64; 13];
+    for (index, stretch) in WATCH.iter().enumerate() {
+        let applied = after_rowexact[index] - before_rowexact[index];
+        rowexact_applied[index] = applied;
+        if !enabled_in_fused.contains(stretch) {
+            assert_eq!(applied, 0, "stretch {} ran while disabled", stretch.name());
+            continue;
+        }
+        // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
+        // the GDN stretches. Deliberately loose lower bounds.
+        let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
+            30
+        } else {
+            48
+        };
+        assert!(
+            applied >= 16 * per_token_floor,
+            "stretch {}: applied only {applied} times over the 16-step RowExact chain \
+             (lower bound {})",
+            stretch.name(),
+            16 * per_token_floor,
+        );
+    }
+    eprintln!(
+        "FUSED_VS_EAGER_ROWEXACT chain16 eager_ms={:.1} fused_ms={:.1} applied={} hc_applied=[{}]",
+        rowexact_eager_secs * 1e3,
+        rowexact_fused_secs * 1e3,
+        rowexact_applied.iter().sum::<u64>(),
+        rowexact_applied
             .iter()
             .map(|count| count.to_string())
             .collect::<Vec<_>>()

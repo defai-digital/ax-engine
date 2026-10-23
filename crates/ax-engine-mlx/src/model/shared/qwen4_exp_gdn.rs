@@ -80,6 +80,8 @@ pub(crate) struct Qwen4ExpGdn {
     eps: f32,
     activation: GdnGateActivation,
     weights: Qwen4ExpGdnWeights,
+    /// `exp(a_log)` in FP32, built on first use by [`Qwen4ExpGdn::exp_a_log`].
+    exp_a_log: std::sync::OnceLock<MlxArray>,
 }
 
 fn require_float_shape(name: &str, tensor: &MlxArray, shape: &[i32]) -> Result<(), String> {
@@ -119,6 +121,50 @@ fn qwen4_verifier_projection(
     qw_with_policy(input, weight, qkv_policy)
 }
 
+/// Key component for a compiled stretch whose body bakes in a dtype.
+///
+/// A compiled body captures its dtype and MLX re-traces that body per input
+/// dtype, so every captured dtype must select its own closure.
+fn dtype_key(dtype: MlxDtype) -> i64 {
+    match dtype {
+        MlxDtype::Float32 => 0,
+        MlxDtype::Float16 => 1,
+        MlxDtype::Bfloat16 => 2,
+        _ => 3,
+    }
+}
+
+/// Closure body of the convolution activation stretch: the pre-activation is
+/// the only input and the output dtype is captured.
+fn conv_activation_closure(dtype: MlxDtype) -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(move |inputs| {
+        vec![astype(
+            &mlx_sys::ops::silu(&astype(&inputs.get(0), MlxDtype::Float32, None), None),
+            dtype,
+            None,
+        )]
+    })
+}
+
+/// SiLU in FP32 and one cast to `dtype`, matching the official BF16 activation's
+/// single rounding after sigmoid and multiply.
+fn conv_activation(input: &MlxArray, dtype: MlxDtype, rows: i32) -> MlxArray {
+    match qwen4_exp_fused::apply(
+        Stretch::GdnConvAct,
+        rows,
+        [dtype_key(dtype), 0, 0, 0],
+        || conv_activation_closure(dtype),
+        &[input],
+    ) {
+        Some(activated) => activated,
+        None => astype(
+            &mlx_sys::ops::silu(&astype(input, MlxDtype::Float32, None), None),
+            dtype,
+            None,
+        ),
+    }
+}
+
 fn qwen4_conv1d(
     cfg: &LinearAttentionConfig,
     qkv: &MlxArray,
@@ -126,9 +172,10 @@ fn qwen4_conv1d(
     state: Option<&MlxArray>,
 ) -> (MlxArray, MlxArray) {
     let (convolved, state) = linear_attention_conv1d_pre_activation(cfg, qkv, weight, state);
-    // Match the official BF16 activation's single rounding after sigmoid and multiply.
-    let activated = mlx_sys::ops::silu(&astype(&convolved, MlxDtype::Float32, None), None);
-    (astype(&activated, qkv.dtype(), None), state)
+    // The seq dimension is the second axis; any other shape stays eager rather
+    // than being indexed.
+    let rows = qkv.shape().get(1).copied().unwrap_or(0);
+    (conv_activation(&convolved, qkv.dtype(), rows), state)
 }
 
 /// Closure body of the beta stretch, with the projection as its only input.
@@ -168,6 +215,84 @@ fn post_closure(
             dtype,
             None,
         )]
+    })
+}
+
+/// Closure body of the pre-`log1p` decay stretch.
+///
+/// Inputs: the decay projection and `dt_bias`. The body widens both to FP32,
+/// adds them and evaluates `exp(min(a, -a))`, which is everything the 14-op
+/// eager chain does before its `log1p`.
+fn decay_pre_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let a = add(
+            &astype(&inputs.get(0), MlxDtype::Float32, None),
+            &astype(&inputs.get(1), MlxDtype::Float32, None),
+            None,
+        );
+        vec![exp(&minimum(&a, &negative(&a, None), None), None)]
+    })
+}
+
+/// Closure body of the post-`log1p` decay stretch.
+///
+/// Inputs, in order: the decay projection, `dt_bias`, `l1` (the eager
+/// `log1p(exp(min(a, -a)))`), `exp(a_log)` and the FP32 zero. The body
+/// recomputes the pre-log sum from the projection and `dt_bias` instead of
+/// trusting a passed-in value, then applies
+/// `exp(-exp(a_log) * (max(a, 0) + l1))`.
+fn decay_post_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let a = add(
+            &astype(&inputs.get(0), MlxDtype::Float32, None),
+            &astype(&inputs.get(1), MlxDtype::Float32, None),
+            None,
+        );
+        let softplus = add(&maximum(&a, &inputs.get(4), None), &inputs.get(2), None);
+        vec![exp(
+            &negative(&multiply(&inputs.get(3), &softplus, None), None),
+            None,
+        )]
+    })
+}
+
+/// Closure body of the L2 sum-of-squares stretch.
+///
+/// Inputs: the tensor to reduce and the FP32 epsilon. The body widens to FP32,
+/// squares, reduces over the last axis and adds the epsilon.
+fn l2_sum_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let widened = astype(&inputs.get(0), MlxDtype::Float32, None);
+        vec![add(
+            &sum_axis(&multiply(&widened, &widened, None), -1, true, None),
+            &inputs.get(1),
+            None,
+        )]
+    })
+}
+
+/// Closure body of the query scale stretch.
+///
+/// Inputs, in order: the tensor to normalise, `power(sum(x * x) + eps, -0.5)`
+/// and `sqrt(head_dim)`. The body widens, multiplies and divides.
+fn q_scale_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let widened = astype(&inputs.get(0), MlxDtype::Float32, None);
+        vec![divide(
+            &multiply(&widened, &inputs.get(1), None),
+            &inputs.get(2),
+            None,
+        )]
+    })
+}
+
+/// Closure body of the key scale stretch.
+///
+/// Inputs: the tensor to normalise and `power(sum(x * x) + eps, -0.5)`.
+fn k_scale_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let widened = astype(&inputs.get(0), MlxDtype::Float32, None);
+        vec![multiply(&widened, &inputs.get(1), None)]
     })
 }
 
@@ -240,6 +365,7 @@ impl Qwen4ExpGdn {
             eps,
             activation,
             weights,
+            exp_a_log: std::sync::OnceLock::new(),
         })
     }
 
@@ -273,6 +399,84 @@ impl Qwen4ExpGdn {
             return Err("qwen4_exp GDN state dtype mismatch".into());
         }
         Ok(())
+    }
+
+    /// `exp(a_log)` widened to FP32, evaluated once per module.
+    ///
+    /// The exponent is taken in FP32 on purpose: exponentiating in a narrower
+    /// dtype would change the decay bits. It is passed to the compiled decay
+    /// closure as an input instead of being captured, because MLX rejects
+    /// captured arrays.
+    fn exp_a_log(&self) -> &MlxArray {
+        self.exp_a_log.get_or_init(|| {
+            let value = exp(&astype(&self.weights.a_log, MlxDtype::Float32, None), None);
+            // Evaluate inside the initializer: MLX mutates an array's status
+            // while evaluating it, so two threads must never be the first to
+            // evaluate the same shared node. A failed evaluation leaves it lazy,
+            // as every other weight-derived array is.
+            let _ = mlx_sys::try_eval(&[&value]);
+            value
+        })
+    }
+
+    /// The per-step decay factor, factored into its compiled and eager stages.
+    ///
+    /// `log1p` between the two stretches stays eager: MLX leaves unqualified
+    /// FP32 math functions on fast variants inside JIT-fused kernels, so a
+    /// compiled `log1p` changes the recurrent state bits. Each stretch falls
+    /// back to its own eager ops independently, and both get the same inputs.
+    fn decay(&self, projection: &MlxArray, rows: i32, key_base: [i64; 4]) -> MlxArray {
+        let dt_bias = &self.weights.dt_bias;
+        let zero = cached_scalar(0.0, MlxDtype::Float32);
+        // The eager sum is built at most once and shared by both fallbacks, so
+        // a run with the stretches off issues exactly the original op sequence.
+        let mut eager_a: Option<MlxArray> = None;
+        // Everything the eager chain does before `l1`.
+        let exponent = match qwen4_exp_fused::apply(
+            Stretch::GdnDecayPre,
+            rows,
+            key_base,
+            decay_pre_closure,
+            &[projection, dt_bias],
+        ) {
+            Some(exponent) => exponent,
+            None => {
+                let a = add(
+                    &astype(projection, MlxDtype::Float32, None),
+                    &astype(dt_bias, MlxDtype::Float32, None),
+                    None,
+                );
+                let exponent = exp(&minimum(&a, &negative(&a, None), None), None);
+                eager_a = Some(a);
+                exponent
+            }
+        };
+        let l1 = log1p(&exponent, None);
+        let exp_a_log = self.exp_a_log();
+        match qwen4_exp_fused::apply(
+            Stretch::GdnDecayPost,
+            rows,
+            key_base,
+            decay_post_closure,
+            &[projection, dt_bias, &l1, exp_a_log, &zero],
+        ) {
+            Some(decay) => decay,
+            None => {
+                let a = eager_a.unwrap_or_else(|| {
+                    add(
+                        &astype(projection, MlxDtype::Float32, None),
+                        &astype(dt_bias, MlxDtype::Float32, None),
+                        None,
+                    )
+                });
+                let softplus = add(&maximum(&a, &zero, None), &l1, None);
+                let log_decay = negative(&multiply(exp_a_log, &softplus, None), None);
+                let decay = exp(&log_decay, None);
+                #[cfg(test)]
+                crate::model::qwen4_exp::profiling::dump("gdn_log_decay", &[&log_decay]);
+                decay
+            }
+        }
     }
 
     pub(crate) fn forward(
@@ -311,39 +515,30 @@ impl Qwen4ExpGdn {
         // specialises per dtype behind the closure. Every stretch below falls
         // back to its eager chain independently.
         let key = [hv as i64, dk as i64, dv as i64, 0];
-        // The decay chain and the q/k L2 normalisations stay eager: a bisect on
-        // a real pack showed that compiling them changes the recurrent state
-        // bits, so they must not exist as compiled stretches.
-        let q = divide(
-            &qwen4_l2(&split.q),
-            &cached_scalar((dk as f32).sqrt(), MlxDtype::Float32),
+        // The q/k L2 chains: `power(x, -0.5)` stays eager inside them.
+        let hk = cfg.num_key_heads as i64;
+        let sqrt_dk = cached_scalar((dk as f32).sqrt(), MlxDtype::Float32);
+        let q = l2_normalize(
+            &split.q,
+            seq,
+            [hk, dk as i64, dtype_key(split.q.dtype()), 2],
+            Some(&sqrt_dk),
+        );
+        let k = l2_normalize(
+            &split.k,
+            seq,
+            [hk, dk as i64, dtype_key(split.k.dtype()), 2],
             None,
         );
-        let k = qwen4_l2(&split.k);
         let v = astype(&split.v, MlxDtype::Float32, None);
-        let a = add(
-            &astype(
-                &qwen4_verifier_projection(input, &self.weights.decay, policy, verifier_policy),
-                MlxDtype::Float32,
-                None,
-            ),
-            &astype(&self.weights.dt_bias, MlxDtype::Float32, None),
-            None,
+        // The decay projection is built once and passed to both decay stages.
+        let decay_projection =
+            qwen4_verifier_projection(input, &self.weights.decay, policy, verifier_policy);
+        let decay = self.decay(
+            &decay_projection,
+            seq,
+            [hv as i64, dv as i64, dtype_key(decay_projection.dtype()), 1],
         );
-        let softplus = add(
-            &maximum(&a, &cached_scalar(0.0, MlxDtype::Float32), None),
-            &log1p(&exp(&minimum(&a, &negative(&a, None), None), None), None),
-            None,
-        );
-        let log_decay = negative(
-            &multiply(
-                &exp(&astype(&self.weights.a_log, MlxDtype::Float32, None), None),
-                &softplus,
-                None,
-            ),
-            None,
-        );
-        let decay = exp(&log_decay, None);
         let beta_projection =
             qwen4_verifier_projection(input, &self.weights.beta, policy, verifier_policy);
         let beta = match qwen4_exp_fused::apply(
@@ -362,7 +557,6 @@ impl Qwen4ExpGdn {
         );
         #[cfg(test)]
         {
-            crate::model::qwen4_exp::profiling::dump("gdn_log_decay", &[&log_decay]);
             crate::model::qwen4_exp::profiling::dump("gdn_beta", &[&beta]);
             crate::model::qwen4_exp::profiling::dump("gdn_initial_state", &[&recurrent]);
         }
@@ -406,12 +600,7 @@ impl Qwen4ExpGdn {
         // activation, because both are baked into the compiled graph.
         // The compiled body bakes in the output dtype, and MLX re-traces the
         // same body per input dtype, so the dtype must select the closure.
-        let dtype_code: i64 = match output_dtype {
-            MlxDtype::Float32 => 0,
-            MlxDtype::Float16 => 1,
-            MlxDtype::Bfloat16 => 2,
-            _ => 3,
-        };
+        let dtype_code = dtype_key(output_dtype);
         let post_key = [
             hv as i64,
             dv as i64,
@@ -466,7 +655,101 @@ impl Qwen4ExpGdn {
     }
 }
 
-fn qwen4_l2(input: &MlxArray) -> MlxArray {
+/// `sum(x * x, -1) + 1e-6` in FP32: the reduction half of the L2
+/// normalisation.
+///
+/// `key_base[1]` is the key head dimension. A 1-wide head elides the reduction
+/// and exposes a multiply feeding an add to contraction, so every L2 stretch
+/// stays eager there.
+#[cfg(test)]
+fn l2_sum(x: &MlxArray, rows: i32, key_base: [i64; 4]) -> MlxArray {
+    l2_sum_shared(x, rows, key_base, &mut None)
+}
+
+/// FP32 view of `x`, built at most once per normalisation so a run with the
+/// stretches off issues the original op sequence.
+fn widened_once(x: &MlxArray, cache: &mut Option<MlxArray>) -> MlxArray {
+    cache
+        .get_or_insert_with(|| astype(x, MlxDtype::Float32, None))
+        .clone()
+}
+
+fn l2_sum_shared(
+    x: &MlxArray,
+    rows: i32,
+    key_base: [i64; 4],
+    widened: &mut Option<MlxArray>,
+) -> MlxArray {
+    let eps = cached_scalar(1e-6, MlxDtype::Float32);
+    if key_base[1] >= 2
+        && let Some(sum) = qwen4_exp_fused::apply(
+            Stretch::GdnL2Sum,
+            rows,
+            key_base,
+            l2_sum_closure,
+            &[x, &eps],
+        )
+    {
+        return sum;
+    }
+    let wide = widened_once(x, widened);
+    add(
+        &sum_axis(&multiply(&wide, &wide, None), -1, true, None),
+        &eps,
+        None,
+    )
+}
+
+/// Full L2 normalisation: the sum-of-squares stretch, the eager
+/// `power(x, -0.5)` and the q or k scale stretch.
+///
+/// `power` stays eager because MLX leaves unqualified FP32 math functions on
+/// fast variants inside JIT-fused kernels, so a compiled `power` changes the
+/// recurrent state bits. `q_scale` is `sqrt(head_dim)` for the query and `None`
+/// for the key.
+fn l2_normalize(
+    x: &MlxArray,
+    rows: i32,
+    key_base: [i64; 4],
+    q_scale: Option<&MlxArray>,
+) -> MlxArray {
+    let mut widened: Option<MlxArray> = None;
+    let sum = l2_sum_shared(x, rows, key_base, &mut widened);
+    let inverse = power(&sum, &cached_scalar(-0.5, MlxDtype::Float32), None);
+    // Same 1-wide-head gate as the reduction: the scaled multiply stays eager
+    // so the whole L2 group keeps one contraction pattern.
+    if key_base[1] >= 2 {
+        let scaled = match q_scale {
+            Some(sqrt_dk) => qwen4_exp_fused::apply(
+                Stretch::GdnQScale,
+                rows,
+                key_base,
+                q_scale_closure,
+                &[x, &inverse, sqrt_dk],
+            ),
+            None => qwen4_exp_fused::apply(
+                Stretch::GdnKScale,
+                rows,
+                key_base,
+                k_scale_closure,
+                &[x, &inverse],
+            ),
+        };
+        if let Some(scaled) = scaled {
+            return scaled;
+        }
+    }
+    let normalized = multiply(&widened_once(x, &mut widened), &inverse, None);
+    match q_scale {
+        Some(sqrt_dk) => divide(&normalized, sqrt_dk, None),
+        None => normalized,
+    }
+}
+
+/// The original single-call L2 normalisation, kept as the bit-exact reference
+/// the factored stages are compared against.
+#[cfg(test)]
+fn qwen4_l2_reference(input: &MlxArray) -> MlxArray {
     let input = astype(input, MlxDtype::Float32, None);
     let squared = sum_axis(&multiply(&input, &input, None), -1, true, None);
     multiply(
@@ -478,6 +761,12 @@ fn qwen4_l2(input: &MlxArray) -> MlxArray {
         ),
         None,
     )
+}
+
+/// Thin test wrapper so the pre-factor call sites keep naming `qwen4_l2`.
+#[cfg(test)]
+fn qwen4_l2(input: &MlxArray) -> MlxArray {
+    qwen4_l2_reference(input)
 }
 
 #[cfg(test)]
@@ -1330,6 +1619,63 @@ mod tests {
         assert_eq!(widened_bits(actual), widened_bits(expected), "{label} bits");
     }
 
+    /// The eight GDN stretches, asserted together wherever a forward runs.
+    const GDN_STRETCHES: [Stretch; 8] = [
+        Stretch::GdnBeta,
+        Stretch::GdnPost,
+        Stretch::GdnConvAct,
+        Stretch::GdnDecayPre,
+        Stretch::GdnDecayPost,
+        Stretch::GdnL2Sum,
+        Stretch::GdnQScale,
+        Stretch::GdnKScale,
+    ];
+
+    /// An f32 host tensor, usually cast to the dtype under test right after.
+    fn f32_tensor(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            data.len() * 4,
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    /// Adversarial f32 values: uniform noise of `magnitude` with about 1% of
+    /// the entries replaced by each special kind, at PRNG-chosen positions.
+    /// The kinds separate the code paths that matter: signed zeros, subnormals
+    /// and min-normals, exact +-1, +-large finite values, +-inf, NaN (payload
+    /// bits must survive to the comparison) and values next to the exp
+    /// overflow and underflow thresholds.
+    fn adversarial_values(rng: &mut XorShift64, len: usize, magnitude: f32) -> Vec<f32> {
+        const KINDS: [f32; 17] = [
+            0.0,
+            -0.0,
+            1e-45,
+            -1e-45,
+            1.2e-38,
+            -1.2e-38,
+            1.0,
+            -1.0,
+            3e38,
+            -3e38,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            -104.0,
+            -87.0,
+            88.5,
+            89.0,
+        ];
+        let mut values: Vec<f32> = (0..len).map(|_| rng.next_f32(magnitude)).collect();
+        for value in values.iter_mut() {
+            if rng.next_u64() % 100 < KINDS.len() as u64 {
+                *value = KINDS[(rng.next_u64() % KINDS.len() as u64) as usize];
+            }
+        }
+        values
+    }
+
     /// Forward on the portable recurrence, so the differentials below exercise
     /// exactly the beta and post stretches on top of one fixed core.
     fn run_forward(
@@ -1438,8 +1784,8 @@ mod tests {
     }
 
     /// The design-review differential: for every dtype, gate activation, decode
-    /// row count and state mode, the fused beta and post stretches must really
-    /// run (counter deltas prove it) and must reproduce the eager bits exactly.
+    /// row count and state mode, every fused GDN stretch must really run
+    /// (counter deltas prove it) and must reproduce the eager bits exactly.
     #[test]
     fn fused_gdn_stretches_match_eager_bits() {
         for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
@@ -1465,23 +1811,18 @@ mod tests {
                             let _eager = qwen4_exp_fused::force_for_test(Some(false));
                             run_forward(&module, &input, state)
                         };
-                        let (beta_before, post_before) = (
-                            qwen4_exp_fused::applied_for_test(Stretch::GdnBeta),
-                            qwen4_exp_fused::applied_for_test(Stretch::GdnPost),
-                        );
+                        let before = GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
                         let (fused_output, fused_state) = {
                             qwen4_exp_fused::reset_registry_for_test();
                             let _fused = qwen4_exp_fused::force_for_test(Some(true));
                             run_forward(&module, &input, state)
                         };
-                        assert!(
-                            qwen4_exp_fused::applied_for_test(Stretch::GdnBeta) > beta_before,
-                            "beta stretch must apply while fused (rows={rows}, state={use_state}, {dtype:?})",
-                        );
-                        assert!(
-                            qwen4_exp_fused::applied_for_test(Stretch::GdnPost) > post_before,
-                            "post stretch must apply while fused (rows={rows}, state={use_state}, {dtype:?})",
-                        );
+                        for (stretch, before) in GDN_STRETCHES.iter().zip(before) {
+                            assert!(
+                                qwen4_exp_fused::applied_for_test(*stretch) > before,
+                                "{stretch:?} stretch must apply while fused (rows={rows}, state={use_state}, {dtype:?})",
+                            );
+                        }
                         assert_bit_identical(&fused_output, &eager_output, "output");
                         assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
                         assert_bit_identical(
@@ -1556,30 +1897,25 @@ mod tests {
                 let _eager = qwen4_exp_fused::force_for_test(Some(false));
                 run_forward(&module, &input, None)
             };
-            let (beta_before, post_before) = (
-                qwen4_exp_fused::applied_for_test(Stretch::GdnBeta),
-                qwen4_exp_fused::applied_for_test(Stretch::GdnPost),
-            );
+            let before = GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
             let (fused_output, fused_state) = {
                 qwen4_exp_fused::reset_registry_for_test();
                 let _fused = qwen4_exp_fused::force_for_test(Some(true));
                 run_forward(&module, &input, None)
             };
-            assert_eq!(
-                qwen4_exp_fused::applied_for_test(Stretch::GdnBeta),
-                beta_before,
-                "beta must not apply at rows={rows}",
-            );
-            assert_eq!(
-                qwen4_exp_fused::applied_for_test(Stretch::GdnPost),
-                post_before,
-                "post must not apply at rows={rows}",
-            );
-            assert!(
-                !qwen4_exp_fused::tombstoned_for_test(Stretch::GdnBeta)
-                    && !qwen4_exp_fused::tombstoned_for_test(Stretch::GdnPost),
-                "the row gate must skip, not tombstone",
-            );
+            for (stretch, before) in GDN_STRETCHES.iter().zip(before) {
+                assert_eq!(
+                    qwen4_exp_fused::applied_for_test(*stretch),
+                    before,
+                    "{stretch:?} must not apply at rows={rows}",
+                );
+            }
+            for stretch in GDN_STRETCHES {
+                assert!(
+                    !qwen4_exp_fused::tombstoned_for_test(stretch),
+                    "the row gate must skip, not tombstone ({stretch:?})",
+                );
+            }
             assert_bit_identical(&fused_output, &eager_output, "output");
             assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
             assert_bit_identical(
@@ -1591,7 +1927,9 @@ mod tests {
     }
 
     /// A failed apply must tombstone only its own stretch and fall back to the
-    /// eager chain, which reproduces the eager bits exactly.
+    /// eager chain, which reproduces the eager bits exactly. The failure is
+    /// injected in turn into every GDN stretch, so each of the six new stages
+    /// is covered alongside beta and post.
     #[test]
     fn fused_gdn_stretch_failure_falls_back_to_eager_bits() {
         let module = synthetic_pack_geometry_with(MlxDtype::Bfloat16, GdnGateActivation::Silu);
@@ -1600,33 +1938,37 @@ mod tests {
             let _eager = qwen4_exp_fused::force_for_test(Some(false));
             run_forward(&module, &input, None)
         };
-        for stretch in [Stretch::GdnBeta, Stretch::GdnPost] {
-            let other = if stretch == Stretch::GdnBeta {
-                Stretch::GdnPost
-            } else {
-                Stretch::GdnBeta
-            };
-            let other_before = qwen4_exp_fused::applied_for_test(other);
+        for failed in GDN_STRETCHES {
+            let before = GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
             let (fused_output, fused_state) = {
                 qwen4_exp_fused::reset_registry_for_test();
                 let _fused = qwen4_exp_fused::force_for_test(Some(true));
-                qwen4_exp_fused::fail_next_apply_for_test(stretch);
+                qwen4_exp_fused::fail_next_apply_for_test(failed);
                 run_forward(&module, &input, None)
             };
             assert!(
-                qwen4_exp_fused::tombstoned_for_test(stretch),
-                "{stretch:?} must tombstone after a failed apply",
+                qwen4_exp_fused::tombstoned_for_test(failed),
+                "{failed:?} must tombstone after a failed apply",
             );
-            assert!(
-                qwen4_exp_fused::applied_for_test(other) > other_before,
-                "{other:?} must still apply when only {stretch:?} fails",
-            );
+            for (other, before) in GDN_STRETCHES.iter().zip(before) {
+                if *other == failed {
+                    continue;
+                }
+                assert!(
+                    !qwen4_exp_fused::tombstoned_for_test(*other),
+                    "only {failed:?} must tombstone, not {other:?}",
+                );
+                assert!(
+                    qwen4_exp_fused::applied_for_test(*other) > before,
+                    "{other:?} must still apply when only {failed:?} fails",
+                );
+            }
             assert_bit_identical(&fused_output, &eager_output, "output");
             assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
             assert_bit_identical(
                 &fused_state.recurrent,
                 &eager_state.recurrent,
-                "recurrent state after {stretch:?} fallback",
+                "recurrent state after {failed:?} fallback",
             );
         }
     }
@@ -1677,6 +2019,329 @@ mod tests {
                         "recurrent state at real geometry",
                     );
                 }
+            }
+        }
+    }
+
+    /// Per-stage decay qualification on adversarial inputs: forced eager,
+    /// forced fused and an inline copy of the original 14-op eager chain must
+    /// agree bit for bit (NaN payload bits included), with cancelling
+    /// projection/dt_bias pairs landing `a` on exactly zero, and both decay
+    /// stretches must apply while fused.
+    #[test]
+    fn gdn_decay_stages_match_the_original_chain_on_adversarial_inputs() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
+            let mut module = synthetic_pack_geometry_with(dtype, GdnGateActivation::Silu);
+            let mut rng = XorShift64::new(case_seed(7700));
+            let a_log_values = adversarial_values(&mut rng, 48, 0.4);
+            module.weights.a_log = f32_tensor(&a_log_values, &[48]);
+            let dt_bias_values = adversarial_values(&mut rng, 48, 12.0);
+            module.weights.dt_bias = f32_tensor(&dt_bias_values, &[48]);
+            let zero = cached_scalar(0.0, MlxDtype::Float32);
+            let exp_a_log = exp(
+                &astype(&module.weights.a_log, MlxDtype::Float32, None),
+                None,
+            );
+            let key = [48_i64, 128, dtype_key(dtype), 1];
+            for seed in 0_u64..8 {
+                for rows in 1_i32..=8 {
+                    let mut prng = XorShift64::new(case_seed(7700 + seed * 16 + rows as u64));
+                    let mut projection_values =
+                        adversarial_values(&mut prng, 48 * rows as usize, 12.0);
+                    // Cancelling pairs: the projection holds x where dt_bias
+                    // holds -x, so `a` lands on exactly zero (and on the
+                    // inf-inf and NaN combinations where the bias is special).
+                    for (index, projection) in projection_values.iter_mut().enumerate() {
+                        if prng.next_u64().is_multiple_of(100) {
+                            *projection = -dt_bias_values[index % 48];
+                        }
+                    }
+                    let projection =
+                        astype(&f32_tensor(&projection_values, &[1, rows, 48]), dtype, None);
+                    // The original chain, op for op.
+                    let original = {
+                        let a = add(
+                            &astype(&projection, MlxDtype::Float32, None),
+                            &astype(&module.weights.dt_bias, MlxDtype::Float32, None),
+                            None,
+                        );
+                        let l1 = log1p(&exp(&minimum(&a, &negative(&a, None), None), None), None);
+                        let softplus = add(&maximum(&a, &zero, None), &l1, None);
+                        exp(
+                            &negative(&multiply(&exp_a_log, &softplus, None), None),
+                            None,
+                        )
+                    };
+                    let eager = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        module.decay(&projection, rows, key)
+                    };
+                    assert_bit_identical(&eager, &original, "decay eager vs original chain");
+                    qwen4_exp_fused::reset_registry_for_test();
+                    let before = (
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnDecayPre),
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnDecayPost),
+                    );
+                    let fused = {
+                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        module.decay(&projection, rows, key)
+                    };
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnDecayPre) > before.0
+                            && qwen4_exp_fused::applied_for_test(Stretch::GdnDecayPost) > before.1,
+                        "decay stretches must apply while fused (rows={rows}, seed={seed}, {dtype:?})",
+                    );
+                    assert_bit_identical(&fused, &original, "decay fused vs original chain");
+                }
+            }
+        }
+    }
+
+    /// The real pack layouts: q and k are non-contiguous views with row gaps
+    /// carved out of a `[1, rows, 2*key_dim + value_dim]` conv output. On
+    /// adversarial rows (all-zero, tiny, overflowing squares, mixed) the
+    /// factored L2 stages must reproduce the reference bits under both force
+    /// modes, the intermediate sum must match between them, and the three
+    /// stretches must apply while fused.
+    #[test]
+    fn gdn_l2_stages_match_the_reference_on_real_slice_layouts() {
+        let cfg = LinearAttentionConfig {
+            full_attention_interval: 4,
+            num_key_heads: 16,
+            num_value_heads: 48,
+            key_head_dim: 128,
+            value_head_dim: 128,
+            conv_kernel_dim: 4,
+            q_scale: 1.0,
+            k_scale: 1.0,
+        };
+        let key_dim = cfg.key_dim() as i32;
+        let width = 2 * key_dim + cfg.value_dim() as i32;
+        let sqrt_dk = cached_scalar((cfg.key_head_dim as f32).sqrt(), MlxDtype::Float32);
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for seed in 0_u64..2 {
+                let mut rng = XorShift64::new(case_seed(6100 + seed));
+                let mut data = adversarial_values(&mut rng, 8 * width as usize, 1e3);
+                for (row, values) in data.chunks_mut(width as usize).enumerate() {
+                    match row % 4 {
+                        // All-zero rows: the epsilon alone feeds the power.
+                        0 => values.fill(0.0),
+                        // Tiny rows: the squares underflow to zero.
+                        1 => values.fill(1e-30),
+                        // Huge rows: 3e19 squared overflows f32 to +inf.
+                        2 => {
+                            for (column, value) in values.iter_mut().enumerate() {
+                                *value = if column % 2 == 0 { 1e18 } else { 3e19 };
+                            }
+                        }
+                        // Mixed magnitudes inside one reduction.
+                        _ => {
+                            for (column, value) in values.iter_mut().enumerate() {
+                                *value = match column % 4 {
+                                    0 => 1e18,
+                                    1 => 1e-30,
+                                    2 => 88.0,
+                                    _ => -87.0,
+                                };
+                            }
+                        }
+                    }
+                }
+                let base = astype(&f32_tensor(&data, &[1, 8, width]), dtype, None);
+                let key_base = [
+                    cfg.num_key_heads as i64,
+                    cfg.key_head_dim as i64,
+                    dtype_key(dtype),
+                    2,
+                ];
+                for rows in 1_i32..=8 {
+                    let conv = slice(&base, &[0, 0, 0], &[1, rows, width], &[1, 1, 1], None);
+                    let split = split_linear_attention_qkv(&cfg, &conv);
+                    let (eager_q, eager_k) = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        (
+                            l2_normalize(&split.q, rows, key_base, Some(&sqrt_dk)),
+                            l2_normalize(&split.k, rows, key_base, None),
+                        )
+                    };
+                    // The original chain: the shared reference plus the eager
+                    // divide for the query.
+                    let reference_q = divide(&qwen4_l2_reference(&split.q), &sqrt_dk, None);
+                    let reference_k = qwen4_l2_reference(&split.k);
+                    assert_bit_identical(&eager_q, &reference_q, "q eager reference");
+                    assert_bit_identical(&eager_k, &reference_k, "k eager reference");
+                    qwen4_exp_fused::reset_registry_for_test();
+                    let before = (
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnL2Sum),
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnQScale),
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnKScale),
+                    );
+                    let (fused_q, fused_k, fused_sum) = {
+                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        let q = l2_normalize(&split.q, rows, key_base, Some(&sqrt_dk));
+                        let k = l2_normalize(&split.k, rows, key_base, None);
+                        let sum = l2_sum(&split.q, rows, key_base);
+                        (q, k, sum)
+                    };
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnL2Sum) >= before.0 + 2,
+                        "the sum stretch must apply once per q/k pair (rows={rows}, {dtype:?})",
+                    );
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnQScale) > before.1
+                            && qwen4_exp_fused::applied_for_test(Stretch::GdnKScale) > before.2,
+                        "the q/k scale stretches must apply (rows={rows}, {dtype:?})",
+                    );
+                    assert_bit_identical(&fused_q, &reference_q, "q fused reference");
+                    assert_bit_identical(&fused_k, &reference_k, "k fused reference");
+                    let eager_sum = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        l2_sum(&split.q, rows, key_base)
+                    };
+                    assert_bit_identical(&fused_sum, &eager_sum, "l2 sum intermediate");
+                }
+            }
+        }
+
+        // One non-aligned view: the slice starts at a column that is not a
+        // multiple of the 128-wide head, so the compiled kernels meet a
+        // stride the aligned layouts never produce.
+        let dtype = MlxDtype::Bfloat16;
+        let rows = 3_i32;
+        let offset = 130_i32;
+        let mut rng = XorShift64::new(case_seed(6900));
+        let data = adversarial_values(
+            &mut rng,
+            rows as usize * (offset as usize + key_dim as usize),
+            4.0,
+        );
+        let base = astype(
+            &f32_tensor(&data, &[1, rows, offset + key_dim]),
+            dtype,
+            None,
+        );
+        let view = slice(
+            &base,
+            &[0, 0, offset],
+            &[1, rows, offset + key_dim],
+            &[1, 1, 1],
+            None,
+        );
+        let q_view = reshape(
+            &view,
+            &[1, rows, cfg.num_key_heads as i32, cfg.key_head_dim as i32],
+            None,
+        );
+        let key_base = [
+            cfg.num_key_heads as i64,
+            cfg.key_head_dim as i64,
+            dtype_key(dtype),
+            2,
+        ];
+        let eager = {
+            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+            l2_normalize(&q_view, rows, key_base, Some(&sqrt_dk))
+        };
+        let reference = divide(&qwen4_l2_reference(&q_view), &sqrt_dk, None);
+        assert_bit_identical(&eager, &reference, "offset eager reference");
+        qwen4_exp_fused::reset_registry_for_test();
+        let before = qwen4_exp_fused::applied_for_test(Stretch::GdnL2Sum);
+        let fused = {
+            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+            l2_normalize(&q_view, rows, key_base, Some(&sqrt_dk))
+        };
+        assert!(
+            qwen4_exp_fused::applied_for_test(Stretch::GdnL2Sum) > before,
+            "the sum stretch must apply on the offset view",
+        );
+        assert_bit_identical(&fused, &reference, "offset fused reference");
+    }
+
+    /// Convolution activation qualification: forced eager, forced fused and
+    /// the inline original three ops must agree bit for bit on adversarial
+    /// inputs (sigmoid saturation, +-inf, NaN, +-0), and GdnConvAct must
+    /// apply while fused.
+    #[test]
+    fn gdn_conv_activation_matches_on_adversarial_inputs() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for rows in [1_i32, 2, 8] {
+                let mut rng = XorShift64::new(case_seed(8300 + rows as u64));
+                let values = adversarial_values(&mut rng, rows as usize * 10240, 40.0);
+                let x = astype(&f32_tensor(&values, &[1, rows, 10240]), dtype, None);
+                let original = astype(
+                    &mlx_sys::ops::silu(&astype(&x, MlxDtype::Float32, None), None),
+                    dtype,
+                    None,
+                );
+                let eager = {
+                    let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                    conv_activation(&x, dtype, rows)
+                };
+                assert_bit_identical(&eager, &original, "conv activation eager");
+                qwen4_exp_fused::reset_registry_for_test();
+                let before = qwen4_exp_fused::applied_for_test(Stretch::GdnConvAct);
+                let fused = {
+                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    conv_activation(&x, dtype, rows)
+                };
+                assert!(
+                    qwen4_exp_fused::applied_for_test(Stretch::GdnConvAct) > before,
+                    "the conv activation stretch must apply while fused (rows={rows}, {dtype:?})",
+                );
+                assert_bit_identical(&fused, &original, "conv activation fused");
+            }
+        }
+    }
+
+    /// The hoisted `exp(a_log)` must be the original inline expression, bit
+    /// for bit, including the inf/NaN corners of a bf16 `a_log`.
+    #[test]
+    fn exp_a_log_matches_the_original_expression() {
+        let mut module = synthetic_pack_geometry_with(MlxDtype::Bfloat16, GdnGateActivation::Silu);
+        let mut rng = XorShift64::new(case_seed(9100));
+        let values = adversarial_values(&mut rng, 48, 0.4);
+        module.weights.a_log = astype(&f32_tensor(&values, &[48]), MlxDtype::Bfloat16, None);
+        let hoisted = module.exp_a_log();
+        let inline = exp(
+            &astype(&module.weights.a_log, MlxDtype::Float32, None),
+            None,
+        );
+        assert_bit_identical(hoisted, &inline, "exp_a_log");
+    }
+
+    /// A 1-wide key head elides the reduction and exposes a multiply feeding
+    /// an add to contraction, so the whole L2 group must stay eager there:
+    /// counters unmoved under force, output equal to the reference bits.
+    #[test]
+    fn gdn_stretches_with_one_row_head_dim_stay_eager() {
+        let sqrt_dk = cached_scalar(1.0, MlxDtype::Float32);
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for rows in [1_i32, 3, 8] {
+                let mut rng = XorShift64::new(case_seed(9700 + rows as u64));
+                let values = adversarial_values(&mut rng, rows as usize * 16, 4.0);
+                let x = astype(&f32_tensor(&values, &[1, rows, 16, 1]), dtype, None);
+                let key_base = [16_i64, 1, dtype_key(dtype), 2];
+                qwen4_exp_fused::reset_registry_for_test();
+                let before = (
+                    qwen4_exp_fused::applied_for_test(Stretch::GdnL2Sum),
+                    qwen4_exp_fused::applied_for_test(Stretch::GdnQScale),
+                    qwen4_exp_fused::applied_for_test(Stretch::GdnKScale),
+                );
+                let output = {
+                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    l2_normalize(&x, rows, key_base, Some(&sqrt_dk))
+                };
+                assert_eq!(
+                    (
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnL2Sum),
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnQScale),
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnKScale),
+                    ),
+                    before,
+                    "the L2 stretches must stay eager at a 1-wide key head (rows={rows}, {dtype:?})",
+                );
+                let reference = divide(&qwen4_l2_reference(&x), &sqrt_dk, None);
+                assert_bit_identical(&output, &reference, "one-wide head reference bits");
             }
         }
     }

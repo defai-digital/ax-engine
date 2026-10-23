@@ -84,8 +84,13 @@ fn max_rows() -> i32 {
 /// for logging and for the mask.
 ///
 /// Only stretches proven bit-identical to the eager ops on a real pack belong
-/// here; a bisect showed that compiling the GDN decay chain and the q/k L2
-/// normalisations changes the recurrent state bits.
+/// here. A probe over random bf16/f32/f16 inputs showed that every segment
+/// between the decay's `log1p` and the L2 normalisation's `power(x, -0.5)` is
+/// bit-identical when compiled, and that the three-call decay chain equals the
+/// original 14-op eager chain bit for bit. Those two ops stay eager outside the
+/// decay and L2 stretches: MLX leaves unqualified FP32 math functions on fast
+/// variants inside JIT-fused kernels, so compiling `log1p` (after any preceding
+/// op) or `power` changes the recurrent state bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Stretch {
     HcNorm,
@@ -95,11 +100,17 @@ pub(crate) enum Stretch {
     HcWrite,
     GdnBeta,
     GdnPost,
+    GdnConvAct,
+    GdnDecayPre,
+    GdnDecayPost,
+    GdnL2Sum,
+    GdnQScale,
+    GdnKScale,
 }
 
 impl Stretch {
     /// Mask order; [`parse_mask`] indexes with [`Stretch::index`].
-    pub(crate) const ALL: [Stretch; 7] = [
+    pub(crate) const ALL: [Stretch; 13] = [
         Stretch::HcNorm,
         Stretch::HcLow,
         Stretch::HcMix,
@@ -107,6 +118,12 @@ impl Stretch {
         Stretch::HcWrite,
         Stretch::GdnBeta,
         Stretch::GdnPost,
+        Stretch::GdnConvAct,
+        Stretch::GdnDecayPre,
+        Stretch::GdnDecayPost,
+        Stretch::GdnL2Sum,
+        Stretch::GdnQScale,
+        Stretch::GdnKScale,
     ];
 
     /// Name used in the `AX_FLASH_NEXT_FUSE` list and in the failure warning.
@@ -119,6 +136,12 @@ impl Stretch {
             Stretch::HcWrite => "hc_write",
             Stretch::GdnBeta => "gdn_beta",
             Stretch::GdnPost => "gdn_post",
+            Stretch::GdnConvAct => "gdn_conv_act",
+            Stretch::GdnDecayPre => "gdn_decay_pre",
+            Stretch::GdnDecayPost => "gdn_decay_post",
+            Stretch::GdnL2Sum => "gdn_l2_sum",
+            Stretch::GdnQScale => "gdn_q_scale",
+            Stretch::GdnKScale => "gdn_k_scale",
         }
     }
 
@@ -137,10 +160,10 @@ impl Stretch {
 /// everything, and anything else is a comma-separated stretch list. Names are
 /// trimmed, case-insensitive, and unknown names are ignored so a typo cannot
 /// silently enable a stretch.
-fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; 7] {
-    let mut mask = [false; 7];
+fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; 13] {
+    let mut mask = [false; 13];
     let Some(raw) = raw else {
-        return [unset_means_all; 7];
+        return [unset_means_all; 13];
     };
     let raw = raw.trim();
     if raw.is_empty() {
@@ -149,7 +172,7 @@ fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; 7] {
     let lowered = raw.to_ascii_lowercase();
     match lowered.as_str() {
         "0" | "false" | "off" | "no" => return mask,
-        "1" | "true" | "on" | "all" => return [true; 7],
+        "1" | "true" | "on" | "all" => return [true; 13],
         _ => {}
     }
     for name in lowered.split(',') {
@@ -165,8 +188,8 @@ fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; 7] {
 }
 
 /// Process-wide mask; read once so the decode path never hits the environment.
-fn env_mask() -> &'static [bool; 7] {
-    static MASK: OnceLock<[bool; 7]> = OnceLock::new();
+fn env_mask() -> &'static [bool; 13] {
+    static MASK: OnceLock<[bool; 13]> = OnceLock::new();
     MASK.get_or_init(|| parse_mask(std::env::var(FUSE_ENV).ok().as_deref(), !cfg!(test)))
 }
 
@@ -438,7 +461,7 @@ thread_local! {
     // Successful compiled applies per stretch on this thread, so a
     // differential test can prove the fused path ran instead of silently
     // falling back to eager.
-    static APPLIED: [Cell<u64>; 7] = const { [const { Cell::new(0) }; 7] };
+    static APPLIED: [Cell<u64>; 13] = const { [const { Cell::new(0) }; 13] };
 }
 
 /// Restores the previous test override on drop, so a test cannot leak a mask
@@ -602,15 +625,32 @@ mod tests {
         reset_registry_for_test();
         let _guard = force_for_test(None);
 
-        const NONE: [bool; 7] = [false; 7];
-        const ALL: [bool; 7] = [true; 7];
-        let norm_only = [true, false, false, false, false, false, false];
-        let norm_and_beta = [true, false, false, false, false, true, false];
+        const NONE: [bool; 13] = [false; 13];
+        const ALL: [bool; 13] = [true; 13];
+        let norm_only = [
+            true, false, false, false, false, false, false, false, false, false, false, false,
+            false,
+        ];
+        let norm_and_beta = [
+            true, false, false, false, false, true, false, false, false, false, false, false, false,
+        ];
 
         assert_eq!(
             Stretch::ALL.map(Stretch::name),
             [
-                "hc_norm", "hc_low", "hc_mix", "hc_gate", "hc_write", "gdn_beta", "gdn_post",
+                "hc_norm",
+                "hc_low",
+                "hc_mix",
+                "hc_gate",
+                "hc_write",
+                "gdn_beta",
+                "gdn_post",
+                "gdn_conv_act",
+                "gdn_decay_pre",
+                "gdn_decay_post",
+                "gdn_l2_sum",
+                "gdn_q_scale",
+                "gdn_k_scale",
             ],
             "mask order and names must not drift"
         );
@@ -641,14 +681,14 @@ mod tests {
 
     #[test]
     fn unset_variable_follows_the_default_policy() {
-        assert_eq!(parse_mask(None, true), [true; 7], "shipping default is on");
+        assert_eq!(parse_mask(None, true), [true; 13], "shipping default is on");
         assert_eq!(
             parse_mask(None, false),
-            [false; 7],
+            [false; 13],
             "unit tests default off"
         );
-        assert_eq!(parse_mask(Some("0"), true), [false; 7], "kill switch");
-        assert_eq!(parse_mask(Some(""), true), [false; 7], "empty disables");
+        assert_eq!(parse_mask(Some("0"), true), [false; 13], "kill switch");
+        assert_eq!(parse_mask(Some(""), true), [false; 13], "empty disables");
     }
 
     #[test]
