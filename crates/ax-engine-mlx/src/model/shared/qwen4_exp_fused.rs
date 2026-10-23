@@ -119,11 +119,17 @@ pub(crate) enum Stretch {
     QsaRopeHi,
     QsaGate,
     MoeRouteTail,
+    /// Native (hand-written Metal) decay and beta of the GDN gates.
+    GdnNativeDecay,
+    /// Native q/k inverse-norm scale of the GDN L2 normalisation.
+    GdnNativeQk,
+    /// Native low-rank activation and write gate of a hyper-connection read.
+    HcNativeLowGate,
 }
 
 impl Stretch {
     /// Mask order; [`parse_mask`] indexes with [`Stretch::index`].
-    pub(crate) const ALL: [Stretch; 19] = [
+    pub(crate) const ALL: [Stretch; 22] = [
         Stretch::HcNorm,
         Stretch::HcLow,
         Stretch::HcMix,
@@ -143,6 +149,9 @@ impl Stretch {
         Stretch::QsaRopeHi,
         Stretch::QsaGate,
         Stretch::MoeRouteTail,
+        Stretch::GdnNativeDecay,
+        Stretch::GdnNativeQk,
+        Stretch::HcNativeLowGate,
     ];
 
     /// Width of every mask, counter and forced-bit array.
@@ -170,6 +179,32 @@ impl Stretch {
             Stretch::QsaRopeHi => "qsa_rope_hi",
             Stretch::QsaGate => "qsa_gate",
             Stretch::MoeRouteTail => "moe_route_tail",
+            Stretch::GdnNativeDecay => "gdn_native_decay",
+            Stretch::GdnNativeQk => "gdn_native_qk",
+            Stretch::HcNativeLowGate => "hc_native_low_gate",
+        }
+    }
+
+    /// Whether this stretch is a hand-written Metal kernel rather than a
+    /// compiled closure. Native stretches use [`native_allowed`].
+    pub(crate) fn is_native(self) -> bool {
+        matches!(
+            self,
+            Stretch::GdnNativeDecay | Stretch::GdnNativeQk | Stretch::HcNativeLowGate
+        )
+    }
+
+    /// The native stretch that takes over this compiled stretch's work when it
+    /// applies, so tests can tell "never ran" from "replaced by its native
+    /// twin".
+    pub(crate) fn replaced_by(self) -> Option<Stretch> {
+        match self {
+            Stretch::GdnBeta | Stretch::GdnDecayPre | Stretch::GdnDecayPost => {
+                Some(Stretch::GdnNativeDecay)
+            }
+            Stretch::GdnQScale | Stretch::GdnKScale => Some(Stretch::GdnNativeQk),
+            Stretch::HcLow | Stretch::HcGate => Some(Stretch::HcNativeLowGate),
+            _ => None,
         }
     }
 
@@ -250,6 +285,18 @@ pub(crate) fn enabled(stretch: Stretch) -> bool {
         return forced;
     }
     env_mask()[stretch.index()]
+}
+
+/// Gate for a native stretch: the same enable mask and row cap as a compiled one.
+pub(crate) fn native_allowed(stretch: Stretch, rows: i32) -> bool {
+    debug_assert!(stretch.is_native());
+    enabled(stretch) && (1..=max_rows()).contains(&rows)
+}
+
+/// Count one successful native application (test counters only).
+pub(crate) fn note_native_applied(stretch: Stretch) {
+    debug_assert!(stretch.is_native());
+    note_applied(stretch);
 }
 
 /// Compile one closure body, or `None` when MLX rejects it.
@@ -658,11 +705,11 @@ mod tests {
         const ALL: [bool; Stretch::COUNT] = [true; Stretch::COUNT];
         let norm_only = [
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false,
         ];
         let norm_and_beta = [
             true, false, false, false, false, true, false, false, false, false, false, false,
-            false, false, false, false, false, false, false,
+            false, false, false, false, false, false, false, false, false, false,
         ];
 
         assert_eq!(
@@ -687,6 +734,9 @@ mod tests {
                 "qsa_rope_hi",
                 "qsa_gate",
                 "moe_route_tail",
+                "gdn_native_decay",
+                "gdn_native_qk",
+                "hc_native_low_gate",
             ],
             "mask order and names must not drift"
         );
