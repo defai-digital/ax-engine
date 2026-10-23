@@ -57,7 +57,10 @@ bit for bit rather than to a tolerance:
   prefill, verifier windows of 1, 2, 3, 4 and 8 rows under both `Shared` and `RowExact`, and a 70-step
   chain, with test limits of 64/32 and 300/16 so the chain crosses several seals; counters prove every
   decode step used the segmented gather and none rebuilt the flat history;
-- the rotary cache is checked the same way on a 2,600-token prompt (selected attention active).
+- the rotary cache is checked the same way on a 2,600-token prompt (selected attention active);
+- the same real-pack gates (segments, rotary cache, and the 15-stretch fused-versus-eager gate) and the
+  1,832-test library suite also pass on an Apple M2 Ultra 192 GB, and the final server build gives the
+  same generated text as the previous one for the streamed-experts and image-prefill smoke requests.
 
 ## Results (Apple M5 Max 128 GB)
 

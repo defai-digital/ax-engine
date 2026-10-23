@@ -26,3 +26,6 @@ Decode is the rate after the first token. Text SHA-256 is compared across arms a
   and 39k tokens of context (`flash_next_decode_context_stage_profile`, test-only marks inside
   QSA). Each stage is evaluated before the next starts, so the stage sum exceeds the real step.
 - `harness/cache_append_probe.py`: the MLX microbenchmark of a per-step K/V concatenation.
+- `raw/final-build-streamed-and-image.txt`: streamed-experts (two requests) and image prefill plus
+  decode (three requests) on the final build; the text SHA-256 values equal those of the earlier
+  15-stretch build in `flash-next-ngram-fused-decode-m5-20261022/raw/server-15-stretch-streamed-and-image.txt`.
