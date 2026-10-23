@@ -3,3 +3,9 @@
 # ax-engine-mlx unit suite can crash under libtest's default parallel runner.
 # Keep the repository test harness deterministic unless a caller overrides it.
 RUST_TEST_THREADS = "1"
+# MLX 0.32 multiplies float32 on Neural Accelerator GPUs (M5 and later) in TF32,
+# about 1e-5 relative error. That fails the float32 oracle comparisons in the
+# ax-engine-mlx unit suite (13 qwen4_exp tests pinned at 2e-6) while the same
+# tests pass on earlier GPUs. Run the suite at full float32 precision; callers
+# can still override it.
+MLX_ENABLE_TF32 = "0"
