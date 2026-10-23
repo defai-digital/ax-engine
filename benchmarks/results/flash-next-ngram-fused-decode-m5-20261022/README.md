@@ -13,7 +13,8 @@ time, `--prefill-chunk 2048 --max-batch-tokens 2048`, `--total-blocks 2048`.
 Three server builds, each run in a fresh process after `purge` (page cache emptied) so
 every n-gram row is cold: `before` is the build from `main` db2a8b92 plus the DFlash2
 branch (which does not touch Flash Next); `n-gram reads + read-ahead` is the new build
-with `AX_FLASH_NEXT_FUSE=0`; `plus fused stretches` is the new build with defaults.
+with `AX_FLASH_NEXT_FUSE=0`; `plus fused stretches` is the new build with defaults at the time
+(the first seven stretches; the later GDN segment stretches add 0.8% decode, same text).
 Prompts are first-seen Rust source excerpts (`Explain what this Rust code does and list
 its main risks.` followed by 8,000 characters of a repository file, chosen at random
 with seed 5; `long1` concatenates four of them), greedy, 128 generated tokens. Decode is

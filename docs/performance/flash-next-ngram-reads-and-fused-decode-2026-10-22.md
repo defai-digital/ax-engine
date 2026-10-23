@@ -48,7 +48,7 @@ moved nothing beyond +-1%.
 | Read every row of a gather concurrently (16 scoped threads) into caller-ordered planes and dequantize them once, lazily, instead of per shard with a device round trip each. Equal to the per-shard path element for element; that path stays as the fallback for tables whose shards differ | `ngram_table.rs`, `mlx-sys` `io_rows.rs` | none (non-uniform tables use the old path) |
 | Start the next prefill chunk's n-gram reads on a background thread while this chunk computes (row IDs depend only on token IDs); a wrong guess is discarded and read synchronously | `ngram_table.rs`, `model/qwen4_exp.rs`, `runner/mod.rs` | `AX_FLASH_NEXT_NGRAM_PREFETCH=0` |
 | Read with 32 threads (omlx measured 98.8k random-read IOPS at 32 threads against 9k at queue depth 1) and, after the weights have loaded, pre-read the 6.4 GB of quantization scales and biases planes into the page cache on a background thread so a first-seen row needs about one cold read instead of three (the MTPLX approach; done before the weight load it is evicted and gains nothing) | `ngram_table.rs`, `mlx-sys` `io_rows.rs`, `runner/mod.rs` | `AX_FLASH_NEXT_NGRAM_WARM_AUX=0`; `AX_FLASH_NEXT_NGRAM_READ_THREADS=<n>` |
-| Compile seven pure elementwise stretches of the decode step (`hc_norm`, `hc_low`, `hc_mix`, `hc_gate`, `hc_write`, `gdn_beta`, `gdn_post`) into one fused call each. Projections, recurrence and reductions' kernels stay outside; only 1-row inputs fuse | `model/shared/qwen4_exp_fused.rs`, `qwen4_exp_residual.rs`, `qwen4_exp_gdn.rs` | `AX_FLASH_NEXT_FUSE=0` (a comma list selects stretches; `AX_FLASH_NEXT_FUSE_ROWS` raises the row limit to at most 8) |
+| Compile 13 pure elementwise stretches of the decode step (`hc_norm`, `hc_low`, `hc_mix`, `hc_gate`, `hc_write`, `gdn_beta`, `gdn_post`, `gdn_conv_act`, `gdn_decay_pre`, `gdn_decay_post`, `gdn_l2_sum`, `gdn_q_scale`, `gdn_k_scale`) into one fused call each. Projections, the recurrence, and the two ops MLX cannot reproduce inside a fused kernel (`log1p`, `power`) stay outside; only 1-row inputs fuse | `model/shared/qwen4_exp_fused.rs`, `qwen4_exp_residual.rs`, `qwen4_exp_gdn.rs` | `AX_FLASH_NEXT_FUSE=0` (a comma list selects stretches; `AX_FLASH_NEXT_FUSE_ROWS` raises the row limit to at most 8) |
 
 The registry behind the third change tombstones a stretch on any failed or panicking
 build, failed apply or failed first evaluation and runs the eager ops from then on,
@@ -65,8 +65,9 @@ exact MTP profile and the verifier windows compare decode rows with singleton ro
 - on the real MXFP4 pack, logits and serialized state are identical for verifier
   windows of 1, 2, 3, 4 and 8 rows under both `Shared` and `RowExact`, and across a
   16-step singleton chain, on an Apple M5 Max 128 GB and an Apple M2 Ultra 192 GB;
-  per-stretch counters prove every stretch ran (over the chain 1,552 norm/low/mix,
-  1,536 gate/write, 576 beta/post);
+  per-stretch counters prove every one of the 13 stretches ran (over the chain 1,552
+  norm/low/mix, 1,536 gate/write, 576 for each GDN stretch except 1,152 for the sum of
+  squares, which q and k both use);
 - unit tests at synthetic and real geometry (f32, bf16, f16; 1 to 8 rows) compare raw
   bits, walk dtypes without clearing the registry, inject a failure into each stretch,
   check that 9- and 16-row inputs never fuse, and check closures are released at
@@ -77,22 +78,26 @@ exact MTP profile and the verifier windows compare decode rows with singleton ro
   mid-prefill, and at a refresh threshold of 200; 30 back-to-back 256-token requests
   stay flat in latency and resident memory.
 
-A bisect on the real pack removed three further GDN stretches (the decay chain and the
-q and k L2 normalizations) because compiling them changed the recurrent-state bits;
-they are not shipped behind a flag. A probe over the chain prefixes (40 random cases,
-M2 Ultra and M5 Max) put the first mismatch at `log1p` after any preceding op and at
-`power(x, -0.5)`; the surrounding add, minimum, exp, multiply and sum agree. The cause
-is in how MLX builds its fused kernels: Metal's `mathMode` and
+The decay chain and the q/k L2 normalizations could not be compiled whole: a bisect on
+the real pack showed the recurrent-state bits change. A probe over the chain prefixes
+(40 random cases, M2 Ultra and M5 Max) put the first mismatch at `log1p` after any
+preceding op and at `power(x, -0.5)`; the surrounding add, minimum, exp, multiply and
+sum agree. The cause is in how MLX builds its fused kernels: Metal's `mathMode` and
 `mathFloatingPointFunctions` are separate compile options, MLX sets only the math mode
 to safe for JIT libraries, so FP32 math functions written without `precise::` (`pow`,
 and the `log` inside MLX's `log1p`) stay on the fast variants, while the precompiled
 kernels are built with `-fno-fast-math`. Ops spelled `precise::` (exp, log, rsqrt,
-sigmoid) match, which is why the beta and post stretches are exact. MLX documents
-compiled results only as equal "up to numerical precision", so bit-exactness is our own
-gate, not an MLX guarantee. Other engines either keep these chains eager or compute
-them inside one hand-written kernel with explicit `precise::` calls and a bitwise
-self-check at load (MTPLX, omlx, TensorFold); that single-dispatch GDN step is the next
-candidate (about 3-6% decode) and needs its own record.
+sigmoid) match. MLX documents compiled results only as equal "up to numerical
+precision", so bit-exactness is our own gate, not an MLX guarantee. The fix that kept
+the gate is to split each chain at those two ops, leave only them eager, and compile
+the segments between them: every segment is bit-identical in isolation (probed in
+bf16, f32 and f16), the three-call decay equals the original 14-op chain, and the
+stage tests repeat the comparison on adversarial inputs (NaN, inf, subnormals, exp
+thresholds, cancelling projection and bias, all-zero, tiny and square-overflowing rows)
+and on the real non-contiguous q/k slices. Other engines either keep these chains eager
+or compute them inside one hand-written kernel with explicit `precise::` calls and a
+bitwise self-check at load (MTPLX, omlx, TensorFold); that single-dispatch GDN step is
+the remaining larger candidate and needs its own record.
 
 ## Results (Apple M5 Max 128 GB)
 
@@ -112,11 +117,16 @@ A 39,225-token first-seen prompt (48 generated tokens, `--total-blocks 4096`): T
 123.0 s before and 76.4 s after both changes (prefill 319 to 513 tok/s), decode 26.9
 to 31.6 tok/s, with identical generated text (SHA-256 of the 48 tokens).
 
+The "fused" columns were measured with the first seven stretches; the six GDN segment
+stretches added afterwards are +0.8% decode on top (same text), and the reader-thread and
+aux-plane changes are in the Limits section.
+
 Decode is tok/s after the first token. The read-ahead alone is 8-12% of TTFT on
 multi-chunk prompts; the rest of the TTFT gain is the concurrent reads. The fused
-stretches add 7-8% to decode. A 16-step singleton chain with logits evaluated at every
-step takes 403 ms eager and 365 ms fused on the M5 Max, 627 ms and 556 ms on the
-M2 Ultra.
+stretches add 8-9% to decode (37.5-40.3 to 40.9-44.2 tok/s on eight prompts with
+identical text; the last six stretches are 0.8% of that). A 16-step singleton chain with
+logits evaluated at every step takes 403 ms eager and 363 ms fused on the M5 Max, 630 ms
+and 546 ms on the M2 Ultra, under both `Shared` and `RowExact`.
 
 ## Limits
 
