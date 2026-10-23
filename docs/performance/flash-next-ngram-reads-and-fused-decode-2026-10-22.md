@@ -47,6 +47,7 @@ moved nothing beyond +-1%.
 | --- | --- | --- |
 | Read every row of a gather concurrently (16 scoped threads) into caller-ordered planes and dequantize them once, lazily, instead of per shard with a device round trip each. Equal to the per-shard path element for element; that path stays as the fallback for tables whose shards differ | `ngram_table.rs`, `mlx-sys` `io_rows.rs` | none (non-uniform tables use the old path) |
 | Start the next prefill chunk's n-gram reads on a background thread while this chunk computes (row IDs depend only on token IDs); a wrong guess is discarded and read synchronously | `ngram_table.rs`, `model/qwen4_exp.rs`, `runner/mod.rs` | `AX_FLASH_NEXT_NGRAM_PREFETCH=0` |
+| Read with 32 threads (omlx measured 98.8k random-read IOPS at 32 threads against 9k at queue depth 1) and, after the weights have loaded, pre-read the 6.4 GB of quantization scales and biases planes into the page cache on a background thread so a first-seen row needs about one cold read instead of three (the MTPLX approach; done before the weight load it is evicted and gains nothing) | `ngram_table.rs`, `mlx-sys` `io_rows.rs`, `runner/mod.rs` | `AX_FLASH_NEXT_NGRAM_WARM_AUX=0`; `AX_FLASH_NEXT_NGRAM_READ_THREADS=<n>` |
 | Compile seven pure elementwise stretches of the decode step (`hc_norm`, `hc_low`, `hc_mix`, `hc_gate`, `hc_write`, `gdn_beta`, `gdn_post`) into one fused call each. Projections, recurrence and reductions' kernels stay outside; only 1-row inputs fuse | `model/shared/qwen4_exp_fused.rs`, `qwen4_exp_residual.rs`, `qwen4_exp_gdn.rs` | `AX_FLASH_NEXT_FUSE=0` (a comma list selects stretches; `AX_FLASH_NEXT_FUSE_ROWS` raises the row limit to at most 8) |
 
 The registry behind the third change tombstones a stretch on any failed or panicking
@@ -78,7 +79,20 @@ exact MTP profile and the verifier windows compare decode rows with singleton ro
 
 A bisect on the real pack removed three further GDN stretches (the decay chain and the
 q and k L2 normalizations) because compiling them changed the recurrent-state bits;
-they are not shipped behind a flag.
+they are not shipped behind a flag. A probe over the chain prefixes (40 random cases,
+M2 Ultra and M5 Max) put the first mismatch at `log1p` after any preceding op and at
+`power(x, -0.5)`; the surrounding add, minimum, exp, multiply and sum agree. The cause
+is in how MLX builds its fused kernels: Metal's `mathMode` and
+`mathFloatingPointFunctions` are separate compile options, MLX sets only the math mode
+to safe for JIT libraries, so FP32 math functions written without `precise::` (`pow`,
+and the `log` inside MLX's `log1p`) stay on the fast variants, while the precompiled
+kernels are built with `-fno-fast-math`. Ops spelled `precise::` (exp, log, rsqrt,
+sigmoid) match, which is why the beta and post stretches are exact. MLX documents
+compiled results only as equal "up to numerical precision", so bit-exactness is our own
+gate, not an MLX guarantee. Other engines either keep these chains eager or compute
+them inside one hand-written kernel with explicit `precise::` calls and a bitwise
+self-check at load (MTPLX, omlx, TensorFold); that single-dispatch GDN step is the next
+candidate (about 3-6% decode) and needs its own record.
 
 ## Results (Apple M5 Max 128 GB)
 
@@ -116,8 +130,13 @@ M2 Ultra.
   `AX_FLASH_NEXT_FUSE_ROWS` is raised) and every model family other than `qwen4_exp`
   are unchanged.
 - MLX 0.32 multiplies float32 on Neural Accelerator GPUs (M5 and later) in TF32, about
-  1e-5 relative error. That, not the code in this note, made 13 `qwen4_exp` oracle unit
-  tests fail on the M5 Max while they pass on the M2 Ultra; the cargo test environment
-  now sets `MLX_ENABLE_TF32=0`. One remaining M5 failure,
-  `mlx_gated_delta::tests::supported_head_pairs_and_extreme_gates_match_ax` (6.4e-5
-  against 5e-5), is the accelerator's gated-delta kernel and is not touched here.
+  1e-5 relative error (MLX issues #3534 and #3235 describe the same behaviour), and
+  selects a different gated-delta kernel there. That, not the code in this note, made 18
+  `ax-engine-mlx` unit tests fail on the M5 Max while they pass on the M2 Ultra. The cargo
+  test environment now sets `MLX_ENABLE_TF32=0` and `GATED_DELTA_CHUNK=8` (the
+  architecture-independent route), the pins MLX's own CI, mlx-vlm and omlx use;
+  the lib suite is 1803 passed, 0 failed on both hosts. A test binary run directly
+  rather than through cargo needs the same two variables.
+- The reader-thread and aux-plane changes above were measured after the table: with
+  the prefix cache off, first-seen prompts of 1,773-2,560 tokens got 2-6% lower TTFT,
+  decode unchanged, text identical.
