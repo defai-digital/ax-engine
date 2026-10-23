@@ -1,0 +1,9 @@
+STREAM-def
+{"label": "t5def", "reqs": [{"sec": 128.8, "tokens": 24, "sha": "0d339abd20b37e4d", "head": "Salt spray kisses stone,\nHorizon bends in the heat"}, {"sec": 112.7, "tokens": 24, "sha": "360a78c703355ae7", "head": "Here are the key differences between TCP and UDP, "}]}
+IMG-def
+{"label": "t5def", "reqs": [{"sec": 0.84, "tokens": 15, "sha": "272f8e922636b87e", "head": "A solid red square is centered on a blue and white checkerboard backgr"}, {"sec": 0.82, "tokens": 15, "sha": "272f8e922636b87e", "head": "A solid red square is centered on a blue and white checkerboard backgr"}, {"sec": 0.32, "tokens": 1, "sha": "5dd272b4f316b776", "head": "Paris"}]}
+STREAM-off
+{"label": "t5off", "reqs": [{"sec": 129.5, "tokens": 24, "sha": "0d339abd20b37e4d", "head": "Salt spray kisses stone,\nHorizon bends in the heat"}, {"sec": 113.0, "tokens": 24, "sha": "360a78c703355ae7", "head": "Here are the key differences between TCP and UDP, "}]}
+IMG-off
+{"label": "t5off", "reqs": [{"sec": 0.88, "tokens": 15, "sha": "272f8e922636b87e", "head": "A solid red square is centered on a blue and white checkerboard backgr"}, {"sec": 0.87, "tokens": 15, "sha": "272f8e922636b87e", "head": "A solid red square is centered on a blue and white checkerboard backgr"}, {"sec": 0.34, "tokens": 1, "sha": "5dd272b4f316b776", "head": "Paris"}]}
+ALLDONE

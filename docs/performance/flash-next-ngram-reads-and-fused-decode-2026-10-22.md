@@ -48,7 +48,7 @@ moved nothing beyond +-1%.
 | Read every row of a gather concurrently (16 scoped threads) into caller-ordered planes and dequantize them once, lazily, instead of per shard with a device round trip each. Equal to the per-shard path element for element; that path stays as the fallback for tables whose shards differ | `ngram_table.rs`, `mlx-sys` `io_rows.rs` | none (non-uniform tables use the old path) |
 | Start the next prefill chunk's n-gram reads on a background thread while this chunk computes (row IDs depend only on token IDs); a wrong guess is discarded and read synchronously | `ngram_table.rs`, `model/qwen4_exp.rs`, `runner/mod.rs` | `AX_FLASH_NEXT_NGRAM_PREFETCH=0` |
 | Read with 32 threads (omlx measured 98.8k random-read IOPS at 32 threads against 9k at queue depth 1) and, after the weights have loaded, pre-read the 6.4 GB of quantization scales and biases planes into the page cache on a background thread so a first-seen row needs about one cold read instead of three (the MTPLX approach; done before the weight load it is evicted and gains nothing) | `ngram_table.rs`, `mlx-sys` `io_rows.rs`, `runner/mod.rs` | `AX_FLASH_NEXT_NGRAM_WARM_AUX=0`; `AX_FLASH_NEXT_NGRAM_READ_THREADS=<n>` |
-| Compile 13 pure elementwise stretches of the decode step (`hc_norm`, `hc_low`, `hc_mix`, `hc_gate`, `hc_write`, `gdn_beta`, `gdn_post`, `gdn_conv_act`, `gdn_decay_pre`, `gdn_decay_post`, `gdn_l2_sum`, `gdn_q_scale`, `gdn_k_scale`) into one fused call each. Projections, the recurrence, and the two ops MLX cannot reproduce inside a fused kernel (`log1p`, `power`) stay outside; only 1-row inputs fuse | `model/shared/qwen4_exp_fused.rs`, `qwen4_exp_residual.rs`, `qwen4_exp_gdn.rs` | `AX_FLASH_NEXT_FUSE=0` (a comma list selects stretches; `AX_FLASH_NEXT_FUSE_ROWS` raises the row limit to at most 8) |
+| Compile 15 pure elementwise stretches of the decode step (`hc_norm`, `hc_low`, `hc_mix`, `hc_gate`, `hc_write`, `gdn_beta`, `gdn_post`, `gdn_conv_act`, `gdn_decay_pre`, `gdn_decay_post`, `gdn_l2_sum`, `gdn_q_scale`, `gdn_k_scale`, `moe_swiglu`, `moe_combine`) into one fused call each. Projections, the recurrence, and the two ops MLX cannot reproduce inside a fused kernel (`log1p`, `power`) stay outside; only 1-row inputs fuse | `model/shared/qwen4_exp_fused.rs`, `qwen4_exp_residual.rs`, `qwen4_exp_gdn.rs`, `qwen4_exp_moe.rs` | `AX_FLASH_NEXT_FUSE=0` (a comma list selects stretches; `AX_FLASH_NEXT_FUSE_ROWS` raises the row limit to at most 8) |
 
 The registry behind the third change tombstones a stretch on any failed or panicking
 build, failed apply or failed first evaluation and runs the eager ops from then on,
@@ -65,9 +65,10 @@ exact MTP profile and the verifier windows compare decode rows with singleton ro
 - on the real MXFP4 pack, logits and serialized state are identical for verifier
   windows of 1, 2, 3, 4 and 8 rows under both `Shared` and `RowExact`, and across a
   16-step singleton chain, on an Apple M5 Max 128 GB and an Apple M2 Ultra 192 GB;
-  per-stretch counters prove every one of the 13 stretches ran (over the chain 1,552
+  per-stretch counters prove every one of the 15 stretches ran (over the chain 1,552
   norm/low/mix, 1,536 gate/write, 576 for each GDN stretch except 1,152 for the sum of
-  squares, which q and k both use);
+  squares, which q and k both use, 1,536 for the SiLU product of the routed and shared
+  experts and 768 for the MoE tail);
 - unit tests at synthetic and real geometry (f32, bf16, f16; 1 to 8 rows) compare raw
   bits, walk dtypes without clearing the registry, inject a failure into each stretch,
   check that 9- and 16-row inputs never fuse, and check closures are released at
@@ -76,7 +77,11 @@ exact MTP profile and the verifier windows compare decode rows with singleton ro
   tokens), under canonical MTP (equal to direct decode) and the opt-in batched MTP
   verifier, after an image prefill, with streamed experts, after a request cancelled
   mid-prefill, and at a refresh threshold of 200; 30 back-to-back 256-token requests
-  stay flat in latency and resident memory.
+  stay flat in latency and resident memory. The final 15-stretch build repeated eight
+  prompts, canonical MTP, the 30-request soak, streamed experts and an image prefill
+  followed by decode against the same build with fusion off: every generated text is
+  identical (the batched MTP verifier, the cancelled prefill and the refresh threshold
+  were run on the 13-stretch build and not repeated).
 
 The decay chain and the q/k L2 normalizations could not be compiled whole: a bisect on
 the real pack showed the recurrent-state bits change. A probe over the chain prefixes
@@ -118,15 +123,19 @@ A 39,225-token first-seen prompt (48 generated tokens, `--total-blocks 4096`): T
 to 31.6 tok/s, with identical generated text (SHA-256 of the 48 tokens).
 
 The "fused" columns were measured with the first seven stretches; the six GDN segment
-stretches added afterwards are +0.8% decode on top (same text), and the reader-thread and
-aux-plane changes are in the Limits section.
+stretches added afterwards are +0.8% decode on top (same text), the two MoE tail
+stretches about 3% more, and the reader-thread and aux-plane changes are in the Limits
+section.
 
 Decode is tok/s after the first token. The read-ahead alone is 8-12% of TTFT on
-multi-chunk prompts; the rest of the TTFT gain is the concurrent reads. The fused
-stretches add 8-9% to decode (37.5-40.3 to 40.9-44.2 tok/s on eight prompts with
-identical text; the last six stretches are 0.8% of that). A 16-step singleton chain with
-logits evaluated at every step takes 403 ms eager and 363 ms fused on the M5 Max, 630 ms
-and 546 ms on the M2 Ultra, under both `Shared` and `RowExact`.
+multi-chunk prompts; the rest of the TTFT gain is the concurrent reads. With all 15
+stretches the server decodes 11-13% faster than the same build with `AX_FLASH_NEXT_FUSE=0`
+(35.2-40.2 to 39.3-45.4 tok/s on eight prompts, text identical; canonical MTP decode
+36.4-37.3 to 40.6-41.9 tok/s, text identical to the unfused run), and
+30 back-to-back requests stay flat (45.3-45.8 tok/s, resident memory 71,442 MB at the start and 71,397 MB at the
+end). A 16-step singleton chain with logits evaluated at every step takes 403 ms eager
+and 350 ms fused on the M5 Max, 625 ms and 511 ms on the M2 Ultra, under both `Shared`
+and `RowExact`.
 
 ## Limits
 
