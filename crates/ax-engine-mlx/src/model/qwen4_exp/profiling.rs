@@ -1745,6 +1745,40 @@ fn flash_next_decode_context_stage_profile() {
         }
         state = measured.state;
     }
+
+    // Optional op census: one extra singleton forward under the per-thread op
+    // trace, so the evidence records WHICH MLX ops the step issues and from
+    // which engine function. No capture, no eval — forward's own dispatches
+    // are the census. The last prompt id is reused because there is no next
+    // id; the logits are discarded, only the bump sites matter.
+    let mut op_trace_json = serde_json::Value::Null;
+    if std::env::var("AX_FLASH_NEXT_OP_TRACE").as_deref() == Ok("1") {
+        let input = [tokens[tokens.len() - 1]];
+        mlx_sys::op_trace_begin();
+        let traced = forward(trunk, &input, &state, owner, ProjectionBatchPolicy::Shared).unwrap();
+        let entries = mlx_sys::op_trace_end();
+        drop(traced);
+        eprintln!(
+            "OP_TRACE distinct={} showing top {}",
+            entries.len(),
+            entries.len().min(60)
+        );
+        for entry in entries.iter().take(60) {
+            eprintln!("{:>8}  {:<28} {}", entry.count, entry.op, entry.caller);
+        }
+        op_trace_json = serde_json::json!(
+            entries
+                .iter()
+                .take(150)
+                .map(|entry| serde_json::json!({
+                    "caller": entry.caller,
+                    "op": entry.op,
+                    "count": entry.count,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+
     let per_step = |total: f64| total / steps as f64;
     let evidence = serde_json::json!({
         "qualification": false,
@@ -1760,6 +1794,7 @@ fn flash_next_decode_context_stage_profile() {
             .iter()
             .map(|(stage, ops)| (stage.to_string(), *ops / steps as u64))
             .collect::<BTreeMap<_, _>>(),
+        "op_trace": op_trace_json,
     });
     if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT") {
         std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
@@ -1887,5 +1922,108 @@ fn flash_next_kv_segments_match_flat_on_real_pack() {
         "KV_SEGMENTS_VS_FLAT limits={min_tokens},{seal_tokens} chain{chain_steps} flat_ms={:.1} segmented_ms={:.1}",
         flat_secs * 1e3,
         seg_secs * 1e3
+    );
+}
+
+/// The cached pooled block keys (extended by newly completed blocks only)
+/// must give bit-identical logits and serialized state to recomputing every
+/// block each step. The prompt needs more than 2,300 ids so the selected
+/// attention path (and with it the indexer's block scoring) is active; the
+/// 70-step chain completes a new block every fourth token, and the verifier
+/// windows run from the same prefix so a rejected staged cache is replayed
+/// from the committed one.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,300 ids)"]
+fn flash_next_pooled_cache_matches_full_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::qwen4_exp_qsa::with_pooled_cache;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(tokens.len() > 2_300, "need more than 2,300 prompt ids");
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+        forward(trunk, input, state, owner, policy).unwrap()
+    };
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+    let chain_steps = 70usize;
+    let split = tokens.len() - chain_steps - 10;
+    let prefill = |enabled: bool| {
+        with_pooled_cache(enabled, || {
+            let mut state = Qwen4ExpState::new(trunk, owner);
+            let mut last_bits = Vec::new();
+            for (offset, end) in chunk_ranges(split, 1024) {
+                let output = run(&tokens[offset..end], &state, ProjectionBatchPolicy::Shared);
+                if end == split {
+                    last_bits = bits(&output);
+                }
+                state = output.state;
+            }
+            (state, last_bits)
+        })
+    };
+    let (full_prefix, full_last) = prefill(false);
+    let (cached_prefix, cached_last) = prefill(true);
+    assert_eq!(full_last, cached_last, "prefill logits");
+    assert_eq!(
+        snapshot(full_prefix.clone()),
+        snapshot(cached_prefix.clone()),
+        "prefill state"
+    );
+
+    for policy in [
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::RowExact,
+    ] {
+        for rows in [1usize, 2, 3, 4, 8] {
+            let window = &tokens[split..split + rows];
+            let full = with_pooled_cache(false, || run(window, &full_prefix, policy));
+            let cached = with_pooled_cache(true, || run(window, &cached_prefix, policy));
+            assert_eq!(bits(&full), bits(&cached), "{policy:?} rows {rows}: logits");
+            assert_eq!(
+                snapshot(full.state),
+                snapshot(cached.state),
+                "{policy:?} rows {rows}: retained state"
+            );
+        }
+    }
+
+    let mut full_state = full_prefix.clone();
+    let mut cached_state = cached_prefix.clone();
+    let (mut full_secs, mut cached_secs) = (0.0f64, 0.0f64);
+    for step in 0..chain_steps {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let full = with_pooled_cache(false, || {
+            run(&token, &full_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&full.logits]);
+        full_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let cached = with_pooled_cache(true, || {
+            run(&token, &cached_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&cached.logits]);
+        cached_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&full), bits(&cached), "singleton step {step}");
+        full_state = full.state;
+        cached_state = cached.state;
+    }
+    assert_eq!(snapshot(full_state), snapshot(cached_state), "chain state");
+    eprintln!(
+        "POOLED_CACHE_VS_FULL chain{chain_steps} full_ms={:.1} cached_ms={:.1}",
+        full_secs * 1e3,
+        cached_secs * 1e3
     );
 }

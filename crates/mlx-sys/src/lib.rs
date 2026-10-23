@@ -69,7 +69,7 @@ pub use mempressure::{
     device_recommended_working_set_bytes, host_resident_bytes,
 };
 pub use metal::{KernelOutputSpec, KernelTemplateArg, LazyKernel, MlxMetalKernel};
-pub use op_count::{op_count_snapshot, op_count_take};
+pub use op_count::{OpTraceEntry, op_count_snapshot, op_count_take, op_trace_begin, op_trace_end};
 pub use ops::{
     MlxQuantizationMode, add, add_rms_norm_pair, arange, argmax, argpartition_axis, argsort_axis,
     as_strided, astype, broadcast_to, clip, compiled_dual_gate_up_qmm,

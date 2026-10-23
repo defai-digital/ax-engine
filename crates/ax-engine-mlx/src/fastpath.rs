@@ -119,6 +119,14 @@ pub(crate) fn flash_next_qsa_rope_cache_enabled() -> bool {
     *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_ROPE_CACHE"))
 }
 
+/// Flash Next keeps the pooled QSA block keys in the index cache and pools
+/// only newly completed blocks. Kill switch:
+/// `AX_FLASH_NEXT_POOLED_CACHE=0`.
+pub(crate) fn flash_next_qsa_pooled_cache_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_POOLED_CACHE"))
+}
+
 /// Flash Next pre-reads the n-gram scales and biases planes into the OS page
 /// cache after the model weights finish loading, so first-seen row gathers
 /// need about one cold read instead of three. Running it earlier would let

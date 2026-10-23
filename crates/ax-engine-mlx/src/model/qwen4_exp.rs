@@ -256,6 +256,11 @@ impl Qwen4ExpState {
                     result.extend(state.keys().arrays());
                     result.extend(state.values().arrays());
                     result.extend(state.index().keys());
+                    // Derived pooled block keys: evaluated with the state so
+                    // their lazy concat chain cannot grow across steps.
+                    if let Some(pooled) = state.index().pooled_blocks() {
+                        result.push(pooled);
+                    }
                 }
             }
             if let Some(conv) = layer.ple.as_ref().and_then(|s| s.conv.as_ref()) {
@@ -320,6 +325,9 @@ impl Qwen4ExpState {
                     );
                     if state.index().keys().is_some() {
                         result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.index"));
+                    }
+                    if state.index().pooled_blocks().is_some() {
+                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.pooled"));
                     }
                 }
             }
@@ -400,6 +408,7 @@ impl Qwen4ExpState {
                         .arrays()
                         .chain(state.values().arrays())
                         .chain(state.index().keys())
+                        .chain(state.index().pooled_blocks())
                         .fold(0u64, |total, array| {
                             total.saturating_add(array.nbytes() as u64)
                         });
