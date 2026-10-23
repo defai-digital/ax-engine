@@ -242,12 +242,23 @@ class NativeSupportTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "internal SSD"):
                     mod.storage_info(Path("model"))
 
-    def test_form_factor_is_named_only_for_known_studio_models(self):
-        for model, expected in (("Mac14,14", "Mac Studio"), ("Mac13,1", "Mac Studio"),
-                                ("Mac14,8", "unrecognized (Mac14,8)"),
+    def test_form_factor_is_named_only_for_known_standard_models(self):
+        for model, expected in (("Mac17,6", "MacBook Pro"),
+                                ("Mac14,14", "unrecognized (Mac14,14)"),
                                 ("Mac16,5", "unrecognized (Mac16,5)")):
             with patch.object(mod.subprocess, "check_output", return_value=model + "\n"):
                 self.assertEqual(mod.form_factor(), expected)
+
+    def test_only_the_m5_max_128_gb_is_the_standard_host(self):
+        gib = 1024**3
+        self.assertTrue(mod.is_target_host("Apple M5 Max", 128 * gib))
+        self.assertFalse(mod.is_target_host("Apple M2 Ultra", 192 * gib))
+        self.assertFalse(mod.is_target_host("Apple M5 Max", 64 * gib))
+        self.assertFalse(mod.is_target_host("Apple M5 Pro", 128 * gib))
+        self.assertTrue(mod.is_target_hardware(
+            {"form_factor": "MacBook Pro", "soc": "Apple M5 Max", "memory_bytes": 128 * gib}))
+        self.assertFalse(mod.is_target_hardware(
+            {"form_factor": "Mac Studio", "soc": "Apple M2 Ultra", "memory_bytes": 192 * gib}))
 
 
 if __name__ == "__main__":

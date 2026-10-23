@@ -33,7 +33,7 @@ MTP sidecar availability does not promote MTP to a product default. Use
 necessary control. MTP-S, MTP-P and MTP-D require evidence tied to each pack.
 Retired 6-bit qualification, speed and safety receipts remain historical;
 none qualify the replacement MXFP4 or future MXFP8 pack. SKU targets remain
-Mac mini M4 Pro 64 GB for 27B and Ultra-class Mac Studio 192 GiB+ for Flash Next.
+Mac mini M4 Pro 64 GB for 27B and MacBook Pro M5 Max 128 GB for Flash Next.
 
 MXFP8 is in scope, but no unverified download alias, revision, throughput
 claim or production promotion is published. AXQuant owns conversion and

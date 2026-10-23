@@ -33,7 +33,7 @@ PROMPTS = REPO_ROOT / "benchmarks/prompts/mtp-suites/flappy.jsonl"
 MTPLX_SOURCE = REPO_ROOT / ".internal/reference/MTPLX"
 OMLX_SOURCE = REPO_ROOT / ".internal/reference/omlx"
 HARDWARE_LABEL = (
-    "Mac Studio, Apple M2 Ultra, 192 GiB unified memory, internal NVMe SSD"
+    "MacBook Pro, Apple M5 Max, 128 GB unified memory, internal NVMe SSD"
 )
 HOSTNAME_KEYS = {"hostname", "host_id", "machine_hostname", "serial_number", "hardware_uuid"}
 
@@ -464,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     stamp = time.strftime("%Y-%m-%d")
     output_dir = args.output_dir or (
-        REPO_ROOT / "benchmarks/results/mtp-axq-peer" / f"{stamp}-apple-m2-ultra-192gb-flash-next"
+        REPO_ROOT / "benchmarks/results/mtp-axq-peer" / f"{stamp}-apple-m5-max-128gb-flash-next"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     repetitions = 1 if args.smoke else args.repetitions

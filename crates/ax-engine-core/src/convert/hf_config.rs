@@ -422,7 +422,7 @@ pub(crate) fn runtime_status_for_model_type(model_type: &str) -> NativeRuntimeSt
             blockers: Vec::new(),
             notes: vec![
                 "n-gram embedding table must not be eval'd at load_weights".to_string(),
-                "qualification target: Mac Studio, Ultra-class Apple Silicon (M2 Ultra+), 192 GiB+, MXFP4 MTP; target qualification pending"
+                "qualification standard: MacBook Pro M5 Max 128 GB, single-stream resident, MXFP4 MTP; target qualification pending"
                     .to_string(),
             ],
         };

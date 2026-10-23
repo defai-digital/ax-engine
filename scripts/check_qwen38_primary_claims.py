@@ -27,13 +27,18 @@ STATUS_FILES = (
 )
 FLASH_NEXT_ALIAS = "qwen3.8-flash-next:axq"
 FLASH_NEXT_STATUS_OPEN = (
-    "Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. "
-    "AX certification record: Candidate (gates open)."
+    "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
+    "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
+    "MXFP4 MTP target; native functional controls verified; checkpoint qualification pending on this standard. "
+    "MTP Tier 2 pending. AX certification record: Candidate (gates open)."
 )
 FLASH_NEXT_STATUS_RELEASED = (
-    "Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; "
-    "model MTP is an explicit experimental opt-in. MTP Tier 2 pending. "
-    "AX certification record: Candidate (direct-default release gates passed; MTP gates open)."
+    "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
+    "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
+    "MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one larger host "
+    "and do not certify this standard by themselves; model MTP is an explicit experimental opt-in. "
+    "MTP Tier 2 pending. "
+    "AX certification record: Candidate (standard host MacBook Pro M5 Max 128 GB; MTP gates open)."
 )
 FLASH_NEXT_RELEASE_VERDICT = (
     "benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-release-gates/release-verdict.json"

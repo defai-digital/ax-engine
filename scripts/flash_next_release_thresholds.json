@@ -9,12 +9,12 @@
     "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
     "published_members": 49,
     "published_bytes": 132261877478,
-    "host": "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GiB or more, internal SSD",
+    "host": "MacBook Pro, Apple M5 Max, 128 GB unified memory, internal SSD; single-stream resident (--max-concurrent-requests 1, MTP off for the default path, contexts up to 32k)",
     "kv_pool": "--total-blocks 4096 (65,536 tokens) for the long-context lookup; the 16,384-token default pool is documented, not changed"
   },
   "memory": {
     "peak_server_rss_gib_max": 96,
-    "basis": "Half of the 192 GiB unified memory. Observed single peaks over the 105-item cohort were 73.1 and 76.2 GiB, so the bound leaves about 20 GiB of headroom for run-to-run variation."
+    "basis": "ADR-049 (2026-10-23) moved the standard host to the 128 GB MacBook Pro M5 Max and kept the 96 GiB bound: 75% of 128 GiB, about 20 GiB above the observed single peaks of 73.1 and 76.2 GiB over the 105-item cohort. The earlier basis was half of the 192 GiB Ultra-class host."
   },
   "readiness": {
     "warm_seconds_max": 120,
@@ -78,5 +78,10 @@
     "reason": "After the bounds were frozen, repeated timing runs on this host showed time-varying background interference: the same binary and flags gave 2,048-token TTFT of 5.8 s and 4.3 s within one hour, while three consecutive clean processes agreed to better than 1% (4.26-4.29 s). A median over one process per arm therefore measured the interference, not the engine.",
     "change": "Each AX arm is measured in two independent server processes interleaved in time and keeps the one with the lower summed median TTFT; both are retained in the raw record and must emit identical tokens. No bound value changes.",
     "applies_before_final_evidence": true
+  },
+  "target_amendment": {
+    "date": "2026-10-23",
+    "adr": "ADR-049",
+    "change": "standard host Mac Studio Ultra-class 192 GiB+ -> MacBook Pro M5 Max 128 GB; earlier gate results measured on the Ultra-class host do not certify the new standard and must be re-collected on it"
   }
 }

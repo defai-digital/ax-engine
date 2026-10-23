@@ -21,6 +21,12 @@ from typing import Any
 SCRIPTS = Path(__file__).resolve().parent
 THRESHOLDS = SCRIPTS / "flash_next_release_thresholds.json"
 GIB = 1024**3
+# Flash Next qualification and certification standard (ADR-049); mirrors
+# check_flash_next_native_support.TARGET_*, which the live harnesses enforce.
+TARGET_FORM_FACTOR = "MacBook Pro"
+TARGET_SOC = "Apple M5 Max"
+TARGET_MEMORY_GIB = 128
+TARGET_DESCRIPTION = "MacBook Pro, Apple M5 Max, 128 GB"
 AX_ARMS = ("disabled", "default")
 OUTPUT_TOKENS = 128
 LONG_ID = "long_context_record_mass"
@@ -246,9 +252,9 @@ def gate_integrity(results: dict[str, dict[str, Any]], th: dict[str, Any]) -> li
         problems.append(f"inventories differ across results: {inventories}")
     for name, result in results.items():
         hardware = result.get("hardware") or {}
-        if hardware.get("form_factor") != "Mac Studio" or "Ultra" not in hardware.get("soc", "") \
-                or hardware.get("memory_bytes", 0) < 192 * GIB:
-            problems.append(f"{name}: not the Mac Studio Ultra 192 GiB target")
+        if hardware.get("form_factor") != TARGET_FORM_FACTOR or hardware.get("soc", "").strip() != TARGET_SOC \
+                or hardware.get("memory_bytes", 0) < TARGET_MEMORY_GIB * GIB:
+            problems.append(f"{name}: not the {TARGET_DESCRIPTION} standard host")
         if result.get("qualification") or result.get("release_ready"):
             problems.append(f"{name}: a harness result claims qualification")
     floor = th["timing_host"]["min_cpu_idle_percent"]

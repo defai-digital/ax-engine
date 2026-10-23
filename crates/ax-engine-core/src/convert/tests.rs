@@ -5517,7 +5517,7 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         );
         assert!(
             manifest.runtime_status.notes.iter().any(|n| {
-                n.contains("Mac Studio, Ultra-class Apple Silicon (M2 Ultra+), 192 GiB+, MXFP4 MTP")
+                n.contains("MacBook Pro M5 Max 128 GB, single-stream resident, MXFP4 MTP")
                     && n.contains("target qualification pending")
             }),
             "{model_type}: {:?}",

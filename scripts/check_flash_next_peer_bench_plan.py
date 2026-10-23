@@ -133,12 +133,12 @@ def contract_problems(contract: dict, metrics_text: str, keys_text: str) -> list
     if not isinstance(host, dict):
         problems.append("target_host must be an object")
         host = {}
-    if "Ultra-class" not in str(host.get("description", "")):
-        problems.append("target_host does not declare the Ultra-class Apple Silicon host")
+    if "M5 Max" not in str(host.get("description", "")):
+        problems.append("target_host does not declare the MacBook Pro M5 Max standard host")
     if host.get("requires_apple_silicon") is not True:
         problems.append("target_host does not require Apple Silicon")
-    if type(host.get("min_memory_gib")) is not int or host["min_memory_gib"] < 192:
-        problems.append("target_host min_memory_gib is below 192")
+    if type(host.get("min_memory_gib")) is not int or host["min_memory_gib"] < 128:
+        problems.append("target_host min_memory_gib is below 128")
 
     pack = contract.get("pack")
     if not isinstance(pack, dict):
