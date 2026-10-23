@@ -260,7 +260,8 @@ def server_command(server: Path, root: Path, mode: str, port: int) -> list[str]:
         raise ValueError(f"unknown control mode {mode!r}; expected one of {SERVER_MODES}")
     base = [str(server), "--mlx", "--model-id", "qwen3.8-flash-next:mxfp4",
             "--mlx-model-artifacts-dir", str(root)]
-    tail = ["--host", "127.0.0.1", "--port", str(port)]
+    # ADR-049 standard envelope: one request at a time on the 128 GB host.
+    tail = ["--max-concurrent-requests", "1", "--host", "127.0.0.1", "--port", str(port)]
     if mode == "default":
         return [*base, *tail]
     return [*base, "--mlx-mtp-policy", mode, "--disable-ngram-acceleration",
