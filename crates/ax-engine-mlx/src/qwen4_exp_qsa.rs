@@ -627,15 +627,24 @@ impl QsaIndexer {
             1,
         );
 
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_i_proj", &[&queries, &raw_keys]);
         let staged_keys = match cache.keys() {
             Some(past) => contiguous(&concatenate(&[past, &raw_keys], 1, None), None),
             None => contiguous(&raw_keys, None),
         };
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_j_stage", &[&staged_keys]);
         let total = staged_keys.shape()[1];
         let n_complete = total / cfg.compress_ratio;
         let scores = if n_complete > 0 {
             let blocks = pooled_block_keys(&staged_keys, n_complete, cfg, &self.k_norm)?;
-            Some(block_scores(&queries, &blocks))
+            #[cfg(test)]
+            crate::model::qwen4_exp::profiling::mark("qsa_k_pool", &[&blocks]);
+            let scores = block_scores(&queries, &blocks);
+            #[cfg(test)]
+            crate::model::qwen4_exp::profiling::mark("qsa_l_scores", &[&scores]);
+            Some(scores)
         } else {
             None
         };
