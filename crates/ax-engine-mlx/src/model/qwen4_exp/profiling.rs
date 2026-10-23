@@ -1357,6 +1357,14 @@ fn flash_next_fused_matches_eager_on_real_pack() {
     // run at all.
     const WATCH: [Stretch; Stretch::COUNT] = Stretch::ALL;
     let enabled_in_fused: Vec<Stretch> = only.clone().unwrap_or_else(|| WATCH.to_vec());
+    // A compiled stretch whose work a native kernel took over (`replaced_by`)
+    // counts as exercised when its native twin ran instead.
+    let replacement_ran = |stretch: Stretch, before: &[u64], after: &[u64]| -> bool {
+        stretch
+            .replaced_by()
+            .and_then(|native| WATCH.iter().position(|w| *w == native))
+            .is_some_and(|index| after[index] > before[index])
+    };
     let snapshot_counts = || {
         let mut counts = [0u64; Stretch::COUNT];
         for (index, stretch) in WATCH.iter().enumerate() {
@@ -1398,9 +1406,14 @@ fn flash_next_fused_matches_eager_on_real_pack() {
             };
             let after_fused = snapshot_counts();
             for (index, stretch) in WATCH.iter().enumerate() {
+                // The native hyper-connection read is a single-token path.
+                if *stretch == Stretch::HcNativeLowGate && rows > 1 {
+                    continue;
+                }
                 if enabled_in_fused.contains(stretch) {
                     assert!(
-                        after_fused[index] > before_fused[index],
+                        after_fused[index] > before_fused[index]
+                            || replacement_ran(*stretch, &before_fused, &after_fused),
                         "{policy:?} rows {rows}: stretch {} never fused",
                         stretch.name(),
                     );
@@ -1456,6 +1469,9 @@ fn flash_next_fused_matches_eager_on_real_pack() {
         hc_applied[index] = applied;
         if !enabled_in_fused.contains(stretch) {
             assert_eq!(applied, 0, "stretch {} ran while disabled", stretch.name());
+            continue;
+        }
+        if replacement_ran(*stretch, &before_chain, &after_chain) {
             continue;
         }
         // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
@@ -1543,6 +1559,9 @@ fn flash_next_fused_matches_eager_on_real_pack() {
         rowexact_applied[index] = applied;
         if !enabled_in_fused.contains(stretch) {
             assert_eq!(applied, 0, "stretch {} ran while disabled", stretch.name());
+            continue;
+        }
+        if replacement_ran(*stretch, &before_rowexact, &after_rowexact) {
             continue;
         }
         // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
@@ -2063,7 +2082,9 @@ fn flash_next_pooled_cache_matches_full_on_real_pack() {
 #[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,300 ids)"]
 fn flash_next_long_context_arms_match_baseline_on_real_pack() {
     use crate::model::ModelConfig;
-    use crate::model::shared::qwen4_exp_fused::{Stretch, applied_for_test, force_for_test};
+    use crate::model::shared::qwen4_exp_fused::{
+        Stretch, applied_for_test, force_for_test, force_only_for_test,
+    };
     use crate::model::shared::qwen4_exp_gdn_metal::with_mode;
     use ax_engine_core::NativeModelArtifacts;
     use std::path::PathBuf;
@@ -2089,8 +2110,14 @@ fn flash_next_long_context_arms_match_baseline_on_real_pack() {
         logits: Vec<(String, Vec<u32>)>,
         final_state: Vec<u8>,
     }
-    let observe = |fuse: bool, metal: bool| -> (Observed, u64) {
-        let _fuse = force_for_test(Some(fuse));
+    let compiled_only: Vec<Stretch> = Stretch::ALL
+        .iter()
+        .copied()
+        .filter(|stretch| !stretch.is_native())
+        .collect();
+    let observe = |fuse: bool, only_compiled: bool, metal: bool| -> (Observed, u64) {
+        let _fuse = (!only_compiled).then(|| force_for_test(Some(fuse)));
+        let _only = only_compiled.then(|| force_only_for_test(&compiled_only));
         let (observed, dispatches) = with_mode(metal, || {
             let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
                 forward(trunk, input, state, owner, policy).unwrap()
@@ -2130,23 +2157,30 @@ fn flash_next_long_context_arms_match_baseline_on_real_pack() {
         (observed, dispatches)
     };
 
-    let (baseline, baseline_dispatches) = observe(false, false);
+    let (baseline, baseline_dispatches) = observe(false, false, false);
     assert_eq!(
         baseline_dispatches, 0,
         "the baseline must not use the GDN kernel"
     );
-    for (name, fuse, metal) in [
-        ("fuse", true, false),
-        ("gdn_metal", false, true),
-        ("fuse+gdn_metal", true, true),
+    for (name, fuse, only_compiled, metal) in [
+        ("fuse", true, false, false),
+        ("compiled_only", true, true, false),
+        ("gdn_metal", false, false, true),
+        ("fuse+gdn_metal", true, false, true),
+        ("compiled_only+gdn_metal", true, true, true),
     ] {
+        let native_before = (
+            applied_for_test(Stretch::GdnNativeDecay),
+            applied_for_test(Stretch::GdnNativeQk),
+            applied_for_test(Stretch::HcNativeLowGate),
+        );
         let rope_before = (
             applied_for_test(Stretch::QsaRopeLo),
             applied_for_test(Stretch::QsaRopeHi),
         );
         let gate_before = applied_for_test(Stretch::QsaGate);
         let tail_before = applied_for_test(Stretch::MoeRouteTail);
-        let (arm, dispatches) = observe(fuse, metal);
+        let (arm, dispatches) = observe(fuse, only_compiled, metal);
         assert_eq!(arm.logits.len(), baseline.logits.len());
         for ((label, expected), (_, actual)) in baseline.logits.iter().zip(&arm.logits) {
             assert_eq!(expected, actual, "{name}: logits differ at {label}");
@@ -2185,6 +2219,26 @@ fn flash_next_long_context_arms_match_baseline_on_real_pack() {
             assert_eq!(
                 tail_before, tail_after,
                 "{name}: MoeRouteTail ran while off"
+            );
+        }
+        let native_after = (
+            applied_for_test(Stretch::GdnNativeDecay),
+            applied_for_test(Stretch::GdnNativeQk),
+            applied_for_test(Stretch::HcNativeLowGate),
+        );
+        if fuse && !only_compiled {
+            // 36 GDN layers (decay/beta and q/k/v scale) and 96 hyper-connection
+            // reads per decode row, over the 16-step chain (loose bounds).
+            assert!(
+                native_after.0 - native_before.0 >= 16 * 30
+                    && native_after.1 - native_before.1 >= 16 * 30
+                    && native_after.2 - native_before.2 >= 16 * 40,
+                "{name}: native stretches applied only {native_before:?} -> {native_after:?}"
+            );
+        } else {
+            assert_eq!(
+                native_before, native_after,
+                "{name}: native stretches ran while off"
             );
         }
         eprintln!("LONG_ARM {name}: identical, gdn kernel dispatches {dispatches}");

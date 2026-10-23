@@ -185,6 +185,12 @@ impl Stretch {
         }
     }
 
+    /// Whether the stretch runs in the shipping default (variable unset).
+    /// Opt-in stretches run only when the list names them or `all` is set.
+    pub(crate) fn default_on(self) -> bool {
+        !matches!(self, Stretch::HcNativeLowGate)
+    }
+
     /// Whether this stretch is a hand-written Metal kernel rather than a
     /// compiled closure. Native stretches use [`native_allowed`].
     pub(crate) fn is_native(self) -> bool {
@@ -194,6 +200,7 @@ impl Stretch {
         )
     }
 
+    #[cfg(test)]
     /// The native stretch that takes over this compiled stretch's work when it
     /// applies, so tests can tell "never ran" from "replaced by its native
     /// twin".
@@ -226,7 +233,7 @@ impl Stretch {
 fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; Stretch::COUNT] {
     let mut mask = [false; Stretch::COUNT];
     let Some(raw) = raw else {
-        return [unset_means_all; Stretch::COUNT];
+        return std::array::from_fn(|index| unset_means_all && Stretch::ALL[index].default_on());
     };
     let raw = raw.trim();
     if raw.is_empty() {
@@ -581,6 +588,18 @@ pub(crate) fn force_only_for_test(stretches: &[Stretch]) -> ForceOnlyGuard {
 
 /// Override [`enabled`] for tests: `Some(true)` enables every stretch,
 /// `Some(false)` disables every stretch, `None` uses the env mask.
+/// Enable exactly the compiled stretches (every native kernel stays off), the
+/// arm that proves the compiled path next to a native twin.
+#[cfg(test)]
+pub(crate) fn force_compiled_only_for_test() -> ForceOnlyGuard {
+    let compiled: Vec<Stretch> = Stretch::ALL
+        .iter()
+        .copied()
+        .filter(|stretch| !stretch.is_native())
+        .collect();
+    force_only_for_test(&compiled)
+}
+
 #[cfg(test)]
 pub(crate) fn force_for_test(mode: Option<bool>) -> ForceGuard {
     let previous = FORCE.with(|force| force.replace(mode));
@@ -769,8 +788,16 @@ mod tests {
     fn unset_variable_follows_the_default_policy() {
         assert_eq!(
             parse_mask(None, true),
-            [true; Stretch::COUNT],
-            "shipping default is on"
+            Stretch::ALL.map(Stretch::default_on),
+            "shipping default is on for every default-on stretch"
+        );
+        assert!(
+            !parse_mask(None, true)[Stretch::HcNativeLowGate as usize],
+            "the measured-slower native HC read stays opt-in"
+        );
+        assert!(
+            parse_mask(Some("all"), true)[Stretch::HcNativeLowGate as usize],
+            "`all` still enables the opt-in stretches"
         );
         assert_eq!(
             parse_mask(None, false),

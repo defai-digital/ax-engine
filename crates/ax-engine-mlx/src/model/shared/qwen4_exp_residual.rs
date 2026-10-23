@@ -21,16 +21,21 @@
 
 use mlx_sys::ops::{cached_scalar, silu};
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, add, astype, broadcast_to, divide, multiply, reshape, rms_norm,
-    sigmoid, sum_axis,
+    MlxArray, MlxClosure, MlxDtype, add, astype, broadcast_to, concatenate, divide, multiply,
+    reshape, rms_norm, sigmoid, sum_axis,
 };
+use std::sync::OnceLock;
 use thiserror::Error;
 
 use super::qwen4_exp_fused::{self, Stretch};
+use super::qwen4_exp_native_hc;
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::weights::QuantizedWeight;
 
 const WRITE_GATE_SCALE: f32 = 2.0;
+
+/// Deterministic inputs the merged-projection proof runs on first use.
+const MERGED_PROOF_INPUTS: u64 = 8;
 
 pub(crate) fn silu_projection_dtype(input: &MlxArray) -> MlxArray {
     // Official activation rounds once before the separate projection-dtype product.
@@ -94,6 +99,21 @@ fn residual_fuse_key(layout: Qwen4ExpStreamLayout, eps: f32) -> [i64; 4] {
         i64::from(eps.to_bits()),
         0,
     ]
+}
+
+/// Deterministic pseudo-random row, used to prove the merged projection
+/// reproduces the separate GEMVs bit for bit.
+fn merged_proof_input(width: usize, seed: u64) -> Vec<f32> {
+    let mut state = 0x2545_F491_4F6C_DD1D ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    (0..width)
+        .map(|index| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let unit = (state >> 40) as f32 / (1u64 << 24) as f32;
+            (unit * 2.0 - 1.0) * (1.0 + (index % 7) as f32)
+        })
+        .collect()
 }
 
 /// Closure body of the grouped-norm stretch; callers pass it as the `build`
@@ -298,6 +318,26 @@ pub(crate) struct Qwen4ExpGatedResidual {
     read_down: QuantizedWeight,
     read_up: QuantizedWeight,
     write_inject: Option<QuantizedWeight>,
+    /// `[read_down; write_inject]` as one dense projection, so the two decode
+    /// GEMVs that read the same normalized row become a single GEMV.
+    ///
+    /// The cell is filled on first use and holds `None` when the pair cannot be
+    /// concatenated or when the one-time bit-exactness proof fails, which keeps
+    /// this residual on the separate projections for its whole lifetime.
+    merged_heads: OnceLock<Option<QuantizedWeight>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// First-use builds of the merged projection on this thread, so a test can
+    /// prove the cache is filled once per module.
+    static MERGED_HEADS_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// First-use builds of the merged projection on this thread.
+#[cfg(test)]
+pub(crate) fn merged_head_builds_for_test() -> u64 {
+    MERGED_HEADS_BUILDS.with(std::cell::Cell::get)
 }
 
 impl Qwen4ExpGatedResidual {
@@ -326,6 +366,7 @@ impl Qwen4ExpGatedResidual {
             read_down: weights.read_down,
             read_up: weights.read_up,
             write_inject: weights.write_inject,
+            merged_heads: OnceLock::new(),
         })
     }
 
@@ -351,26 +392,37 @@ impl Qwen4ExpGatedResidual {
             self.layout
                 .rank3_dims("grouped norm input", packed, self.layout.packed_width)?;
         let normalized = self.normalize_stretch(packed, seq)?;
-        let branch_input = self.read_mix(packed.dtype(), &normalized, batch, seq, policy);
-        let logits = qw_with_policy(&normalized, inject, policy);
-        let dtype = logits.dtype();
-        let streams = self.layout.streams_scalar(dtype);
-        let scale = cached_scalar(WRITE_GATE_SCALE, dtype);
-        let write_gate = match qwen4_exp_fused::apply(
-            Stretch::HcGate,
-            seq,
-            self.fuse_key(),
-            gate_closure,
-            &[&logits, &streams, &scale],
-        ) {
-            Some(write_gate) => write_gate,
-            None => {
-                let scaled = divide(&logits, &streams, None);
-                #[cfg(test)]
-                crate::model::qwen4_exp::profiling::dump("hc_inject_scaled", &[&scaled]);
-                multiply(&sigmoid_projection_dtype(&scaled), &scale, None)
-            }
-        };
+        let (branch_input, write_gate) =
+            match self.native_read(packed.dtype(), &normalized, batch, seq, policy) {
+                Some(native) => native,
+                None => {
+                    let branch_input =
+                        self.read_mix(packed.dtype(), &normalized, batch, seq, policy);
+                    let logits = qw_with_policy(&normalized, inject, policy);
+                    let dtype = logits.dtype();
+                    let streams = self.layout.streams_scalar(dtype);
+                    let scale = cached_scalar(WRITE_GATE_SCALE, dtype);
+                    let write_gate = match qwen4_exp_fused::apply(
+                        Stretch::HcGate,
+                        seq,
+                        self.fuse_key(),
+                        gate_closure,
+                        &[&logits, &streams, &scale],
+                    ) {
+                        Some(write_gate) => write_gate,
+                        None => {
+                            let scaled = divide(&logits, &streams, None);
+                            #[cfg(test)]
+                            crate::model::qwen4_exp::profiling::dump(
+                                "hc_inject_scaled",
+                                &[&scaled],
+                            );
+                            multiply(&sigmoid_projection_dtype(&scaled), &scale, None)
+                        }
+                    };
+                    (branch_input, write_gate)
+                }
+            };
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::dump("hc_write_gate", &[&write_gate]);
         Ok(Qwen4ExpResidualRead {
@@ -401,6 +453,179 @@ impl Qwen4ExpGatedResidual {
             Some(normalized) => Ok(normalized),
             None => self.normalize(packed),
         }
+    }
+
+    /// Native decode read: one merged GEMV feeds one kernel that returns both
+    /// the low-rank activation and the write gate, replacing two GEMVs and the
+    /// two elementwise stretches that followed them.
+    ///
+    /// Only a single-token row whose projections are both dense merges; every
+    /// other shape, dtype or weight layout keeps [`Self::read_mix`] and the
+    /// compiled gate stretch.
+    fn native_read(
+        &self,
+        residual_dtype: MlxDtype,
+        normalized: &MlxArray,
+        batch: i32,
+        seq: i32,
+        policy: ProjectionBatchPolicy,
+    ) -> Option<(MlxArray, MlxArray)> {
+        // Every cheap, structural and enable check comes first, so a read that
+        // is not allowed never compiles the kernel, runs its self-check or
+        // builds the merged projection.
+        if batch != 1 || seq != 1 {
+            return None;
+        }
+        if !qwen4_exp_fused::native_allowed(Stretch::HcNativeLowGate, seq) {
+            return None;
+        }
+        // The kernel only has bf16/f16 bodies; anything else is refused before
+        // the per-dtype check can touch the kernel.
+        let dtype = normalized.dtype();
+        if !qwen4_exp_native_hc::supports_dtype(dtype) {
+            return None;
+        }
+        // First side-effecting steps: the one-time per-dtype self-check, then
+        // the merged-weight proof. Both run only after the gate above agreed.
+        if !qwen4_exp_native_hc::supported(dtype) {
+            return None;
+        }
+        let merged = self.merged_heads()?;
+        // At a single token both policies reduce to the plain singleton GEMV:
+        // `RowExact` has no extra row to split, so it takes the direct path.
+        let cat = qw_with_policy(normalized, merged, policy);
+        let rank = self.read_down.weight.shape()[0];
+        let streams = self.layout.stream_count;
+        let total = rank.checked_add(streams)?;
+        let dtype = cat.dtype();
+        let streams_scalar = self.layout.streams_scalar(dtype);
+        let scale = cached_scalar(WRITE_GATE_SCALE, dtype);
+        let (low, write_gate) = qwen4_exp_native_hc::low_gate(
+            &reshape(&cat, &[total], None),
+            &streams_scalar,
+            &scale,
+            rank,
+            streams,
+        )?;
+        let low = reshape(&low, &[batch, seq, rank], None);
+        let write_gate = reshape(&write_gate, &[batch, seq, streams], None);
+        let branch_input = self.mix_from_low(residual_dtype, normalized, &low, batch, seq, policy);
+        qwen4_exp_fused::note_native_applied(Stretch::HcNativeLowGate);
+        Some((branch_input, write_gate))
+    }
+
+    /// Cached `[read_down; write_inject]` projection, filled once and kept only
+    /// when it reproduces both separate GEMVs bit for bit.
+    fn merged_heads(&self) -> Option<&QuantizedWeight> {
+        self.merged_heads
+            .get_or_init(|| self.build_merged_heads())
+            .as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn merged_heads_for_test(&self) -> Option<&QuantizedWeight> {
+        self.merged_heads()
+    }
+
+    fn build_merged_heads(&self) -> Option<QuantizedWeight> {
+        #[cfg(test)]
+        MERGED_HEADS_BUILDS.with(|builds| builds.set(builds.get() + 1));
+        let merged = self.concatenate_merged_heads()?;
+        let proven = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.merged_heads_exact(&merged)
+        }))
+        .unwrap_or(false);
+        if !proven {
+            tracing::warn!(
+                rank = self.read_down.weight.shape()[0],
+                streams = self.layout.stream_count,
+                "Flash Next merged hyper-connection projection does not reproduce the separate GEMVs; keeping both"
+            );
+            return None;
+        }
+        Some(merged)
+    }
+
+    /// `[read_down; write_inject]` when both weights are dense and share the
+    /// input width and dtype, evaluated once so later calls see a plain array.
+    fn concatenate_merged_heads(&self) -> Option<QuantizedWeight> {
+        let inject = self.write_inject.as_ref()?;
+        let down = &self.read_down;
+        if down.scales.is_some()
+            || inject.scales.is_some()
+            || down.biases.is_some()
+            || inject.biases.is_some()
+            || down.linear_bias.is_some()
+            || inject.linear_bias.is_some()
+        {
+            return None;
+        }
+        let down_shape = down.weight.shape();
+        let inject_shape = inject.weight.shape();
+        if down_shape.len() != 2
+            || inject_shape.len() != 2
+            || down_shape[1] != inject_shape[1]
+            || down.weight.dtype() != inject.weight.dtype()
+        {
+            return None;
+        }
+        let cat = concatenate(&[&down.weight, &inject.weight], 0, None);
+        if mlx_sys::try_eval(&[&cat]).is_err() {
+            tracing::warn!("Flash Next merged hyper-connection projection failed to evaluate");
+            return None;
+        }
+        Some(QuantizedWeight::new(cat, None, None))
+    }
+
+    /// Compare the merged GEMV with the two separate GEMVs on deterministic
+    /// inputs and require identical raw output bits.
+    ///
+    /// The probe runs in the projection dtype (the decode dtype a real
+    /// checkpoint uses, bf16) so the extra rows of the merged weight cannot
+    /// change the kernel selection. A GEMV row reduction depends on the shapes
+    /// only, so the proof is data independent; it is still repeated on several
+    /// inputs because a backend may specialise the projection per call.
+    fn merged_heads_exact(&self, merged: &QuantizedWeight) -> bool {
+        let Some(inject) = self.write_inject.as_ref() else {
+            return false;
+        };
+        let rank = self.read_down.weight.shape()[0];
+        let streams = self.layout.stream_count;
+        let Some(total) = rank
+            .checked_add(streams)
+            .and_then(|total| usize::try_from(total).ok())
+        else {
+            return false;
+        };
+        let Some(rank) = usize::try_from(rank).ok() else {
+            return false;
+        };
+        let width = self.layout.packed_width;
+        let dtype = merged.weight.dtype();
+        for seed in 0..MERGED_PROOF_INPUTS {
+            let input = qwen4_exp_native_hc::array_from_f32(
+                &merged_proof_input(width as usize, seed),
+                &[1, 1, width],
+                dtype,
+            );
+            let merged_out = qw_with_policy(&input, merged, ProjectionBatchPolicy::Shared);
+            let down_out = qw_with_policy(&input, &self.read_down, ProjectionBatchPolicy::Shared);
+            let inject_out = qw_with_policy(&input, inject, ProjectionBatchPolicy::Shared);
+            let (Some(merged_bits), Some(down_bits), Some(inject_bits)) = (
+                qwen4_exp_native_hc::raw_bits(&merged_out),
+                qwen4_exp_native_hc::raw_bits(&down_out),
+                qwen4_exp_native_hc::raw_bits(&inject_out),
+            ) else {
+                return false;
+            };
+            if merged_bits.len() != total
+                || merged_bits[..rank] != down_bits[..]
+                || merged_bits[rank..] != inject_bits[..]
+            {
+                return false;
+            }
+        }
+        true
     }
 
     /// Final mixer: `[batch, seq, C * H]` → `[batch, seq, H]`.
@@ -434,27 +659,49 @@ impl Qwen4ExpGatedResidual {
         seq: i32,
         policy: ProjectionBatchPolicy,
     ) -> MlxArray {
-        let layout = self.layout;
-        let key = self.fuse_key();
         let down = qw_with_policy(normalized, &self.read_down, policy);
-        let streams = layout.streams_scalar(down.dtype());
-        let low =
-            match qwen4_exp_fused::apply(Stretch::HcLow, seq, key, low_closure, &[&down, &streams])
-            {
-                Some(low) => low,
-                None => {
-                    let scaled = divide(&down, &streams, None);
-                    #[cfg(test)]
-                    crate::model::qwen4_exp::profiling::dump("hc_scaled", &[&scaled]);
-                    silu_projection_dtype(&scaled)
-                }
-            };
-        let up = qw_with_policy(&low, &self.read_up, policy);
+        let low = self.low_stretch(&down, seq);
+        self.mix_from_low(residual_dtype, normalized, &low, batch, seq, policy)
+    }
+
+    /// `HcLow`: `silu_projection_dtype(down / streams)`, compiled when enabled.
+    fn low_stretch(&self, down: &MlxArray, seq: i32) -> MlxArray {
+        let streams = self.layout.streams_scalar(down.dtype());
+        match qwen4_exp_fused::apply(
+            Stretch::HcLow,
+            seq,
+            self.fuse_key(),
+            low_closure,
+            &[down, &streams],
+        ) {
+            Some(low) => low,
+            None => {
+                let scaled = divide(down, &streams, None);
+                #[cfg(test)]
+                crate::model::qwen4_exp::profiling::dump("hc_scaled", &[&scaled]);
+                silu_projection_dtype(&scaled)
+            }
+        }
+    }
+
+    /// `read_up` followed by the `HcMix` stream mean, from an already computed
+    /// `low` (the native read supplies it instead of `read_down`).
+    fn mix_from_low(
+        &self,
+        residual_dtype: MlxDtype,
+        normalized: &MlxArray,
+        low: &MlxArray,
+        batch: i32,
+        seq: i32,
+        policy: ProjectionBatchPolicy,
+    ) -> MlxArray {
+        let layout = self.layout;
+        let up = qw_with_policy(low, &self.read_up, policy);
         let streams_f32 = cached_scalar(layout.stream_count as f32, MlxDtype::Float32);
         let mean = match qwen4_exp_fused::apply(
             Stretch::HcMix,
             seq,
-            key,
+            self.fuse_key(),
             || mix_closure(layout),
             &[&up, normalized, &streams_f32],
         ) {
@@ -479,7 +726,7 @@ impl Qwen4ExpGatedResidual {
         {
             for (stage, array) in [
                 ("hc_normalized", normalized),
-                ("hc_low", &low),
+                ("hc_low", low),
                 ("hc_up", &up),
                 ("hc_mean", &mean),
             ] {
@@ -924,13 +1171,76 @@ mod tests {
         assert_eq!(eager.2, fused.2, "written residual bits differ for {case}");
     }
 
+    /// Every compiled stretch must have fused, or have been replaced by a
+    /// native stretch that took over its work on the shape under test.
     fn assert_every_stretch_applied(applied: [u64; 5], case: &str) {
+        let native = qwen4_exp_fused::applied_for_test(Stretch::HcNativeLowGate);
         for (stretch, applied) in HC_STRETCHES.into_iter().zip(applied) {
+            let replaced = native > 0 && stretch.replaced_by() == Some(Stretch::HcNativeLowGate);
             assert!(
-                applied >= 1,
+                applied >= 1 || replaced,
                 "{stretch:?} took the eager path {case}; fusion is not being exercised"
             );
         }
+    }
+
+    /// Applies gained by one operation: the compiled gated-residual stretches
+    /// plus the native low/gate kernel, which replaces two of them.
+    struct AppliedCounts {
+        compiled: [u64; 5],
+        native: u64,
+    }
+
+    fn applied_snapshot() -> AppliedCounts {
+        AppliedCounts {
+            compiled: applied_counts(),
+            native: qwen4_exp_fused::applied_for_test(Stretch::HcNativeLowGate),
+        }
+    }
+
+    fn applied_delta(before: &AppliedCounts, after: &AppliedCounts) -> AppliedCounts {
+        AppliedCounts {
+            compiled: std::array::from_fn(|index| {
+                after.compiled[index].saturating_sub(before.compiled[index])
+            }),
+            native: after.native.saturating_sub(before.native),
+        }
+    }
+
+    /// Read and write with every stretch forced off.
+    fn eager_bits(
+        module: &Qwen4ExpGatedResidual,
+        packed: &MlxArray,
+        branch: &MlxArray,
+    ) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+        read_write_bits(module, packed, branch)
+    }
+
+    /// Read and write with exactly the compiled gated-residual stretches on.
+    fn compiled_bits(
+        module: &Qwen4ExpGatedResidual,
+        packed: &MlxArray,
+        branch: &MlxArray,
+    ) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+        let _compiled = qwen4_exp_fused::force_only_for_test(&HC_STRETCHES);
+        qwen4_exp_fused::reset_registry_for_test();
+        read_write_bits(module, packed, branch)
+    }
+
+    /// Read and write with every stretch on, plus the applies it took.
+    type ReadBits = (Vec<u32>, Vec<u32>, Vec<u32>);
+
+    fn native_bits(
+        module: &Qwen4ExpGatedResidual,
+        packed: &MlxArray,
+        branch: &MlxArray,
+    ) -> (ReadBits, AppliedCounts) {
+        let _native = qwen4_exp_fused::force_for_test(Some(true));
+        qwen4_exp_fused::reset_registry_for_test();
+        let before = applied_snapshot();
+        let bits = read_write_bits(module, packed, branch);
+        (bits, applied_delta(&before, &applied_snapshot()))
     }
 
     #[test]
@@ -1868,6 +2178,468 @@ mod tests {
                 });
             assert_read_write_identical(&eager, &fused, &case);
             assert_every_stretch_applied(applied, &case);
+        }
+    }
+
+    /// [`real_geometry_weights`] with every tensor cast to `dtype`, so the
+    /// projections and the residual share a dtype like a real checkpoint.
+    fn real_geometry_weights_at(dtype: MlxDtype) -> Qwen4ExpGatedResidualWeights {
+        let weights = real_geometry_weights();
+        if dtype == MlxDtype::Float32 {
+            return weights;
+        }
+        let cast = |array: &MlxArray| astype(array, dtype, None);
+        let mut read_down = weights.read_down;
+        read_down.weight = cast(&read_down.weight);
+        read_down.invalidate_weight_t_view();
+        let mut read_up = weights.read_up;
+        read_up.weight = cast(&read_up.weight);
+        read_up.invalidate_weight_t_view();
+        let write_inject = weights.write_inject.map(|mut inject| {
+            inject.weight = cast(&inject.weight);
+            inject.invalidate_weight_t_view();
+            inject
+        });
+        Qwen4ExpGatedResidualWeights {
+            norm_gain: cast(&weights.norm_gain),
+            read_down,
+            read_up,
+            write_inject,
+        }
+    }
+
+    /// The merged `[read_down; write_inject]` GEMV must reproduce both separate
+    /// GEMVs bit for bit at the production geometry. This is the evidence the
+    /// merge is legal on this host, so it fails loudly.
+    #[test]
+    fn merged_heads_match_separate_gemms() {
+        let width = REAL_STREAMS * REAL_HIDDEN;
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float32] {
+            let layout = Qwen4ExpStreamLayout::new(REAL_STREAMS, REAL_HIDDEN).expect("layout");
+            let module =
+                Qwen4ExpGatedResidual::new(layout, REAL_RANK, EPS, real_geometry_weights_at(dtype))
+                    .expect("merged residual");
+            let merged = module
+                .merged_heads_for_test()
+                .expect("the merged projection must be legal at this geometry");
+            assert_eq!(
+                merged.weight.shape(),
+                [(REAL_RANK + REAL_STREAMS) as i32, width as i32],
+                "{dtype:?} merged weight shape"
+            );
+            assert!(
+                merged.scales.is_none() && merged.linear_bias.is_none(),
+                "{dtype:?} merged weight must stay dense and bias free"
+            );
+            let inject = module.write_inject.as_ref().expect("inject");
+            for seed in 0..64u64 {
+                let input = astype(
+                    &array_f32(&merged_proof_input(width, seed), &[1, 1, width as i32]),
+                    dtype,
+                    None,
+                );
+                let merged_out = qw_with_policy(&input, merged, ProjectionBatchPolicy::Shared);
+                let down_out =
+                    qw_with_policy(&input, &module.read_down, ProjectionBatchPolicy::Shared);
+                let inject_out = qw_with_policy(&input, inject, ProjectionBatchPolicy::Shared);
+                let merged_bits =
+                    qwen4_exp_native_hc::raw_bits(&merged_out).expect("merged output bits");
+                assert_eq!(
+                    merged_bits[..REAL_RANK],
+                    qwen4_exp_native_hc::raw_bits(&down_out).expect("down bits")[..],
+                    "{dtype:?} seed {seed}: merged low rows differ from read_down"
+                );
+                assert_eq!(
+                    merged_bits[REAL_RANK..],
+                    qwen4_exp_native_hc::raw_bits(&inject_out).expect("inject bits")[..],
+                    "{dtype:?} seed {seed}: merged gate rows differ from write_inject"
+                );
+            }
+        }
+    }
+
+    /// Dense bf16 weights at a small geometry, for the fallback cases.
+    fn small_bf16_weights() -> Qwen4ExpGatedResidualWeights {
+        let mut weights = dense_weights(&host_weights(4, 64, 32, true));
+        weights.norm_gain = astype(&weights.norm_gain, MlxDtype::Bfloat16, None);
+        weights.read_down.weight = astype(&weights.read_down.weight, MlxDtype::Bfloat16, None);
+        weights.read_down.invalidate_weight_t_view();
+        weights.read_up.weight = astype(&weights.read_up.weight, MlxDtype::Bfloat16, None);
+        weights.read_up.invalidate_weight_t_view();
+        if let Some(inject) = weights.write_inject.as_mut() {
+            inject.weight = astype(&inject.weight, MlxDtype::Bfloat16, None);
+            inject.invalidate_weight_t_view();
+        }
+        weights
+    }
+
+    fn small_module(weights: Qwen4ExpGatedResidualWeights) -> Qwen4ExpGatedResidual {
+        let layout = Qwen4ExpStreamLayout::new(4, 64).expect("layout");
+        Qwen4ExpGatedResidual::new(layout, 32, EPS, weights).expect("small residual")
+    }
+
+    /// `(packed, branch)` for one bf16 decode row at the small geometry.
+    fn small_bf16_case(seed: u64) -> (MlxArray, MlxArray) {
+        let mut rng = XorShift64::new(seed);
+        let packed: Vec<f32> = (0..256).map(|_| rng.uniform(1.5)).collect();
+        let branch: Vec<f32> = (0..64).map(|_| rng.uniform(1.0)).collect();
+        (
+            astype(&array_f32(&packed, &[1, 1, 256]), MlxDtype::Bfloat16, None),
+            astype(&array_f32(&branch, &[1, 1, 64]), MlxDtype::Bfloat16, None),
+        )
+    }
+
+    /// An affine-quantized `read_down` cannot join the dense merged weight, so
+    /// the read must keep the separate projections.
+    fn quantized_read_down_weights() -> Qwen4ExpGatedResidualWeights {
+        let (group_size, bits) = (32, 8);
+        let host = host_weights(4, 64, 32, true);
+        let mut weights = small_bf16_weights();
+        let source = array_f32(&host.down, &[32, 256]);
+        let quantized = quantize(
+            &source,
+            Some(group_size),
+            Some(bits),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let mut read_down = QuantizedWeight::new(
+            quantized[0].clone(),
+            Some(quantized[1].clone()),
+            Some(quantized[2].clone()),
+        );
+        read_down.group_size = group_size;
+        read_down.bits = bits;
+        weights.read_down = read_down;
+        weights
+    }
+
+    /// `read_down` in bf16 with a f32 `write_inject`: the dtypes differ, so the
+    /// merged projection is refused and the read stays on the old path.
+    fn mixed_dtype_weights() -> Qwen4ExpGatedResidualWeights {
+        let mut weights = small_bf16_weights();
+        if let Some(inject) = weights.write_inject.as_mut() {
+            inject.weight = astype(&inject.weight, MlxDtype::Float32, None);
+            inject.invalidate_weight_t_view();
+        }
+        weights
+    }
+
+    /// Native, compiled and eager reads must agree bit for bit on a decode row;
+    /// every other shape or weight layout must keep the old path.
+    #[test]
+    fn native_hyper_connection_read_matches_compiled_and_eager() {
+        let layout = Qwen4ExpStreamLayout::new(REAL_STREAMS, REAL_HIDDEN).expect("layout");
+        let build = || {
+            Qwen4ExpGatedResidual::new(
+                layout,
+                REAL_RANK,
+                EPS,
+                real_geometry_weights_at(MlxDtype::Bfloat16),
+            )
+            .expect("bf16 residual")
+        };
+        let native_module = build();
+        let compiled_module = build();
+        let eager_module = build();
+
+        // One decode row: the merged GEMV plus the native low/gate kernel.
+        let (packed, branch) = real_geometry_case(21, 1, MlxDtype::Bfloat16);
+        let eager = eager_bits(&eager_module, &packed, &branch);
+        let compiled = compiled_bits(&compiled_module, &packed, &branch);
+        let (native, applied) = native_bits(&native_module, &packed, &branch);
+        assert_eq!(
+            applied.native, 1,
+            "the native low/gate kernel must apply once per read"
+        );
+        assert_eq!(
+            applied.compiled[applied_index(Stretch::HcLow)],
+            0,
+            "the native kernel replaces HcLow"
+        );
+        assert_eq!(
+            applied.compiled[applied_index(Stretch::HcGate)],
+            0,
+            "the native kernel replaces HcGate"
+        );
+        for stretch in [Stretch::HcNorm, Stretch::HcMix, Stretch::HcWrite] {
+            assert!(
+                applied.compiled[applied_index(stretch)] >= 1,
+                "{stretch:?} must keep fusing around the native kernel"
+            );
+        }
+        assert_read_write_identical(&compiled, &native, "native vs compiled, one row");
+        assert_read_write_identical(&eager, &native, "native vs eager, one row");
+
+        // The merged projection is built once and then cached.
+        let builds = merged_head_builds_for_test();
+        let (again, applied) = native_bits(&native_module, &packed, &branch);
+        assert_eq!(applied.native, 1, "the second read stays native");
+        assert_eq!(
+            merged_head_builds_for_test(),
+            builds,
+            "the merged projection must be built once per module"
+        );
+        assert_eq!(again, native, "the cached merged projection must not drift");
+
+        // Every other row count keeps the old path (and still agrees).
+        let max_rows = usize::try_from(qwen4_exp_fused::FUSE_MAX_ROWS).expect("max fused rows");
+        for rows in 2..=max_rows + 1 {
+            let (packed, branch) = real_geometry_case(40 + rows as u64, rows, MlxDtype::Bfloat16);
+            let compiled = compiled_bits(&compiled_module, &packed, &branch);
+            let (native, applied) = native_bits(&native_module, &packed, &branch);
+            assert_eq!(
+                applied.native, 0,
+                "rows {rows} must not take the native path"
+            );
+            assert_read_write_identical(
+                &compiled,
+                &native,
+                &format!("native vs compiled, rows {rows}"),
+            );
+        }
+
+        // A quantized read_down cannot merge into one dense weight.
+        let quantized_native = small_module(quantized_read_down_weights());
+        let quantized_compiled = small_module(quantized_read_down_weights());
+        let quantized_eager = small_module(quantized_read_down_weights());
+        let (packed, branch) = small_bf16_case(7);
+        let eager = eager_bits(&quantized_eager, &packed, &branch);
+        let compiled = compiled_bits(&quantized_compiled, &packed, &branch);
+        let (native, applied) = native_bits(&quantized_native, &packed, &branch);
+        assert_eq!(
+            applied.native, 0,
+            "a quantized read_down must keep the separate projections"
+        );
+        assert_read_write_identical(&compiled, &native, "quantized read_down");
+        assert_read_write_identical(&eager, &native, "quantized read_down (eager)");
+
+        // Mixed projection dtypes are refused the same way.
+        let mixed_native = small_module(mixed_dtype_weights());
+        let mixed_compiled = small_module(mixed_dtype_weights());
+        let mixed_eager = small_module(mixed_dtype_weights());
+        let (native, applied) = native_bits(&mixed_native, &packed, &branch);
+        assert_eq!(applied.native, 0, "mixed projection dtypes must fall back");
+        assert_read_write_identical(
+            &compiled_bits(&mixed_compiled, &packed, &branch),
+            &native,
+            "mixed dtype",
+        );
+        assert_read_write_identical(
+            &eager_bits(&mixed_eager, &packed, &branch),
+            &native,
+            "mixed dtype (eager)",
+        );
+
+        // A failed self-check disables the kernel and still agrees. This runs
+        // last because the injected verdict sticks for the rest of the thread.
+        let failing_native = small_module(small_bf16_weights());
+        let failing_compiled = small_module(small_bf16_weights());
+        qwen4_exp_native_hc::fail_next_self_check_for_test();
+        let (native, applied) = native_bits(&failing_native, &packed, &branch);
+        assert_eq!(
+            applied.native, 0,
+            "a failed self-check must disable the native kernel"
+        );
+        assert_read_write_identical(
+            &compiled_bits(&failing_compiled, &packed, &branch),
+            &native,
+            "injected self-check failure",
+        );
+    }
+
+    /// One bf16 decode read on a module whose verdicts were just cleared: it
+    /// must stay on the eager path without any first-use side effect.
+    fn assert_disabled_read_skips_first_use(
+        module: &Qwen4ExpGatedResidual,
+        packed: &MlxArray,
+    ) -> Qwen4ExpResidualRead {
+        qwen4_exp_native_hc::reset_verdicts_for_test();
+        let checks = qwen4_exp_native_hc::self_check_runs_for_test();
+        let builds = qwen4_exp_native_hc::kernel_builds_for_test();
+        let merges = merged_head_builds_for_test();
+        let applied = qwen4_exp_fused::applied_for_test(Stretch::HcNativeLowGate);
+
+        let read = shared_read(module, packed);
+
+        assert_eq!(
+            qwen4_exp_fused::applied_for_test(Stretch::HcNativeLowGate),
+            applied,
+            "a disabled native read must not apply the kernel"
+        );
+        assert_eq!(
+            qwen4_exp_native_hc::self_check_runs_for_test(),
+            checks,
+            "a disabled native read must not run the self-check"
+        );
+        assert_eq!(
+            qwen4_exp_native_hc::kernel_builds_for_test(),
+            builds,
+            "a disabled native read must not create the kernel"
+        );
+        assert_eq!(
+            merged_head_builds_for_test(),
+            merges,
+            "a disabled native read must not build the merged projection"
+        );
+        assert!(
+            qwen4_exp_native_hc::unchecked_for_test(MlxDtype::Bfloat16),
+            "a disabled native read must leave no kernel verdict"
+        );
+        read
+    }
+
+    /// The kill switch and the stretch mask must be consulted before anything
+    /// is compiled, proven or built.
+    #[test]
+    fn disabled_native_read_skips_every_first_use_step() {
+        let layout = Qwen4ExpStreamLayout::new(REAL_STREAMS, REAL_HIDDEN).expect("layout");
+        let module = Qwen4ExpGatedResidual::new(
+            layout,
+            REAL_RANK,
+            EPS,
+            real_geometry_weights_at(MlxDtype::Bfloat16),
+        )
+        .expect("bf16 residual");
+        let (packed, _branch) = real_geometry_case(91, 1, MlxDtype::Bfloat16);
+
+        // The environment kill switch (`AX_FLASH_NEXT_FUSE=0`).
+        {
+            let _off = qwen4_exp_fused::force_for_test(Some(false));
+            let read = assert_disabled_read_skips_first_use(&module, &packed);
+            assert_eq!(read.write_gate().shape(), [1, 1, REAL_STREAMS as i32]);
+        }
+        // A mask that enables every compiled stretch but not the native one.
+        {
+            let _mask = qwen4_exp_fused::force_only_for_test(&HC_STRETCHES);
+            let read = assert_disabled_read_skips_first_use(&module, &packed);
+            assert_eq!(read.write_gate().shape(), [1, 1, REAL_STREAMS as i32]);
+        }
+    }
+
+    /// An admitted launch that the kernel rejects disables the dtype: the read
+    /// falls back to the eager result and later reads stop dispatching.
+    #[test]
+    fn rejected_native_launch_disables_the_dtype() {
+        let layout = Qwen4ExpStreamLayout::new(REAL_STREAMS, REAL_HIDDEN).expect("layout");
+        let module = Qwen4ExpGatedResidual::new(
+            layout,
+            REAL_RANK,
+            EPS,
+            real_geometry_weights_at(MlxDtype::Bfloat16),
+        )
+        .expect("bf16 residual");
+        let eager_module = Qwen4ExpGatedResidual::new(
+            layout,
+            REAL_RANK,
+            EPS,
+            real_geometry_weights_at(MlxDtype::Bfloat16),
+        )
+        .expect("eager residual");
+        let (packed, branch) = real_geometry_case(93, 1, MlxDtype::Bfloat16);
+        let eager = eager_bits(&eager_module, &packed, &branch);
+
+        // The first read passes the self-check, so the dtype is admitted.
+        let (first, applied) = native_bits(&module, &packed, &branch);
+        assert_eq!(applied.native, 1, "the first read must dispatch natively");
+        assert_read_write_identical(&eager, &first, "before the rejected launch");
+
+        // Reject the next launch: the verdict must be revoked, not retried.
+        qwen4_exp_native_hc::fail_next_launch_for_test();
+        let launches = qwen4_exp_native_hc::launches_for_test();
+        let (rejected, applied) = native_bits(&module, &packed, &branch);
+        assert_eq!(applied.native, 0, "a rejected launch must fall back");
+        assert!(
+            !qwen4_exp_native_hc::launch_failure_pending_for_test(),
+            "the read must have reached the injected launch"
+        );
+        assert!(
+            qwen4_exp_native_hc::launches_for_test() > launches,
+            "the rejected read must have attempted a launch"
+        );
+        assert!(
+            qwen4_exp_native_hc::verdict_failed_for_test(MlxDtype::Bfloat16),
+            "a rejected launch must disable the dtype"
+        );
+        assert_read_write_identical(&eager, &rejected, "after the rejected launch");
+
+        // The dtype is disabled now, so later reads cannot launch again.
+        let launches = qwen4_exp_native_hc::launches_for_test();
+        let (again, applied) = native_bits(&module, &packed, &branch);
+        assert_eq!(applied.native, 0, "a disabled dtype must not apply");
+        assert_eq!(
+            qwen4_exp_native_hc::launches_for_test(),
+            launches,
+            "a disabled dtype must not launch again"
+        );
+        assert_read_write_identical(&eager, &again, "disabled dtype fallback");
+        qwen4_exp_native_hc::reset_verdicts_for_test();
+    }
+
+    /// GPU-inclusive cost of one decode-row hyper-connection read with and
+    /// without the native low/gate path: per-read synchronised, and 96 reads
+    /// submitted back to back (the decode step's shape). Informational.
+    #[test]
+    #[ignore = "timing probe; run with --nocapture on the build host"]
+    fn hc_read_gpu_cost_probe() {
+        use std::time::Instant;
+        let layout = Qwen4ExpStreamLayout::new(REAL_STREAMS, REAL_HIDDEN).expect("layout");
+        let module = Qwen4ExpGatedResidual::new(
+            layout,
+            REAL_RANK,
+            EPS,
+            real_geometry_weights_at(MlxDtype::Bfloat16),
+        )
+        .expect("module");
+        let (packed, _branch) = real_geometry_case(7, 1, MlxDtype::Bfloat16);
+        let compiled_stretches: Vec<Stretch> = Stretch::ALL
+            .iter()
+            .copied()
+            .filter(|stretch| !stretch.is_native())
+            .collect();
+        for round in 0..2 {
+            for (name, native) in [("compiled", false), ("native", true)] {
+                let _all = native.then(|| qwen4_exp_fused::force_for_test(Some(true)));
+                let _only =
+                    (!native).then(|| qwen4_exp_fused::force_only_for_test(&compiled_stretches));
+                // Warm: kernel compile, merged weight, closures.
+                for _ in 0..8 {
+                    let read = module
+                        .read(&packed, ProjectionBatchPolicy::Shared)
+                        .expect("read");
+                    eval(&[read.branch_input(), read.write_gate()]);
+                }
+                let n = 400;
+                let started = Instant::now();
+                for _ in 0..n {
+                    let read = module
+                        .read(&packed, ProjectionBatchPolicy::Shared)
+                        .expect("read");
+                    eval(&[read.branch_input(), read.write_gate()]);
+                }
+                let sync_us = started.elapsed().as_secs_f64() / n as f64 * 1e6;
+                let started = Instant::now();
+                let mut reads = Vec::new();
+                for _ in 0..96 * 4 {
+                    reads.push(
+                        module
+                            .read(&packed, ProjectionBatchPolicy::Shared)
+                            .expect("read"),
+                    );
+                }
+                let build_us = started.elapsed().as_secs_f64() / (96.0 * 4.0) * 1e6;
+                let mut outputs: Vec<&MlxArray> = Vec::new();
+                for read in &reads {
+                    outputs.push(read.branch_input());
+                    outputs.push(read.write_gate());
+                }
+                eval(&outputs);
+                let batch_us = started.elapsed().as_secs_f64() / (96.0 * 4.0) * 1e6;
+                eprintln!(
+                    "HC_READ_COST round {round} {name}: sync {sync_us:.1} us/read, batched {batch_us:.1} us/read (host build {build_us:.2} us/read)"
+                );
+            }
         }
     }
 }

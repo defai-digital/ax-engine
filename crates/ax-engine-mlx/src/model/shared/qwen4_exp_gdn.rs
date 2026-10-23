@@ -10,6 +10,7 @@ use mlx_sys::{
 };
 
 use super::qwen4_exp_fused::{self, Stretch};
+use super::qwen4_exp_native_gdn::{QkvGeometry, decay_beta, qkv_scale};
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::linear_attention_ops::{
@@ -518,38 +519,92 @@ impl Qwen4ExpGdn {
         // The q/k L2 chains: `power(x, -0.5)` stays eager inside them.
         let hk = cfg.num_key_heads as i64;
         let sqrt_dk = cached_scalar((dk as f32).sqrt(), MlxDtype::Float32);
-        let q = l2_normalize(
+        let mut widened_q: Option<MlxArray> = None;
+        let mut widened_k: Option<MlxArray> = None;
+        let sum_q = l2_sum_shared(
             &split.q,
             seq,
             [hk, dk as i64, dtype_key(split.q.dtype()), 2],
-            Some(&sqrt_dk),
+            &mut widened_q,
         );
-        let k = l2_normalize(
+        let sum_k = l2_sum_shared(
             &split.k,
             seq,
             [hk, dk as i64, dtype_key(split.k.dtype()), 2],
-            None,
+            &mut widened_k,
         );
-        let v = astype(&split.v, MlxDtype::Float32, None);
-        // The decay projection is built once and passed to both decay stages.
+        // The native kernel derives the value head width from the key head
+        // dimension, so it only takes over when the two widths agree.
+        let (q, k, v) = if dk == dv
+            && qwen4_exp_fused::native_allowed(Stretch::GdnNativeQk, seq)
+            && let Some((q, k, v)) = qkv_scale(
+                &convolved,
+                &sum_q,
+                &sum_k,
+                &sqrt_dk,
+                QkvGeometry {
+                    key_dim: cfg.num_key_heads as i32 * dk,
+                    head_dim: dk,
+                    value_dim: hv * dv,
+                },
+            ) {
+            qwen4_exp_fused::note_native_applied(Stretch::GdnNativeQk);
+            (q, k, v)
+        } else {
+            (
+                l2_scale(
+                    &split.q,
+                    &sum_q,
+                    seq,
+                    [hk, dk as i64, dtype_key(split.q.dtype()), 2],
+                    Some(&sqrt_dk),
+                    &mut widened_q,
+                ),
+                l2_scale(
+                    &split.k,
+                    &sum_k,
+                    seq,
+                    [hk, dk as i64, dtype_key(split.k.dtype()), 2],
+                    None,
+                    &mut widened_k,
+                ),
+                astype(&split.v, MlxDtype::Float32, None),
+            )
+        };
+        // Both gate projections are built once and handed to the native
+        // kernel or to their compiled and eager stages unchanged.
         let decay_projection =
             qwen4_verifier_projection(input, &self.weights.decay, policy, verifier_policy);
-        let decay = self.decay(
-            &decay_projection,
-            seq,
-            [hv as i64, dv as i64, dtype_key(decay_projection.dtype()), 1],
-        );
         let beta_projection =
             qwen4_verifier_projection(input, &self.weights.beta, policy, verifier_policy);
-        let beta = match qwen4_exp_fused::apply(
-            Stretch::GdnBeta,
-            seq,
-            key,
-            beta_closure,
-            &[&beta_projection],
-        ) {
-            Some(beta) => beta,
-            None => qwen4_beta(&beta_projection),
+        // The native kernel produces decay and beta together; when it does not
+        // apply, both stages keep their original chain.
+        let (decay, beta) = if qwen4_exp_fused::native_allowed(Stretch::GdnNativeDecay, seq)
+            && let Some((decay, beta)) = decay_beta(
+                &decay_projection,
+                &self.weights.dt_bias,
+                self.exp_a_log(),
+                &beta_projection,
+            ) {
+            qwen4_exp_fused::note_native_applied(Stretch::GdnNativeDecay);
+            (decay, beta)
+        } else {
+            let decay = self.decay(
+                &decay_projection,
+                seq,
+                [hv as i64, dv as i64, dtype_key(decay_projection.dtype()), 1],
+            );
+            let beta = match qwen4_exp_fused::apply(
+                Stretch::GdnBeta,
+                seq,
+                key,
+                beta_closure,
+                &[&beta_projection],
+            ) {
+                Some(beta) => beta,
+                None => qwen4_beta(&beta_projection),
+            };
+            (decay, beta)
         };
         let recurrent = state.map_or_else(
             || zeros(&recurrent_shape, MlxDtype::Float32, None),
@@ -704,13 +759,13 @@ fn l2_sum_shared(
     )
 }
 
-/// Full L2 normalisation: the sum-of-squares stretch, the eager
-/// `power(x, -0.5)` and the q or k scale stretch.
+/// Full L2 normalisation: the shared sum-of-squares reduction followed by the
+/// inverse square root and the q or k scale stretch, with one widened cache
+/// so the whole chain issues exactly one cast per tensor.
 ///
-/// `power` stays eager because MLX leaves unqualified FP32 math functions on
-/// fast variants inside JIT-fused kernels, so a compiled `power` changes the
-/// recurrent state bits. `q_scale` is `sqrt(head_dim)` for the query and `None`
-/// for the key.
+/// Test-only: `forward` drives the two stages separately around the native
+/// q/k/v kernel, and the tests use this as the bit-exact reference chain.
+#[cfg(test)]
 fn l2_normalize(
     x: &MlxArray,
     rows: i32,
@@ -719,7 +774,26 @@ fn l2_normalize(
 ) -> MlxArray {
     let mut widened: Option<MlxArray> = None;
     let sum = l2_sum_shared(x, rows, key_base, &mut widened);
-    let inverse = power(&sum, &cached_scalar(-0.5, MlxDtype::Float32), None);
+    l2_scale(x, &sum, rows, key_base, q_scale, &mut widened)
+}
+
+/// The eager `power(x, -0.5)` and the q or k scale stretch: the second half
+/// of the L2 normalisation, taking the shared reduction sum as input.
+///
+/// `power` stays eager because MLX leaves unqualified FP32 math functions on
+/// fast variants inside JIT-fused kernels, so a compiled `power` changes the
+/// recurrent state bits. `q_scale` is `sqrt(head_dim)` for the query and `None`
+/// for the key. The `widened` cache must be the one the reduction half used,
+/// so a run with the stretches off keeps the original one-cast op sequence.
+fn l2_scale(
+    x: &MlxArray,
+    sum: &MlxArray,
+    rows: i32,
+    key_base: [i64; 4],
+    q_scale: Option<&MlxArray>,
+    widened: &mut Option<MlxArray>,
+) -> MlxArray {
+    let inverse = power(sum, &cached_scalar(-0.5, MlxDtype::Float32), None);
     // Same 1-wide-head gate as the reduction: the scaled multiply stays eager
     // so the whole L2 group keeps one contraction pattern.
     if key_base[1] >= 2 {
@@ -743,7 +817,7 @@ fn l2_normalize(
             return scaled;
         }
     }
-    let normalized = multiply(&widened_once(x, &mut widened), &inverse, None);
+    let normalized = multiply(&widened_once(x, widened), &inverse, None);
     match q_scale {
         Some(sqrt_dk) => divide(&normalized, sqrt_dk, None),
         None => normalized,
@@ -1818,7 +1892,7 @@ mod tests {
                         let before = GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
                         let (fused_output, fused_state) = {
                             qwen4_exp_fused::reset_registry_for_test();
-                            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                            let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                             run_forward(&module, &input, state)
                         };
                         for (stretch, before) in GDN_STRETCHES.iter().zip(before) {
@@ -1862,7 +1936,7 @@ mod tests {
             };
             let post_before = qwen4_exp_fused::applied_for_test(Stretch::GdnPost);
             let (fused_output, fused_state) = {
-                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                 run_forward(&module, &input, None)
             };
             assert!(
@@ -1904,7 +1978,7 @@ mod tests {
             let before = GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
             let (fused_output, fused_state) = {
                 qwen4_exp_fused::reset_registry_for_test();
-                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                 run_forward(&module, &input, None)
             };
             for (stretch, before) in GDN_STRETCHES.iter().zip(before) {
@@ -1946,7 +2020,7 @@ mod tests {
             let before = GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
             let (fused_output, fused_state) = {
                 qwen4_exp_fused::reset_registry_for_test();
-                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                 qwen4_exp_fused::fail_next_apply_for_test(failed);
                 run_forward(&module, &input, None)
             };
@@ -2004,7 +2078,7 @@ mod tests {
                         qwen4_exp_fused::applied_for_test(Stretch::GdnPost),
                     );
                     let (fused_output, fused_state) = {
-                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                         run_forward(&module, &input, None)
                     };
                     assert!(
@@ -2087,7 +2161,7 @@ mod tests {
                         qwen4_exp_fused::applied_for_test(Stretch::GdnDecayPost),
                     );
                     let fused = {
-                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                         module.decay(&projection, rows, key)
                     };
                     assert!(
@@ -2181,7 +2255,7 @@ mod tests {
                         qwen4_exp_fused::applied_for_test(Stretch::GdnKScale),
                     );
                     let (fused_q, fused_k, fused_sum) = {
-                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                         let q = l2_normalize(&split.q, rows, key_base, Some(&sqrt_dk));
                         let k = l2_normalize(&split.k, rows, key_base, None);
                         let sum = l2_sum(&split.q, rows, key_base);
@@ -2251,7 +2325,7 @@ mod tests {
         qwen4_exp_fused::reset_registry_for_test();
         let before = qwen4_exp_fused::applied_for_test(Stretch::GdnL2Sum);
         let fused = {
-            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+            let _fused = qwen4_exp_fused::force_compiled_only_for_test();
             l2_normalize(&q_view, rows, key_base, Some(&sqrt_dk))
         };
         assert!(
@@ -2285,7 +2359,7 @@ mod tests {
                 qwen4_exp_fused::reset_registry_for_test();
                 let before = qwen4_exp_fused::applied_for_test(Stretch::GdnConvAct);
                 let fused = {
-                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                     conv_activation(&x, dtype, rows)
                 };
                 assert!(
@@ -2332,7 +2406,7 @@ mod tests {
                     qwen4_exp_fused::applied_for_test(Stretch::GdnKScale),
                 );
                 let output = {
-                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    let _fused = qwen4_exp_fused::force_compiled_only_for_test();
                     l2_normalize(&x, rows, key_base, Some(&sqrt_dk))
                 };
                 assert_eq!(
@@ -2348,5 +2422,219 @@ mod tests {
                 assert_bit_identical(&output, &reference, "one-wide head reference bits");
             }
         }
+    }
+
+    /// The two native GDN stretches, asserted together wherever a forward
+    /// runs with them enabled.
+    const NATIVE_GDN_STRETCHES: [Stretch; 2] = [Stretch::GdnNativeDecay, Stretch::GdnNativeQk];
+
+    /// The compiled stages the native kernels replace, asserted idle in the
+    /// native arm.
+    const NATIVE_REPLACED_STRETCHES: [Stretch; 5] = [
+        Stretch::GdnDecayPre,
+        Stretch::GdnDecayPost,
+        Stretch::GdnBeta,
+        Stretch::GdnQScale,
+        Stretch::GdnKScale,
+    ];
+
+    /// A small synthetic GDN with distinct key and value head dimensions
+    /// (`dk=4`, `dv=8`): the geometry the native q/k/v kernel must refuse,
+    /// because it derives the value head width from the key head dimension.
+    fn synthetic_pack_geometry_unequal_head_dims(dtype: MlxDtype) -> Qwen4ExpGdn {
+        let tensor = |shape: &[i32], phase: usize, scale: f32| {
+            let n: usize = shape.iter().map(|&d| d as usize).product();
+            let data: Vec<f32> = (0..n)
+                .map(|i| (((i + phase) * 37 % 997) as f32 / 997.0 - 0.5) * scale)
+                .collect();
+            astype(
+                &MlxArray::from_raw_data(data.as_ptr().cast(), n * 4, shape, MlxDtype::Float32),
+                dtype,
+                None,
+            )
+        };
+        let dense = |output, input, phase| {
+            QuantizedWeight::new(tensor(&[output, input], phase, 0.04), None, None)
+        };
+        // 2 key heads of 4 and 4 value heads of 8: the qkv row is 2*2*4 + 4*8.
+        Qwen4ExpGdn::new(
+            LinearAttentionConfig {
+                full_attention_interval: 4,
+                num_key_heads: 2,
+                num_value_heads: 4,
+                key_head_dim: 4,
+                value_head_dim: 8,
+                conv_kernel_dim: 4,
+                q_scale: 1.0,
+                k_scale: 1.0,
+            },
+            32,
+            1e-6,
+            GdnGateActivation::Silu,
+            Qwen4ExpGdnWeights {
+                qkv: dense(48, 32, 1),
+                gate: dense(32, 32, 7),
+                decay: dense(4, 32, 13),
+                beta: dense(4, 32, 19),
+                output: dense(32, 32, 23),
+                conv: tensor(&[48, 4, 1], 29, 0.5),
+                a_log: astype(&tensor(&[4], 31, 0.4), MlxDtype::Float32, None),
+                dt_bias: astype(&tensor(&[4], 37, 0.5), MlxDtype::Float32, None),
+                norm_gain: mlx_sys::broadcast_to(
+                    &astype(&MlxArray::from_f32(1.0), dtype, None),
+                    &[8],
+                    None,
+                ),
+            },
+        )
+        .unwrap()
+    }
+
+    /// The native GDN kernels must be bit-identical to both the compiled
+    /// stretch chain and the eager chain on decode rows and short windows,
+    /// for every synthetic dtype and gate activation, and the compiled stages
+    /// they replace must stay idle while they run.
+    #[test]
+    fn native_gdn_forward_matches_compiled_and_eager() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            for activation in [GdnGateActivation::Silu, GdnGateActivation::Sigmoid] {
+                let module = synthetic_pack_geometry_with(dtype, activation);
+                // Primed state from an eager 3-row call on a different input.
+                let prime = deterministic_input(32, 3, case_seed(61), 1.5, dtype);
+                let primed = {
+                    let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                    run_forward(&module, &prime, None).1
+                };
+                for rows in [1_i32, 3] {
+                    let input =
+                        deterministic_input(32, rows, case_seed(2000 + rows as u64), 1.5, dtype);
+                    let (eager_output, eager_state) = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        run_forward(&module, &input, Some(&primed))
+                    };
+                    let (compiled_output, compiled_state) = {
+                        let _compiled = qwen4_exp_fused::force_only_for_test(&GDN_STRETCHES);
+                        run_forward(&module, &input, Some(&primed))
+                    };
+                    assert_bit_identical(&compiled_output, &eager_output, "compiled output");
+                    assert_bit_identical(
+                        &compiled_state.conv,
+                        &eager_state.conv,
+                        "compiled conv state",
+                    );
+                    assert_bit_identical(
+                        &compiled_state.recurrent,
+                        &eager_state.recurrent,
+                        "compiled recurrent state",
+                    );
+                    let native_before = NATIVE_GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
+                    let replaced_before =
+                        NATIVE_REPLACED_STRETCHES.map(qwen4_exp_fused::applied_for_test);
+                    let (native_output, native_state) = {
+                        let _native = qwen4_exp_fused::force_for_test(Some(true));
+                        run_forward(&module, &input, Some(&primed))
+                    };
+                    for (stretch, before) in NATIVE_GDN_STRETCHES.iter().zip(native_before) {
+                        assert!(
+                            qwen4_exp_fused::applied_for_test(*stretch) > before,
+                            "{stretch:?} stretch must apply while native \
+                             ({dtype:?}, {activation:?}, rows={rows})",
+                        );
+                    }
+                    for (stretch, before) in NATIVE_REPLACED_STRETCHES.iter().zip(replaced_before) {
+                        assert_eq!(
+                            qwen4_exp_fused::applied_for_test(*stretch),
+                            before,
+                            "{stretch:?} must stay idle while its native twin runs \
+                             ({dtype:?}, {activation:?}, rows={rows})",
+                        );
+                    }
+                    assert_bit_identical(&native_output, &eager_output, "native output");
+                    assert_bit_identical(
+                        &native_state.conv,
+                        &eager_state.conv,
+                        "native conv state",
+                    );
+                    assert_bit_identical(
+                        &native_state.recurrent,
+                        &eager_state.recurrent,
+                        "native recurrent state",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Prefill-sized rows must skip the native kernels exactly like the
+    /// compiled stretches: no applies, no tombstone, and eager bits.
+    #[test]
+    fn native_gdn_stretches_skip_prefill_sized_inputs() {
+        let module = synthetic_pack_geometry_with(MlxDtype::Bfloat16, GdnGateActivation::Silu);
+        for rows in [qwen4_exp_fused::FUSE_MAX_ROWS + 1, 16] {
+            let input = deterministic_input(
+                32,
+                rows,
+                case_seed(7300 + rows as u64),
+                1.5,
+                MlxDtype::Bfloat16,
+            );
+            let before = NATIVE_GDN_STRETCHES.map(qwen4_exp_fused::applied_for_test);
+            let (native_output, native_state) = {
+                let _native = qwen4_exp_fused::force_for_test(Some(true));
+                run_forward(&module, &input, None)
+            };
+            for (stretch, count) in NATIVE_GDN_STRETCHES.iter().zip(before) {
+                assert_eq!(
+                    qwen4_exp_fused::applied_for_test(*stretch),
+                    count,
+                    "{stretch:?} must not apply at rows={rows}",
+                );
+                assert!(
+                    !qwen4_exp_fused::tombstoned_for_test(*stretch),
+                    "the row gate must skip, not tombstone ({stretch:?})",
+                );
+            }
+            let (eager_output, eager_state) = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                run_forward(&module, &input, None)
+            };
+            assert_bit_identical(&native_output, &eager_output, "output");
+            assert_bit_identical(&native_state.conv, &eager_state.conv, "conv state");
+            assert_bit_identical(
+                &native_state.recurrent,
+                &eager_state.recurrent,
+                "recurrent state",
+            );
+        }
+    }
+
+    /// Distinct key and value head widths cannot use the native q/k/v kernel,
+    /// so the module must fall back to the compiled chain and still agree bit
+    /// for bit with the eager run.
+    #[test]
+    fn native_gdn_unequal_head_dims_fall_back_to_compiled() {
+        let module = synthetic_pack_geometry_unequal_head_dims(MlxDtype::Bfloat16);
+        let input = deterministic_input(32, 2, case_seed(7500), 1.5, MlxDtype::Bfloat16);
+        let (eager_output, eager_state) = {
+            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+            run_forward(&module, &input, None)
+        };
+        let qk_before = qwen4_exp_fused::applied_for_test(Stretch::GdnNativeQk);
+        let (native_output, native_state) = {
+            let _native = qwen4_exp_fused::force_for_test(Some(true));
+            run_forward(&module, &input, None)
+        };
+        assert_eq!(
+            qwen4_exp_fused::applied_for_test(Stretch::GdnNativeQk),
+            qk_before,
+            "GdnNativeQk must not apply when the head widths differ",
+        );
+        assert_bit_identical(&native_output, &eager_output, "output");
+        assert_bit_identical(&native_state.conv, &eager_state.conv, "conv state");
+        assert_bit_identical(
+            &native_state.recurrent,
+            &eager_state.recurrent,
+            "recurrent state",
+        );
     }
 }
