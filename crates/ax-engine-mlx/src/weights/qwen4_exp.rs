@@ -2718,7 +2718,8 @@ mod tests {
             records.push(serde_json::json!({"step": step, "position": position,
                 "output_sha256": format!("{:x}", Sha256::digest(&delta)),
                 "input_sha256": format!("{:x}", Sha256::digest(&payload)),
-                "cache": [fingerprint(cache.keys().unwrap()), fingerprint(cache.values().unwrap()),
+                "cache": [fingerprint(&cache.flat_keys().unwrap()),
+                    fingerprint(&cache.flat_values().unwrap()),
                     fingerprint(cache.index().keys().unwrap())]}));
             eprintln!("qsa replay position={position}");
         }

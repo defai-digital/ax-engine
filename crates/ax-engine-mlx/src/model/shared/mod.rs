@@ -10,6 +10,7 @@ pub(crate) mod qwen4_exp_attention;
 pub(crate) mod qwen4_exp_fused;
 pub(crate) mod qwen4_exp_gdn;
 pub(crate) mod qwen4_exp_gdn_metal;
+pub(crate) mod qwen4_exp_kv_history;
 pub(crate) mod qwen4_exp_moe;
 pub(crate) mod qwen4_exp_ple;
 pub(crate) mod qwen4_exp_residual;

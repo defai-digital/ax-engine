@@ -18,6 +18,7 @@ use mlx_sys::{
 };
 use thiserror::Error;
 
+use super::qwen4_exp_kv_history::KvHistory;
 use super::qwen4_exp_residual::{
     Qwen4ExpResidualError, sigmoid_projection_dtype, validate_projection,
 };
@@ -182,46 +183,73 @@ pub(crate) struct Qwen4ExpAttentionWeights {
     pub k_norm: MlxArray,
 }
 
-/// Request-owned K/V plus the indexer key history. Never mutated in place.
+/// Request-owned K/V histories plus the indexer key history. Never mutated in
+/// place: an append stages a new history and the caller publishes it.
 #[derive(Clone)]
 pub(crate) struct Qwen4ExpAttentionCache {
-    keys: Option<MlxArray>,
-    values: Option<MlxArray>,
+    keys: KvHistory,
+    values: KvHistory,
     index: QsaIndexKeyCache,
 }
 
 impl Qwen4ExpAttentionCache {
     pub(crate) fn empty() -> Self {
         Self {
-            keys: None,
-            values: None,
+            keys: KvHistory::empty(),
+            values: KvHistory::empty(),
             index: QsaIndexKeyCache::empty(),
         }
     }
 
-    pub(crate) fn keys(&self) -> Option<&MlxArray> {
-        self.keys.as_ref()
+    pub(crate) fn keys(&self) -> &KvHistory {
+        &self.keys
     }
 
-    pub(crate) fn values(&self) -> Option<&MlxArray> {
-        self.values.as_ref()
+    pub(crate) fn values(&self) -> &KvHistory {
+        &self.values
+    }
+
+    /// Flat K rows for tests that compare whole tensors.
+    #[cfg(test)]
+    pub(crate) fn flat_keys(&self) -> Option<MlxArray> {
+        self.keys.flat()
+    }
+
+    /// Flat V rows for tests that compare whole tensors.
+    #[cfg(test)]
+    pub(crate) fn flat_values(&self) -> Option<MlxArray> {
+        self.values.flat()
     }
 
     pub(crate) fn index(&self) -> &QsaIndexKeyCache {
         &self.index
     }
 
+    /// Test-only: assemble a cache from already-built histories.
+    #[cfg(test)]
+    pub(crate) fn from_histories(
+        keys: KvHistory,
+        values: KvHistory,
+        index: QsaIndexKeyCache,
+    ) -> Self {
+        Self {
+            keys,
+            values,
+            index,
+        }
+    }
+
     pub(crate) fn token_count(&self) -> Result<usize> {
-        match (&self.keys, &self.values) {
-            (None, None) => Ok(0),
-            (Some(keys), Some(values)) => {
-                let key_len = cache_tokens("key cache", keys)?;
-                let value_len = cache_tokens("value cache", values)?;
+        match (self.keys.is_some(), self.values.is_some()) {
+            (false, false) => Ok(0),
+            (true, true) => {
+                let key_len = self.keys.token_count();
+                let value_len = self.values.token_count();
                 if key_len != value_len {
                     return Err(Qwen4ExpAttentionError::TensorShape {
                         tensor: "value cache",
                         expected: format!("[batch, {key_len}, kv_heads, head_dim]"),
-                        actual: values.shape(),
+                        actual: self.values.first().map_or_else(Vec::new, MlxArray::shape),
                     });
                 }
                 Ok(key_len)
@@ -250,8 +278,8 @@ impl Qwen4ExpAttentionCache {
             return Err(Qwen4ExpAttentionError::IncompleteCache);
         }
         Ok(Self {
-            keys,
-            values,
+            keys: keys.map_or_else(KvHistory::empty, KvHistory::from_flat),
+            values: values.map_or_else(KvHistory::empty, KvHistory::from_flat),
             index,
         })
     }
@@ -266,7 +294,7 @@ impl Qwen4ExpAttentionCache {
         dtype: MlxDtype,
     ) -> std::result::Result<(), String> {
         let cached_tokens = self.token_count().map_err(|e| e.to_string())?;
-        if let Some(keys) = self.keys() {
+        for keys in self.keys().arrays() {
             expect_cache_layout(
                 "key cache",
                 keys,
@@ -277,7 +305,7 @@ impl Qwen4ExpAttentionCache {
             )
             .map_err(|e| e.to_string())?;
         }
-        if let Some(values) = self.values() {
+        for values in self.values().arrays() {
             expect_cache_layout(
                 "value cache",
                 values,
@@ -558,23 +586,34 @@ impl Qwen4ExpAttention {
         let values = astype(&values, dtype, None);
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("qsa_b_prep", &[&queries, &keys, &values]);
-        let staged_keys = append_cache(cache.keys(), &keys)?;
-        let staged_values = append_cache(cache.values(), &values)?;
+        let staged_keys = cache.keys().append(&keys);
+        let staged_values = cache.values().append(&values);
         #[cfg(test)]
-        crate::model::qwen4_exp::profiling::mark("qsa_c_append", &[&staged_keys, &staged_values]);
+        {
+            let mut staged = Vec::new();
+            staged.extend(staged_keys.arrays());
+            staged.extend(staged_values.arrays());
+            crate::model::qwen4_exp::profiling::mark("qsa_c_append", &staged);
+        }
+        // Rebuilt once per call: the attention kernels and the test dumps
+        // share this single flattening of the two segments.
+        let key_rows = staged_keys
+            .flat()
+            .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
+        let value_rows = staged_values
+            .flat()
+            .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
         #[cfg(test)]
         for (stage, array) in [
             ("qsa_queries", &queries),
-            ("qsa_keys", &staged_keys),
-            ("qsa_values", &staged_values),
+            ("qsa_keys", &key_rows),
+            ("qsa_values", &value_rows),
         ] {
             crate::model::qwen4_exp::profiling::dump(stage, &[array]);
         }
 
         let attn = match &selection {
-            Some(selection) => {
-                attend_selected(&queries, &staged_keys, &staged_values, selection, cfg)?
-            }
+            Some(selection) => attend_selected(&queries, &key_rows, &value_rows, selection, cfg)?,
             // Short verifier windows replay each query row through the
             // singleton dense kernel so the batched window matches the
             // per-token decode arithmetic bit for bit.
@@ -582,9 +621,9 @@ impl Qwen4ExpAttention {
                 && seq > 1
                 && seq <= VERIFY_ROWWISE_MAX_QUERIES =>
             {
-                attend_dense_rowwise(&queries, &staged_keys, &staged_values, cfg)
+                attend_dense_rowwise(&queries, &key_rows, &value_rows, cfg)
             }
-            None => attend_dense(&queries, &staged_keys, &staged_values, cfg),
+            None => attend_dense(&queries, &key_rows, &value_rows, cfg),
         };
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("qsa_d_attend", &[&attn]);
@@ -623,8 +662,8 @@ impl Qwen4ExpAttention {
         Ok(Qwen4ExpAttentionOutput {
             delta,
             next_state: Qwen4ExpAttentionCache {
-                keys: Some(staged_keys),
-                values: Some(staged_values),
+                keys: staged_keys,
+                values: staged_values,
                 index: match selection {
                     Some(selection) => selection.into_next_cache(),
                     None => next_index,
@@ -669,10 +708,10 @@ impl Qwen4ExpAttention {
             });
         }
         let cfg = self.config;
-        if let Some(keys) = cache.keys() {
+        for keys in cache.keys().arrays() {
             expect_cache_layout("key cache", keys, batch, cfg.kv_heads, cfg.head_dim, dtype)?;
         }
-        if let Some(values) = cache.values() {
+        for values in cache.values().arrays() {
             expect_cache_layout(
                 "value cache",
                 values,
@@ -1063,14 +1102,6 @@ fn attend_selected_batched(
 /// Queries inspected to size a sub-batch before its exact padding is known.
 const BATCHED_ATTENTION_PROBE_QUERIES: usize = 512;
 
-fn append_cache(past: Option<&MlxArray>, new: &MlxArray) -> Result<MlxArray> {
-    let staged = match past {
-        Some(past) => concatenate(&[past, new], 1, None),
-        None => new.clone(),
-    };
-    Ok(contiguous(&staged, None))
-}
-
 #[cfg(test)]
 fn rope_bhsd(x: &MlxArray, rotary_dim: i32, rope_base: f32, offset: i32) -> MlxArray {
     mlx_sys::rope(
@@ -1115,18 +1146,6 @@ fn concat_owned(parts: &[MlxArray], axis: i32) -> MlxArray {
     }
     let refs: Vec<&MlxArray> = parts.iter().collect();
     concatenate(&refs, axis, None)
-}
-
-fn cache_tokens(tensor: &'static str, array: &MlxArray) -> Result<usize> {
-    let shape = array.shape();
-    if shape.len() != 4 || shape[1] < 0 {
-        return Err(Qwen4ExpAttentionError::TensorShape {
-            tensor,
-            expected: "[batch, tokens, kv_heads, head_dim]".to_string(),
-            actual: shape,
-        });
-    }
-    Ok(shape[1] as usize)
 }
 
 fn expect_cache_layout(
@@ -1394,13 +1413,13 @@ mod tests {
         label: &str,
     ) {
         close(
-            actual.keys().unwrap(),
-            expected.keys().unwrap(),
+            &actual.flat_keys().unwrap(),
+            &expected.flat_keys().unwrap(),
             &format!("{label} keys"),
         );
         close(
-            actual.values().unwrap(),
-            expected.values().unwrap(),
+            &actual.flat_values().unwrap(),
+            &expected.flat_values().unwrap(),
             &format!("{label} values"),
         );
         close(
@@ -1476,6 +1495,82 @@ mod tests {
         close_state(&cache, whole.next_state(), "token-step");
     }
 
+    fn f32_value_bits(array: &MlxArray) -> Vec<u32> {
+        let widened = contiguous(&astype(array, MlxDtype::Float32, None), None);
+        eval(&[&widened]);
+        widened
+            .data_f32()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    #[test]
+    fn kv_segments_state_equals_flat_state() {
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        let (_, module) = oracle();
+        let rows = 26i32;
+        let prefix_rows = 5i32;
+        let data: Vec<f32> = (0..rows * 16)
+            .map(|i| ((i * 37 + 11) % 1013 - 506) as f32 / 512.0)
+            .collect();
+        let input = array_f32(&data, &[1, rows, 16]);
+        let prefix = slice(&input, &[0, 0, 0], &[1, prefix_rows, 16], &[1, 1, 1], None);
+
+        let chain = |segments: Option<(usize, usize)>| {
+            with_kv_segments(segments, || {
+                let mut cache = Qwen4ExpAttentionCache::empty();
+                let first = run(&module, &prefix, &cache, 0);
+                let mut deltas = vec![first.delta().clone()];
+                cache = first.into_next_state();
+                for token in prefix_rows..rows {
+                    let row = slice(
+                        &input,
+                        &[0, token, 0],
+                        &[1, token + 1, 16],
+                        &[1, 1, 1],
+                        None,
+                    );
+                    let step = run(&module, &row, &cache, token as usize);
+                    deltas.push(step.delta().clone());
+                    cache = step.into_next_state();
+                }
+                (deltas, cache)
+            })
+        };
+
+        let (flat_deltas, flat_cache) = chain(None);
+        let (segmented_deltas, segmented_cache) = chain(Some((8, 4)));
+        assert_eq!(flat_deltas.len(), segmented_deltas.len());
+        assert_eq!(
+            segmented_deltas.len(),
+            rows as usize - prefix_rows as usize + 1
+        );
+        for (step, (flat, segmented)) in flat_deltas.iter().zip(&segmented_deltas).enumerate() {
+            assert_eq!(
+                f32_value_bits(flat),
+                f32_value_bits(segmented),
+                "delta bits at step {step}"
+            );
+        }
+        assert_eq!(segmented_cache.token_count().unwrap(), rows as usize);
+        assert_eq!(
+            segmented_cache.flat_keys().unwrap().shape(),
+            flat_cache.flat_keys().unwrap().shape()
+        );
+        assert_eq!(
+            f32_value_bits(&segmented_cache.flat_keys().unwrap()),
+            f32_value_bits(&flat_cache.flat_keys().unwrap()),
+            "K history bits"
+        );
+        assert_eq!(
+            f32_value_bits(&segmented_cache.flat_values().unwrap()),
+            f32_value_bits(&flat_cache.flat_values().unwrap()),
+            "V history bits"
+        );
+    }
+
     #[test]
     fn request_fork_isolation_and_rejected_calls_preserve_state() {
         let (f, module) = oracle();
@@ -1484,7 +1579,7 @@ mod tests {
         let suffix = slice(&input, &[0, 8, 0], &[1, 19, 16], &[1, 1, 1], None);
         let first = run(&module, &prefix, &Qwen4ExpAttentionCache::empty(), 0);
         let original = first.next_state().fork();
-        let snapshot_k = first.next_state().keys().unwrap().clone();
+        let snapshot_k = first.next_state().flat_keys().unwrap();
         eval(&[&snapshot_k]);
         let snapshot = snapshot_k.data_f32().to_vec();
 
@@ -1509,24 +1604,24 @@ mod tests {
                 .is_err()
         );
         close(
-            first.next_state().keys().unwrap(),
+            &first.next_state().flat_keys().unwrap(),
             &array_f32(&snapshot, &snapshot_k.shape()),
             "source cache after rejected calls",
         );
         close(
-            original.keys().unwrap(),
+            &original.flat_keys().unwrap(),
             &array_f32(&snapshot, &snapshot_k.shape()),
             "forked cache after rejected calls",
         );
 
         let published = run(&module, &suffix, first.next_state(), 8);
         close(
-            first.next_state().keys().unwrap(),
+            &first.next_state().flat_keys().unwrap(),
             &array_f32(&snapshot, &snapshot_k.shape()),
             "source cache after a later forward",
         );
         close(
-            original.keys().unwrap(),
+            &original.flat_keys().unwrap(),
             &array_f32(&snapshot, &snapshot_k.shape()),
             "forked cache after a later forward",
         );
@@ -1538,7 +1633,7 @@ mod tests {
             "fork next state",
         );
         assert_ne!(
-            eval_len(published.next_state().keys().unwrap()),
+            eval_len(&published.next_state().flat_keys().unwrap()),
             snapshot.len()
         );
 

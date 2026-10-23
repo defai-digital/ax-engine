@@ -103,6 +103,14 @@ pub(crate) fn flash_next_ngram_prefetch_enabled() -> bool {
     *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_PREFETCH"))
 }
 
+/// Flash Next keeps the QSA K/V history as a sealed prefix plus a short tail
+/// so a decode step copies only the tail. Kill switch:
+/// `AX_FLASH_NEXT_KV_SEGMENTS=0`.
+pub(crate) fn flash_next_kv_segments_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_KV_SEGMENTS"))
+}
+
 /// Flash Next builds the QSA rotary cos/sin tables once per decode step
 /// instead of once per layer and call. Kill switch:
 /// `AX_FLASH_NEXT_ROPE_CACHE=0`.
