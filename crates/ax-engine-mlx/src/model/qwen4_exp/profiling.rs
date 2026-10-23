@@ -1349,10 +1349,10 @@ fn flash_next_fused_matches_eager_on_real_pack() {
     // Every stretch. Aggregate counters cannot prove that each one ran, so all
     // checks below are per stretch; stretches outside the enabled set must not
     // run at all.
-    const WATCH: [Stretch; 13] = Stretch::ALL;
+    const WATCH: [Stretch; 15] = Stretch::ALL;
     let enabled_in_fused: Vec<Stretch> = only.clone().unwrap_or_else(|| WATCH.to_vec());
     let snapshot_counts = || {
-        let mut counts = [0u64; 13];
+        let mut counts = [0u64; 15];
         for (index, stretch) in WATCH.iter().enumerate() {
             counts[index] = applied_for_test(*stretch);
         }
@@ -1444,7 +1444,7 @@ fn flash_next_fused_matches_eager_on_real_pack() {
     }
     assert_eq!(snapshot(eager_state), snapshot(fused_state), "chain state");
     let after_chain = snapshot_counts();
-    let mut hc_applied = [0u64; 13];
+    let mut hc_applied = [0u64; 15];
     for (index, stretch) in WATCH.iter().enumerate() {
         let applied = after_chain[index] - before_chain[index];
         hc_applied[index] = applied;
@@ -1453,9 +1453,12 @@ fn flash_next_fused_matches_eager_on_real_pack() {
             continue;
         }
         // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
-        // the GDN stretches. Deliberately loose lower bounds.
+        // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu.
+        // Deliberately loose lower bounds.
         let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
             30
+        } else if stretch.name().starts_with("moe_") {
+            40
         } else {
             48
         };
@@ -1521,7 +1524,7 @@ fn flash_next_fused_matches_eager_on_real_pack() {
         "RowExact chain state"
     );
     let after_rowexact = snapshot_counts();
-    let mut rowexact_applied = [0u64; 13];
+    let mut rowexact_applied = [0u64; 15];
     for (index, stretch) in WATCH.iter().enumerate() {
         let applied = after_rowexact[index] - before_rowexact[index];
         rowexact_applied[index] = applied;
@@ -1530,9 +1533,12 @@ fn flash_next_fused_matches_eager_on_real_pack() {
             continue;
         }
         // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
-        // the GDN stretches. Deliberately loose lower bounds.
+        // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu.
+        // Deliberately loose lower bounds.
         let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
             30
+        } else if stretch.name().starts_with("moe_") {
+            40
         } else {
             48
         };

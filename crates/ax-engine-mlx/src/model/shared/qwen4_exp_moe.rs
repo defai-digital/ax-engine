@@ -8,11 +8,12 @@
 
 use mlx_sys::ops::silu;
 use mlx_sys::{
-    MlxArray, MlxDtype, add, astype, concatenate, contiguous, divide, expand_dims_axes, multiply,
-    reshape, sigmoid, slice, softmax, sum_axis, take, try_eval,
+    MlxArray, MlxClosure, MlxDtype, add, astype, concatenate, contiguous, divide, expand_dims_axes,
+    multiply, reshape, sigmoid, slice, softmax, sum_axis, take, try_eval,
 };
 
 use super::mlp::{SwitchGatherInputs, switch_gather_inputs, top_k_by_argpartition};
+use super::qwen4_exp_fused::{self, Stretch};
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_gather, qw_with_policy, squeeze_switch_singleton};
 use crate::expert_stream::{ExpertLayerSource, LayerExpertStack};
@@ -119,6 +120,110 @@ fn sigmoid_projection_dtype(input: &MlxArray) -> MlxArray {
         input.dtype(),
         None,
     )
+}
+
+/// Closure body of the SiLU-gated expert product.
+///
+/// Inputs, in order: `gate`, `up`. Nothing is captured: the body reads the
+/// dtype from its inputs, so one closure serves both the routed experts
+/// (`[1, rows, top_k, 1, intermediate]`) and the shared expert
+/// (`[1, rows, shared_intermediate]`), and MLX compiles per input signature.
+fn swiglu_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let (gate, up) = (inputs.get(0), inputs.get(1));
+        vec![multiply(&silu_projection_dtype(&gate), &up, None)]
+    })
+}
+
+/// Dump stage names of the activation and the product of a gate/up pair.
+type SwigluStages = (&'static str, &'static str);
+
+/// The routed experts, in the switch layout or the sorted-prefill layout.
+const ROUTED_SWIGLU_STAGES: SwigluStages = ("moe_gate_activation", "moe_activated");
+
+/// The shared expert, a plain `[1, rows, s]` projection.
+const SHARED_SWIGLU_STAGES: SwigluStages = ("moe_shared_activation", "moe_shared_input");
+
+/// `silu(gate) * up`, compiled when [`Stretch::MoeSwiglu`] applies.
+///
+/// The compiled path does not materialise the intermediate activation, so the
+/// dump only sees it when the eager fallback runs. `stages` names the dumps
+/// explicitly: the sorted-prefill gather yields rank-three routed tensors, so
+/// the rank cannot tell the routed experts from the shared expert.
+#[cfg_attr(not(test), allow(unused_variables))]
+fn swiglu(gate: &MlxArray, up: &MlxArray, rows: i32, stages: SwigluStages) -> MlxArray {
+    if let Some(activated) = qwen4_exp_fused::apply(
+        Stretch::MoeSwiglu,
+        rows,
+        [0, 0, 0, 0],
+        swiglu_closure,
+        &[gate, up],
+    ) {
+        return activated;
+    }
+    let gate_activation = silu_projection_dtype(gate);
+    let activated = multiply(&gate_activation, up, None);
+    #[cfg(test)]
+    {
+        crate::model::qwen4_exp::profiling::dump(stages.0, &[&gate_activation]);
+        crate::model::qwen4_exp::profiling::dump(stages.1, &[&activated]);
+    }
+    activated
+}
+
+/// Closure body of the MoE tail.
+///
+/// Inputs, in order: `down` (expert outputs restored to token order),
+/// `routing` (`[batch, rows, top_k]`), `shared` (the shared expert's down
+/// projection) and `shared_router`. The reshape back to `[batch, rows, hidden]`
+/// stays outside the stretch: it is only a view.
+fn combine_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let (down, routing) = (inputs.get(0), inputs.get(1));
+        let (shared, shared_router) = (inputs.get(2), inputs.get(3));
+        let routed = sum_axis(
+            &multiply(&down, &expand_dims_axes(&routing, &[-1], None), None),
+            -2,
+            false,
+            None,
+        );
+        vec![add(
+            &routed,
+            &multiply(&shared, &sigmoid_projection_dtype(&shared_router), None),
+            None,
+        )]
+    })
+}
+
+/// Weighted routed sum plus the gated shared expert, before the reshape.
+fn combine(
+    down: &MlxArray,
+    routing: &MlxArray,
+    shared: &MlxArray,
+    shared_router: &MlxArray,
+    rows: i32,
+) -> MlxArray {
+    if let Some(combined) = qwen4_exp_fused::apply(
+        Stretch::MoeCombine,
+        rows,
+        [0, 0, 0, 0],
+        combine_closure,
+        &[down, routing, shared, shared_router],
+    ) {
+        return combined;
+    }
+    let weighted = multiply(down, &expand_dims_axes(routing, &[-1], None), None);
+    let routed = sum_axis(&weighted, -2, false, None);
+    let shared_score = sigmoid_projection_dtype(shared_router);
+    let shared_output = multiply(shared, &shared_score, None);
+    let combined = add(&routed, &shared_output, None);
+    #[cfg(test)]
+    {
+        crate::model::qwen4_exp::profiling::dump("moe_routed", &[&routed]);
+        crate::model::qwen4_exp::profiling::dump("moe_shared_score", &[&shared_score]);
+        crate::model::qwen4_exp::profiling::dump("moe_shared_output", &[&shared_output]);
+    }
+    combined
 }
 
 impl Qwen4ExpMoe {
@@ -473,18 +578,16 @@ impl Qwen4ExpMoe {
             }
         };
         let sorted = gathered.sorted_indices;
+        let rows = shape[1];
         let gate = qw_gather(&gathered.x, experts.gate(), &gathered.indices, sorted);
         let up = qw_gather(&gathered.x, experts.up(), &gathered.indices, sorted);
-        let gate_activation = silu_projection_dtype(&gate);
-        let activated = multiply(&gate_activation, &up, None);
+        let activated = swiglu(&gate, &up, rows, ROUTED_SWIGLU_STAGES);
         let down_gathered = qw_gather(&activated, experts.down(), &gathered.indices, sorted);
         let down = if sorted {
             gathered.unsort(down_gathered)
         } else {
             squeeze_switch_singleton(&down_gathered)
         };
-        let weighted = multiply(&down, &expand_dims_axes(routing, &[-1], None), None);
-        let routed = sum_axis(&weighted, -2, false, None);
         let shared_gate_policy =
             if w.shared_gate.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
                 verifier_policy
@@ -492,7 +595,6 @@ impl Qwen4ExpMoe {
                 policy
             };
         let shared_gate = qw_with_policy(input, &w.shared_gate, shared_gate_policy);
-        let shared_activation = silu_projection_dtype(&shared_gate);
         let shared_up_policy =
             if w.shared_up.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
                 verifier_policy
@@ -500,7 +602,7 @@ impl Qwen4ExpMoe {
                 policy
             };
         let shared_up = qw_with_policy(input, &w.shared_up, shared_up_policy);
-        let shared_input = multiply(&shared_activation, &shared_up, None);
+        let shared_input = swiglu(&shared_gate, &shared_up, rows, SHARED_SWIGLU_STAGES);
         let shared_down_policy =
             if w.shared_down.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
                 verifier_policy
@@ -509,26 +611,26 @@ impl Qwen4ExpMoe {
             };
         let shared = qw_with_policy(&shared_input, &w.shared_down, shared_down_policy);
         let shared_router = qw_with_policy(input, &w.shared_router, policy);
-        let shared_score = sigmoid_projection_dtype(&shared_router);
-        let shared_output = multiply(&shared, &shared_score, None);
-        let output = reshape(&add(&routed, &shared_output, None), &shape, None);
+        // The reshape back to the input shape is a view, so it stays outside the
+        // tail stretch.
+        let output = reshape(
+            &combine(&down, routing, &shared, &shared_router, rows),
+            &shape,
+            None,
+        );
+        // Only intermediates that exist on the path taken: the fused stretches
+        // do not materialise the activations and the weighted sum inputs, and a
+        // dump of a graph the run never built would be a different op sequence.
         #[cfg(test)]
         {
             for (stage, array) in [
                 ("moe_gate", &gate),
                 ("moe_up", &up),
-                ("moe_gate_activation", &gate_activation),
-                ("moe_activated", &activated),
                 ("moe_down", &down),
-                ("moe_routed", &routed),
                 ("moe_shared_gate", &shared_gate),
                 ("moe_shared_up", &shared_up),
-                ("moe_shared_activation", &shared_activation),
-                ("moe_shared_input", &shared_input),
                 ("moe_shared_down", &shared),
                 ("moe_shared_router", &shared_router),
-                ("moe_shared_score", &shared_score),
-                ("moe_shared_output", &shared_output),
                 ("moe_delta", &output),
             ] {
                 crate::model::qwen4_exp::profiling::dump(stage, &[array]);
@@ -1133,6 +1235,499 @@ mod tests {
                     "MoE window row {s} ({label}) diverged from the singleton row"
                 );
             }
+        }
+    }
+
+    /// Deterministic xorshift64 PRNG, so the adversarial differential inputs
+    /// below are reproducible without pulling in an external crate (same
+    /// construction as the GDN differential tests).
+    struct XorShift64(u64);
+
+    impl XorShift64 {
+        fn new(seed: u64) -> Self {
+            Self(seed | 1)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        /// Uniform in `+-1`.
+        fn unit(&mut self) -> f32 {
+            let unit = (self.next_u64() >> 11) as f32 / (1u64 << 53) as f32;
+            unit * 2.0 - 1.0
+        }
+    }
+
+    /// Adversarial f32 buffer: at PRNG-chosen positions (~1% each) one of the
+    /// special classes - quiet NaNs with pseudo-random payloads, +-inf, +-0.0,
+    /// subnormal and min-normal values (1e-45, 1.2e-38), +-1, large finite
+    /// (3e38), sigmoid/SiLU saturation values (+-30, +-90) and bf16/f16
+    /// rounding boundaries (1.00390625, 65504.0, 65520.0) - otherwise scaled
+    /// noise.
+    fn adversarial(rng: &mut XorShift64, len: usize, magnitude: f32) -> Vec<f32> {
+        (0..len)
+            .map(|_| {
+                let sign = if rng.next_u64() & 1 == 0 { 1.0 } else { -1.0 };
+                match rng.next_u64() % 100 {
+                    0 => f32::from_bits(0x7fc0_0000 | (rng.next_u64() as u32 & 0x003f_ffff)),
+                    1 => sign * f32::INFINITY,
+                    2 => sign * 0.0,
+                    3 => sign * 1.0e-45,
+                    4 => sign * 1.2e-38,
+                    5 => sign,
+                    6 => sign * 3.0e38,
+                    7 => sign * 30.0,
+                    8 => sign * 90.0,
+                    9 => match rng.next_u64() % 3 {
+                        0 => sign * (1.0 + 1.0 / 256.0),
+                        1 => sign * 65504.0,
+                        _ => sign * 65520.0,
+                    },
+                    _ => rng.unit() * magnitude,
+                }
+            })
+            .collect()
+    }
+
+    /// `shape` adversarial buffer of `dtype`, built through an f32 widening.
+    fn adversarial_array(
+        rng: &mut XorShift64,
+        shape: &[i32],
+        magnitude: f32,
+        dtype: MlxDtype,
+    ) -> MlxArray {
+        let len: usize = shape.iter().map(|&dim| dim as usize).product();
+        let data = adversarial(rng, len, magnitude);
+        astype(
+            &MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data.as_slice()),
+                shape,
+                MlxDtype::Float32,
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    /// Widen to f32 (lossless for f32/bf16/f16) and compare raw bits, NaN
+    /// payloads included: the fused stretches must match the eager ops bit
+    /// for bit.
+    fn widened_bits(array: &MlxArray) -> Vec<u32> {
+        let wide = contiguous(&astype(array, MlxDtype::Float32, None), None);
+        eval(&[&wide]);
+        wide.data_f32()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    /// `[1, rows, 10]` routing weights for the combine differential test:
+    /// non-negative values summing to ~1 per row, or an adversarial variant
+    /// with zeros and NaN (infinities are mapped to zero - the router never
+    /// emits them and inf*0 would only add noise to both paths alike).
+    fn routing_weights(
+        rng: &mut XorShift64,
+        rows: i32,
+        dtype: MlxDtype,
+        adversarial_routing: bool,
+    ) -> MlxArray {
+        let len = (rows * 10) as usize;
+        let data: Vec<f32> = if adversarial_routing {
+            adversarial(rng, len, 1.0)
+                .into_iter()
+                .map(|value| if value.is_infinite() { 0.0 } else { value })
+                .collect()
+        } else {
+            let mut data = Vec::with_capacity(len);
+            for _ in 0..rows {
+                let weights: Vec<f32> = (0..10).map(|_| 0.05 + 0.1 * rng.unit().abs()).collect();
+                let total: f32 = weights.iter().sum();
+                data.extend(weights.iter().map(|weight| weight / total));
+            }
+            data
+        };
+        astype(
+            &MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data.as_slice()),
+                &[1, rows, 10],
+                MlxDtype::Float32,
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    /// The `MoeSwiglu` stretch on both call shapes: routed experts
+    /// (`[1, rows, top_k, 1, intermediate]`) and the shared expert
+    /// (`[1, rows, shared_intermediate]`). The forced-fused result, the
+    /// forced-eager result and the original inline ops must agree bit for bit
+    /// on adversarial inputs for every dtype, row count and seed, and one
+    /// shared closure must serve both shapes without stale specialisation.
+    #[test]
+    fn moe_swiglu_matches_eager_on_adversarial_inputs() {
+        for (dtype_index, dtype) in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16]
+            .into_iter()
+            .enumerate()
+        {
+            for rows in 1..=8i32 {
+                for seed in 0..7u64 {
+                    let mut rng = XorShift64::new(
+                        dtype_index as u64 * 1_000_003 + seed * 613 + rows as u64 * 29,
+                    );
+                    let routed = [1, rows, 10, 1, 640];
+                    let shared = [1, rows, 640];
+                    let routed_gate = adversarial_array(&mut rng, &routed, 4.0, dtype);
+                    let routed_up = adversarial_array(&mut rng, &routed, 4.0, dtype);
+                    let shared_gate = adversarial_array(&mut rng, &shared, 4.0, dtype);
+                    let shared_up = adversarial_array(&mut rng, &shared, 4.0, dtype);
+
+                    // Forced eager and the original inline ops are the same op
+                    // sequence; both anchors must agree before the fused run.
+                    let eager_routed = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        swiglu(&routed_gate, &routed_up, rows, ROUTED_SWIGLU_STAGES)
+                    };
+                    let eager_shared = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        swiglu(&shared_gate, &shared_up, rows, SHARED_SWIGLU_STAGES)
+                    };
+                    let inline_routed =
+                        multiply(&silu_projection_dtype(&routed_gate), &routed_up, None);
+                    let inline_shared =
+                        multiply(&silu_projection_dtype(&shared_gate), &shared_up, None);
+                    assert_eq!(
+                        widened_bits(&eager_routed),
+                        widened_bits(&inline_routed),
+                        "eager routed swiglu drifted from the inline ops \
+                         ({dtype:?}, rows {rows}, seed {seed})"
+                    );
+                    assert_eq!(
+                        widened_bits(&eager_shared),
+                        widened_bits(&inline_shared),
+                        "eager shared swiglu drifted from the inline ops \
+                         ({dtype:?}, rows {rows}, seed {seed})"
+                    );
+
+                    qwen4_exp_fused::reset_registry_for_test();
+                    let before = qwen4_exp_fused::applied_for_test(Stretch::MoeSwiglu);
+                    let (fused_routed, fused_shared) = {
+                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        (
+                            swiglu(&routed_gate, &routed_up, rows, ROUTED_SWIGLU_STAGES),
+                            swiglu(&shared_gate, &shared_up, rows, SHARED_SWIGLU_STAGES),
+                        )
+                    };
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(Stretch::MoeSwiglu) - before >= 2,
+                        "each of the two fused swiglu calls must count as an apply \
+                         ({dtype:?}, rows {rows}, seed {seed})"
+                    );
+                    assert_eq!(
+                        widened_bits(&fused_routed),
+                        widened_bits(&inline_routed),
+                        "fused routed swiglu diverged ({dtype:?}, rows {rows}, seed {seed})"
+                    );
+                    assert_eq!(
+                        widened_bits(&fused_shared),
+                        widened_bits(&inline_shared),
+                        "fused shared swiglu diverged ({dtype:?}, rows {rows}, seed {seed})"
+                    );
+                }
+            }
+
+            // One compiled closure serves both shapes: routed, then shared,
+            // then routed again with fresh inputs must each match the eager
+            // product - no stale specialisation to the first traced shape.
+            qwen4_exp_fused::reset_registry_for_test();
+            let mut rng = XorShift64::new(9_521 + dtype_index as u64);
+            let rows = 3i32;
+            let routed = [1, rows, 10, 1, 640];
+            let shared = [1, rows, 640];
+            let first_gate = adversarial_array(&mut rng, &routed, 4.0, dtype);
+            let first_up = adversarial_array(&mut rng, &routed, 4.0, dtype);
+            let shared_gate = adversarial_array(&mut rng, &shared, 4.0, dtype);
+            let shared_up = adversarial_array(&mut rng, &shared, 4.0, dtype);
+            let again_gate = adversarial_array(&mut rng, &routed, 4.0, dtype);
+            let again_up = adversarial_array(&mut rng, &routed, 4.0, dtype);
+            let (fused_first, fused_shared, fused_again) = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                (
+                    swiglu(&first_gate, &first_up, rows, ROUTED_SWIGLU_STAGES),
+                    swiglu(&shared_gate, &shared_up, rows, SHARED_SWIGLU_STAGES),
+                    swiglu(&again_gate, &again_up, rows, ROUTED_SWIGLU_STAGES),
+                )
+            };
+            assert_eq!(
+                widened_bits(&fused_first),
+                widened_bits(&multiply(
+                    &silu_projection_dtype(&first_gate),
+                    &first_up,
+                    None
+                )),
+                "routed shape before the shared shape"
+            );
+            assert_eq!(
+                widened_bits(&fused_shared),
+                widened_bits(&multiply(
+                    &silu_projection_dtype(&shared_gate),
+                    &shared_up,
+                    None
+                )),
+                "shared shape after the routed shape"
+            );
+            assert_eq!(
+                widened_bits(&fused_again),
+                widened_bits(&multiply(
+                    &silu_projection_dtype(&again_gate),
+                    &again_up,
+                    None
+                )),
+                "routed shape again after the shared shape"
+            );
+        }
+    }
+
+    /// The `MoeCombine` stretch - weighted routed sum plus the gated shared
+    /// expert - against forced eager and the original inline ops on
+    /// adversarial inputs, through the reshape back to `[1, rows, hidden]`.
+    #[test]
+    fn moe_combine_matches_eager_on_adversarial_inputs() {
+        for (dtype_index, dtype) in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16]
+            .into_iter()
+            .enumerate()
+        {
+            for rows in 1..=8i32 {
+                for routing_adversarial in [false, true] {
+                    let mut rng = XorShift64::new(
+                        dtype_index as u64 * 1_000_003
+                            + rows as u64 * 29
+                            + u64::from(routing_adversarial) * 17
+                            + 3,
+                    );
+                    let down = adversarial_array(&mut rng, &[1, rows, 10, 2560], 2.0, dtype);
+                    let shared = adversarial_array(&mut rng, &[1, rows, 2560], 2.0, dtype);
+                    let shared_router = adversarial_array(&mut rng, &[1, rows, 1], 8.0, dtype);
+                    let routing = routing_weights(&mut rng, rows, dtype, routing_adversarial);
+
+                    // Original inline ops, before any fusion is forced.
+                    let inline = {
+                        let weighted =
+                            multiply(&down, &expand_dims_axes(&routing, &[-1], None), None);
+                        let routed = sum_axis(&weighted, -2, false, None);
+                        let shared_score = sigmoid_projection_dtype(&shared_router);
+                        let shared_output = multiply(&shared, &shared_score, None);
+                        add(&routed, &shared_output, None)
+                    };
+                    let eager = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        combine(&down, &routing, &shared, &shared_router, rows)
+                    };
+                    let inline_bits = widened_bits(&inline);
+                    assert_eq!(
+                        widened_bits(&eager),
+                        inline_bits,
+                        "eager combine drifted from the inline ops \
+                         ({dtype:?}, rows {rows}, adversarial routing {routing_adversarial})"
+                    );
+
+                    qwen4_exp_fused::reset_registry_for_test();
+                    let before = qwen4_exp_fused::applied_for_test(Stretch::MoeCombine);
+                    let (fused, fused_view) = {
+                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        let fused = combine(&down, &routing, &shared, &shared_router, rows);
+                        let view = reshape(&fused, &[1, rows, 2560], None);
+                        (fused, view)
+                    };
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(Stretch::MoeCombine) > before,
+                        "MoeCombine never applied \
+                         ({dtype:?}, rows {rows}, adversarial routing {routing_adversarial})"
+                    );
+                    assert_eq!(
+                        widened_bits(&fused),
+                        inline_bits,
+                        "fused combine diverged \
+                         ({dtype:?}, rows {rows}, adversarial routing {routing_adversarial})"
+                    );
+                    // The reshape stays outside the stretch; both paths must
+                    // agree through it too.
+                    let inline_view = reshape(&inline, &[1, rows, 2560], None);
+                    assert_eq!(
+                        widened_bits(&fused_view),
+                        widened_bits(&inline_view),
+                        "post-reshape combine diverged \
+                         ({dtype:?}, rows {rows}, adversarial routing {routing_adversarial})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// End-to-end: the public MoE forward must be bit identical under every
+    /// fusion mode, the counters must prove both stretches ran (routed +
+    /// shared swiglu, one combine per processed row group), rows past the
+    /// fuse cap must stay eager without tombstoning anything, and an injected
+    /// apply failure must tombstone exactly the failing stretch while the
+    /// output stays on the eager bits.
+    #[test]
+    fn moe_forward_fused_matches_eager_end_to_end() {
+        let (module, _) = build_resident_module();
+        let input = |rows: i32| {
+            let values: Vec<f32> = (0..rows * 16)
+                .map(|i| (((i * 29) % 53) as f32 - 26.0) / 9.0)
+                .collect();
+            reshape(&MlxArray::from_f32_slice(&values), &[1, rows, 16], None)
+        };
+
+        for rows in 1..=4i32 {
+            for policy in [
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::RowExact,
+            ] {
+                let eager_bits = {
+                    let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                    widened_bits(&module.forward(&input(rows), policy).unwrap())
+                };
+                qwen4_exp_fused::reset_registry_for_test();
+                let swiglu_before = qwen4_exp_fused::applied_for_test(Stretch::MoeSwiglu);
+                let combine_before = qwen4_exp_fused::applied_for_test(Stretch::MoeCombine);
+                let fused = {
+                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    module.forward(&input(rows), policy).unwrap()
+                };
+                assert_eq!(
+                    widened_bits(&fused),
+                    eager_bits,
+                    "{policy:?} rows {rows}: fused MoE forward diverged"
+                );
+                // RowExact splits the window into per-row groups; each group
+                // pays two swiglu applies (routed + shared) and one combine.
+                let groups = if policy == ProjectionBatchPolicy::RowExact {
+                    rows as u64
+                } else {
+                    1
+                };
+                let swiglu_floor = 2 * groups;
+                assert!(
+                    qwen4_exp_fused::applied_for_test(Stretch::MoeSwiglu) - swiglu_before
+                        >= swiglu_floor,
+                    "{policy:?} rows {rows}: expected >= {swiglu_floor} MoeSwiglu applies"
+                );
+                assert!(
+                    qwen4_exp_fused::applied_for_test(Stretch::MoeCombine) - combine_before
+                        >= groups,
+                    "{policy:?} rows {rows}: expected >= {groups} MoeCombine applies"
+                );
+            }
+        }
+
+        // Rows past the fuse cap must not fuse at all, and must not leave a
+        // tombstone behind either.
+        let tall = input(9);
+        let tall_bits = {
+            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+            widened_bits(
+                &module
+                    .forward(&tall, ProjectionBatchPolicy::Shared)
+                    .unwrap(),
+            )
+        };
+        qwen4_exp_fused::reset_registry_for_test();
+        let swiglu_before = qwen4_exp_fused::applied_for_test(Stretch::MoeSwiglu);
+        let combine_before = qwen4_exp_fused::applied_for_test(Stretch::MoeCombine);
+        let fused_tall = {
+            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+            module
+                .forward(&tall, ProjectionBatchPolicy::Shared)
+                .unwrap()
+        };
+        assert_eq!(widened_bits(&fused_tall), tall_bits, "9 rows diverged");
+        assert_eq!(
+            qwen4_exp_fused::applied_for_test(Stretch::MoeSwiglu),
+            swiglu_before,
+            "9 rows must stay above the fuse cap (MoeSwiglu)"
+        );
+        assert_eq!(
+            qwen4_exp_fused::applied_for_test(Stretch::MoeCombine),
+            combine_before,
+            "9 rows must stay above the fuse cap (MoeCombine)"
+        );
+        assert!(!qwen4_exp_fused::tombstoned_for_test(Stretch::MoeSwiglu));
+        assert!(!qwen4_exp_fused::tombstoned_for_test(Stretch::MoeCombine));
+
+        // An injected apply failure tombstones exactly the failing stretch,
+        // while the forward output stays on the eager bits and the other
+        // stretch keeps applying.
+        let eager_rows2 = {
+            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+            widened_bits(
+                &module
+                    .forward(&input(2), ProjectionBatchPolicy::Shared)
+                    .unwrap(),
+            )
+        };
+        for stretch in [Stretch::MoeSwiglu, Stretch::MoeCombine] {
+            let other = if stretch == Stretch::MoeSwiglu {
+                Stretch::MoeCombine
+            } else {
+                Stretch::MoeSwiglu
+            };
+            qwen4_exp_fused::reset_registry_for_test();
+            let other_before = qwen4_exp_fused::applied_for_test(other);
+            let injected = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                qwen4_exp_fused::fail_next_apply_for_test(stretch);
+                module
+                    .forward(&input(2), ProjectionBatchPolicy::Shared)
+                    .unwrap()
+            };
+            assert_eq!(
+                widened_bits(&injected),
+                eager_rows2,
+                "{}: forward with an injected failure diverged",
+                stretch.name()
+            );
+            assert!(
+                qwen4_exp_fused::tombstoned_for_test(stretch),
+                "{}: the injected failure must tombstone",
+                stretch.name()
+            );
+            assert!(
+                !qwen4_exp_fused::tombstoned_for_test(other),
+                "{}: the other stretch must not tombstone",
+                stretch.name()
+            );
+            assert!(
+                qwen4_exp_fused::applied_for_test(other) > other_before,
+                "{}: the other stretch must keep applying",
+                stretch.name()
+            );
+            // The tombstone holds on the next step, still on the eager bits.
+            let after = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                module
+                    .forward(&input(2), ProjectionBatchPolicy::Shared)
+                    .unwrap()
+            };
+            assert_eq!(
+                widened_bits(&after),
+                eager_rows2,
+                "{}: post-tombstone forward diverged",
+                stretch.name()
+            );
+            assert!(
+                !qwen4_exp_fused::tombstoned_for_test(other),
+                "{}: the other stretch must survive the next step",
+                stretch.name()
+            );
         }
     }
 }
