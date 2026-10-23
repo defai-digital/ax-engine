@@ -1,0 +1,68 @@
+{
+ "schema_version": "ax.flash_next_peer_summary.v1",
+ "hardware": "MacBook Pro, Apple M5 Max, 128 GB unified memory, internal NVMe SSD",
+ "pack_repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+ "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+ "model_type": "qwen4_exp",
+ "contract": {
+  "suite": "flappy",
+  "sampling": "temperature 0, top_p 1, top_k 0, seed 0",
+  "max_tokens": 256,
+  "repetitions": 5,
+  "warmup_repetitions": 2,
+  "peer_depth": 3,
+  "ax_mtp_policy": "required",
+  "stream_experts": "auto"
+ },
+ "qualification": false,
+ "lanes": {
+  "ax": {
+   "status": "measured",
+   "exit_code": 0,
+   "elapsed_s": 321.419,
+   "artifact": "ax_engine.json",
+   "log": "ax.log",
+   "decode_tok_s_median": 47.4520305411528,
+   "prefill_tok_s_median": 798.8512112076353,
+   "measured_decode_samples": 20,
+   "measured_prefill_samples": 20
+  },
+  "mlx_lm": {
+   "status": "unsupported",
+   "reason": "mlx-lm has no loader for model_type 'qwen4_exp'; weights were not loaded"
+  },
+  "mtplx": {
+   "status": "unsupported",
+   "exit_code": 1,
+   "elapsed_s": 1.852,
+   "artifact": "mtplx.json",
+   "log": "mtplx.log",
+   "reason": "Peer load rejected checkpoint tensors that are not parameters of its model module. No tokens were served."
+  },
+  "omlx": {
+   "status": "failed",
+   "exit_code": 1,
+   "elapsed_s": 125.507,
+   "artifact": "omlx.json",
+   "log": "omlx.log",
+   "reason": "Metal out of memory at the first prefill (kIOGPUCommandBufferCallbackErrorOutOfMemory) on this 128 GB host; no tokens were served. The same OMLX lane served this pack on the 192 GiB host on 2026-10-08."
+  },
+  "omlx_no_mtp": {
+   "status": "failed",
+   "exit_code": 1,
+   "elapsed_s": 109.211,
+   "artifact": "omlx.json",
+   "log": "omlx.log",
+   "reason": "Metal out of memory at the first prefill (kIOGPUCommandBufferCallbackErrorOutOfMemory) on this 128 GB host; no tokens were served. The same OMLX lane served this pack on the 192 GiB host on 2026-10-08."
+  },
+  "ax_direct": {
+   "status": "measured",
+   "artifact": "ax-direct.json",
+   "decode_tok_s_median": 51.41,
+   "prefill_tok_s_median": 852.6,
+   "measured_decode_samples": 20,
+   "measured_prefill_samples": 20,
+   "note": "same flappy contract, MTP off (the product default path)"
+  }
+ }
+}
