@@ -1683,6 +1683,16 @@ fn flash_next_rope_cache_matches_uncached_on_real_pack() {
 #[test]
 #[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS; synchronized attribution only"]
 fn flash_next_decode_context_stage_profile() {
+    // `AX_FLASH_NEXT_PROFILE_GDN_METAL=1` profiles the production GDN path (the
+    // native singleton kernel); unit tests default to the portable recurrence.
+    let native = std::env::var("AX_FLASH_NEXT_PROFILE_GDN_METAL").as_deref() == Ok("1");
+    let _ = crate::model::shared::qwen4_exp_gdn_metal::with_mode(
+        native,
+        decode_context_stage_profile_body,
+    );
+}
+
+fn decode_context_stage_profile_body() {
     use crate::model::ModelConfig;
     use ax_engine_core::NativeModelArtifacts;
     use std::path::PathBuf;
