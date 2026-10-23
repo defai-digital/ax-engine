@@ -90,13 +90,6 @@ pub(crate) fn flash_next_ngram_prefetch_enabled() -> bool {
     *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_PREFETCH"))
 }
 
-/// `AX_FLASH_NEXT_HC_COMPILE=1` compiles the elementwise stretches of Flash
-/// Next's gated residual (default off while it is being measured).
-pub(crate) fn flash_next_hc_compile_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag("AX_FLASH_NEXT_HC_COMPILE"))
-}
-
 /// Read `name` as an opt-in flag. Only the [`parse_bool_value`] truthy
 /// spellings engage it; unset or any other value (including junk and empty)
 /// is `false`.

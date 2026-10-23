@@ -1291,3 +1291,191 @@ fn paging_capture_preserves_context_without_evaluation() {
     assert_eq!(events[3]["event"]["kind"], "layer_cache_hit");
     assert!(CAPTURE.with_borrow(Option::is_none));
 }
+
+/// Fused elementwise stretches against the eager graph on a real pack: every
+/// output must match bit for bit, because verifier windows and the exact MTP
+/// profile compare decode rows with singleton rows and a compiled stretch that
+/// rounded differently would silently break that contract.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (>= 24 ids)"]
+fn flash_next_fused_matches_eager_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_fused::{
+        ForceGuard, ForceOnlyGuard, Stretch, applied_for_test, force_for_test, force_only_for_test,
+    };
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    // The prefill prefix is `len - 17` rows and must exceed the fuse limit (8).
+    assert!(tokens.len() >= 26, "need at least 26 prompt ids");
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    // `AX_FUSE_TEST_ONLY=gdn_beta,gdn_post` bisects a divergence to named stretches.
+    let only: Option<Vec<Stretch>> = std::env::var("AX_FUSE_TEST_ONLY").ok().map(|raw| {
+        let selected: Vec<Stretch> = raw
+            .split(',')
+            .map(|name| {
+                Stretch::ALL
+                    .iter()
+                    .copied()
+                    .find(|s| s.name() == name.trim())
+                    .unwrap_or_else(|| panic!("AX_FUSE_TEST_ONLY: unknown stretch {name:?}"))
+            })
+            .collect();
+        assert!(!selected.is_empty(), "AX_FUSE_TEST_ONLY selected nothing");
+        selected
+    });
+    let fused_mode = || -> (Option<ForceGuard>, Option<ForceOnlyGuard>) {
+        match &only {
+            Some(stretches) => (None, Some(force_only_for_test(stretches))),
+            None => (Some(force_for_test(Some(true))), None),
+        }
+    };
+    let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+        forward(trunk, input, state, owner, policy).unwrap()
+    };
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+
+    // Every stretch. Aggregate counters cannot prove that each one ran, so all
+    // checks below are per stretch; stretches outside the enabled set must not
+    // run at all.
+    const WATCH: [Stretch; 7] = Stretch::ALL;
+    let enabled_in_fused: Vec<Stretch> = only.clone().unwrap_or_else(|| WATCH.to_vec());
+    let snapshot_counts = || {
+        let mut counts = [0u64; 7];
+        for (index, stretch) in WATCH.iter().enumerate() {
+            counts[index] = applied_for_test(*stretch);
+        }
+        counts
+    };
+
+    let initial = Qwen4ExpState::new(trunk, owner);
+    let split = tokens.len() - 17;
+    // Prefill is never fused (rows > 8); it only provides the shared state.
+    // Even with fusion forced on, a prefill chunk must not apply any stretch.
+    let before_prefill = snapshot_counts();
+    let prefix = {
+        let _mode = fused_mode();
+        run(&tokens[..split], &initial, ProjectionBatchPolicy::Shared)
+    };
+    assert_eq!(
+        before_prefill,
+        snapshot_counts(),
+        "prefill chunks have more than 8 rows and must never fuse"
+    );
+
+    // Verifier windows from the same state, both policies.
+    for policy in [
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::RowExact,
+    ] {
+        for rows in [1usize, 2, 3, 4, 8] {
+            let window = &tokens[split..split + rows];
+            let eager = {
+                let _mode = force_for_test(Some(false));
+                run(window, &prefix.state, policy)
+            };
+            let before_fused = snapshot_counts();
+            let fused = {
+                let _mode = fused_mode();
+                run(window, &prefix.state, policy)
+            };
+            let after_fused = snapshot_counts();
+            for (index, stretch) in WATCH.iter().enumerate() {
+                if enabled_in_fused.contains(stretch) {
+                    assert!(
+                        after_fused[index] > before_fused[index],
+                        "{policy:?} rows {rows}: stretch {} never fused",
+                        stretch.name(),
+                    );
+                } else {
+                    assert_eq!(
+                        after_fused[index],
+                        before_fused[index],
+                        "{policy:?} rows {rows}: stretch {} ran while disabled",
+                        stretch.name(),
+                    );
+                }
+            }
+            assert_eq!(bits(&eager), bits(&fused), "{policy:?} rows {rows}: logits");
+            assert_eq!(
+                snapshot(eager.state),
+                snapshot(fused.state),
+                "{policy:?} rows {rows}: retained state"
+            );
+        }
+    }
+
+    // A 16-step singleton chain: errors compound through the recurrent state,
+    // so equal logits at every step and equal final state is the strong check.
+    let mut eager_state = prefix.state.clone();
+    let mut fused_state = prefix.state.clone();
+    let before_chain = snapshot_counts();
+    let (mut eager_secs, mut fused_secs) = (0.0f64, 0.0f64);
+    for step in 0..16 {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let eager = {
+            let _mode = force_for_test(Some(false));
+            run(&token, &eager_state, ProjectionBatchPolicy::Shared)
+        };
+        eval(&[&eager.logits]);
+        eager_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let fused = {
+            let _mode = fused_mode();
+            run(&token, &fused_state, ProjectionBatchPolicy::Shared)
+        };
+        eval(&[&fused.logits]);
+        fused_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&eager), bits(&fused), "singleton step {step}: logits");
+        eager_state = eager.state;
+        fused_state = fused.state;
+    }
+    assert_eq!(snapshot(eager_state), snapshot(fused_state), "chain state");
+    let after_chain = snapshot_counts();
+    let mut hc_applied = [0u64; 7];
+    for (index, stretch) in WATCH.iter().enumerate() {
+        let applied = after_chain[index] - before_chain[index];
+        hc_applied[index] = applied;
+        if !enabled_in_fused.contains(stretch) {
+            assert_eq!(applied, 0, "stretch {} ran while disabled", stretch.name());
+            continue;
+        }
+        // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
+        // the GDN stretches. Deliberately loose lower bounds.
+        let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
+            30
+        } else {
+            48
+        };
+        assert!(
+            applied >= 16 * per_token_floor,
+            "stretch {}: applied only {applied} times over the 16-step chain \
+             (lower bound {})",
+            stretch.name(),
+            16 * per_token_floor,
+        );
+    }
+    eprintln!(
+        "FUSED_VS_EAGER chain16 eager_ms={:.1} fused_ms={:.1} applied={} hc_applied=[{}]",
+        eager_secs * 1e3,
+        fused_secs * 1e3,
+        hc_applied.iter().sum::<u64>(),
+        hc_applied
+            .iter()
+            .map(|count| count.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+}

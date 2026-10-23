@@ -5,10 +5,11 @@
 
 use mlx_sys::ops::cached_scalar;
 use mlx_sys::{
-    MlxArray, MlxDtype, add, astype, divide, exp, log1p, maximum, minimum, multiply, negative,
-    power, reshape, rms_norm, sigmoid, sum_axis, zeros,
+    MlxArray, MlxClosure, MlxDtype, add, astype, divide, exp, log1p, maximum, minimum, multiply,
+    negative, power, reshape, rms_norm, sigmoid, sum_axis, zeros,
 };
 
+use super::qwen4_exp_fused::{self, Stretch};
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::linear_attention_ops::{
@@ -128,6 +129,46 @@ fn qwen4_conv1d(
     // Match the official BF16 activation's single rounding after sigmoid and multiply.
     let activated = mlx_sys::ops::silu(&astype(&convolved, MlxDtype::Float32, None), None);
     (astype(&activated, qkv.dtype(), None), state)
+}
+
+/// Closure body of the beta stretch, with the projection as its only input.
+fn beta_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| vec![qwen4_beta(&inputs.get(0))])
+}
+
+/// Closure body of the post-recurrence stretch: gated RMS norm, output gate and
+/// the flatten back to `[batch, seq, value_dim]`.
+///
+/// Inputs: the recurrence output, the gate projection before its reshape, and
+/// `norm_gain`. Only plain `Copy` values are captured, and `batch`/`seq` come
+/// from the input shape, so nothing shape-specific has to be passed in.
+fn post_closure(
+    hv: i32,
+    dv: i32,
+    value_dim: i32,
+    eps: f32,
+    activation: GdnGateActivation,
+    dtype: MlxDtype,
+) -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(move |inputs| {
+        let (output, gate_projection, norm_gain) = (inputs.get(0), inputs.get(1), inputs.get(2));
+        let shape = output.shape();
+        let (batch, seq) = (shape[0], shape[1]);
+        let output = astype(&output, dtype, None);
+        let normed = rms_norm(&astype(&output, MlxDtype::Float32, None), None, eps, None);
+        let normed = multiply(&astype(&normed, dtype, None), &norm_gain, None);
+        let gate = reshape(&gate_projection, &[batch, seq, hv, dv], None);
+        let gated = multiply(
+            &astype(&normed, MlxDtype::Float32, None),
+            &activation.apply(&gate),
+            None,
+        );
+        vec![astype(
+            &reshape(&gated, &[batch, seq, value_dim], None),
+            dtype,
+            None,
+        )]
+    })
 }
 
 impl Qwen4ExpGdn {
@@ -266,6 +307,13 @@ impl Qwen4ExpGdn {
             crate::model::qwen4_exp::profiling::dump("gdn_key_input", &[&split.k]);
             crate::model::qwen4_exp::profiling::dump("gdn_value_input", &[&split.v]);
         }
+        // One registry key per geometry; the dtype stays out because MLX
+        // specialises per dtype behind the closure. Every stretch below falls
+        // back to its eager chain independently.
+        let key = [hv as i64, dk as i64, dv as i64, 0];
+        // The decay chain and the q/k L2 normalisations stay eager: a bisect on
+        // a real pack showed that compiling them changes the recurrent state
+        // bits, so they must not exist as compiled stretches.
         let q = divide(
             &qwen4_l2(&split.q),
             &cached_scalar((dk as f32).sqrt(), MlxDtype::Float32),
@@ -296,12 +344,18 @@ impl Qwen4ExpGdn {
             None,
         );
         let decay = exp(&log_decay, None);
-        let beta = qwen4_beta(&qwen4_verifier_projection(
-            input,
-            &self.weights.beta,
-            policy,
-            verifier_policy,
-        ));
+        let beta_projection =
+            qwen4_verifier_projection(input, &self.weights.beta, policy, verifier_policy);
+        let beta = match qwen4_exp_fused::apply(
+            Stretch::GdnBeta,
+            seq,
+            key,
+            beta_closure,
+            &[&beta_projection],
+        ) {
+            Some(beta) => beta,
+            None => qwen4_beta(&beta_projection),
+        };
         let recurrent = state.map_or_else(
             || zeros(&recurrent_shape, MlxDtype::Float32, None),
             |s| s.recurrent.clone(),
@@ -340,39 +394,71 @@ impl Qwen4ExpGdn {
             crate::model::qwen4_exp::profiling::dump("gdn_core_output", &[&output]);
             crate::model::qwen4_exp::profiling::dump("gdn_final_state", &[&recurrent]);
         }
-        let output = astype(&output, input.dtype(), None);
-        let normed = rms_norm(
-            &astype(&output, MlxDtype::Float32, None),
-            None,
-            self.eps,
-            None,
-        );
-        let normed = multiply(
-            &astype(&normed, input.dtype(), None),
-            &self.weights.norm_gain,
-            None,
-        );
-        let gate = reshape(
-            &qwen4_verifier_projection(input, &self.weights.gate, policy, verifier_policy),
-            &[batch, seq, hv, dv],
-            None,
-        );
-        let gated = multiply(
-            &astype(&normed, MlxDtype::Float32, None),
-            &self.activation.apply(&gate),
-            None,
-        );
-        let gated = astype(
-            &reshape(&gated, &[batch, seq, cfg.value_dim() as i32], None),
-            input.dtype(),
-            None,
-        );
+        let activation = self.activation;
+        let eps = self.eps;
+        let value_dim = cfg.value_dim() as i32;
+        let output_dtype = input.dtype();
+        let activation_code: i64 = match activation {
+            GdnGateActivation::Sigmoid => 0,
+            GdnGateActivation::Silu => 1,
+        };
+        // The post-recurrence stretch also keys on the epsilon and the gate
+        // activation, because both are baked into the compiled graph.
+        // The compiled body bakes in the output dtype, and MLX re-traces the
+        // same body per input dtype, so the dtype must select the closure.
+        let dtype_code: i64 = match output_dtype {
+            MlxDtype::Float32 => 0,
+            MlxDtype::Float16 => 1,
+            MlxDtype::Bfloat16 => 2,
+            _ => 3,
+        };
+        let post_key = [
+            hv as i64,
+            dv as i64,
+            eps.to_bits() as i64,
+            activation_code | (dtype_code << 8),
+        ];
+        let gate_projection =
+            qwen4_verifier_projection(input, &self.weights.gate, policy, verifier_policy);
+        let gated = match qwen4_exp_fused::apply(
+            Stretch::GdnPost,
+            seq,
+            post_key,
+            || post_closure(hv, dv, value_dim, eps, activation, output_dtype),
+            &[&output, &gate_projection, &self.weights.norm_gain],
+        ) {
+            Some(gated) => gated,
+            None => {
+                let output = astype(&output, output_dtype, None);
+                let normed = rms_norm(&astype(&output, MlxDtype::Float32, None), None, eps, None);
+                let normed = multiply(
+                    &astype(&normed, output_dtype, None),
+                    &self.weights.norm_gain,
+                    None,
+                );
+                let gate = reshape(&gate_projection, &[batch, seq, hv, dv], None);
+                let gated = multiply(
+                    &astype(&normed, MlxDtype::Float32, None),
+                    &activation.apply(&gate),
+                    None,
+                );
+                #[cfg(test)]
+                {
+                    crate::model::qwen4_exp::profiling::dump(
+                        "gdn_norm_gain",
+                        &[&self.weights.norm_gain],
+                    );
+                    crate::model::qwen4_exp::profiling::dump("gdn_gate", &[&gate]);
+                }
+                astype(
+                    &reshape(&gated, &[batch, seq, value_dim], None),
+                    output_dtype,
+                    None,
+                )
+            }
+        };
         #[cfg(test)]
-        {
-            crate::model::qwen4_exp::profiling::dump("gdn_norm_gain", &[&self.weights.norm_gain]);
-            crate::model::qwen4_exp::profiling::dump("gdn_gate", &[&gate]);
-            crate::model::qwen4_exp::profiling::dump("gdn_gated_output", &[&gated]);
-        }
+        crate::model::qwen4_exp::profiling::dump("gdn_gated_output", &[&gated]);
         Ok((
             qwen4_verifier_projection(&gated, &self.weights.output, policy, verifier_policy),
             Qwen4ExpGdnState { conv, recurrent },
@@ -402,6 +488,10 @@ mod tests {
     use serde_json::Value;
 
     fn synthetic_pack_geometry(dtype: MlxDtype) -> Qwen4ExpGdn {
+        synthetic_pack_geometry_with(dtype, GdnGateActivation::Silu)
+    }
+
+    fn synthetic_pack_geometry_with(dtype: MlxDtype, activation: GdnGateActivation) -> Qwen4ExpGdn {
         let tensor = |shape: &[i32], phase: usize, scale: f32| {
             let n: usize = shape.iter().map(|&d| d as usize).product();
             let data: Vec<f32> = (0..n)
@@ -429,7 +519,7 @@ mod tests {
             },
             32,
             1e-6,
-            GdnGateActivation::Silu,
+            activation,
             Qwen4ExpGdnWeights {
                 qkv: dense(10240, 32, 1),
                 gate: dense(6144, 32, 7),
@@ -1169,6 +1259,425 @@ mod tests {
                 .unwrap();
             close(&repeated, &tail, "fork");
             close(&repeated_state.recurrent, &next.recurrent, "fork state");
+        }
+    }
+
+    /// Small deterministic xorshift64 PRNG, so differential inputs are
+    /// reproducible without pulling in an external crate.
+    struct XorShift64(u64);
+
+    impl XorShift64 {
+        fn new(seed: u64) -> Self {
+            Self(seed | 1)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        /// Uniform in `+-amplitude`.
+        fn next_f32(&mut self, amplitude: f32) -> f32 {
+            let unit = (self.next_u64() >> 11) as f32 / (1u64 << 53) as f32;
+            (unit * 2.0 - 1.0) * amplitude
+        }
+    }
+
+    /// Distinct nonzero PRNG seed per test case.
+    fn case_seed(tag: u64) -> u64 {
+        tag.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1
+    }
+
+    /// `[1, rows, hidden]` of deterministic pseudo-random values uniform in
+    /// `+-amplitude`, cast to `dtype`.
+    fn deterministic_input(
+        hidden: i32,
+        rows: i32,
+        seed: u64,
+        amplitude: f32,
+        dtype: MlxDtype,
+    ) -> MlxArray {
+        let mut rng = XorShift64::new(seed);
+        let data: Vec<f32> = (0..rows * hidden)
+            .map(|_| rng.next_f32(amplitude))
+            .collect();
+        astype(
+            &MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                data.len() * 4,
+                &[1, rows, hidden],
+                MlxDtype::Float32,
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    /// Widen to f32 (lossless for every dtype used here) and compare raw bits:
+    /// the compiled stretches must match the eager chain bit for bit.
+    fn widened_bits(array: &MlxArray) -> Vec<u32> {
+        let widened = contiguous(&astype(array, MlxDtype::Float32, None), None);
+        eval(&[&widened]);
+        widened.data_f32().iter().map(|v| v.to_bits()).collect()
+    }
+
+    fn assert_bit_identical(actual: &MlxArray, expected: &MlxArray, label: &str) {
+        assert_eq!(actual.shape(), expected.shape(), "{label} shape");
+        assert_eq!(widened_bits(actual), widened_bits(expected), "{label} bits");
+    }
+
+    /// Forward on the portable recurrence, so the differentials below exercise
+    /// exactly the beta and post stretches on top of one fixed core.
+    fn run_forward(
+        module: &Qwen4ExpGdn,
+        input: &MlxArray,
+        state: Option<&Qwen4ExpGdnState>,
+    ) -> (MlxArray, Qwen4ExpGdnState) {
+        crate::flash_next_gdn::with_mode(false, || {
+            module.forward(
+                input,
+                state,
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::Shared,
+            )
+        })
+        .0
+        .unwrap()
+    }
+
+    fn prng_dense(
+        rng: &mut XorShift64,
+        output: usize,
+        input: usize,
+        amplitude: f32,
+        dtype: MlxDtype,
+    ) -> QuantizedWeight {
+        let data: Vec<f32> = (0..output * input)
+            .map(|_| rng.next_f32(amplitude))
+            .collect();
+        QuantizedWeight::new(
+            astype(
+                &MlxArray::from_raw_data(
+                    data.as_ptr().cast(),
+                    data.len() * 4,
+                    &[output as i32, input as i32],
+                    MlxDtype::Float32,
+                ),
+                dtype,
+                None,
+            ),
+            None,
+            None,
+        )
+    }
+
+    fn prng_vector(rng: &mut XorShift64, len: usize, amplitude: f32) -> MlxArray {
+        let data: Vec<f32> = (0..len).map(|_| rng.next_f32(amplitude)).collect();
+        astype(
+            &MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                data.len() * 4,
+                &[len as i32],
+                MlxDtype::Float32,
+            ),
+            MlxDtype::Float32,
+            None,
+        )
+    }
+
+    /// The real pack geometry: hidden 2560, 16 key heads / 48 value heads of
+    /// 128 dims, conv kernel 4.
+    fn real_geometry_module(dtype: MlxDtype) -> Qwen4ExpGdn {
+        let mut rng = XorShift64::new(case_seed(42));
+        let conv_data: Vec<f32> = (0..10240 * 4).map(|_| rng.next_f32(0.5)).collect();
+        let conv = astype(
+            &MlxArray::from_raw_data(
+                conv_data.as_ptr().cast(),
+                conv_data.len() * 4,
+                &[10240, 4, 1],
+                MlxDtype::Float32,
+            ),
+            dtype,
+            None,
+        );
+        Qwen4ExpGdn::new(
+            LinearAttentionConfig {
+                full_attention_interval: 4,
+                num_key_heads: 16,
+                num_value_heads: 48,
+                key_head_dim: 128,
+                value_head_dim: 128,
+                conv_kernel_dim: 4,
+                q_scale: 1.0,
+                k_scale: 1.0,
+            },
+            2560,
+            1e-6,
+            GdnGateActivation::Silu,
+            Qwen4ExpGdnWeights {
+                qkv: prng_dense(&mut rng, 10240, 2560, 0.02, dtype),
+                gate: prng_dense(&mut rng, 6144, 2560, 0.02, dtype),
+                decay: prng_dense(&mut rng, 48, 2560, 0.02, dtype),
+                beta: prng_dense(&mut rng, 48, 2560, 0.02, dtype),
+                output: prng_dense(&mut rng, 2560, 6144, 0.02, dtype),
+                conv,
+                a_log: prng_vector(&mut rng, 48, 0.4),
+                dt_bias: prng_vector(&mut rng, 48, 0.4),
+                norm_gain: mlx_sys::broadcast_to(
+                    &astype(&MlxArray::from_f32(1.0), dtype, None),
+                    &[128],
+                    None,
+                ),
+            },
+        )
+        .unwrap()
+    }
+
+    /// The design-review differential: for every dtype, gate activation, decode
+    /// row count and state mode, the fused beta and post stretches must really
+    /// run (counter deltas prove it) and must reproduce the eager bits exactly.
+    #[test]
+    fn fused_gdn_stretches_match_eager_bits() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for activation in [GdnGateActivation::Silu, GdnGateActivation::Sigmoid] {
+                let module = synthetic_pack_geometry_with(dtype, activation);
+                // Primed state from an eager 3-row call on a different input.
+                let prime = deterministic_input(32, 3, case_seed(7), 1.5, dtype);
+                let primed = {
+                    let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                    run_forward(&module, &prime, None).1
+                };
+                for rows in [1_i32, 2, 3, 4, 8] {
+                    for use_state in [false, true] {
+                        let input = deterministic_input(
+                            32,
+                            rows,
+                            case_seed(1000 + rows as u64 * 2 + u64::from(use_state)),
+                            1.5,
+                            dtype,
+                        );
+                        let state = use_state.then_some(&primed);
+                        let (eager_output, eager_state) = {
+                            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                            run_forward(&module, &input, state)
+                        };
+                        let (beta_before, post_before) = (
+                            qwen4_exp_fused::applied_for_test(Stretch::GdnBeta),
+                            qwen4_exp_fused::applied_for_test(Stretch::GdnPost),
+                        );
+                        let (fused_output, fused_state) = {
+                            qwen4_exp_fused::reset_registry_for_test();
+                            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                            run_forward(&module, &input, state)
+                        };
+                        assert!(
+                            qwen4_exp_fused::applied_for_test(Stretch::GdnBeta) > beta_before,
+                            "beta stretch must apply while fused (rows={rows}, state={use_state}, {dtype:?})",
+                        );
+                        assert!(
+                            qwen4_exp_fused::applied_for_test(Stretch::GdnPost) > post_before,
+                            "post stretch must apply while fused (rows={rows}, state={use_state}, {dtype:?})",
+                        );
+                        assert_bit_identical(&fused_output, &eager_output, "output");
+                        assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
+                        assert_bit_identical(
+                            &fused_state.recurrent,
+                            &eager_state.recurrent,
+                            "recurrent state",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The registry is keyed by geometry, so one thread serves every dtype from
+    /// the same slot. The compiled post body bakes in its output dtype, so the
+    /// dtype must be part of the key: this walks dtypes WITHOUT clearing the
+    /// registry between them, in an order that would reuse a stale closure.
+    #[test]
+    fn fused_gdn_registry_reuse_across_dtypes_stays_bit_identical() {
+        qwen4_exp_fused::reset_registry_for_test();
+        for dtype in [
+            MlxDtype::Float32,
+            MlxDtype::Bfloat16,
+            MlxDtype::Float16,
+            MlxDtype::Bfloat16,
+            MlxDtype::Float32,
+        ] {
+            let module = synthetic_pack_geometry_with(dtype, GdnGateActivation::Silu);
+            let input = deterministic_input(32, 2, case_seed(4242), 1.5, dtype);
+            let (eager_output, eager_state) = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                run_forward(&module, &input, None)
+            };
+            let post_before = qwen4_exp_fused::applied_for_test(Stretch::GdnPost);
+            let (fused_output, fused_state) = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                run_forward(&module, &input, None)
+            };
+            assert!(
+                qwen4_exp_fused::applied_for_test(Stretch::GdnPost) > post_before,
+                "post stretch must apply ({dtype:?})"
+            );
+            assert_eq!(
+                fused_output.dtype(),
+                eager_output.dtype(),
+                "{dtype:?} dtype"
+            );
+            assert_bit_identical(&fused_output, &eager_output, "output");
+            assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
+            assert_bit_identical(
+                &fused_state.recurrent,
+                &eager_state.recurrent,
+                "recurrent state",
+            );
+        }
+    }
+
+    /// Prefill-sized inputs must skip the stretches entirely: eager bits, no
+    /// applies, and no tombstone (the row gate is a skip, not a failure).
+    #[test]
+    fn fused_gdn_stretches_skip_prefill_sized_inputs() {
+        let module = synthetic_pack_geometry_with(MlxDtype::Bfloat16, GdnGateActivation::Silu);
+        for rows in [qwen4_exp_fused::FUSE_MAX_ROWS + 1, 16] {
+            let input = deterministic_input(
+                32,
+                rows,
+                case_seed(500 + rows as u64),
+                1.5,
+                MlxDtype::Bfloat16,
+            );
+            let (eager_output, eager_state) = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                run_forward(&module, &input, None)
+            };
+            let (beta_before, post_before) = (
+                qwen4_exp_fused::applied_for_test(Stretch::GdnBeta),
+                qwen4_exp_fused::applied_for_test(Stretch::GdnPost),
+            );
+            let (fused_output, fused_state) = {
+                qwen4_exp_fused::reset_registry_for_test();
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                run_forward(&module, &input, None)
+            };
+            assert_eq!(
+                qwen4_exp_fused::applied_for_test(Stretch::GdnBeta),
+                beta_before,
+                "beta must not apply at rows={rows}",
+            );
+            assert_eq!(
+                qwen4_exp_fused::applied_for_test(Stretch::GdnPost),
+                post_before,
+                "post must not apply at rows={rows}",
+            );
+            assert!(
+                !qwen4_exp_fused::tombstoned_for_test(Stretch::GdnBeta)
+                    && !qwen4_exp_fused::tombstoned_for_test(Stretch::GdnPost),
+                "the row gate must skip, not tombstone",
+            );
+            assert_bit_identical(&fused_output, &eager_output, "output");
+            assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
+            assert_bit_identical(
+                &fused_state.recurrent,
+                &eager_state.recurrent,
+                "recurrent state at rows={rows}",
+            );
+        }
+    }
+
+    /// A failed apply must tombstone only its own stretch and fall back to the
+    /// eager chain, which reproduces the eager bits exactly.
+    #[test]
+    fn fused_gdn_stretch_failure_falls_back_to_eager_bits() {
+        let module = synthetic_pack_geometry_with(MlxDtype::Bfloat16, GdnGateActivation::Silu);
+        let input = deterministic_input(32, 2, case_seed(300), 1.5, MlxDtype::Bfloat16);
+        let (eager_output, eager_state) = {
+            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+            run_forward(&module, &input, None)
+        };
+        for stretch in [Stretch::GdnBeta, Stretch::GdnPost] {
+            let other = if stretch == Stretch::GdnBeta {
+                Stretch::GdnPost
+            } else {
+                Stretch::GdnBeta
+            };
+            let other_before = qwen4_exp_fused::applied_for_test(other);
+            let (fused_output, fused_state) = {
+                qwen4_exp_fused::reset_registry_for_test();
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                qwen4_exp_fused::fail_next_apply_for_test(stretch);
+                run_forward(&module, &input, None)
+            };
+            assert!(
+                qwen4_exp_fused::tombstoned_for_test(stretch),
+                "{stretch:?} must tombstone after a failed apply",
+            );
+            assert!(
+                qwen4_exp_fused::applied_for_test(other) > other_before,
+                "{other:?} must still apply when only {stretch:?} fails",
+            );
+            assert_bit_identical(&fused_output, &eager_output, "output");
+            assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
+            assert_bit_identical(
+                &fused_state.recurrent,
+                &eager_state.recurrent,
+                "recurrent state after {stretch:?} fallback",
+            );
+        }
+    }
+
+    /// Same differential on the production geometry, where the projections are
+    /// 2560 wide and every head dimension is the real 128: the compiled
+    /// stretches must stay bit-identical where it actually ships.
+    #[test]
+    fn fused_gdn_matches_eager_at_real_geometry() {
+        for dtype in [MlxDtype::Bfloat16, MlxDtype::Float32] {
+            // Weights are built once per dtype and reused across all cases.
+            let module = real_geometry_module(dtype);
+            qwen4_exp_fused::reset_registry_for_test();
+            for seed in 0_u64..4 {
+                for rows in 1_i32..=8 {
+                    let input = deterministic_input(
+                        2560,
+                        rows,
+                        case_seed(9000 + seed * 16 + rows as u64),
+                        1.0,
+                        dtype,
+                    );
+                    let (eager_output, eager_state) = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        run_forward(&module, &input, None)
+                    };
+                    let (beta_before, post_before) = (
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnBeta),
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnPost),
+                    );
+                    let (fused_output, fused_state) = {
+                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        run_forward(&module, &input, None)
+                    };
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnBeta) > beta_before,
+                        "beta must apply at rows={rows}, seed={seed}, {dtype:?}",
+                    );
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(Stretch::GdnPost) > post_before,
+                        "post must apply at rows={rows}, seed={seed}, {dtype:?}",
+                    );
+                    assert_bit_identical(&fused_output, &eager_output, "output");
+                    assert_bit_identical(&fused_state.conv, &eager_state.conv, "conv state");
+                    assert_bit_identical(
+                        &fused_state.recurrent,
+                        &eager_state.recurrent,
+                        "recurrent state at real geometry",
+                    );
+                }
+            }
         }
     }
 }
