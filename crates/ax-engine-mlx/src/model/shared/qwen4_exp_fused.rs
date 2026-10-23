@@ -1,5 +1,6 @@
 //! Compiled elementwise stretches of the Qwen 3.8 Flash Next (`qwen4_exp`)
-//! layers, shared by the gated residual and the gated delta network.
+//! layers, shared by the gated residual, the gated delta network, the QSA
+//! rotary application and the MoE tails.
 //!
 //! Why this exists: a decode step builds on the order of 10k MLX ops, and host
 //! graph construction dominates the step. These layers spend most of those ops
@@ -92,7 +93,9 @@ fn max_rows() -> i32 {
 /// variants inside JIT-fused kernels, so compiling `log1p` (after any preceding
 /// op) or `power` changes the recurrent state bits. The two MoE tails were
 /// probed bit-identical as well; the selected-expert index read-back and the
-/// expert gathers stay outside every stretch.
+/// expert gathers stay outside every stretch. The two halves of the QSA rotary
+/// product were probed bit-identical too; the half-table slices, the final
+/// concatenate and the tail pass-through stay outside every stretch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Stretch {
     HcNorm,
@@ -110,11 +113,13 @@ pub(crate) enum Stretch {
     GdnKScale,
     MoeSwiglu,
     MoeCombine,
+    QsaRopeLo,
+    QsaRopeHi,
 }
 
 impl Stretch {
     /// Mask order; [`parse_mask`] indexes with [`Stretch::index`].
-    pub(crate) const ALL: [Stretch; 15] = [
+    pub(crate) const ALL: [Stretch; 17] = [
         Stretch::HcNorm,
         Stretch::HcLow,
         Stretch::HcMix,
@@ -130,7 +135,12 @@ impl Stretch {
         Stretch::GdnKScale,
         Stretch::MoeSwiglu,
         Stretch::MoeCombine,
+        Stretch::QsaRopeLo,
+        Stretch::QsaRopeHi,
     ];
+
+    /// Width of every mask, counter and forced-bit array.
+    pub(crate) const COUNT: usize = Self::ALL.len();
 
     /// Name used in the `AX_FLASH_NEXT_FUSE` list and in the failure warning.
     pub(crate) fn name(self) -> &'static str {
@@ -150,6 +160,8 @@ impl Stretch {
             Stretch::GdnKScale => "gdn_k_scale",
             Stretch::MoeSwiglu => "moe_swiglu",
             Stretch::MoeCombine => "moe_combine",
+            Stretch::QsaRopeLo => "qsa_rope_lo",
+            Stretch::QsaRopeHi => "qsa_rope_hi",
         }
     }
 
@@ -168,10 +180,10 @@ impl Stretch {
 /// everything, and anything else is a comma-separated stretch list. Names are
 /// trimmed, case-insensitive, and unknown names are ignored so a typo cannot
 /// silently enable a stretch.
-fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; 15] {
-    let mut mask = [false; 15];
+fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; Stretch::COUNT] {
+    let mut mask = [false; Stretch::COUNT];
     let Some(raw) = raw else {
-        return [unset_means_all; 15];
+        return [unset_means_all; Stretch::COUNT];
     };
     let raw = raw.trim();
     if raw.is_empty() {
@@ -180,7 +192,7 @@ fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; 15] {
     let lowered = raw.to_ascii_lowercase();
     match lowered.as_str() {
         "0" | "false" | "off" | "no" => return mask,
-        "1" | "true" | "on" | "all" => return [true; 15],
+        "1" | "true" | "on" | "all" => return [true; Stretch::COUNT],
         _ => {}
     }
     for name in lowered.split(',') {
@@ -196,18 +208,18 @@ fn parse_mask(raw: Option<&str>, unset_means_all: bool) -> [bool; 15] {
 }
 
 /// Process-wide mask; read once so the decode path never hits the environment.
-fn env_mask() -> &'static [bool; 15] {
-    static MASK: OnceLock<[bool; 15]> = OnceLock::new();
+fn env_mask() -> &'static [bool; Stretch::COUNT] {
+    static MASK: OnceLock<[bool; Stretch::COUNT]> = OnceLock::new();
     MASK.get_or_init(|| parse_mask(std::env::var(FUSE_ENV).ok().as_deref(), !cfg!(test)))
 }
 
 #[cfg(test)]
-fn forced_only_bits() -> Option<u16> {
+fn forced_only_bits() -> Option<u32> {
     FORCE_ONLY.with(|only| only.get())
 }
 
 #[cfg(not(test))]
-fn forced_only_bits() -> Option<u16> {
+fn forced_only_bits() -> Option<u32> {
     None
 }
 
@@ -459,7 +471,7 @@ thread_local! {
     static FORCE: Cell<Option<bool>> = const { Cell::new(None) };
     // Test override that enables exactly the stretches in a bit set (bit i is
     // `Stretch::ALL[i]`), for bisecting a divergence to one stretch.
-    static FORCE_ONLY: Cell<Option<u16>> = const { Cell::new(None) };
+    static FORCE_ONLY: Cell<Option<u32>> = const { Cell::new(None) };
     // Stretches whose next apply must behave as a failed apply.
     static INJECTED_FAILURES: RefCell<HashSet<Stretch>> = RefCell::new(HashSet::new());
     // Stretches whose next first-use evaluation must behave as a failed eval.
@@ -469,7 +481,8 @@ thread_local! {
     // Successful compiled applies per stretch on this thread, so a
     // differential test can prove the fused path ran instead of silently
     // falling back to eager.
-    static APPLIED: [Cell<u64>; 15] = const { [const { Cell::new(0) }; 15] };
+    static APPLIED: [Cell<u64>; Stretch::COUNT] =
+        const { [const { Cell::new(0) }; Stretch::COUNT] };
 }
 
 /// Restores the previous test override on drop, so a test cannot leak a mask
@@ -491,7 +504,7 @@ impl Drop for ForceGuard {
 #[cfg(test)]
 #[must_use = "hold the guard for the whole test body"]
 pub(crate) struct ForceOnlyGuard {
-    previous: Option<u16>,
+    previous: Option<u32>,
 }
 
 #[cfg(test)]
@@ -506,7 +519,7 @@ impl Drop for ForceOnlyGuard {
 pub(crate) fn force_only_for_test(stretches: &[Stretch]) -> ForceOnlyGuard {
     let bits = stretches
         .iter()
-        .fold(0u16, |bits, stretch| bits | (1 << stretch.index()));
+        .fold(0u32, |bits, stretch| bits | (1 << stretch.index()));
     let previous = FORCE_ONLY.with(|only| only.replace(Some(bits)));
     ForceOnlyGuard { previous }
 }
@@ -633,15 +646,15 @@ mod tests {
         reset_registry_for_test();
         let _guard = force_for_test(None);
 
-        const NONE: [bool; 15] = [false; 15];
-        const ALL: [bool; 15] = [true; 15];
+        const NONE: [bool; Stretch::COUNT] = [false; Stretch::COUNT];
+        const ALL: [bool; Stretch::COUNT] = [true; Stretch::COUNT];
         let norm_only = [
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false,
+            false, false, false, false, false,
         ];
         let norm_and_beta = [
             true, false, false, false, false, true, false, false, false, false, false, false,
-            false, false, false,
+            false, false, false, false, false,
         ];
 
         assert_eq!(
@@ -662,6 +675,8 @@ mod tests {
                 "gdn_k_scale",
                 "moe_swiglu",
                 "moe_combine",
+                "qsa_rope_lo",
+                "qsa_rope_hi",
             ],
             "mask order and names must not drift"
         );
@@ -692,14 +707,26 @@ mod tests {
 
     #[test]
     fn unset_variable_follows_the_default_policy() {
-        assert_eq!(parse_mask(None, true), [true; 15], "shipping default is on");
+        assert_eq!(
+            parse_mask(None, true),
+            [true; Stretch::COUNT],
+            "shipping default is on"
+        );
         assert_eq!(
             parse_mask(None, false),
-            [false; 15],
+            [false; Stretch::COUNT],
             "unit tests default off"
         );
-        assert_eq!(parse_mask(Some("0"), true), [false; 15], "kill switch");
-        assert_eq!(parse_mask(Some(""), true), [false; 15], "empty disables");
+        assert_eq!(
+            parse_mask(Some("0"), true),
+            [false; Stretch::COUNT],
+            "kill switch"
+        );
+        assert_eq!(
+            parse_mask(Some(""), true),
+            [false; Stretch::COUNT],
+            "empty disables"
+        );
     }
 
     #[test]

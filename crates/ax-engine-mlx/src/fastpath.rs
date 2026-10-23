@@ -111,6 +111,15 @@ pub(crate) fn flash_next_kv_segments_enabled() -> bool {
     *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_KV_SEGMENTS"))
 }
 
+/// Flash Next runs the singleton (one-row) GDN recurrence as two native pointwise
+/// kernels that keep both MLX reductions, instead of the ~26-op portable
+/// sequence; bit-identical to the portable recurrence (real-pack gate).
+/// Kill switch: `AX_MLX_FLASH_NEXT_GDN_METAL=0`.
+pub(crate) fn flash_next_gdn_metal_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_MLX_FLASH_NEXT_GDN_METAL"))
+}
+
 /// Flash Next builds the QSA rotary cos/sin tables once per decode step
 /// instead of once per layer and call. Kill switch:
 /// `AX_FLASH_NEXT_ROPE_CACHE=0`.

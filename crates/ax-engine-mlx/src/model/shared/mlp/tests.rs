@@ -33,6 +33,7 @@ fn qwen_compiled_split_prefill_gate_up_stays_opt_in_after_wash() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     assert!(
         qwen_compiled_split_prefill_gate_up(&x, &w, &w).is_none(),
@@ -83,6 +84,7 @@ fn qwen_prefill_dual_affine_gate_up_matches_two_qmm() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let up_w = QuantizedWeight {
         weight: uq[0].clone(),
@@ -96,6 +98,7 @@ fn qwen_prefill_dual_affine_gate_up_matches_two_qmm() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     assert!(
         qwen_prefill_maybe_dual_affine_gate_up_for(false, "qwen3_5", seq, &x, &gate_w, &up_w)
@@ -185,6 +188,7 @@ fn qwen_compiled_split_prefill_ffn_matches_two_qmm_4bit_gs32() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let gate = qweight(&gq);
     let up = qweight(&uq);
@@ -286,6 +290,7 @@ fn qwen_compiled_split_verify_ffn_mxfp4_s2_matches_imperative() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let gate = qmx(&array_f32(&gate_data, &[intermediate, hidden]));
@@ -336,6 +341,7 @@ fn mxfp4_quant_weight(w: &MlxArray) -> QuantizedWeight {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     }
 }
 
@@ -507,6 +513,7 @@ fn qwen_compiled_split_verify_ffn_plus_residual_s2_matches_imperative() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let mut cfg = v4_test_config(1, 1);
@@ -603,6 +610,7 @@ fn qwen_compiled_split_verify_ffn_bf16_affine_matches_imperative() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let mut cfg = v4_test_config(1, 1);
@@ -681,6 +689,7 @@ fn qwen_compiled_split_verify_o_proj_ffn_plus_residual_s2_matches_imperative() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let mut cfg = v4_test_config(1, 1);
@@ -789,6 +798,7 @@ fn qwen_compiled_split_verify_fa_o_proj_ffn_s2_matches_imperative() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let mut cfg = v4_test_config(1, 1);
@@ -894,6 +904,7 @@ fn qwen_compiled_split_verify_la_gate_o_proj_s2_matches_imperative() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let mut cfg = v4_test_config(1, 1);
@@ -1014,6 +1025,7 @@ fn qwen_compiled_split_verify_la_gate_o_proj_ffn_s2_matches_imperative() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let mut cfg = v4_test_config(1, 1);
@@ -1119,6 +1131,7 @@ fn qwen_compiled_split_verify_fa_attn_norm_qkv_s2_matches_imperative() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let mut cfg = v4_test_config(1, 1);
@@ -1191,6 +1204,7 @@ fn qwen_compiled_prefill_down_qmm_matches_qw_4bit_gs32() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let compiled =
         qwen_compiled_prefill_down_qmm_for(true, 0x444F_574E_5052_4546, 3, &hidden, &down)
@@ -1241,6 +1255,7 @@ fn cached_prefill_q2_down_requants_4bit_and_qws() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let q2 = cached_prefill_q2_down(0x5132_444F_574E, 7, &down)
         .expect("4-bit gs32 down must grow a 2-bit overlay");
@@ -1292,6 +1307,7 @@ fn cached_prefill_ffn_gs64_requants_4bit_gs32_and_qws() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let gs64 = cached_prefill_ffn_gs64(0x4753_3634, 3, PREFILL_FFN_GS64_DOWN, &down)
         .expect("4-bit gs32 down must grow a gs64 overlay");
@@ -1343,6 +1359,7 @@ fn cached_prefill_ffn_q3_requants_4bit_and_qws() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let q3 = cached_prefill_ffn_q3(0x5133_4646_4e51, 5, PREFILL_FFN_GS64_DOWN, &down)
         .expect("4-bit gs32 down must grow a 3-bit overlay");
@@ -1394,6 +1411,7 @@ fn cached_prefill_ffn_contiguous_weight_keeps_bits_and_qws() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let contig = cached_prefill_ffn_contiguous_weight(0x434f_4e54, 2, PREFILL_FFN_GS64_DOWN, &down)
         .expect("affine down must grow a contiguous overlay");
@@ -1523,6 +1541,7 @@ fn cached_prefill_attn_contiguous_weight_keeps_bits_and_qws() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let contig = cached_prefill_attn_contiguous_weight(&src);
     assert_eq!(contig.bits, 4);
@@ -1631,6 +1650,7 @@ fn qwen_prefill_dual_qmm_swiglu_metal_matches_two_qmm_silu_mul_4bit_gs32() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let gate = qweight(&gq);
     let up = qweight(&uq);
@@ -1873,6 +1893,7 @@ fn qwen_prefill_contiguous_ffn_qw_matches_view_4bit_gs32() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let packed = qw(&contiguous(&view, None), &down);
     let portable = qw(&view, &down);
@@ -1919,6 +1940,7 @@ fn qwen_prefill_flat_ffn_activation_qw_matches_3d_4bit_gs32() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let (flat, orig) = flatten_qwen_prefill_ffn_activation(&hidden);
     assert_eq!(flat.shape(), vec![8, 64]);
@@ -1965,6 +1987,7 @@ fn qwen_prefill_flat_down_qmm_matches_3d_qw_4bit_gs32() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let flat = qwen_prefill_flat_down_qmm(&hidden, &down)
         .expect("Qwen 4-bit gs32 flat down qmm should engage");
@@ -2026,6 +2049,7 @@ fn qwen_dual_qmm_swiglu_matches_two_qmm_silu_mul_4bit_gs32() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let gate = qweight(&gq);
     let up = qweight(&uq);
@@ -2092,6 +2116,7 @@ fn qwen_swiglu_down_fuse_matches_silu_mul_then_qmm_4bit_gs32() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let fused =
         qwen_swiglu_down_fuse(&gate, &up, &down).expect("Qwen SwiGLU+down fuse should engage");
@@ -2476,6 +2501,7 @@ fn check_qwen_gate_up_swiglu_precision(dtype: MlxDtype) {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let up = QuantizedWeight {
         weight: up_q[0].clone(),
@@ -2489,6 +2515,7 @@ fn check_qwen_gate_up_swiglu_precision(dtype: MlxDtype) {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
 
     let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
@@ -2569,6 +2596,7 @@ fn qwen_dense_ffn_gate_up_swiglu_metal_rejects_non_decode_shapes() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let batched = mlx_sys::zeros(&[2, 1, 32], MlxDtype::Float32, None);
     let prefill = mlx_sys::zeros(&[1, 2, 32], MlxDtype::Float32, None);
@@ -2633,6 +2661,7 @@ fn qwen_dense_ffn_down_matvec_metal_matches_quantized_matmul() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
 
     let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
@@ -2673,6 +2702,7 @@ fn qwen_dense_ffn_down_residual_metal_matches_add() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
 
     let fused = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, Some(&residual))
@@ -2709,6 +2739,7 @@ fn affine_6bit_weight(weight: &MlxArray, group_size: i32) -> (QuantizedWeight, V
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         },
         q,
     )
@@ -2804,6 +2835,7 @@ fn qwen_dense_ffn_down_matvec_metal_8bit_matches_quantized_matmul() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let metal = qwen_dense_ffn_down_matvec_metal_impl(&x, &down, None)
         .expect("8-bit affine down matvec should be eligible");
@@ -2917,6 +2949,7 @@ fn qwen_dense_ffn_matvec_rejects_unsupported_bit_widths() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         assert!(
             qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &weight, &weight).is_none(),
@@ -3438,6 +3471,7 @@ fn shapeless_compiled_linear_closure_is_shape_polymorphic() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
 
     // Capture a *clone* of the weight into the closure body. Per

@@ -19,13 +19,14 @@
 #[cfg(test)]
 use mlx_sys::eval;
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxQuantizationMode, add, arange, argsort_axis, astype, broadcast_to,
-    concatenate, contiguous, cos, divide, expand_dims_axes, less, matmul, maximum, multiply,
-    negative, outer, quantized_matmul_with_mode, reshape, rms_norm, sin, slice, slice_last_dim,
-    sum_axis, transpose, where_cond,
+    MlxArray, MlxClosure, MlxDtype, MlxQuantizationMode, add, arange, argsort_axis, astype,
+    broadcast_to, concatenate, contiguous, cos, divide, expand_dims_axes, less, matmul, maximum,
+    multiply, negative, outer, quantized_matmul_with_mode, reshape, rms_norm, sin, slice,
+    slice_last_dim, sum_axis, transpose, where_cond,
 };
 use thiserror::Error;
 
+use crate::model::shared::qwen4_exp_fused::{self, Stretch};
 use crate::weights::QuantizedWeight;
 
 /// Multimodal (MRoPE) positions of one qwen4_exp request with image input.
@@ -830,11 +831,23 @@ struct TrigKey {
 }
 
 /// One cached cos/sin pair, already reshaped to the broadcast shape of the
-/// caller's tensor.
+/// caller's tensor, plus the half tables the compiled rotary stretches read.
 struct TrigEntry {
     key: TrigKey,
+    tables: RotaryTables,
+}
+
+/// Full rotary tables of one [`TrigKey`] and their `rotary_dim / 2` halves.
+///
+/// The full tables broadcast like the caller's tensor with the last axis
+/// `rotary_dim`; the halves keep the same shape with the last axis `h`, so
+/// they broadcast against the half views of the rotated tensor.
+#[derive(Clone)]
+struct RotaryTables {
     cos: MlxArray,
     sin: MlxArray,
+    cos_h: MlxArray,
+    sin_h: MlxArray,
 }
 
 thread_local! {
@@ -984,6 +997,101 @@ fn apply_rotary_trig_shaped(
     }
 }
 
+/// Key component for a compiled stretch whose inputs carry the dtype.
+///
+/// The rotary closure bodies bake in no scalar and read their dtype from the
+/// inputs, but MLX still traces one body per input dtype, so the registry key
+/// must select it: a past key without the dtype reused a closure across a
+/// dtype switch.
+fn dtype_key(dtype: MlxDtype) -> i64 {
+    match dtype {
+        MlxDtype::Float32 => 0,
+        MlxDtype::Float16 => 1,
+        MlxDtype::Bfloat16 => 2,
+        _ => 3,
+    }
+}
+
+/// Closure body of the lower rotary half: `x1 * cos_h + (-x2) * sin_h`, with
+/// the explicit negative kept so each product and the sum round exactly like
+/// the eager ops. No scalar is baked in; the dtype comes from the inputs.
+fn qsa_rope_lo_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let (x1, x2, cos_h, sin_h) = (inputs.get(0), inputs.get(1), inputs.get(2), inputs.get(3));
+        vec![add(
+            &multiply(&x1, &cos_h, None),
+            &multiply(&negative(&x2, None), &sin_h, None),
+            None,
+        )]
+    })
+}
+
+/// Closure body of the upper rotary half: `x2 * cos_h + x1 * sin_h`.
+fn qsa_rope_hi_closure() -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(|inputs| {
+        let (x1, x2, cos_h, sin_h) = (inputs.get(0), inputs.get(1), inputs.get(2), inputs.get(3));
+        vec![add(
+            &multiply(&x2, &cos_h, None),
+            &multiply(&x1, &sin_h, None),
+            None,
+        )]
+    })
+}
+
+/// Rotate the first `rotary_dim` channels of `x` with a cached table pair,
+/// through the two compiled half stretches when they may apply.
+///
+/// The halves read `x1 = x[..., :h]` and `x2 = x[..., h:rotary_dim]` against
+/// the half tables and equal the eager halves bit for bit; the half-table
+/// slices, the final concatenate and the tail pass-through stay eager. The
+/// row gate is the caller's sequence axis (a pooled block step rotates
+/// `n_blocks_new` rows). Both stretches must apply; anything else - an odd
+/// `rotary_dim`, a row count past the fuse cap, a failed compile or apply -
+/// falls back to the full eager sequence.
+fn apply_rotary_trig_split(
+    x: &MlxArray,
+    rotary_dim: i32,
+    tables: &RotaryTables,
+    seq_axis: i32,
+) -> MlxArray {
+    if rotary_dim % 2 != 0 {
+        return apply_rotary_trig_shaped(x, rotary_dim, &tables.cos, &tables.sin);
+    }
+    let h = rotary_dim / 2;
+    let rows = x.shape()[seq_axis as usize];
+    let x1 = slice_last_dim(x, 0, h, None);
+    let x2 = slice_last_dim(x, h, rotary_dim, None);
+    let key = [
+        dtype_key(x.dtype()),
+        i64::from(h),
+        x.ndim() as i64,
+        i64::from(seq_axis),
+    ];
+    let inputs = [&x1, &x2, &tables.cos_h, &tables.sin_h];
+    let Some(lo) =
+        qwen4_exp_fused::apply(Stretch::QsaRopeLo, rows, key, qsa_rope_lo_closure, &inputs)
+    else {
+        return apply_rotary_trig_shaped(x, rotary_dim, &tables.cos, &tables.sin);
+    };
+    let Some(hi) =
+        qwen4_exp_fused::apply(Stretch::QsaRopeHi, rows, key, qsa_rope_hi_closure, &inputs)
+    else {
+        // The upper half failed, so drop the compiled lower half with it: the
+        // full eager sequence is the only anchor the caller can trust.
+        return apply_rotary_trig_shaped(x, rotary_dim, &tables.cos, &tables.sin);
+    };
+    let head_dim = x.shape()[x.ndim() - 1];
+    if rotary_dim < head_dim {
+        concatenate(
+            &[&lo, &hi, &slice_last_dim(x, rotary_dim, head_dim, None)],
+            -1,
+            None,
+        )
+    } else {
+        concatenate(&[&lo, &hi], -1, None)
+    }
+}
+
 pub(crate) fn apply_qsa_rotary_offset(
     x: &MlxArray,
     rotary_dim: i32,
@@ -997,7 +1105,7 @@ pub(crate) fn apply_qsa_rotary_offset(
         let positions: Vec<[i32; 3]> = (0..seq as usize).map(|i| media.at(start + i)).collect();
         return apply_qsa_mrope(x, rotary_dim, rope_base, &positions, &media, seq_axis);
     }
-    let (cos, sin) = cached_rotary_trig(
+    let tables = cached_rotary_trig(
         x,
         rotary_dim,
         rope_base,
@@ -1006,7 +1114,7 @@ pub(crate) fn apply_qsa_rotary_offset(
         seq,
         seq_axis,
     );
-    apply_rotary_trig_shaped(x, rotary_dim, &cos, &sin)
+    apply_rotary_trig_split(x, rotary_dim, &tables, seq_axis)
 }
 
 fn qsa_rotary_cos_sin(
@@ -1029,11 +1137,13 @@ fn qsa_rotary_cos_sin(
 }
 
 /// Cos/sin for `count` positions from `start` in steps of `step`, reshaped to
-/// [`trig_shape`] of `x`.
+/// [`trig_shape`] of `x`, with the half tables [`apply_rotary_trig_split`]
+/// reads.
 ///
 /// The table depends only on the key's arguments, and every operation below is
 /// the same one the uncached path always ran, so a cache hit is bit-identical
-/// to a rebuild.
+/// to a rebuild. The halves are sliced once per miss; hits clone them out (a
+/// refcount bump, no ops).
 fn cached_rotary_trig(
     x: &MlxArray,
     rotary_dim: i32,
@@ -1042,7 +1152,7 @@ fn cached_rotary_trig(
     step: f64,
     count: i32,
     seq_axis: i32,
-) -> (MlxArray, MlxArray) {
+) -> RotaryTables {
     let key = TrigKey {
         start: start.to_bits(),
         step: step.to_bits(),
@@ -1055,16 +1165,16 @@ fn cached_rotary_trig(
     };
     let enabled = rope_cache_enabled();
     if enabled {
-        // Clone the pair out and drop the borrow before any MLX call.
+        // Clone the tables out and drop the borrow before any MLX call.
         let cached = TRIG_CACHE.with(|cache| {
             cache
                 .borrow()
                 .iter()
                 .find(|entry| entry.key == key)
-                .map(|entry| (entry.cos.clone(), entry.sin.clone()))
+                .map(|entry| entry.tables.clone())
         });
-        if let Some((cos, sin)) = cached {
-            return (cos, sin);
+        if let Some(tables) = cached {
+            return tables;
         }
     }
     let positions = arange(
@@ -1078,6 +1188,13 @@ fn cached_rotary_trig(
     let trig = trig_shape(x, rotary_dim, seq_axis);
     let cos = reshape(&cos, &trig, None);
     let sin = reshape(&sin, &trig, None);
+    let half = rotary_dim / 2;
+    let tables = RotaryTables {
+        cos_h: slice_last_dim(&cos, 0, half, None),
+        sin_h: slice_last_dim(&sin, 0, half, None),
+        cos,
+        sin,
+    };
     if enabled {
         TRIG_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
@@ -1086,12 +1203,11 @@ fn cached_rotary_trig(
             }
             cache.push(TrigEntry {
                 key,
-                cos: cos.clone(),
-                sin: sin.clone(),
+                tables: tables.clone(),
             });
         });
     }
-    (cos, sin)
+    tables
 }
 
 /// Interleaved MRoPE with the official QSA rounding: float32 angles, cos and
@@ -1258,7 +1374,7 @@ fn rope_block_starts(
             .collect();
         return apply_qsa_mrope(blocks, rotary_dim, rope_base, &positions, &media, 1);
     }
-    let (cos, sin) = cached_rotary_trig(
+    let tables = cached_rotary_trig(
         blocks,
         rotary_dim,
         rope_base,
@@ -1267,7 +1383,7 @@ fn rope_block_starts(
         n_blocks,
         1,
     );
-    apply_rotary_trig_shaped(blocks, rotary_dim, &cos, &sin)
+    apply_rotary_trig_split(blocks, rotary_dim, &tables, 1)
 }
 
 fn block_scores(queries: &MlxArray, blocks: &MlxArray) -> MlxArray {
@@ -3251,6 +3367,398 @@ mod tests {
             raw_bits(&fourth(left_blocks)),
             raw_bits(&fourth(right_blocks)),
             "each fork pools its own block"
+        );
+    }
+
+    /// One adversarial f32 sample from a cyclic table: NaN payloads,
+    /// infinities, signed zeros, subnormals, units and large finite values.
+    fn adversarial_value(index: usize) -> f32 {
+        const TABLE: [f32; 12] = [
+            f32::NAN,
+            f32::from_bits(0x7fc0_0001), // quiet NaN, payload 1
+            f32::from_bits(0xffc0_abcd), // negative quiet NaN, payload
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            -0.0,
+            f32::from_bits(1),           // smallest subnormal
+            f32::from_bits(0x0070_1234), // subnormal
+            1.0,
+            -1.0,
+            1.0e30,
+        ];
+        TABLE[index % TABLE.len()]
+    }
+
+    /// `shape` adversarial rotary input of `dtype`, built through an f32
+    /// widening (the same path the projections take into the model dtype).
+    fn adversarial_rotary_input(shape: &[i32], dtype: MlxDtype, offset: usize) -> MlxArray {
+        let len: i32 = shape.iter().product();
+        let data: Vec<f32> = (0..len as usize)
+            .map(|index| adversarial_value(index + offset))
+            .collect();
+        astype(
+            &MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data.as_slice()),
+                shape,
+                MlxDtype::Float32,
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    /// Full tables from the real rotary builder at `offset`, bypassing the
+    /// cache so a case never reads another case's entry.
+    fn real_tables(x: &MlxArray, rotary_dim: i32, offset: i32, seq_axis: i32) -> RotaryTables {
+        let seq = x.shape()[seq_axis as usize];
+        with_rope_cache(false, || {
+            cached_rotary_trig(
+                x,
+                rotary_dim,
+                10_000_000.0,
+                f64::from(offset),
+                1.0,
+                seq,
+                seq_axis,
+            )
+        })
+    }
+
+    /// Adversarial tables (NaN/inf/subnormal entries) in the production
+    /// layout: the full table is the half table duplicated along the last
+    /// axis (`concat(h, h)`), so the two halves are equal by construction.
+    fn adversarial_tables(
+        rotary_dim: i32,
+        count: i32,
+        ndim: usize,
+        seq_axis: i32,
+        dtype: MlxDtype,
+    ) -> RotaryTables {
+        let half = rotary_dim / 2;
+        let mut trig = vec![1i32; ndim];
+        trig[seq_axis as usize] = count;
+        trig[ndim - 1] = half;
+        let len = trig.iter().product::<i32>() as usize;
+        let build_half = |seed: usize| {
+            let data: Vec<f32> = (0..len)
+                .map(|index| adversarial_value(index + seed))
+                .collect();
+            astype(
+                &MlxArray::from_raw_data(
+                    data.as_ptr().cast(),
+                    std::mem::size_of_val(data.as_slice()),
+                    &trig,
+                    MlxDtype::Float32,
+                ),
+                dtype,
+                None,
+            )
+        };
+        let cos_h = build_half(0);
+        let sin_h = build_half(len);
+        RotaryTables {
+            cos: concatenate(&[&cos_h, &cos_h], -1, None),
+            sin: concatenate(&[&sin_h, &sin_h], -1, None),
+            cos_h,
+            sin_h,
+        }
+    }
+
+    /// Raw bits of a rotary output: f32 natively, the half dtypes through the
+    /// lossless f32 widening.
+    fn rope_bits(array: &MlxArray) -> Vec<u32> {
+        if array.dtype() == MlxDtype::Float32 {
+            eval(&[array]);
+            array
+                .data_f32()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect()
+        } else {
+            raw_bits(array)
+        }
+    }
+
+    /// The two outputs must carry the same dtype before any widening, then
+    /// compare bit for bit (NaN payloads included).
+    fn assert_rope_bits(actual: &MlxArray, expected: &MlxArray, label: &str) {
+        assert_eq!(
+            actual.dtype(),
+            expected.dtype(),
+            "{label}: dtype must match before the bit comparison"
+        );
+        assert_eq!(rope_bits(actual), rope_bits(expected), "{label}");
+    }
+
+    /// The original inline op sequence of [`apply_rotary_trig_shaped`], spelled
+    /// out as the third anchor of the differential test.
+    fn inline_rotary_shaped(
+        x: &MlxArray,
+        rotary_dim: i32,
+        cos: &MlxArray,
+        sin: &MlxArray,
+    ) -> MlxArray {
+        let shape = x.shape();
+        let ndim = shape.len();
+        let head_dim = shape[ndim - 1];
+        let rope_part = slice_last_dim(x, 0, rotary_dim, None);
+        let rotated = add(
+            &multiply(&rope_part, cos, None),
+            &multiply(&rotate_half_last(&rope_part), sin, None),
+            None,
+        );
+        if rotary_dim < head_dim {
+            concatenate(
+                &[&rotated, &slice_last_dim(x, rotary_dim, head_dim, None)],
+                -1,
+                None,
+            )
+        } else {
+            rotated
+        }
+    }
+
+    /// Both compiled rotary halves against forced eager and the original
+    /// inline ops, bit for bit, on adversarial inputs: three dtypes, both
+    /// layouts and sequence axes, partial and full rotary width, every fuse
+    /// row count, real tables at several offsets and adversarial tables.
+    #[test]
+    fn qsa_rope_stretch_matches_eager_on_adversarial_inputs() {
+        qwen4_exp_fused::reset_registry_for_test();
+        reset_rope_cache_for_test();
+        for (dtype_index, dtype) in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16]
+            .into_iter()
+            .enumerate()
+        {
+            for (head_dim, rotary_dim) in [(256i32, 64i32), (64, 64)] {
+                for (seq_axis, heads) in [(2i32, 4i32), (1, 4)] {
+                    for rows in 1..=8i32 {
+                        let (shape, seq) = if seq_axis == 2 {
+                            (vec![1, heads, rows, head_dim], rows)
+                        } else {
+                            (vec![1, rows, heads, head_dim], rows)
+                        };
+                        let x = adversarial_rotary_input(&shape, dtype, dtype_index);
+                        let mut cases: Vec<(String, RotaryTables)> = [0, 5, 4093]
+                            .into_iter()
+                            .map(|offset| {
+                                (
+                                    format!("offset {offset}"),
+                                    real_tables(&x, rotary_dim, offset, seq_axis),
+                                )
+                            })
+                            .collect();
+                        cases.push((
+                            "adversarial tables".to_string(),
+                            adversarial_tables(rotary_dim, seq, 4, seq_axis, dtype),
+                        ));
+                        for (case, tables) in &cases {
+                            let label = format!(
+                                "{dtype:?} head {head_dim} axis {seq_axis} rows {rows}: {case}"
+                            );
+                            let eager = {
+                                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                                apply_rotary_trig_split(&x, rotary_dim, tables, seq_axis)
+                            };
+                            let inline =
+                                inline_rotary_shaped(&x, rotary_dim, &tables.cos, &tables.sin);
+                            assert_rope_bits(
+                                &eager,
+                                &inline,
+                                &format!("{label}: eager drifted from the inline ops"),
+                            );
+                            let lo_before = qwen4_exp_fused::applied_for_test(Stretch::QsaRopeLo);
+                            let hi_before = qwen4_exp_fused::applied_for_test(Stretch::QsaRopeHi);
+                            let fused = {
+                                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                                apply_rotary_trig_split(&x, rotary_dim, tables, seq_axis)
+                            };
+                            assert!(
+                                qwen4_exp_fused::applied_for_test(Stretch::QsaRopeLo) > lo_before,
+                                "{label}: QsaRopeLo never applied"
+                            );
+                            assert!(
+                                qwen4_exp_fused::applied_for_test(Stretch::QsaRopeHi) > hi_before,
+                                "{label}: QsaRopeHi never applied"
+                            );
+                            assert_rope_bits(
+                                &fused,
+                                &eager,
+                                &format!("{label}: fused diverged from eager"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rows past the fuse cap never apply either stretch and still get the
+    /// eager result.
+    #[test]
+    fn qsa_rope_stretches_stay_eager_above_the_row_cap() {
+        qwen4_exp_fused::reset_registry_for_test();
+        reset_rope_cache_for_test();
+        for rows in [9i32, 16] {
+            let x = rotary_input(&[1, 4, rows, 256], MlxDtype::Bfloat16);
+            let tables = real_tables(&x, 64, 0, 2);
+            let eager = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                apply_rotary_trig_split(&x, 64, &tables, 2)
+            };
+            let lo_before = qwen4_exp_fused::applied_for_test(Stretch::QsaRopeLo);
+            let hi_before = qwen4_exp_fused::applied_for_test(Stretch::QsaRopeHi);
+            let fused = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                apply_rotary_trig_split(&x, 64, &tables, 2)
+            };
+            assert_eq!(
+                qwen4_exp_fused::applied_for_test(Stretch::QsaRopeLo),
+                lo_before,
+                "rows {rows} must stay above the fuse cap (QsaRopeLo)"
+            );
+            assert_eq!(
+                qwen4_exp_fused::applied_for_test(Stretch::QsaRopeHi),
+                hi_before,
+                "rows {rows} must stay above the fuse cap (QsaRopeHi)"
+            );
+            assert_rope_bits(
+                &fused,
+                &eager,
+                &format!("rows {rows} must equal the eager result"),
+            );
+        }
+    }
+
+    /// The registry is never reset across dtypes: the key must select one
+    /// closure per dtype, and a revisited dtype must reuse its entry without
+    /// stale specialisation.
+    #[test]
+    fn qsa_rope_registry_key_survives_dtype_switches() {
+        qwen4_exp_fused::reset_registry_for_test();
+        reset_rope_cache_for_test();
+        for dtype in [
+            MlxDtype::Float32,
+            MlxDtype::Bfloat16,
+            MlxDtype::Float16,
+            MlxDtype::Bfloat16,
+        ] {
+            let x = rotary_input(&[1, 4, 1, 256], dtype);
+            let tables = real_tables(&x, 64, 7, 2);
+            let eager = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                apply_rotary_trig_split(&x, 64, &tables, 2)
+            };
+            let lo_before = qwen4_exp_fused::applied_for_test(Stretch::QsaRopeLo);
+            let hi_before = qwen4_exp_fused::applied_for_test(Stretch::QsaRopeHi);
+            let fused = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                apply_rotary_trig_split(&x, 64, &tables, 2)
+            };
+            assert!(
+                qwen4_exp_fused::applied_for_test(Stretch::QsaRopeLo) > lo_before
+                    && qwen4_exp_fused::applied_for_test(Stretch::QsaRopeHi) > hi_before,
+                "{dtype:?}: the fused path must run after a dtype switch"
+            );
+            assert_rope_bits(
+                &fused,
+                &eager,
+                &format!("{dtype:?} must match eager after a dtype switch"),
+            );
+        }
+    }
+
+    /// An injected apply failure of either stretch tombstones exactly that
+    /// stretch, falls back to the full eager sequence bit for bit, and the
+    /// tombstone holds on the next call.
+    #[test]
+    fn qsa_rope_failure_injection_falls_back_to_eager() {
+        qwen4_exp_fused::reset_registry_for_test();
+        reset_rope_cache_for_test();
+        let x = rotary_input(&[1, 4, 1, 256], MlxDtype::Bfloat16);
+        let tables = real_tables(&x, 64, 3, 2);
+        let eager = {
+            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+            apply_rotary_trig_split(&x, 64, &tables, 2)
+        };
+        let eager_bits = rope_bits(&eager);
+        for stretch in [Stretch::QsaRopeLo, Stretch::QsaRopeHi] {
+            let other = if stretch == Stretch::QsaRopeLo {
+                Stretch::QsaRopeHi
+            } else {
+                Stretch::QsaRopeLo
+            };
+            qwen4_exp_fused::reset_registry_for_test();
+            let injected = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                qwen4_exp_fused::fail_next_apply_for_test(stretch);
+                apply_rotary_trig_split(&x, 64, &tables, 2)
+            };
+            assert_eq!(
+                rope_bits(&injected),
+                eager_bits,
+                "{}: the result with an injected failure diverged",
+                stretch.name()
+            );
+            assert!(
+                qwen4_exp_fused::tombstoned_for_test(stretch),
+                "{}: the injected failure must tombstone",
+                stretch.name()
+            );
+            assert!(
+                !qwen4_exp_fused::tombstoned_for_test(other),
+                "{}: the other stretch must not tombstone",
+                stretch.name()
+            );
+            // The tombstone holds on the next call, still on the eager bits.
+            let after = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                apply_rotary_trig_split(&x, 64, &tables, 2)
+            };
+            assert_eq!(
+                rope_bits(&after),
+                eager_bits,
+                "{}: the post-tombstone result diverged",
+                stretch.name()
+            );
+        }
+        qwen4_exp_fused::reset_registry_for_test();
+    }
+
+    /// The rotary cache hit path returns the same full and half tables as the
+    /// miss, and the halves equal the slices of the full tables - the exact
+    /// assumption the split path makes.
+    #[test]
+    fn rotary_cache_hit_returns_equal_full_and_half_tables() {
+        reset_rope_cache_for_test();
+        let x = rotary_input(&[1, 4, 3, 256], MlxDtype::Bfloat16);
+        let miss = with_rope_cache(true, || {
+            cached_rotary_trig(&x, 64, 10_000_000.0, 5.0, 1.0, 3, 2)
+        });
+        let hit = with_rope_cache(true, || {
+            cached_rotary_trig(&x, 64, 10_000_000.0, 5.0, 1.0, 3, 2)
+        });
+        assert_eq!(rope_cache_len_for_test(), 1, "the second call must hit");
+        for (name, miss_table, hit_table) in [
+            ("cos", &miss.cos, &hit.cos),
+            ("sin", &miss.sin, &hit.sin),
+            ("cos_h", &miss.cos_h, &hit.cos_h),
+            ("sin_h", &miss.sin_h, &hit.sin_h),
+        ] {
+            assert_eq!(rope_bits(miss_table), rope_bits(hit_table), "{name}");
+        }
+        let half = 32i32;
+        assert_eq!(
+            rope_bits(&miss.cos_h),
+            rope_bits(&slice_last_dim(&miss.cos, 0, half, None)),
+            "cos_h must slice cos"
+        );
+        assert_eq!(
+            rope_bits(&miss.sin_h),
+            rope_bits(&slice_last_dim(&miss.sin, 0, half, None)),
+            "sin_h must slice sin"
         );
     }
 }

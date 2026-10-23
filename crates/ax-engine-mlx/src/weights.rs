@@ -571,6 +571,33 @@ enum LinearAttentionProjectionRowSource {
 /// (`mlx_array_set`), and per-layer compiled closures (e.g. the compiled
 /// shared-expert forward) need to capture cloned `QuantizedWeight`s as graph
 /// constants.
+/// Lazily built `[in, out]` transposed *view* (no copy) of an unquantized
+/// `[out, in]` weight, reused by every matmul instead of rebuilding the view
+/// per call.
+///
+/// A clone starts EMPTY on purpose: code that clones a weight and then swaps
+/// the clone's `weight` must never inherit a view of the old tensor. Replacing
+/// `weight` in place on a weight that may already have served a projection
+/// requires [`QuantizedWeight::invalidate_weight_t_view`].
+#[derive(Default)]
+pub struct WeightViewCell(std::sync::OnceLock<MlxArray>);
+
+impl Clone for WeightViewCell {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl WeightViewCell {
+    pub(crate) fn get_or_init(&self, build: impl FnOnce() -> MlxArray) -> &MlxArray {
+        self.0.get_or_init(build)
+    }
+
+    fn reset(&mut self) {
+        self.0 = std::sync::OnceLock::new();
+    }
+}
+
 #[derive(Clone)]
 pub struct QuantizedWeight {
     pub weight: MlxArray,
@@ -599,6 +626,14 @@ pub struct QuantizedWeight {
     pub decode_q2_weight: Option<MlxArray>,
     pub decode_q2_scales: Option<MlxArray>,
     pub decode_q2_biases: Option<MlxArray>,
+    /// Lazily built `[in, out]` transposed *view* of an unquantized `[out, in]`
+    /// weight (no copy); reused by every decode/prefill matmul instead of
+    /// rebuilding the view per call.
+    ///
+    /// An MLX transpose is metadata only, so this cached view is bit-identical
+    /// to a per-call transpose: `matmul` sees the same strided operand either
+    /// way. Quantized weights never take that path and leave the lock empty.
+    pub weight_t_view: WeightViewCell,
 }
 
 /// Decode-only `lm_head` cache. 2-bit gs64 cuts ~2.14 GB/token vs BF16
@@ -638,12 +673,22 @@ impl QuantizedWeight {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: WeightViewCell::default(),
         }
     }
 
     pub(crate) fn with_linear_bias(mut self, linear_bias: Option<MlxArray>) -> Self {
         self.linear_bias = linear_bias;
         self
+    }
+
+    /// Drop the cached `[in, out]` transposed view.
+    ///
+    /// Required whenever `weight` is replaced in place after a projection could
+    /// already have cached the view: a cached transpose is a view of the old
+    /// tensor, so it must never outlive it.
+    pub(crate) fn invalidate_weight_t_view(&mut self) {
+        self.weight_t_view.reset();
     }
 
     /// Keep the checkpoint's target head identical across prefill, decode, and verification.
@@ -675,6 +720,7 @@ impl QuantizedWeight {
         // Drop the original [out, in] allocation. Readers that still want
         // that layout go through a lazy view of the single W_t buffer.
         self.weight = transpose(&transposed, &[1, 0], None);
+        self.invalidate_weight_t_view();
         self.decode_weight_t = Some(transposed);
     }
 
@@ -817,6 +863,9 @@ impl QuantizedWeight {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            // `weight` is a brand-new concatenated array, so its transposed view
+            // must be rebuilt rather than inherited from either input.
+            weight_t_view: WeightViewCell::default(),
         })
     }
 
@@ -944,6 +993,7 @@ pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<Quan
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -996,6 +1046,7 @@ pub(crate) fn requant_affine_to_prefill_gs64(src: &QuantizedWeight) -> Option<Qu
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -1045,6 +1096,7 @@ pub(crate) fn requant_affine_to_prefill_q3(src: &QuantizedWeight) -> Option<Quan
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -1076,6 +1128,7 @@ pub(crate) fn contiguous_affine_weight(src: &QuantizedWeight) -> QuantizedWeight
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     }
 }
 
@@ -2729,6 +2782,7 @@ fn mtp_take_weight(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -2922,6 +2976,7 @@ fn mtp_take_mxfp4_experts(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let down = QuantizedWeight {
         weight: stack(&down_weight_refs, 0, None),
@@ -2935,6 +2990,7 @@ fn mtp_take_mxfp4_experts(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     Some((gate_up, down))
 }
@@ -3108,6 +3164,7 @@ fn mtp_take_per_expert_qwen_moe(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let down = QuantizedWeight {
         weight: stack(&down_refs, 0, None),
@@ -3131,6 +3188,7 @@ fn mtp_take_per_expert_qwen_moe(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     tracing::info!(
         target: "ax_mlx::weights",
@@ -3291,6 +3349,7 @@ fn build_draft_lm_head(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -4650,6 +4709,7 @@ fn apply_rotated_checkpoint(
                 }
                 require_rotation_eligible_dim(&key, logical_inner)?;
                 target.weight = rotated_w.clone();
+                target.invalidate_weight_t_view();
                 target.scales = Some(scales.clone());
                 target.biases = Some(biases.clone());
                 target.bits = bits_calc as i32;
@@ -4661,6 +4721,7 @@ fn apply_rotated_checkpoint(
                 require_rotation_eligible_dim(&key, inner)?;
                 let cast = astype(rotated_w, MlxDtype::Bfloat16, None);
                 target.weight = cast;
+                target.invalidate_weight_t_view();
                 target.scales = None;
                 target.biases = None;
             }
@@ -6278,6 +6339,7 @@ fn split_deepseek_kv_b_projection(
                 decode_q2_weight: None,
                 decode_q2_scales: None,
                 decode_q2_biases: None,
+                weight_t_view: Default::default(),
             },
             QuantizedWeight {
                 weight: unembed_out,
@@ -6292,6 +6354,7 @@ fn split_deepseek_kv_b_projection(
                 decode_q2_weight: None,
                 decode_q2_scales: None,
                 decode_q2_biases: None,
+                weight_t_view: Default::default(),
             },
         ))
     }
@@ -6333,6 +6396,7 @@ fn requantize_affine_weight(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -6418,6 +6482,7 @@ fn concat_quantized_weight_rows(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -6581,6 +6646,7 @@ fn slice_quantized_weight_rows(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -6818,6 +6884,7 @@ fn pack_linear_attention_projection_rows(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 

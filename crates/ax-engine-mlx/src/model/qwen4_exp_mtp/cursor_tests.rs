@@ -103,6 +103,7 @@ fn flash_next_final_budget_skips_proposal_and_preserves_transactional_state() {
 
     let head_projection = head.graph.lm_head.weight.clone();
     head.graph.lm_head.weight = broken_lazy_array(&head_projection);
+    head.graph.lm_head.invalidate_weight_t_view();
     let mut actual = cursor.clone();
     let result = actual
         .step(&trunk, &head, &prefill.state, owner, primary, 1, &[])
@@ -127,6 +128,7 @@ fn flash_next_final_budget_skips_proposal_and_preserves_transactional_state() {
             .is_err()
     );
     head.graph.lm_head.weight = head_projection;
+    head.graph.lm_head.invalidate_weight_t_view();
 
     // Required cache work and a later primary failure must publish neither state.
     for fail_primary in [false, true] {
@@ -137,8 +139,10 @@ fn flash_next_final_budget_skips_proposal_and_preserves_transactional_state() {
         };
         if fail_primary {
             trunk.lm_head.weight = broken_lazy_array(&saved);
+            trunk.lm_head.invalidate_weight_t_view();
         } else {
             head.fc_hidden.weight = broken_lazy_array(&saved);
+            head.fc_hidden.invalidate_weight_t_view();
         }
         assert!(
             cursor
@@ -147,8 +151,10 @@ fn flash_next_final_budget_skips_proposal_and_preserves_transactional_state() {
         );
         if fail_primary {
             trunk.lm_head.weight = saved;
+            trunk.lm_head.invalidate_weight_t_view();
         } else {
             head.fc_hidden.weight = saved;
+            head.fc_hidden.invalidate_weight_t_view();
         }
         assert_eq!(bytes(&cursor.draft_state), before);
         assert_eq!(
@@ -292,17 +298,21 @@ fn flash_next_cache_only_head_matches_full_state_and_preserves_failures() {
         // A vocabulary projection is not a dependency of the QSA cache.
         let original = head.graph.lm_head.weight.clone();
         head.graph.lm_head.weight = broken_lazy_array(&original);
+        head.graph.lm_head.invalidate_weight_t_view();
         let cached = head_advance_cache(&head, &row, &[2], &actual, owner).unwrap();
         assert_eq!(bytes(&cached), bytes(&expected.state));
         assert!(head_forward(&head, &row, &[2], &actual, owner).is_err());
         head.graph.lm_head.weight = original;
+        head.graph.lm_head.invalidate_weight_t_view();
 
         // The pre-FC hidden projection is required. Its failure must not
         // publish any cache growth, and retry must recover exactly.
         let original = head.fc_hidden.weight.clone();
         head.fc_hidden.weight = broken_lazy_array(&original);
+        head.fc_hidden.invalidate_weight_t_view();
         assert!(head_advance_cache(&head, &row, &[2], &actual, owner).is_err());
         head.fc_hidden.weight = original;
+        head.fc_hidden.invalidate_weight_t_view();
         assert_eq!(bytes(&actual), before);
         let recovered = head_advance_cache(&head, &row, &[2], &actual, owner).unwrap();
         assert_eq!(bytes(&recovered), bytes(&expected.state));
@@ -745,6 +755,7 @@ fn flash_next_prefix_snapshot_restore_fails_closed() {
         mlx_sys::contiguous(&astype(&original_embedding, foreign_dtype, None), None);
     let foreign = Qwen4ExpDraftCursor::from_prefix_snapshot(head, owner, &trunk_state, &payload);
     head.graph.token_embedding.weight = original_embedding;
+    head.graph.token_embedding.invalidate_weight_t_view();
     let error = foreign
         .err()
         .expect("a foreign head graph must fail closed");

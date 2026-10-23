@@ -22,6 +22,7 @@ fn qw_applies_dense_linear_bias() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let x = array_f32(&[1.0, 2.0], &[1, 1, 2]);
     let out = super::qw(&x, &qw);
@@ -57,6 +58,7 @@ fn verify_qmm_contract_fixture(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     (input, weight)
 }
@@ -156,6 +158,7 @@ fn project_unquantized_decode_matches_x_at_weight_t() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let shipped = super::project_lm_head(&x, &lm);
     let reference = matmul(&x, &transpose(&weight, &[1, 0], None), None);
@@ -239,6 +242,7 @@ fn qw_pretransposed_lm_head_matches_lazy_transpose() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     prepared.prepare_contiguous_decode_weight_t();
     let weight_t = prepared
@@ -264,6 +268,7 @@ fn qw_pretransposed_lm_head_matches_lazy_transpose() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let got = super::qw(&x, &prepared);
     let want = super::qw(&x, &lazy);
@@ -298,6 +303,7 @@ fn prepare_contiguous_decode_weight_t_skips_quantized() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     quantized.prepare_contiguous_decode_weight_t();
     quantized.prepare_decode_q2_lm_head();
@@ -376,6 +382,7 @@ fn prepare_decode_q2_lm_head_is_decode_only() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     prepared.prepare_decode_q2_lm_head();
     prepared.prepare_contiguous_decode_weight_t();
@@ -489,6 +496,7 @@ fn qwen_prefill_dequant_dense_matches_quantized_matmul() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..seq * input_dim)
         .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
@@ -681,6 +689,7 @@ fn prepare_contiguous_decode_weight_t_keeps_one_physical_buffer() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     prepared.prepare_contiguous_decode_weight_t();
     let weight_t = prepared.decode_weight_t.as_ref().expect("prepared W_t");
@@ -968,6 +977,7 @@ fn quantized_expert_stack(
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         },
         q,
     )
@@ -1348,6 +1358,7 @@ fn row_exact_projection_matches_independent_quantized_rows() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..2 * input_dim)
         .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
@@ -1406,6 +1417,7 @@ fn batched_mxfp4_multi_token_without_exact_vs_singleton() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
         .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
@@ -1475,6 +1487,7 @@ fn exact_shared_mxfp4_multi_token_matches_singleton_rows() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..(seq * input_dim) as usize)
         .map(|index| ((index % 29) as f32 - 14.0) * 0.03125)
@@ -1679,6 +1692,7 @@ fn mxfp4_quantized_weight(output_dim: i32, input_dim: i32) -> QuantizedWeight {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     }
 }
 
@@ -1859,6 +1873,7 @@ fn invariant_affine_projection_is_bit_exact_across_microbatch_shapes() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..2 * input_dim)
         .map(|index| ((index % 43) as f32 - 21.0) * 0.02734375)
@@ -1932,6 +1947,7 @@ fn invariant_split_2816_matches_mlx_and_microbatch() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..3 * input_dim)
         .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -2022,6 +2038,7 @@ fn invariant_qmv_2816_matches_mlx_singleton() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..input_dim)
         .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -2097,6 +2114,7 @@ fn invariant_gemma26_shapes_self_consistent_and_mlx() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         let s = 3_i32;
         let input_data: Vec<f32> = (0..(s * input_dim) as usize)
@@ -2207,6 +2225,7 @@ fn invariant_2d_vs_3d_singleton_shape() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..input_dim as usize)
         .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -2268,6 +2287,7 @@ fn invariant_nonfast_2112_matches_mlx_singleton() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..input_dim as usize)
         .map(|i| ((i % 89) as f32 - 44.0) * 0.015625)
@@ -2348,6 +2368,7 @@ fn invariant_affine_bf16_q4_kernel_matches_generic_bit_exact() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         for leading in 1..=4 {
             let input_data: Vec<f32> = (0..leading * input_dim)
@@ -2426,6 +2447,7 @@ fn invariant_affine_qmv_fast_matches_mlx_singleton_and_microbatch() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         let microbatch = invariant_projection_metal_impl(&input, &weight)
             .expect("fast invariant affine projection should support two rows");
@@ -2504,6 +2526,7 @@ fn invariant_dense_projection_is_bit_exact_across_microbatch_shapes() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let input_data: Vec<f32> = (0..2 * input_dim)
         .map(|index| ((index % 37) as f32 - 18.0) * 0.0234375)
@@ -2620,6 +2643,7 @@ fn invariant_projection_window_matches_row_by_row_bit_exact() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         for leading in 2..=4 {
             let input_data: Vec<f32> = (0..leading * input_dim)
@@ -2691,6 +2715,7 @@ fn invariant_projection_window_matches_row_by_row_bit_exact() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     assert!(invariant_projection_window(&input, &mxfp4_weight).is_none());
     drop(_exact);
@@ -2715,6 +2740,182 @@ fn invariant_projection_window_matches_row_by_row_bit_exact() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     assert!(invariant_projection_window(&input, &affine).is_none());
+}
+
+// --- cached `[in, out]` transposed dense-weight view -------------------------
+
+fn dense_projection_weight_data(out: i32, input: i32) -> Vec<f32> {
+    (0..(out * input))
+        .map(|index| ((index % 53) as f32 - 26.0) * 0.0078125)
+        .collect()
+}
+
+fn dense_projection_input_data(seq: i32, input: i32) -> Vec<f32> {
+    (0..(seq * input))
+        .map(|index| ((index % 31) as f32 - 15.0) * 0.03125)
+        .collect()
+}
+
+/// `qw_direct`'s dense branch caches a metadata-only `[in, out]` transpose view
+/// per weight instead of rebuilding it per call. That view must be bit-identical
+/// to the per-call transpose it replaces, in f32 and bf16, for decode (S=1),
+/// MTP-verify (S=3) and prefill (S=2048) rows, on both the cache-filling call
+/// and the reuse call.
+#[test]
+fn cached_weight_view_matches_per_call_transpose() {
+    const OUT: i32 = 96;
+    const IN: i32 = 64;
+    let weight_data = dense_projection_weight_data(OUT, IN);
+    for (label, dtype) in [("f32", MlxDtype::Float32), ("bf16", MlxDtype::Bfloat16)] {
+        let w = astype(&array_f32(&weight_data, &[OUT, IN]), dtype, None);
+        let qw = QuantizedWeight::new(w.clone(), None, None);
+        for seq in [1_i32, 3, 2048] {
+            let input_data = dense_projection_input_data(seq, IN);
+            let x = astype(&array_f32(&input_data, &[1, seq, IN]), dtype, None);
+            let expected = matmul(&x, &transpose(&w, &[1, 0], None), None);
+            // First call fills `weight_t_view`, the second reuses it.
+            let first = super::qw_direct(&x, &qw);
+            let second = super::qw_direct(&x, &qw);
+            let expected = astype(&expected, MlxDtype::Float32, None);
+            let first = astype(&first, MlxDtype::Float32, None);
+            let second = astype(&second, MlxDtype::Float32, None);
+            eval(&[&expected, &first, &second]);
+            assert_eq!(
+                first.data_f32(),
+                expected.data_f32(),
+                "cached view changed the cache-filling call ({label}, seq {seq})"
+            );
+            assert_eq!(
+                second.data_f32(),
+                expected.data_f32(),
+                "cached view changed the reuse call ({label}, seq {seq})"
+            );
+        }
+    }
+}
+
+/// The cache removes the transpose dispatch from every call after the first:
+/// the reuse call issues one op fewer than the cache-filling call. The op
+/// counter is thread-local, so this delta is measured cleanly per test thread.
+#[test]
+fn cached_weight_view_reuses_the_transpose_op() {
+    const OUT: i32 = 96;
+    const IN: i32 = 64;
+    let weight_data = dense_projection_weight_data(OUT, IN);
+    let w = array_f32(&weight_data, &[OUT, IN]);
+    let x = array_f32(&dense_projection_input_data(1, IN), &[1, 1, IN]);
+    let qw = QuantizedWeight::new(w, None, None);
+    let before = mlx_sys::op_count_snapshot();
+    let first = super::qw_direct(&x, &qw);
+    let first_ops = mlx_sys::op_count_take(before);
+    let before = mlx_sys::op_count_snapshot();
+    let second = super::qw_direct(&x, &qw);
+    let second_ops = mlx_sys::op_count_take(before);
+    eval(&[&first, &second]);
+    assert_eq!(
+        first.data_f32(),
+        second.data_f32(),
+        "cached view changed the projection result"
+    );
+    assert!(
+        second_ops < first_ops,
+        "reuse call should issue one op fewer: first {first_ops}, second {second_ops}"
+    );
+}
+
+/// A weight cloned before the view is built starts with an empty lock: it must
+/// build its own view on first use and produce the same bits as the original.
+#[test]
+fn clone_before_view_init_projects_the_same_bits() {
+    const OUT: i32 = 96;
+    const IN: i32 = 64;
+    let weight_data = dense_projection_weight_data(OUT, IN);
+    let w = astype(
+        &array_f32(&weight_data, &[OUT, IN]),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let qw = QuantizedWeight::new(w.clone(), None, None);
+    let cloned = qw.clone();
+    let x = astype(
+        &array_f32(&dense_projection_input_data(3, IN), &[1, 3, IN]),
+        MlxDtype::Bfloat16,
+        None,
+    );
+    let expected = matmul(&x, &transpose(&w, &[1, 0], None), None);
+    let from_original = super::qw_direct(&x, &qw);
+    let from_clone = super::qw_direct(&x, &cloned);
+    // The clone filled its own lock on the previous call; reusing it must agree.
+    let from_clone_again = super::qw_direct(&x, &cloned);
+    let expected = astype(&expected, MlxDtype::Float32, None);
+    let from_original = astype(&from_original, MlxDtype::Float32, None);
+    let from_clone = astype(&from_clone, MlxDtype::Float32, None);
+    let from_clone_again = astype(&from_clone_again, MlxDtype::Float32, None);
+    eval(&[&expected, &from_original, &from_clone, &from_clone_again]);
+    assert_eq!(
+        from_original.data_f32(),
+        expected.data_f32(),
+        "original weight changed bits"
+    );
+    assert_eq!(
+        from_clone.data_f32(),
+        expected.data_f32(),
+        "clone taken before view init changed bits"
+    );
+    assert_eq!(
+        from_clone_again.data_f32(),
+        expected.data_f32(),
+        "clone reuse changed bits"
+    );
+}
+
+/// A clone made AFTER the view was built must not inherit it: swapping the
+/// clone's weight must project with the new tensor, the original must keep
+/// the old one, and an explicit invalidation after an in-place swap must do
+/// the same for the original.
+#[test]
+fn weight_view_never_outlives_its_tensor() {
+    const OUT: i32 = 96;
+    const IN: i32 = 64;
+    let old_data = dense_projection_weight_data(OUT, IN);
+    let new_data: Vec<f32> = old_data.iter().map(|value| value * -0.5 + 0.0625).collect();
+    let old_w = array_f32(&old_data, &[OUT, IN]);
+    let new_w = array_f32(&new_data, &[OUT, IN]);
+    let x = array_f32(&dense_projection_input_data(1, IN), &[1, 1, IN]);
+    let expected_old = matmul(&x, &transpose(&old_w, &[1, 0], None), None);
+    let expected_new = matmul(&x, &transpose(&new_w, &[1, 0], None), None);
+
+    let mut original = QuantizedWeight::new(old_w, None, None);
+    let warm = super::qw_direct(&x, &original);
+    let mut cloned = original.clone();
+    cloned.weight = new_w.clone();
+    let from_clone = super::qw_direct(&x, &cloned);
+    let original_again = super::qw_direct(&x, &original);
+    original.weight = new_w;
+    original.invalidate_weight_t_view();
+    let from_swapped = super::qw_direct(&x, &original);
+    eval(&[
+        &expected_old,
+        &expected_new,
+        &warm,
+        &from_clone,
+        &original_again,
+        &from_swapped,
+    ]);
+    assert_eq!(warm.data_f32(), expected_old.data_f32());
+    assert_eq!(
+        from_clone.data_f32(),
+        expected_new.data_f32(),
+        "stale view in a clone"
+    );
+    assert_eq!(original_again.data_f32(), expected_old.data_f32());
+    assert_eq!(
+        from_swapped.data_f32(),
+        expected_new.data_f32(),
+        "stale view after a swap"
+    );
+    assert_ne!(expected_old.data_f32(), expected_new.data_f32());
 }

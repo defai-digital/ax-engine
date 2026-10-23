@@ -899,6 +899,7 @@ mod tests {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         let input_data: Vec<f32> = (0..(m * k) as usize)
             .map(|index| ((index % 29) as f32 - 14.0) / 128.0)
@@ -969,6 +970,7 @@ mod tests {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         let input_data: Vec<f32> = (0..(m * k) as usize)
             .map(|index| ((index % 29) as f32 - 14.0) / 128.0)
@@ -1054,6 +1056,7 @@ mod tests {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     }
 

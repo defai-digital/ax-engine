@@ -1413,6 +1413,7 @@ fn glm_quantized_weight(group_size: i32, bits: i32, with_biases: bool) -> Quanti
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     }
 }
 
@@ -1443,6 +1444,7 @@ fn moe_expert_quantized_weight(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     }
 }
 

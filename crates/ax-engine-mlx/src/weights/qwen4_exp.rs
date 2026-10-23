@@ -1876,6 +1876,7 @@ pub(crate) fn split_packed_expert_gate_up(
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         })
     };
     Ok((build(0)?, build(expert_intermediate)?))

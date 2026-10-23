@@ -77,6 +77,7 @@ fn qwen4_exp_eval_failure_returns_error_without_committing_state() {
         )
         .unwrap();
     trunk.lm_head.weight = outputs.remove(0);
+    trunk.lm_head.invalidate_weight_t_view();
     let failed = qwen4_exp::forward(
         trunk,
         &tokens,
@@ -85,6 +86,7 @@ fn qwen4_exp_eval_failure_returns_error_without_committing_state() {
         ProjectionBatchPolicy::Shared,
     );
     trunk.lm_head.weight = original;
+    trunk.lm_head.invalidate_weight_t_view();
     assert!(failed.err().unwrap().contains("evaluation failed"));
     assert_eq!(state.position(), 0);
     let recovered = qwen4_exp::forward(

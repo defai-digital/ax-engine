@@ -1355,10 +1355,10 @@ fn flash_next_fused_matches_eager_on_real_pack() {
     // Every stretch. Aggregate counters cannot prove that each one ran, so all
     // checks below are per stretch; stretches outside the enabled set must not
     // run at all.
-    const WATCH: [Stretch; 15] = Stretch::ALL;
+    const WATCH: [Stretch; Stretch::COUNT] = Stretch::ALL;
     let enabled_in_fused: Vec<Stretch> = only.clone().unwrap_or_else(|| WATCH.to_vec());
     let snapshot_counts = || {
-        let mut counts = [0u64; 15];
+        let mut counts = [0u64; Stretch::COUNT];
         for (index, stretch) in WATCH.iter().enumerate() {
             counts[index] = applied_for_test(*stretch);
         }
@@ -1450,7 +1450,7 @@ fn flash_next_fused_matches_eager_on_real_pack() {
     }
     assert_eq!(snapshot(eager_state), snapshot(fused_state), "chain state");
     let after_chain = snapshot_counts();
-    let mut hc_applied = [0u64; 15];
+    let mut hc_applied = [0u64; Stretch::COUNT];
     for (index, stretch) in WATCH.iter().enumerate() {
         let applied = after_chain[index] - before_chain[index];
         hc_applied[index] = applied;
@@ -1459,12 +1459,16 @@ fn flash_next_fused_matches_eager_on_real_pack() {
             continue;
         }
         // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
-        // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu.
+        // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu,
+        // 24 q/k rotations for the qsa_rope halves (the 96-id prompt stays
+        // inside the dense context limit, so the indexer never runs).
         // Deliberately loose lower bounds.
         let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
             30
         } else if stretch.name().starts_with("moe_") {
             40
+        } else if stretch.name().starts_with("qsa_rope") {
+            20
         } else {
             48
         };
@@ -1530,7 +1534,7 @@ fn flash_next_fused_matches_eager_on_real_pack() {
         "RowExact chain state"
     );
     let after_rowexact = snapshot_counts();
-    let mut rowexact_applied = [0u64; 15];
+    let mut rowexact_applied = [0u64; Stretch::COUNT];
     for (index, stretch) in WATCH.iter().enumerate() {
         let applied = after_rowexact[index] - before_rowexact[index];
         rowexact_applied[index] = applied;
@@ -1539,12 +1543,16 @@ fn flash_next_fused_matches_eager_on_real_pack() {
             continue;
         }
         // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
-        // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu.
+        // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu,
+        // 24 q/k rotations for the qsa_rope halves (the 96-id prompt stays
+        // inside the dense context limit, so the indexer never runs).
         // Deliberately loose lower bounds.
         let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
             30
         } else if stretch.name().starts_with("moe_") {
             40
+        } else if stretch.name().starts_with("qsa_rope") {
+            20
         } else {
             48
         };
@@ -2026,4 +2034,125 @@ fn flash_next_pooled_cache_matches_full_on_real_pack() {
         full_secs * 1e3,
         cached_secs * 1e3
     );
+}
+
+/// Long-prompt exactness of the decode-path switches against an all-off
+/// baseline: the compiled stretches (including the QSA rotary stretches, which
+/// only reach the indexer and the pooled blocks once selected attention is
+/// active), the native GDN singleton kernel, and both together. Every arm must
+/// give bit-identical logits for the chunked prefill, verifier windows of
+/// 1/2/3/4/8 rows under Shared and RowExact, and a 16-step chain, and an
+/// identical final serialized state. The prompt needs more than 2,300 ids.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,300 ids)"]
+fn flash_next_long_context_arms_match_baseline_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_fused::{Stretch, applied_for_test, force_for_test};
+    use crate::model::shared::qwen4_exp_gdn_metal::with_mode;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(tokens.len() > 2_300, "need more than 2,300 prompt ids");
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+    let chain_steps = 16usize;
+    let split = tokens.len() - chain_steps - 10;
+
+    struct Observed {
+        logits: Vec<(String, Vec<u32>)>,
+        final_state: Vec<u8>,
+    }
+    let observe = |fuse: bool, metal: bool| -> (Observed, u64) {
+        let _fuse = force_for_test(Some(fuse));
+        let (observed, dispatches) = with_mode(metal, || {
+            let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+                forward(trunk, input, state, owner, policy).unwrap()
+            };
+            let mut logits = Vec::new();
+            let mut state = Qwen4ExpState::new(trunk, owner);
+            for (offset, end) in chunk_ranges(split, 1024) {
+                let output = run(&tokens[offset..end], &state, ProjectionBatchPolicy::Shared);
+                if end == split {
+                    logits.push(("prefill".to_string(), bits(&output)));
+                }
+                state = output.state;
+            }
+            for policy in [
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::RowExact,
+            ] {
+                for rows in [1usize, 2, 3, 4, 8] {
+                    let output = run(&tokens[split..split + rows], &state, policy);
+                    logits.push((format!("{policy:?} rows {rows}"), bits(&output)));
+                }
+            }
+            for step in 0..chain_steps {
+                let output = run(
+                    &[tokens[split + step]],
+                    &state,
+                    ProjectionBatchPolicy::Shared,
+                );
+                logits.push((format!("chain step {step}"), bits(&output)));
+                state = output.state;
+            }
+            Observed {
+                logits,
+                final_state: snapshot(state),
+            }
+        });
+        (observed, dispatches)
+    };
+
+    let (baseline, baseline_dispatches) = observe(false, false);
+    assert_eq!(
+        baseline_dispatches, 0,
+        "the baseline must not use the GDN kernel"
+    );
+    for (name, fuse, metal) in [
+        ("fuse", true, false),
+        ("gdn_metal", false, true),
+        ("fuse+gdn_metal", true, true),
+    ] {
+        let rope_before = (
+            applied_for_test(Stretch::QsaRopeLo),
+            applied_for_test(Stretch::QsaRopeHi),
+        );
+        let (arm, dispatches) = observe(fuse, metal);
+        assert_eq!(arm.logits.len(), baseline.logits.len());
+        for ((label, expected), (_, actual)) in baseline.logits.iter().zip(&arm.logits) {
+            assert_eq!(expected, actual, "{name}: logits differ at {label}");
+        }
+        assert_eq!(baseline.final_state, arm.final_state, "{name}: final state");
+        if metal {
+            assert!(dispatches > 0, "{name}: the native GDN kernel never ran");
+        } else {
+            assert_eq!(dispatches, 0, "{name}: the native GDN kernel ran");
+        }
+        let rope_after = (
+            applied_for_test(Stretch::QsaRopeLo),
+            applied_for_test(Stretch::QsaRopeHi),
+        );
+        if fuse {
+            // 12 QSA layers x (attention q, attention k, indexer q) per decode
+            // row at least over the 16-step chain.
+            assert!(
+                rope_after.0 - rope_before.0 >= 16 * 36 && rope_after.1 - rope_before.1 >= 16 * 36,
+                "{name}: QSA rotary stretches applied only {rope_before:?} -> {rope_after:?}"
+            );
+        } else {
+            assert_eq!(rope_before, rope_after, "{name}: stretches ran while off");
+        }
+        eprintln!("LONG_ARM {name}: identical, gdn kernel dispatches {dispatches}");
+    }
 }

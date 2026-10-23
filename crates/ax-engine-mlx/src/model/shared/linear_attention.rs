@@ -1850,6 +1850,7 @@ fn compiled_fused_qkvz_ba_qmm_unpack(
                 decode_q2_weight: None,
                 decode_q2_scales: None,
                 decode_q2_biases: None,
+                weight_t_view: Default::default(),
             };
             let mixed = qw(&x, &fused);
             let mixed_qkvz = slice_last_dim(&mixed, 0, qkvz_out, None);

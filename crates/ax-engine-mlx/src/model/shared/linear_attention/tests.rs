@@ -58,6 +58,7 @@ fn qwen_la_projection_preserves_float32_gate_before_output_cast() {
                 decode_q2_weight: None,
                 decode_q2_scales: None,
                 decode_q2_biases: None,
+                weight_t_view: Default::default(),
             };
             let normed = rms_norm(&hidden, Some(&norm), 1e-6, None);
             let expected_gate = astype(
@@ -208,6 +209,7 @@ fn exact_s2_s1_metal_gate_o_proj_matches_two_s1_rows() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let dummy = zeros(&[1], MlxDtype::Float32, None);
     let linear_w = LinearAttentionWeights {
@@ -451,6 +453,7 @@ fn cached_prefill_la_contiguous_weight_keeps_bits_and_qws() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let contig = cached_prefill_la_contiguous_weight(&src);
     assert_eq!(contig.bits, 4);
@@ -802,6 +805,7 @@ fn affine_quant_weight(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     }
 }
 
@@ -841,6 +845,7 @@ fn matching_affine_quant_rejects_mxfp4_even_when_bits_match() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let mxfp4_qw = QuantizedWeight {
         weight: mxfp4[0].clone(),
@@ -854,6 +859,7 @@ fn matching_affine_quant_rejects_mxfp4_even_when_bits_match() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     assert!(affine_qw.is_affine_quantized());
     assert!(!mxfp4_qw.is_affine_quantized());
@@ -955,6 +961,7 @@ fn exact_s2_mxfp4_fused_qkvz_ba_matches_split_qw() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let qkvz = mk(qkvz_out, 8.0);
@@ -1120,6 +1127,7 @@ fn exact_s2_compiled_rms_qmm_unpack_matches_rms_then_fused() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let qkvz = mk(qkvz_out, 8.0);
@@ -1230,6 +1238,7 @@ fn exact_attn_norm_fallback_applies_rms_when_compile_does_not() {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         }
     };
     let qkvz = mk(qkvz_out, 8.0);
@@ -1482,6 +1491,7 @@ fn qw_rms_norm_qmm_matches_rms_then_qw() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let norm_data = vec![1.0f32; 64];
     let norm_w = MlxArray::from_raw_data(
@@ -1551,6 +1561,7 @@ fn qw_rms_norm_qmm_mxfp4_matches_rms_then_qw() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let norm_data = vec![1.0f32; 64];
     let norm_w = MlxArray::from_raw_data(
@@ -1616,6 +1627,7 @@ fn qwen_prefill_contiguous_la_input_qw_matches_view() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let packed = qw(&contiguous(&view, None), &proj);
     let portable = qw(&view, &proj);

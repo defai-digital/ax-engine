@@ -1,4 +1,4 @@
-//! Experimental singleton recurrence. Q/K normalization, gates and QMM stay
+//! Native singleton recurrence. Q/K normalization, gates and QMM stay
 //! on their existing MLX paths. MLX retains both F32 reductions; only the
 //! elementwise products and state update are fused.
 
@@ -15,7 +15,12 @@ pub(super) fn enabled() -> bool {
     if let Some(value) = TEST_MODE.with(std::cell::Cell::get) {
         return value;
     }
-    crate::fastpath::env_flag("AX_MLX_FLASH_NEXT_GDN_METAL")
+    // Unit tests keep the portable recurrence unless they opt in with
+    // `with_mode`; production runs the native kernel unless it is switched off.
+    if cfg!(test) {
+        return false;
+    }
+    crate::fastpath::flash_next_gdn_metal_enabled()
 }
 
 pub(super) fn singleton(
