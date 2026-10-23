@@ -57,6 +57,10 @@ a borrow across an MLX call, and treats `MLX_DISABLE_COMPILE` as compilation bei
 unavailable. Compilation happens on the generation thread during the load-time
 production warm-up, so the first request pays nothing extra.
 
+Four more stretches (`qsa_rope_lo`, `qsa_rope_hi`, `qsa_gate`, `moe_route_tail`, 19 in all) and the other
+decode-glue changes of the next day are recorded in
+[Flash Next long-context decode and decode glue](flash-next-long-context-decode-2026-10-23.md).
+
 ## Numerics
 
 Fused and eager outputs are compared **bit for bit**, not to a tolerance, because the

@@ -1,107 +1,340 @@
 {
- "change": "K/V segments on (def) vs AX_FLASH_NEXT_KV_SEGMENTS=0 (off)",
- "prompts": [
-  {
-   "off": {
-    "decode_tok_s": [
-     42.31,
-     42.32
-    ],
-    "ttft_s": [
-     2.382,
-     2.375
-    ],
-    "text_sha": [
-     "6189ecc27de45897",
-     "6189ecc27de45897"
-    ]
+ "host": "Apple M5 Max 128 GB (campaign host)",
+ "note": "decode_delta_pct is arm_b against arm_a; every comparison has identical generated text",
+ "kv_segments": {
+  "arm_a": "AX_FLASH_NEXT_KV_SEGMENTS=0",
+  "arm_b": "default",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "off": {
+     "decode_tok_s": [
+      42.31,
+      42.32
+     ],
+     "ttft_s": [
+      2.382,
+      2.375
+     ]
+    },
+    "def": {
+     "decode_tok_s": [
+      42.36,
+      42.2
+     ],
+     "ttft_s": [
+      2.378,
+      2.384
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.08
    },
-   "def": {
-    "decode_tok_s": [
-     42.36,
-     42.2
-    ],
-    "ttft_s": [
-     2.378,
-     2.384
-    ],
-    "text_sha": [
-     "6189ecc27de45897",
-     "6189ecc27de45897"
-    ]
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "off": {
+     "decode_tok_s": [
+      39.97,
+      40.04
+     ],
+     "ttft_s": [
+      13.65,
+      13.689
+     ]
+    },
+    "def": {
+     "decode_tok_s": [
+      40.67,
+      40.45
+     ],
+     "ttft_s": [
+      13.603,
+      13.641
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 1.39
    },
-   "file": "p1.txt",
-   "prompt_tokens": 2207,
-   "decode_delta_pct": -0.08,
-   "text_identical": true
-  },
-  {
-   "off": {
-    "decode_tok_s": [
-     39.97,
-     40.04
-    ],
-    "ttft_s": [
-     13.65,
-     13.689
-    ],
-    "text_sha": [
-     "c14a851241e3a98f",
-     "c14a851241e3a98f"
-    ]
+   {
+    "file": "long32.txt",
+    "prompt_tokens": 39225,
+    "off": {
+     "decode_tok_s": [
+      32.75,
+      32.73
+     ],
+     "ttft_s": [
+      75.696,
+      75.277
+     ]
+    },
+    "def": {
+     "decode_tok_s": [
+      37.56,
+      37.44
+     ],
+     "ttft_s": [
+      74.855,
+      74.886
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 14.54
+   }
+  ]
+ },
+ "gdn_native_kernel": {
+  "arm_a": "portable recurrence",
+  "arm_b": "AX_MLX_FLASH_NEXT_GDN_METAL=1",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "off": {
+     "decode_tok_s": [
+      42.06,
+      42.09
+     ],
+     "ttft_s": [
+      2.371,
+      2.384
+     ]
+    },
+    "on": {
+     "decode_tok_s": [
+      43.52,
+      43.6
+     ],
+     "ttft_s": [
+      2.378,
+      2.382
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 3.53
    },
-   "def": {
-    "decode_tok_s": [
-     40.67,
-     40.45
-    ],
-    "ttft_s": [
-     13.603,
-     13.641
-    ],
-    "text_sha": [
-     "c14a851241e3a98f",
-     "c14a851241e3a98f"
-    ]
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "off": {
+     "decode_tok_s": [
+      44.36,
+      44.25
+     ],
+     "ttft_s": [
+      1.424,
+      1.426
+     ]
+    },
+    "on": {
+     "decode_tok_s": [
+      45.86,
+      46.04
+     ],
+     "ttft_s": [
+      1.423,
+      1.425
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 3.71
    },
-   "file": "long1.txt",
-   "prompt_tokens": 8976,
-   "decode_delta_pct": 1.39,
-   "text_identical": true
-  },
-  {
-   "off": {
-    "decode_tok_s": [
-     32.75,
-     32.73
-    ],
-    "ttft_s": [
-     75.696,
-     75.277
-    ],
-    "text_sha": [
-     "a3ac5cb9493c449f",
-     "a3ac5cb9493c449f"
-    ]
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "off": {
+     "decode_tok_s": [
+      40.4,
+      40.37
+     ],
+     "ttft_s": [
+      13.595,
+      13.642
+     ]
+    },
+    "on": {
+     "decode_tok_s": [
+      41.61,
+      41.88
+     ],
+     "ttft_s": [
+      13.637,
+      13.671
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 3.37
+   }
+  ]
+ },
+ "glue_t9": {
+  "arm_a": "previous build",
+  "arm_b": "pooled cache, rotary stretches, weight view, native GDN",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "prev": {
+     "decode_tok_s": [
+      42.15,
+      42.44
+     ],
+     "ttft_s": [
+      2.372,
+      2.382
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.21,
+      44.37
+     ],
+     "ttft_s": [
+      2.64,
+      2.386
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 4.72
    },
-   "def": {
-    "decode_tok_s": [
-     37.56,
-     37.44
-    ],
-    "ttft_s": [
-     74.855,
-     74.886
-    ],
-    "text_sha": [
-     "a3ac5cb9493c449f",
-     "a3ac5cb9493c449f"
-    ]
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "prev": {
+     "decode_tok_s": [
+      40.43,
+      40.68
+     ],
+     "ttft_s": [
+      13.605,
+      13.647
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      42.95,
+      43.02
+     ],
+     "ttft_s": [
+      13.565,
+      13.648
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 5.99
    },
-   "file": "long32.txt",
-   "prompt_tokens": 39225,
-   "decode_delta_pct": 14.54,
-   "text_identical": true
-  }
- ]
+   {
+    "file": "long32.txt",
+    "prompt_tokens": 39225,
+    "prev": {
+     "decode_tok_s": [
+      37.41,
+      37.61
+     ],
+     "ttft_s": [
+      75.358,
+      74.871
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      41.97,
+      41.97
+     ],
+     "ttft_s": [
+      74.478,
+      74.829
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 11.89
+   }
+  ]
+ },
+ "glue_wave2": {
+  "arm_a": "previous build",
+  "arm_b": "grouped GDN heads, f32 gains, gate/route-tail stretches, identity slices",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "prev": {
+     "decode_tok_s": [
+      44.49,
+      44.25
+     ],
+     "ttft_s": [
+      2.376,
+      2.375
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.81,
+      44.96
+     ],
+     "ttft_s": [
+      2.375,
+      2.387
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 1.16
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "prev": {
+     "decode_tok_s": [
+      43.23,
+      43.11
+     ],
+     "ttft_s": [
+      13.578,
+      13.564
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      43.54,
+      43.6
+     ],
+     "ttft_s": [
+      13.609,
+      13.595
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 0.93
+   },
+   {
+    "file": "long32.txt",
+    "prompt_tokens": 39225,
+    "prev": {
+     "decode_tok_s": [
+      41.99,
+      42.03
+     ],
+     "ttft_s": [
+      75.652,
+      74.452
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      42.53,
+      42.46
+     ],
+     "ttft_s": [
+      74.89,
+      74.702
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 1.15
+   }
+  ]
+ }
 }

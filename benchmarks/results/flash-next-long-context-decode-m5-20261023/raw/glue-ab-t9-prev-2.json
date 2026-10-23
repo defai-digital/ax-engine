@@ -1,0 +1,36 @@
+{
+ "label": "t9prev2",
+ "bin": "<home>/build/fn-ab/ax-engine-server-t7",
+ "rows": [
+  {
+   "file": "p1.txt",
+   "prompt_tokens": 2207,
+   "completion_tokens": 128,
+   "ttft_s": 2.382,
+   "prefill_tok_s": 926.7,
+   "decode_tok_s": 42.44,
+   "text_head": "This Rust code implements a **backend adapter layer** for an LLM (Large Language",
+   "text_sha": "6189ecc27de45897"
+  },
+  {
+   "file": "long1.txt",
+   "prompt_tokens": 8976,
+   "completion_tokens": 128,
+   "ttft_s": 13.647,
+   "prefill_tok_s": 657.7,
+   "decode_tok_s": 40.68,
+   "text_head": "This codebase implements a **distributed LLM inference gateway** (likely for a m",
+   "text_sha": "c14a851241e3a98f"
+  },
+  {
+   "file": "long32.txt",
+   "prompt_tokens": 39225,
+   "completion_tokens": 128,
+   "ttft_s": 74.871,
+   "prefill_tok_s": 523.9,
+   "decode_tok_s": 37.61,
+   "text_head": "Based on the provided Rust source code, here is a summary of the main risks asso",
+   "text_sha": "a3ac5cb9493c449f"
+  }
+ ]
+}
