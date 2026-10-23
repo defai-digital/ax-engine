@@ -3314,6 +3314,12 @@ pub fn cached_scalar(value: f32, dtype: MlxDtype) -> MlxArray {
         return arr.clone();
     }
     let out = make_scalar_array(value, dtype);
+    // Materialize before sharing: an unevaluated `astype` is bound to the
+    // creating thread's stream, and another thread that evaluates a graph
+    // holding it fails with "There is no Stream(gpu, N) in current thread".
+    if crate::transforms::try_eval(&[&out]).is_err() {
+        return out;
+    }
     map.insert(key, out.clone());
     out
 }
