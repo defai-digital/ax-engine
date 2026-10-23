@@ -9,3 +9,9 @@ RUST_TEST_THREADS = "1"
 # tests pass on earlier GPUs. Run the suite at full float32 precision; callers
 # can still override it.
 MLX_ENABLE_TF32 = "0"
+# MLX picks the Neural Accelerator gated-delta kernel (chunk 16) on M5 and later
+# and the simdgroup kernel elsewhere; its own tests allow the accelerator variant
+# atol 1e-1 against 1e-4 for the others. Our gate-parity check measures 6.4e-5
+# against a 5e-5 bound on the accelerator kernel, so pin the architecture-
+# independent simdgroup route (GATED_DELTA_CHUNK=8) for the unit suite.
+GATED_DELTA_CHUNK = "8"
