@@ -336,5 +336,269 @@
     "decode_delta_pct": 1.15
    }
   ]
+ },
+ "gdn_native_gate_kernels": {
+  "arm_a": "mask without gdn_native_decay/gdn_native_qk",
+  "arm_b": "default mask",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "old": {
+     "decode_tok_s": [
+      44.83,
+      44.64,
+      44.65
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      45.18,
+      44.98,
+      45.02
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 0.79
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "old": {
+     "decode_tok_s": [
+      47.04,
+      46.79,
+      46.91
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      47.46,
+      47.2,
+      47.3
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 0.87
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "old": {
+     "decode_tok_s": [
+      43.58,
+      43.34,
+      43.44
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      43.91,
+      43.76,
+      43.77
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 0.83
+   }
+  ]
+ },
+ "hc_native_read_vs_previous_build": {
+  "arm_a": "previous build",
+  "arm_b": "opt-in hc_native_low_gate on",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "prev": {
+     "decode_tok_s": [
+      44.68,
+      44.65,
+      44.74
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.29,
+      44.27,
+      44.21
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.97
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "prev": {
+     "decode_tok_s": [
+      47.0,
+      46.77,
+      46.81
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      46.54,
+      46.56,
+      46.47
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.72
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "prev": {
+     "decode_tok_s": [
+      43.59,
+      43.37,
+      43.57
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      43.16,
+      43.31,
+      43.1
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.74
+   }
+  ]
+ },
+ "hc_native_read_same_binary": {
+  "arm_a": "mask without hc_native_low_gate",
+  "arm_b": "hc_native_low_gate on",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "old": {
+     "decode_tok_s": [
+      45.15,
+      44.67,
+      44.79
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.45,
+      44.49,
+      44.3
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -1.02
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "old": {
+     "decode_tok_s": [
+      47.23,
+      46.94,
+      47.02
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      46.67,
+      46.82,
+      46.56
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.81
+   }
+  ]
+ },
+ "hc_native_read_ballast_control": {
+  "old_vs_ballast": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "old": {
+     "decode_tok_s": [
+      44.81,
+      44.76,
+      44.71
+     ]
+    },
+    "ballast": {
+     "decode_tok_s": [
+      44.67,
+      44.59,
+      44.54
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.36
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "old": {
+     "decode_tok_s": [
+      46.97,
+      46.97,
+      46.87
+     ]
+    },
+    "ballast": {
+     "decode_tok_s": [
+      46.88,
+      46.84,
+      46.86
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.16
+   }
+  ],
+  "old_vs_native": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "old": {
+     "decode_tok_s": [
+      44.81,
+      44.76,
+      44.71
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.49,
+      44.33,
+      44.31
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.86
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "old": {
+     "decode_tok_s": [
+      46.97,
+      46.97,
+      46.87
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      46.69,
+      46.55,
+      46.51
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.75
+   }
+  ]
  }
 }

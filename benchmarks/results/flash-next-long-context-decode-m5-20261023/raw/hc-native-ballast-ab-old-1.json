@@ -1,0 +1,26 @@
+{
+ "label": "t14old1",
+ "bin": "<home>/build/fn-ab/ax-engine-server-t14",
+ "rows": [
+  {
+   "file": "p1.txt",
+   "prompt_tokens": 2207,
+   "completion_tokens": 128,
+   "ttft_s": 2.368,
+   "prefill_tok_s": 931.8,
+   "decode_tok_s": 44.81,
+   "text_head": "This Rust code implements a **backend adapter layer** for an LLM (Large Language",
+   "text_sha": "6189ecc27de45897"
+  },
+  {
+   "file": "p3.txt",
+   "prompt_tokens": 1905,
+   "completion_tokens": 128,
+   "ttft_s": 1.419,
+   "prefill_tok_s": 1342.4,
+   "decode_tok_s": 46.97,
+   "text_head": "This Rust code implements the **input handling and editing logic for a chat inte",
+   "text_sha": "8c0545060f84c30b"
+  }
+ ]
+}

@@ -36,22 +36,24 @@ silently degrade to a copy of the whole buffer.
 function, with source lines in a dev build. The first census of one decode step showed 9,851 ops with no compiled
 stretches and 5,331 with the 15 stretches of the earlier note, and two things nobody had written down: the
 production decode ran the 26-op portable GDN recurrence (the native kernel validated in September was still
-default-off), and 290 `transpose` ops per step rebuilt the same weight views. Per change below, after all of them
-the step is 4,036 ops, of which about 1,080 are compiled-stretch dispatches and 900 are GEMMs.
+default-off), and 290 `transpose` ops per step rebuilt the same weight views. After all the changes below the step is
+3,712 ops, of which about 900 are fused or native elementwise dispatches and about 900 are GEMMs.
 
 ## What changed
 
-All changes are bit-identical to the previous behaviour by construction or by gate, and each has a kill switch.
+All changes are bit-identical to the previous behaviour by construction or by gate, and each has a kill switch. The default build runs 21 compiled or native stretches; one more (the hyper-connection read) is opt-in.
 
 | Change | Where | Kill switch |
 | --- | --- | --- |
 | The K/V history of each QSA layer is an immutable **sealed prefix plus a tail** of at most 256 rows; an append copies only the tail and folds it into the prefix once per 256 rows. Selected attention gathers its rows from the two segments directly (clamp per segment, take twice, select on `idx < sealed_rows`: pure copies). Below 4,096 tokens the history stays one array. Dense kernels, batched prefill windows and the snapshot writer still flatten | `model/shared/qwen4_exp_kv_history.rs`, `qwen4_exp_attention.rs`, `qwen4_exp.rs` | `AX_FLASH_NEXT_KV_SEGMENTS=0` |
 | The QSA **pooled block keys** (mean of each block, RMS norm, rotation) were recomputed for every complete block each step. They are now derived data in the index key cache and extended only by newly completed blocks (three steps in four pool nothing); never serialized, media steps bypass | `qwen4_exp_qsa.rs` | `AX_FLASH_NEXT_POOLED_CACHE=0` |
 | The QSA **RoPE cos/sin tables** were rebuilt up to four times per layer per step; a per-thread cache hands the finished tables to later layers. The rotation itself is two compiled stretches (`qsa_rope_lo`, `qsa_rope_hi`) over the half tables, without the rotate-half concatenation | `qwen4_exp_qsa.rs` | `AX_FLASH_NEXT_ROPE_CACHE=0`, `AX_FLASH_NEXT_FUSE` |
-| Two more compiled stretches, `qsa_gate` (attention times the f32 sigmoid of the gate) and `moe_route_tail` (top-k renormalisation and cast): 19 stretches in all | `qwen4_exp_attention.rs`, `qwen4_exp_moe.rs` | `AX_FLASH_NEXT_FUSE` |
+| Two more compiled stretches, `qsa_gate` (attention times the f32 sigmoid of the gate) and `moe_route_tail` (top-k renormalisation and cast) | `qwen4_exp_attention.rs`, `qwen4_exp_moe.rs` | `AX_FLASH_NEXT_FUSE` |
 | The **native singleton GDN kernel** (two pointwise Metal dispatches that keep both MLX reductions, validated bit-exact against the portable recurrence in September) is default-on, and reads the key heads unexpanded so the two `expand_heads` gathers per layer disappear | `qwen4_exp_gdn_metal.rs`, `qwen4_exp_gdn.rs` | `AX_MLX_FLASH_NEXT_GDN_METAL=0` |
 | `QuantizedWeight` caches the transposed **view** of an unquantized weight (metadata only, so the same strided operand reaches the same GEMM); a clone starts empty and replacing the weight invalidates the view | `weights.rs`, `model/shared/utils.rs` | none (view only) |
 | RMS norm gains of the QSA and indexer layers are cast to f32 once; full-range slices are skipped when batch or sequence is one | `qwen4_exp_qsa.rs`, `qwen4_exp_attention.rs` | none |
+| Two **native pointwise Metal kernels** for the GDN gates: `ax_gdn_decay_beta_v1` (beta, decay pre/post and the eager `log1p`: four dispatches become one) and `ax_gdn_qkv_scale_v1` (inverse-norm scaling of q and k through `precise::pow` and the f32 cast of v: two eager `power` ops, two scale stretches and a cast become one). The sums of squares stay MLX reductions. Each kernel copies MLX's own Sigmoid, Minimum/Maximum, log1p and Power definitions, spells the math functions `precise::`, disables contraction, and runs a raw-bit self-check per dtype on first use that disables it for the process on any mismatch or rejected launch | `qwen4_exp_native_gdn.rs`, `qwen4_exp_gdn.rs` | `AX_FLASH_NEXT_FUSE` (`gdn_native_decay`, `gdn_native_qk`) |
+| A **native hyper-connection read** (`ax_hc_low_gate_v1`): one GEMV over the concatenation of `read_down` and `write_inject` (MLX picks identical GEMV tiles for 4, 320 and 324 rows, proven per layer at first use) feeds one kernel that returns the low-rank activation and the write gate. Built, exact, and **opt-in**: measured 0.8% slower end to end (see below) | `qwen4_exp_native_hc.rs`, `qwen4_exp_residual.rs` | on only with `AX_FLASH_NEXT_FUSE=hc_native_low_gate` (or `all`) |
 
 ## Numerics
 
@@ -68,13 +70,19 @@ Every change is checked bit for bit rather than to a tolerance:
   without a registry reset, failure injection per stretch, the row cap, the grouped GDN kernel against the
   expanded kernel and the portable recurrence (groups 1-3, batch 1-2, subnormal inputs, eight state-feedback
   steps), and a stale-weight-view regression;
+- the native kernels are proven rather than sampled: on an Apple M2 Ultra, every positive finite f32 bit pattern goes
+  through `pow(s, -0.5)` (kernel B against MLX's `power`), every f32 bit pattern through the whole decay chain (three
+  `exp_a_log` values) and the f32 sigmoid, and every bf16 and f16 pattern through the beta path; the hyper-connection
+  kernel takes all 65,536 bf16 and f16 patterns in both the low-rank and the gate role. All compare raw bits, NaN
+  payloads included;
 - on the real pack, a 2,600-token prompt (selected attention active) is run chunked, then as verifier windows of
   1, 2, 3, 4 and 8 rows under both `Shared` and `RowExact`, then as a 16- or 70-step chain, under: K/V segments
   with test limits 64/32 and 300/16; the pooled cache on and off; the rotary cache on and off; and the
-  arms {compiled stretches, native GDN kernel, both} against an all-off baseline. Logits and the serialized final
+  arms {compiled stretches only, all stretches including the native kernels, MLX's native GDN recurrence kernel and
+  their combinations} against an all-off baseline. Logits and the serialized final
   state are identical in every case, counters prove the segmented gather, the stretches and the kernel ran, and
-  the 96-id fused-versus-eager gate checks each of the 19 stretches over the chain;
-- the same gates and the 1,858-test library suite pass on an Apple M2 Ultra 192 GB.
+  the 96-id fused-versus-eager gate checks each of the 22 stretches over the chain;
+- the same gates, the exhaustive sweeps and the 1,876-test library suite pass on an Apple M2 Ultra 192 GB.
 
 ## Results (Apple M5 Max 128 GB)
 
@@ -85,19 +93,19 @@ text SHA-256 is identical in every arm and round of every comparison below.
 | --- | ---: | ---: | ---: |
 | main at the start of this campaign | 31.2 | 30.4 | 26.9 |
 | after the n-gram reads and 7 stretches (earlier note) | 40.1 | 37.9 | 31.6 |
-| final build, all of the above | 44.8 | 43.5 | 42.3 |
-| final build with today's kill switches set (flat K/V, portable GDN, no pooled or rotary cache, 15 stretches) | 41.9 | 39.6 | 32.4 |
+| final build, all of the above | 45.4 | 44.0 | 42.6 |
+| final build with today's kill switches set (flat K/V, portable GDN, no pooled or rotary cache, 15 stretches) | 41.7 | 39.5 | 32.4 |
 
 Individual steps, each against the same build with only that switch changed (two rounds): K/V segments 42.3 -> 42.3
 (-0.1%, inactive below 4,096 tokens), 40.0 -> 40.6 (+1.4%), 32.7 -> 37.5 (+14.5%); native GDN kernel 42.1 -> 43.6
 (+3.5%), 44.3 -> 45.9 (+3.7%, 1,905 tokens), 40.4 -> 41.7 (+3.4%); the glue commit of this note's second half
-(grouped heads, gains, gate, route tail, slices) +1.2% / +0.9% / +1.2%. TTFT is unchanged by all of them.
+(grouped heads, gains, gate, route tail, slices) +1.2% / +0.9% / +1.2%; the native GDN gate kernels +0.8% / +0.9% / +0.8% at 2.2k / 1.9k / 9k tokens (three rounds, same binary, mask on versus off). TTFT is unchanged by all of them.
 
-Under canonical MTP (`--mlx-mtp-policy required`) the same switches give 40.7 -> 43.0, 36.1 -> 39.7 and 28.4 -> 38.7
-tok/s (+5.5%, +9.9%, +36%) at 1.9k, 9k and 39k tokens, and under the opt-in batched verifier 35.9 -> 36.3, 31.7 ->
-32.8 and 32.1 -> 38.8, text identical to the unchanged build in every case. A request cancelled mid-prefill leaves
+Under canonical MTP (`--mlx-mtp-policy required`) the same switches give 40.8 -> 43.3, 36.1 -> 40.1 and 28.6 -> 39.0
+tok/s (+6.2%, +10.9%, +36%) at 1.9k, 9k and 39k tokens, and under the opt-in batched verifier 35.7 -> 36.4, 31.4 ->
+32.9 and 31.9 -> 39.0, text identical to the unchanged build in every case. A request cancelled mid-prefill leaves
 the server producing the same text for the next request, 16 back-to-back 9k requests give one text with steady
-decode (43.6-43.9 tok/s) and flat resident memory (72.44 -> 72.09 GB), 30 short requests stay at 48.4-48.8 tok/s with
+decode (43.8-44.2 tok/s) and flat resident memory (72.33 -> 72.08 GB), 30 short requests stay at 48.9-49.2 tok/s with
 flat memory, and the streamed-experts and image-prefill smoke requests produce the same text as the previous builds.
 
 After the changes the synchronized step (sum of all stages, which is larger than the real step because every stage
@@ -105,16 +113,20 @@ is evaluated on its own) grows by 5.2 ms from 2.6k to 39k tokens of context, whe
 K/V append is 1.88 ms at 39k (it was 16.99 ms), the pooled block keys 0.65 ms, and the rest of the QSA layer is
 flat. The raw profiles are in the benchmark record.
 
-## Evaluated and not built
+## The native kernels: what the measurements said
 
-- **HC read as fewer dispatches.** Per hyper-connection read the sequence is norm stretch, GEMM, low stretch, GEMM,
-  mix stretch, GEMM, gate stretch: four fused elementwise kernels around three GEMMs, already one dispatch each.
-  Fewer dispatches would need GEMM prologue/epilogue fusion, that is custom GEMMs, and another MLX-based engine
-  measured hand-written GEMVs losing in all three attempts; MLX does not fuse unrelated elementwise graphs, so
-  merging the independent gate and low stretches gains nothing.
-- **Custom kernels for the GDN decay and L2 chains.** The eager remainder after the stretches is `power` (72 ops
-  per step) and `log1p` (36), under 1% of the step, and a custom kernel would need explicit `precise::` math and a
-  load-time bitwise self-check to match them.
+- **GDN gates (kernels A and B): shipped default-on.** Server A/B, same binary with the two stretches in the mask or
+  not, three rounds, text identical: +0.79% (2,207 tokens), +0.87% (1,905), +0.83% (8,976). The 16-step real-pack
+  chain is 351.6 -> 342.2 ms on the M5 and 503 -> 497 ms on the M2.
+- **Hyper-connection read: built, exact, measured slower, left opt-in.** In isolation, a decode-row read is cheaper
+  (24.6 -> 23.0 us per read when 384 reads are submitted back to back, 190.5 -> 180.3 us when each is synchronised,
+  M5; 32.9 -> 31.0 on the M2), and one native launch costs 1.6 us of host time against 0.5 us for two plain
+  elementwise ops. End to end it is slower: -1.0% and -0.8% (same binary, mask on versus off, three rounds, p1 and
+  p3), -0.7% to -1.0% against the previous build. An allocation-only control (the merged weights built and kept, never
+  used) is -0.4% and -0.2%, so about a third of the loss is the 637 MB of duplicated weights (96 residuals x 6.6 MB)
+  and the rest is the native path itself; the serialised merged GEMV also removes the overlap the write-gate
+  GEMV had with the low-rank chain. The mask therefore has an opt-in class (`Stretch::default_on`): the stretch runs
+  only when `AX_FLASH_NEXT_FUSE` names it or says `all`.
 - The router's `softmax`, `argpartition` and `take_along_axis` are primitives, not fusable glue.
 
 ## Limits
@@ -126,5 +138,8 @@ flat. The raw profiles are in the benchmark record.
 - The dense kernels (context up to the QSA budget), the batched prefill windows and the snapshot writer still
   build a flat history, which is the cost they had before. The opt-in batched MTP verifier is unchanged at short
   context.
-- The native GDN kernel accepts f32 state with key widths 32, 64, 128 and 256; anything else takes the portable
-  recurrence (exactly as before).
+- MLX's native GDN recurrence kernel accepts f32 state with key widths 32, 64, 128 and 256; anything else takes the
+  portable recurrence (exactly as before).
+- The new GDN gate kernels need `dk == dv` for the q/k/v kernel, rows 1-8, and a dtype mix of bf16/f16/f32; a
+  non-contiguous input costs one extra copy dispatch (`ensure_row_contiguous`). Any self-check mismatch or rejected
+  launch disables a kernel for the process and the compiled stretches run instead.
