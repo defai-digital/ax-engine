@@ -76,6 +76,8 @@ use mlx_sys::{MlxArray, MlxDtype, add, astype, reshape};
 
 use super::shared::qwen4_exp_attention::Qwen4ExpAttentionCache;
 use super::shared::qwen4_exp_gdn::Qwen4ExpGdnState;
+#[cfg(test)]
+use super::shared::qwen4_exp_kv_history::KvHistory;
 use super::shared::qwen4_exp_ple::Qwen4ExpPleConvState;
 use super::shared::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::kv_cache::MlxKVCacheSerializeError;
@@ -251,8 +253,8 @@ impl Qwen4ExpState {
                 }
                 AttentionState::Gdn(None) => {}
                 AttentionState::Qsa(state) => {
-                    result.extend(state.keys());
-                    result.extend(state.values());
+                    result.extend(state.keys().arrays());
+                    result.extend(state.values().arrays());
                     result.extend(state.index().keys());
                 }
             }
@@ -261,6 +263,27 @@ impl Qwen4ExpState {
             }
         }
         result
+    }
+
+    /// One descriptor per physical K/V segment: the sealed prefix under the
+    /// base kind and the tail under the tail kind. A history that only has a
+    /// tail keeps the base kind, so one-segment caches look unchanged.
+    #[cfg(test)]
+    fn push_history_segments(
+        result: &mut Vec<Qwen4ExpStateArray>,
+        layer: usize,
+        kind: &'static str,
+        tail_kind: &'static str,
+        history: &KvHistory,
+    ) {
+        let (sealed, tail) = history.segments();
+        if sealed.is_some() {
+            result.push(Qwen4ExpStateArray::new(result.len(), layer, kind));
+        }
+        if tail.is_some() {
+            let kind = if sealed.is_some() { tail_kind } else { kind };
+            result.push(Qwen4ExpStateArray::new(result.len(), layer, kind));
+        }
     }
 
     /// Names for [`Self::arrays`] in the same order. PLE n-gram token
@@ -281,12 +304,20 @@ impl Qwen4ExpState {
                 }
                 AttentionState::Gdn(None) => {}
                 AttentionState::Qsa(state) => {
-                    if state.keys().is_some() {
-                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.k"));
-                    }
-                    if state.values().is_some() {
-                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.v"));
-                    }
+                    Self::push_history_segments(
+                        &mut result,
+                        layer,
+                        "qsa.k",
+                        "qsa.k.tail",
+                        state.keys(),
+                    );
+                    Self::push_history_segments(
+                        &mut result,
+                        layer,
+                        "qsa.v",
+                        "qsa.v.tail",
+                        state.values(),
+                    );
                     if state.index().keys().is_some() {
                         result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.index"));
                     }
@@ -325,8 +356,8 @@ impl Qwen4ExpState {
                 AttentionState::Qsa(state) if state.keys().is_some() => {
                     let bytes = state
                         .keys()
-                        .into_iter()
-                        .chain(state.values())
+                        .arrays()
+                        .chain(state.values().arrays())
                         .chain(state.index().keys())
                         .fold(0u64, |total, array| {
                             total.saturating_add(array.nbytes() as u64)
@@ -408,11 +439,13 @@ impl Qwen4ExpState {
             }
             AttentionState::Qsa(cache) => {
                 out.push(ATTENTION_TAG_QSA);
-                match (cache.keys(), cache.values()) {
+                // The wire carries the flat logical tensor whatever the
+                // in-memory segmentation.
+                match (cache.keys().flat(), cache.values().flat()) {
                     (Some(keys), Some(values)) => {
                         out.push(TAG_PRESENT);
-                        write_tensor(out, keys);
-                        write_tensor(out, values);
+                        write_tensor(out, &keys);
+                        write_tensor(out, &values);
                     }
                     _ => out.push(TAG_ABSENT),
                 }
@@ -628,8 +661,8 @@ impl Qwen4ExpState {
                     }
                     for array in cache
                         .keys()
-                        .into_iter()
-                        .chain(cache.values())
+                        .arrays()
+                        .chain(cache.values().arrays())
                         .chain(cache.index().keys())
                     {
                         if array.shape()[0] != 1
@@ -1066,8 +1099,8 @@ fn forward_prepared_rows(
                 #[cfg(test)]
                 {
                     let mut arrays = vec![&delta];
-                    arrays.extend(cache.keys());
-                    arrays.extend(cache.values());
+                    arrays.extend(cache.keys().arrays());
+                    arrays.extend(cache.values().arrays());
                     arrays.extend(cache.index().keys());
                     profiling::mark("qsa", &arrays);
                 }
@@ -1370,8 +1403,8 @@ mod tests {
         }
         match &restored.layers[1].attention {
             AttentionState::Qsa(cache) => {
-                assert_eq!(cache.keys().unwrap().dtype(), MlxDtype::Bfloat16);
-                assert_eq!(cache.values().unwrap().dtype(), MlxDtype::Bfloat16);
+                assert_eq!(cache.flat_keys().unwrap().dtype(), MlxDtype::Bfloat16);
+                assert_eq!(cache.flat_values().unwrap().dtype(), MlxDtype::Bfloat16);
                 assert_eq!(cache.index().keys().unwrap().dtype(), MlxDtype::Bfloat16);
             }
             _ => panic!("expected QSA state"),
@@ -1402,6 +1435,67 @@ mod tests {
         );
         assert!(fresh.arrays().is_empty());
         assert!(fresh.array_descriptors().is_empty());
+    }
+
+    #[test]
+    fn qsa_wire_bytes_ignore_kv_segmentation() {
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        let rows: Vec<MlxArray> = (0..12)
+            .map(|step| {
+                astype(
+                    &array_f32(&[step as f32, step as f32 + 0.5], &[1, 1, 1, 2]),
+                    MlxDtype::Bfloat16,
+                    None,
+                )
+            })
+            .collect();
+        let build = |segments: Option<(usize, usize)>| {
+            let (keys, values) = with_kv_segments(segments, || {
+                let mut keys = KvHistory::empty();
+                let mut values = KvHistory::empty();
+                for row in &rows {
+                    keys = keys.append(row);
+                    values = values.append(row);
+                }
+                (keys, values)
+            });
+            assert_eq!(keys.token_count(), rows.len());
+            assert_eq!(values.token_count(), rows.len());
+            Qwen4ExpAttentionCache::from_histories(
+                keys,
+                values,
+                QsaIndexKeyCache::from_serialized(Some(rows[0].clone())),
+            )
+        };
+        let state = |cache: Qwen4ExpAttentionCache| Qwen4ExpState {
+            owner: 7,
+            position: rows.len(),
+            media: None,
+            layers: vec![LayerState {
+                attention: AttentionState::Qsa(cache),
+                ple: None,
+            }],
+        };
+        let wire = |state: &Qwen4ExpState| {
+            let mut out = Vec::new();
+            state.write_layer(0, &mut out, test_write_tensor);
+            out
+        };
+
+        let flat = build(None);
+        let segmented = build(Some((8, 4)));
+        assert!(
+            segmented.keys().segments().1.is_some(),
+            "expected a live K tail after 12 single-row appends"
+        );
+        assert!(segmented.values().segments().1.is_some());
+        assert!(flat.keys().segments().1.is_none());
+        assert_eq!(
+            wire(&state(flat)),
+            wire(&state(segmented)),
+            "wire bytes must not depend on the in-memory segmentation"
+        );
     }
 
     #[test]

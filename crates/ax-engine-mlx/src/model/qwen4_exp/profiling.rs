@@ -1760,3 +1760,115 @@ fn flash_next_decode_context_stage_profile() {
     }
     eprintln!("{evidence}");
 }
+
+/// The QSA K/V history stored as a sealed prefix plus a short tail must give
+/// bit-identical logits and serialized state to the single flat array. Small
+/// limits (`AX_KV_TEST_LIMITS=min,seal`, default `64,32`) make the 70-step
+/// chain and the verifier windows cross several seal boundaries on a short
+/// prompt; the prompt must have more than 2,200 ids so the selected-attention
+/// path is active, and windows run from the same prefix state so a discarded
+/// (rejected) staged state is replayed from an unsealed history.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,300 ids)"]
+fn flash_next_kv_segments_match_flat_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(tokens.len() > 2_300, "need more than 2,300 prompt ids");
+    let limits = std::env::var("AX_KV_TEST_LIMITS").unwrap_or_else(|_| "64,32".to_string());
+    let (min_tokens, seal_tokens) = {
+        let (min, seal) = limits.split_once(',').expect("AX_KV_TEST_LIMITS=min,seal");
+        (
+            min.trim().parse::<usize>().unwrap(),
+            seal.trim().parse::<usize>().unwrap(),
+        )
+    };
+    let segmented = Some((min_tokens, seal_tokens));
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+        forward(trunk, input, state, owner, policy).unwrap()
+    };
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+    let chain_steps = 70usize;
+    let split = tokens.len() - chain_steps - 10;
+    let prefill = |limits: Option<(usize, usize)>| {
+        with_kv_segments(limits, || {
+            let mut state = Qwen4ExpState::new(trunk, owner);
+            let mut last_bits = Vec::new();
+            for (offset, end) in chunk_ranges(split, 1024) {
+                let output = run(&tokens[offset..end], &state, ProjectionBatchPolicy::Shared);
+                if end == split {
+                    last_bits = bits(&output);
+                }
+                state = output.state;
+            }
+            (state, last_bits)
+        })
+    };
+    let (flat_prefix, flat_last) = prefill(None);
+    let (seg_prefix, seg_last) = prefill(segmented);
+    assert_eq!(flat_last, seg_last, "prefill logits");
+    assert_eq!(
+        snapshot(flat_prefix.clone()),
+        snapshot(seg_prefix.clone()),
+        "prefill state"
+    );
+
+    for policy in [
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::RowExact,
+    ] {
+        for rows in [1usize, 2, 3, 4, 8] {
+            let window = &tokens[split..split + rows];
+            let flat = with_kv_segments(None, || run(window, &flat_prefix, policy));
+            let seg = with_kv_segments(segmented, || run(window, &seg_prefix, policy));
+            assert_eq!(bits(&flat), bits(&seg), "{policy:?} rows {rows}: logits");
+            assert_eq!(
+                snapshot(flat.state),
+                snapshot(seg.state),
+                "{policy:?} rows {rows}: retained state"
+            );
+        }
+    }
+
+    let mut flat_state = flat_prefix.clone();
+    let mut seg_state = seg_prefix.clone();
+    let (mut flat_secs, mut seg_secs) = (0.0f64, 0.0f64);
+    for step in 0..chain_steps {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let flat = with_kv_segments(None, || {
+            run(&token, &flat_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&flat.logits]);
+        flat_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let seg = with_kv_segments(segmented, || {
+            run(&token, &seg_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&seg.logits]);
+        seg_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&flat), bits(&seg), "singleton step {step}");
+        flat_state = flat.state;
+        seg_state = seg.state;
+    }
+    assert_eq!(snapshot(flat_state), snapshot(seg_state), "chain state");
+    eprintln!(
+        "KV_SEGMENTS_VS_FLAT limits={min_tokens},{seal_tokens} chain{chain_steps} flat_ms={:.1} segmented_ms={:.1}",
+        flat_secs * 1e3,
+        seg_secs * 1e3
+    );
+}
