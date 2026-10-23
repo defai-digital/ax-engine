@@ -1461,7 +1461,8 @@ fn flash_next_fused_matches_eager_on_real_pack() {
         // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
         // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu,
         // 24 q/k rotations for the qsa_rope halves (the 96-id prompt stays
-        // inside the dense context limit, so the indexer never runs).
+        // inside the dense context limit, so the indexer never runs), 12
+        // output gates for qsa_gate and 48 routing tails for moe_route_tail.
         // Deliberately loose lower bounds.
         let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
             30
@@ -1469,6 +1470,8 @@ fn flash_next_fused_matches_eager_on_real_pack() {
             40
         } else if stretch.name().starts_with("qsa_rope") {
             20
+        } else if stretch.name() == "qsa_gate" {
+            10
         } else {
             48
         };
@@ -1545,7 +1548,8 @@ fn flash_next_fused_matches_eager_on_real_pack() {
         // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
         // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu,
         // 24 q/k rotations for the qsa_rope halves (the 96-id prompt stays
-        // inside the dense context limit, so the indexer never runs).
+        // inside the dense context limit, so the indexer never runs), 12
+        // output gates for qsa_gate and 48 routing tails for moe_route_tail.
         // Deliberately loose lower bounds.
         let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
             30
@@ -1553,6 +1557,8 @@ fn flash_next_fused_matches_eager_on_real_pack() {
             40
         } else if stretch.name().starts_with("qsa_rope") {
             20
+        } else if stretch.name() == "qsa_gate" {
+            10
         } else {
             48
         };
@@ -2138,6 +2144,8 @@ fn flash_next_long_context_arms_match_baseline_on_real_pack() {
             applied_for_test(Stretch::QsaRopeLo),
             applied_for_test(Stretch::QsaRopeHi),
         );
+        let gate_before = applied_for_test(Stretch::QsaGate);
+        let tail_before = applied_for_test(Stretch::MoeRouteTail);
         let (arm, dispatches) = observe(fuse, metal);
         assert_eq!(arm.logits.len(), baseline.logits.len());
         for ((label, expected), (_, actual)) in baseline.logits.iter().zip(&arm.logits) {
@@ -2153,15 +2161,31 @@ fn flash_next_long_context_arms_match_baseline_on_real_pack() {
             applied_for_test(Stretch::QsaRopeLo),
             applied_for_test(Stretch::QsaRopeHi),
         );
+        let gate_after = applied_for_test(Stretch::QsaGate);
+        let tail_after = applied_for_test(Stretch::MoeRouteTail);
         if fuse {
             // 12 QSA layers x (attention q, attention k, indexer q) per decode
-            // row at least over the 16-step chain.
+            // row at least over the 16-step chain, 12 output gates and 48
+            // routing tails per row.
             assert!(
                 rope_after.0 - rope_before.0 >= 16 * 36 && rope_after.1 - rope_before.1 >= 16 * 36,
                 "{name}: QSA rotary stretches applied only {rope_before:?} -> {rope_after:?}"
             );
+            assert!(
+                gate_after - gate_before >= 16 * 10,
+                "{name}: QsaGate applied only {gate_before} -> {gate_after}"
+            );
+            assert!(
+                tail_after - tail_before >= 16 * 40,
+                "{name}: MoeRouteTail applied only {tail_before} -> {tail_after}"
+            );
         } else {
             assert_eq!(rope_before, rope_after, "{name}: stretches ran while off");
+            assert_eq!(gate_before, gate_after, "{name}: QsaGate ran while off");
+            assert_eq!(
+                tail_before, tail_after,
+                "{name}: MoeRouteTail ran while off"
+            );
         }
         eprintln!("LONG_ARM {name}: identical, gdn kernel dispatches {dispatches}");
     }

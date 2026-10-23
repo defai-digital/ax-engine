@@ -1,6 +1,6 @@
 //! Compiled elementwise stretches of the Qwen 3.8 Flash Next (`qwen4_exp`)
 //! layers, shared by the gated residual, the gated delta network, the QSA
-//! rotary application and the MoE tails.
+//! rotary application, the attention output gate and the MoE tails.
 //!
 //! Why this exists: a decode step builds on the order of 10k MLX ops, and host
 //! graph construction dominates the step. These layers spend most of those ops
@@ -95,7 +95,9 @@ fn max_rows() -> i32 {
 /// probed bit-identical as well; the selected-expert index read-back and the
 /// expert gathers stay outside every stretch. The two halves of the QSA rotary
 /// product were probed bit-identical too; the half-table slices, the final
-/// concatenate and the tail pass-through stay outside every stretch.
+/// concatenate and the tail pass-through stay outside every stretch. The QSA
+/// output gate and the MoE routing tail (whose per-row sum reduction is kept
+/// exactly like the `gdn_l2_sum` reduction) were probed bit-identical too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Stretch {
     HcNorm,
@@ -115,11 +117,13 @@ pub(crate) enum Stretch {
     MoeCombine,
     QsaRopeLo,
     QsaRopeHi,
+    QsaGate,
+    MoeRouteTail,
 }
 
 impl Stretch {
     /// Mask order; [`parse_mask`] indexes with [`Stretch::index`].
-    pub(crate) const ALL: [Stretch; 17] = [
+    pub(crate) const ALL: [Stretch; 19] = [
         Stretch::HcNorm,
         Stretch::HcLow,
         Stretch::HcMix,
@@ -137,6 +141,8 @@ impl Stretch {
         Stretch::MoeCombine,
         Stretch::QsaRopeLo,
         Stretch::QsaRopeHi,
+        Stretch::QsaGate,
+        Stretch::MoeRouteTail,
     ];
 
     /// Width of every mask, counter and forced-bit array.
@@ -162,6 +168,8 @@ impl Stretch {
             Stretch::MoeCombine => "moe_combine",
             Stretch::QsaRopeLo => "qsa_rope_lo",
             Stretch::QsaRopeHi => "qsa_rope_hi",
+            Stretch::QsaGate => "qsa_gate",
+            Stretch::MoeRouteTail => "moe_route_tail",
         }
     }
 
@@ -650,11 +658,11 @@ mod tests {
         const ALL: [bool; Stretch::COUNT] = [true; Stretch::COUNT];
         let norm_only = [
             true, false, false, false, false, false, false, false, false, false, false, false,
-            false, false, false, false, false,
+            false, false, false, false, false, false, false,
         ];
         let norm_and_beta = [
             true, false, false, false, false, true, false, false, false, false, false, false,
-            false, false, false, false, false,
+            false, false, false, false, false, false, false,
         ];
 
         assert_eq!(
@@ -677,6 +685,8 @@ mod tests {
                 "moe_combine",
                 "qsa_rope_lo",
                 "qsa_rope_hi",
+                "qsa_gate",
+                "moe_route_tail",
             ],
             "mask order and names must not drift"
         );

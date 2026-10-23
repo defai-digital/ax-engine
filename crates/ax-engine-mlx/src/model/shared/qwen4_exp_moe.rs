@@ -17,6 +17,7 @@ use super::qwen4_exp_fused::{self, Stretch};
 use super::qwen4_exp_residual::validate_projection;
 use super::utils::{ProjectionBatchPolicy, qw_gather, qw_with_policy, squeeze_switch_singleton};
 use crate::expert_stream::{ExpertLayerSource, LayerExpertStack};
+use crate::qwen4_exp_qsa::dtype_key;
 use crate::weights::QuantizedWeight;
 
 /// Expert projections already resident in unified memory.
@@ -224,6 +225,42 @@ fn combine(
         crate::model::qwen4_exp::profiling::dump("moe_shared_output", &[&shared_output]);
     }
     combined
+}
+
+/// Closure body of the routing tail: the per-row sum normalize plus the cast
+/// back to the logits dtype, with the output dtype baked in. The reduction is
+/// the same op the eager path runs, kept inside the body exactly like the
+/// `gdn_l2_sum` reduction.
+fn moe_route_tail_closure(out_dtype: MlxDtype) -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(move |inputs| {
+        let routing = inputs.get(0);
+        vec![astype(
+            &divide(&routing, &sum_axis(&routing, -1, true, None), None),
+            out_dtype,
+            None,
+        )]
+    })
+}
+
+/// The normalized routing tail: divide each row by its sum and cast back to
+/// the logits dtype, compiled as one stretch when [`Stretch::MoeRouteTail`]
+/// applies. `rows` is the row count of `routing`; the eager fallback is the
+/// original op sequence.
+fn route_tail(routing: &MlxArray, out_dtype: MlxDtype, rows: i32) -> MlxArray {
+    if let Some(tail) = qwen4_exp_fused::apply(
+        Stretch::MoeRouteTail,
+        rows,
+        [dtype_key(out_dtype), 0, 0, 0],
+        || moe_route_tail_closure(out_dtype),
+        &[routing],
+    ) {
+        return tail;
+    }
+    astype(
+        &divide(routing, &sum_axis(routing, -1, true, None), None),
+        out_dtype,
+        None,
+    )
 }
 
 impl Qwen4ExpMoe {
@@ -490,11 +527,10 @@ impl Qwen4ExpMoe {
         let (indices, routing) =
             top_k_by_argpartition(&probabilities, self.experts, self.top_k, false);
         let routing = if self.normalize_top_k {
-            divide(&routing, &sum_axis(&routing, -1, true, None), None)
+            route_tail(&routing, logits.dtype(), routing.shape()[1])
         } else {
-            routing
+            astype(&routing, logits.dtype(), None)
         };
-        let routing = astype(&routing, logits.dtype(), None);
         #[cfg(test)]
         {
             crate::model::qwen4_exp::profiling::dump("moe_router_logits", &[&logits]);
@@ -1730,5 +1766,207 @@ mod tests {
                 stretch.name()
             );
         }
+    }
+
+    /// The `MoeRouteTail` stretch - the per-row sum normalize plus the cast
+    /// back to the logits dtype - against forced eager and the original
+    /// inline ops on adversarial routing, including all-zero rows (the sum is
+    /// 0, so the divide is NaN on both paths) and rows whose f32 sum
+    /// overflows to infinity.
+    #[test]
+    fn moe_route_tail_matches_eager_on_adversarial_inputs() {
+        let inline_tail = |routing: &MlxArray, out_dtype: MlxDtype| {
+            astype(
+                &divide(routing, &sum_axis(routing, -1, true, None), None),
+                out_dtype,
+                None,
+            )
+        };
+        for (dtype_index, out_dtype) in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16]
+            .into_iter()
+            .enumerate()
+        {
+            for rows in 1..=8i32 {
+                for seed in 0..5u64 {
+                    let mut rng = XorShift64::new(
+                        dtype_index as u64 * 1_000_003 + rows as u64 * 29 + seed * 613 + 7,
+                    );
+                    let routing =
+                        adversarial_array(&mut rng, &[1, rows, 10], 3.0, MlxDtype::Float32);
+                    let inline_bits = widened_bits(&inline_tail(&routing, out_dtype));
+                    let eager = {
+                        let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                        route_tail(&routing, out_dtype, rows)
+                    };
+                    assert_eq!(
+                        widened_bits(&eager),
+                        inline_bits,
+                        "eager route tail drifted from the inline ops \
+                         ({out_dtype:?}, rows {rows}, seed {seed})"
+                    );
+
+                    qwen4_exp_fused::reset_registry_for_test();
+                    let before = qwen4_exp_fused::applied_for_test(Stretch::MoeRouteTail);
+                    let fused = {
+                        let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                        route_tail(&routing, out_dtype, rows)
+                    };
+                    assert!(
+                        qwen4_exp_fused::applied_for_test(Stretch::MoeRouteTail) > before,
+                        "MoeRouteTail never applied \
+                         ({out_dtype:?}, rows {rows}, seed {seed})"
+                    );
+                    assert_eq!(
+                        widened_bits(&fused),
+                        inline_bits,
+                        "fused route tail diverged ({out_dtype:?}, rows {rows}, seed {seed})"
+                    );
+                }
+
+                // All-zero rows: the per-row sum is 0, the divide is 0/0, and
+                // both paths must cast the same NaN pattern.
+                let zeros = zeros(&[1, rows, 10]);
+                let inline_bits = widened_bits(&inline_tail(&zeros, out_dtype));
+                qwen4_exp_fused::reset_registry_for_test();
+                let fused = {
+                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    route_tail(&zeros, out_dtype, rows)
+                };
+                assert_eq!(
+                    widened_bits(&fused),
+                    inline_bits,
+                    "all-zero routing rows diverged ({out_dtype:?}, rows {rows})"
+                );
+
+                // Rows whose f32 sum overflows to infinity divide to zero on
+                // both paths.
+                let data = vec![3.0e38f32; (rows * 10) as usize];
+                let huge = MlxArray::from_raw_data(
+                    data.as_ptr().cast(),
+                    std::mem::size_of_val(data.as_slice()),
+                    &[1, rows, 10],
+                    MlxDtype::Float32,
+                );
+                let inline_bits = widened_bits(&inline_tail(&huge, out_dtype));
+                qwen4_exp_fused::reset_registry_for_test();
+                let fused = {
+                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    route_tail(&huge, out_dtype, rows)
+                };
+                assert_eq!(
+                    widened_bits(&fused),
+                    inline_bits,
+                    "overflowing-sum routing rows diverged ({out_dtype:?}, rows {rows})"
+                );
+            }
+        }
+        qwen4_exp_fused::reset_registry_for_test();
+
+        // The registry is never reset across dtypes: the key must select one
+        // closure per output dtype, and a revisited dtype must reuse its
+        // entry without stale specialisation.
+        for (dtype_index, out_dtype) in [
+            MlxDtype::Float32,
+            MlxDtype::Bfloat16,
+            MlxDtype::Float16,
+            MlxDtype::Bfloat16,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut rng = XorShift64::new(4_242 + dtype_index as u64);
+            let routing = adversarial_array(&mut rng, &[1, 2, 10], 2.0, MlxDtype::Float32);
+            let inline_bits = widened_bits(&inline_tail(&routing, out_dtype));
+            let eager = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                route_tail(&routing, out_dtype, 2)
+            };
+            assert_eq!(
+                widened_bits(&eager),
+                inline_bits,
+                "{out_dtype:?}: eager drifted from the inline ops"
+            );
+            let before = qwen4_exp_fused::applied_for_test(Stretch::MoeRouteTail);
+            let fused = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                route_tail(&routing, out_dtype, 2)
+            };
+            assert!(
+                qwen4_exp_fused::applied_for_test(Stretch::MoeRouteTail) > before,
+                "{out_dtype:?}: the fused path must run after a dtype switch"
+            );
+            assert_eq!(
+                widened_bits(&fused),
+                inline_bits,
+                "{out_dtype:?} must match the inline ops after a dtype switch"
+            );
+        }
+        qwen4_exp_fused::reset_registry_for_test();
+
+        // Rows past the fuse cap never apply the stretch and still get the
+        // eager result.
+        for rows in [9i32, 16] {
+            let mut rng = XorShift64::new(777 + rows as u64);
+            let routing = adversarial_array(&mut rng, &[1, rows, 10], 2.0, MlxDtype::Float32);
+            let eager = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                route_tail(&routing, MlxDtype::Bfloat16, rows)
+            };
+            let before = qwen4_exp_fused::applied_for_test(Stretch::MoeRouteTail);
+            let fused = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                route_tail(&routing, MlxDtype::Bfloat16, rows)
+            };
+            assert_eq!(
+                qwen4_exp_fused::applied_for_test(Stretch::MoeRouteTail),
+                before,
+                "rows {rows} must stay above the fuse cap (MoeRouteTail)"
+            );
+            assert_eq!(
+                widened_bits(&fused),
+                widened_bits(&eager),
+                "rows {rows} must equal the eager result"
+            );
+        }
+        qwen4_exp_fused::reset_registry_for_test();
+
+        // An injected apply failure tombstones the stretch, falls back to the
+        // eager ops bit for bit, and the tombstone holds on the next call.
+        let mut rng = XorShift64::new(99);
+        let routing = adversarial_array(&mut rng, &[1, 1, 10], 2.0, MlxDtype::Float32);
+        let eager = {
+            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+            route_tail(&routing, MlxDtype::Bfloat16, 1)
+        };
+        let eager_bits = widened_bits(&eager);
+        qwen4_exp_fused::reset_registry_for_test();
+        let injected = {
+            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+            qwen4_exp_fused::fail_next_apply_for_test(Stretch::MoeRouteTail);
+            route_tail(&routing, MlxDtype::Bfloat16, 1)
+        };
+        assert_eq!(
+            widened_bits(&injected),
+            eager_bits,
+            "the result with an injected failure diverged"
+        );
+        assert!(
+            qwen4_exp_fused::tombstoned_for_test(Stretch::MoeRouteTail),
+            "the injected failure must tombstone"
+        );
+        let after = {
+            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+            route_tail(&routing, MlxDtype::Bfloat16, 1)
+        };
+        assert_eq!(
+            widened_bits(&after),
+            eager_bits,
+            "the post-tombstone result diverged"
+        );
+        assert!(
+            qwen4_exp_fused::tombstoned_for_test(Stretch::MoeRouteTail),
+            "the tombstone must hold on the next call"
+        );
+        qwen4_exp_fused::reset_registry_for_test();
     }
 }

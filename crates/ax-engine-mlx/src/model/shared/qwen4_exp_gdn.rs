@@ -569,13 +569,17 @@ impl Qwen4ExpGdn {
             prefill
         } else {
             let native = if seq == 1 && super::qwen4_exp_gdn_metal::enabled() {
-                let (q, k) = crate::flash_next_gdn::expand_heads(&q, &k, hv);
-                super::qwen4_exp_gdn_metal::singleton(&q, &k, &v, &decay, &beta, &recurrent)?
+                // The grouped kernel reads the unexpanded key heads directly, so
+                // decode skips the two per-layer `expand_heads` gathers.
+                super::qwen4_exp_gdn_metal::singleton_grouped(
+                    &q, &k, &v, &decay, &beta, &recurrent,
+                )?
             } else {
                 None
             };
             match native {
                 Some(output) => output,
+                // The portable recurrence expands the key heads itself.
                 None => crate::flash_next_gdn::portable_recurrence(
                     &q, &k, &v, &decay, &beta, &recurrent,
                 )?,

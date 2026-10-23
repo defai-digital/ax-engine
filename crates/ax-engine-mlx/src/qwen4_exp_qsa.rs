@@ -480,8 +480,15 @@ impl QsaSelection {
 pub struct QsaIndexer {
     config: QsaConfig,
     qk_proj: QuantizedWeight,
+    /// Raw gains; production reads the pre-cast f32 copies below.
+    #[cfg_attr(not(test), allow(dead_code))]
     q_norm: MlxArray,
+    #[cfg_attr(not(test), allow(dead_code))]
     k_norm: MlxArray,
+    /// The gains widened to f32 once in the constructor: the cast is a constant
+    /// of the layer, so every RMS call skips rebuilding it.
+    q_norm_f32: MlxArray,
+    k_norm_f32: MlxArray,
 }
 
 impl QsaIndexer {
@@ -494,11 +501,15 @@ impl QsaIndexer {
         )?;
         validate_gain("q_norm", &weights.q_norm, config.head_dim)?;
         validate_gain("k_norm", &weights.k_norm, config.head_dim)?;
+        let q_norm_f32 = astype(&weights.q_norm, MlxDtype::Float32, None);
+        let k_norm_f32 = astype(&weights.k_norm, MlxDtype::Float32, None);
         Ok(Self {
             config,
             qk_proj: weights.qk_proj,
             q_norm: weights.q_norm,
             k_norm: weights.k_norm,
+            q_norm_f32,
+            k_norm_f32,
         })
     }
 
@@ -644,7 +655,7 @@ impl QsaIndexer {
         let raw_keys = slice_last_dim(&projected, cfg.query_width(), cfg.proj_out(), None);
         let queries = reshape(&queries, &[batch, seq, cfg.query_heads, cfg.head_dim], None);
         let raw_keys = reshape(&raw_keys, &[batch, seq, cfg.head_dim], None);
-        let queries = rms_with_gain(&queries, &self.q_norm, cfg.rms_eps);
+        let queries = rms_with_scale_f32(&queries, &self.q_norm_f32, cfg.rms_eps);
         let queries = apply_qsa_rotary_offset(
             &queries,
             cfg.rotary_dim,
@@ -674,7 +685,7 @@ impl QsaIndexer {
                 &staged_keys,
                 n_complete,
                 cfg,
-                &self.k_norm,
+                &self.k_norm_f32,
                 media_active,
             )?;
             #[cfg(test)]
@@ -806,11 +817,23 @@ fn project(x: &MlxArray, weight: &QuantizedWeight) -> MlxArray {
     }
 }
 
+/// RMS norm with a gain cast per call, kept for callers without a pre-cast
+/// gain and for the differential tests of [`rms_with_scale_f32`].
+#[cfg_attr(not(test), allow(dead_code))]
 fn rms_with_gain(x: &MlxArray, weight: &MlxArray, eps: f32) -> MlxArray {
     let dtype = x.dtype();
     let x32 = astype(x, MlxDtype::Float32, None);
     let scale = astype(weight, MlxDtype::Float32, None);
     astype(&rms_norm(&x32, Some(&scale), eps, None), dtype, None)
+}
+
+/// RMS norm with the gain already widened to f32: callers holding the layer's
+/// cached `*_norm_f32` skip the per-call `astype` of the gain, and the result
+/// is bit-identical to [`rms_with_gain`].
+fn rms_with_scale_f32(x: &MlxArray, scale_f32: &MlxArray, eps: f32) -> MlxArray {
+    let dtype = x.dtype();
+    let x32 = astype(x, MlxDtype::Float32, None);
+    astype(&rms_norm(&x32, Some(scale_f32), eps, None), dtype, None)
 }
 
 /// Identity of one QSA rotary cos/sin table. The floats compare by raw bits:
@@ -1002,8 +1025,9 @@ fn apply_rotary_trig_shaped(
 /// The rotary closure bodies bake in no scalar and read their dtype from the
 /// inputs, but MLX still traces one body per input dtype, so the registry key
 /// must select it: a past key without the dtype reused a closure across a
-/// dtype switch.
-fn dtype_key(dtype: MlxDtype) -> i64 {
+/// dtype switch. Stretches that bake the dtype into the closure (the QSA
+/// output gate, the MoE routing tail) also key on it.
+pub(crate) fn dtype_key(dtype: MlxDtype) -> i64 {
     match dtype {
         MlxDtype::Float32 => 0,
         MlxDtype::Float16 => 1,
@@ -1260,9 +1284,9 @@ fn pooled_block_keys(
     keys: &MlxArray,
     n_complete: i32,
     cfg: QsaConfig,
-    k_norm: &MlxArray,
+    k_norm_f32: &MlxArray,
 ) -> Result<MlxArray> {
-    pooled_block_keys_range(keys, 0, n_complete, cfg, k_norm)
+    pooled_block_keys_range(keys, 0, n_complete, cfg, k_norm_f32)
 }
 
 /// Pooled block keys of the complete blocks `[first_block, n_complete)`.
@@ -1277,7 +1301,7 @@ fn pooled_block_keys_range(
     first_block: i32,
     n_complete: i32,
     cfg: QsaConfig,
-    k_norm: &MlxArray,
+    k_norm_f32: &MlxArray,
 ) -> Result<MlxArray> {
     if first_block < 0 || first_block >= n_complete {
         return Err(QsaError::InvalidScalar("pooled block range"));
@@ -1294,7 +1318,7 @@ fn pooled_block_keys_range(
     let summed = sum_axis(&grouped_f32, 2, false, None);
     let mean = divide(&summed, &MlxArray::from_f32(ratio as f32), None);
     let pooled = astype(&mean, keys.dtype(), None);
-    let pooled = rms_with_gain(&pooled, k_norm, cfg.rms_eps);
+    let pooled = rms_with_scale_f32(&pooled, k_norm_f32, cfg.rms_eps);
     Ok(rope_block_starts(
         &pooled,
         cfg.rotary_dim,
@@ -1317,7 +1341,7 @@ fn pooled_blocks_for(
     keys: &MlxArray,
     n_complete: i32,
     cfg: QsaConfig,
-    k_norm: &MlxArray,
+    k_norm_f32: &MlxArray,
     media_active: bool,
 ) -> Result<MlxArray> {
     let reusable = match &cache.pooled {
@@ -1327,12 +1351,12 @@ fn pooled_blocks_for(
         _ => None,
     };
     let Some(cached) = reusable else {
-        return pooled_block_keys(keys, n_complete, cfg, k_norm);
+        return pooled_block_keys(keys, n_complete, cfg, k_norm_f32);
     };
     if cached.n_blocks == n_complete {
         return Ok(cached.blocks.clone());
     }
-    let new = pooled_block_keys_range(keys, cached.n_blocks, n_complete, cfg, k_norm)?;
+    let new = pooled_block_keys_range(keys, cached.n_blocks, n_complete, cfg, k_norm_f32)?;
     Ok(concatenate(&[&cached.blocks, &new], 1, None))
 }
 
@@ -2037,6 +2061,70 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// RMS with a pre-widened f32 gain must equal RMS with the raw gain bit
+    /// for bit in every dtype: the constructor-cached gain only removes the
+    /// per-call `astype`, never changes the arithmetic.
+    #[test]
+    fn rms_with_scale_f32_matches_rms_with_gain() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for rows in [1, 3] {
+                let x = rotary_input(&[1, rows, 32], dtype);
+                let gain = astype(
+                    &array_f32(&wave(32, 0.13, 0.4, 1.1), &[32]),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                let with_gain = rms_with_gain(&x, &gain, EPS);
+                let with_scale =
+                    rms_with_scale_f32(&x, &astype(&gain, MlxDtype::Float32, None), EPS);
+                assert_eq!(
+                    raw_bits(&with_gain),
+                    raw_bits(&with_scale),
+                    "{dtype:?} rows {rows}: pre-widened gain diverged"
+                );
+            }
+        }
+    }
+
+    /// The constructor caches both gains widened to f32, and the cache is
+    /// exactly `astype(gain)`.
+    #[test]
+    fn indexer_constructor_caches_the_f32_gains() {
+        let head_dim = 8;
+        let indexer = QsaIndexer::new(
+            QsaConfig::new(2, 1, head_dim, 8, 2, 4, 16, EPS, BASE).unwrap(),
+            QsaIndexerWeights {
+                qk_proj: QuantizedWeight::new(
+                    array_f32(&wave((2 + 1) * head_dim * 16, 0.05, 0.3, 0.1), &[24, 16]),
+                    None,
+                    None,
+                ),
+                q_norm: astype(
+                    &array_f32(&wave(head_dim, 0.21, 0.5, 1.2), &[head_dim as i32]),
+                    MlxDtype::Bfloat16,
+                    None,
+                ),
+                k_norm: astype(
+                    &array_f32(&wave(head_dim, 0.07, 0.3, 0.9), &[head_dim as i32]),
+                    MlxDtype::Float16,
+                    None,
+                ),
+            },
+        )
+        .unwrap();
+        for (name, gain, cached) in [
+            ("q_norm", &indexer.q_norm, &indexer.q_norm_f32),
+            ("k_norm", &indexer.k_norm, &indexer.k_norm_f32),
+        ] {
+            assert_eq!(cached.dtype(), MlxDtype::Float32, "{name} cache dtype");
+            assert_eq!(
+                raw_bits(cached),
+                raw_bits(&astype(gain, MlxDtype::Float32, None)),
+                "{name}: the cached f32 gain drifted from astype(gain)"
+            );
         }
     }
 
@@ -3033,12 +3121,12 @@ mod tests {
         keys: &MlxArray,
         full: &MlxArray,
         cfg: QsaConfig,
-        k_norm: &MlxArray,
+        k_norm_f32: &MlxArray,
         first: i32,
         n_complete: i32,
         label: &str,
     ) {
-        let new = pooled_block_keys_range(keys, first, n_complete, cfg, k_norm).unwrap();
+        let new = pooled_block_keys_range(keys, first, n_complete, cfg, k_norm_f32).unwrap();
         let joined = if first == 0 {
             new
         } else {
@@ -3182,7 +3270,7 @@ mod tests {
             let keys = next_cache.keys().unwrap();
             let n_complete = keys.shape()[1] / ratio;
             if n_complete > 0 {
-                let expected = pooled_block_keys(keys, n_complete, cfg, &model.k_norm).unwrap();
+                let expected = pooled_block_keys(keys, n_complete, cfg, &model.k_norm_f32).unwrap();
                 assert_eq!(
                     raw_bits(next_cache.pooled_blocks().unwrap()),
                     raw_bits(&expected),
@@ -3259,10 +3347,11 @@ mod tests {
         // The gate exists because the media rotation really does differ.
         let warmed_keys = actual.next_cache().keys().unwrap();
         let n_complete = warmed_keys.shape()[1] / cfg.compress_ratio;
-        let text_blocks = pooled_block_keys(warmed_keys, n_complete, cfg, &model.k_norm).unwrap();
+        let text_blocks =
+            pooled_block_keys(warmed_keys, n_complete, cfg, &model.k_norm_f32).unwrap();
         let media_blocks = {
             let _scope = scoped_media(Some(media(positions.clone(), 0)));
-            pooled_block_keys(warmed_keys, n_complete, cfg, &model.k_norm).unwrap()
+            pooled_block_keys(warmed_keys, n_complete, cfg, &model.k_norm_f32).unwrap()
         };
         assert_ne!(
             raw_bits(&text_blocks),
@@ -3339,7 +3428,7 @@ mod tests {
                     // No new block completed: the cached ones are reused as is.
                     assert_eq!(raw_bits(blocks), base_bits.as_slice());
                 }
-                let expected = pooled_block_keys(keys, n_complete, cfg, &model.k_norm).unwrap();
+                let expected = pooled_block_keys(keys, n_complete, cfg, &model.k_norm_f32).unwrap();
                 assert_eq!(raw_bits(blocks), raw_bits(&expected), "position {position}");
             }
             cache

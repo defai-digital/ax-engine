@@ -193,6 +193,11 @@ fn rows_i32(array: &MlxArray) -> Option<i32> {
 /// Slice `batch_index` out of one physical segment: `[1, tokens, heads, dim]`.
 fn batch_row(segment: &MlxArray, batch_index: i32) -> MlxArray {
     let shape = segment.shape();
+    if batch_index == 0 && shape[0] == 1 {
+        // The slice would be the identity: cloning is a refcount bump with
+        // the same values and no op.
+        return segment.clone();
+    }
     slice(
         segment,
         &[batch_index, 0, 0, 0],
