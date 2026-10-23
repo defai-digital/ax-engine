@@ -373,6 +373,11 @@ pub(crate) fn try_whole_compiled_qwen_verify(
     cache: &mut MlxKVCache,
     token_offset: usize,
 ) -> Option<(MlxArray, MlxArray)> {
+    // The compiled closure runs the layers itself, so per-layer outputs would
+    // never reach `layer_capture`; a capturing caller takes the layered path.
+    if super::layer_capture::active() {
+        return None;
+    }
     let eligible = qwen_whole_verify_eligible(cfg, weights, cache, seq);
     if seq >= 2 && std::env::var("AX_MLX_MTP_WHOLE_VERIFY_DEBUG").is_ok() {
         WHOLE_VERIFY_DEBUG_ONCE.call_once(|| {

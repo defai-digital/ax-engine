@@ -1593,6 +1593,86 @@ env_flag_default_on!(
     "AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4"
 );
 
+/// `AX_MLX_DFLASH2_DIR`: explicit directory of a z-lab DFlash2 drafter
+/// checkpoint (`config.json` + `model.safetensors`). When unset the runner looks
+/// for `dflash2/` inside the model directory and for the `z-lab/Qwen3.8-27B-DFlash2`
+/// snapshot in the Hugging Face cache. Read once per process.
+pub(crate) fn dflash2_dir() -> Option<&'static std::path::Path> {
+    static CACHED: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var("AX_MLX_DFLASH2_DIR")
+                .ok()
+                .map(|raw| raw.trim().to_owned())
+                .filter(|raw| !raw.is_empty())
+                .map(std::path::PathBuf::from)
+        })
+        .as_deref()
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2` - DFlash2 block speculation for greedy text requests on
+    /// the Qwen 3.8 27B target whenever a drafter checkpoint can be found
+    /// (ADR-045). `--mlx-mtp-policy disabled`, the direct baseline switches and
+    /// a missing drafter keep it off too.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_DFLASH2=0`).
+    dflash2_enabled,
+    "AX_MLX_DFLASH2"
+);
+
+/// Hugging Face hub cache roots to search for the DFlash2 drafter, in priority
+/// order: `HF_HUB_CACHE`, `HF_HOME/hub`, `~/.cache/huggingface/hub`. Read once.
+pub(crate) fn hf_hub_cache_roots() -> &'static [std::path::PathBuf] {
+    static CACHED: OnceLock<Vec<std::path::PathBuf>> = OnceLock::new();
+    CACHED.get_or_init(|| {
+        let var = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .map(|raw| raw.trim().to_owned())
+                .filter(|raw| !raw.is_empty())
+        };
+        let mut roots = Vec::new();
+        if let Some(cache) = var("HF_HUB_CACHE") {
+            roots.push(std::path::PathBuf::from(cache));
+        }
+        if let Some(home) = var("HF_HOME") {
+            roots.push(std::path::PathBuf::from(home).join("hub"));
+        }
+        if let Some(home) = var("HOME") {
+            roots.push(
+                std::path::PathBuf::from(home)
+                    .join(".cache")
+                    .join("huggingface")
+                    .join("hub"),
+            );
+        }
+        roots
+    })
+}
+
+/// `AX_MLX_DFLASH2_WINDOW`: pin the DFlash2 verify window to this many rows
+/// (anchor plus drafts, 3 to the drafter's block size). Unset or `0` lets the
+/// per-request policy choose it from the observed acceptance. Read once per
+/// process.
+pub(crate) fn dflash2_window_override() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_DFLASH2_WINDOW")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|rows| *rows >= 3)
+    })
+}
+
+env_flag!(
+    /// `AX_MLX_DFLASH2_BF16` - keep the DFlash2 drafter in bf16 instead of
+    /// quantizing its large matrices to MXFP4 at load (0.3% more tokens per
+    /// round, about 25% slower drafting). **Default: OFF** (MXFP4).
+    dflash2_bf16_enabled,
+    "AX_MLX_DFLASH2_BF16"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM` - price Flash Next Auto expert
     /// streaming on the bytes the loader actually makes resident, excluding

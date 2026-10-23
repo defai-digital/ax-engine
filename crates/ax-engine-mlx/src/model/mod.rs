@@ -123,6 +123,7 @@ pub use config::{
     LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 
+pub(crate) mod layer_capture;
 pub(crate) mod qwen4_exp;
 #[cfg(test)]
 mod qwen4_exp_integration_tests;
@@ -206,6 +207,31 @@ pub fn layer_forward(
     layer_idx: usize,
     token_offset: usize,
     per_layer_input: Option<&MlxArray>, // [1, seq, per_layer_dim] or None
+    shared_mask: Option<&Option<MlxArray>>,
+) -> MlxArray {
+    let output = layer_forward_uncaptured(
+        cfg,
+        w,
+        hidden,
+        cache,
+        layer_idx,
+        token_offset,
+        per_layer_input,
+        shared_mask,
+    );
+    layer_capture::observe(layer_idx, &output);
+    output
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layer_forward_uncaptured(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    token_offset: usize,
+    per_layer_input: Option<&MlxArray>,
     shared_mask: Option<&Option<MlxArray>>,
 ) -> MlxArray {
     // Nemotron-H owns all of its hybrid mixers (Mamba-2 / attention / MoE);

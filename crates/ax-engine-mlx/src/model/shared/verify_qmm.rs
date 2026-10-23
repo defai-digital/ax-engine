@@ -29,6 +29,10 @@ const MIN_ROUTE_N: i32 = 16_384;
 #[cfg(test)]
 const SPLIT_K_TEST_N: i32 = 16_384;
 const MSG_ROUTE_N: i32 = 100_000;
+/// Widest verify window the affine kernels serve. The accumulators are
+/// `4 * rows` floats per simdgroup, which fits the 32-lane reduction up to 8
+/// rows; 7 and 8 rows serve DFlash2's 8-row windows.
+const AFFINE_MAX_ROWS: i32 = 8;
 const DEFAULT_MSG_SIMDGROUPS: i32 = 8;
 
 /// Minimum output width routed through the verify QMM.
@@ -691,7 +695,7 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
         return None;
     }
     let shape = x.shape();
-    if shape.len() != 3 || shape[0] != 1 || !(3..=6).contains(&shape[1]) {
+    if shape.len() != 3 || shape[0] != 1 || !(3..=AFFINE_MAX_ROWS).contains(&shape[1]) {
         return None;
     }
     let m = shape[1];
@@ -1015,6 +1019,14 @@ mod tests {
     #[test]
     fn four_row_split_k_matches_affine_qmm_on_minimum_routed_shape() {
         assert_route_matches_affine_qmm(SPLIT_K_TEST_N, SPLIT_K_TEST_N, 4, "four-row split-K");
+    }
+
+    #[test]
+    fn wide_windows_of_seven_and_eight_rows_match_affine_qmm() {
+        for m in [7, 8] {
+            assert_route_matches_affine_qmm(SPLIT_K_TEST_N, SPLIT_K_TEST_N, m, "wide split-K");
+            assert_route_matches_affine_qmm(MSG_ROUTE_N, MIN_ROUTE_N, m, "wide multi-simdgroup");
+        }
     }
 
     #[test]

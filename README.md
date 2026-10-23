@@ -567,7 +567,9 @@ single-host median spread, read it as parity there. The strongest signals in
 this campaign are on `long_code` (1.26× over MTPLX) and the MoE pack
 (1.87× over MTPLX at 239.5 vs 127.9 tok/s, where AX is highest in this
 snapshot); the MoE margin reflects MTP-path fit on that architecture and
-suite, not a standing cross-engine ranking. Gemma rows are native-graph
+suite, not a standing cross-engine ranking. The Qwen 3.6 35B-A3B row is
+superseded by the [2026-10-22 rerun](#qwen36-35b-fair-rerun) below: MTPLX 2.12.2
+reads 202.7, not 127.9, and OMLX runs on a correctly prepared pack. Gemma rows are native-graph
 load/decode evidence only — direct AR, not MTP, and not the 6-bit
 recommended publication lane. This is a version-pinned single-host snapshot
 (2026-09-21T07:07:55Z .. 09:48:41Z UTC, sequential lanes), not a permanent
@@ -580,6 +582,39 @@ Artifacts:
 [Qwen family](benchmarks/results/mtp-axq-peer/2026-09-21-apple-m5-max-128gb-qwen-family/) ·
 [Gemma family](benchmarks/results/mtp-axq-peer/2026-09-21-apple-m5-max-128gb-gemma/).
 Chart regenerated deterministically by `scripts/render_m5_peer_2026_09_21.py`.
+
+<a id="qwen36-35b-fair-rerun"></a>
+
+### Qwen 3.6 35B-A3B AXQ 6-bit MTP rerun (2026-10-22, M5 Max 128 GB)
+
+Same pack for every runtime (`AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP` @ `6a4c2207`), the
+latest release of each peer (MTPLX **2.12.2**, OMLX **0.7.2**, mlx-lm **0.32.2**) and AX
+Engine **7.8.0** (branch commit `77242419`, unmerged when recorded). Contract: `flappy` and
+`long_code`, 256 gen, greedy, thinking off, 2 warmups, 5 measured reps, 3 s cooldown, median
+of 20 runs, CPU-idle gate before every lane, each MTP runtime at its own best draft depth.
+Decode / prefill tok/s (prefill: engine-reported; OMLX reports none, its figure is prompt
+tokens over client time to first token):
+
+| Runtime | `flappy` decode / prefill | `long_code` decode / prefill |
+| --- | ---: | ---: |
+| **AX Engine MTP** | **250.6 / 2364** | 242.8 / **3550** |
+| MTPLX 2.12.2 (default depth 3 / best depth 2 on `long_code`) | 202.7 / 1765 | 247.6 / 3136 (255.5 at depth 2) |
+| OMLX 0.7.2 (depth 3) | 207.1 / 1193 | 240.1 / 1963 |
+| mlx-lm 0.32.2 (direct) | 113.9 / 1242 | 113.1 / 2129 |
+| AX Engine direct | 122.4 / 2199 | 121.6 / 3515 |
+
+AX decode is 1.24× MTPLX on `flappy` and 0.98× on `long_code`; AX prefill is 1.13× to
+1.34× MTPLX and about 2× OMLX and mlx-lm; AX has the lowest time to first token (137 and
+204 ms against 185 and 229 for MTPLX). Two findings changed this table from the
+2026-09-21 one. OMLX's MTP head needs all seven RMSNorm gains shifted from raw HF deltas to
+MLX multipliers; the stock AXQ pack leaves three, which gave 3.8% draft acceptance, so
+OMLX now runs on the variant AXQuant's `export-runtime --target omlx` builds (trunk shards
+byte-identical). MTPLX's lead on `long_code` comes from its default prompt-copy drafting
+(`MTPLX_CONTEXT_COPY=0` removes it: 211.1 tok/s there, 214.9 on `flappy`), which AX Engine
+has no counterpart for on this hybrid MoE target; pure MTP head against MTPLX with copy
+off is 1.17× and 1.15× in AX's favour. Single host, signal only. Details:
+[analysis](docs/mtp/qwen36-35b-6bit-peer-m5-2026-10-22.md) ·
+[campaign record](benchmarks/results/mtp-axq-peer/2026-10-22-apple-m5-max-128gb-qwen36-35b-6bit/).
 
 ### Qwen 3.8 Flash Next peer snapshot (2026-10-08, M2 Ultra 192 GB)
 

@@ -290,6 +290,7 @@ bash scripts/check-qa.sh
   scripts/test_source_distribution.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_download_model.py \
+  scripts/test_bench_omlx_prompt_suites.py \
   scripts/test_simulate_mtp_verify_prefix.py \
   scripts/test_probe_hybrid_prefix_reuse.py \
   scripts/test_bench_ax_serving.py \
