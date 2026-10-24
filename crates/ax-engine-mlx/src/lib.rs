@@ -18,6 +18,7 @@ pub(crate) mod gemma4_unified;
 pub mod gemma4_vl;
 pub mod generate;
 pub(crate) mod hardware;
+pub mod idle_residency;
 pub mod kv_block_pool;
 pub mod kv_cache;
 pub(crate) mod minicpm_v;

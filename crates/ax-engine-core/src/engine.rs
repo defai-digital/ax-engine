@@ -246,6 +246,12 @@ impl EngineCore {
         self.runner.native_expert_streaming_active()
     }
 
+    /// One keep-warm GPU copy on this session's runner. False when the runner
+    /// has nothing to touch. Does not change the wired limit.
+    pub fn touch_idle_residency(&self) -> bool {
+        self.runner.touch_idle_residency()
+    }
+
     pub fn embed(
         &self,
         token_ids: &[u32],

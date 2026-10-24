@@ -51,11 +51,15 @@ pub(crate) async fn stream_openai_request(
     incremental_tool_chat: bool,
     reasoning_family: Option<StreamReasoningFamily>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    // Argument deltas are a separate opt-in (`AX_API_INCREMENTAL_TOOL_ARGS`,
+    // default off). The scanner itself still splits content from calls when
+    // `incremental_tool_chat` is set; with the flag off each call is one chunk.
+    let incremental_tool_args = state.env.incremental_tool_args;
     let pipeline = OpenAiStreamPipeline {
         tool_scanner: incremental_tool_chat.then(|| {
             ToolCallStreamScanner::with_incremental(
                 response_options.tool_contract.clone(),
-                response_options.api_polish.0,
+                incremental_tool_args,
             )
         }),
         stop_scanner: StopSequenceScanner::new(response_options.client_stop_sequences.clone()),
@@ -496,7 +500,17 @@ impl OpenAiStreamDriver {
                         }
                     }
                 }
-                let final_sent = if self.calls_emitted > 0 {
+                // `calls_emitted` counts headers as well as finished calls.
+                // A span that already streamed a header and then failed to
+                // parse must not finish `tool_calls` (non-streaming would
+                // have suppressed that span). `parsed_calls` counts only
+                // calls the shared extractor accepted.
+                let parsed_tool_calls = self
+                    .pipeline
+                    .tool_scanner
+                    .as_ref()
+                    .map_or(0, ToolCallStreamScanner::parsed_calls);
+                let final_sent = if parsed_tool_calls > 0 {
                     let chunk = chat_tool_calls_final_chunk(request_id, model_id);
                     send_openai_stream_chunk(tx, &chunk)
                 } else {
@@ -2476,6 +2490,74 @@ mod openai_stream_driver_tests {
                 .collect();
             assert_eq!(reasons, vec!["tool_calls"]);
         }
+    }
+
+    #[test]
+    fn unparsed_tool_span_does_not_finish_tool_calls() {
+        // Incremental deltas off: no header is sent, matching non-streaming,
+        // which suppresses a span that never parses.
+        let partial = "<tool_call>{\"name\":\"lookup\",\"arguments\":{\"city\":\"Tai";
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut driver = chat_driver(&[]);
+        assert!(driver.process_text(&tx, 1, "qwen3", partial.to_string()));
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                response: sample_response(),
+            })
+        ));
+        drop(tx);
+        let payloads = collect_chunk_payloads(&mut rx);
+        let reasons: Vec<_> = payloads
+            .iter()
+            .filter_map(|payload| payload["choices"][0]["finish_reason"].as_str())
+            .collect();
+        assert_eq!(reasons, vec!["stop"]);
+        assert!(
+            payloads
+                .iter()
+                .all(|payload| payload["choices"][0]["delta"]["tool_calls"].is_null()),
+            "a header must not be sent when incremental deltas are off"
+        );
+
+        // Incremental deltas on: the header may already have left, but the
+        // finish reason still must not claim tool_calls when nothing parsed.
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut driver = chat_driver(&[]);
+        driver.pipeline.tool_scanner = Some(ToolCallStreamScanner::with_incremental(None, true));
+        assert!(driver.process_text(&tx, 1, "qwen3", partial.to_string()));
+        assert!(driver.handle_event(
+            &tx,
+            GenerateStreamEvent::Response(GenerateStreamResponseEvent {
+                response: sample_response(),
+            })
+        ));
+        drop(tx);
+        let payloads = collect_chunk_payloads(&mut rx);
+        assert!(
+            payloads
+                .iter()
+                .any(|payload| payload["choices"][0]["delta"]["tool_calls"].is_array()),
+            "the open span streams a header before it fails to parse"
+        );
+        let reasons: Vec<_> = payloads
+            .iter()
+            .filter_map(|payload| payload["choices"][0]["finish_reason"].as_str())
+            .collect();
+        assert_eq!(
+            reasons,
+            vec!["stop"],
+            "finish_reason must not claim tool_calls when no call parsed"
+        );
+        assert_eq!(
+            driver
+                .pipeline
+                .tool_scanner
+                .as_ref()
+                .expect("scanner")
+                .parsed_calls(),
+            0
+        );
     }
 
     #[test]

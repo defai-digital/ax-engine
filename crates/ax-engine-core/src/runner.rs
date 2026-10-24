@@ -392,6 +392,15 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     fn native_expert_streaming_active(&self) -> bool {
         false
     }
+
+    /// Submit one tiny GPU copy so an idle device keeps model buffers wired.
+    ///
+    /// The default is a no-op. The MLX runner overrides it and does not change
+    /// the wired limit. Call only from the thread that owns the runner, and
+    /// never while a request is in flight.
+    fn touch_idle_residency(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) fn successful_runner_output_from_input(input: &RunnerInput) -> RunnerOutput {

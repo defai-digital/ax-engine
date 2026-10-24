@@ -995,26 +995,76 @@ fn count_gemma4_reasoning_tokens(tokens: &[u32], ids: crate::chat::Gemma4Channel
         .fold(0u32, u32::saturating_add)
 }
 
+/// One incremental decode step. `Some(None)` holds an unfinished codepoint.
+/// `None` means the decode is not a monotonic extension of the prefix.
+fn incremental_decode_step(
+    tokenizer: &EngineTokenizer,
+    token: u32,
+    ids: &mut Vec<u32>,
+    prefix: &mut String,
+    prefix_index: &mut usize,
+) -> Option<Option<String>> {
+    if prefix.is_empty() && !ids.is_empty() {
+        let new_prefix = tokenizer.decode(ids, false).ok()?;
+        if !new_prefix.ends_with('\u{FFFD}') {
+            *prefix = new_prefix;
+            *prefix_index = ids.len();
+        }
+    }
+    ids.push(token);
+    let string = tokenizer.decode(ids, false).ok()?;
+    if string.len() > prefix.len() && !string.ends_with('\u{FFFD}') {
+        if !string.starts_with(prefix.as_str()) {
+            return None;
+        }
+        let new_text = string[prefix.len()..].to_string();
+        let kept = ids.len().saturating_sub(*prefix_index);
+        ids.drain(..*prefix_index);
+        *prefix = tokenizer.decode(ids, false).ok()?;
+        *prefix_index = kept;
+        return Some(Some(new_text));
+    }
+    Some(None)
+}
+
 fn count_tagged_reasoning_tokens(
     tokenizer: &EngineTokenizer,
     output_tokens: &[u32],
 ) -> Option<u32> {
-    let mut previous = String::new();
+    // Decode each token against a bounded window (the same state a streaming
+    // decoder keeps) and record byte spans once. A full-prefix decode per
+    // token is quadratic.
+    let mut ids = Vec::new();
+    let mut prefix = String::new();
+    let mut prefix_index = 0usize;
+    let mut text = String::new();
     let mut spans = Vec::with_capacity(output_tokens.len());
-    for index in 0..output_tokens.len() {
-        let prefix = tokenizer.decode(&output_tokens[..=index], false).ok()?;
-        if prefix.len() < previous.len() || !prefix.starts_with(&previous) {
+    for &token in output_tokens {
+        let start = text.len();
+        if let Some(delta) =
+            incremental_decode_step(tokenizer, token, &mut ids, &mut prefix, &mut prefix_index)?
+        {
+            text.push_str(&delta);
+        }
+        spans.push((start, text.len()));
+    }
+    let full = tokenizer.decode(output_tokens, false).ok()?;
+    if text != full {
+        if full.starts_with(&text) {
+            if let Some(last) = spans.last_mut() {
+                last.1 = full.len();
+            }
+            text = full;
+        } else {
             return None;
         }
-        spans.push((previous.len(), prefix.len()));
-        previous = prefix;
     }
-    let Some(ranges) = reasoning_body_byte_ranges(&previous) else {
+    let Some(ranges) = reasoning_body_byte_ranges(&text) else {
         return Some(0);
     };
     let mut count = 0u32;
     for (start, end) in spans {
-        if token_span_is_reasoning(&previous, start, end, &ranges) {
+        if token_span_is_reasoning(&text, start, end, &ranges) {
             count = count.saturating_add(1);
         }
     }

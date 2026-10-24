@@ -181,6 +181,21 @@ impl OpenAiToolContract {
         }
         serde_json::to_string(&Value::Object(object)).unwrap_or(arguments)
     }
+
+    /// True when this tool's declared properties include an alias
+    /// (`file_path` → `filePath` and the other pairs in
+    /// [`argument_aliases`]). Incremental argument streaming would emit the
+    /// model's keys and then fail to extend them with the canonical object.
+    pub(crate) fn arguments_may_be_rewritten(&self, tool_name: &str) -> bool {
+        let canonical = self.canonical_tool_name(tool_name);
+        let Some(shape) = self.tools.get(&canonical) else {
+            return false;
+        };
+        shape
+            .properties
+            .iter()
+            .any(|property| !argument_aliases(property).is_empty())
+    }
 }
 
 fn normalize_tool_name(name: &str) -> String {

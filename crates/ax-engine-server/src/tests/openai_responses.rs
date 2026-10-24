@@ -1128,6 +1128,57 @@ fn usage_reports_reasoning_tokens_from_output_ids_without_double_counting() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn tagged_reasoning_token_count_stays_linear_for_thousands_of_tokens() {
+    let dir = reasoning_word_tokenizer_dir();
+    let tokenizer = EngineTokenizer::from_model_dir(&dir).expect("tokenizer");
+    let mut tokens = Vec::with_capacity(4_002);
+    tokens.push(1);
+    tokens.extend(std::iter::repeat_n(6, 4_000));
+    tokens.push(3);
+    let started = std::time::Instant::now();
+    let count = crate::openai::responses::reasoning_token_count(&tokenizer, &tokens)
+        .expect("aligned decode");
+    let elapsed = started.elapsed();
+    assert_eq!(count, 4_000);
+    assert!(
+        elapsed.as_millis() < 1_500,
+        "counting {len} tokens took {elapsed:?}; a per-token full-prefix decode is quadratic",
+        len = tokens.len()
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn reasoning_word_tokenizer_dir() -> std::path::PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-reasoning-linear-{unique}"));
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join("config.json"), r#"{"eos_token_id":5}"#).expect("config");
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "Whitespace"},
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {"[UNK]": 0, "<think>": 1, "STOP": 2, "</think>": 3, "answer": 4, "<eos>": 5, "w": 6},
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer");
+    dir
+}
+
 fn reasoning_tokenizer_dir() -> std::path::PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

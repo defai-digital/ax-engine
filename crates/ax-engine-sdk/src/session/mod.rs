@@ -688,6 +688,36 @@ impl EngineSession {
         self.core.native_expert_streaming_active()
     }
 
+    /// One idle keep-warm copy on this session's runner.
+    ///
+    /// `&mut self` keeps the call on the worker that owns the session. The
+    /// runner does not change the wired limit. Deterministic and delegated
+    /// runners return false.
+    pub fn touch_idle_gpu_residency(&mut self) -> bool {
+        #[cfg(feature = "mlx-native")]
+        {
+            self.core.touch_idle_residency()
+        }
+        #[cfg(not(feature = "mlx-native"))]
+        {
+            false
+        }
+    }
+
+    /// Host vm-pressure or MLX active bytes over the recommended working set.
+    /// False when the probe is unavailable or this build has no MLX runtime.
+    pub fn idle_residency_under_memory_pressure(&self) -> bool {
+        let _ = self;
+        #[cfg(feature = "mlx-native")]
+        {
+            ax_engine_mlx::idle_residency::sample_under_memory_pressure()
+        }
+        #[cfg(not(feature = "mlx-native"))]
+        {
+            false
+        }
+    }
+
     pub fn core(&self) -> &EngineCore {
         &self.core
     }

@@ -4342,6 +4342,12 @@ struct StagedBatchedPrefill {
 }
 
 impl ExecutionRunner for MlxRunner {
+    fn touch_idle_residency(&self) -> bool {
+        // The worker thread already made this stream the default at load.
+        // Pin it again so the copy and its eval stay on that stream.
+        crate::idle_residency::touch_gpu_residency(&self._stream)
+    }
+
     fn run(&self, input: RunnerInput) -> RunnerOutput {
         // Keep exact arithmetic model-scoped. This prevents one resident Qwen
         // MTP model from changing the projection path of another model in the

@@ -45,6 +45,10 @@ pub use ax_engine_core::{
 };
 #[cfg(feature = "mlx-native")]
 pub use ax_engine_mlx::MlxPrefixCacheStore;
+#[cfg(feature = "mlx-native")]
+pub use ax_engine_mlx::idle_residency::{
+    IdleResidencyConfig, IdleResidencyPolicy, IdleStopReason, IdleTickContext, IdleTickDecision,
+};
 
 pub mod backend;
 mod delegated_http;

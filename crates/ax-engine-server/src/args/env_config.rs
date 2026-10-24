@@ -50,10 +50,19 @@ pub(crate) const AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH_ENV: &str =
 pub(crate) const AX_ENGINE_EMBED_MICROBATCH_QUEUE_CAPACITY_ENV: &str =
     "AX_ENGINE_EMBED_MICROBATCH_QUEUE_CAPACITY";
 pub(crate) const AX_MLX_BATCHED_DECODE_MAX_ENV: &str = "AX_MLX_BATCHED_DECODE_MAX";
+/// Idle GPU keep-warm tick interval in milliseconds. Unset, empty,
+/// non-numeric, or `0` disables. Whitespace is trimmed.
+pub(crate) const AX_MLX_IDLE_TICK_MS_ENV: &str = "AX_MLX_IDLE_TICK_MS";
+/// Seconds to keep ticking after the last request. Unset, empty, or
+/// non-numeric values fall back to 900. Whitespace is trimmed.
+pub(crate) const AX_MLX_IDLE_TICK_MAX_S_ENV: &str = "AX_MLX_IDLE_TICK_MAX_S";
 /// OpenAI/Anthropic API polish (WP12). Default **on**. `0`, `false`, or
 /// `off` (trimmed, `false`/`off` case-insensitive) restores the previous
 /// contract. Anything else, including unset, keeps it on.
 pub(crate) const AX_API_POLISH_ENV: &str = "AX_API_POLISH";
+/// Incremental JSON tool-argument deltas. Default **off**. Only `1`,
+/// `true`, `on`, or `yes` (trimmed, case-insensitive) enable them.
+pub(crate) const AX_API_INCREMENTAL_TOOL_ARGS_ENV: &str = "AX_API_INCREMENTAL_TOOL_ARGS";
 
 /// Start-up-resolved serving configuration sourced from the process
 /// environment.
@@ -148,11 +157,28 @@ pub(crate) struct ServerEnvConfig {
     pub(crate) mlx_batched_decode_max: u64,
     /// `AX_API_POLISH` (default **on**): OpenAI/Anthropic contract polish
     /// (answer-only client stops on the Anthropic direct path, reasoning
-    /// token usage, incremental tool-argument deltas, sorted tool-schema
-    /// keys, `GET /v1/memory`, Anthropic context-overflow remap). Accepted:
-    /// `0`, `false`, or `off` (words case-insensitive) disable it; anything
-    /// else, including unset, keeps it on. Whitespace is trimmed.
+    /// token usage, `GET /v1/memory`, Anthropic context-overflow remap).
+    /// Accepted: `0`, `false`, or `off` (words case-insensitive) disable
+    /// it; anything else, including unset, keeps it on. Whitespace is
+    /// trimmed. Incremental tool-argument deltas are a separate opt-in;
+    /// see [`Self::incremental_tool_args`].
     pub(crate) api_polish: bool,
+    /// `AX_MLX_IDLE_TICK_MS` (default `0` = off): idle GPU keep-warm tick
+    /// interval. Unset, empty, non-numeric, or `0` disables. Whitespace
+    /// is trimmed. The worker ignores a positive interval on delegated
+    /// builds, which have no MLX device to touch.
+    pub(crate) idle_tick_interval: Duration,
+    /// `AX_MLX_IDLE_TICK_MAX_S` (default `900`): seconds to keep ticking
+    /// after the last request. Unset, empty, or non-numeric values fall
+    /// back to 900. Whitespace is trimmed. `0` is a zero window.
+    pub(crate) idle_tick_max_window: Duration,
+    /// `AX_API_INCREMENTAL_TOOL_ARGS` (default **off**): stream JSON
+    /// `<tool_call>` arguments as deltas instead of one final chunk.
+    /// Accepted: `1`, `true`, `on`, or `yes` (trimmed, case-insensitive)
+    /// enable it; every other value, including unset, leaves it off.
+    /// Tools whose argument keys can be canonicalized stay one-shot even
+    /// when this is on.
+    pub(crate) incremental_tool_args: bool,
 }
 
 impl ServerEnvConfig {
@@ -209,6 +235,15 @@ impl ServerEnvConfig {
                 vars(AX_MLX_BATCHED_DECODE_MAX_ENV).as_deref(),
             ),
             api_polish: resolve_api_polish(vars(AX_API_POLISH_ENV).as_deref()),
+            idle_tick_interval: resolve_idle_tick_interval(
+                vars(AX_MLX_IDLE_TICK_MS_ENV).as_deref(),
+            ),
+            idle_tick_max_window: resolve_idle_tick_max_window(
+                vars(AX_MLX_IDLE_TICK_MAX_S_ENV).as_deref(),
+            ),
+            incremental_tool_args: resolve_incremental_tool_args(
+                vars(AX_API_INCREMENTAL_TOOL_ARGS_ENV).as_deref(),
+            ),
         }
     }
 
@@ -230,6 +265,38 @@ impl Default for ServerEnvConfig {
         // The all-keys-unset configuration.
         Self::from_vars(|_| None)
     }
+}
+
+/// Resolve `AX_MLX_IDLE_TICK_MS`. Mirrors `IdleResidencyConfig::from_raw`:
+/// unset, empty, or non-numeric text is `0` (the kill switch).
+fn resolve_idle_tick_interval(raw: Option<&str>) -> Duration {
+    Duration::from_millis(parse_trimmed_u64(raw).unwrap_or(0))
+}
+
+/// Resolve `AX_MLX_IDLE_TICK_MAX_S`. Mirrors `IdleResidencyConfig::from_raw`:
+/// unset, empty, or non-numeric text keeps the 900-second default.
+fn resolve_idle_tick_max_window(raw: Option<&str>) -> Duration {
+    Duration::from_secs(parse_trimmed_u64(raw).unwrap_or(900))
+}
+
+fn parse_trimmed_u64(raw: Option<&str>) -> Option<u64> {
+    let text = raw?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Resolve `AX_API_INCREMENTAL_TOOL_ARGS`. Default off. Trimmed `1`,
+/// `true`, `on`, or `yes` (case-insensitive) opt in.
+pub(crate) fn resolve_incremental_tool_args(raw: Option<&str>) -> bool {
+    raw.is_some_and(|value| {
+        let value = value.trim();
+        value == "1"
+            || value.eq_ignore_ascii_case("true")
+            || value.eq_ignore_ascii_case("on")
+            || value.eq_ignore_ascii_case("yes")
+    })
 }
 
 /// Resolve `AX_API_POLISH`. Same off-switch as
@@ -322,6 +389,64 @@ mod tests {
         assert_eq!(config.embed_microbatch_queue_capacity, 1024);
         assert_eq!(config.mlx_batched_decode_max, 8);
         assert!(config.api_polish);
+        assert_eq!(config.idle_tick_interval, Duration::ZERO);
+        assert_eq!(config.idle_tick_max_window, Duration::from_secs(900));
+        assert!(!config.incremental_tool_args);
+    }
+
+    #[test]
+    fn idle_tick_snapshot_matches_the_mlx_parser() {
+        let resolve = |tick: Option<&str>, window: Option<&str>| {
+            ServerEnvConfig::from_vars(move |key| match key {
+                AX_MLX_IDLE_TICK_MS_ENV => tick.map(str::to_string),
+                AX_MLX_IDLE_TICK_MAX_S_ENV => window.map(str::to_string),
+                _ => None,
+            })
+        };
+        let off = resolve(None, None);
+        assert_eq!(off.idle_tick_interval, Duration::ZERO);
+        assert_eq!(off.idle_tick_max_window, Duration::from_secs(900));
+        let zero = resolve(Some("0"), Some("10"));
+        assert_eq!(zero.idle_tick_interval, Duration::ZERO);
+        assert_eq!(zero.idle_tick_max_window, Duration::from_secs(10));
+        let padded = resolve(Some(" 1500 "), Some(" 30 "));
+        assert_eq!(padded.idle_tick_interval, Duration::from_millis(1500));
+        assert_eq!(padded.idle_tick_max_window, Duration::from_secs(30));
+        let invalid = resolve(Some("no"), Some("later"));
+        assert_eq!(invalid.idle_tick_interval, Duration::ZERO);
+        assert_eq!(invalid.idle_tick_max_window, Duration::from_secs(900));
+        #[cfg(feature = "mlx-native-server")]
+        {
+            for (tick, window) in [
+                (None, None),
+                (Some("0"), Some("10")),
+                (Some(" 1500 "), Some(" 30 ")),
+                (Some("no"), Some("later")),
+                (Some(""), Some("")),
+            ] {
+                let config = resolve(tick, window);
+                let mlx = ax_engine_sdk::IdleResidencyConfig::from_raw(tick, window);
+                assert_eq!(config.idle_tick_interval, mlx.tick_interval());
+                assert_eq!(config.idle_tick_max_window, mlx.max_window());
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_tool_args_default_off_and_explicit_on_enables_it() {
+        let resolve = |value: Option<&str>| {
+            ServerEnvConfig::from_vars(single_var(AX_API_INCREMENTAL_TOOL_ARGS_ENV, value))
+                .incremental_tool_args
+        };
+        assert!(!resolve(None));
+        assert!(!resolve(Some("0")));
+        assert!(!resolve(Some("false")));
+        assert!(!resolve(Some("off")));
+        assert!(!resolve(Some("")));
+        assert!(resolve(Some("1")));
+        assert!(resolve(Some("true")));
+        assert!(resolve(Some("ON")));
+        assert!(resolve(Some(" yes ")));
     }
 
     #[test]

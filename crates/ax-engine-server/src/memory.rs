@@ -109,6 +109,23 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
 mod tests {
     use super::*;
 
+    fn assert_paired_footprint(footprint: &Value, peak: &Value) {
+        let paired = match (footprint, peak) {
+            (Value::Null, Value::Null) => true,
+            (Value::Number(footprint), Value::Number(peak)) => {
+                matches!(
+                    (footprint.as_u64(), peak.as_u64()),
+                    (Some(footprint), Some(peak)) if peak >= footprint
+                )
+            }
+            _ => false,
+        };
+        assert!(
+            paired,
+            "footprint and lifetime peak must both be null or both be u64 with peak >= footprint: {footprint:?} {peak:?}"
+        );
+    }
+
     #[test]
     fn rfc3339_formats_known_unix_timestamps() {
         assert_eq!(rfc3339_from_unix(0, 0), "1970-01-01T00:00:00.000000000Z");
@@ -126,11 +143,10 @@ mod tests {
             sampled_at.contains('T') && sampled_at.ends_with('Z'),
             "{sampled_at}"
         );
-        let footprint = report["phys_footprint_bytes"].as_u64();
-        let peak = report["lifetime_max_phys_footprint_bytes"].as_u64();
-        if let (Some(footprint), Some(peak)) = (footprint, peak) {
-            assert!(peak >= footprint);
-        }
+        assert_paired_footprint(
+            &report["phys_footprint_bytes"],
+            &report["lifetime_max_phys_footprint_bytes"],
+        );
         #[cfg(feature = "mlx-native-server")]
         {
             assert!(report.get("mlx").is_some());

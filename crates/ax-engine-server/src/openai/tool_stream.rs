@@ -70,11 +70,17 @@ pub(crate) struct ToolCallStreamScanner {
     bare_scan_from: usize,
     bare_scan_depth: usize,
     calls_emitted: u32,
+    /// Calls the shared extractor accepted. A streamed header that never
+    /// parses does not count, so the stream must not finish `tool_calls`.
+    parsed_calls: u32,
+    /// Times the canonical arguments were not a continuation of the text
+    /// already streamed. The call closes on that streamed text.
+    argument_continuations_rejected: u32,
     contract: Option<Arc<OpenAiToolContract>>,
-    /// When true, a JSON `<tool_call>` whose arguments are a contiguous
-    /// substring of the client-visible arguments text is emitted as
-    /// argument deltas. `new` leaves this off so existing one-shot callers
-    /// keep a single final chunk.
+    /// When true, a JSON `<tool_call>` whose arguments stay a prefix of the
+    /// canonical arguments text is emitted as argument deltas. `new` leaves
+    /// this off so callers keep a single final chunk. Production streaming
+    /// turns it on only for `AX_API_INCREMENTAL_TOOL_ARGS`.
     incremental: bool,
     /// Header already sent for the open span. A later `Call` is suppressed.
     header_sent: bool,
@@ -106,6 +112,8 @@ impl ToolCallStreamScanner {
             bare_scan_from: 0,
             bare_scan_depth: 0,
             calls_emitted: 0,
+            parsed_calls: 0,
+            argument_continuations_rejected: 0,
             contract,
             incremental,
             header_sent: false,
@@ -117,6 +125,23 @@ impl ToolCallStreamScanner {
     #[cfg(test)]
     pub(crate) fn calls_emitted(&self) -> u32 {
         self.calls_emitted
+    }
+
+    /// Calls the extractor accepted. Headers of spans that never parsed are
+    /// excluded, including when incremental deltas already left the server.
+    pub(crate) fn parsed_calls(&self) -> u32 {
+        self.parsed_calls
+    }
+
+    #[cfg(test)]
+    pub(crate) fn argument_continuations_rejected(&self) -> u32 {
+        self.argument_continuations_rejected
+    }
+
+    #[cfg(test)]
+    fn testing_overwrite_streamed_arguments(&mut self, text: &str) {
+        self.header_sent = true;
+        self.streamed_arguments = text.to_string();
     }
 
     pub(crate) fn push(&mut self, text: &str) -> Vec<ToolScanEvent> {
@@ -136,6 +161,12 @@ impl ToolCallStreamScanner {
     /// it (the XML extractor tolerates a missing closer), otherwise flush the
     /// withheld text as content. Never drops text, never leaves a call half
     /// emitted.
+    ///
+    /// Incremental deltas default off, so a span that fails here never sent a
+    /// header and the caller does not finish `tool_calls`. With
+    /// `AX_API_INCREMENTAL_TOOL_ARGS` on, a header may already have been
+    /// streamed; a span that still fails to parse does not increment
+    /// [`Self::parsed_calls`], and the stream must not claim `tool_calls`.
     pub(crate) fn finish(&mut self) -> Vec<ToolScanEvent> {
         let mut events = self.drain_events(true);
         if let Some(kind) = self.span.take()
@@ -527,9 +558,9 @@ impl ToolCallStreamScanner {
             function.name = contract.canonical_tool_name(&function.name);
             function.arguments = contract.canonical_arguments(&function.name, function.arguments);
         }
+        self.parsed_calls = self.parsed_calls.saturating_add(1);
         if self.header_sent {
-            if function.arguments.starts_with(&self.streamed_arguments) {
-                let rest = &function.arguments[self.streamed_arguments.len()..];
+            if let Some(rest) = function.arguments.strip_prefix(&self.streamed_arguments) {
                 if !rest.is_empty() {
                     events.push(ToolScanEvent::Arguments {
                         id: None,
@@ -537,12 +568,17 @@ impl ToolCallStreamScanner {
                         arguments: rest.to_string(),
                     });
                 }
-            } else if self.streamed_arguments.is_empty() && !function.arguments.is_empty() {
-                events.push(ToolScanEvent::Arguments {
-                    id: None,
-                    name: None,
-                    arguments: function.arguments,
-                });
+            } else {
+                // The canonical text is not a continuation of what the client
+                // already has. Appending it would corrupt the JSON. Close on
+                // the streamed prefix and record the rejection.
+                tracing::warn!(
+                    streamed_bytes = self.streamed_arguments.len(),
+                    canonical_bytes = function.arguments.len(),
+                    "incremental tool arguments are not a prefix of the canonical arguments; closing the call on the streamed text"
+                );
+                self.argument_continuations_rejected =
+                    self.argument_continuations_rejected.saturating_add(1);
             }
             self.header_sent = false;
             self.streamed_arguments.clear();
@@ -576,6 +612,15 @@ impl ToolCallStreamScanner {
         if !progress.arguments_started {
             return;
         }
+        let name = if let Some(contract) = self.contract.as_deref() {
+            if contract.arguments_may_be_rewritten(&name) {
+                self.incremental_blocked = true;
+                return;
+            }
+            contract.canonical_tool_name(&name)
+        } else {
+            name
+        };
         let visible = progress.visible;
         if !self.header_sent {
             let id = format!("call_{}", self.calls_emitted);
@@ -717,7 +762,7 @@ fn partial_json_value(body: &str, start: usize) -> Option<ValueProgress> {
                 live: true,
             })
         }
-        b'{' | b'[' => partial_json_container(body, start),
+        b'{' | b'[' => partial_json_container(body, start, 0),
         b't' | b'f' | b'n' | b'-' | b'0'..=b'9' => partial_json_literal(body, start),
         _ => None,
     }
@@ -787,105 +832,180 @@ fn partial_json_literal(body: &str, start: usize) -> Option<ValueProgress> {
     })
 }
 
-fn partial_json_container(body: &str, start: usize) -> Option<ValueProgress> {
+/// JSON string as `serde_json` would emit it. An incomplete string omits the
+/// closing quote so a later chunk can extend the same literal.
+fn canonical_json_string(decoded: &str, complete: bool) -> String {
+    let mut encoded = serde_json::to_string(decoded).unwrap_or_else(|_| "\"\"".to_string());
+    if !complete {
+        encoded.pop();
+    }
+    encoded
+}
+
+fn canonical_nested_value(body: &str, start: usize, depth: usize) -> Option<ValueProgress> {
+    match body.as_bytes().get(start).copied()? {
+        b'"' => {
+            let (decoded, end, complete) = partial_json_string(body, start)?;
+            Some(ValueProgress {
+                visible: canonical_json_string(&decoded, complete),
+                end,
+                complete,
+                live: true,
+            })
+        }
+        b'{' | b'[' => partial_json_container(body, start, depth.saturating_add(1)),
+        b't' | b'f' | b'n' | b'-' | b'0'..=b'9' => {
+            let progress = partial_json_literal(body, start)?;
+            if !progress.complete {
+                return Some(ValueProgress {
+                    visible: String::new(),
+                    end: progress.end,
+                    complete: false,
+                    live: progress.live,
+                });
+            }
+            let visible = serde_json::from_str::<serde_json::Value>(&progress.visible)
+                .ok()
+                .and_then(|value| serde_json::to_string(&value).ok())
+                .unwrap_or(progress.visible);
+            Some(ValueProgress {
+                visible,
+                end: progress.end,
+                complete: true,
+                live: true,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Canonical JSON for a container, matching `serde_json::to_string` on the
+/// parsed value (sorted keys, compact, serde string escapes). Whitespace or
+/// out-of-order keys set `live` false so the one-shot call path owns them.
+fn partial_json_container(body: &str, start: usize, depth: usize) -> Option<ValueProgress> {
+    if depth > 64 {
+        return None;
+    }
     let bytes = body.as_bytes();
-    let opening = bytes[start];
-    let closing = if opening == b'{' { b'}' } else { b']' };
-    let mut depth = 0i32;
-    let mut index = start;
-    let mut in_string = false;
-    let mut escape = false;
+    let opening = *bytes.get(start)?;
+    let closing = match opening {
+        b'{' => b'}',
+        b'[' => b']',
+        _ => return None,
+    };
+    let mut out = String::new();
+    out.push(char::from(opening));
+    let mut index = start + 1;
     let mut live = true;
-    let mut object_keys: Vec<String> = Vec::new();
-    let mut pending_key: Option<String> = None;
-    let mut key_start = None;
-    while index < bytes.len() {
+    let mut complete = false;
+    let mut need_comma = false;
+    let mut last_key: Option<String> = None;
+    loop {
+        let skipped = skip_ws(body, index);
+        if skipped != index {
+            live = false;
+        }
+        index = skipped;
+        if index >= body.len() {
+            break;
+        }
         let byte = bytes[index];
-        if in_string {
-            if escape {
-                escape = false;
-            } else if byte == b'\\' {
-                escape = true;
-            } else if byte == b'"' {
-                in_string = false;
-                if depth == 1 && opening == b'{' {
-                    if let Some(start_key) = key_start.take() {
-                        pending_key = Some(body[start_key..index].to_string());
-                    }
-                }
+        if byte == closing {
+            out.push(char::from(closing));
+            index += 1;
+            complete = true;
+            break;
+        }
+        if byte == b',' {
+            if !need_comma {
+                return None;
             }
             index += 1;
+            need_comma = false;
             continue;
         }
-        match byte {
-            b'"' => {
-                in_string = true;
-                if depth == 1 && opening == b'{' && pending_key.is_none() {
-                    key_start = Some(index + 1);
-                }
-                index += 1;
+        if opening == b'{' {
+            if byte != b'"' {
+                return None;
             }
-            b'{' | b'[' => {
-                depth += 1;
-                index += 1;
+            let (key, next, key_complete) = partial_json_string(body, index)?;
+            if !key_complete {
+                break;
             }
-            b'}' | b']' => {
-                depth -= 1;
-                index += 1;
-                if depth == 0 {
-                    let raw = &body[start..index];
-                    if byte != closing {
-                        return None;
-                    }
-                    if !live {
-                        return Some(ValueProgress {
-                            visible: String::new(),
-                            end: index,
-                            complete: true,
-                            live: false,
-                        });
-                    }
-                    return Some(ValueProgress {
-                        visible: raw.to_string(),
-                        end: index,
-                        complete: true,
-                        live: true,
-                    });
-                }
-            }
-            b':' => {
-                if depth == 1 && opening == b'{' {
-                    if let Some(key) = pending_key.take() {
-                        if object_keys
-                            .last()
-                            .is_some_and(|previous| key.as_str() < previous.as_str())
-                        {
-                            live = false;
-                        }
-                        object_keys.push(key);
-                    }
-                }
-                index += 1;
-            }
-            b' ' | b'\t' | b'\n' | b'\r' => {
+            if last_key
+                .as_ref()
+                .is_some_and(|previous| key.as_str() < previous.as_str())
+            {
                 live = false;
-                index += 1;
             }
-            _ => index += 1,
+            last_key = Some(key.clone());
+            index = next;
+            let after_key = skip_ws(body, index);
+            if after_key != index {
+                live = false;
+            }
+            index = after_key;
+            if index >= body.len() || bytes[index] != b':' {
+                break;
+            }
+            index += 1;
+            let after_colon = skip_ws(body, index);
+            if after_colon != index {
+                live = false;
+            }
+            index = after_colon;
+            if index >= body.len() {
+                break;
+            }
+            let value = canonical_nested_value(body, index, depth)?;
+            if !value.live {
+                live = false;
+            }
+            if value.visible.is_empty() && !value.complete {
+                break;
+            }
+            if need_comma {
+                out.push(',');
+            }
+            out.push_str(&canonical_json_string(&key, true));
+            out.push(':');
+            out.push_str(&value.visible);
+            index = value.end;
+            if !value.complete {
+                break;
+            }
+            need_comma = true;
+            continue;
         }
+        let value = canonical_nested_value(body, index, depth)?;
+        if !value.live {
+            live = false;
+        }
+        if value.visible.is_empty() && !value.complete {
+            break;
+        }
+        if need_comma {
+            out.push(',');
+        }
+        out.push_str(&value.visible);
+        index = value.end;
+        if !value.complete {
+            break;
+        }
+        need_comma = true;
     }
     if !live {
         return Some(ValueProgress {
             visible: String::new(),
-            end: body.len(),
-            complete: false,
+            end: index,
+            complete,
             live: false,
         });
     }
     Some(ValueProgress {
-        visible: body[start..].to_string(),
-        end: body.len(),
-        complete: false,
+        visible: out,
+        end: index,
+        complete,
         live: true,
     })
 }
@@ -919,10 +1039,23 @@ fn partial_json_string(body: &str, start: usize) -> Option<(String, usize, bool)
                     b'r' => '\r',
                     b't' => '\t',
                     b'u' => {
-                        let hex = body.get(index + 2..index + 6)?;
-                        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                        // A short or still-hex tail is an unfinished escape.
+                        // A non-hex byte makes the literal invalid.
+                        let available = body.get(index + 2..).unwrap_or_default();
+                        let hex_len = available
+                            .bytes()
+                            .take(4)
+                            .take_while(|byte| byte.is_ascii_hexdigit())
+                            .count();
+                        if hex_len < 4 {
+                            // The tail is still hex (or empty): hold the escape.
+                            // A non-hex byte ends the literal.
+                            if available.len() == hex_len {
+                                return Some((decoded, index, false));
+                            }
                             return None;
                         }
+                        let hex = &available[..4];
                         let code = u32::from_str_radix(hex, 16).ok()?;
                         let ch = char::from_u32(code)?;
                         decoded.push(ch);
@@ -954,9 +1087,12 @@ fn skip_ws(body: &str, mut index: usize) -> usize {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::sync::Arc;
+
     use serde_json::json;
 
     use super::*;
+    use crate::openai::requests::OpenAiToolContract;
 
     fn scanner() -> ToolCallStreamScanner {
         ToolCallStreamScanner::new(None)
@@ -1527,5 +1663,156 @@ mod tests {
         events.extend(scanner.finish());
         assert!(argument_pieces(&events).2.is_empty());
         assert_eq!(calls(&events).len(), 1);
+    }
+
+    fn streamed_argument_text(events: &[ToolScanEvent]) -> Vec<String> {
+        let mut calls = Vec::new();
+        for event in events {
+            match event {
+                ToolScanEvent::Call(call) => calls.push(call.function.arguments.clone()),
+                ToolScanEvent::Arguments { id, arguments, .. } => {
+                    if id.is_some() || calls.is_empty() {
+                        calls.push(arguments.clone());
+                    } else if let Some(current) = calls.last_mut() {
+                        current.push_str(arguments);
+                    }
+                }
+                ToolScanEvent::Content(_) => {}
+            }
+        }
+        calls
+    }
+
+    fn non_streaming_arguments(text: &str, contract: Option<&OpenAiToolContract>) -> Vec<String> {
+        let mut rest = text.to_string();
+        let mut arguments = Vec::new();
+        while let Some(start) = rest.find("<tool_call>") {
+            let Some((mut function, remaining)) =
+                crate::openai::responses::extract_xml_tool_call_payload_at(&rest, start)
+            else {
+                break;
+            };
+            if let Some(contract) = contract {
+                function.name = contract.canonical_tool_name(&function.name);
+                function.arguments =
+                    contract.canonical_arguments(&function.name, function.arguments);
+            }
+            arguments.push(function.arguments);
+            if remaining == rest {
+                break;
+            }
+            rest = remaining;
+        }
+        arguments
+    }
+
+    fn assert_chunked_matches_non_streaming(text: &str, contract: Option<OpenAiToolContract>) {
+        let expected = non_streaming_arguments(text, contract.as_ref());
+        let mut scanner = ToolCallStreamScanner::with_incremental(contract.map(Arc::new), true);
+        let mut events = Vec::new();
+        let mut pending = String::new();
+        for ch in text.chars() {
+            pending.push(ch);
+            if pending.chars().count() == 3 {
+                events.extend(scanner.push(&pending));
+                pending.clear();
+            }
+        }
+        if !pending.is_empty() {
+            events.extend(scanner.push(&pending));
+        }
+        events.extend(scanner.finish());
+        assert_eq!(
+            streamed_argument_text(&events),
+            expected,
+            "streamed deltas diverged for {text}"
+        );
+    }
+
+    #[test]
+    fn incremental_deltas_match_non_streaming_arguments() {
+        let edit = OpenAiToolContract::from_tools(Some(&json!([{
+            "type": "function",
+            "function": {
+                "name": "edit",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"filePath": {"type": "string"}}
+                }
+            }
+        }])))
+        .expect("edit contract");
+        assert_chunked_matches_non_streaming(
+            "<tool_call>{\"name\":\"edit\",\"arguments\":{\"file_path\":\"notes.rs\"}}</tool_call>",
+            Some(edit),
+        );
+
+        let echo = OpenAiToolContract::from_tools(Some(&json!([{
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}}
+                }
+            }
+        }])))
+        .expect("echo contract");
+        assert_chunked_matches_non_streaming(
+            "<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"a\\nb\"}}</tool_call>",
+            Some(echo.clone()),
+        );
+        assert_chunked_matches_non_streaming(
+            "<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"caf\\u00e9\"}}</tool_call>",
+            Some(echo.clone()),
+        );
+        assert_chunked_matches_non_streaming(
+            "<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"a\\nb\"}}</tool_call><tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"caf\\u00e9\"}}</tool_call>",
+            Some(echo),
+        );
+    }
+
+    #[test]
+    fn incremental_header_uses_the_canonical_tool_name() {
+        let tools = json!([{
+            "type": "function",
+            "function": {
+                "name": "read",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
+            }
+        }]);
+        let contract = OpenAiToolContract::from_tools(Some(&tools)).expect("contract");
+        let mut scanner = ToolCallStreamScanner::with_incremental(Some(Arc::new(contract)), true);
+        let events = scanner.push(
+            "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"query\":\"ports\"}}</tool_call>",
+        );
+        let (_id, name, arguments) = argument_pieces(&events);
+        assert_eq!(name.as_deref(), Some("read"));
+        assert_eq!(arguments, "{\"query\":\"ports\"}");
+    }
+
+    #[test]
+    fn canonical_arguments_that_do_not_continue_the_prefix_are_not_appended() {
+        let mut scanner = ToolCallStreamScanner::with_incremental(None, true);
+        let opened = scanner.push("<tool_call>{\"name\":\"echo\",\"arguments\":{\"text\":\"ab");
+        assert!(!argument_pieces(&opened).2.is_empty());
+        scanner.testing_overwrite_streamed_arguments("XXXX");
+        let mut closed = scanner.push("c\"}}</tool_call>");
+        closed.extend(scanner.finish());
+        assert_eq!(scanner.argument_continuations_rejected(), 1);
+        let concatenated = format!(
+            "{}{}",
+            argument_pieces(&opened).2,
+            argument_pieces(&closed).2
+        );
+        assert!(
+            !concatenated.contains("XXXX"),
+            "the overwritten prefix is not re-sent"
+        );
+        assert_ne!(
+            concatenated, "{\"text\":\"abc\"}",
+            "a non-continuation must not be spliced into the canonical object"
+        );
+        assert_eq!(scanner.parsed_calls(), 1);
     }
 }
