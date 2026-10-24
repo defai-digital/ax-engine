@@ -23,7 +23,7 @@ pub(crate) fn floats_to_pybytes<'py>(
         // Bulk copy via u32 native-endian bytes. On Apple Silicon (always
         // little-endian), to_ne_bytes is identical to to_le_bytes and the
         // compiler lowers the loop to a single memcpy.
-        for (chunk, &value) in out.chunks_exact_mut(4).zip(floats.iter()) {
+        for (chunk, &value) in out.as_chunks_mut::<4>().0.iter_mut().zip(floats.iter()) {
             chunk.copy_from_slice(&value.to_ne_bytes());
         }
         Ok(())
@@ -47,7 +47,7 @@ pub(crate) fn embedding_matrix_to_pybytes<'py>(
     let byte_len = raw.len() * 4;
     PyBytes::new_with(py, byte_len, |out| {
         // Bulk copy the raw f32 data into the PyBytes buffer.
-        for (chunk, &value) in out.chunks_exact_mut(4).zip(raw.iter()) {
+        for (chunk, &value) in out.as_chunks_mut::<4>().0.iter_mut().zip(raw.iter()) {
             chunk.copy_from_slice(&value.to_ne_bytes());
         }
         // Apply row-wise L2 normalization directly in the output buffer,
@@ -55,12 +55,12 @@ pub(crate) fn embedding_matrix_to_pybytes<'py>(
         if normalize && hidden_size > 0 {
             for row_bytes in out.chunks_exact_mut(hidden_size * 4) {
                 let mut sum_sq: f32 = 0.0;
-                for chunk in row_bytes.chunks_exact(4) {
+                for chunk in row_bytes.as_chunks::<4>().0 {
                     let val = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     sum_sq += val * val;
                 }
                 let inv_norm = 1.0_f32 / (sum_sq.sqrt() + 1e-12);
-                for chunk in row_bytes.chunks_exact_mut(4) {
+                for chunk in row_bytes.as_chunks_mut::<4>().0 {
                     let val = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     let scaled = val * inv_norm;
                     chunk.copy_from_slice(&scaled.to_ne_bytes());

@@ -93,7 +93,7 @@ impl RuntimeMediaDigest {
         // Hash LE bits without allocating another copy of a large media tensor.
         let mut bytes = [0u8; 1024];
         for chunk in values.chunks(bytes.len() / 4) {
-            for (value, output) in chunk.iter().zip(bytes.chunks_exact_mut(4)) {
+            for (value, output) in chunk.iter().zip(bytes.as_chunks_mut::<4>().0) {
                 output.copy_from_slice(&value.to_le_bytes());
             }
             self.0.update(&bytes[..chunk.len() * 4]);

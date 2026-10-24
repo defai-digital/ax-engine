@@ -2691,8 +2691,10 @@ mod tests {
                 std::fs::read(stages.join(format!("{name}-attention_hc_read.f32le"))).unwrap();
             assert_eq!(payload.len(), seq * hidden * 4);
             let values: Vec<f32> = payload
-                .chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| f32::from_le_bytes(*chunk))
                 .collect();
             let input = mlx_sys::reshape(
                 &MlxArray::from_f32_slice(&values),

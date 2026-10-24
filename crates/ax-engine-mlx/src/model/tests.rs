@@ -3309,7 +3309,9 @@ fn switch_gather_inputs_sorts_indices_and_tracks_source_rows() {
     let sorted_rows = gather_inputs
         .x
         .data_f32()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|row| row[0] as usize)
         .collect::<Vec<_>>();
     let expected_rows = (0..64).map(|expert| (63 - expert) / 4).collect::<Vec<_>>();
