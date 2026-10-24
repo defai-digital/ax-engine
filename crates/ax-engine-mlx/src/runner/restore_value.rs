@@ -1,19 +1,32 @@
 //! Value-priced prefix restore (`AX_MLX_PREFIX_RESTORE_VALUE`).
 //!
-//! The historical decision restores the longest resident prefix. That is
-//! not always the cheapest completion: extending an already-restored RAM
-//! prefix by a few tokens can cost more (materialization + repage) than
-//! recomputing those tokens, and a short durable prefix can be dominated by
-//! the best RAM prefix. This module prices each candidate against the best
-//! resident RAM prefix:
+//! The historical decision restores the longest available prefix. That is
+//! not always the cheapest completion: extending an already-restored prefix
+//! by a few tokens can cost more (materialization + repage) than recomputing
+//! those tokens, and a short durable prefix can be dominated by the prefix
+//! the request would restore anyway. This module prices each candidate
+//! against that off-path baseline:
 //!
-//! `benefit(p) = C(p) - C(m) - restore_us(p)`
+//! `benefit(p) = [C(p) - C(b)] - [restore_us(p) - restore_us(b)]`
 //!
-//! where `C` is fresh prefill cost on the same artifact/execution path,
-//! `m` is the best RAM-resident prefix, and `restore_us` covers read,
-//! verification, materialization and repage. A strictly-greater-than
-//! [`RESTORE_SAFETY_MARGIN_US`] benefit is required; unknown cost inputs
-//! fail closed (recompute / RAM only). Ties prefer the longer prefix.
+//! where `C` is fresh prefill cost on the same artifact/execution path, `b` is
+//! the prefix the request would restore without the value path (the scheduler
+//! claim, or the unpriced probe result when there is no claim), and
+//! `restore_us` covers read, verification, materialization and repage. Both
+//! restores pay their own materialization, so only the *incremental* restore
+//! cost is charged. That distinction decides whether the feature can ever fire
+//! on a hybrid (linear-attention) model: their snapshot carries a large
+//! fixed-size recurrent state, so charging the candidate the whole state while
+//! pricing the baseline restore at zero rejects every option, including ones
+//! that genuinely save hundreds of milliseconds of prefill. When the baseline
+//! is not a restore at all (`b == 0`, nothing restorable) the incremental cost
+//! is the whole restore cost, which is the conservative case.
+//!
+//! Only candidates strictly longer than `b` can win — restoring less than the
+//! baseline would leave tokens to recompute that the baseline already covers.
+//! A strictly-greater-than [`RESTORE_SAFETY_MARGIN_US`] benefit is required;
+//! unknown cost inputs fail closed (recompute / baseline only). Ties prefer
+//! the longer prefix.
 //!
 //! Pure decision logic plus a process-local prefill-rate EWMA. Never part
 //! of correctness.
@@ -55,33 +68,41 @@ pub(crate) fn estimated_prefill_us(tokens: u32) -> Option<u64> {
 }
 
 /// Pick the candidate index with the largest positive benefit over the
-/// best resident RAM prefix. Returns `None` when no candidate clears the
+/// off-path baseline restore. Returns `None` when no candidate clears the
 /// margin, when the prefill rate is unknown, or when a candidate's restore
-/// cost cannot be priced.
+/// cost cannot be priced — the caller then keeps the baseline.
 ///
-/// `min_tokens` is the shortest prefix this choice may use — the
-/// scheduler claim. A shorter restore leaves a positional gap that the
-/// caller can only replay in full (linear state cannot be trimmed), so it
-/// is strictly worse than taking the claim; such candidates are never
-/// chosen. The claim itself stays eligible: it is the reference restore
-/// this choice has to justify replacing.
+/// `baseline_tokens` is the prefix the request restores without the value
+/// path: the scheduler claim when one exists, otherwise the unpriced probe
+/// result. Candidates must be *strictly* longer than it; a candidate at the
+/// baseline saves nothing (the baseline already covers those tokens) and a
+/// shorter one would leave a positional gap the caller can only replay in
+/// full (linear state cannot be trimmed).
+///
+/// `min_tokens` is the shortest prefix the scheduler can accept (the claim).
+/// With `baseline_tokens` derived from the claim the two floors coincide for
+/// claimed requests; the explicit floor still rejects shorter candidates for
+/// an unclaimed request whose baseline is a probe result.
+///
+/// `baseline_restore_us` is what the baseline restore itself costs. It is
+/// charged against the candidate so that a hybrid model's fixed-size recurrent
+/// state — which both restores pay — cannot veto a restore that saves more
+/// prefill than the extra bytes cost. Pass `0` when the baseline is not a
+/// restore (nothing restorable): the candidate then pays its full cost.
 pub(crate) fn choose_restore_candidate(
     candidates: &[RestoreCandidate],
-    ram_prefix_tokens: u32,
+    baseline_tokens: u32,
     min_tokens: u32,
+    baseline_restore_us: u64,
     prefill_us: impl Fn(u32) -> Option<u64>,
     restore_us: impl Fn(&RestoreCandidate) -> Option<u64>,
 ) -> Option<usize> {
-    let ram_cost = prefill_us(ram_prefix_tokens)?;
+    // Unknown baseline cost: nothing can be priced against it, so keep the
+    // baseline instead of inventing a saving.
+    let baseline_cost = prefill_us(baseline_tokens)?;
     let mut best: Option<(usize, i128)> = None;
     for (index, candidate) in candidates.iter().enumerate() {
-        // The RAM baseline is an *exclusive* floor: restoring a prefix the
-        // cache would reuse anyway saves nothing. The scheduler claim is an
-        // *inclusive* one: a candidate exactly at the claim must stay
-        // eligible, otherwise the priced path can never choose the claim it
-        // is supposed to compete against and returns no restore at all when
-        // no longer candidate exists.
-        if candidate.token_count <= ram_prefix_tokens || candidate.token_count < min_tokens {
+        if candidate.token_count <= baseline_tokens || candidate.token_count < min_tokens {
             continue;
         }
         let Some(cost) = prefill_us(candidate.token_count) else {
@@ -90,19 +111,21 @@ pub(crate) fn choose_restore_candidate(
         let Some(restore) = restore_us(candidate) else {
             continue;
         };
-        // Extra prefill from the RAM prefix to the candidate, then restore.
-        let benefit = i128::from(cost)
-            .saturating_sub(i128::from(ram_cost))
-            .saturating_sub(i128::from(restore));
+        // Prefill the caller saves by restoring `p` instead of the baseline,
+        // minus the extra restore cost of the longer prefix. Both restores pay
+        // their own materialization, so only the difference is decision
+        // relevant.
+        let prefill_saved = i128::from(cost).saturating_sub(i128::from(baseline_cost));
+        let extra_restore = i128::from(restore).saturating_sub(i128::from(baseline_restore_us));
+        let benefit = prefill_saved.saturating_sub(extra_restore);
         if benefit <= i128::from(RESTORE_SAFETY_MARGIN_US) {
             continue;
         }
         match best {
-            Some((_, best_benefit))
+            Some((best_index, best_benefit))
                 if benefit < best_benefit
                     || (benefit == best_benefit
-                        && candidate.token_count
-                            <= candidates[best.map(|(i, _)| i).unwrap_or(index)].token_count) => {}
+                        && candidate.token_count <= candidates[best_index].token_count) => {}
             _ => best = Some((index, benefit)),
         }
     }
@@ -167,33 +190,32 @@ mod tests {
     }
 
     #[test]
-    fn restore_value_uses_ram_baseline() {
+    fn restore_value_uses_off_path_baseline() {
         // Fresh prefill = 2 us/token, restore = 1 us/token.
         let prefill = |tokens: u32| Some(u64::from(tokens) * 2);
         let restore = |c: &RestoreCandidate| Some(u64::from(c.token_count));
-        // 1000-token candidate over an 800-token RAM prefix only saves
-        // 400us - 1000us < 0, so the RAM prefix wins.
+        // 1000-token candidate over an 800-token baseline only saves
+        // 400us - 1000us < 0, so the baseline wins.
         assert_eq!(
-            choose_restore_candidate(&[candidate(1000)], 800, 0, prefill, restore),
+            choose_restore_candidate(&[candidate(1000)], 800, 0, 0, prefill, restore),
             None
         );
         // 2000 tokens over the same baseline saves 2400us - 2000us = 400us,
         // still under the 10_000us margin.
         assert_eq!(
-            choose_restore_candidate(&[candidate(2000)], 800, 0, prefill, restore),
+            choose_restore_candidate(&[candidate(2000)], 800, 0, 0, prefill, restore),
             None
         );
-        // A 20_000-token candidate saves 24_000us - 20_000us = 4_000us...
-        // extend the rate so the margin is cleared and the same baseline
-        // still matters: 100k tokens saves 100_000us with 100k restore us.
+        // 2000 tokens over a 40_000us margin-clearing rate is chosen.
         let prefill_fast = |tokens: u32| Some(u64::from(tokens) * 50);
         assert_eq!(
-            choose_restore_candidate(&[candidate(2000)], 800, 0, prefill_fast, restore),
+            choose_restore_candidate(&[candidate(2000)], 800, 0, 0, prefill_fast, restore),
             Some(0)
         );
-        // Raising the RAM baseline to the candidate length removes it.
+        // Raising the baseline to the candidate length removes it: the
+        // candidate saves nothing over what the request already restores.
         assert_eq!(
-            choose_restore_candidate(&[candidate(2000)], 2000, 0, prefill_fast, restore),
+            choose_restore_candidate(&[candidate(2000)], 2000, 0, 0, prefill_fast, restore),
             None
         );
     }
@@ -212,15 +234,100 @@ mod tests {
         // prefill; use a restore cost that scales so p=2000 wins on tie.
         let tie_restore = |c: &RestoreCandidate| Some(u64::from(c.token_count) * 100);
         assert_eq!(
-            choose_restore_candidate(&candidates, 0, 0, prefill, tie_restore),
+            choose_restore_candidate(&candidates, 0, 0, 0, prefill, tie_restore),
             None,
             "equal benefit must not clear the strict margin"
         );
         let win = |c: &RestoreCandidate| Some(u64::from(c.token_count) * 100 - 20_000);
         assert_eq!(
-            choose_restore_candidate(&candidates, 0, 0, prefill, win),
+            choose_restore_candidate(&candidates, 0, 0, 0, prefill, win),
             Some(1),
             "equal benefit prefers the longer prefix"
+        );
+    }
+
+    #[test]
+    fn value_path_chooses_a_cut_beyond_the_claim() {
+        // A resident semantic cut sits 30 tokens past the scheduler claim and
+        // is priced against the claim restore: prefill 4_000us/token, restore
+        // 300us/token (payload materialization). 30 * 4_000 - 350 * 300 =
+        // 15_000us clears the 10_000us margin, so the cut is chosen.
+        let prefill = |tokens: u32| Some(u64::from(tokens) * 4_000);
+        let restore = |c: &RestoreCandidate| Some(u64::from(c.token_count) * 300);
+        assert_eq!(
+            choose_restore_candidate(&[candidate(350)], 320, 320, 0, prefill, restore),
+            Some(0)
+        );
+        // The claim itself is never a candidate: it is the baseline.
+        assert_eq!(
+            choose_restore_candidate(&[candidate(320)], 320, 320, 0, prefill, restore),
+            None
+        );
+        // A cut too close to the claim cannot pay for its own materialization.
+        assert_eq!(
+            choose_restore_candidate(&[candidate(325)], 320, 320, 0, prefill, restore),
+            None,
+            "5 tokens saved (20_000us) minus 97_500us of materialization must lose"
+        );
+    }
+
+    #[test]
+    fn value_path_charges_only_the_incremental_restore() {
+        // Hybrid models (linear attention) carry a large fixed-size recurrent
+        // state, so every restore costs ~155_000us regardless of prefix length.
+        // Both the baseline and the candidate pay it; charging the candidate
+        // the whole amount while the baseline restore is free would reject a
+        // cut that saves 63ms of prefill. Measured shape: prefill 9_076us/token,
+        // 65.5us per extra token of payload.
+        let prefill = |tokens: u32| Some(u64::from(tokens) * 9_076);
+        let fixed = 154_600u64;
+        let restore = |c: &RestoreCandidate| Some(fixed + u64::from(c.token_count) * 66);
+        // Claim 400, cut 415: 15 tokens * 9_076 = 136_140us saved, 15 tokens of
+        // extra payload = 990us. Clears the margin by a wide gap.
+        assert_eq!(
+            choose_restore_candidate(
+                &[candidate(415)],
+                400,
+                400,
+                restore(&candidate(400)).unwrap(),
+                prefill,
+                restore
+            ),
+            Some(0),
+            "a 15-token cut that saves 136ms must be chosen"
+        );
+        // The same candidate priced against a free baseline restore loses: this
+        // is the model the incremental charge replaces.
+        assert_eq!(
+            choose_restore_candidate(&[candidate(415)], 400, 400, 0, prefill, restore),
+            None,
+            "charging the whole fixed state to the candidate would veto the restore"
+        );
+    }
+
+    #[test]
+    fn value_path_prices_a_longer_disk_entry_over_the_claim() {
+        // Durable entry one block past the claim: read + materialization is
+        // priced, and the saved prefill still clears the margin.
+        let prefill = |tokens: u32| Some(u64::from(tokens) * 4_000);
+        let mut durable = candidate(384);
+        durable.resident_in_l1 = false;
+        durable.materialized_bytes = 0;
+        assert_eq!(
+            choose_restore_candidate(&[durable], 320, 320, 0, prefill, |_| Some(5_000)),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn unknown_baseline_cost_keeps_the_baseline() {
+        // The rate is known for the candidate but not for the baseline: the
+        // saving cannot be computed, so the baseline is kept.
+        let prefill = |tokens: u32| (tokens != 320).then_some(u64::from(tokens) * 4_000);
+        let restore = |c: &RestoreCandidate| Some(u64::from(c.token_count));
+        assert_eq!(
+            choose_restore_candidate(&[candidate(350)], 320, 320, 0, prefill, restore),
+            None
         );
     }
 
@@ -258,20 +365,19 @@ mod tests {
         let prefill = |tokens: u32| Some(u64::from(tokens) * 10);
         let free = |_: &RestoreCandidate| Some(0);
         assert_eq!(
-            choose_restore_candidate(&[candidate(1000)], 0, 2000, prefill, free),
+            choose_restore_candidate(&[candidate(1000)], 0, 2000, 0, prefill, free),
             None,
             "a prefix shorter than the scheduler claim must not be chosen"
         );
         // The claim itself (and anything longer) stays eligible.
         assert_eq!(
-            choose_restore_candidate(&[candidate(2000)], 0, 2000, prefill, free),
+            choose_restore_candidate(&[candidate(2000)], 0, 2000, 0, prefill, free),
             Some(0)
         );
-        // The inclusive claim floor must not weaken the exclusive RAM floor:
-        // a candidate that only ties a resident RAM prefix still loses, even
-        // when it is exactly the scheduler claim.
+        // A candidate at the baseline saves nothing, even when it is exactly
+        // the scheduler claim.
         assert_eq!(
-            choose_restore_candidate(&[candidate(2000)], 2000, 2000, prefill, free),
+            choose_restore_candidate(&[candidate(2000)], 2000, 2000, 0, prefill, free),
             None
         );
     }
@@ -281,12 +387,12 @@ mod tests {
         let unknown = |_: u32| None;
         let restore = |_: &RestoreCandidate| Some(0);
         assert_eq!(
-            choose_restore_candidate(&[candidate(4096)], 0, 0, unknown, restore),
+            choose_restore_candidate(&[candidate(4096)], 0, 0, 0, unknown, restore),
             None
         );
         let prefill = |tokens: u32| Some(u64::from(tokens));
         assert_eq!(
-            choose_restore_candidate(&[candidate(4096)], 0, 0, prefill, |_| None),
+            choose_restore_candidate(&[candidate(4096)], 0, 0, 0, prefill, |_| None),
             None
         );
     }

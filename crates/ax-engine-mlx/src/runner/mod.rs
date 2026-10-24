@@ -217,10 +217,6 @@ const NGRAM_REPEATING_PROMPT_FEED_MAX: usize = 512;
 const NGRAM_MIN_OUTPUT_FOR_ACCELERATION: u32 = 64;
 const DEFAULT_PREFIX_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_PREFIX_CACHE_MAX_ENTRIES: usize = 64;
-/// Upper bound on block-aligned prefixes the value-priced restore adds
-/// to its candidate set. Together with the scheduler claim and the
-/// semantic cuts this keeps the priced decision O(1) in prompt length.
-const MAX_ALIGNED_RESTORE_CANDIDATES: usize = 8;
 /// How many block-aligned lengths the candidate scan may inspect with
 /// an L1 hash lookup or one `stat` before it stops looking. Never a
 /// file open: metadata probes run only for candidates that exist.
@@ -8190,6 +8186,12 @@ impl MlxRunner {
     /// holds a snapshot from process A). The disk check is `fs::stat`
     /// per candidate prefix — cheap; the eventual full read + SHA256
     /// validate happens once at restore time, not per probe step.
+    ///
+    /// A snapshot stored at a non-block-aligned position (a semantic cut, or
+    /// an unaligned scheduler claim) can only be found at the bound itself:
+    /// [`block_aligned_prefix_hashes`] indexes block boundaries only, so the
+    /// aligned walk cannot represent it. The bound is therefore consulted
+    /// first, exactly as the later `cache.get` on that same length would be.
     fn probe_runner_snapshot_for_prefix(
         &self,
         model_id: &str,
@@ -8227,27 +8229,34 @@ impl MlxRunner {
             Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
                 probe_key.token_count = saturating_u32(prefix.len());
                 probe_key.token_hash = block_hashes[prefix.len() / block_size_tokens as usize - 1];
-                if self
-                    .prefix_cache
-                    .lock()
-                    .contains_exact_tokens(&probe_key, prefix)
-                {
-                    return true;
-                }
-                if let Some(disk) = self.disk_prefix_cache.as_ref()
-                    && let Some(key_bytes) = self.disk_prefix_key_bytes(&probe_key, prefix)
-                    && disk.contains(&key_bytes)
-                {
-                    return true;
-                }
-                false
+                self.prefix_snapshot_present(&probe_key, prefix)
             });
+        // The bound itself: the `probe_key` built above already carries the
+        // whole-input length and hash, so this is one lookup, and it is the
+        // longest prefix the probe can ever return.
+        let exact_bound = (probe_exact_bound_needed(input.len(), block_size_tokens as usize)
+            && self.prefix_snapshot_present(&probe_key, input))
+        .then(|| input.to_vec());
+        let portable = exact_bound.or(portable);
         let portable_len = portable.as_ref().map(Vec::len);
         match (native_len, portable_len) {
             (Some(native), Some(portable_len)) if native <= portable_len => portable,
             (Some(native), _) => Some(input[..native].to_vec()),
             (None, _) => portable,
         }
+    }
+
+    /// Whether a prefix of `tokens` is stored in either tier (exact token
+    /// equality, no LRU touch). Shared by the aligned walk and the exact-bound
+    /// check so both consult the same two layers in the same order.
+    fn prefix_snapshot_present(&self, key: &MlxPrefixCacheKey, tokens: &[u32]) -> bool {
+        if self.prefix_cache.lock().contains_exact_tokens(key, tokens) {
+            return true;
+        }
+        self.disk_prefix_cache.as_ref().is_some_and(|disk| {
+            self.disk_prefix_key_bytes(key, tokens)
+                .is_some_and(|bytes| disk.contains(&bytes))
+        })
     }
 
     /// Bytes this runner can free before a restore: the shared FA pool's
@@ -8269,58 +8278,23 @@ impl MlxRunner {
         reclaimable_bytes(&blocks)
     }
 
-    /// Longest block-aligned prefix resident in RAM (L1 / native), used as
-    /// the baseline `m` for restore pricing.
-    fn longest_resident_prefix_len(
-        &self,
-        model_id: &str,
-        block_size_tokens: u32,
-        input: &[u32],
-        media_key: &str,
-    ) -> u32 {
-        let block_size = block_size_tokens as usize;
-        if block_size == 0 {
-            return 0;
-        }
-        let mut key =
-            self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
-        let native_len = self
-            .native_fa_prefix_sharing_enabled()
-            .then(|| {
-                self.native_prefix_cache
-                    .lock()
-                    .longest_prefix_len(&key, input)
-            })
-            .flatten()
-            .unwrap_or(0);
-        let mut len = (input.len() / block_size) * block_size;
-        while len >= block_size {
-            key.token_count = saturating_u32(len);
-            if self
-                .prefix_cache
-                .lock()
-                .contains_exact_tokens(&key, &input[..len])
-            {
-                return saturating_u32(len.max(native_len));
-            }
-            len -= block_size;
-        }
-        saturating_u32(native_len)
-    }
-
-    /// Price durable candidates (semantic cuts, the scheduler claim and a
-    /// bounded set of block-aligned prefixes) against the best resident RAM
-    /// prefix and return the chosen exact prefix.
+    /// Price durable candidates (semantic cuts, the scheduler claim and the
+    /// longest block-aligned prefix) against the restore this request would
+    /// get without the value path, and return the chosen exact prefix.
     ///
     /// With `AX_MLX_PREFIX_RESTORE_VALUE` off this degrades to the historical
     /// longest-candidate choice, but still consults semantic cuts when
     /// `AX_MLX_PREFIX_SEMANTIC_CUTS` is on.
     ///
-    /// The candidate set is bounded on purpose: the scheduler claim, every
-    /// semantic cut, and at most [`MAX_ALIGNED_RESTORE_CANDIDATES`]
-    /// block-aligned prefixes discovered by a `contains` scan (an L1 hash
-    /// lookup or one `stat`, never a file open). Only the kept candidates are
-    /// metadata-probed, and only when the priced path needs their bytes.
+    /// The candidate set is deliberately small: the scheduler claim (only when
+    /// a snapshot exists for it), every semantic cut the bound reaches, and
+    /// the longest block-aligned prefix discovered by a `contains` scan (an L1
+    /// hash lookup or one `stat`, never a file open). Only those candidates
+    /// are metadata-probed, and only when the priced path needs their bytes.
+    ///
+    /// `probe_tokens` is the unpriced probe's length for an unclaimed request;
+    /// it is the baseline such a request restores without the value path.
+    #[allow(clippy::too_many_arguments)]
     fn select_restore_prefix_by_value<'a>(
         &self,
         model_id: &str,
@@ -8329,6 +8303,7 @@ impl MlxRunner {
         media_key: &str,
         cut_plan: &SnapshotCutPlan,
         claim_tokens: usize,
+        probe_tokens: u32,
     ) -> Option<&'a [u32]> {
         let disk = self.disk_prefix_cache.as_ref();
         let l1_enabled = self.prefix_cache.lock().enabled();
@@ -8340,60 +8315,61 @@ impl MlxRunner {
         let claim = claim_tokens.min(input.len());
         let price_value = crate::fastpath::prefix_restore_value_enabled();
 
-        let mut lengths: Vec<usize> = Vec::new();
-        if claim > 0 {
-            lengths.push(claim);
-        }
-        for cut in &cut_plan.cuts {
-            if *cut > claim && *cut < input.len() {
-                lengths.push(*cut);
-            }
-        }
+        let mut key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
         let block_size = block_size_tokens as usize;
-        // `checked_div` also covers a zero block size (never a real config,
-        // but the candidate scan must not divide by it).
-        if let Some(blocks) = input.len().checked_div(block_size) {
-            let mut key =
-                self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
-            let mut aligned = blocks * block_size;
-            let mut scanned = 0usize;
-            let mut found = 0usize;
-            while aligned > claim
-                && found < MAX_ALIGNED_RESTORE_CANDIDATES
-                && scanned < MAX_ALIGNED_RESTORE_SCAN
+        // One rolling pass over the bound yields every block-aligned prefix
+        // hash; non-aligned candidates (the claim and the semantic cuts) are
+        // hashed on demand. Without this the scan would look up a candidate
+        // under the *whole bound's* hash, so every length except the bound
+        // itself would report "no snapshot" and the priced path would never
+        // see a real candidate.
+        let aligned_hashes = if block_size > 0 {
+            block_aligned_prefix_hashes(input, block_size)
+        } else {
+            Vec::new()
+        };
+        let prefix_hash = |len: usize| -> u64 {
+            if block_size > 0
+                && len.is_multiple_of(block_size)
+                && let Some(hash) = aligned_hashes.get(len / block_size - 1)
             {
-                let prefix = &input[..aligned];
-                key.token_count = saturating_u32(aligned);
-                let resident =
-                    l1_enabled && self.prefix_cache.lock().contains_exact_tokens(&key, prefix);
-                let on_disk = !resident
-                    && disk.is_some_and(|disk| {
-                        self.disk_prefix_key_bytes(&key, prefix)
-                            .is_some_and(|bytes| disk.contains(&bytes))
-                    });
-                if resident || on_disk {
-                    lengths.push(aligned);
-                    found += 1;
-                }
-                scanned += 1;
-                let Some(next) = aligned.checked_sub(block_size) else {
-                    break;
-                };
-                aligned = next;
+                return *hash;
             }
-        }
-        lengths.sort_unstable();
-        lengths.dedup();
-
+            hash_prefix_tokens(&input[..len])
+        };
+        let lengths = restore_candidate_lengths(
+            claim,
+            input.len(),
+            block_size,
+            &cut_plan.cuts,
+            |len, hash| {
+                let prefix = &input[..len];
+                key.token_count = saturating_u32(len);
+                key.token_hash = hash;
+                if l1_enabled && self.prefix_cache.lock().contains_exact_tokens(&key, prefix) {
+                    return true;
+                }
+                disk.is_some_and(|disk| {
+                    self.disk_prefix_key_bytes(&key, prefix)
+                        .is_some_and(|bytes| disk.contains(&bytes))
+                })
+            },
+            prefix_hash,
+        );
+        // Recompute the full key: the existence scan above mutated its length
+        // and hash fields.
         let mut key =
             self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
         let mut candidates = Vec::new();
-        for len in lengths {
+        for len in &lengths {
+            let len = *len;
             if len == 0 || len > input.len() {
                 continue;
             }
             let prefix = &input[..len];
             key.token_count = saturating_u32(len);
+            key.token_hash = prefix_hash(len);
             // Prefer a resident RAM snapshot: rehydration from L1 is strictly
             // cheaper than a durable read, and semantic cuts are stored in L1
             // even when no disk layer is open.
@@ -8445,8 +8421,22 @@ impl MlxRunner {
         if candidates.is_empty() {
             return None;
         }
-        let ram_prefix_tokens =
-            self.longest_resident_prefix_len(model_id, block_size_tokens, input, media_key);
+        // The off-path baseline: the prefix this request would restore without
+        // the value path. A scheduler claim is only that baseline when the
+        // runner actually holds a snapshot for it — otherwise the unpriced path
+        // would miss and recompute the whole prompt, so the saving has to be
+        // measured from zero. With no claim the unpriced probe result is the
+        // baseline. Candidates below the claim stay ineligible either way
+        // (`min_tokens`), because a shorter restore leaves a positional gap.
+        let baseline_tokens = if claim > 0 {
+            if lengths.contains(&claim) {
+                saturating_u32(claim)
+            } else {
+                0
+            }
+        } else {
+            probe_tokens.min(saturating_u32(input.len()))
+        };
         let throughput = self
             .disk_prefix_writer
             .as_ref()
@@ -8457,11 +8447,21 @@ impl MlxRunner {
                 .map(|model| model.restore_us(candidate.payload_bytes));
             restore_cost_us(candidate, read)
         };
+        // The baseline restore pays its own materialization/read too, so only
+        // the extra cost of the longer candidate is decision relevant. A
+        // baseline with no snapshot is not a restore (`0`): the candidate then
+        // pays its full cost.
+        let baseline_restore_us = candidates
+            .iter()
+            .find(|candidate| candidate.token_count == baseline_tokens)
+            .and_then(restore_us)
+            .unwrap_or(0);
         let chosen = if price_value {
             choose_restore_candidate(
                 &candidates,
-                ram_prefix_tokens,
+                baseline_tokens,
                 saturating_u32(claim),
+                baseline_restore_us,
                 estimated_prefill_us,
                 restore_us,
             )?
@@ -8655,20 +8655,22 @@ impl MlxRunner {
         } else {
             default_probe_bound
         };
-        let probed_tokens: Vec<u32> = if state.cache.seq_len() == 0
-            && !default_probe_bound.is_empty()
-            && matches!(item.mode, ExecutionMode::Prefill)
-        {
-            self.probe_runner_snapshot_for_prefix(
-                model_id,
-                block_size_tokens,
-                default_probe_bound,
-                media_key,
-            )
-            .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let probed_tokens: Vec<u32> =
+            if restore_probe_applies(state.cache.seq_len(), default_probe_bound) {
+                self.probe_runner_snapshot_for_prefix(
+                    model_id,
+                    block_size_tokens,
+                    default_probe_bound,
+                    media_key,
+                )
+                .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+        // The priced path derives its baseline from the claim when the runner
+        // holds a snapshot for it, and from the unpriced probe otherwise; the
+        // probe length is all it needs from here.
+        let value_probe_tokens = saturating_u32(probed_tokens.len());
         let cut_plan = value_features.then(|| {
             snapshot_cut_plan(
                 probe_upper_bound.len(),
@@ -8688,6 +8690,7 @@ impl MlxRunner {
                 media_key,
                 cut_plan,
                 item.reused_prefix_token_slice.len(),
+                value_probe_tokens,
             )
         });
         let priced_planned_cut = cut_plan
@@ -17413,6 +17416,77 @@ fn block_aligned_prefix_hashes(tokens: &[u32], block_size: usize) -> Vec<u64> {
         }
     }
     hashes
+}
+
+/// Candidate token lengths for the value-priced restore.
+///
+/// Exactly three groups: the scheduler claim (only when a snapshot exists for
+/// that exact length), every semantic cut the bound reaches, and the single
+/// longest block-aligned prefix that exists within the bound. `has_snapshot`
+/// is a cheap presence check (one L1 hash lookup or one `stat`, never a file
+/// open) and `prefix_hash` supplies the cache key hash for a given length; a
+/// candidate looked up under the wrong hash silently looks absent, which is
+/// what made the priced path inert.
+///
+/// Only the *longest* aligned prefix is kept: it saves the most prefill, and a
+/// longer prefix costs strictly less per saved token than a shorter one, so no
+/// shorter aligned entry can out-price it.
+fn restore_candidate_lengths(
+    claim: usize,
+    bound_len: usize,
+    block_size: usize,
+    cuts: &[usize],
+    mut has_snapshot: impl FnMut(usize, u64) -> bool,
+    prefix_hash: impl Fn(usize) -> u64,
+) -> Vec<usize> {
+    let mut lengths = Vec::new();
+    if claim > 0 && claim <= bound_len && has_snapshot(claim, prefix_hash(claim)) {
+        lengths.push(claim);
+    }
+    for cut in cuts {
+        if *cut > claim && *cut < bound_len {
+            lengths.push(*cut);
+        }
+    }
+    if block_size > 0 && bound_len >= block_size {
+        let mut aligned = (bound_len / block_size) * block_size;
+        let mut scanned = 0usize;
+        while aligned > claim && scanned < MAX_ALIGNED_RESTORE_SCAN {
+            if has_snapshot(aligned, prefix_hash(aligned)) {
+                lengths.push(aligned);
+                break;
+            }
+            scanned += 1;
+            let Some(next) = aligned.checked_sub(block_size) else {
+                break;
+            };
+            aligned = next;
+        }
+    }
+    lengths.sort_unstable();
+    lengths.dedup();
+    lengths
+}
+
+/// The exact-bound probe is only needed when the bound is not a block
+/// boundary: an aligned bound is already the first candidate of the aligned
+/// walk, so probing it twice would be pure overhead.
+fn probe_exact_bound_needed(bound_len: usize, block_size: usize) -> bool {
+    bound_len > 0 && (block_size == 0 || !bound_len.is_multiple_of(block_size))
+}
+
+/// Whether the runner-side snapshot probe applies to this item.
+///
+/// The probe answers a question about cache contents, not about execution
+/// mode: "does the snapshot map hold a prefix of this bound?" A warm request
+/// whose whole prompt is already resident is scheduled as a single Decode item
+/// with `seq_len() == 0`. Gating the probe on `ExecutionMode::Prefill` left
+/// `probed` empty on exactly those requests — they then restored the same
+/// prefix through the `cache.get` fallback, so `probed=0` alongside a cache hit
+/// looked like a probe bug and, more importantly, hid the value path's own
+/// baseline.
+fn restore_probe_applies(cache_seq_len: usize, bound: &[u32]) -> bool {
+    cache_seq_len == 0 && !bound.is_empty()
 }
 
 /// Fold media digests into the prefix-cache layer layout string (WS-M3).

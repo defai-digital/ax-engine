@@ -40,6 +40,13 @@ pub fn restore_value_enabled() -> bool {
 
 /// `AX_MLX_PREFIX_SEMANTIC_CUTS` — capture in-place snapshots at
 /// assistant-turn starts.
+///
+/// Opt-in and partition-changing by design: capturing a cut splits the cold
+/// prefill at that token position, and the switch is part of the execution
+/// signature the durable key carries, so snapshots never cross a setting
+/// change. Outputs therefore equal a cold run under the *same* setting, not
+/// necessarily the switch-off output (that run uses a different prefill
+/// chunk partition).
 pub fn semantic_cuts_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| env_flag(PREFIX_SEMANTIC_CUTS_ENV))

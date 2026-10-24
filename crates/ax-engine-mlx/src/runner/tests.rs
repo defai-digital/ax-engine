@@ -8816,6 +8816,107 @@ fn block_aligned_prefix_hashes_match_full_rehash_per_boundary() {
 }
 
 #[test]
+fn restore_candidate_lengths_hashes_each_candidate_and_skips_a_missing_claim() {
+    // Prompt of 1024 tokens, block 32, scheduler claim 512, one semantic cut
+    // at 600. Only the cut and the longest aligned entry exist, so the claim
+    // must not become a candidate and every presence check must carry the
+    // *candidate's* hash — looking candidates up under the whole bound's hash
+    // made every length except the bound look absent.
+    let tokens: Vec<u32> = (0..1024).map(|i| i * 3 + 1).collect();
+    let bound_hash = hash_prefix_tokens(&tokens);
+    let cuts = [600usize];
+    let mut checks: Vec<(usize, u64)> = Vec::new();
+    let lengths = restore_candidate_lengths(
+        512,
+        tokens.len(),
+        32,
+        &cuts,
+        |len, hash| {
+            checks.push((len, hash));
+            matches!(len, 600 | 1024)
+        },
+        |len| hash_prefix_tokens(&tokens[..len]),
+    );
+    assert_eq!(lengths, vec![600, 1024]);
+    assert!(
+        !lengths.contains(&512),
+        "a claim without a snapshot must not be offered as a candidate"
+    );
+    for (len, hash) in &checks {
+        if *len != tokens.len() {
+            assert_ne!(
+                *hash, bound_hash,
+                "candidate {len} must not be looked up under the whole-bound hash"
+            );
+        }
+        assert_eq!(*hash, hash_prefix_tokens(&tokens[..*len]));
+    }
+}
+
+#[test]
+fn restore_candidate_lengths_takes_only_the_longest_aligned_entry() {
+    // Bound 352, claim 320 (present), block 32: the aligned scan starts at
+    // 352 and stops at the first hit. It must never walk below the claim,
+    // which was the old `aligned > claim` blind spot that left the claim's own
+    // aligned snapshot undiscovered.
+    let mut checks = Vec::new();
+    let lengths = restore_candidate_lengths(
+        320,
+        352,
+        32,
+        &[],
+        |len, _hash| {
+            checks.push(len);
+            matches!(len, 256 | 320)
+        },
+        |len| len as u64,
+    );
+    assert_eq!(lengths, vec![320]);
+    assert_eq!(
+        checks,
+        vec![320, 352],
+        "claim presence then the aligned scan, starting at the bound"
+    );
+}
+
+#[test]
+fn restore_candidate_lengths_ignores_cuts_at_or_below_the_claim() {
+    let lengths = restore_candidate_lengths(
+        320,
+        400,
+        32,
+        &[100, 320, 321, 400, 401],
+        |_, _| false,
+        |len| len as u64,
+    );
+    assert_eq!(
+        lengths,
+        vec![321],
+        "only cuts strictly inside (claim, bound) are candidates"
+    );
+}
+
+#[test]
+fn restore_probe_applies_to_warm_decode_items() {
+    // A warm request whose whole prompt is resident is scheduled as a single
+    // Decode item with an empty cache. The probe answers a cache question, so
+    // it must run there too; gating it on Prefill is what reported probed=0
+    // for requests that then hit the cache through `get`.
+    assert!(restore_probe_applies(0, &[1, 2, 3]));
+    assert!(!restore_probe_applies(32, &[1, 2, 3]));
+    assert!(!restore_probe_applies(0, &[]));
+}
+
+#[test]
+fn probe_exact_bound_covers_unaligned_bounds() {
+    // A semantic cut or unaligned claim only matches at the bound itself; an
+    // aligned bound is already the first step of the aligned walk.
+    assert!(probe_exact_bound_needed(35, 32));
+    assert!(!probe_exact_bound_needed(32, 32));
+    assert!(!probe_exact_bound_needed(0, 32));
+}
+
+#[test]
 fn presence_penalty_history_holds_generated_tokens_only() {
     let mut state = RequestState::new(2, 1, None);
     state.prompt_prefix_tokens = vec![10, 11, 12];

@@ -164,6 +164,13 @@ pub(crate) fn env_flag_default_on(name: &str) -> bool {
 /// semantic snapshot cut points (`AX_MLX_PREFIX_SEMANTIC_CUTS`) are resolved
 /// in `ax-engine-core` so the request edge and the runner agree on them (the
 /// edge skips hint construction when they are off).
+///
+/// The two switches carry different contracts. Restore value only chooses
+/// among snapshots that already exist, so it must never change the text.
+/// Semantic cuts change the prefill chunk partition — cut capture splits the
+/// cold prefill, and the plan is part of the execution signature — so their
+/// output equals a cold run under the same setting, not necessarily the
+/// switch-off output.
 pub(crate) fn prefix_restore_value_enabled() -> bool {
     ax_engine_core::prefix_features::restore_value_enabled()
 }
