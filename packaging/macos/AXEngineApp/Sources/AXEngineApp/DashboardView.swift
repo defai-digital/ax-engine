@@ -75,6 +75,14 @@ struct DashboardView: View {
                     Spacer()
                     Text("Hover over a history to inspect a sample")
                 }.font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Label("Chat profile: " + model.settings.effectiveProfile.title, systemImage: "slider.horizontal.3")
+                    Button("Change") { model.page = .settings }
+                        .buttonStyle(.borderless)
+                    Spacer()
+                }
+                .font(.caption)
+                .help("Saved defaults for the next built-in Chat request. Other clients use their own parameters.")
                 DisclosureGroup("How these measurements work", isExpanded: $detailsExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("RAM is an estimate from active, wired and compressed pages, not model memory or an admission guarantee. CPU uses process averages normalized by logical cores. GPU is available when IOAccelerator exposes it. Missing and stale samples leave gaps. Live activity continues across pages and in the background while this window is open. Turn it off to stop recording. Activity history stays in memory for up to four hours and resets when the app quits. Longer charts preserve each time bucket’s low and high readings; hover reads an original sample.")

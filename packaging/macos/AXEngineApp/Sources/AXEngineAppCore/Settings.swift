@@ -88,6 +88,7 @@ public enum RuntimeLocator {
             candidates.append(virtualEnv + "/bin/ax-engine")
         }
         candidates.append(home.appendingPathComponent(".local/bin/ax-engine").path)
+        candidates.append(home.appendingPathComponent(".local/ax-engine/ax-engine").path)
         // AX Code Desktop delegates this discovery to its runtime. Use the same
         // managed install marker and complete payload boundary; do not scan or
         // adopt unfinished version directories or overwrite another app's install.
