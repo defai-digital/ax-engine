@@ -62,11 +62,25 @@ struct AXEngineApplication: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About AX Engine") { showAbout() }
             }
+            ThirdPartyNoticeCommands()
         }
         Settings { SettingsView(model: model).frame(width: 620).padding(28) }
+        Window("Third-Party Notices", id: "third-party-notices") {
+            ThirdPartyNoticesView()
+        }
+        .windowResizability(.contentSize)
     }
     private func showAbout() {
-        let credits = NSMutableAttributedString(string: "Native local inference for Apple Silicon.\n\nPowered by MTPLX\nhttps://github.com/youssofal/mtplx\n\nUI components adapted from MTPLX by Youssof Altoukhi (Apache-2.0). Inference is provided by AX Engine.")
+        let credits = NSMutableAttributedString(string: "Native local inference for Apple Silicon.\n\nManage your models, run local inference and chat on your Mac.\n\nOpen Third-Party Notices from the AX Engine menu for open-source acknowledgements.")
         NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
+}
+
+struct ThirdPartyNoticeCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Third-Party Notices") { openWindow(id: "third-party-notices") }
+        }
     }
 }

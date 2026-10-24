@@ -3,6 +3,7 @@ import AppKit
 import AXEngineAppCore
 
 struct SettingsView: View {
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var model: ApplicationModel
     @ObservedObject private var runtime: RuntimeController
     @ObservedObject private var models: ModelStore
@@ -53,13 +54,10 @@ struct SettingsView: View {
                     .disabled(runtime.owned || runtime.connection != nil || runtime.busy || models.downloading || models.removing)
             }
             Divider()
-            Text("Powered by MTPLX").font(.headline)
-            Link("MTPLX by Youssof Altoukhi · Apache-2.0", destination: URL(string: "https://github.com/youssofal/mtplx")!)
-            Button("View Third-Party Notices") {
-                if let url = Bundle.main.url(forResource: "MTPLX-NOTICE", withExtension: "txt") { NSWorkspace.shared.open(url) }
-            }
-            Text("Selected native app components are adapted from MTPLX. Inference is provided by AX Engine. No telemetry is sent by this app.")
+            Text("AX Engine").font(.headline)
+            Text("Native local inference for Apple Silicon. No telemetry is sent by this app.")
                 .font(.caption).foregroundStyle(.secondary)
+            Button("Third-Party Notices") { openWindow(id: "third-party-notices") }
         }
     }
     private func choose(directory: Bool) {

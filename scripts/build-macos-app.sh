@@ -43,7 +43,7 @@ with open(sys.argv[1], 'wb') as dest:
         'CFBundleShortVersionString': sys.argv[2], 'CFBundleVersion': sys.argv[2],
         'CFBundleIconFile': 'AppIcon', 'LSMinimumSystemVersion': '26.0',
         'NSHighResolutionCapable': True,
-        'NSHumanReadableCopyright': 'AX Engine contributors. Selected components: Copyright 2026 Youssof Altoukhi (Apache-2.0).',
+        'NSHumanReadableCopyright': 'AX Engine contributors.',
         'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
     }, dest)
 PY

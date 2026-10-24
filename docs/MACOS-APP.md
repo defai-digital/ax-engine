@@ -81,5 +81,8 @@ Runtime installation and updates use AX Engine's existing distribution channels.
 Powered by MTPLX: <https://github.com/youssofal/mtplx>.
 Selected native app components are adapted from MTPLX by Youssof Altoukhi under
 Apache-2.0, at revision `9882703f3105363ddc37eca9f97aa09a1d387112`.
-Original license and notices ship inside the app and are accessible in Settings.
+Original license and notices ship inside the app and are accessible through
+**Third-Party Notices** in Settings or the AX Engine menu. Product screens,
+icons and the About panel use AX Engine branding; upstream acknowledgements
+are collected in that dedicated notices window.
 AX Engine provides inference; MTPLX inference code and model assets are not bundled.
