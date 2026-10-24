@@ -85,9 +85,25 @@ synchronization on the shared default stream.
 
 ### Wired weight memory
 
-`mlx_set_wired_limit(recommendedMaxWorkingSetSize)` is called at startup to
-wire model weights into GPU memory, preventing Metal from paging them between
-requests.
+`mlx_set_wired_limit(...)` is called once at startup to wire model weights into
+GPU memory, preventing Metal from paging them between requests. The default is
+`0.9 x recommendedMaxWorkingSetSize` (96.8 GiB on a 128 GB Mac), the historical
+share that avoids wiring the full recommendation. The share is raised only when
+the priced plan says the pack needs it: a pack whose resident working set lands
+between `0.9x` and `1.0x` of the recommendation gets the smallest share that
+still covers it (up to `1.0x`), and a pack above the recommendation gets `1.0x`.
+Packs under the default share — MXFP4 Flash Next, the 27B packs, denser models
+— see exactly the wiring they had before. `AX_MLX_WIRED_LIMIT_SCALE` pins the
+share explicitly.
+
+The wired limit is reported, not enforced: the plan keeps its RAM-derived
+placement decision and only states the gap. When a resident plan prices above
+the wired limit, AX logs one warning with the shortfall and the exact remedy
+(`sudo sysctl iogpu.wired_limit_mb=<MiB>`, whose value covers the priced
+working set plus 4 GiB and is capped at `RAM - os reserve`), and `GET
+/v1/memory` carries `memory_plan.wired_limit_bytes` and
+`memory_plan.wired_shortfall_bytes` for later sampling. The kernel applies that
+sysctl process-wide, needs root, and resets it on reboot; AX cannot set it.
 
 ### Chunked prefill
 
@@ -307,7 +323,8 @@ what the kill switch restores.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `AX_MLX_PRICED_MEMORY` | on (unset is on) | Auto placement is decided by the priced memory plan: non-expert weights, KV cache, GDN/QSA state, prefill scratch, and runtime reserves are priced separately from the expert weights and the never-resident n-gram table. `0`, `false`, `no`, or `off` restores the legacy 48 GiB fixed-headroom formula. Placement only: the same weights and kernels run either way. |
+| `AX_MLX_PRICED_MEMORY` | on (unset is on) | Auto placement is decided by the priced memory plan: non-expert weights, KV cache, GDN/QSA state, prefill scratch, and runtime reserves are priced separately from the expert weights and the never-resident n-gram table. `0`, `false`, `no`, or `off` restores the legacy 48 GiB fixed-headroom formula (and the flat prefill-scratch estimate that came with it). Placement only: the same weights and kernels run either way. |
+| `AX_MLX_WIRED_LIMIT_SCALE` | unset (working-set sized, `0.9` floor) | Explicit wired-limit share of Metal's `recommendedMaxWorkingSetSize`, clamped to `0.0..=1.0` (`0` leaves the weights unwired). When unset, the runner wires `0.9x` unless the priced plan says the pack needs more, in which case it wires the smallest share that covers the working set, up to `1.0x`. Setting it pins the historical behaviour exactly and also disables the Tiel auto-no-wire policy. Wiring only: placement, kernels and output are unchanged. |
 | `AX_STREAM_EXPERT_CACHE_BYTES` | unset (no operator byte cap) | Explicit byte budget for resident expert layer stacks. A positive integer wins over the priced plan's remainder; blank, zero, and unparsable values mean "no byte cap", leaving `AX_STREAM_EXPERT_LAYERS` as the only limit. Placement only. |
 | `AX_MLX_MEMORY_CEILING_BYTES` | unset (derived from host RAM) | Explicit load-admission ceiling in bytes. When RAM is known the value is clamped to `RAM - 4 GiB` so an override can never page the kernel out; when RAM is unknown it is used as is. Blank, zero, and unparsable values keep the derived ceiling. Placement only. |
 | `AX_FLASH_NEXT_MTP_COST` | on | Enables the measured Flash Next MTP cost policy. Under the `auto` policy a head whose rounds lose to direct decode is parked for the rest of the request, which switches the mechanism to direct decode without changing the accepted greedy token stream. `0` restores the pre-WP03 gate order exactly: the machine never arms and `cost_direct` stays false. `AX_FLASH_NEXT_MTP_COST_POLICY` selects the policy; `required` reports `would_park` and never parks, `disabled` never measures. |
@@ -323,11 +340,36 @@ what the kill switch restores.
 Memory rule: the usable ceiling is `RAM - max(8 GiB, 10% RAM)`, so a 128 GiB
 host reserves 12.8 GiB and admits about 115.2 GiB. The Metal
 `recommendedMaxWorkingSetSize` is reported but never bounds the ceiling: a
-measured Flash Next session ran resident above it. With the priced plan on,
-Auto keeps the whole pack resident when the priced working set fits under the
-ceiling, streams experts with a byte-budgeted cache when only the fixed part
-fits, and refuses the load when even the fixed part does not fit. A priced
-cache too small to hold one layer stack is refused rather than thrashed.
+measured Flash Next session ran resident above it. The wired limit does bound
+GPU residency, and it is normally below the recommendation's full value; a
+resident plan that prices above the wired limit is what makes macOS page
+weights out, so the plan warns with the gap and the `iogpu.wired_limit_mb`
+value that closes it. With the priced plan on, Auto keeps the whole pack
+resident when the priced working set fits under the ceiling, streams experts
+with a byte-budgeted cache when only the fixed part fits, and refuses the load
+when even the fixed part does not fit.
+
+Concurrency is part of that pricing. Per-request gated-delta-net state is
+charged once per live decode sequence, so a pack can fit at one row and not at
+the runner's default eight-row cohort: the affine 6-bit Flash Next pack prices
+116.17 GiB at eight rows and 115.15 GiB at one against the same 115.20 GiB
+ceiling. When the configured live-sequence count `N` does not fit but some
+smaller `L` does, the plan stays resident and publishes `live_sequence_cap = L`;
+the engine admits at most `L` concurrently prefill/decode requests for that
+model and leaves the rest in the scheduler's queue, in arrival order. Only when
+even `L = 1` does not fit does the plan fall back to the stream/refuse ladder
+unchanged. The effective admission is `min(explicit --max-concurrent-requests,
+L)`, and the reduction is announced once with a `configured=N admitted=L`
+warning. MXFP4 Flash Next keeps its full cohort: nothing is capped when the
+configured count fits. `GET /v1/memory` reports `memory_plan.live_sequences`
+(the configured count) and `memory_plan.live_sequence_cap` (the admitted one),
+so lower parallelism than requested is diagnosable without reading logs. A priced cache too small to hold one
+layer stack is refused rather than thrashed. The prefill-scratch term is
+shape-derived from the configured chunk — residual/attention copies, gated-delta
+chunk intermediates, `chunk x top_k` MoE staging, the QSA score workspace and
+selected-K/V gather, and hyper-connection buffers — instead of a flat
+activation copy, because a profiled 8192-token Flash Next prefill peaked about
+3.5 GiB above the flat estimate.
 
 ## Benchmarking
 

@@ -450,6 +450,17 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
         false
     }
 
+    /// Live decode sequences the loaded model may run concurrently.
+    ///
+    /// `None` means this runner imposes no cap. A runner whose load-time memory
+    /// plan proved residency at fewer live sequences than the caller configured
+    /// reports that smaller number here, and the engine admits at most that
+    /// many requests at a time (leaving the rest queued) instead of crossing
+    /// the priced ceiling and paging weights out of GPU residency.
+    fn native_live_sequence_cap(&self) -> Option<u32> {
+        None
+    }
+
     /// Submit one tiny GPU copy so an idle device keeps model buffers wired.
     ///
     /// The default is a no-op. The MLX runner overrides it and does not change

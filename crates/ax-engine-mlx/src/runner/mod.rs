@@ -1655,6 +1655,15 @@ pub struct MlxRunner {
     /// Effective MLX memory limit in bytes (`0` when the limit is unknown).
     /// Pressure requeue uses 90% / 80% of this value and stays off at `0`.
     mlx_memory_limit: u64,
+    /// Live decode sequences this session may run concurrently, resolved by the
+    /// priced memory plan at load time.
+    ///
+    /// `None` when the plan did not price live sequences or did not stay
+    /// resident, in which case residency imposes no cap and the caller's own
+    /// admission limit stands. A `Some(n)` below the configured count means the
+    /// per-request state term was re-priced for `n` rows: admitting more would
+    /// cross the ceiling the plan proved.
+    live_sequence_cap: Option<u32>,
     /// Model id from the latest `run`, used when a checkpoint stores a prefix.
     last_prefix_model_id: Mutex<String>,
     /// Block size from the latest `run`, paired with `last_prefix_model_id`.
@@ -2595,17 +2604,60 @@ impl MlxRunner {
         stream.set_as_default();
 
         // Wire weights into GPU memory to prevent paging between requests.
-        // Scale to 90% of Metal's recommended working set to avoid macOS kernel
-        // panics caused by wiring the full max (documented in mlx-lm#883).
-        // Override via AX_MLX_WIRED_LIMIT_SCALE (0.0-1.0).
+        // 90% of Metal's recommended working set is the default, because
+        // wiring the full max was linked to macOS kernel panics (mlx-lm#883).
+        // The share is raised only as far as this pack's priced working set
+        // actually needs, up to the full recommendation: a resident Flash Next
+        // 6-bit session prices above the 0.9 share on a 128 GiB host, and
+        // wiring less than the weights need is exactly what makes macOS page
+        // them out during long-context prefill. Override (and thus pin the
+        // historical behaviour) via AX_MLX_WIRED_LIMIT_SCALE (0.0-1.0).
         let wired_cap = max_recommended_working_set_size();
+        let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&c| c >= 1)
+            .unwrap_or(8);
+        let live_sequences = crate::expert_stream::resolved_live_sequences(
+            session_budget.and_then(|budget| budget.max_live_sequences),
+            batched_cap,
+        );
+        // Priced residency of the pack about to load, estimated from the
+        // manifest and headers only: the working set sizes the wired limit, and
+        // the live-sequence cap it resolves is the concurrency this session may
+        // actually run at. An empty report (no sidecar, required streaming,
+        // plan already streaming) keeps the historical 0.9 share and no cap.
+        let priced_residency = session_budget.map_or_else(
+            crate::expert_stream::PricedSessionResidency::default,
+            |budget| {
+                crate::expert_stream::price_session_residency(artifacts, budget, live_sequences)
+            },
+        );
+        let planned_working_set_bytes = priced_residency.resident_working_set_bytes;
+        let live_sequence_cap = priced_residency.live_sequence_cap;
+        let wired_limit = crate::tiel_memory_policy::resolve_wired_limit(
+            wired_cap,
+            planned_working_set_bytes,
+            crate::tiel_memory_policy::wired_limit_scale_override(),
+        );
         let wired_residency = if wired_cap > 0 {
-            let scale: f64 = std::env::var("AX_MLX_WIRED_LIMIT_SCALE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.9);
-            let scaled = (wired_cap as f64 * scale.clamp(0.0, 1.0)) as usize;
-            set_wired_limit(scaled);
+            set_wired_limit(usize::try_from(wired_limit.limit_bytes).unwrap_or(usize::MAX));
+            tracing::info!(
+                target: "ax_engine_mlx::runner",
+                wired_limit_bytes = wired_limit.limit_bytes,
+                wired_limit_scale = wired_limit.scale,
+                wired_limit_source = ?wired_limit.source,
+                recommended_working_set_bytes = wired_cap,
+                planned_working_set_bytes = ?planned_working_set_bytes,
+                "wired GPU residency for this session"
+            );
+            ax_engine_core::memory_budget::publish_wired_memory_report(
+                ax_engine_core::memory_budget::WiredMemoryReport::from_wired_limit(
+                    wired_limit.limit_bytes,
+                    planned_working_set_bytes,
+                    crate::expert_stream::unified_memory_bytes(),
+                ),
+            );
             crate::tiel_memory_policy::WiredResidencyGuard::acquire()
         } else {
             crate::tiel_memory_policy::WiredResidencyGuard::unheld()
@@ -2672,20 +2724,12 @@ impl MlxRunner {
         let reused_shared_weights = preloaded_weights.is_some();
         // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
         // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
-        let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .filter(|&c| c >= 1)
-            .unwrap_or(8);
-        // `batched_cap` is the runner's hard bound on live decode sequences. The
-        // priced plan charges per-request hybrid/QSA state once per live row,
-        // but the effective count also honours the session's admitted
-        // concurrency (`SessionResidencyBudget::max_live_sequences`): a server
-        // limited to one request must not be priced for eight.
-        let live_sequences = crate::expert_stream::resolved_live_sequences(
-            session_budget.and_then(|budget| budget.max_live_sequences),
-            batched_cap,
-        );
+        // `batched_cap` and `live_sequences` were resolved above, before the
+        // wired limit needed the session's priced working set. The priced plan
+        // charges per-request hybrid/QSA state once per live row, but the
+        // effective count also honours the session's admitted concurrency
+        // (`SessionResidencyBudget::max_live_sequences`): a server limited to
+        // one request must not be priced for eight.
         // Priced-plan inputs for this session, installed on the thread that
         // loads the weights (the same per-session latch pattern as
         // `set_stream_experts_mode`). Builders without an admitted session
@@ -2717,7 +2761,18 @@ impl MlxRunner {
                 host_ram_bytes: crate::expert_stream::unified_memory_bytes(),
                 metal_recommended_max_working_set_bytes:
                     crate::expert_stream::metal_recommended_working_set_bytes(),
+                // The plan compares its priced working set against the limit
+                // this process actually set, not against a re-derived guess.
+                wired_limit_bytes: (wired_cap > 0).then_some(wired_limit.limit_bytes),
                 ceiling_override_bytes: crate::expert_stream::memory_ceiling_override_bytes(),
+                // The plan re-prices its per-request state term against this
+                // live-sequence count, so the concurrency it charges is the
+                // concurrency the engine admits.
+                live_sequences: Some(live_sequences.max(1)),
+                state_bytes_per_live_sequence: crate::expert_stream::per_live_sequence_state_bytes(
+                    artifacts.manifest(),
+                ),
+                live_sequences_operator_capped: budget.max_live_sequences.is_some(),
             }
         }));
         let weights = match preloaded_weights {
@@ -3241,6 +3296,7 @@ impl MlxRunner {
             rotating_sliding_decode,
             direct_clear_cache_cadence,
             mlx_memory_limit: u64::try_from(memory_limit).unwrap_or(u64::MAX),
+            live_sequence_cap,
             last_prefix_model_id: Mutex::new(String::new()),
             last_block_size_tokens: std::sync::atomic::AtomicU32::new(0),
             checkpoint_write_errors: std::sync::atomic::AtomicU32::new(0),
@@ -5562,6 +5618,10 @@ impl ExecutionRunner for MlxRunner {
 
     fn native_expert_streaming_active(&self) -> bool {
         self.weights.expert_stream.is_some()
+    }
+
+    fn native_live_sequence_cap(&self) -> Option<u32> {
+        self.live_sequence_cap
     }
 
     fn release_request_state(&self, request_id: RequestId) {

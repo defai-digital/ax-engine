@@ -119,6 +119,10 @@ pub struct EngineCore {
     prefill_stall: crate::prefill_stall::PrefillStallPolicy,
     /// Default generation paradigm applied to new submissions (ADR-038).
     generation_kind: GenerationKind,
+    /// Live decode sequences the loaded model may run concurrently, resolved by
+    /// the runner's load-time priced plan. `None` keeps the historical
+    /// admit-every-waiting-request behaviour.
+    live_sequence_cap: Option<usize>,
     next_step_id: u64,
     /// Consecutive runner/sampler panics contained at the step boundary.
     /// Reset on every successful dispatch; at `RUNNER_PANIC_RETIREMENT_THRESHOLD`
@@ -190,6 +194,10 @@ impl EngineCore {
         R: ExecutionRunner + 'static,
         S: TokenSampler + 'static,
     {
+        let live_sequence_cap = runner
+            .native_live_sequence_cap()
+            .and_then(|cap| usize::try_from(cap).ok())
+            .filter(|cap| *cap > 0);
         Self {
             request_manager: RequestManager::new(kv_config.cache_group_id),
             kv_manager: KvManager::new(kv_config),
@@ -203,6 +211,7 @@ impl EngineCore {
             max_inflight_prefill_requests: 0,
             prefill_stall: crate::prefill_stall::PrefillStallPolicy::default(),
             generation_kind: GenerationKind::Autoregressive,
+            live_sequence_cap,
             next_step_id: 0,
             consecutive_runner_panics: 0,
             pending_evictions: 0,
@@ -332,6 +341,21 @@ impl EngineCore {
     /// Set the generation paradigm applied to newly submitted requests (ADR-038).
     pub fn set_generation_kind(&mut self, generation_kind: GenerationKind) {
         self.generation_kind = generation_kind;
+    }
+
+    /// Live decode sequences this core admits at once.
+    ///
+    /// Resolved at construction from
+    /// [`ExecutionRunner::native_live_sequence_cap`]; callers that build a core
+    /// without a capped runner may also set it explicitly. `None` admits every
+    /// waiting request, which is the historical behaviour.
+    pub fn set_live_sequence_cap(&mut self, cap: Option<usize>) {
+        self.live_sequence_cap = cap.filter(|cap| *cap > 0);
+    }
+
+    /// Live decode sequences this core admits at once, if a cap is in force.
+    pub fn live_sequence_cap(&self) -> Option<usize> {
+        self.live_sequence_cap
     }
 
     pub fn last_metal_dispatch(&self) -> Option<crate::metal::MetalDispatchTrace> {
@@ -471,7 +495,9 @@ impl EngineCore {
         if pressure_sample.is_some_and(MemoryPressureSample::over_hard) {
             self.spill_one_victim()?;
         }
-        let admitted_requests = self.request_manager.admit_waiting()?;
+        let admitted_requests = self
+            .request_manager
+            .admit_waiting_up_to(self.live_sequence_cap)?;
         step_span.record("step_id", step_id.0);
         trace!(
             cleanup_results = cleanup_results.len(),
@@ -3361,6 +3387,63 @@ mod tests {
                 .and_then(|batch| batch.route_metadata.attention_route.as_deref()),
             Some("qwen3_prefill")
         );
+    }
+
+    /// A model whose priced plan proved residency at fewer live sequences than
+    /// the caller submitted must queue the rest, not admit them and cross the
+    /// ceiling. This is the 6-bit Flash Next case on a 128 GiB host: the plan
+    /// publishes a cap of one row, and the engine must serve one request at a
+    /// time instead of paging 91 GiB of experts.
+    #[test]
+    fn live_sequence_cap_queues_waiting_requests_until_a_slot_frees() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 8, 8));
+        assert_eq!(engine.live_sequence_cap(), None);
+        engine.set_live_sequence_cap(Some(1));
+        assert_eq!(engine.live_sequence_cap(), Some(1));
+
+        engine.submit(make_submission(1, 1, 2)).unwrap();
+        engine.submit(make_submission(2, 2, 2)).unwrap();
+
+        let outcome = engine.step(3, true).unwrap();
+        // Only one row is live; the second waits for its turn.
+        assert_eq!(outcome.admitted_requests, vec![RequestId(1)]);
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .state,
+            RequestState::Waiting
+        );
+        // The queued request is real backlog, not a rejected or dropped row.
+        assert_eq!(outcome.metrics.waiting_requests, 1);
+
+        // Freeing the live row admits exactly the next queued request.
+        engine.cancel(RequestId(1)).unwrap();
+        let outcome = engine.step(3, true).unwrap();
+        assert_eq!(outcome.admitted_requests, vec![RequestId(2)]);
+        assert_eq!(
+            engine
+                .request_manager()
+                .snapshot(RequestId(2))
+                .unwrap()
+                .state,
+            RequestState::Runnable
+        );
+        // Exactly one live row: the queue drained into the freed slot.
+        assert_eq!(engine.request_manager().live_request_count(), 1);
+
+        // No cap restores the historical admit-everything behaviour.
+        let mut uncapped =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 8, 8));
+        uncapped.set_live_sequence_cap(None);
+        assert_eq!(uncapped.live_sequence_cap(), None);
+        uncapped.submit(make_submission(1, 1, 2)).unwrap();
+        uncapped.submit(make_submission(2, 2, 2)).unwrap();
+        let outcome = uncapped.step(3, true).unwrap();
+        assert_eq!(outcome.admitted_requests, vec![RequestId(1), RequestId(2)]);
+        assert_eq!(uncapped.request_manager().live_request_count(), 2);
     }
 
     #[test]
