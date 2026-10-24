@@ -2496,6 +2496,7 @@ fn validate_projection(
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::test_support::with_isolated_peak_memory;
 
     fn media(prompt: Vec<[i32; 3]>, delta: i32) -> std::sync::Arc<Qwen4ExpMediaPositions> {
         std::sync::Arc::new(Qwen4ExpMediaPositions::new(prompt, delta, &[11, 11, 10]).unwrap())
@@ -5219,71 +5220,73 @@ mod tests {
 
     #[test]
     fn qsa_tiled_peak_workspace_is_bounded() {
-        let seq = 2048i32;
-        let heads = 4i32;
-        let dim = 128i32;
-        let n_blocks = 8193i32;
-        let monolithic = full_score_workspace_bytes(1, seq, heads, n_blocks as usize).unwrap();
-        assert!(monolithic > QSA_SCORE_WORKSPACE_LIMIT);
-        let plan = planned(1, seq, heads, dim, n_blocks, MlxDtype::Float32).unwrap();
-        assert!(plan.query_rows.len() > 1);
-        assert!(plan.workspace_bytes <= QSA_TILE_WORKSPACE_BUDGET);
-        assert_eq!(plan.query_rows.iter().sum::<i32>(), seq);
-        for &rows in &plan.query_rows {
-            let bytes = full_score_workspace_bytes(1, rows, heads, n_blocks as usize).unwrap();
-            assert!(bytes <= QSA_SCORE_WORKSPACE_LIMIT);
-        }
-        let spec = Geom {
-            heads: heads as usize,
-            dim: dim as usize,
-            ratio: 4,
-            budget: 4,
-            hidden: 4,
-        };
-        let indexer = geom_indexer(&spec);
-        let past_tokens = n_blocks as usize * spec.ratio - seq as usize;
-        let past = array_f32(
-            &vec![0.05f32; past_tokens * spec.dim],
-            &[1, past_tokens as i32, spec.dim as i32],
-        );
-        let cache = QsaIndexKeyCache::from_serialized(Some(past));
-        let hidden = hidden_tensor(&spec, 1, seq as usize, 0.0);
-        let rejected = with_tiled_scores(false, || {
-            indexer.select_with_mode(&hidden, &cache, past_tokens, project, false)
-        });
-        match rejected {
-            Err(QsaError::InvalidScalar(message)) => {
-                assert!(message.contains("score workspace"), "{message}");
+        with_isolated_peak_memory(|| {
+            let seq = 2048i32;
+            let heads = 4i32;
+            let dim = 128i32;
+            let n_blocks = 8193i32;
+            let monolithic = full_score_workspace_bytes(1, seq, heads, n_blocks as usize).unwrap();
+            assert!(monolithic > QSA_SCORE_WORKSPACE_LIMIT);
+            let plan = planned(1, seq, heads, dim, n_blocks, MlxDtype::Float32).unwrap();
+            assert!(plan.query_rows.len() > 1);
+            assert!(plan.workspace_bytes <= QSA_TILE_WORKSPACE_BUDGET);
+            assert_eq!(plan.query_rows.iter().sum::<i32>(), seq);
+            for &rows in &plan.query_rows {
+                let bytes = full_score_workspace_bytes(1, rows, heads, n_blocks as usize).unwrap();
+                assert!(bytes <= QSA_SCORE_WORKSPACE_LIMIT);
             }
-            Err(error) => panic!("monolithic path must reject this chunk, got {error}"),
-            Ok(_) => panic!("monolithic path must reject this chunk"),
-        }
-        let previous_limit = mlx_sys::set_cache_limit(0);
-        let active_before = mlx_sys::mempressure::device_active_bytes().unwrap_or(0);
-        mlx_sys::reset_peak_memory();
-        let peak_after_reset = mlx_sys::get_peak_memory() as u64;
-        let selected = with_tiled_scores(true, || {
-            indexer
-                .select_with_mode(&hidden, &cache, past_tokens, project, false)
-                .unwrap()
+            let spec = Geom {
+                heads: heads as usize,
+                dim: dim as usize,
+                ratio: 4,
+                budget: 4,
+                hidden: 4,
+            };
+            let indexer = geom_indexer(&spec);
+            let past_tokens = n_blocks as usize * spec.ratio - seq as usize;
+            let past = array_f32(
+                &vec![0.05f32; past_tokens * spec.dim],
+                &[1, past_tokens as i32, spec.dim as i32],
+            );
+            let cache = QsaIndexKeyCache::from_serialized(Some(past));
+            let hidden = hidden_tensor(&spec, 1, seq as usize, 0.0);
+            let rejected = with_tiled_scores(false, || {
+                indexer.select_with_mode(&hidden, &cache, past_tokens, project, false)
+            });
+            match rejected {
+                Err(QsaError::InvalidScalar(message)) => {
+                    assert!(message.contains("score workspace"), "{message}");
+                }
+                Err(error) => panic!("monolithic path must reject this chunk, got {error}"),
+                Ok(_) => panic!("monolithic path must reject this chunk"),
+            }
+            let previous_limit = mlx_sys::set_cache_limit(0);
+            let active_before = mlx_sys::mempressure::device_active_bytes().unwrap_or(0);
+            mlx_sys::reset_peak_memory();
+            let peak_after_reset = mlx_sys::get_peak_memory() as u64;
+            let selected = with_tiled_scores(true, || {
+                indexer
+                    .select_with_mode(&hidden, &cache, past_tokens, project, false)
+                    .unwrap()
+            });
+            let peak = mlx_sys::get_peak_memory() as u64;
+            mlx_sys::set_cache_limit(previous_limit);
+            let growth = peak.saturating_sub(peak_after_reset);
+            let over_active = peak.saturating_sub(active_before);
+            let observed = match (growth > 0, over_active > 0) {
+                (true, true) => growth.min(over_active),
+                (true, false) => growth,
+                (false, true) => over_active,
+                (false, false) => 0,
+            };
+            assert!(observed > 1024 * 1024, "tiled select allocated nothing");
+            assert!(
+                observed < monolithic as u64,
+                "tiled peak growth {observed} reached the monolithic score workspace {monolithic}"
+            );
+            assert_eq!(selected.tokens.len(), 1);
+            assert_eq!(selected.tokens[0].len(), seq as usize);
+            assert!(selected.next_cache().keys().is_some());
         });
-        let peak = mlx_sys::get_peak_memory() as u64;
-        mlx_sys::set_cache_limit(previous_limit);
-        let growth = peak.saturating_sub(peak_after_reset);
-        let over_active = peak.saturating_sub(active_before);
-        let observed = match (growth > 0, over_active > 0) {
-            (true, true) => growth.min(over_active),
-            (true, false) => growth,
-            (false, true) => over_active,
-            (false, false) => 0,
-        };
-        assert!(observed > 1024 * 1024, "tiled select allocated nothing");
-        assert!(
-            observed < monolithic as u64,
-            "tiled peak growth {observed} reached the monolithic score workspace {monolithic}"
-        );
-        assert_eq!(selected.tokens.len(), 1);
-        assert_eq!(selected.tokens[0].len(), seq as usize);
-        assert!(selected.next_cache().keys().is_some());
     }
 }

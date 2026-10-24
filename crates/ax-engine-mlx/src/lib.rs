@@ -34,6 +34,8 @@ mod whisper_mel;
 mod whisper_tokenizer;
 
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod vl_fixture_tests;
 // Public for the kernel-dispatch probe binaries (`src/bin/`), like the
 // sibling modules; not a stable external API.
