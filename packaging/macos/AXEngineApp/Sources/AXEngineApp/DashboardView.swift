@@ -73,9 +73,15 @@ struct DashboardView: View {
                 }
                 HStack(alignment: .top, spacing: 16) {
                     Card("Runtime snapshot", subtitle: "Reported by the connected service. Unavailable values show a dash.") {
-                        MetricRow(label: "Active streams", value: number("ax_engine_generation_active_streams"))
-                        MetricRow(label: "MLX active memory", value: memory("ax_engine_memory_mlx_active_bytes"))
-                        MetricRow(label: "Process resident memory", value: memory("ax_engine_memory_host_resident_bytes"))
+                        if runtime.connection == nil && !runtime.owned {
+                            Label("No service connected", systemImage: "network.slash")
+                            Text("Start a model or connect to an existing service to see runtime measurements.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        } else {
+                            MetricRow(label: "Active streams", value: number("ax_engine_generation_active_streams"))
+                            MetricRow(label: "MLX active memory", value: memory("ax_engine_memory_mlx_active_bytes"))
+                            MetricRow(label: "Process resident memory", value: memory("ax_engine_memory_host_resident_bytes"))
+                        }
                         Button("View diagnostics") { model.page = .server }
                     }
                     Card("Model library", subtitle: "Downloaded files still require runtime compatibility checks.") {
@@ -89,7 +95,7 @@ struct DashboardView: View {
                         Button("Open library") { model.modelsSection = "library"; model.page = .models }
                     }
                 }
-                if let transfer = models.downloads.first(where: { ["Queued", "Downloading", "Failed", "Cancelled"].contains($0.state) }) {
+                if let transfer = DownloadItem.dashboardItem(models.downloads) {
                     Card("Model transfer", subtitle: transfer.model.alias) {
                         Text(transfer.state).font(.headline)
                         if let fraction = transfer.fraction { ProgressView(value: fraction) }
@@ -97,6 +103,7 @@ struct DashboardView: View {
                         Button("View transfers") { model.modelsSection = "transfers"; model.page = .models }
                     }
                 }
+                HostMonitoringView(model: model, monitor: model.hostMonitor)
                 HStack {
                     Label("This Mac", systemImage: "desktopcomputer")
                     Text(ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory) + " unified memory")

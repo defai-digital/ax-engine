@@ -115,9 +115,26 @@ Dashboard replaces the static Overview. It keeps one layout and changes its
 primary action for discovery, downloaded files, startup, a ready service, and
 failures. It shows the current model, service ownership, last successful health
 check, startup elapsed time and a small snapshot of existing runtime metrics.
-Unknown metrics show a dash. Startup phases and percentages are not invented;
-CPU/GPU history and generated-token throughput are not reported by this view.
-Server retains lifecycle configuration, advanced counters and output.
+When disconnected, the snapshot explains how to start or connect instead of
+showing an empty metric grid. Unknown metrics show a dash. Startup phases,
+percentages and generated-token throughput are not invented. Server retains
+lifecycle configuration, advanced counters and output.
+
+Optional **This Mac monitoring** shows five minutes of CPU, GPU and unified-memory
+history. It is off by default; the preference persists locally. Sampling runs only
+while Dashboard or Server is visible in the active app, with a five-second pause
+between samples and a two-second deadline per probe. CPU uses process averages
+normalized by logical cores; memory uses active, wired and compressed pages.
+GPU utilization is available only when IOAccelerator exposes it. These host-wide
+estimates are separate from runtime metrics and do not establish model fit or
+inference performance. OS memory pressure remains unknown until a public system
+event arrives. Missing, stale and interrupted samples leave gaps instead of zeros.
+
+Server's collapsed **Runtime history** uses existing service polls for MLX active
+memory, active streams and interval MTP draft acceptance. Idle intervals, counter
+resets and probe failures leave gaps; acceptance is not a speedup measurement.
+History resets when the connection or reported model changes. All measurement
+history is bounded and kept in memory only; no telemetry is sent.
 
 Library discovery runs in the bundled `AXEngineModelScanner` helper, which only
 reads metadata. Results arrive incrementally, ordinary local repositories are
@@ -132,6 +149,10 @@ network storage may require reconnecting the volume before retrying.
 Model rows show a compact name, source and download status, with full paths and
 revision details behind a disclosure. Complete files do not establish runtime
 compatibility, and absence from the runtime catalog does not mean unsupported.
+Library filters distinguish all folders, catalog matches and other folders without
+claiming compatibility. Search offers a clear recovery action when nothing matches.
+The app-owned running model is labeled explicitly. Dashboard prioritizes active
+transfers over older failures, and Catalog links an active download to Transfers.
 The app performs compatibility validation when the operator explicitly starts a
 model. Models from other tools are not silently deleted or hidden.
 

@@ -22,6 +22,7 @@ struct MainView: View {
     @ObservedObject var models: ModelStore
     @ObservedObject var chat: ChatStore
     @FocusState private var searchFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
     @State private var removeTarget: LocalModel?
     @State private var stopConfirmation = false
     @State private var apiKey = ""
@@ -71,6 +72,11 @@ struct MainView: View {
             .background(Color(nsColor: .windowBackgroundColor))
         }
         .task { if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) } }
+        .onAppear { syncHostMonitoring() }
+        .onChange(of: model.page) { _, _ in syncHostMonitoring() }
+        .onChange(of: model.hostMonitoringEnabled) { _, _ in syncHostMonitoring() }
+        .onChange(of: scenePhase) { _, _ in syncHostMonitoring() }
+        .onDisappear { model.hostMonitor.setActive(false) }
         .onChange(of: model.searchFocusRequest) { _, _ in
             Task { @MainActor in await Task.yield(); searchFocused = true }
         }
@@ -89,6 +95,10 @@ struct MainView: View {
         } message: { Text("Active inference on this app-owned server will stop.") }
     }
 
+    private func syncHostMonitoring() {
+        model.hostMonitor.setActive(HostMonitor.shouldSample(enabled: model.hostMonitoringEnabled,
+            foreground: scenePhase == .active, visible: model.page == .overview || model.page == .server))
+    }
     private var subtitle: String {
         switch model.page ?? .overview {
         case .overview: "Your model, runtime status and next step."
@@ -138,7 +148,12 @@ struct MainView: View {
         Card("Runtime catalog", subtitle: "Pinned profiles come from your installed AX Engine runtime. A catalog entry is not a hardware qualification.") {
             if models.refreshing { ProgressView("Reading runtime catalog…") }
             if models.catalog.isEmpty && !models.refreshing { Text("Select your AX Engine runtime in Settings, then refresh.").foregroundStyle(.secondary) }
-            ForEach(models.catalog.filter { model.modelSearch.isEmpty || $0.alias.localizedCaseInsensitiveContains(model.modelSearch) || $0.repoId.localizedCaseInsensitiveContains(model.modelSearch) }) { item in
+            let matches = models.catalog.filter { model.modelSearch.isEmpty || $0.alias.localizedCaseInsensitiveContains(model.modelSearch) || $0.repoId.localizedCaseInsensitiveContains(model.modelSearch) }
+            if matches.isEmpty && !model.modelSearch.isEmpty && !models.refreshing {
+                Text("No catalog profiles match your search.").foregroundStyle(.secondary)
+                Button("Clear search") { model.modelSearch = "" }
+            }
+            ForEach(matches) { item in
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.alias).font(.headline)
@@ -146,7 +161,9 @@ struct MainView: View {
                         Text(item.revision.map { "Revision " + $0 } ?? "Unpinned runtime profile").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Download", systemImage: "arrow.down") { models.enqueue(item, settings: model.settings); model.modelsSection = "transfers"; model.page = .models }
+                    Button(models.downloads.contains { $0.model.target == item.target && ["Queued", "Downloading"].contains($0.state) } ? "View Transfer" : "Download", systemImage: "arrow.down") {
+                        models.enqueue(item, settings: model.settings); model.modelsSection = "transfers"; model.page = .models
+                    }
                 }.padding(.vertical, 7)
                 Divider()
             }
@@ -154,6 +171,15 @@ struct MainView: View {
     }
     private func localLibrary(filter: String = "") -> some View {
         Card("Local library", subtitle: "\(models.library.count) folders · \(models.library.filter { $0.ready && models.checkedPaths.contains($0.path) }.count) with checked, complete weight files") {
+            Picker("Library filter", selection: $model.libraryScope) {
+                Text("All folders").tag("all")
+                Text("Catalog matches").tag("catalog")
+                Text("Other folders").tag("other")
+            }.pickerStyle(.segmented)
+            if model.libraryScope != "all" {
+                Text("Catalog association is not a compatibility check. Other folders may still be supported by AX Engine.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if models.scanning {
                 HStack {
                     ProgressView("Checking folders · \(models.checkedPaths.count) found")
@@ -172,21 +198,30 @@ struct MainView: View {
                 Text("No local models found. Browse Catalog to download one, or add an existing folder.")
                 Button("Browse Catalog") { model.modelSearch = ""; model.modelsSection = "catalog" }
             }
-            let matches = models.library.filter { filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter) }.sorted { left, right in
+            let matches = models.library.filter {
+                let associated = $0.isCatalogAssociated(models.catalog)
+                let included = model.libraryScope == "all" || (model.libraryScope == "catalog" ? associated : !associated)
+                return included && (filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter))
+            }.sorted { left, right in
                 let l = left.ready && models.checkedPaths.contains(left.path)
                 let r = right.ready && models.checkedPaths.contains(right.path)
                 return l == r ? left.path < right.path : l && !r
             }
-            if matches.isEmpty && !filter.isEmpty { Text("No folders match your search.").foregroundStyle(.secondary) }
+            if matches.isEmpty && (!filter.isEmpty || model.libraryScope != "all") {
+                Text("No folders match this filter.").foregroundStyle(.secondary)
+                Button("Show all folders") { model.libraryScope = "all"; model.modelSearch = "" }
+            }
             ForEach(matches) { item in
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(item.displayName).font(.headline).lineLimit(2)
                             Text(item.source).font(.caption).foregroundStyle(.secondary)
-                            Text(models.checkedPaths.contains(item.path)
-                                 ? (item.ready ? "Downloaded · compatibility unverified" : "Weights incomplete or metadata only")
-                                 : "Not checked in this scan · previous result")
+                            Text(runtime.ready && runtime.owned && runtime.selectedModel == item.path
+                                 ? "Running in this app"
+                                 : models.checkedPaths.contains(item.path)
+                                    ? (item.ready ? "Downloaded · compatibility unverified" : "Weights incomplete or metadata only")
+                                    : "Not checked in this scan · previous result")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -288,6 +323,8 @@ struct MainView: View {
                     MetricRow(label: "MTP accepted tokens", value: metric("ax_engine_mtp_accepted_tokens_total"))
                     ForEach(runtime.models) { item in MetricRow(label: item.id, value: item.contextLength.map { "\($0) context" } ?? "Connected") }
                 }
+                RuntimeHistoryView(runtime: runtime)
+                HostMonitoringView(model: model, monitor: model.hostMonitor)
                 if !runtime.logs.isEmpty {
                     Card("Runtime output", subtitle: "Bounded local diagnostic output") {
                         ScrollView([.horizontal, .vertical]) {

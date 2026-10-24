@@ -365,6 +365,7 @@ func testScannerURL() -> URL {
     #expect(attached.state == "Connection degraded")
     #expect(!attached.ready)
     #expect(attached.metrics.isEmpty)
+    #expect(attached.history.samples.last?.values.isEmpty == true)
     #expect(attached.lastSuccessfulCheck != nil)
     let lastCheck = attached.lastSuccessfulCheck
     #expect(service.running)
@@ -374,8 +375,10 @@ func testScannerURL() -> URL {
     while !attached.ready && Date() < recoveryDeadline { try await Task.sleep(for: .milliseconds(50)) }
     #expect(attached.ready)
     #expect(attached.lastSuccessfulCheck != lastCheck)
+    #expect(attached.history.latest("ax_engine_generation_active_streams") == 0)
     await attached.stop()
     #expect(attached.lastSuccessfulCheck == nil)
+    #expect(attached.history.latest("ax_engine_generation_active_streams") == nil)
     #expect(service.running)
     service.cancel()
     _ = try? await running.value

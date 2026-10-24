@@ -18,6 +18,14 @@ public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
     public var source = "Local folder"
     public var displayName: String { name.components(separatedBy: " · ").first?.components(separatedBy: "/").last ?? name }
     public var id: String { path }
+    public func isCatalogAssociated(_ catalog: [CatalogModel]) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        if url.deletingLastPathComponent().lastPathComponent == "snapshots" {
+            let repository = url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+            return catalog.contains { repository == "models--" + $0.repoId.replacingOccurrences(of: "/", with: "--") }
+        }
+        return managed && catalog.contains { url.lastPathComponent == $0.folderName }
+    }
     public var name: String {
         let url = URL(fileURLWithPath: path)
         if url.deletingLastPathComponent().lastPathComponent == "snapshots" {
@@ -36,6 +44,11 @@ public struct DownloadItem: Identifiable, Sendable {
     public var state = "Queued"
     public var fraction: Double?
     public var detail = "Waiting"
+    public static func dashboardItem(_ items: [Self]) -> Self? {
+        items.first(where: { $0.state == "Downloading" })
+            ?? items.first(where: { $0.state == "Queued" })
+            ?? items.last(where: { $0.state == "Failed" })
+    }
 }
 
 public struct DownloadProgress: Equatable, Sendable {

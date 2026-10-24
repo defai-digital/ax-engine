@@ -15,6 +15,11 @@ final class ApplicationModel: ObservableObject {
     @Published var modelSearch = ""
     @Published var modelsSection = "library"
     @Published var searchFocusRequest = 0
+    @Published var libraryScope = "all"
+    @Published var hostMonitoringEnabled = UserDefaults.standard.bool(forKey: "hostMonitoringEnabled") {
+        didSet { UserDefaults.standard.set(hostMonitoringEnabled, forKey: "hostMonitoringEnabled") }
+    }
+    let hostMonitor = HostMonitor()
     let runtime = RuntimeController()
     let models = ModelStore()
     let chat = ChatStore()
@@ -54,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         quitting = true
         Task {
+            await model.hostMonitor.shutdown()
             await model.chat.stop()
             await model.models.shutdown()
             await model.runtime.stop()

@@ -16,6 +16,8 @@ public final class RuntimeController: ObservableObject {
     @Published public private(set) var startedAt: Date?
     @Published public private(set) var lastSuccessfulCheck: Date?
     @Published public private(set) var selectedModel = ""
+    @Published public private(set) var history = MetricHistory()
+    private var mtpWindow = MTPCounterWindow()
     public let job = ProcessJob()
     private let logStore = BoundedLogStore(capacity: 250)
     private var generation = UUID()
@@ -33,6 +35,7 @@ public final class RuntimeController: ObservableObject {
                 throw AppFailure.message("Select an installed model or enter a model alias.")
             }
             let identity = UUID(); generation = identity
+            history = MetricHistory(); mtpWindow.reset()
             let key = UUID().uuidString + UUID().uuidString
             let candidate = EngineConnection(port: settings.port, apiKey: key)
             busy = true; owned = true; state = "Starting"; error = nil; logs = ""
@@ -54,6 +57,7 @@ public final class RuntimeController: ObservableObject {
                 }
                 guard generation == identity else { return }
                 polling?.cancel(); connection = nil; models = []; metrics = [:]
+                history.append([:]); mtpWindow.reset()
                 busy = false; owned = false; state = error == nil ? "Stopped" : "Failed"
             }
             polling = Task {
@@ -83,6 +87,7 @@ public final class RuntimeController: ObservableObject {
         guard !busy, !owned, connection == nil else { return }
         guard (1024...65535).contains(port) else { error = "Choose a port between 1024 and 65535."; return }
         let identity = UUID(); generation = identity
+        history = MetricHistory(); mtpWindow.reset()
         busy = true; state = "Connecting"; error = nil
         startedAt = Date(); lastSuccessfulCheck = nil; selectedModel = ""
         let candidate = EngineConnection(port: port, apiKey: apiKey)
@@ -103,12 +108,20 @@ public final class RuntimeController: ObservableObject {
                 let latest = try await client.metrics()
                 let discovered = try await client.models()
                 guard !Task.isCancelled, generation == identity else { return }
-                metrics = latest; models = discovered; error = nil; state = owned ? "Running" : "Attached"; lastSuccessfulCheck = Date()
+                if models.map(\.id).sorted() != discovered.map(\.id).sorted() {
+                    history = MetricHistory(); mtpWindow.reset()
+                }
+                let checked = Date()
+                var plotted = latest
+                plotted["mtpAcceptedPercent"] = mtpWindow.observe(latest, at: checked)
+                history.append(plotted, at: checked)
+                metrics = latest; models = discovered; error = nil; state = owned ? "Running" : "Attached"; lastSuccessfulCheck = checked
             } catch {
                 guard !Task.isCancelled, generation == identity else { return }
                 // A busy, unauthorized or changed-schema service is not dead.
                 // Never auto-kill a serving model on a probe failure.
-                metrics = [:]; state = "Connection degraded"; self.error = error.localizedDescription
+                metrics = [:]; history.append([:]); mtpWindow.reset()
+                state = "Connection degraded"; self.error = error.localizedDescription
             }
             try? await Task.sleep(for: .seconds(2))
         }
@@ -118,6 +131,7 @@ public final class RuntimeController: ObservableObject {
         guard owned else { detach(); return }
         generation = UUID(); polling?.cancel(); polling = nil
         state = "Stopping"; busy = true
+        history.append([:]); mtpWindow.reset()
         launch?.cancel(); job.cancel()
         await launch?.value
         await logStore.append(logs, stream: .stderr)
@@ -127,6 +141,7 @@ public final class RuntimeController: ObservableObject {
     public func detach() {
         guard !owned else { return }
         generation = UUID(); polling?.cancel(); polling = nil
+        history.append([:]); mtpWindow.reset()
         connection = nil; models = []; metrics = [:]; busy = false; state = "Stopped"; error = nil; lastSuccessfulCheck = nil; startedAt = nil
     }
 }
