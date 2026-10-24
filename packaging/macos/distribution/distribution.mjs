@@ -50,7 +50,7 @@ export function ready(inventory, digest) {
   return `v${inventory.version}\n${inventory.commit}\n${hash(manifest(inventory))}\n${digest}\n`;
 }
 export function cask(version, digest) {
-  return `cask "ax-engine-gui" do\n  version "${version}"\n  sha256 "${digest}"\n\n  url "${BASE}/releases/download/v#{version}/AX-Engine-#{version}-mac-arm64.dmg"\n  name "AX Engine"\n  desc "Native Apple Silicon inference dashboard and model manager"\n  homepage "https://github.com/defai-digital/ax-engine"\n\n  depends_on arch: :arm64\n  depends_on macos: ">= 26.2"\n  app "AX Engine.app"\nend\n`;
+  return `cask "ax-engine-gui" do\n  version "${version}"\n  sha256 "${digest}"\n\n  url "${BASE}/releases/download/v#{version}/AX-Engine-#{version}-mac-arm64.dmg"\n  name "AX Engine"\n  desc "Native Apple Silicon inference dashboard and model manager"\n  homepage "https://github.com/defai-digital/ax-engine"\n\n  depends_on arch: :arm64\n  depends_on macos: :tahoe\n  preflight do\n    odie "AX Engine requires macOS 26.2 or newer." if MacOS.full_version < Version.new("26.2")\n  end\n  app "AX Engine.app"\nend\n`;
 }
 export function sourceAuthority(commit) {
   check(execFileSync('git', ['rev-parse', 'HEAD'], {cwd: ROOT, encoding: 'utf8'}).trim() === commit,

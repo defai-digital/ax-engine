@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {execFileSync} from 'node:child_process';
-import {prepare, verifyDirectory, releaseObjects, publishObjects, verifyLatest, hash, validIdentity, compareVersion} from './distribution.mjs';
+import {prepare, verifyDirectory, releaseObjects, publishObjects, verifyLatest, hash, validIdentity, compareVersion, cask} from './distribution.mjs';
 import worker, {objectKey, byteRange} from './download-worker/worker.mjs';
 import {validateConfig, routeOwner} from './gateway.mjs';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ax-gui-distribution-test-'));
@@ -143,4 +143,20 @@ test('gateway handles HEAD, ranges, conditional reads and concurrent replacement
   response=await worker.fetch(new Request(url),{...env,PUBLIC_RELEASE_ENABLED:'false'});assert.equal(response.status,503);
   response=await worker.fetch(new Request(url,{method:'PUT'}),env);assert.equal(response.status,405);
   response=await worker.fetch(new Request(url,{headers:{Range:'bytes=99-'}}),env);assert.equal(response.status,416);
+});
+
+test('Homebrew loads the generated Cask and enforces the runtime minor version', {skip: process.platform !== 'darwin'}, () => {
+  const file=path.join(root,'ax-engine-gui.rb');
+  fs.writeFileSync(file,cask('1.2.3','a'.repeat(64)));
+  const script=`require "cask/cask_loader"
+MacOS.define_singleton_method(:full_version) { Version.new(ARGV[1]) }
+c = Cask::CaskLoader::FromContentLoader.new(File.read(ARGV[0])).load(config: nil)
+c.artifacts.find { |a| a.is_a?(Cask::Artifact::PreflightBlock) }.install_phase
+puts "Cask preflight passed"`;
+  for (const version of ['26.0','26.1','26.2','27.0']) {
+    const invoke=()=>execFileSync('brew',['ruby','-e',script,file,version],
+      {env:{...process.env,HOMEBREW_NO_AUTO_UPDATE:'1'},stdio:['ignore','pipe','pipe']});
+    if (['26.0','26.1'].includes(version)) assert.throws(invoke, error=>error.stderr.toString().includes('requires macOS 26.2'));
+    else assert.match(invoke().toString(),/Cask preflight passed/);
+  }
 });
