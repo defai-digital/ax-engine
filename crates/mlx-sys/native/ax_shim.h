@@ -268,6 +268,9 @@ int mlx_fast_rms_norm(mlx_array* res, const mlx_array x, const mlx_array weight,
 int mlx_fast_rope(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, int offset, const mlx_array freqs, const mlx_stream s);
 int mlx_fast_rope_dynamic(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, const mlx_array offset, const mlx_array freqs, const mlx_stream s);
 int mlx_fast_scaled_dot_product_attention(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, bool force_fused, const mlx_stream s);
+#ifdef AX_MLX_HAS_SDPA_WINDOW
+int mlx_fast_scaled_dot_product_attention_windowed(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, int window_size, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, bool force_fused, const mlx_stream s);
+#endif
 int mlx_fast_layer_norm(mlx_array* res, const mlx_array x, const mlx_array weight, const mlx_array bias, float eps, const mlx_stream s);
 int ax_mlx_gated_delta_update(mlx_array* output, mlx_array* final_state,
     const mlx_array q, const mlx_array k, const mlx_array v,

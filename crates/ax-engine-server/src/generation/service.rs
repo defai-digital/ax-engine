@@ -591,9 +591,11 @@ struct ServiceState {
     last_step_scheduled_tokens: AtomicU32,
     /// Current sibling-active prefill quantum (tokens/turn).
     adaptive_prefill_tokens: AtomicU32,
-    /// Idle GPU keep-warm copies submitted by this worker. Stays zero unless
-    /// `AX_MLX_IDLE_TICK_MS` is a positive interval.
+    /// Idle GPU keep-warm copies that completed. Stays zero unless
+    /// `AX_MLX_IDLE_TICK_MS` is a positive interval and the touch returns true.
     idle_residency_ticks: AtomicU64,
+    /// Idle GPU keep-warm touches that returned false or panicked.
+    idle_residency_failures: AtomicU64,
 }
 
 pub(crate) struct NativeGenerationService {
@@ -775,6 +777,7 @@ impl NativeGenerationService {
                 ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
             ),
             idle_residency_ticks: AtomicU64::new(0),
+            idle_residency_failures: AtomicU64::new(0),
         });
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
@@ -1027,6 +1030,11 @@ impl NativeGenerationService {
     #[cfg(test)]
     fn idle_residency_tick_count(&self) -> u64 {
         self.state.idle_residency_ticks.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn idle_residency_failure_count(&self) -> u64 {
+        self.state.idle_residency_failures.load(Ordering::Acquire)
     }
 
     pub(crate) async fn shutdown(&self) -> Result<(), GenerationServiceError> {
@@ -1333,10 +1341,22 @@ fn record_idle_tick(
         log_idle_start(idle);
     }
     // The copy runs on this worker. A failing op must not retire the session.
-    let _touched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let touched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         session.touch_idle_gpu_residency()
     }));
-    state.idle_residency_ticks.fetch_add(1, Ordering::Relaxed);
+    match touched {
+        Ok(true) => {
+            state.idle_residency_ticks.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(false) | Err(_) => {
+            let prior = state
+                .idle_residency_failures
+                .fetch_add(1, Ordering::Relaxed);
+            if prior == 0 {
+                tracing::warn!("idle GPU residency keep-warm touch failed");
+            }
+        }
+    }
 }
 
 fn wait_for_command_or_idle_tick(
@@ -3737,6 +3757,7 @@ mod tests {
                 ADAPTIVE_PREFILL_LATENCY_TOKENS_PER_STEP_DEFAULT,
             ),
             idle_residency_ticks: AtomicU64::new(0),
+            idle_residency_failures: AtomicU64::new(0),
         };
 
         rollback_failed_enqueue(&state);
@@ -3803,16 +3824,18 @@ mod tests {
         )
         .expect("service should start");
         let started = Instant::now();
-        while service.idle_residency_tick_count() == 0 {
+        while service.idle_residency_failure_count() == 0 {
             if started.elapsed() > Duration::from_secs(2) {
                 panic!("idle keep-warm tick did not fire");
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        assert_eq!(service.idle_residency_tick_count(), 0);
         service.shutdown().await.expect("worker should shut down");
-        let ticks = service.idle_residency_tick_count();
-        assert!(ticks >= 1, "ticks={ticks}");
+        let failures = service.idle_residency_failure_count();
+        assert!(failures >= 1, "failures={failures}");
         tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(service.idle_residency_tick_count(), ticks);
+        assert_eq!(service.idle_residency_failure_count(), failures);
+        assert_eq!(service.idle_residency_tick_count(), 0);
     }
 }

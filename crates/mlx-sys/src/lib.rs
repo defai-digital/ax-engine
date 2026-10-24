@@ -53,10 +53,12 @@ pub use closure::{MlxClosure, MlxVectorArray};
 pub use error::{
     QuietErrorCapture, install_recoverable_error_handler, runtime_version, take_last_error,
 };
+#[cfg(ax_mlx_sdpa_window)]
+pub use fast::fast_sdpa_windowed;
 pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask, scaled_dot_product_attention_with_mask_and_sinks,
-    try_gated_delta_update, try_scaled_dot_product_attention,
+    sdpa_window_capability_report, try_gated_delta_update, try_scaled_dot_product_attention,
 };
 pub use io::{
     SafetensorsNameFilter, load_safetensors, load_safetensors_filtered, load_safetensors_mmap,
