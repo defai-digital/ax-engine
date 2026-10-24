@@ -570,32 +570,45 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
                 value,
             );
         }
-        append_metric(
+        // These two WP07 series are per-step route counters like their
+        // neighbours above. They must be rendered through the same
+        // aggregate-plus-`model` path: the process accumulator only receives
+        // a model's totals when that model is retired, so reading it alone
+        // reports 0 for every step of a loaded model — indistinguishable from
+        // "the switch is on but nothing fired".
+        append_step_metric(
             &mut body,
             "ax_engine_mlx_semantic_cut_snapshots_total",
             "In-place MLX prefix snapshots stored at a semantic (assistant-turn) cut (AX_MLX_PREFIX_SEMANTIC_CUTS).",
             "counter",
+            &step_models,
             process.mlx_prefix_cache_semantic_cut_snapshots_total,
+            |step: &crate::app_state::EngineStepGauges| {
+                step.mlx_prefix_cache_semantic_cut_snapshots_total
+            },
         );
+        let restore_value_decisions: Vec<(&str, u64)> =
+            ["semantic_cut", "priced_restore", "ram_baseline"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, decision)| {
+                    let live: u64 = step_models
+                        .iter()
+                        .map(|(_, step)| step.mlx_prefix_cache_restore_value_decisions_total[index])
+                        .sum();
+                    (
+                        decision,
+                        process.mlx_prefix_cache_restore_value_decisions_total[index]
+                            .saturating_add(live),
+                    )
+                })
+                .collect();
         append_labeled_counter(
             &mut body,
             "ax_engine_mlx_prefix_restore_value_decisions_total",
             "Value-priced MLX prefix restore decisions by outcome.",
             "decision",
-            &[
-                (
-                    "semantic_cut",
-                    process.mlx_prefix_cache_restore_value_decisions_total[0],
-                ),
-                (
-                    "priced_restore",
-                    process.mlx_prefix_cache_restore_value_decisions_total[1],
-                ),
-                (
-                    "ram_baseline",
-                    process.mlx_prefix_cache_restore_value_decisions_total[2],
-                ),
-            ],
+            &restore_value_decisions,
         );
         if emit_gauges {
             for (name, help, value) in [

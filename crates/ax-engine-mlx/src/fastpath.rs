@@ -160,22 +160,23 @@ pub(crate) fn env_flag_default_on(name: &str) -> bool {
     std::env::var(name).map_or(true, |raw| parse_bool_value(&raw))
 }
 
-/// Opt-in value-priced prefix restore (`AX_MLX_PREFIX_RESTORE_VALUE`).
-/// Unset/`0` keeps the historical longest-prefix restore decision exactly.
-pub(crate) const PREFIX_RESTORE_VALUE_ENV: &str = "AX_MLX_PREFIX_RESTORE_VALUE";
-
-/// Opt-in semantic snapshot cut points (`AX_MLX_PREFIX_SEMANTIC_CUTS`).
-/// Unset/`0` keeps block-aligned-only capture exactly.
-pub(crate) const PREFIX_SEMANTIC_CUTS_ENV: &str = "AX_MLX_PREFIX_SEMANTIC_CUTS";
-
+/// Opt-in value-priced prefix restore (`AX_MLX_PREFIX_RESTORE_VALUE`) and
+/// semantic snapshot cut points (`AX_MLX_PREFIX_SEMANTIC_CUTS`) are resolved
+/// in `ax-engine-core` so the request edge and the runner agree on them (the
+/// edge skips hint construction when they are off).
+///
+/// The two switches carry different contracts. Restore value only chooses
+/// among snapshots that already exist, so it must never change the text.
+/// Semantic cuts change the prefill chunk partition — cut capture splits the
+/// cold prefill, and the plan is part of the execution signature — so their
+/// output equals a cold run under the same setting, not necessarily the
+/// switch-off output.
 pub(crate) fn prefix_restore_value_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag(PREFIX_RESTORE_VALUE_ENV))
+    ax_engine_core::prefix_features::restore_value_enabled()
 }
 
 pub(crate) fn prefix_semantic_cuts_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag(PREFIX_SEMANTIC_CUTS_ENV))
+    ax_engine_core::prefix_features::semantic_cuts_enabled()
 }
 
 /// Activation dtype policy for the Qwen hybrid (`qwen3_5`) runtime,
