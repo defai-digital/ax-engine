@@ -10430,6 +10430,9 @@ impl MlxRunner {
         {
             return tokens;
         }
+        // The cache is untrustworthy after a failed verify fence. run_item
+        // consumes this flag and fails the request; any other caller of
+        // decode_one must check it too, or it sees silent empty output.
         if state.dflash2_verify_fence_error.is_some() {
             return Vec::new();
         }
