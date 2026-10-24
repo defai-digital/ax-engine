@@ -16,7 +16,7 @@ Settings and saved conversations are local JSON files in
 responses, reasoning when returned by the model, and per-reply speed measurements.
 They remain until replaced or cleared. **Clear** in Playground removes the app's
 saved conversation; it does not manage copies you exported or system backups.
-**Show local data folder** in Settings opens the storage location.
+**Show local data folder** in Settings > Privacy opens the storage location.
 
 CPU, GPU, memory and inference counters are read locally for the dashboard and
 server views. Their bounded activity histories stay in memory and reset when the
@@ -38,8 +38,8 @@ controlled separately in System Settings.
 
 ## Disclosure design
 
-Playground includes a short no-telemetry notice near the message field. Settings
-provides the local-storage, retention and network details without a consent popup
+Playground includes a short no-telemetry notice near the message field.
+The Settings > Privacy tab provides the local-storage, retention and network details without a consent popup
 or a telemetry switch for a feature that does not exist. Model download screens
 identify the network destination before downloading.
 
