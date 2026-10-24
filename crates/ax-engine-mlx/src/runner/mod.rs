@@ -612,6 +612,9 @@ struct RequestState {
     /// Request-local DFlash2 drafter state (ADR-045). `None` until a prefill
     /// under an eligible request captured hidden states.
     dflash2: Option<dflash2_decode::Dflash2RequestState>,
+    /// Set when the linear DFlash2 verify fence fails after rebind. The cache
+    /// is not restored; `run_item` fails this request and drops the state.
+    dflash2_verify_fence_error: Option<String>,
 }
 
 /// Draft history for the Flash Next candidate plus its route counters.
@@ -1325,6 +1328,7 @@ impl RequestState {
             mtp_ngram_utility_hysteresis_remaining: 0,
             flash_next_mtp: FlashNextMtpRequestState::default(),
             dflash2: None,
+            dflash2_verify_fence_error: None,
         }
     }
 
@@ -8023,6 +8027,10 @@ impl MlxRunner {
                         },
                     )
                 };
+                if let Some(error) = state.dflash2_verify_fence_error.take() {
+                    clear_cache();
+                    return errored_item_run(item.request_id, error);
+                }
                 state
                     .decode_telemetry
                     .record_decode(elapsed_us(decode_started));
@@ -10421,6 +10429,12 @@ impl MlxRunner {
                 self.try_dflash2_decode(state, input_tokens, sampling, is_greedy, &options)
         {
             return tokens;
+        }
+        // The cache is untrustworthy after a failed verify fence. run_item
+        // consumes this flag and fails the request; any other caller of
+        // decode_one must check it too, or it sees silent empty output.
+        if state.dflash2_verify_fence_error.is_some() {
+            return Vec::new();
         }
 
         let pure_direct_pipeline = !think_hard_close_due

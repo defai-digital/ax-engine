@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
 
-use mlx_sys::{MlxArray, MlxDtype, argmax, astype, concatenate, contiguous, eval, reshape, slice};
+use mlx_sys::{MlxArray, MlxDtype, argmax, astype, concatenate, contiguous, reshape, slice};
 
 use super::*;
 use crate::dflash2::{Dflash2Drafter, Dflash2Weights};
@@ -74,6 +74,14 @@ impl Dflash2RequestState {
             tree_accepted_length: 0,
             tree_branch_chosen: 0,
         }
+    }
+
+    /// Test setup: hidden rows the next linear verify round will draft from.
+    #[cfg(test)]
+    pub(super) fn stage_pending_hidden_for_test(&mut self, hidden: MlxArray, captured_rows: usize) {
+        self.pending_hidden = Some(hidden);
+        self.captured_rows = captured_rows;
+        self.disabled = false;
     }
 
     fn reset(&mut self) {
@@ -211,6 +219,18 @@ impl WindowStats {
 /// routes.
 fn decline(reason: &'static str) -> Option<Vec<u32>> {
     tracing::debug!(target: "ax_engine_mlx::dflash2", reason, "DFlash2 step declined");
+    None
+}
+
+/// The linear verify fence already rebound the request cache. A failed read
+/// cannot restore that cache, so this request fails instead of declining.
+fn fail_linear_verify_fence(state: &mut RequestState, error: String) -> Option<Vec<u32>> {
+    tracing::error!(
+        target: "ax_engine_mlx::dflash2",
+        %error,
+        "DFlash2 linear verify fence failed; failing this request"
+    );
+    state.dflash2_verify_fence_error = Some(format!("DFlash2 linear verify fence failed: {error}"));
     None
 }
 
@@ -670,8 +690,16 @@ impl MlxRunner {
         let predicted_arr = argmax(&logits_all, None);
         let refs: Vec<&MlxArray> = captured.iter().collect();
         let hidden_all = astype(&concatenate(&refs, 2, None), MlxDtype::Bfloat16, None);
-        // Infallible: retaining the pre-rebind K/V across this read blocks MLX donation.
-        eval(&[&predicted_arr, &hidden_all, &draft_arr]);
+        // Rebind already published the verifier K/V into the request cache.
+        // This read must not retain the pre-rebind handles: that blocks MLX
+        // donation. A failure leaves the cache untrustworthy, so fail the
+        // request instead of restoring it.
+        if let Some(error) = crate::dflash2::take_dflash2_capture_verify_eval_error() {
+            return fail_linear_verify_fence(state, error);
+        }
+        if let Err(error) = mlx_sys::try_eval(&[&predicted_arr, &hidden_all, &draft_arr]) {
+            return fail_linear_verify_fence(state, error);
+        }
         let verify_wall_us = elapsed_us(verify_started);
         let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
         let drafts_owned: Vec<u32> = draft_arr.data_u32().to_vec();
