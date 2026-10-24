@@ -1,0 +1,38 @@
+# Flash Next prefill increments — 2026-10-24 (negative results)
+
+Follow-up to the reference review's "Flash Next prefill pipeline" item. Pinned
+MLX 0.32.4, Flash Next MXFP4, 8,192 prompt tokens, chunk 2048, measured with the
+ignored real-pack test `flash_next_prefill_stage_profile`.
+
+## Where prefill time goes (M5 Max 128 GB, synchronized attribution)
+
+Total 14.84 s for 8,192 tokens. Largest stages: `moe_compute` 4.08 s,
+`qsa_d_attend` 3.89 s, `qsa_indexer` 1.77 s, `gdn_chunked` 1.11 s, `gdn` 0.69 s,
+attention/MLP hyper-connection reads 0.67 + 0.67 s. Chunks after the first cost
+about 2x the first because the first fits the 2,051-token selection budget and
+takes dense causal attention.
+
+Prefill already attends only to the indexer-selected tokens (up to 512 complete
+4-token blocks plus the visible tail per query); it is not dense-masked over the
+full context. The selected KV is gathered once per query, and that staging is
+the attention cost. Removing both QSA buckets entirely would cap the gain at
+about 1.62x under this profile, so a matched 4x gap to the reference claim (a
+different machine and context length) is not reachable from QSA alone.
+
+## Tried and not merged
+
+| Increment | Exactness | Measured (M2 Ultra, release) | Decision |
+|---|---|---|---|
+| Indexed sparse prompt attention: Metal kernel reading selected KV by index instead of per-query copies (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`) | Tolerance tests pass; the 8,192-token / 256-token greedy text identity check failed (cause not isolated) | `qsa_d_attend` 4.401 -> 4.189 s (-4.8%), wall 23.42 -> 22.22 s (-5.1%), peak unchanged | Not merged |
+| MoE inverse permutation by scatter instead of a second argsort (`AX_MLX_FLASH_NEXT_MOE_INVERSE_SCATTER`) | Bit-identical (integer permutation and all outputs) | Microbench 0.38 -> 0.24 ms per inverse; end-to-end `moe_compute` within noise (warm pair 10.81 -> 11.13 s) | Not merged |
+
+Already shipped from the same item: tiled QSA scores (opt-in, ~2.6% TTFT with an
+outer chunk of 2048 or more on M5 Max; see `../reference-wave-m5max-20261024/`).
+
+## What would move the number
+
+MoE compute is the largest bucket and is expert-matmul bound with sorted rows
+already in place; the next lever there is the MLX main quantized-matmul paths
+(`../mlx-main-qmv-probe-m5-20261024/`), which need an MLX bump and an exactness
+re-baseline. For QSA, a kernel that removes per-query staging must first pass
+greedy text identity before its ~5% is worth the risk.
