@@ -14,7 +14,12 @@
 //! Greedy requests on the Qwen 3.8 hybrid dense model only. Anything else, and
 //! any request whose captured hidden states stop matching its cache, takes the
 //! normal decode routes: `try_dflash2_decode` returns `None` rather than failing.
+//!
+//! `AX_MLX_TREE_VERIFY` (default off) verifies a four-node tree of the first two
+//! draft positions on separate cache clones instead of the single linear window.
+//! Unset or `0` keeps the linear path.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -44,6 +49,12 @@ pub(super) struct Dflash2RequestState {
     pub(super) rounds: u32,
     pub(super) drafted: u32,
     pub(super) accepted: u32,
+    /// Last tree-verify round. Zero while [`crate::fastpath::tree_verify_enabled`]
+    /// is off, which is the default.
+    pub(super) tree_nodes_verified: u32,
+    pub(super) tree_accepted_length: u32,
+    /// `0` is the drafter's primary branch.
+    pub(super) tree_branch_chosen: u32,
 }
 
 impl Dflash2RequestState {
@@ -59,6 +70,9 @@ impl Dflash2RequestState {
             rounds: 0,
             drafted: 0,
             accepted: 0,
+            tree_nodes_verified: 0,
+            tree_accepted_length: 0,
+            tree_branch_chosen: 0,
         }
     }
 
@@ -70,6 +84,9 @@ impl Dflash2RequestState {
         self.started = false;
         self.disabled = false;
         self.window_stats = WindowStats::new();
+        self.tree_nodes_verified = 0;
+        self.tree_accepted_length = 0;
+        self.tree_branch_chosen = 0;
     }
 
     /// Appends captured prompt rows (`tail`: the trailing rows of an item whose
@@ -201,7 +218,7 @@ fn decline(reason: &'static str) -> Option<Vec<u32>> {
 /// the target's choice after row `i` of the verify window. Returns how many
 /// drafts were accepted and the committed tokens: the accepted drafts followed
 /// by the target's own token at the first mismatch (or after the last draft).
-pub(super) fn greedy_walk(drafts: &[u32], predicted: &[u32]) -> (usize, Vec<u32>) {
+pub(crate) fn greedy_walk(drafts: &[u32], predicted: &[u32]) -> (usize, Vec<u32>) {
     debug_assert_eq!(predicted.len(), drafts.len() + 1);
     let accepted = drafts
         .iter()
@@ -393,10 +410,20 @@ impl MlxRunner {
                 dflash.started = true;
             }
             let hidden = dflash.pending_hidden.take()?;
-            let drafted =
+            // The flag is read once per process. Unset and `0` call `draft_block`
+            // and leave the linear verify below unchanged.
+            let drafted = if crate::fastpath::tree_verify_enabled() {
+                dflash.drafter.draft_block_capturing_alternatives(
+                    primary,
+                    &hidden,
+                    &self.weights,
+                    cfg.block_size,
+                )
+            } else {
                 dflash
                     .drafter
-                    .draft_block(primary, &hidden, &self.weights, cfg.block_size);
+                    .draft_block(primary, &hidden, &self.weights, cfg.block_size)
+            };
             // The verify window takes the first `window - 1` drafts.
             reshape(
                 &slice(&drafted, &[0, 0], &[1, window as i32 - 1], &[1, 1], None),
@@ -421,6 +448,19 @@ impl MlxRunner {
         let _target_verify_fast_scope = crate::fastpath::scoped_qwen_linear_mtp_target_verify(true);
         let _target_verify_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
         let _verify_qmm_scope = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true);
+
+        if crate::fastpath::tree_verify_enabled()
+            && let Some(tokens) = self.try_dflash2_tree_verify(
+                state,
+                primary,
+                &draft_arr,
+                token_offset,
+                options,
+                draft_wall_us,
+            )
+        {
+            return Some(tokens);
+        }
 
         // Linear-attention state cannot be trimmed: verify on a clone that
         // records the prefix tape, then adopt, restore or replay it.
@@ -591,6 +631,276 @@ impl MlxRunner {
                     keep,
                 )
             })
+    }
+
+    /// Greedy tree verify for one request. Each branch clones `state.cache`
+    /// (KV, linear/GDN, and QSA/PLE state) and runs the same singleton forward
+    /// as the linear path. Only the winning branch is written back.
+    fn try_dflash2_tree_verify(
+        &self,
+        state: &mut RequestState,
+        anchor: u32,
+        draft_arr: &MlxArray,
+        token_offset: usize,
+        options: &DecodeOneOptions<'_>,
+        draft_wall_us: u32,
+    ) -> Option<Vec<u32>> {
+        use super::tree_verify::{CommitLimits, DraftTree, verify_draft_tree};
+
+        let remaining = options.request_context.map_or(0, |ctx| {
+            ctx.max_output_tokens.saturating_sub(ctx.generated_len) as usize
+        });
+        let capture_layers = self.dflash2.as_ref()?.config().target_layer_ids.clone();
+        eval(&[draft_arr]);
+        let drafted = draft_arr.data_u32();
+        if drafted.is_empty() {
+            return None;
+        }
+        let primary_len = drafted.len().min(2);
+        let primary = drafted[..primary_len].to_vec();
+        let alternatives = state.dflash2.as_ref()?.drafter.tree_alternatives;
+        let tree = DraftTree::from_top2(&primary, &alternatives).ok()?;
+        let hiddens: RefCell<Vec<Option<MlxArray>>> = RefCell::new(Vec::new());
+        let verify_started = Instant::now();
+        let decision = {
+            let base = &state.cache;
+            verify_draft_tree(
+                &tree,
+                base,
+                CommitLimits {
+                    budget: remaining,
+                    eos: options.terminal_token_ids,
+                },
+                |cache, branch| {
+                    let (verification, hidden) = self.forward_tree_branch(
+                        cache,
+                        anchor,
+                        branch,
+                        token_offset,
+                        &capture_layers,
+                        CommitLimits {
+                            budget: remaining,
+                            eos: options.terminal_token_ids,
+                        },
+                    );
+                    hiddens.borrow_mut().push(hidden);
+                    verification
+                },
+            )
+        };
+        let decision = decision.ok()?;
+        if decision.tokens.is_empty() {
+            return None;
+        }
+        let hidden = hiddens.into_inner().get(decision.branch_index)?.clone()?;
+        let verify_wall_us = elapsed_us(verify_started);
+        state.cache = decision.state;
+        if let Some(dflash) = state.dflash2.as_mut() {
+            dflash.pending_hidden = Some(hidden);
+            dflash.captured_rows = token_offset + 1 + decision.cache_draft_rows;
+            dflash.rounds = dflash.rounds.saturating_add(1);
+            dflash.drafted = dflash
+                .drafted
+                .saturating_add(saturating_u32(decision.draft_len));
+            dflash.accepted = dflash
+                .accepted
+                .saturating_add(saturating_u32(decision.accepted_drafts));
+            dflash
+                .window_stats
+                .record(decision.draft_len, decision.accepted_drafts);
+            dflash.tree_nodes_verified = saturating_u32(decision.nodes_verified);
+            dflash.tree_accepted_length = saturating_u32(decision.accepted_drafts);
+            dflash.tree_branch_chosen = saturating_u32(decision.branch_index);
+        }
+        tracing::debug!(
+            target: "ax_engine_mlx::dflash2",
+            tree_nodes_verified = decision.nodes_verified,
+            accepted_length = decision.accepted_drafts,
+            branch_chosen = decision.branch_index,
+            "DFlash2 tree verify round"
+        );
+        state.mtp_pending_draft.clear();
+        state.mtp_pending_draft_lazy = None;
+        state.mtp_pending_draft_sources.clear();
+        state.mtp_telemetry.record_step(
+            decision.draft_len,
+            decision.accepted_drafts,
+            &vec![MtpDraftSource::Mtp; decision.draft_len],
+            None,
+            decision.accepted_drafts,
+        );
+        state.mtp_telemetry.record_timings(MtpStepTimings {
+            verify_forward_wall_us: verify_wall_us,
+            draft_wall_us,
+            mtp_draft_wall_us: draft_wall_us,
+            verify_tokens: saturating_u32(decision.nodes_verified),
+            emitted_tokens: saturating_u32(decision.tokens.len()),
+            ..MtpStepTimings::default()
+        });
+        Some(apply_decode_result(
+            state,
+            &decision.tokens,
+            options.terminal_token_ids,
+        ))
+    }
+
+    /// One linear greedy verify of `drafts` on a clone of `source`. The clone
+    /// is the only cache this branch writes.
+    fn forward_tree_branch(
+        &self,
+        source: MlxKVCache,
+        anchor: u32,
+        drafts: &[u32],
+        token_offset: usize,
+        capture_layers: &[usize],
+        limits: super::tree_verify::CommitLimits<'_>,
+    ) -> (
+        super::tree_verify::BranchVerification<MlxKVCache>,
+        Option<MlxArray>,
+    ) {
+        use super::tree_verify::{BranchVerification, limit_commit};
+
+        let failed = |cache: MlxKVCache| {
+            (
+                BranchVerification {
+                    accepted_drafts: 0,
+                    committed: Vec::new(),
+                    state: cache,
+                    usable: false,
+                },
+                None,
+            )
+        };
+        if drafts.is_empty() {
+            return failed(source);
+        }
+        let mut ids = Vec::with_capacity(drafts.len() + 1);
+        ids.push(anchor);
+        ids.extend_from_slice(drafts);
+        let verify_len = ids.len();
+        let Ok(verify_len_i) = i32::try_from(verify_len) else {
+            return failed(source);
+        };
+        let ids_1d = MlxArray::from_raw_data(
+            ids.as_ptr().cast::<u8>(),
+            ids.len() * std::mem::size_of::<u32>(),
+            &[verify_len_i],
+            MlxDtype::Uint32,
+        );
+        let mut verify_cache = source.clone();
+        verify_cache.begin_linear_prefix_capture(1);
+        let capture = layer_capture::capture_layers(capture_layers);
+        let (logits_all, _post_norm) = crate::model::forward_all_positions_with_post_norm_ids(
+            &self.cfg,
+            &self.weights,
+            &ids_1d,
+            verify_len,
+            &mut verify_cache,
+            token_offset,
+            false,
+        );
+        let captured = layer_capture::take();
+        drop(capture);
+        verify_cache.advance(verify_len);
+        let Some(captured) = captured else {
+            return failed(source);
+        };
+        let predicted_arr = argmax(&logits_all, None);
+        let refs: Vec<&MlxArray> = captured.iter().collect();
+        let hidden_all = astype(&concatenate(&refs, 2, None), MlxDtype::Bfloat16, None);
+        eval(&[&predicted_arr, &hidden_all]);
+        let predicted = predicted_arr.data_u32().to_vec();
+        if predicted.len() != verify_len {
+            return failed(source);
+        }
+        let (accepted, committed) = greedy_walk(drafts, &predicted);
+        let (_emitted, cache_draft_rows) =
+            limit_commit(&committed, accepted, limits.budget, limits.eos);
+        let retained = 1 + cache_draft_rows;
+        let shape = hidden_all.shape();
+        let (Some(&rows), Some(&width)) = (shape.get(1), shape.get(2)) else {
+            return failed(source);
+        };
+        let Ok(retained_i) = i32::try_from(retained) else {
+            return failed(source);
+        };
+        if width <= 0 || rows < retained_i {
+            return failed(source);
+        }
+        let hidden = slice(
+            &hidden_all,
+            &[0, 0, 0],
+            &[1, retained_i, width],
+            &[1, 1, 1],
+            None,
+        );
+        let cache = self.commit_tree_branch(
+            source,
+            verify_cache,
+            anchor,
+            drafts,
+            cache_draft_rows,
+            token_offset,
+        );
+        (
+            BranchVerification {
+                accepted_drafts: accepted,
+                committed,
+                state: cache,
+                usable: true,
+            },
+            Some(hidden),
+        )
+    }
+
+    /// Adopt, restore, or replay `source` so the cache keeps the anchor plus
+    /// `cache_draft_rows` accepted drafts. `source` itself is not modified
+    /// unless adoption fails and the committed prefix is recomputed on it.
+    fn commit_tree_branch(
+        &self,
+        source: MlxKVCache,
+        mut verify_cache: MlxKVCache,
+        anchor: u32,
+        drafts: &[u32],
+        cache_draft_rows: usize,
+        token_offset: usize,
+    ) -> MlxKVCache {
+        let retained = 1 + cache_draft_rows;
+        let verify_len = drafts.len() + 1;
+        let adopted = if retained == verify_len {
+            if !crate::fastpath::mtp_lazy_adopt_state_enabled() {
+                let refs = verify_cache.collect_eval_refs();
+                eval(&refs);
+            }
+            verify_cache.trim_to(token_offset + retained)
+        } else if retained == 1 {
+            (verify_cache.restore_linear_prefix_checkpoint()
+                || self.dflash2_replay_prefix(&source, &mut verify_cache, 1))
+                && verify_cache.trim_to(token_offset + 1)
+        } else {
+            let replayed = self.dflash2_replay_prefix(&source, &mut verify_cache, retained);
+            if replayed && !crate::fastpath::mtp_lazy_adopt_state_enabled() {
+                let refs = verify_cache.collect_eval_refs();
+                eval(&refs);
+            }
+            replayed && verify_cache.trim_to(token_offset + retained)
+        };
+        if adopted {
+            verify_cache.clear_linear_prefix_checkpoint();
+            verify_cache
+        } else {
+            let mut rebuilt = source;
+            let kept = cache_draft_rows.min(drafts.len());
+            let _after = recompute_committed_prefix_with_argmax(
+                &self.cfg,
+                &self.weights,
+                &mut rebuilt,
+                anchor,
+                &drafts[..kept],
+                token_offset,
+            );
+            rebuilt
+        }
     }
 }
 

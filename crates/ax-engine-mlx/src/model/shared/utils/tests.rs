@@ -4,6 +4,38 @@ use mlx_sys::{
     quantized_matmul, reset_peak_memory, transpose,
 };
 
+/// Run `measure` in a fresh process so the process-global MLX peak counter
+/// cannot see allocations from other test threads. The parent asserts that
+/// the child actually executed this test.
+fn with_isolated_peak_memory(measure: impl FnOnce()) {
+    const FLAG: &str = "AX_MLX_PEAK_TEST_ISOLATED";
+    if std::env::var_os(FLAG).is_some() {
+        measure();
+        return;
+    }
+    let name = std::thread::current()
+        .name()
+        .expect("libtest names the test thread")
+        .to_owned();
+    let exe = std::env::current_exe().expect("test executable");
+    let output = std::process::Command::new(exe)
+        .args(["--exact", &name, "--test-threads=1", "--nocapture"])
+        .env(FLAG, "1")
+        .output()
+        .expect("spawn isolated peak measurement");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "isolated peak measurement failed for {name}\n{stdout}\n{stderr}"
+    );
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("1 passed"),
+        "isolated peak measurement did not run {name}\n{combined}"
+    );
+}
+
 #[test]
 fn qw_applies_dense_linear_bias() {
     // Dense Linear: y = x @ W^T + b  (mlx-lm nn.Linear with bias=True).
@@ -189,35 +221,37 @@ fn project_unquantized_decode_matches_x_at_weight_t() {
 
 #[test]
 fn project_unquantized_decode_skips_full_weight_transpose_buffer() {
-    // Large enough that a materialized W.T is visible in peak memory.
-    let hidden = 128i32;
-    let vocab = 4096i32;
-    let w_data: Vec<f32> = (0..vocab * hidden)
-        .map(|i| (i % 17) as f32 * 0.01)
-        .collect();
-    let x_data: Vec<f32> = (0..hidden).map(|i| (i % 5) as f32 * 0.1).collect();
-    let weight = array_f32(&w_data, &[vocab, hidden]);
-    let x = array_f32(&x_data, &[1, hidden]);
-    eval(&[&x, &weight]);
+    with_isolated_peak_memory(|| {
+        // Large enough that a materialized W.T is visible in peak memory.
+        let hidden = 128i32;
+        let vocab = 4096i32;
+        let w_data: Vec<f32> = (0..vocab * hidden)
+            .map(|i| (i % 17) as f32 * 0.01)
+            .collect();
+        let x_data: Vec<f32> = (0..hidden).map(|i| (i % 5) as f32 * 0.1).collect();
+        let weight = array_f32(&w_data, &[vocab, hidden]);
+        let x = array_f32(&x_data, &[1, hidden]);
+        eval(&[&x, &weight]);
 
-    clear_cache();
-    reset_peak_memory();
-    let metal = super::project_unquantized_decode(&x, &weight).expect("decode GEMV eligible");
-    eval(&[&metal]);
-    let peak_metal = get_peak_memory();
+        clear_cache();
+        reset_peak_memory();
+        let metal = super::project_unquantized_decode(&x, &weight).expect("decode GEMV eligible");
+        eval(&[&metal]);
+        let peak_metal = get_peak_memory();
 
-    clear_cache();
-    reset_peak_memory();
-    let transposed = contiguous(&transpose(&weight, &[1, 0], None), None);
-    let reference = matmul(&x, &transposed, None);
-    eval(&[&reference]);
-    let peak_transpose = get_peak_memory();
+        clear_cache();
+        reset_peak_memory();
+        let transposed = contiguous(&transpose(&weight, &[1, 0], None), None);
+        let reference = matmul(&x, &transposed, None);
+        eval(&[&reference]);
+        let peak_transpose = get_peak_memory();
 
-    let weight_bytes = (vocab as usize) * (hidden as usize) * 4;
-    assert!(
-        peak_metal + weight_bytes / 2 < peak_transpose,
-        "no-copy GEMV peak {peak_metal} should beat materialized transpose peak {peak_transpose} by ~half of {weight_bytes} weight bytes"
-    );
+        let weight_bytes = (vocab as usize) * (hidden as usize) * 4;
+        assert!(
+            peak_metal + weight_bytes / 2 < peak_transpose,
+            "no-copy GEMV peak {peak_metal} should beat materialized transpose peak {peak_transpose} by ~half of {weight_bytes} weight bytes"
+        );
+    });
 }
 
 #[test]
@@ -669,41 +703,43 @@ fn qwen_prefill_tile_qmm_matches_oneshot() {
 
 #[test]
 fn prepare_contiguous_decode_weight_t_keeps_one_physical_buffer() {
-    // Large enough that a second full copy would show in peak memory.
-    let hidden = 128i32;
-    let vocab = 4096i32;
-    let w_data: Vec<f32> = (0..vocab * hidden)
-        .map(|i| (i % 17) as f32 * 0.01)
-        .collect();
-    let weight = array_f32(&w_data, &[vocab, hidden]);
-    eval(&[&weight]);
-    let mut prepared = QuantizedWeight {
-        weight,
-        scales: None,
-        biases: None,
-        group_size: 1,
-        bits: 32,
-        mode: "affine".to_string(),
-        linear_bias: None,
-        decode_weight_t: None,
-        decode_q2_weight: None,
-        decode_q2_scales: None,
-        decode_q2_biases: None,
-        weight_t_view: Default::default(),
-    };
-    prepared.prepare_contiguous_decode_weight_t();
-    let weight_t = prepared.decode_weight_t.as_ref().expect("prepared W_t");
-    clear_cache();
-    reset_peak_memory();
-    eval(&[&prepared.weight, weight_t]);
-    let peak = get_peak_memory();
-    let one_copy = (vocab as usize) * (hidden as usize) * 4;
-    assert!(
-        peak < one_copy.saturating_mul(2),
-        "eval of W view + W_t must not materialize two full copies (peak {peak}, one copy {one_copy})"
-    );
-    assert_eq!(prepared.weight.shape(), vec![vocab, hidden]);
-    assert_eq!(weight_t.shape(), vec![hidden, vocab]);
+    with_isolated_peak_memory(|| {
+        // Large enough that a second full copy would show in peak memory.
+        let hidden = 128i32;
+        let vocab = 4096i32;
+        let w_data: Vec<f32> = (0..vocab * hidden)
+            .map(|i| (i % 17) as f32 * 0.01)
+            .collect();
+        let weight = array_f32(&w_data, &[vocab, hidden]);
+        eval(&[&weight]);
+        let mut prepared = QuantizedWeight {
+            weight,
+            scales: None,
+            biases: None,
+            group_size: 1,
+            bits: 32,
+            mode: "affine".to_string(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+            weight_t_view: Default::default(),
+        };
+        prepared.prepare_contiguous_decode_weight_t();
+        let weight_t = prepared.decode_weight_t.as_ref().expect("prepared W_t");
+        clear_cache();
+        reset_peak_memory();
+        eval(&[&prepared.weight, weight_t]);
+        let peak = get_peak_memory();
+        let one_copy = (vocab as usize) * (hidden as usize) * 4;
+        assert!(
+            peak < one_copy.saturating_mul(2),
+            "eval of W view + W_t must not materialize two full copies (peak {peak}, one copy {one_copy})"
+        );
+        assert_eq!(prepared.weight.shape(), vec![vocab, hidden]);
+        assert_eq!(weight_t.shape(), vec![hidden, vocab]);
+    });
 }
 
 #[test]

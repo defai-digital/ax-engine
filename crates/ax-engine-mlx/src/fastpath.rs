@@ -1673,6 +1673,16 @@ env_flag!(
     "AX_MLX_DFLASH2_BF16"
 );
 
+env_flag!(
+    /// `AX_MLX_TREE_VERIFY` - verify a DFlash2 draft as a tree of at most four
+    /// nodes (top-2 tokens at the first two draft positions) instead of one
+    /// linear chain. Each branch runs the canonical greedy verify on its own
+    /// cache clone. **Default: OFF.** Unset, `0`, or any other non-truthy
+    /// value keeps today's linear DFlash2 path.
+    tree_verify_enabled,
+    "AX_MLX_TREE_VERIFY"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM` - price Flash Next Auto expert
     /// streaming on the bytes the loader actually makes resident, excluding

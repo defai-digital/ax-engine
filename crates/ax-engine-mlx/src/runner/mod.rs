@@ -124,6 +124,7 @@ mod pipeline;
 mod prefix_cache;
 mod runner_telemetry;
 mod step_telemetry;
+mod tree_verify;
 mod util;
 
 use manifest_validation::*;

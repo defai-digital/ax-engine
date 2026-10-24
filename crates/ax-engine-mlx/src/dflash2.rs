@@ -25,8 +25,8 @@ use std::path::Path;
 
 use mlx_sys::{
     MlxArray, MlxDtype, MlxQuantizationMode, add, argmax, argpartition_axis, astype, concatenate,
-    matmul, multiply, reshape, rms_norm, rope, scaled_dot_product_attention, silu_mul, slice,
-    split, stack, sum_axis, take, take_along_axis, transpose,
+    contiguous, eval, matmul, multiply, reshape, rms_norm, rope, scaled_dot_product_attention,
+    silu_mul, slice, split, stack, sum_axis, take, take_along_axis, transpose,
 };
 
 use crate::model::shared::qw;
@@ -561,6 +561,9 @@ pub(crate) struct Dflash2Drafter {
     caches: Vec<LayerCache>,
     /// Absolute position of the next context row (the reference's `cache.offset`).
     offset: i32,
+    /// Second-best token at the first two draft positions. Filled only by
+    /// [`Self::draft_block_capturing_alternatives`]; otherwise both are `None`.
+    pub(crate) tree_alternatives: [Option<u32>; 2],
 }
 
 impl Dflash2Drafter {
@@ -572,6 +575,7 @@ impl Dflash2Drafter {
             stage_times: None,
             caches: (0..layers).map(|_| LayerCache::default()).collect(),
             offset: 0,
+            tree_alternatives: [None, None],
         }
     }
 
@@ -627,6 +631,7 @@ impl Dflash2Drafter {
             *cache = LayerCache::default();
         }
         self.offset = 0;
+        self.tree_alternatives = [None, None];
     }
 
     /// Drafts `block - 1` tokens after `anchor`.
@@ -641,6 +646,31 @@ impl Dflash2Drafter {
         target: &ModelWeights,
         block: i32,
     ) -> MlxArray {
+        self.draft_block_inner(anchor, new_hidden, target, block, false)
+    }
+
+    /// Same block as [`Self::draft_block`], and also records the runner-up
+    /// token at the first two draft positions in [`Self::tree_alternatives`].
+    /// The returned primary chain matches [`Self::draft_block`].
+    pub(crate) fn draft_block_capturing_alternatives(
+        &mut self,
+        anchor: u32,
+        new_hidden: &MlxArray,
+        target: &ModelWeights,
+        block: i32,
+    ) -> MlxArray {
+        self.draft_block_inner(anchor, new_hidden, target, block, true)
+    }
+
+    fn draft_block_inner(
+        &mut self,
+        anchor: u32,
+        new_hidden: &MlxArray,
+        target: &ModelWeights,
+        block: i32,
+        capture_alternatives: bool,
+    ) -> MlxArray {
+        self.tree_alternatives = [None, None];
         let weights = self.weights.clone();
         let cfg = &weights.cfg;
         // Arm the fused multi-row matmuls for the whole block: the projections
@@ -648,7 +678,6 @@ impl Dflash2Drafter {
         // seven.
         let _fused_rows = QwenMtpVerifyQmmGuard::arm(true);
         let mut timer = std::time::Instant::now();
-        let proposals = block - 1;
         let hidden = cfg.hidden_size;
         let kv_width = cfg.num_kv_heads * cfg.head_dim;
         let dtype = new_hidden.dtype();
@@ -765,6 +794,9 @@ impl Dflash2Drafter {
             // Greedy path: plain argmax of the target LM head.
             let tokens = astype(&argmax(&logits, None), MlxDtype::Uint32, None);
             self.mark("argmax", &tokens, &mut timer);
+            if capture_alternatives {
+                self.tree_alternatives = greedy_runner_up(&logits, &tokens);
+            }
             return tokens;
         }
         self.select(
@@ -773,7 +805,7 @@ impl Dflash2Drafter {
             &draft_hidden,
             &logits,
             anchor,
-            proposals,
+            capture_alternatives,
         )
     }
 
@@ -898,15 +930,17 @@ impl Dflash2Drafter {
     /// candidate is its logit plus a low-rank edge score against the previously
     /// chosen token, and the best candidate is taken position by position.
     fn select(
-        &self,
+        &mut self,
         selector: &Selector,
         cfg: &Dflash2Config,
         draft_hidden: &MlxArray,
         logits: &MlxArray,
         anchor: u32,
-        proposals: i32,
+        capture_alternatives: bool,
     ) -> MlxArray {
-        let vocab = logits.shape()[2];
+        let shape = logits.shape();
+        let proposals = shape[1];
+        let vocab = shape[2];
         let top_k = cfg.selector_top_k;
         let partitioned = argpartition_axis(logits, vocab - top_k, 2, None);
         let candidates = slice(
@@ -925,6 +959,7 @@ impl Dflash2Drafter {
             MlxDtype::Uint32,
         );
         let mut path = Vec::with_capacity(proposals as usize);
+        let mut alt_slots = capture_alternatives.then(Vec::new);
         for position in 0..proposals {
             let slot = |array: &MlxArray, width: i32| {
                 reshape(
@@ -958,6 +993,11 @@ impl Dflash2Drafter {
                 None,
             );
             let scores = add(&slot(&unary, top_k), &edges, None);
+            if let Some(slots) = alt_slots.as_mut()
+                && position < 2
+            {
+                slots.push((position_candidates.clone(), scores.clone()));
+            }
             let chosen = argmax(&scores, None);
             predecessor = reshape(
                 &take_along_axis(
@@ -971,9 +1011,97 @@ impl Dflash2Drafter {
             );
             path.push(predecessor.clone());
         }
+        if let Some(slots) = alt_slots.as_ref() {
+            self.tree_alternatives = selector_runner_up(slots, &path);
+        }
         let refs: Vec<&MlxArray> = path.iter().collect();
         astype(&stack(&refs, 1, None), MlxDtype::Uint32, None)
     }
+}
+
+/// Runner-up token at the first two greedy draft positions. The primary id is
+/// read from `drafted`, the same array the caller returns, so a tie cannot
+/// make the alternative equal the committed chain.
+fn greedy_runner_up(logits: &MlxArray, drafted: &MlxArray) -> [Option<u32>; 2] {
+    let shape = logits.shape();
+    if shape.len() != 3 || shape[1] < 1 || shape[2] < 2 {
+        return [None, None];
+    }
+    let positions = shape[1].min(2);
+    let vocab = shape[2];
+    let head = slice(logits, &[0, 0, 0], &[1, positions, vocab], &[1, 1, 1], None);
+    let partitioned = argpartition_axis(&head, vocab - 2, 2, None);
+    // The tail of each row is a view. Copy it before reading ids, or a
+    // two-row slice is not a dense `[positions, 2]` buffer.
+    let top = astype(
+        &contiguous(
+            &slice(
+                &partitioned,
+                &[0, 0, vocab - 2],
+                &[1, positions, vocab],
+                &[1, 1, 1],
+                None,
+            ),
+            None,
+        ),
+        MlxDtype::Uint32,
+        None,
+    );
+    let primary = astype(
+        &contiguous(
+            &slice(drafted, &[0, 0], &[1, positions], &[1, 1], None),
+            None,
+        ),
+        MlxDtype::Uint32,
+        None,
+    );
+    eval(&[&top, &primary]);
+    let primary_ids = primary.data_u32();
+    let top_ids = top.data_u32();
+    let mut out = [None, None];
+    if primary_ids.len() < positions as usize || top_ids.len() < (positions as usize) * 2 {
+        return out;
+    }
+    for position in 0..positions as usize {
+        let primary = primary_ids[position];
+        let first = top_ids[position * 2];
+        let second = top_ids[position * 2 + 1];
+        out[position] = [first, second].into_iter().find(|token| *token != primary);
+    }
+    out
+}
+
+/// Highest-scoring candidate that is not `primary`. Equal scores keep the
+/// earlier candidate.
+fn distinct_runner_up(primary: u32, candidates: &[u32], scores: &[f32]) -> Option<u32> {
+    let mut best: Option<(u32, f32)> = None;
+    for (&token, &score) in candidates.iter().zip(scores) {
+        if token == primary || !score.is_finite() {
+            continue;
+        }
+        if best.is_none_or(|(_, best_score)| score > best_score) {
+            best = Some((token, score));
+        }
+    }
+    best.map(|(token, _)| token)
+}
+
+fn selector_runner_up(slots: &[(MlxArray, MlxArray)], chosen: &[MlxArray]) -> [Option<u32>; 2] {
+    let mut out = [None, None];
+    for (index, ((candidates, scores), chosen)) in slots.iter().zip(chosen).enumerate() {
+        if index >= 2 {
+            break;
+        }
+        let candidates = astype(candidates, MlxDtype::Uint32, None);
+        let scores = astype(scores, MlxDtype::Float32, None);
+        let chosen = astype(chosen, MlxDtype::Uint32, None);
+        eval(&[&candidates, &scores, &chosen]);
+        let Some(primary) = chosen.data_u32().first().copied() else {
+            continue;
+        };
+        out[index] = distinct_runner_up(primary, candidates.data_u32(), scores.data_f32());
+    }
+    out
 }
 
 /// Directory name of the drafter's Hugging Face cache entry.
@@ -1065,6 +1193,13 @@ mod tests {
             "mask_token_id": 248070, "selector_rank": 256, "selector_top_k": 16,
             "target_layer_ids": [5, 19, 33, 47, 61]}
     }"#;
+
+    #[test]
+    fn second_best_score_skips_the_primary_token() {
+        assert_eq!(distinct_runner_up(4, &[4, 9, 2], &[3.0, 2.5, 2.5]), Some(9));
+        assert_eq!(distinct_runner_up(4, &[4, 4], &[1.0, 1.0]), None);
+        assert_eq!(distinct_runner_up(1, &[8, 3], &[f32::NAN, 0.5]), Some(3));
+    }
 
     #[test]
     fn config_parses_the_released_checkpoint_shape() {
