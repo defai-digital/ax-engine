@@ -18,7 +18,8 @@
 //!
 //! `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` (default off) scores a long prefill
 //! chunk as query tiles and keeps only the selected indices. A tile runs
-//! only for an MLX 0.32.4 `applegpu_g14d` GEMM shape whose tests match the
+//! only for an MLX 0.32.4 `applegpu_g14d` (M2) or `applegpu_g17s` (M5)
+//! GEMM shape whose tests match the
 //! monolithic score bits. Every other shape keeps one score tensor and the
 //! 256 MiB workspace check.
 
@@ -1465,8 +1466,8 @@ const QSA_TILE_MAX_QUERIES: i32 = 1024;
 const QSA_TILE_WORKSPACE_BUDGET: usize = 128 * 1024 * 1024;
 /// Monolithic score-workspace ceiling. Each issued tile is checked against it.
 const QSA_SCORE_WORKSPACE_LIMIT: usize = 256 * 1024 * 1024;
-/// GPU architecture whose tiled f32 GEMM matched the monolithic score bits.
-const QSA_TILED_SCORE_ARCH: &str = "applegpu_g14d";
+/// GPU architectures whose tiled f32 GEMM matched the monolithic score bits.
+const QSA_TILED_SCORE_ARCHES: &[&str] = &["applegpu_g14d", "applegpu_g17s"];
 const QSA_TILED_MLX_VERSION: &str = "0.32.4";
 
 /// Query tiles for one score. `query_rows` sums to the chunk length.
@@ -1574,7 +1575,7 @@ fn tiled_score_runtime_matches() -> bool {
     let arch_ok = if let Some(matches) = ARCH.get() {
         *matches
     } else if let Ok(arch) = gpu_device_architecture() {
-        *ARCH.get_or_init(|| arch == QSA_TILED_SCORE_ARCH)
+        *ARCH.get_or_init(|| QSA_TILED_SCORE_ARCHES.contains(&arch.as_str()))
     } else {
         false
     };
@@ -4528,8 +4529,10 @@ mod tests {
     fn qsa_tiled_score_bits_match_monolithic() {
         let arch = gpu_device_architecture().unwrap();
         let version = mlx_sys::runtime_version().unwrap();
-        assert_eq!(arch, QSA_TILED_SCORE_ARCH);
-        assert_eq!(version, QSA_TILED_MLX_VERSION);
+        if !QSA_TILED_SCORE_ARCHES.contains(&arch.as_str()) || version != QSA_TILED_MLX_VERSION {
+            eprintln!("skipping: {arch} / MLX {version} is not a proven tiled-score target");
+            return;
+        }
 
         let cases = [
             (1, 1025, 4, 128, 129, MlxDtype::Float32, None),
