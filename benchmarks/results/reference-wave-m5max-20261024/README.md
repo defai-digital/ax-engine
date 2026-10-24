@@ -50,11 +50,24 @@ resident.
 re-runs gave 2.366-2.387 s vs 2.376-2.389 s. Output text hashes match the
 baseline for all three MXFP4 prompts.
 
-6-bit long context: the priced plan admits a 114.5 GiB working set (ceiling
-115.2 GiB, above the Metal recommendation of 107.5 GiB). A rerun of the 39k
-prompt showed no new swap-outs, so the slowdown is not swapping; the most
-likely cause is the smaller page cache left for n-gram row reads. Not yet
-proven; MXFP4 stays the long-context recommendation.
+6-bit long context, root cause: the runner wires 0.9 x Metal's recommended
+working set (96.8 GiB) while the 6-bit pack stays ~108 GiB resident, so macOS
+pages part of the weights out of GPU residency (no swap; disk reads match MXFP4).
+Follow-up commits make the plan report the wired shortfall with the exact
+`sudo sysctl iogpu.wired_limit_mb=<MiB>` remedy, raise the wired scale up to 1.0
+when needed, price prefill scratch from the chunk shapes (1.69 GiB), and cap the
+6-bit default server to one live sequence instead of streaming. Measured on
+the final main:
+
+| 6-bit, prompt tokens | Default sysctl TTFT / decode | `iogpu.wired_limit_mb=117964` TTFT / decode |
+|---|---:|---:|
+| 2,207 | 2.99 s / 41.8 | 2.63 s / 42.5 |
+| 8,976 | 27.55 s / 41.4 | 14.98 s / 41.4 |
+| 39,225 | 157.0 s / 25.7 | 83.37 s / 40.1 |
+
+The sysctl needs root and resets on reboot. MXFP4 and 27B are unchanged (no
+cap, 0.9 wired scale); 27B DFlash2 output and speed match the pre-follow-up
+build on three prompts.
 
 ## Opt-in features measured on this host
 
