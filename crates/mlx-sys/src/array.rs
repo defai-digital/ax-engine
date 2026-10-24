@@ -353,15 +353,24 @@ impl MlxArray {
         }
     }
 
-    #[cfg(test)]
     /// True when the array's data has been computed and is readable. The
     /// `data_*` accessors fail with a recorded shim error (previously a
     /// SIGSEGV inside `mx::array::data<T>()`) when this is false.
-    pub(crate) fn is_evaled(&self) -> bool {
+    ///
+    /// Public so downstream graph-retention tests can distinguish a scheduled
+    /// / evaluated array from a still-pending primitive. An array with no
+    /// primitive is available by definition, so this only reports `false` for
+    /// a graph node nothing has forced yet.
+    pub fn is_evaluated(&self) -> bool {
         unsafe {
             ensure_error_handler();
             ffi::ax_shim_array_is_evaled(self.inner) == 1
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_evaled(&self) -> bool {
+        self.is_evaluated()
     }
 }
 

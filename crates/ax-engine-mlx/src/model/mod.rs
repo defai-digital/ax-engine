@@ -638,10 +638,11 @@ pub fn decode_batched_forward(
 
     // Commit boundary for the hybrid gated-delta state. Each layer's state is a
     // kernel output that only the next step reads, so it is not an ancestor of
-    // this step's logits and would otherwise stay pending; materializing it here
+    // this step's logits and would otherwise stay pending; scheduling it here
     // keeps the graph one step wide for a long-running cohort
     // (`AX_MLX_BATCHED_STATE_MATERIALIZE=0` restores the lazy update). Values do
-    // not change — `eval` only forces scheduled work.
+    // not change, and the commit is asynchronous: this step already blocks on
+    // `argmax_batched`, so a second blocking eval would add a per-step barrier.
     if crate::fastpath::batched_state_materialize_enabled()
         && let Some(linear) = lin_state.as_deref()
     {

@@ -2504,6 +2504,25 @@ impl MlxRunner {
         // safetensors read + GPU eval entirely.
         let preloaded_weights = shared_weights.and_then(MlxSharedWeightsCell::get);
         let reused_shared_weights = preloaded_weights.is_some();
+        // Priced-plan inputs for this session, installed on the thread that
+        // loads the weights (the same per-session latch pattern as
+        // `set_stream_experts_mode`). Builders without an admitted session
+        // budget clear it, so a later load cannot inherit this one's pool.
+        crate::expert_stream::set_auto_residency_context(session_budget.map(|budget| {
+            let (kv_bytes, state_bytes, prefill_scratch_bytes) =
+                crate::expert_stream::estimate_auto_residency_costs(artifacts.manifest(), budget);
+            crate::expert_stream::AutoResidencyContext {
+                kv_bytes,
+                state_bytes,
+                prefill_scratch_bytes,
+                // Filled per pack by the loader (the table is a pack property).
+                ngram_table_bytes: 0,
+                host_ram_bytes: crate::expert_stream::unified_memory_bytes(),
+                metal_recommended_max_working_set_bytes:
+                    crate::expert_stream::metal_recommended_working_set_bytes(),
+                ceiling_override_bytes: crate::expert_stream::memory_ceiling_override_bytes(),
+            }
+        }));
         let weights = match preloaded_weights {
             Some(weights) => weights,
             None => {

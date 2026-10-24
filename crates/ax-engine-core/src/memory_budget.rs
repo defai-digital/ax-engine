@@ -245,6 +245,357 @@ pub fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) 
     Some(total)
 }
 
+/// MLX's own computed-graph buffer cache, charged to a priced load plan.
+pub const MEMORY_PLAN_MLX_BUFFER_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Runtime reserve on top of the MLX buffer cache: compiled graphs,
+/// tokenizer/request state, and allocator slack.
+pub const MEMORY_PLAN_RUNTIME_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Floor of the OS reserve. The reserve is `max(this, RAM/10)` so a small
+/// host still keeps room for the kernel, the display server, and the page
+/// cache that serves disk-mapped tensors.
+pub const MEMORY_PLAN_MIN_OS_RESERVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// OS reserve for a host of `host_ram_bytes`: a tenth of RAM, never below
+/// [`MEMORY_PLAN_MIN_OS_RESERVE_BYTES`]. 12.8 GiB on a 128 GiB host, which
+/// leaves a 115.2 GiB ceiling.
+pub fn memory_plan_os_reserve_bytes(host_ram_bytes: u64) -> u64 {
+    MEMORY_PLAN_MIN_OS_RESERVE_BYTES.max(host_ram_bytes / 10)
+}
+
+/// Reserve the explicit `AX_MLX_MEMORY_CEILING_BYTES` override may never
+/// cross: the override can move the ceiling in either direction, but never
+/// into the last 4 GiB of unified memory, where the kernel and the window
+/// server live.
+pub const MEMORY_PLAN_OVERRIDE_RAM_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Environment variable holding an explicit ceiling override in bytes.
+pub const MEMORY_PLAN_CEILING_OVERRIDE_ENV: &str = "AX_MLX_MEMORY_CEILING_BYTES";
+
+/// Parse an explicit ceiling override. Blank, zero, negative, and unparsable
+/// values mean "no override" so the RAM-derived ceiling stands.
+pub fn parse_memory_plan_ceiling_override(value: Option<&str>) -> Option<u64> {
+    value
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|bytes| *bytes > 0)
+}
+
+/// Priced decomposition of one model's resident and streamed costs.
+///
+/// Every field is bytes. The n-gram table is priced separately because the
+/// Flash Next table is served by disk row gathers and is never resident; it
+/// is reported but not charged to the working set. Expert weight bytes are
+/// charged only when the plan decides to keep them resident.
+///
+/// This is a load-admission estimate, not an allocator limit. `ceiling_bytes`
+/// is `None` when host RAM is unknown and no override is set, in which case
+/// residency cannot be proven and the plan pages experts rather than risking
+/// an OOM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryPlan {
+    /// Non-expert weights that always stay resident (embeddings, attention,
+    /// shared experts, norms, MTP head).
+    pub resident_non_expert_bytes: u64,
+    /// Packed expert weight bytes that may stay resident or page from disk.
+    pub expert_bytes: u64,
+    /// Whole n-gram lexical table including its quantization scales/biases.
+    /// Disk/virtual: reported, never charged to the working set.
+    pub ngram_table_bytes: u64,
+    /// KV cache bytes for the configured context at the admitted pool.
+    pub kv_bytes: u64,
+    /// GDN/QSA/PLE per-request state (conv rings, recurrent state, index and
+    /// pooled buffers) for the served concurrency.
+    pub state_bytes: u64,
+    /// Bound on prefill activations for one chunk.
+    pub prefill_scratch_bytes: u64,
+    /// MLX computed-graph buffer cache allowance.
+    pub mlx_buffer_cache_bytes: u64,
+    /// Runtime reserve (compiled graphs, allocator slack).
+    pub runtime_reserve_bytes: u64,
+    /// Physical unified memory (`hw.memsize`).
+    pub host_ram_bytes: Option<u64>,
+    /// Metal `recommendedMaxWorkingSetSize`, when the platform reports it.
+    ///
+    /// Advisory only: it never bounds [`MemoryPlan::ceiling_bytes`]. Measured
+    /// Flash Next 6-bit sessions ran resident at a peak RSS above this value,
+    /// so the plan keeps its RAM-derived decision and only flags the gap in
+    /// [`MemoryPlan::log_line`].
+    pub metal_recommended_max_working_set_bytes: Option<u64>,
+    /// Explicit ceiling override (`AX_MLX_MEMORY_CEILING_BYTES`). Bounded by
+    /// `RAM - MEMORY_PLAN_OVERRIDE_RAM_RESERVE_BYTES` when RAM is known, and
+    /// used as-is when it is not.
+    pub ceiling_override_bytes: Option<u64>,
+}
+
+impl Default for MemoryPlan {
+    fn default() -> Self {
+        Self {
+            resident_non_expert_bytes: 0,
+            expert_bytes: 0,
+            ngram_table_bytes: 0,
+            kv_bytes: 0,
+            state_bytes: 0,
+            prefill_scratch_bytes: 0,
+            mlx_buffer_cache_bytes: MEMORY_PLAN_MLX_BUFFER_CACHE_BYTES,
+            runtime_reserve_bytes: MEMORY_PLAN_RUNTIME_RESERVE_BYTES,
+            host_ram_bytes: None,
+            metal_recommended_max_working_set_bytes: None,
+            ceiling_override_bytes: None,
+        }
+    }
+}
+
+/// Outcome of [`MemoryPlan::decide`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryPlanDecision {
+    /// Everything, experts included, fits under the ceiling.
+    Resident {
+        working_set_bytes: u64,
+        ceiling_bytes: u64,
+    },
+    /// The fixed part fits but the experts do not; page them with at most
+    /// `expert_cache_bytes` of resident layer stacks (`0` means "no byte
+    /// cap": the layer-count budget alone decides).
+    Stream {
+        working_set_bytes: u64,
+        expert_cache_bytes: u64,
+        ceiling_bytes: Option<u64>,
+    },
+    /// Even the fixed part does not fit: the load cannot be admitted.
+    Refuse {
+        fixed_bytes: u64,
+        ceiling_bytes: u64,
+    },
+}
+
+impl MemoryPlanDecision {
+    pub fn is_resident(self) -> bool {
+        matches!(self, Self::Resident { .. })
+    }
+
+    /// Byte budget for resident expert layer stacks, when the plan streamed.
+    pub fn expert_cache_bytes(self) -> Option<u64> {
+        match self {
+            Self::Stream {
+                expert_cache_bytes, ..
+            } => Some(expert_cache_bytes),
+            _ => None,
+        }
+    }
+}
+
+impl MemoryPlan {
+    /// Usable ceiling: `RAM - memory_plan_os_reserve_bytes(RAM)`, replaced by
+    /// an explicit `AX_MLX_MEMORY_CEILING_BYTES` override bounded at
+    /// `RAM - MEMORY_PLAN_OVERRIDE_RAM_RESERVE_BYTES`.
+    ///
+    /// The Metal `recommendedMaxWorkingSetSize` is deliberately NOT part of
+    /// this bound. It is a vendor hint, not an allocator limit: a Flash Next
+    /// 6-bit pack measured a 109.8 GiB peak RSS with no swap growth on an
+    /// M5 Max whose recommendation is 107.5 GiB, and taking the minimum would
+    /// have paged a pack that in fact runs resident. The recommendation is
+    /// still reported, and [`Self::exceeds_recommended_working_set`] flags a
+    /// plan that goes above it.
+    pub fn ceiling_bytes(&self) -> Option<u64> {
+        match self.ceiling_override_bytes {
+            Some(override_bytes) => Some(match self.host_ram_bytes {
+                Some(ram) => {
+                    override_bytes.min(ram.saturating_sub(MEMORY_PLAN_OVERRIDE_RAM_RESERVE_BYTES))
+                }
+                None => override_bytes,
+            }),
+            None => self
+                .host_ram_bytes
+                .map(|ram| ram.saturating_sub(memory_plan_os_reserve_bytes(ram))),
+        }
+    }
+
+    /// Whether the override, not the OS reserve, decided the ceiling.
+    pub fn ceiling_is_overridden(&self) -> bool {
+        self.ceiling_override_bytes.is_some()
+    }
+
+    /// True when the priced working set is above the Metal
+    /// `recommendedMaxWorkingSetSize`.
+    ///
+    /// Advisory only: the decision keeps the RAM-derived ceiling, and the log
+    /// line carries both numbers. `false` when either side is unknown.
+    pub fn exceeds_recommended_working_set(&self) -> bool {
+        self.metal_recommended_max_working_set_bytes
+            .is_some_and(|recommended| self.resident_working_set_bytes() > recommended)
+    }
+
+    /// Everything that stays resident regardless of the expert decision.
+    /// Prefill scratch, the MLX buffer cache, and the runtime reserve are
+    /// part of the fixed cost: streaming cannot free them.
+    pub fn fixed_bytes(&self) -> u64 {
+        self.resident_non_expert_bytes
+            .saturating_add(self.kv_bytes)
+            .saturating_add(self.state_bytes)
+            .saturating_add(self.prefill_scratch_bytes)
+            .saturating_add(self.mlx_buffer_cache_bytes)
+            .saturating_add(self.runtime_reserve_bytes)
+    }
+
+    /// Fixed part plus fully resident experts. The n-gram table is excluded:
+    /// it is disk/virtual.
+    pub fn resident_working_set_bytes(&self) -> u64 {
+        self.fixed_bytes().saturating_add(self.expert_bytes)
+    }
+
+    /// Decision ladder: resident if the whole working set fits, stream if the
+    /// fixed part plus the minimum scratch fits, refuse otherwise.
+    pub fn decide(&self) -> MemoryPlanDecision {
+        let fixed = self.fixed_bytes();
+        let working = self.resident_working_set_bytes();
+        let Some(ceiling) = self.ceiling_bytes() else {
+            // Unknown capacity cannot prove residency: page instead of
+            // risking an OOM, and leave the byte cap to the caller.
+            return MemoryPlanDecision::Stream {
+                working_set_bytes: working,
+                expert_cache_bytes: 0,
+                ceiling_bytes: None,
+            };
+        };
+        if working <= ceiling {
+            return MemoryPlanDecision::Resident {
+                working_set_bytes: working,
+                ceiling_bytes: ceiling,
+            };
+        }
+        if fixed <= ceiling {
+            return MemoryPlanDecision::Stream {
+                working_set_bytes: working,
+                expert_cache_bytes: ceiling - fixed,
+                ceiling_bytes: Some(ceiling),
+            };
+        }
+        MemoryPlanDecision::Refuse {
+            fixed_bytes: fixed,
+            ceiling_bytes: ceiling,
+        }
+    }
+
+    /// One structured English log line: every component, the ceiling, the
+    /// Metal recommendation, and the decision. Contains no paths or host
+    /// names.
+    ///
+    /// When the priced working set is above the Metal recommendation the line
+    /// carries a `warning=working-set-exceeds-metal-recommended(...)` field
+    /// with both numbers; the decision itself is unchanged.
+    pub fn log_line(&self) -> String {
+        let decision = self.decide();
+        let ceiling = self
+            .ceiling_bytes()
+            .map_or_else(|| "unknown".to_string(), bytes_label);
+        let os_reserve = self.host_ram_bytes.map_or_else(
+            || "unknown".to_string(),
+            |ram| bytes_label(memory_plan_os_reserve_bytes(ram)),
+        );
+        let host_ram = self
+            .host_ram_bytes
+            .map_or_else(|| "unknown".to_string(), bytes_label);
+        let metal = self
+            .metal_recommended_max_working_set_bytes
+            .map_or_else(|| "unknown".to_string(), bytes_label);
+        let ceiling_source = if self.ceiling_is_overridden() {
+            "override"
+        } else if self.host_ram_bytes.is_some() {
+            "ram"
+        } else {
+            "unknown"
+        };
+        let above_recommended = self.exceeds_recommended_working_set();
+        let warning = if above_recommended {
+            let recommended = self.metal_recommended_max_working_set_bytes;
+            format!(
+                " warning=working-set-exceeds-metal-recommended(working-set={} metal-recommended={})",
+                bytes_label(self.resident_working_set_bytes()),
+                recommended.map_or_else(|| "unknown".to_string(), bytes_label),
+            )
+        } else {
+            String::new()
+        };
+        let (decision_label, expert_cache) = match decision {
+            MemoryPlanDecision::Resident {
+                working_set_bytes, ..
+            } => (
+                "resident",
+                format!("working-set={}", bytes_label(working_set_bytes)),
+            ),
+            MemoryPlanDecision::Stream {
+                working_set_bytes,
+                expert_cache_bytes,
+                ..
+            } => (
+                "stream",
+                format!(
+                    "working-set={} expert-cache={}",
+                    bytes_label(working_set_bytes),
+                    bytes_label(expert_cache_bytes)
+                ),
+            ),
+            MemoryPlanDecision::Refuse {
+                fixed_bytes,
+                ceiling_bytes,
+            } => (
+                "refuse",
+                format!(
+                    "fixed={} ceiling={}",
+                    bytes_label(fixed_bytes),
+                    bytes_label(ceiling_bytes)
+                ),
+            ),
+        };
+        format!(
+            "memory plan: resident-non-expert={} expert={} ngram-table={}(not-resident) \
+             kv={} hybrid-state={} prefill-scratch={} mlx-buffer-cache={} runtime-reserve={} \
+             host-ram={} metal-recommended={} metal-recommended-exceeded={} os-reserve={} \
+             ceiling-source={} ceiling={} {}{} decision={}",
+            bytes_label(self.resident_non_expert_bytes),
+            bytes_label(self.expert_bytes),
+            bytes_label(self.ngram_table_bytes),
+            bytes_label(self.kv_bytes),
+            bytes_label(self.state_bytes),
+            bytes_label(self.prefill_scratch_bytes),
+            bytes_label(self.mlx_buffer_cache_bytes),
+            bytes_label(self.runtime_reserve_bytes),
+            host_ram,
+            metal,
+            above_recommended,
+            os_reserve,
+            ceiling_source,
+            ceiling,
+            expert_cache,
+            warning,
+            decision_label,
+        )
+    }
+}
+
+/// Integer-only byte label (`10.51GiB`), so log lines never inherit float
+/// rounding drift. Hundredths are rounded half-up, which turns a value one
+/// byte under a boundary into the value operators quote (`115.20GiB`, not
+/// `115.19GiB`).
+fn bytes_label(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    let (unit_bytes, unit) = if bytes >= GIB {
+        (GIB, "GiB")
+    } else if bytes >= MIB {
+        (MIB, "MiB")
+    } else if bytes >= KIB {
+        (KIB, "KiB")
+    } else {
+        return format!("{bytes}B");
+    };
+    let whole = bytes / unit_bytes;
+    let hundredths = ((bytes % unit_bytes) * 100 + unit_bytes / 2) / unit_bytes;
+    format!("{whole}.{hundredths:02}{unit}")
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used)]
@@ -479,5 +830,360 @@ mod tests {
             "global_head_dim": 0, "global_kv_head_count": 1
         }));
         assert_eq!(estimated_kv_pool_bytes(&geometry, 1000), None);
+    }
+
+    // Priced memory plan -----------------------------------------------------
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// Metal `recommendedMaxWorkingSetSize` an M5 Max with 128 GiB unified
+    /// memory reports (measured 2026-10-24). It is advisory: the plan records
+    /// it for the warning and never clamps the ceiling to it, because a 6-bit
+    /// Flash Next session ran resident at a higher peak RSS with no swap
+    /// growth.
+    const M5_MAX_RECOMMENDED_WORKING_SET_BYTES: u64 = 115_448_725_504;
+
+    /// Flash Next 6-bit pack: 98.1 GB of experts, 11.3 GB of resident
+    /// non-expert weights, and a 57.6 GB n-gram table served from disk. The
+    /// table is disk/virtual, so the priced working set is 105.88 GiB.
+    fn flash_next_6bit_plan(host_ram_gi_b: u64) -> MemoryPlan {
+        flash_next_6bit_plan_with_metal(host_ram_gi_b, M5_MAX_RECOMMENDED_WORKING_SET_BYTES)
+    }
+
+    /// The same pack priced against an explicit Metal recommendation, so the
+    /// value the host actually reports can be varied without touching the
+    /// weight bytes.
+    fn flash_next_6bit_plan_with_metal(host_ram_gi_b: u64, metal_bytes: u64) -> MemoryPlan {
+        MemoryPlan {
+            resident_non_expert_bytes: 11_278_347_768,
+            expert_bytes: 98_146_713_600,
+            ngram_table_bytes: 57_600_276_480,
+            kv_bytes: 805_306_368,
+            // QSA index/pooled 125,829,120 + GDN state 115,458,048.
+            state_bytes: 125_829_120 + 115_458_048,
+            prefill_scratch_bytes: 0,
+            host_ram_bytes: Some(host_ram_gi_b * GIB),
+            metal_recommended_max_working_set_bytes: Some(metal_bytes),
+            ..MemoryPlan::default()
+        }
+    }
+
+    fn mxfp4_plan(host_ram_gi_b: u64) -> MemoryPlan {
+        MemoryPlan {
+            resident_non_expert_bytes: 10_455_888_888,
+            expert_bytes: 64_172_851_200,
+            kv_bytes: 805_306_368,
+            state_bytes: 125_829_120 + 115_458_048,
+            host_ram_bytes: Some(host_ram_gi_b * GIB),
+            metal_recommended_max_working_set_bytes: Some(M5_MAX_RECOMMENDED_WORKING_SET_BYTES),
+            ..MemoryPlan::default()
+        }
+    }
+
+    /// `RAM - max(8 GiB, RAM/10)` on a 128 GiB host: 115.20 GiB.
+    const CEILING_128_GIB_HOST_BYTES: u64 = 123_695_058_125;
+
+    #[test]
+    fn priced_plan_keeps_flash_next_6bit_resident_on_128gib() {
+        let plan = flash_next_6bit_plan(128);
+        let decision = plan.decide();
+        assert!(
+            decision.is_resident(),
+            "6-bit Flash Next must stay resident: {decision:?} in {}",
+            plan.log_line()
+        );
+        // The 57.6 GB table is priced but never charged to the working set.
+        assert_eq!(
+            plan.resident_working_set_bytes(),
+            plan.fixed_bytes() + plan.expert_bytes
+        );
+        assert_eq!(plan.fixed_bytes(), 15_546_166_776);
+        assert_eq!(plan.resident_working_set_bytes(), 113_692_880_376);
+        // The ceiling comes from RAM alone and sits ABOVE the Metal
+        // recommendation: that is the whole point of not taking the minimum.
+        assert_eq!(plan.ceiling_bytes(), Some(CEILING_128_GIB_HOST_BYTES));
+        assert_eq!(
+            plan.ceiling_bytes(),
+            Some(128 * GIB - memory_plan_os_reserve_bytes(128 * GIB))
+        );
+        assert!(plan.ceiling_bytes() > plan.metal_recommended_max_working_set_bytes);
+        assert!(plan.resident_working_set_bytes() < CEILING_128_GIB_HOST_BYTES);
+        // A resident decision reports the expert cache as absent.
+        assert_eq!(decision.expert_cache_bytes(), None);
+        let line = plan.log_line();
+        for component in [
+            "resident-non-expert=10.50GiB",
+            "expert=91.41GiB",
+            "ngram-table=53.64GiB(not-resident)",
+            "host-ram=128.00GiB",
+            "metal-recommended=107.52GiB",
+            "metal-recommended-exceeded=false",
+            "os-reserve=12.80GiB",
+            "ceiling-source=ram",
+            "ceiling=115.20GiB",
+            "working-set=105.88GiB",
+            "decision=resident",
+        ] {
+            assert!(line.contains(component), "missing {component:?} in {line}");
+        }
+        assert!(!line.contains("warning="), "unexpected warning in {line}");
+        // Dropping the disk-served table from the pricing cannot change the
+        // decision, which is what makes it safe to exclude.
+        let without_ngram = MemoryPlan {
+            ngram_table_bytes: 0,
+            ..plan
+        };
+        assert_eq!(without_ngram.decide(), decision);
+    }
+
+    /// The priced working set is 105.88 GiB and the M5 Max recommends
+    /// 107.52 GiB, so this pack does not warn on that host. A pack whose
+    /// working set is above the recommendation keeps its decision, and the
+    /// log line carries both numbers.
+    #[test]
+    fn priced_plan_warns_above_the_metal_recommendation_without_changing_the_decision() {
+        let fits = flash_next_6bit_plan(128);
+        assert!(!fits.exceeds_recommended_working_set());
+        assert!(fits.log_line().contains("metal-recommended-exceeded=false"));
+
+        let above = flash_next_6bit_plan_with_metal(128, 100 * GIB);
+        assert!(above.exceeds_recommended_working_set());
+        assert!(
+            above.decide().is_resident(),
+            "the advisory warning must not page a pack that fits RAM: {}",
+            above.log_line()
+        );
+        let line = above.log_line();
+        assert!(line.contains("metal-recommended=100.00GiB"), "{line}");
+        assert!(line.contains("metal-recommended-exceeded=true"), "{line}");
+        assert!(
+            line.contains(
+                "warning=working-set-exceeds-metal-recommended(\
+                 working-set=105.88GiB metal-recommended=100.00GiB)"
+            ),
+            "{line}"
+        );
+        assert!(line.contains("decision=resident"), "{line}");
+    }
+
+    #[test]
+    fn priced_plan_keeps_mxfp4_resident() {
+        let plan = mxfp4_plan(128);
+        let decision = plan.decide();
+        assert!(
+            decision.is_resident(),
+            "MXFP4 Flash Next must stay resident: {}",
+            plan.log_line()
+        );
+        // 73.48 GiB of working set against a 115.20 GiB ceiling, below the
+        // 107.52 GiB recommendation, so no advisory warning fires either.
+        assert_eq!(plan.resident_working_set_bytes(), 78_896_559_096);
+        assert!(!plan.exceeds_recommended_working_set());
+        assert!(plan.log_line().contains("ceiling=115.20GiB"));
+        assert!(plan.log_line().contains("decision=resident"));
+    }
+
+    #[test]
+    fn priced_plan_streams_when_experts_do_not_fit() {
+        // Both packs on a 64 GiB host: the fixed part fits the 56 GiB
+        // ceiling, the experts do not, so the plan pages them with the
+        // remainder.
+        for (plan, expected_cache) in [
+            (flash_next_6bit_plan(64), 44_583_375_368u64),
+            (mxfp4_plan(64), 45_405_834_248u64),
+        ] {
+            let ceiling = plan.ceiling_bytes().expect("64 GiB host has a ceiling");
+            assert_eq!(
+                ceiling,
+                64 * GIB - memory_plan_os_reserve_bytes(64 * GIB),
+                "the 8 GiB reserve floor binds on a 64 GiB host"
+            );
+            assert!(plan.fixed_bytes() <= ceiling);
+            assert!(plan.resident_working_set_bytes() > ceiling);
+            let decision = plan.decide();
+            assert!(
+                matches!(
+                    decision,
+                    MemoryPlanDecision::Stream {
+                        expert_cache_bytes,
+                        ceiling_bytes: Some(reported),
+                        ..
+                    } if reported == ceiling && expert_cache_bytes == ceiling - plan.fixed_bytes()
+                ),
+                "expected a stream decision against the {ceiling} byte ceiling, got {decision:?}"
+            );
+            assert_eq!(decision.expert_cache_bytes(), Some(expected_cache));
+            assert!(plan.log_line().contains("decision=stream"));
+        }
+    }
+
+    #[test]
+    fn priced_plan_refuses_when_fixed_part_does_not_fit() {
+        // 60 GiB of resident non-expert weights plus the default 3 GiB of
+        // runtime reserves cannot fit a 64 GiB host's 56 GiB ceiling even
+        // with every expert streamed.
+        let plan = MemoryPlan {
+            resident_non_expert_bytes: 60 * GIB,
+            expert_bytes: 10 * GIB,
+            host_ram_bytes: Some(64 * GIB),
+            metal_recommended_max_working_set_bytes: Some(112 * GIB),
+            ..MemoryPlan::default()
+        };
+        let ceiling = plan.ceiling_bytes().expect("known ceiling");
+        assert_eq!(ceiling, 56 * GIB);
+        assert!(plan.fixed_bytes() > ceiling);
+        let decision = plan.decide();
+        assert!(
+            matches!(
+                decision,
+                MemoryPlanDecision::Refuse {
+                    fixed_bytes,
+                    ceiling_bytes,
+                } if fixed_bytes == plan.fixed_bytes() && ceiling_bytes == ceiling
+            ),
+            "expected a refusal, got {decision:?}"
+        );
+        assert!(plan.log_line().contains("decision=refuse"));
+    }
+
+    #[test]
+    fn priced_plan_pages_when_capacity_is_unknown() {
+        // Neither probe succeeded and no override was given: residency cannot
+        // be proven, so the plan pages without imposing a byte cap.
+        let plan = MemoryPlan {
+            resident_non_expert_bytes: 1,
+            expert_bytes: 1,
+            ..MemoryPlan::default()
+        };
+        assert_eq!(plan.ceiling_bytes(), None);
+        let decision = plan.decide();
+        assert!(
+            matches!(
+                decision,
+                MemoryPlanDecision::Stream {
+                    ceiling_bytes: None,
+                    expert_cache_bytes: 0,
+                    ..
+                }
+            ),
+            "expected an uncapped stream decision, got {decision:?}"
+        );
+        assert!(plan.log_line().contains("ceiling-source=unknown"));
+    }
+
+    #[test]
+    fn ceiling_override_parses_only_positive_integers() {
+        assert_eq!(parse_memory_plan_ceiling_override(None), None);
+        for raw in ["", "   ", "0", "-1", "abc", "1.5", "115GiB"] {
+            assert_eq!(
+                parse_memory_plan_ceiling_override(Some(raw)),
+                None,
+                "{raw:?} must not become a ceiling"
+            );
+        }
+        assert_eq!(
+            parse_memory_plan_ceiling_override(Some("107374182400")),
+            Some(100 * GIB)
+        );
+        // Surrounding whitespace is trimmed before the parse.
+        assert_eq!(
+            parse_memory_plan_ceiling_override(Some(" 133143986176\n")),
+            Some(124 * GIB)
+        );
+    }
+
+    #[test]
+    fn ceiling_override_still_keeps_four_gib_of_ram() {
+        // A 100 GiB override on a 128 GiB host stands: the operator can move
+        // the ceiling in either direction.
+        let tightened = MemoryPlan {
+            ceiling_override_bytes: Some(100 * GIB),
+            ..flash_next_6bit_plan(128)
+        };
+        assert_eq!(tightened.ceiling_bytes(), Some(100 * GIB));
+        assert!(tightened.ceiling_is_overridden());
+        let line = tightened.log_line();
+        assert!(line.contains("ceiling-source=override"), "{line}");
+        assert!(line.contains("ceiling=100.00GiB"), "{line}");
+        // 105.88 GiB no longer fits the tighter ceiling, so the experts page
+        // with the remainder instead of the pack being refused.
+        let decision = tightened.decide();
+        assert_eq!(
+            decision.expert_cache_bytes(),
+            Some(100 * GIB - tightened.fixed_bytes())
+        );
+        assert!(line.contains("decision=stream"), "{line}");
+
+        // An override above `RAM - 4 GiB` is clamped there: the last 4 GiB
+        // stay with the kernel and the window server.
+        let raised = MemoryPlan {
+            ceiling_override_bytes: Some(200 * GIB),
+            ..flash_next_6bit_plan(128)
+        };
+        assert_eq!(raised.ceiling_bytes(), Some(128 * GIB - 4 * GIB));
+        assert!(raised.decide().is_resident());
+
+        // A host smaller than the fixed 4 GiB reserve saturates at zero
+        // instead of wrapping into a huge ceiling.
+        let tiny = MemoryPlan {
+            host_ram_bytes: Some(2 * GIB),
+            ceiling_override_bytes: Some(8 * GIB),
+            ..MemoryPlan::default()
+        };
+        assert_eq!(tiny.ceiling_bytes(), Some(0));
+
+        // With RAM unknown an explicit override is the only capacity the plan
+        // has, and it is used as given.
+        let unknown_ram = MemoryPlan {
+            ceiling_override_bytes: Some(96 * GIB),
+            ..MemoryPlan::default()
+        };
+        assert_eq!(unknown_ram.ceiling_bytes(), Some(96 * GIB));
+        assert!(unknown_ram.log_line().contains("ceiling-source=override"));
+        assert!(unknown_ram.log_line().contains("os-reserve=unknown"));
+    }
+
+    #[test]
+    fn memory_plan_ceiling_and_os_reserve_use_integer_arithmetic() {
+        // 8 GiB floor dominates on small hosts; a tenth of RAM dominates on
+        // large ones.
+        assert_eq!(memory_plan_os_reserve_bytes(32 * GIB), 8 * GIB);
+        assert_eq!(memory_plan_os_reserve_bytes(64 * GIB), 8 * GIB);
+        assert_eq!(memory_plan_os_reserve_bytes(80 * GIB), 8 * GIB);
+        assert_eq!(memory_plan_os_reserve_bytes(128 * GIB), 128 * GIB / 10);
+        assert_eq!(memory_plan_os_reserve_bytes(u64::MAX), u64::MAX / 10);
+        // The Metal recommendation never bounds the ceiling, however low it
+        // is: only RAM and an explicit override do.
+        let with_low_recommendation = MemoryPlan {
+            host_ram_bytes: Some(128 * GIB),
+            metal_recommended_max_working_set_bytes: Some(64 * GIB),
+            ..MemoryPlan::default()
+        };
+        assert_eq!(
+            with_low_recommendation.ceiling_bytes(),
+            Some(CEILING_128_GIB_HOST_BYTES)
+        );
+        let no_recommendation = MemoryPlan {
+            host_ram_bytes: Some(128 * GIB),
+            ..MemoryPlan::default()
+        };
+        assert_eq!(
+            no_recommendation.ceiling_bytes(),
+            Some(CEILING_128_GIB_HOST_BYTES)
+        );
+        // Saturating sums never wrap to a tiny working set.
+        let huge = MemoryPlan {
+            resident_non_expert_bytes: u64::MAX,
+            expert_bytes: u64::MAX,
+            ..MemoryPlan::default()
+        };
+        assert_eq!(huge.fixed_bytes(), u64::MAX);
+        assert_eq!(huge.resident_working_set_bytes(), u64::MAX);
+        // A RAM figure below the reserve saturates to a zero ceiling.
+        let too_small = MemoryPlan {
+            host_ram_bytes: Some(1),
+            ..MemoryPlan::default()
+        };
+        assert_eq!(too_small.ceiling_bytes(), Some(0));
     }
 }

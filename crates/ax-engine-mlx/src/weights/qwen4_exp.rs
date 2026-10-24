@@ -207,13 +207,30 @@ pub(crate) fn load_with_paging_policy(
     load_with_schedule_admission(root, manifest, mode, budget_layers, audited_mxfp4)
 }
 
-/// Bytes of the n-gram lexical table, which this loader never makes resident.
+/// Bytes of the whole n-gram lexical table, which this loader never makes
+/// resident.
+///
+/// The table is quantized per shard, so it reaches the manifest as several
+/// specs: the `...ngram_embedding.shards.N.weight` entries carry the
+/// [`NativeTensorRole::NgramEmbedding`] role, while their `.scales`/`.biases`
+/// sidecars do not. Matching the name segment as well as the role prices the
+/// whole table (57.6 GB on the Flash Next 6-bit pack, not the 51.2 GB of
+/// weights alone), which is what Auto admission must discount to keep a pack
+/// that fits residency-resident.
 fn never_loaded_ngram_bytes(tensors: &[NativeTensorSpec]) -> u64 {
     tensors
         .iter()
-        .filter(|spec| spec.role == NativeTensorRole::NgramEmbedding)
+        .filter(|spec| is_ngram_table_tensor(spec))
         .map(|spec| spec.length_bytes)
         .fold(0u64, u64::saturating_add)
+}
+
+/// Whether `spec` belongs to the disk-served n-gram table.
+///
+/// PLE head metadata (`ngram_heads_offsets`, `ngram_heads_vocab_sizes`) is
+/// resident and deliberately does not match.
+fn is_ngram_table_tensor(spec: &NativeTensorSpec) -> bool {
+    spec.role == NativeTensorRole::NgramEmbedding || spec.name.contains("ngram_embedding")
 }
 
 fn load_with_schedule_admission(
@@ -241,7 +258,14 @@ fn load_with_schedule_admission(
     } else {
         0
     };
-    let stream_manifest = crate::expert_stream::resolve_expert_stream(
+    // Priced Auto admission: the session's admitted KV pool, hybrid state and
+    // prefill chunk, plus this pack's disk-served table. `AX_MLX_PRICED_MEMORY=0`
+    // restores the legacy fixed-headroom formula inside the resolver.
+    let residency_context = crate::expert_stream::session_auto_residency_context(
+        crate::expert_stream::auto_residency_context(),
+        never_loaded_bytes,
+    );
+    let stream_manifest = crate::expert_stream::resolve_expert_stream_with_plan(
         mode,
         crate::expert_stream::ExpertStreamManifest::read_from_dir(root)?.map(|file| {
             crate::expert_stream::discount_never_loaded_bytes(file, never_loaded_bytes)
@@ -256,6 +280,7 @@ fn load_with_schedule_admission(
             })
         },
         crate::expert_stream::unified_memory_bytes(),
+        Some(&residency_context),
     )?;
     let canonical_root = root.canonicalize().map_err(|e| {
         WeightLoadError::FileMissing(format!("cannot resolve root {}: {e}", root.display()))
@@ -2153,6 +2178,72 @@ mod tests {
 
     fn test_index(root: &Path, canonical: &Path) -> Option<HashMap<String, PathBuf>> {
         read_weight_index(root, canonical).unwrap()
+    }
+
+    #[test]
+    fn ngram_discount_covers_scales_and_biases() {
+        use ax_engine_core::{NativeTensorDataType, NativeTensorQuantization};
+        fn table_spec(name: &str, role: NativeTensorRole) -> NativeTensorSpec {
+            NativeTensorSpec {
+                name: name.into(),
+                role,
+                layer_index: Some(1),
+                dtype: NativeTensorDataType::U32,
+                source_tensor_type: None,
+                source_quantized: true,
+                quantization: Some(NativeTensorQuantization {
+                    bits: 8,
+                    group_size: 32,
+                    mode: "affine".into(),
+                }),
+                quantized_source: None,
+                shape: vec![1024, 2],
+                file: "ngram.safetensors".into(),
+                offset_bytes: 0,
+                length_bytes: 0,
+            }
+        }
+        // The measured Flash Next table: 51,200,245,760 bytes of weights,
+        // 57,600,276,480 bytes with the scales/biases planes. Discounting only
+        // the NgramEmbedding role under-prices the table by 6.4 GB.
+        let weights = 51_200_245_760u64;
+        let scales = 6_000_000_000u64;
+        let biases = 400_030_720u64;
+        let mut specs = vec![
+            table_spec(
+                "model.layers.1.ple.ple_embedding.ngram_embedding.shards.0.weight",
+                NativeTensorRole::NgramEmbedding,
+            ),
+            // Quantization sidecars do not carry the n-gram role.
+            table_spec(
+                "model.layers.1.ple.ple_embedding.ngram_embedding.shards.0.scales",
+                NativeTensorRole::Other,
+            ),
+            table_spec(
+                "model.layers.1.ple.ple_embedding.ngram_embedding.shards.0.biases",
+                NativeTensorRole::Other,
+            ),
+        ];
+        specs[0].length_bytes = weights;
+        specs[1].length_bytes = scales;
+        specs[2].length_bytes = biases;
+        // PLE head metadata and resident projections are not table bytes.
+        specs.push(table_spec(
+            "model.layers.1.ple.ple_embedding.ngram_heads_offsets",
+            NativeTensorRole::Qwen4ExpPleHeadOffsets,
+        ));
+        specs.push(table_spec(
+            "model.layers.1.mlp.shared_expert.down_proj.weight",
+            NativeTensorRole::FfnSharedExpertDown,
+        ));
+        specs[3].length_bytes = 24;
+        specs[4].length_bytes = 7;
+        assert_eq!(weights + scales + biases, 57_600_276_480);
+        assert_eq!(
+            never_loaded_ngram_bytes(&specs),
+            weights + scales + biases,
+            "the discount must price the whole table, not just the weight shards"
+        );
     }
 
     fn schedule_projection(

@@ -6654,8 +6654,9 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
-    /// `AX_MLX_BATCHED_STATE_MATERIALIZE` — evaluate the batched gated-delta
-    /// conv/recurrent state at the end of every batched decode step.
+    /// `AX_MLX_BATCHED_STATE_MATERIALIZE` — schedule the batched gated-delta
+    /// conv/recurrent state for evaluation at the end of every batched decode
+    /// step.
     ///
     /// **Default: ON** (kill switch via `AX_MLX_BATCHED_STATE_MATERIALIZE=0`,
     /// which restores the purely lazy state update).
@@ -6666,7 +6667,9 @@ env_flag_default_on!(
     /// graph is built on top of it. A long-running cohort therefore keeps one
     /// suspended graph per step alive for the whole session — the failure mode
     /// that drove another engine into Metal's resource limit after ~40 minutes.
-    /// `eval` only forces work already scheduled: the state bytes are unchanged.
+    /// The commit uses `async_eval`, not a blocking `eval`: the decode step
+    /// already blocks once on argmax, and scheduling alone releases the
+    /// intermediate nodes. State bytes are unchanged.
     batched_state_materialize_enabled,
     "AX_MLX_BATCHED_STATE_MATERIALIZE"
 );
@@ -6904,6 +6907,40 @@ pub(crate) fn gemma4_loop_detection_mode_for(raw: Option<&str>) -> Gemma4LoopDet
         "force" => Gemma4LoopDetectionMode::Force,
         _ => Gemma4LoopDetectionMode::Default,
     }
+}
+
+/// `AX_MLX_PRICED_MEMORY` — kill switch for the priced expert-stream memory
+/// plan. Unset means on; only an explicit false-y value restores the legacy
+/// fixed-headroom Auto formula. Read once: the plan is resolved at admission,
+/// never per decode step.
+pub(crate) fn priced_memory_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| std::env::var("AX_MLX_PRICED_MEMORY").ok())
+        .clone()
+}
+
+/// `AX_STREAM_EXPERT_CACHE_BYTES` — explicit byte budget for resident expert
+/// layer stacks. Unset means "no operator byte cap". Read once: the loader
+/// resolves the budget when it builds the expert layer stacks.
+pub(crate) fn stream_expert_cache_bytes_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| std::env::var("AX_STREAM_EXPERT_CACHE_BYTES").ok())
+        .clone()
+}
+
+/// `AX_MLX_MEMORY_CEILING_BYTES` — explicit load-admission ceiling in bytes.
+/// Unset means "derive it from host RAM". The priced plan still keeps the last
+/// 4 GiB for the system, so an override can never page the kernel out. Read
+/// once: the ceiling is resolved at admission, never per decode step.
+pub(crate) fn memory_ceiling_override_env() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var(ax_engine_core::memory_budget::MEMORY_PLAN_CEILING_OVERRIDE_ENV).ok()
+        })
+        .clone()
 }
 
 #[cfg(test)]
