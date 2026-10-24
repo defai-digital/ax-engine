@@ -67,7 +67,7 @@ public enum HostMetricParser {
 
 @MainActor
 public final class HostMonitor: ObservableObject {
-    @Published public private(set) var history = MetricHistory()
+    @Published public private(set) var history = MetricHistory.hostActivity()
     @Published public private(set) var active = false
     @Published public private(set) var collecting = false
     @Published public private(set) var pressure: String?
@@ -87,9 +87,7 @@ public final class HostMonitor: ObservableObject {
         self.probes = probes; self.interval = interval; self.timeout = timeout
         self.cores = cores; self.memory = memory
     }
-    public static func shouldSample(enabled: Bool, foreground: Bool, visible: Bool) -> Bool {
-        enabled && foreground && visible
-    }
+    public static func shouldSample(enabled: Bool) -> Bool { enabled }
     public func setActive(_ value: Bool) {
         guard value != active else { return }
         active = value; generation += 1

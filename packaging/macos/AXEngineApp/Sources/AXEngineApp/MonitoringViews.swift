@@ -22,8 +22,9 @@ struct MetricHistoryChart: View {
     @State private var selectedDate: Date?
 
     var body: some View {
+        let range = ActivityHistoryRange(rawValue: window) ?? .fiveMinutes
         let start = now.addingTimeInterval(-window)
-        let points = history.points(key, now: now).filter { $0.time >= start }
+        let points = history.plotPoints(key, window: window, now: now)
         let selected = selectedDate.flatMap { history.sample(key, near: $0, now: now) }.flatMap { $0.time >= start ? $0 : nil }
         let latest = selectedDate == nil ? history.latest(key, now: now) : selected?.values[key]
         let segmentCounts = Dictionary(grouping: points, by: \.segment).mapValues(\.count)
@@ -109,10 +110,10 @@ struct MetricHistoryChart: View {
                     .drawingGroup(opaque: false, colorMode: .linear)
             }
             .frame(height: 108)
-            .accessibilityLabel(title + ". Last \(Int(window / 60)) \(window == 60 ? "minute" : "minutes"). Missing samples are gaps.")
+            .accessibilityLabel(title + ". Last \(range.spokenLabel). Missing samples are gaps.")
             .accessibilityValue(percent ? "Vertical scale: zero to one hundred percent." : "Values in " + (unit.isEmpty ? "count" : unit))
             HStack {
-                Text("\(Int(window / 60)) min ago")
+                Text("\(range.label) ago")
                 Spacer()
                 Text("Now")
             }.font(.system(size: 10)).foregroundStyle(.secondary)
@@ -169,14 +170,14 @@ struct HostMonitoringView: View {
                 HStack(spacing: 7) {
                     Image(systemName: monitor.active ? "circle.fill" : "pause.circle")
                         .font(.system(size: 7)).foregroundStyle(monitor.active ? Brand.accentChrome : .secondary)
-                    Text(monitor.active ? "Live while this page is active" : "Paused · return to this page to resume")
+                    Text(monitor.active ? "Live · recording across pages and in the background" : "Activity monitoring paused")
                     Spacer()
                     Text("Hover to inspect · 5 min")
                 }.font(.caption).foregroundStyle(.secondary)
                 DisclosureGroup("About these measurements", isExpanded: $detailsExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("CPU uses process averages normalized by logical cores. Memory includes active, wired and compressed pages. GPU is available when IOAccelerator exposes it.")
-                        Text("These host-wide estimates are not model throughput or a memory-fit guarantee. Missing and stale samples show a dash; gaps are never filled. Hover over a chart to inspect an actual sample and its time.")
+                        Text("These host-wide estimates are not model throughput or a memory-fit guarantee. History is retained for four hours while this window is open, including in the background; turn Monitoring off to stop recording. Missing and stale samples show a dash; gaps are never filled. Hover over a chart to inspect an actual sample and its time.")
                         HStack {
                             Text("Last OS memory-pressure event: " + (monitor.pressure ?? "Not reported"))
                             if let date = monitor.pressureAt { Text(date.formatted(date: .omitted, time: .standard)) }

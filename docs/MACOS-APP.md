@@ -129,10 +129,12 @@ folders, not a count of models verified to run. One cached snapshot per reposito
 is included. Partial and ongoing scans are labeled. Refresh updates storage and
 inventory without starting a model or downloading anything.
 
-Optional **Live activity** shows five minutes of CPU, GPU and unified-memory
-history. It is off by default; the preference persists locally. Sampling runs only
-while Dashboard or Server is visible in the active app, with a five-second pause
-between samples and a two-second deadline per probe. CPU uses process averages
+Optional **Live activity** retains up to four hours of CPU, GPU and unified-memory
+history. It is off by default; the preference persists locally. Once enabled,
+sampling continues across pages and in the background while the app window is
+open, with a five-second pause between samples and a two-second deadline per probe.
+Turn Live activity off to stop recording. Closing the window stops sampling;
+quitting clears the in-memory history. Sleep and interrupted probes leave gaps. CPU uses process averages
 normalized by logical cores; memory uses active, wired and compressed pages.
 GPU utilization is available only when IOAccelerator exposes it. These host-wide
 estimates are separate from runtime metrics and do not establish model fit or
@@ -140,8 +142,12 @@ inference performance. OS memory pressure remains unknown until a public system
 event arrives. Missing, stale and interrupted samples leave gaps instead of zeros.
 
 RAM shows estimated GB used with the percentage and total memory alongside it.
-Select a one- or five-minute activity window; changing the range does not change
-sampling or discard history. Each trend has a fixed 0–100% scale. Hover
+Select **1 min, 5 min, 15 min, 30 min, 1 hour, or 4 hours** from the Dashboard
+range menu; changing the range does not change sampling or discard history.
+History retains at most 6,000 samples within four hours. Each plot renders at
+most 600 original samples, preserving first/last and low/high values per time
+bucket and keeping gaps between disconnected segments. Hover inspection uses
+the original history. A newly opened app shows only the history collected so far. Each trend has a fixed 0–100% scale. Hover
 over a plot to inspect an actual sample and its timestamp; empty intervals stay
 unavailable. Source explanations are under **How these measurements work** on Dashboard. The
 native Swift Charts plot uses SwiftUI's Metal-backed offscreen composition, while

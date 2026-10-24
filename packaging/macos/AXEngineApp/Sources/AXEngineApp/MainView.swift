@@ -22,7 +22,6 @@ struct MainView: View {
     @ObservedObject var models: ModelStore
     @ObservedObject var chat: ChatStore
     @FocusState private var searchFocused: Bool
-    @Environment(\.scenePhase) private var scenePhase
     @State private var removeTarget: LocalModel?
     @State private var stopConfirmation = false
     @State private var apiKey = ""
@@ -73,9 +72,7 @@ struct MainView: View {
         }
         .task { if !models.discoveryAttempted && !models.refreshing { await models.refresh(settings: model.settings) } }
         .onAppear { syncHostMonitoring() }
-        .onChange(of: model.page) { _, _ in syncHostMonitoring() }
         .onChange(of: model.hostMonitoringEnabled) { _, _ in syncHostMonitoring() }
-        .onChange(of: scenePhase) { _, _ in syncHostMonitoring() }
         .onDisappear { model.hostMonitor.setActive(false) }
         .onChange(of: model.searchFocusRequest) { _, _ in
             Task { @MainActor in await Task.yield(); searchFocused = true }
@@ -96,8 +93,7 @@ struct MainView: View {
     }
 
     private func syncHostMonitoring() {
-        model.hostMonitor.setActive(HostMonitor.shouldSample(enabled: model.hostMonitoringEnabled,
-            foreground: scenePhase == .active, visible: model.page == .overview || model.page == .server))
+        model.hostMonitor.setActive(HostMonitor.shouldSample(enabled: model.hostMonitoringEnabled))
     }
     private var subtitle: String {
         switch model.page ?? .overview {

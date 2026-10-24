@@ -59,11 +59,9 @@ import Testing
     #expect(HostMetricParser.gpu("missing") == nil)
 }
 
-@Test @MainActor func hostPollingIsOptInVisibleAndCancellable() async throws {
-    #expect(HostMonitor.shouldSample(enabled: true, foreground: true, visible: true))
-    #expect(!HostMonitor.shouldSample(enabled: false, foreground: true, visible: true))
-    #expect(!HostMonitor.shouldSample(enabled: true, foreground: false, visible: true))
-    #expect(!HostMonitor.shouldSample(enabled: true, foreground: true, visible: false))
+@Test @MainActor func hostPollingIsOptInAndCancellable() async throws {
+    #expect(HostMonitor.shouldSample(enabled: true))
+    #expect(!HostMonitor.shouldSample(enabled: false))
     let probe = HostProbe(kind: "cpu", executable: URL(fileURLWithPath: "/usr/bin/python3"), arguments: ["-c", "print('80.0')"])
     let monitor = HostMonitor(probes: [probe], interval: .milliseconds(60), cores: 4)
     #expect(monitor.history.samples.isEmpty)
@@ -113,4 +111,54 @@ import Testing
     #expect(history.sample("cpu", near: now.addingTimeInterval(1), now: now) == nil)
     #expect(history.sample("cpu", near: start, now: start.addingTimeInterval(301)) == nil)
     #expect(history.sample("gpu", near: start, now: now) == nil)
+}
+
+@Test func hostHistoryRetainsFourHoursAndExpiresOlderSamples() {
+    var history = MetricHistory.hostActivity()
+    let start = Date(timeIntervalSince1970: 100_000)
+    for seconds in stride(from: 0, through: 6 * 3600, by: 5) {
+        history.append(["cpu": Double(seconds % 100)], at: start.addingTimeInterval(Double(seconds)))
+    }
+    let now = start.addingTimeInterval(6 * 3600)
+    #expect(history.samples.count == 2881)
+    #expect(history.samples.count <= history.capacity)
+    #expect(history.samples.first?.time == now.addingTimeInterval(-4 * 3600))
+    #expect(history.sample("cpu", near: now.addingTimeInterval(-3 * 3600), now: now) != nil)
+    #expect(history.sample("cpu", near: now.addingTimeInterval(-4 * 3600 - 5), now: now) == nil)
+    #expect(MetricHistory().duration == 300) // Runtime history keeps its own retention.
+    #expect(ActivityHistoryRange.allCases.map(\.rawValue) == [60, 300, 900, 1800, 3600, 14400])
+    for range in ActivityHistoryRange.allCases {
+        let plot = history.plotPoints("cpu", window: range.rawValue, now: now)
+        #expect(!plot.isEmpty)
+        #expect(plot.count <= 600)
+        #expect(plot.first!.time >= now.addingTimeInterval(-range.rawValue))
+        #expect(plot.last?.time == now)
+    }
+}
+
+@Test func reducedHistoryPreservesExtremaRealSamplesAndGaps() {
+    var history = MetricHistory.hostActivity()
+    let start = Date(timeIntervalSince1970: 100_000)
+    for seconds in stride(from: 0, through: 14400, by: 5) {
+        let value: Double = seconds == 1010 ? 100 : seconds == 1020 ? 0 : 50
+        history.append(seconds == 7200 ? [:] : ["cpu": value], at: start.addingTimeInterval(Double(seconds)))
+    }
+    let now = start.addingTimeInterval(14400)
+    let raw = history.points("cpu", now: now)
+    let plot = history.plotPoints("cpu", window: 14400, now: now)
+    #expect(plot.count <= 600)
+    #expect(plot.contains { $0.value == 100 })
+    #expect(plot.contains { $0.value == 0 })
+    #expect(Set(plot.map(\.id)).count == plot.count)
+    let originals = Dictionary(uniqueKeysWithValues: raw.map { ($0.id, $0) })
+    for point in plot {
+        #expect(originals[point.id]?.time == point.time)
+        #expect(originals[point.id]?.value == point.value)
+        #expect(originals[point.id]?.segment == point.segment)
+    }
+    #expect(plot.last(where: { $0.time < start.addingTimeInterval(7200) })?.segment !=
+            plot.first(where: { $0.time > start.addingTimeInterval(7200) })?.segment)
+    #expect(history.sample("cpu", near: start.addingTimeInterval(7200), now: now) == nil)
+    let short = history.plotPoints("cpu", window: 60, now: now)
+    #expect(short.map(\.id) == raw.filter { $0.time >= now.addingTimeInterval(-60) }.map(\.id))
 }

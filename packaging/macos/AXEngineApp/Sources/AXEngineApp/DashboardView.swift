@@ -19,9 +19,10 @@ struct DashboardView: View {
                     Text(memoryTotal + " unified memory").font(.callout).foregroundStyle(.secondary)
                     Spacer()
                     Picker("History range", selection: $model.dashboardHistoryWindow) {
-                        Text("1 min").tag(60.0)
-                        Text("5 min").tag(300.0)
-                    }.pickerStyle(.segmented).labelsHidden().frame(width: 124)
+                        ForEach(ActivityHistoryRange.allCases, id: \.rawValue) { range in
+                            Text(range.label).tag(range.rawValue)
+                        }
+                    }.pickerStyle(.menu).labelsHidden().frame(width: 112)
                         .accessibilityLabel("Activity history range")
                     Toggle("Live activity", isOn: $model.hostMonitoringEnabled)
                         .toggleStyle(.switch).controlSize(.small).fixedSize()
@@ -69,14 +70,14 @@ struct DashboardView: View {
                     Image(systemName: monitor.active ? "circle.fill" : "pause.circle")
                         .foregroundStyle(monitor.active ? Brand.accentChrome : .secondary)
                     Text(model.hostMonitoringEnabled
-                         ? monitor.active ? "Live activity · last \(Int(model.dashboardHistoryWindow / 60)) min" : "Activity paused while the app is inactive"
+                         ? monitor.active ? "Live activity · last \(historyRange.label)" : "Activity monitoring paused"
                          : "Activity monitoring is off")
                     Spacer()
                     Text("Hover over a history to inspect a sample")
                 }.font(.caption).foregroundStyle(.secondary)
                 DisclosureGroup("How these measurements work", isExpanded: $detailsExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("RAM is an estimate from active, wired and compressed pages, not model memory or an admission guarantee. CPU uses process averages normalized by logical cores. GPU is available when IOAccelerator exposes it. Missing and stale samples leave gaps.")
+                        Text("RAM is an estimate from active, wired and compressed pages, not model memory or an admission guarantee. CPU uses process averages normalized by logical cores. GPU is available when IOAccelerator exposes it. Missing and stale samples leave gaps. Live activity continues across pages and in the background while this window is open. Turn it off to stop recording. Activity history stays in memory for up to four hours and resets when the app quits. Longer charts preserve each time bucket’s low and high readings; hover reads an original sample.")
                         Text("Storage shows the volume containing your download folder, including other files and APFS allocations. Imported models and caches can live on other volumes. The app does not scan model weights to estimate disk usage.")
                         Text("Model counts cover discovered folders, not verified runtime support. One cached snapshot per repository is counted. Incomplete includes metadata-only folders; unchecked folders are retained from earlier scans.")
                         Text("Last OS memory-pressure event: " + (monitor.pressure ?? "Not reported"))
@@ -97,6 +98,9 @@ struct DashboardView: View {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
+    }
+    private var historyRange: ActivityHistoryRange {
+        ActivityHistoryRange(rawValue: model.dashboardHistoryWindow) ?? .minute
     }
     private var memoryTotal: String {
         ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
