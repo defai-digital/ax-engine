@@ -40,7 +40,7 @@ FLASH_NEXT_STATUS_RELEASED = (
     "AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open)."
 )
 FLASH_NEXT_RELEASE_VERDICT = (
-    "benchmarks/results/qualification/2026-10-23-flash-next-mxfp4-m5max-release-gates/release-verdict.json"
+    "benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/release-verdict.json"
 )
 FLASH_NEXT_PACK_REVISION = "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
 

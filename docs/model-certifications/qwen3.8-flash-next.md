@@ -6,8 +6,7 @@ the affine 6-bit/group64 MTP pack (ADR-050). `qwen3.8-flash-next:axq` and
 `AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP` at
 `ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3`; `qwen3.8-flash-next:axq-6bit`
 selects `AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP` at
-`d514dcebf3086068ed7968caf395083c95ebcfca` (that Hub repository is not public
-yet, so it runs from a local copy). Other standalone affine widths stay
+`3c1dd547d70cb7bf01dd0a89c41c400dde32ed39`. Other standalone affine widths stay
 unsupported; MXFP8 pack audit and native admission are pending. Receipts of
 one format do not qualify another.
 See [format policy](../QWEN38-FORMAT-POLICY.md).
@@ -100,6 +99,21 @@ No QA cohort, context above 9k, concurrency, MTP or endurance evidence exists fo
 it on this host, and it exceeds the 96 GiB bound of the MXFP4 release gates, so it
 is supported but not qualified. Record:
 [6-bit on M5 Max](../../benchmarks/results/flash-next-6bit-m5-20261023/README.md).
+
+## Published v7.9.0 on the standard host (2026-10-24)
+
+The signed v7.9.0 release tarball, unpacked unchanged, passes all nine direct-default
+release gates on MacBook Pro M5 Max 128 GB
+([release-gate evidence](../../benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/README.md)):
+101/105 in every mode, peak RSS 78.4 GiB, readiness 44.5 s after delivery, 29,774-token
+lookup 55-57 s, decode 50.7 / 47.0 / 45.8 tok/s at 512 / 2,048 / 8,192. It reproduces
+the dev build within 1% and with identical text at 2.2k / 9k / 39k tokens
+([retest](../../benchmarks/results/flash-next-release-v7.9.0-retest-m5-20261024/README.md)).
+The status sentence now derives from this verdict.
+
+The 6-bit pack is public at `3c1dd547` and scores 103/105 on the same cohort with
+experts resident (41-46 tok/s, peak 109.8 GiB); v7.9.0 itself predates 6-bit
+admission ([6-bit retest](../../benchmarks/results/flash-next-6bit-m5-20261023/retest-3c1dd547-20261024/README.md)).
 
 ## Direct-default release gates on the standard host (2026-10-23)
 
@@ -633,7 +647,7 @@ or the target Studio SKU, and does not enable default MTP or Tier 2 status.
 ## Immutable public pack metadata
 
 The 4-bit alias is pinned to `680573112360bfd3f71556082f875c907c21a6e7`;
-the 6-bit alias to `d514dcebf3086068ed7968caf395083c95ebcfca`. Both repositories
+the 6-bit alias to `3c1dd547d70cb7bf01dd0a89c41c400dde32ed39`. Both repositories
 are publicly accessible. Their config, AXQuant manifest, tensor index and expert
 stream manifest match the native test packs byte-for-byte. See the
 [metadata identity record](../../benchmarks/results/flash-next-public-pack-metadata-20260917.json).
