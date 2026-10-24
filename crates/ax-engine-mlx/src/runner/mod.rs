@@ -262,6 +262,9 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_PRICED_RESTORE: &str =
     "ax_mlx_prefix_cache_restore_value_priced_restore";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_RAM_BASELINE: &str =
     "ax_mlx_prefix_cache_restore_value_ram_baseline";
+/// Lifetime count of prefix checkpoints refused because linear, GDN, or QSA
+/// state was not already at the requested cut. Emitted as a per-step delta.
+const ROUTE_DECISION_AX_MLX_CHECKPOINT_UNSUPPORTED: &str = "ax_mlx_checkpoint_unsupported";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS: &str = "ax_mlx_prefix_cache_disk_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cache_disk_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
@@ -4611,6 +4614,24 @@ fn checkpoint_receipt_from_prefix_store(
     }
 }
 
+/// Label one restore choice for route telemetry.
+///
+/// `priced_restore` is recorded only when `price_value` is set and the chosen
+/// prefix is not a cut. Cuts-only (semantic cuts on, value pricing off) labels
+/// a chosen cut `semantic_cut` and every other longest-candidate outcome,
+/// including no candidate, `ram_baseline`.
+fn restore_value_decision(
+    chosen_len: Option<usize>,
+    chosen_is_cut: bool,
+    price_value: bool,
+) -> RestoreValueDecision {
+    match chosen_len {
+        Some(_) if chosen_is_cut => RestoreValueDecision::SemanticCut,
+        Some(_) if price_value => RestoreValueDecision::PricedRestore,
+        _ => RestoreValueDecision::RamBaseline,
+    }
+}
+
 impl ExecutionRunner for MlxRunner {
     fn checkpoint_request(
         &self,
@@ -5452,6 +5473,22 @@ impl ExecutionRunner for MlxRunner {
                 "ax_mlx_flash_next_selected_expert_payload_kib",
                 u32::try_from(selected_reads.payload_bytes / 1024).unwrap_or(u32::MAX),
             );
+            // Per-step delta of checkpoints refused for an untrimmed linear,
+            // GDN, or QSA capture. A zero load stays off the route map.
+            let checkpoint_unsupported = self
+                .checkpoint_unsupported
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if checkpoint_unsupported > 0 {
+                let checkpoint_unsupported = self
+                    .checkpoint_unsupported
+                    .swap(0, std::sync::atomic::Ordering::Relaxed);
+                if checkpoint_unsupported > 0 {
+                    route_decisions.upsert_route_decision(
+                        ROUTE_DECISION_AX_MLX_CHECKPOINT_UNSUPPORTED,
+                        checkpoint_unsupported,
+                    );
+                }
+            }
             if let Some(trunk) = self.weights.qwen4_exp.as_ref() {
                 route_decisions.upsert_route_decision(
                     "ax_mlx_flash_next_mtp_verifier_schedule",
@@ -8932,11 +8969,11 @@ impl MlxRunner {
             .as_ref()
             .is_some_and(|plan| priced_tokens.is_some_and(|t| plan.cuts.contains(&t.len())));
         if value_features {
-            telemetry.record_restore_value_decision(match priced_tokens {
-                Some(_) if priced_planned_cut => RestoreValueDecision::SemanticCut,
-                Some(_) => RestoreValueDecision::PricedRestore,
-                None => RestoreValueDecision::RamBaseline,
-            });
+            telemetry.record_restore_value_decision(restore_value_decision(
+                priced_tokens.map(|tokens| tokens.len()),
+                priced_planned_cut,
+                crate::fastpath::prefix_restore_value_enabled(),
+            ));
         }
         let probed_tokens = match priced_tokens {
             Some(tokens) => tokens.to_vec(),

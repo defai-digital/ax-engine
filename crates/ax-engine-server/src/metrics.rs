@@ -587,6 +587,15 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
                 step.mlx_prefix_cache_semantic_cut_snapshots_total
             },
         );
+        append_step_metric(
+            &mut body,
+            "ax_engine_mlx_checkpoint_unsupported_total",
+            "Prefix checkpoints refused because linear, GDN, or QSA state was not already at the requested cut.",
+            "counter",
+            &step_models,
+            process.mlx_checkpoint_unsupported_total,
+            |step: &crate::app_state::EngineStepGauges| step.mlx_checkpoint_unsupported_total,
+        );
         let restore_value_decisions: Vec<(&str, u64)> =
             ["semantic_cut", "priced_restore", "ram_baseline"]
                 .into_iter()

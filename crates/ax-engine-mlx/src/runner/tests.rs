@@ -9182,3 +9182,34 @@ fn checkpoint_refuses_trimmed_linear_state() {
     );
     fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
 }
+
+#[test]
+fn cuts_only_restore_is_not_recorded_as_priced_restore() {
+    assert_eq!(
+        restore_value_decision(Some(512), true, false),
+        RestoreValueDecision::SemanticCut,
+        "a cuts-only longest candidate that lands on a cut is a semantic cut"
+    );
+    assert_eq!(
+        restore_value_decision(Some(384), false, false),
+        RestoreValueDecision::RamBaseline,
+        "a cuts-only longest candidate that is not a cut is the RAM baseline"
+    );
+    assert_eq!(
+        restore_value_decision(None, false, false),
+        RestoreValueDecision::RamBaseline
+    );
+    assert_eq!(
+        restore_value_decision(Some(512), false, true),
+        RestoreValueDecision::PricedRestore
+    );
+    assert_eq!(
+        restore_value_decision(Some(256), true, true),
+        RestoreValueDecision::SemanticCut,
+        "a priced choice that is a cut stays a semantic cut"
+    );
+    assert_eq!(
+        restore_value_decision(None, false, true),
+        RestoreValueDecision::RamBaseline
+    );
+}

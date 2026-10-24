@@ -1488,7 +1488,23 @@ fn rope_block_starts(
 const QSA_TILE_MAX_QUERIES: i32 = 1024;
 /// Query widths whose f32 GEMM matched the monolithic scores. The planner
 /// picks the largest of these that fits. It does not search for another width.
+/// Order is preference (largest first), not an identity: folding uses
+/// [`QSA_SMALLEST_PROVEN_TILE_WIDTH`].
 const QSA_PROVEN_TILE_WIDTHS: [i32; 3] = [1024, 512, 256];
+/// Smallest proven query width. Folding and the test-only tile cap compare
+/// against this value so reordering [`QSA_PROVEN_TILE_WIDTHS`] cannot change
+/// which one-row tails fold.
+const QSA_SMALLEST_PROVEN_TILE_WIDTH: i32 = {
+    let mut smallest = QSA_PROVEN_TILE_WIDTHS[0];
+    let mut index = 1;
+    while index < QSA_PROVEN_TILE_WIDTHS.len() {
+        if QSA_PROVEN_TILE_WIDTHS[index] < smallest {
+            smallest = QSA_PROVEN_TILE_WIDTHS[index];
+        }
+        index += 1;
+    }
+    smallest
+};
 /// Scratch budget for one tile: the score graph plus the f32 casts.
 const QSA_TILE_WORKSPACE_BUDGET: usize = 128 * 1024 * 1024;
 /// Monolithic score-workspace ceiling. Each issued tile is checked against it.
@@ -1701,7 +1717,7 @@ fn candidate_tile_widths(max_rows: i32) -> Vec<i32> {
     // checked. Production never sets that cap, so it cannot invent a width.
     #[cfg(test)]
     if TILE_LIMITS_OVERRIDE.with(std::cell::Cell::get).is_some()
-        && (1..QSA_PROVEN_TILE_WIDTHS[2]).contains(&max_rows)
+        && (1..QSA_SMALLEST_PROVEN_TILE_WIDTH).contains(&max_rows)
         && !widths.contains(&max_rows)
     {
         widths.push(max_rows);
@@ -1732,8 +1748,8 @@ fn choose_query_tiles(
 }
 
 /// Split `seq` into widths of at most `width`. A one-row tail is folded into
-/// the previous tile: with one head it is a GEMV, and a proven production
-/// width never keeps a one-query tile. The folded tail is at least two queries.
+/// the previous tile when there is one head (a GEMV) or `width` is at least
+/// [`QSA_SMALLEST_PROVEN_TILE_WIDTH`]. The folded tail is at least two queries.
 fn split_query_tiles(
     seq: i32,
     width: i32,
@@ -1750,7 +1766,7 @@ fn split_query_tiles(
         rows.push(take);
         left -= take;
     }
-    let fold_one_row_tail = heads == 1 || width >= QSA_PROVEN_TILE_WIDTHS[2];
+    let fold_one_row_tail = heads == 1 || width >= QSA_SMALLEST_PROVEN_TILE_WIDTH;
     if fold_one_row_tail && rows.last().copied() == Some(1) {
         rows.pop();
         let last = rows.last_mut()?;
@@ -4716,6 +4732,22 @@ mod tests {
         assert_production_tiled_score_sweep();
     }
 
+    #[test]
+    fn one_row_tail_folds_at_the_smallest_proven_width() {
+        let mut ordered = QSA_PROVEN_TILE_WIDTHS;
+        ordered.sort_unstable();
+        assert_eq!(ordered[0], QSA_SMALLEST_PROVEN_TILE_WIDTH);
+        let fits = |_| true;
+        let width = QSA_SMALLEST_PROVEN_TILE_WIDTH;
+        let folded = split_query_tiles(width * 2 + 1, width, 4, fits).expect("proven width folds");
+        assert_eq!(folded, vec![width, width + 1]);
+        let narrow = width - 1;
+        let unfolded = split_query_tiles(narrow * 2 + 1, narrow, 4, fits).expect("narrow tiles");
+        assert_eq!(unfolded.last().copied(), Some(1));
+        let gemv = split_query_tiles(narrow * 2 + 1, narrow, 1, fits).expect("one head folds");
+        assert_ne!(gemv.last().copied(), Some(1));
+    }
+
     /// Production matrix: 4 heads, dim 128, f32 GEMM after the cast. Every
     /// listed sequence and block count appears, every width the planner can
     /// choose is bit-compared, and the largest shape runs once.
@@ -4757,7 +4789,7 @@ mod tests {
             }
             let monolithic = score_bits(&queries, &blocks);
             let tiled = tiled_score_bits(&queries, &blocks, &plan.query_rows);
-            assert_same_bits_first(&tiled, &monolithic);
+            assert_same_bits(&tiled, &monolithic);
             let offset = 7usize;
             assert_ordered_indices_match(&monolithic, &tiled, seq, n_blocks, offset);
         }
@@ -4780,21 +4812,6 @@ mod tests {
                 "unproven tile width {width} in {rows:?}"
             );
         }
-    }
-
-    fn assert_same_bits_first(actual: &[u32], expected: &[u32]) {
-        assert_eq!(actual.len(), expected.len());
-        let mismatch = actual
-            .iter()
-            .zip(expected)
-            .position(|(got, want)| got != want);
-        let index = mismatch.unwrap_or(0);
-        assert!(
-            mismatch.is_none(),
-            "score bit mismatch at {index}: {:08x} vs {:08x}",
-            actual[index],
-            expected[index]
-        );
     }
 
     fn assert_ordered_indices_match(

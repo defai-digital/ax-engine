@@ -1,7 +1,7 @@
 //! Durable L2 disk prefix cache over `MlxKVCache::serialize_to_bytes`.
 //!
 //! Contract: ADR-002 and TECH-SPEC-DURABLE-TIERED-PREFIX-CACHE (internal
-//! design package). Outer file format v3, canonical key schema v3, payload
+//! design package). Outer file format v3, canonical key schema v4, payload
 //! wire v4. Mutating operations take a directory-level advisory lock so
 //! concurrent local processes serialize `insert -> atomic rename -> eviction`
 //! while readers remain lock-free.

@@ -245,6 +245,12 @@ fn linear_window_commit(
     (emitted, keep)
 }
 
+/// Draft rows that survive the EOS and output-budget cut. Acceptance telemetry
+/// counts these, not the pre-cut greedy match, so it matches emitted tokens.
+fn committed_draft_count(pre_cut_accepted: usize, keep: usize) -> usize {
+    keep.saturating_sub(1).min(pre_cut_accepted)
+}
+
 impl RequestState {
     /// False once DFlash2 gave up on this request.
     pub(super) fn dflash2_prefill_open(&self) -> bool {
@@ -594,8 +600,9 @@ impl MlxRunner {
             dflash.captured_rows = token_offset + keep;
             dflash.rounds += 1;
             dflash.drafted += drafts.len() as u32;
-            dflash.accepted += accepted as u32;
-            dflash.window_stats.record(drafts.len(), accepted);
+            let committed_drafts = committed_draft_count(accepted, keep);
+            dflash.accepted += committed_drafts as u32;
+            dflash.window_stats.record(drafts.len(), committed_drafts);
         }
         // A draft made before this route took over (the MTP head's first
         // proposal) no longer matches the position.
@@ -722,14 +729,17 @@ impl MlxRunner {
             dflash.drafted = dflash
                 .drafted
                 .saturating_add(saturating_u32(decision.draft_len));
+            // `cache_draft_rows` is the post-cut draft count. `accepted_drafts`
+            // is the pre-cut greedy match and can include tokens never emitted.
+            let committed_drafts = decision.cache_draft_rows;
             dflash.accepted = dflash
                 .accepted
-                .saturating_add(saturating_u32(decision.accepted_drafts));
+                .saturating_add(saturating_u32(committed_drafts));
             dflash
                 .window_stats
-                .record(decision.draft_len, decision.accepted_drafts);
+                .record(decision.draft_len, committed_drafts);
             dflash.tree_nodes_verified = saturating_u32(decision.nodes_verified);
-            dflash.tree_accepted_length = saturating_u32(decision.accepted_drafts);
+            dflash.tree_accepted_length = saturating_u32(committed_drafts);
             dflash.tree_branch_chosen = saturating_u32(decision.branch_index);
         }
         tracing::debug!(
@@ -1059,6 +1069,31 @@ mod tests {
         let (full, full_keep) = linear_window_commit(&new_tokens, accepted, 8, &[]);
         assert_eq!(full, new_tokens);
         assert_eq!(full_keep, accepted + 1);
+    }
+
+    #[test]
+    fn acceptance_telemetry_counts_post_cut_drafts() {
+        let drafts = [10_u32, 20, 30, 40, 50, 60, 70];
+        let predicted = [10, 20, 30, 40, 50, 60, 70, 80];
+        let (accepted, new_tokens) = greedy_walk(&drafts, &predicted);
+        assert_eq!(accepted, 7);
+
+        let (budget_tokens, budget_keep) = linear_window_commit(&new_tokens, accepted, 3, &[]);
+        let budget_counted = committed_draft_count(accepted, budget_keep);
+        assert_eq!(budget_counted, 3);
+        assert_eq!(budget_counted, budget_tokens.len().min(accepted));
+        assert!(budget_counted < accepted);
+        let mut stats = WindowStats::new();
+        stats.record(drafts.len(), budget_counted);
+        assert_eq!(stats.hit[2], 1.0);
+        assert_eq!(stats.hit[3], 0.0, "a draft past the budget is not a hit");
+
+        let (eos_tokens, eos_keep) = linear_window_commit(&new_tokens, accepted, 8, &[40]);
+        assert_eq!(eos_tokens, vec![10, 20, 30, 40]);
+        assert_eq!(committed_draft_count(accepted, eos_keep), 4);
+
+        let (_, full_keep) = linear_window_commit(&new_tokens, accepted, 8, &[]);
+        assert_eq!(committed_draft_count(accepted, full_keep), accepted);
     }
 
     /// EOS cut, then the output-budget cut, matching `apply_decode_result`
