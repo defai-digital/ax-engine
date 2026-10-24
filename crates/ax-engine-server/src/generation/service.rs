@@ -1393,6 +1393,22 @@ struct ActiveStream {
 /// (≤0.90× and absolute ≤50 ms). Engine burst below keeps GPU fed.
 const STREAM_TOKEN_EMIT_BATCH: usize = 1;
 
+/// Whether a native stream step should enqueue its pending tokens now.
+///
+/// The first non-empty output flushes immediately (`first_output_emitted`
+/// is still false). Later tokens flush when the pending batch reaches
+/// [`STREAM_TOKEN_EMIT_BATCH`] (currently 1, so every token flushes) or the
+/// step is terminal. Speculative drafting happens inside the engine `step`
+/// that produced the token; this predicate only decides the enqueue that
+/// follows that step. The server does not flush the HTTP socket here.
+pub(crate) fn stream_step_should_flush(
+    first_output_emitted: bool,
+    pending_delta_tokens: usize,
+    step_terminal: bool,
+) -> bool {
+    step_terminal || !first_output_emitted || pending_delta_tokens >= STREAM_TOKEN_EMIT_BATCH
+}
+
 /// Single-stream engine steps per worker tick after the first token.
 /// Larger than the SSE emit batch so the Metal double-buffer stays fed even
 /// when the async SSE consumer is slightly behind.
@@ -1991,9 +2007,11 @@ fn apply_step_to_streams(
                         .extend(step.delta_token_logprobs);
                     stream.pending_step = Some(step.step);
                     stream.pending_request = Some(step.request);
-                    let should_flush = step_terminal
-                        || !stream.first_output_emitted
-                        || stream.pending_delta_tokens.len() >= STREAM_TOKEN_EMIT_BATCH;
+                    let should_flush = stream_step_should_flush(
+                        stream.first_output_emitted,
+                        stream.pending_delta_tokens.len(),
+                        step_terminal,
+                    );
                     if !should_flush {
                         continue;
                     }
@@ -2422,6 +2440,16 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn first_generated_token_flushes_before_a_later_burst_step() {
+        // The first token is enqueued before the worker takes another engine
+        // step. With the batch size at 1, every later token flushes too.
+        assert!(stream_step_should_flush(false, 1, false));
+        assert!(stream_step_should_flush(true, 1, false));
+        assert!(stream_step_should_flush(true, 0, true));
+        assert!(!stream_step_should_flush(true, 0, false));
+    }
 
     #[test]
     fn sibling_engine_step_burst_default_is_sixteen() {

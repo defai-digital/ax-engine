@@ -24,13 +24,15 @@ use crate::generation::streaming::{
 };
 use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, chat_reasoning_delta_chunk,
-    chat_single_tool_call_delta_chunk, chat_tool_calls_final_chunk, completion_delta_chunk,
-    completion_final_chunk, next_chat_delta_role, stream_usage_chunk,
+    chat_single_tool_call_delta_chunk, chat_tool_call_arguments_delta_chunk,
+    chat_tool_calls_final_chunk, completion_delta_chunk, completion_final_chunk,
+    next_chat_delta_role, stream_usage_chunk,
 };
 use crate::openai::reasoning_stream::{DeepSeekThinkCutter, ThinkTagScanner};
 use crate::openai::requests::OpenAiResponseOptions;
 use crate::openai::responses::{
-    finish_reason_from_llama_cpp_chat, openai_usage, served_prefix_reused_tokens,
+    finish_reason_from_llama_cpp_chat, openai_usage, reasoning_token_count,
+    served_prefix_reused_tokens,
 };
 use crate::openai::schema::{OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiUsage};
 use crate::openai::sse::send_openai_stream_chunk;
@@ -50,10 +52,15 @@ pub(crate) async fn stream_openai_request(
     reasoning_family: Option<StreamReasoningFamily>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let pipeline = OpenAiStreamPipeline {
-        tool_scanner: incremental_tool_chat
-            .then(|| ToolCallStreamScanner::new(response_options.tool_contract.clone())),
+        tool_scanner: incremental_tool_chat.then(|| {
+            ToolCallStreamScanner::with_incremental(
+                response_options.tool_contract.clone(),
+                response_options.api_polish.0,
+            )
+        }),
         stop_scanner: StopSequenceScanner::new(response_options.client_stop_sequences.clone()),
         include_usage: response_options.include_stream_usage,
+        count_reasoning_tokens: response_options.api_polish.0 && response_options.include_reasoning,
     };
     let stream_context = build_stream_state(&state, &live, request).await?;
     let tokenizer = native_mlx_openai_stream_tokenizer(&live)?;
@@ -162,6 +169,9 @@ pub(crate) struct OpenAiStreamPipeline {
     pub(crate) tool_scanner: Option<ToolCallStreamScanner>,
     pub(crate) stop_scanner: Option<StopSequenceScanner>,
     pub(crate) include_usage: bool,
+    /// Count reasoning tokens into the terminal usage chunk when a tokenizer
+    /// and output token ids are available (`AX_API_POLISH` and reasoning on).
+    pub(crate) count_reasoning_tokens: bool,
 }
 
 /// Which streaming-reasoning mechanism the request's model family uses.
@@ -466,11 +476,26 @@ impl OpenAiStreamDriver {
                 if !self.flush_pipeline(tx, request_id, &model_id) {
                     return false;
                 }
-                let usage = self
+                let mut usage = self
                     .pipeline
                     .include_usage
                     .then(|| openai_usage(&payload.response))
                     .flatten();
+                if self.pipeline.count_reasoning_tokens {
+                    if let (Some(usage), Some(decoder)) = (usage.as_mut(), self.decoder.as_ref()) {
+                        if let Some(count) = reasoning_token_count(
+                            &decoder.tokenizer,
+                            &payload.response.output_tokens,
+                        ) {
+                            if count <= usage.completion_tokens {
+                                usage.completion_tokens_details =
+                                    Some(crate::openai::schema::OpenAiCompletionTokensDetails {
+                                        reasoning_tokens: count,
+                                    });
+                            }
+                        }
+                    }
+                }
                 let final_sent = if self.calls_emitted > 0 {
                     let chunk = chat_tool_calls_final_chunk(request_id, model_id);
                     send_openai_stream_chunk(tx, &chunk)
@@ -633,9 +658,12 @@ impl OpenAiStreamDriver {
         // Content released in the same batch as a Call precedes that call in
         // the model output; a stop match there would strand the call (the
         // non-stream surface ignores stops whenever calls exist).
-        let batch_has_call = events
-            .iter()
-            .any(|event| matches!(event, ToolScanEvent::Call(_)));
+        let batch_has_call = events.iter().any(|event| {
+            matches!(
+                event,
+                ToolScanEvent::Call(_) | ToolScanEvent::Arguments { .. }
+            )
+        });
         if batch_has_call && let Some(mut stop_scanner) = self.pipeline.stop_scanner.take() {
             // Pending text precedes every event in this batch. Retire the
             // stop scanner before emitting any content, restoring even a
@@ -671,6 +699,36 @@ impl OpenAiStreamDriver {
                         return false;
                     }
                     self.calls_emitted += 1;
+                }
+                ToolScanEvent::Arguments {
+                    id,
+                    name,
+                    arguments,
+                } => {
+                    let first = id.is_some();
+                    let index = if first {
+                        self.calls_emitted
+                    } else {
+                        self.calls_emitted.saturating_sub(1)
+                    };
+                    let role = first
+                        .then(|| next_chat_delta_role(&mut self.chat_role_emitted))
+                        .flatten();
+                    let chunk = chat_tool_call_arguments_delta_chunk(
+                        request_id,
+                        model_id.to_string(),
+                        role,
+                        index,
+                        id,
+                        name,
+                        arguments,
+                    );
+                    if !send_openai_stream_chunk(tx, &chunk) {
+                        return false;
+                    }
+                    if first {
+                        self.calls_emitted += 1;
+                    }
                 }
             }
         }
@@ -1642,6 +1700,7 @@ fn count_based_stream_usage(
         prompt_tokens_details: prefix_reused_tokens
             .filter(|reused| *reused > 0)
             .map(|cached_tokens| OpenAiPromptTokensDetails { cached_tokens }),
+        completion_tokens_details: None,
     }
 }
 
@@ -2062,6 +2121,7 @@ mod stream_usage_tests {
                 tool_scanner: None,
                 stop_scanner: None,
                 include_usage: true,
+                count_reasoning_tokens: false,
             },
             reasoning: None,
             calls_emitted: 0,
@@ -2251,6 +2311,7 @@ mod openai_stream_driver_tests {
                     stops.iter().map(|stop| (*stop).to_string()).collect(),
                 ),
                 include_usage: false,
+                count_reasoning_tokens: false,
             },
             reasoning: None,
             calls_emitted: 0,
@@ -2806,6 +2867,7 @@ mod openai_stream_driver_tests {
                 tool_scanner: None,
                 stop_scanner: None,
                 include_usage: false,
+                count_reasoning_tokens: false,
             },
             reasoning: Some(StreamReasoningMode::Gemma4Channel(Box::new(
                 IncrementalDecoder::new(byte_level_test_tokenizer("reasoning-tail")),
@@ -2875,6 +2937,49 @@ mod openai_stream_driver_tests {
         );
     }
 
+    #[test]
+    fn stop_inside_think_block_does_not_end_the_stream() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut driver = chat_driver(&["STOP"]);
+        driver.reasoning = Some(StreamReasoningMode::QwenThink(super::ThinkTagScanner::new()));
+        assert!(
+            driver.handle_event(&tx, step_with_delta_text("<think>STOP</think>hello")),
+            "a stop inside reasoning must not finish the stream"
+        );
+        assert!(
+            !driver.handle_event(&tx, step_with_delta_text(" STOP")),
+            "the same stop in the answer still finishes the stream"
+        );
+        drop(tx);
+        let payloads = collect_chunk_payloads(&mut rx);
+        let reasoning: String = payloads
+            .iter()
+            .filter_map(|payload| payload["choices"][0]["delta"]["reasoning_content"].as_str())
+            .collect();
+        let content: String = payloads
+            .iter()
+            .filter_map(|payload| payload["choices"][0]["delta"]["content"].as_str())
+            .collect();
+        assert!(reasoning.contains("STOP"), "{reasoning}");
+        assert!(content.contains("hello"), "{content}");
+        assert!(!content.contains("STOP"), "{content}");
+    }
+
+    #[test]
+    fn native_eos_response_ends_the_stream_without_a_client_stop() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut driver = chat_driver(&["STOP"]);
+        assert!(driver.handle_event(&tx, step_with_delta_text("hello")));
+        assert!(driver.handle_event(&tx, response_event()));
+        drop(tx);
+        let payloads = collect_chunk_payloads(&mut rx);
+        let reasons: Vec<_> = payloads
+            .iter()
+            .filter_map(|payload| payload["choices"][0]["finish_reason"].as_str())
+            .collect();
+        assert_eq!(reasons, vec!["stop"]);
+    }
+
     fn response_event() -> GenerateStreamEvent {
         GenerateStreamEvent::Response(GenerateStreamResponseEvent {
             response: sample_response(),
@@ -2918,6 +3023,7 @@ mod openai_stream_driver_tests {
                 tool_scanner: None,
                 stop_scanner: None,
                 include_usage: false,
+                count_reasoning_tokens: false,
             },
             reasoning: Some(StreamReasoningMode::DeepSeekCut(DeepSeekThinkCutter::new())),
             calls_emitted: 0,

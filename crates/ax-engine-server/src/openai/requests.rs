@@ -89,6 +89,9 @@ pub(crate) struct OpenAiResponseOptions {
     /// Clamp `max_output_tokens` to the remaining context instead of
     /// rejecting the request (Ollama `num_predict` sentinels).
     pub(crate) fit_max_tokens_to_context: bool,
+    /// `AX_API_POLISH`. Default on. Gates reasoning-token usage and the
+    /// Anthropic answer-only stop path that reads these options.
+    pub(crate) api_polish: crate::openai::schema::ApiPolish,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -232,6 +235,7 @@ impl OpenAiResponseOptions {
             tool_contract: None,
             client_stop_sequences: Vec::new(),
             fit_max_tokens_to_context: request.fit_max_tokens_to_context,
+            api_polish: crate::openai::schema::ApiPolish::default(),
         })
     }
 
@@ -278,6 +282,7 @@ impl OpenAiResponseOptions {
             tool_contract: OpenAiToolContract::from_tools(request.tools.as_ref()).map(Arc::new),
             client_stop_sequences: Vec::new(),
             fit_max_tokens_to_context: request.fit_max_tokens_to_context,
+            api_polish: request.api_polish,
         })
     }
 
@@ -1715,6 +1720,7 @@ fn openai_chat_prompt_render_options_for_model(
         // Model-only construction has no manifest access; the `_for_live`
         // wrapper resolves the contract framing (ADR-025 Phase 2).
         deepseek_v4_framing: None,
+        api_polish: request.api_polish,
     }
 }
 

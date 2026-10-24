@@ -6,12 +6,15 @@
 //!
 //! - [`host_resident_bytes`] returns the current process's resident-set
 //!   size, sampled via `getrusage(RUSAGE_SELF)` on Unix.
+//! - [`process_memory_footprint`] returns this process's physical footprint
+//!   from macOS `proc_pid_rusage(RUSAGE_INFO_V4)`.
 //! - [`device_active_bytes`] returns MLX's currently-allocated GPU memory
 //!   in bytes via `mlx_get_active_memory`.
 //! - [`device_recommended_working_set_bytes`] returns Metal's
 //!   `recommendedMaxWorkingSetSize` as the device budget.
 //!
-//! All three return `Option<u64>`; absent or failing probes return `None`
+//! Numeric probes return `Option<u64>`; [`process_memory_footprint`] returns
+//! `Option<ProcessFootprint>`. Absent or failing probes return `None`
 //! so the downstream classifier can distinguish "probe unavailable" from
 //! a probe that legitimately sampled zero (PRD §7.2).
 //!
@@ -57,6 +60,52 @@ pub fn host_resident_bytes() -> Option<u64> {
         }
     }
     #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
+/// Physical footprint of this process from macOS `proc_pid_rusage`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessFootprint {
+    pub phys_footprint_bytes: u64,
+    pub lifetime_max_phys_footprint_bytes: u64,
+}
+
+/// Current and lifetime-max physical footprint of this process.
+///
+/// On macOS this calls `proc_pid_rusage` with `RUSAGE_INFO_V4` and reads
+/// `ri_phys_footprint` and `ri_lifetime_max_phys_footprint`. Returns `None`
+/// off macOS and when the call fails.
+pub fn process_memory_footprint() -> Option<ProcessFootprint> {
+    #[cfg(target_os = "macos")]
+    {
+        // `rusage_info_v4` is a POD of integers and a byte array, so the
+        // all-zero bit pattern is valid. `proc_pid_rusage` writes that
+        // struct through `*mut rusage_info_t` (`*mut *mut c_void`).
+        let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::zeroed();
+        // SAFETY: `info` is a zeroed `rusage_info_v4`, large enough for
+        // `RUSAGE_INFO_V4`. The pid is this process. The kernel writes the
+        // struct and does not retain the pointer.
+        let rc = unsafe {
+            libc::proc_pid_rusage(
+                std::process::id() as libc::pid_t,
+                libc::RUSAGE_INFO_V4,
+                info.as_mut_ptr() as *mut libc::rusage_info_t,
+            )
+        };
+        if rc != 0 {
+            return None;
+        }
+        // SAFETY: a zero return means `proc_pid_rusage` initialized the
+        // `RUSAGE_INFO_V4` struct.
+        let info = unsafe { info.assume_init() };
+        Some(ProcessFootprint {
+            phys_footprint_bytes: info.ri_phys_footprint,
+            lifetime_max_phys_footprint_bytes: info.ri_lifetime_max_phys_footprint,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
     {
         None
     }
@@ -127,6 +176,26 @@ pub fn device_recommended_working_set_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_memory_footprint_is_positive_on_macos() {
+        let value = process_memory_footprint();
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                value.is_some_and(|footprint| {
+                    footprint.phys_footprint_bytes > 0
+                        && footprint.lifetime_max_phys_footprint_bytes
+                            >= footprint.phys_footprint_bytes
+                }),
+                "process_memory_footprint should return a positive footprint on macOS, got {value:?}"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(value.is_none());
+        }
+    }
 
     #[test]
     fn host_resident_bytes_is_nonzero_on_unix() {

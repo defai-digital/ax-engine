@@ -28,6 +28,13 @@ const BARE_GEMMA4_LEAD: &str = "call:";
 pub(crate) enum ToolScanEvent {
     Content(String),
     Call(OpenAiToolCall),
+    /// One piece of `function.arguments`. `id` and `name` are set only on
+    /// the first piece for a call.
+    Arguments {
+        id: Option<String>,
+        name: Option<String>,
+        arguments: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,10 +71,32 @@ pub(crate) struct ToolCallStreamScanner {
     bare_scan_depth: usize,
     calls_emitted: u32,
     contract: Option<Arc<OpenAiToolContract>>,
+    /// When true, a JSON `<tool_call>` whose arguments are a contiguous
+    /// substring of the client-visible arguments text is emitted as
+    /// argument deltas. `new` leaves this off so existing one-shot callers
+    /// keep a single final chunk.
+    incremental: bool,
+    /// Header already sent for the open span. A later `Call` is suppressed.
+    header_sent: bool,
+    /// Client-visible argument text already emitted for the open span.
+    streamed_arguments: String,
+    /// This span cannot stream raw arguments (the parser cannot delimit a
+    /// contiguous arguments substring, or canonicalization would rewrite it).
+    incremental_blocked: bool,
 }
 
 impl ToolCallStreamScanner {
+    /// One-shot scanner used by tests of the pre-polish path. Production
+    /// streaming builds the scanner with `with_incremental`.
+    #[cfg(test)]
     pub(crate) fn new(contract: Option<Arc<OpenAiToolContract>>) -> Self {
+        Self::with_incremental(contract, false)
+    }
+
+    pub(crate) fn with_incremental(
+        contract: Option<Arc<OpenAiToolContract>>,
+        incremental: bool,
+    ) -> Self {
         Self {
             buffer: String::new(),
             span: None,
@@ -78,6 +107,10 @@ impl ToolCallStreamScanner {
             bare_scan_depth: 0,
             calls_emitted: 0,
             contract,
+            incremental,
+            header_sent: false,
+            streamed_arguments: String::new(),
+            incremental_blocked: false,
         }
     }
 
@@ -109,7 +142,7 @@ impl ToolCallStreamScanner {
             && !self.buffer.is_empty()
             && let Some((function, remaining)) = self.extract_span_at_start(kind, true)
         {
-            events.push(ToolScanEvent::Call(self.build_call(function)));
+            self.push_parsed_call(function, &mut events);
             self.buffer = remaining;
         }
         if !self.buffer.is_empty() {
@@ -136,6 +169,9 @@ impl ToolCallStreamScanner {
                         self.span_scan_offset = 0;
                         self.bare_scan_from = 0;
                         self.bare_scan_depth = 0;
+                        self.header_sent = false;
+                        self.streamed_arguments.clear();
+                        self.incremental_blocked = false;
                         continue;
                     }
                     let hold = if at_end {
@@ -168,7 +204,7 @@ impl ToolCallStreamScanner {
                         match dsml::parse_dsml_tool_calls(&self.buffer[..close_end]) {
                             Some((functions, _)) => {
                                 for function in functions {
-                                    events.push(ToolScanEvent::Call(self.build_call(function)));
+                                    self.push_parsed_call(function, &mut events);
                                 }
                                 self.buffer.drain(..close_end);
                                 parsed = true;
@@ -212,6 +248,12 @@ impl ToolCallStreamScanner {
                     continue;
                 }
                 Some(kind) => {
+                    if self.incremental
+                        && matches!(kind, ToolSpanKind::Xml)
+                        && !self.incremental_blocked
+                    {
+                        self.poll_xml_argument_deltas(&mut events);
+                    }
                     let closer = match kind {
                         ToolSpanKind::Xml => Some(XML_CLOSE),
                         ToolSpanKind::Gemma4 => Some(GEMMA4_CLOSE),
@@ -227,7 +269,7 @@ impl ToolCallStreamScanner {
                             };
                             match self.extract_span_at_start(kind, true) {
                                 Some((function, remaining)) => {
-                                    events.push(ToolScanEvent::Call(self.build_call(function)));
+                                    self.push_parsed_call(function, &mut events);
                                     self.buffer = remaining;
                                 }
                                 None => {
@@ -277,7 +319,7 @@ impl ToolCallStreamScanner {
                         // that has not parsed yet stays withheld.
                         if let Some((function, remaining)) = self.extract_span_at_start(kind, false)
                         {
-                            events.push(ToolScanEvent::Call(self.build_call(function)));
+                            self.push_parsed_call(function, &mut events);
                             self.buffer = remaining;
                             self.span = None;
                             self.span_scan_offset = 0;
@@ -304,7 +346,7 @@ impl ToolCallStreamScanner {
                                 if let Some((function, remaining)) =
                                     self.extract_span_at_start(ToolSpanKind::BareGemma4, at_end)
                                 {
-                                    events.push(ToolScanEvent::Call(self.build_call(function)));
+                                    self.push_parsed_call(function, &mut events);
                                     self.buffer = remaining;
                                     self.span = None;
                                     self.bare_scan_from = 0;
@@ -475,6 +517,438 @@ impl ToolCallStreamScanner {
         self.calls_emitted += 1;
         call
     }
+
+    fn push_parsed_call(
+        &mut self,
+        mut function: OpenAiFunctionCall,
+        events: &mut Vec<ToolScanEvent>,
+    ) {
+        if let Some(contract) = self.contract.as_deref() {
+            function.name = contract.canonical_tool_name(&function.name);
+            function.arguments = contract.canonical_arguments(&function.name, function.arguments);
+        }
+        if self.header_sent {
+            if function.arguments.starts_with(&self.streamed_arguments) {
+                let rest = &function.arguments[self.streamed_arguments.len()..];
+                if !rest.is_empty() {
+                    events.push(ToolScanEvent::Arguments {
+                        id: None,
+                        name: None,
+                        arguments: rest.to_string(),
+                    });
+                }
+            } else if self.streamed_arguments.is_empty() && !function.arguments.is_empty() {
+                events.push(ToolScanEvent::Arguments {
+                    id: None,
+                    name: None,
+                    arguments: function.arguments,
+                });
+            }
+            self.header_sent = false;
+            self.streamed_arguments.clear();
+            return;
+        }
+        events.push(ToolScanEvent::Call(self.build_call(function)));
+    }
+
+    /// Emit argument deltas for an open JSON `<tool_call>` span. A span that
+    /// is not JSON, or whose arguments would be rewritten, is left for the
+    /// one-shot `Call` path.
+    fn poll_xml_argument_deltas(&mut self, events: &mut Vec<ToolScanEvent>) {
+        let Some(body) = self.buffer.strip_prefix(XML_OPEN) else {
+            return;
+        };
+        let Some(progress) = xml_json_argument_progress(body) else {
+            if !body.trim_start().is_empty() && !body.trim_start().starts_with('{') {
+                self.incremental_blocked = true;
+            }
+            return;
+        };
+        let Some(name) = progress.name else {
+            return;
+        };
+        if !progress.live {
+            if progress.complete {
+                self.incremental_blocked = true;
+            }
+            return;
+        }
+        if !progress.arguments_started {
+            return;
+        }
+        let visible = progress.visible;
+        if !self.header_sent {
+            let id = format!("call_{}", self.calls_emitted);
+            self.calls_emitted += 1;
+            let piece = if visible.starts_with(&self.streamed_arguments) {
+                visible[self.streamed_arguments.len()..].to_string()
+            } else {
+                visible.clone()
+            };
+            events.push(ToolScanEvent::Arguments {
+                id: Some(id),
+                name: Some(name),
+                arguments: piece,
+            });
+            self.header_sent = true;
+            self.streamed_arguments = visible;
+            return;
+        }
+        if visible.starts_with(&self.streamed_arguments)
+            && visible.len() > self.streamed_arguments.len()
+        {
+            let piece = visible[self.streamed_arguments.len()..].to_string();
+            events.push(ToolScanEvent::Arguments {
+                id: None,
+                name: None,
+                arguments: piece,
+            });
+            self.streamed_arguments = visible;
+        }
+    }
+}
+
+struct XmlArgProgress {
+    name: Option<String>,
+    arguments_started: bool,
+    visible: String,
+    complete: bool,
+    /// The visible text is the client-visible arguments string (raw when
+    /// that string will not be rewritten).
+    live: bool,
+}
+
+fn xml_json_argument_progress(body: &str) -> Option<XmlArgProgress> {
+    let trimmed = skip_ws(body, 0);
+    if trimmed >= body.len() {
+        return Some(XmlArgProgress {
+            name: None,
+            arguments_started: false,
+            visible: String::new(),
+            complete: false,
+            live: true,
+        });
+    }
+    if body.as_bytes()[trimmed] != b'{' {
+        return None;
+    }
+    let mut index = trimmed + 1;
+    let mut name = None;
+    let mut arguments_started = false;
+    let mut visible = String::new();
+    let mut complete = false;
+    let mut live = true;
+    loop {
+        index = skip_ws(body, index);
+        if index >= body.len() {
+            break;
+        }
+        match body.as_bytes()[index] {
+            b'}' => break,
+            b',' => {
+                index += 1;
+                continue;
+            }
+            b'"' => {}
+            _ => return None,
+        }
+        let (key, next) = parse_json_string(body, index)?;
+        index = skip_ws(body, next);
+        if index >= body.len() || body.as_bytes()[index] != b':' {
+            break;
+        }
+        index = skip_ws(body, index + 1);
+        if index >= body.len() {
+            if key == "arguments" {
+                arguments_started = true;
+            }
+            break;
+        }
+        if key == "name" && name.is_none() {
+            let (value, next, string_complete) = partial_json_string(body, index)?;
+            if !string_complete {
+                break;
+            }
+            name = Some(value);
+            index = next;
+            continue;
+        }
+        if key == "arguments" && !arguments_started {
+            arguments_started = true;
+            let progress = partial_json_value(body, index)?;
+            visible = progress.visible;
+            complete = progress.complete;
+            live = progress.live;
+            break;
+        }
+        let progress = partial_json_value(body, index)?;
+        if !progress.complete {
+            break;
+        }
+        index = progress.end;
+    }
+    Some(XmlArgProgress {
+        name,
+        arguments_started,
+        visible,
+        complete,
+        live,
+    })
+}
+
+struct ValueProgress {
+    visible: String,
+    end: usize,
+    complete: bool,
+    live: bool,
+}
+
+fn partial_json_value(body: &str, start: usize) -> Option<ValueProgress> {
+    if start >= body.len() {
+        return None;
+    }
+    match body.as_bytes()[start] {
+        b'"' => {
+            let (decoded, end, complete) = partial_json_string(body, start)?;
+            Some(ValueProgress {
+                visible: decoded,
+                end,
+                complete,
+                live: true,
+            })
+        }
+        b'{' | b'[' => partial_json_container(body, start),
+        b't' | b'f' | b'n' | b'-' | b'0'..=b'9' => partial_json_literal(body, start),
+        _ => None,
+    }
+}
+
+fn partial_json_literal(body: &str, start: usize) -> Option<ValueProgress> {
+    let rest = &body[start..];
+    if rest.starts_with("true") || rest.starts_with("false") || rest.starts_with("null") {
+        let word = if rest.starts_with("true") {
+            "true"
+        } else if rest.starts_with("false") {
+            "false"
+        } else {
+            "null"
+        };
+        return Some(ValueProgress {
+            visible: word.to_string(),
+            end: start + word.len(),
+            complete: true,
+            live: true,
+        });
+    }
+    if rest.starts_with('t') || rest.starts_with('f') || rest.starts_with('n') {
+        return Some(ValueProgress {
+            visible: String::new(),
+            end: start,
+            complete: false,
+            live: true,
+        });
+    }
+    let mut end = start;
+    let bytes = body.as_bytes();
+    if bytes.get(end) == Some(&b'-') {
+        end += 1;
+    }
+    let mut saw_digit = false;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        saw_digit = true;
+        end += 1;
+    }
+    if end < bytes.len() && bytes[end] == b'.' {
+        end += 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            saw_digit = true;
+            end += 1;
+        }
+    }
+    if !saw_digit {
+        return Some(ValueProgress {
+            visible: String::new(),
+            end: start,
+            complete: false,
+            live: true,
+        });
+    }
+    let raw = body[start..end].to_string();
+    let complete = end < bytes.len()
+        && !bytes[end].is_ascii_digit()
+        && bytes[end] != b'.'
+        && bytes[end] != b'e'
+        && bytes[end] != b'E';
+    Some(ValueProgress {
+        visible: raw,
+        end,
+        complete,
+        live: true,
+    })
+}
+
+fn partial_json_container(body: &str, start: usize) -> Option<ValueProgress> {
+    let bytes = body.as_bytes();
+    let opening = bytes[start];
+    let closing = if opening == b'{' { b'}' } else { b']' };
+    let mut depth = 0i32;
+    let mut index = start;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut live = true;
+    let mut object_keys: Vec<String> = Vec::new();
+    let mut pending_key: Option<String> = None;
+    let mut key_start = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if escape {
+                escape = false;
+            } else if byte == b'\\' {
+                escape = true;
+            } else if byte == b'"' {
+                in_string = false;
+                if depth == 1 && opening == b'{' {
+                    if let Some(start_key) = key_start.take() {
+                        pending_key = Some(body[start_key..index].to_string());
+                    }
+                }
+            }
+            index += 1;
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                if depth == 1 && opening == b'{' && pending_key.is_none() {
+                    key_start = Some(index + 1);
+                }
+                index += 1;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' | b']' => {
+                depth -= 1;
+                index += 1;
+                if depth == 0 {
+                    let raw = &body[start..index];
+                    if byte != closing {
+                        return None;
+                    }
+                    if !live {
+                        return Some(ValueProgress {
+                            visible: String::new(),
+                            end: index,
+                            complete: true,
+                            live: false,
+                        });
+                    }
+                    return Some(ValueProgress {
+                        visible: raw.to_string(),
+                        end: index,
+                        complete: true,
+                        live: true,
+                    });
+                }
+            }
+            b':' => {
+                if depth == 1 && opening == b'{' {
+                    if let Some(key) = pending_key.take() {
+                        if object_keys
+                            .last()
+                            .is_some_and(|previous| key.as_str() < previous.as_str())
+                        {
+                            live = false;
+                        }
+                        object_keys.push(key);
+                    }
+                }
+                index += 1;
+            }
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                live = false;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    if !live {
+        return Some(ValueProgress {
+            visible: String::new(),
+            end: body.len(),
+            complete: false,
+            live: false,
+        });
+    }
+    Some(ValueProgress {
+        visible: body[start..].to_string(),
+        end: body.len(),
+        complete: false,
+        live: true,
+    })
+}
+
+fn parse_json_string(body: &str, start: usize) -> Option<(String, usize)> {
+    let (decoded, end, complete) = partial_json_string(body, start)?;
+    complete.then_some((decoded, end))
+}
+
+fn partial_json_string(body: &str, start: usize) -> Option<(String, usize, bool)> {
+    if body.as_bytes().get(start) != Some(&b'"') {
+        return None;
+    }
+    let mut decoded = String::new();
+    let bytes = body.as_bytes();
+    let mut index = start + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => return Some((decoded, index + 1, true)),
+            b'\\' => {
+                if index + 1 >= bytes.len() {
+                    return Some((decoded, index, false));
+                }
+                let escaped = match bytes[index + 1] {
+                    b'"' => '"',
+                    b'\\' => '\\',
+                    b'/' => '/',
+                    b'b' => '\u{0008}',
+                    b'f' => '\u{000c}',
+                    b'n' => '\n',
+                    b'r' => '\r',
+                    b't' => '\t',
+                    b'u' => {
+                        let hex = body.get(index + 2..index + 6)?;
+                        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                            return None;
+                        }
+                        let code = u32::from_str_radix(hex, 16).ok()?;
+                        let ch = char::from_u32(code)?;
+                        decoded.push(ch);
+                        index += 6;
+                        continue;
+                    }
+                    _ => return None,
+                };
+                decoded.push(escaped);
+                index += 2;
+            }
+            _ => {
+                let ch = body[index..].chars().next()?;
+                decoded.push(ch);
+                index += ch.len_utf8();
+            }
+        }
+    }
+    Some((decoded, index, false))
+}
+
+fn skip_ws(body: &str, mut index: usize) -> usize {
+    while index < body.len() && body.as_bytes()[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    index
 }
 
 #[cfg(test)]
@@ -493,7 +967,7 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 ToolScanEvent::Content(text) => Some(text.as_str()),
-                ToolScanEvent::Call(_) => None,
+                ToolScanEvent::Call(_) | ToolScanEvent::Arguments { .. } => None,
             })
             .collect()
     }
@@ -503,7 +977,7 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 ToolScanEvent::Call(call) => Some(call),
-                ToolScanEvent::Content(_) => None,
+                ToolScanEvent::Content(_) | ToolScanEvent::Arguments { .. } => None,
             })
             .collect()
     }
@@ -984,5 +1458,74 @@ mod tests {
             elapsed.as_secs_f64() < 1.0,
             "64 KiB in 4-byte chunks must not rescan quadratically: {elapsed:?}"
         );
+    }
+
+    fn argument_pieces(events: &[ToolScanEvent]) -> (Option<String>, Option<String>, String) {
+        let mut id = None;
+        let mut name = None;
+        let mut arguments = String::new();
+        for event in events {
+            if let ToolScanEvent::Arguments {
+                id: event_id,
+                name: event_name,
+                arguments: piece,
+            } = event
+            {
+                if event_id.is_some() {
+                    id = event_id.clone();
+                    name = event_name.clone();
+                }
+                arguments.push_str(piece);
+            }
+        }
+        (id, name, arguments)
+    }
+
+    #[test]
+    fn incremental_json_arguments_stream_in_pieces_and_name_is_sent_once() {
+        let mut scanner = ToolCallStreamScanner::with_incremental(None, true);
+        let first = scanner.push("<tool_call>{\"name\":\"lookup\",\"arguments\":{\"city\":\"");
+        let (id, name, arguments) = argument_pieces(&first);
+        assert_eq!(id.as_deref(), Some("call_0"));
+        assert_eq!(name.as_deref(), Some("lookup"));
+        assert_eq!(arguments, "{\"city\":\"");
+        assert!(calls(&first).is_empty());
+        let mut second = scanner.push("Taipei\"}}</tool_call> tail");
+        second.extend(scanner.finish());
+        let (id, name, arguments) = argument_pieces(&second);
+        assert!(id.is_none(), "id is sent only on the first piece");
+        assert!(name.is_none(), "name is sent only on the first piece");
+        assert_eq!(arguments, "Taipei\"}");
+        assert!(calls(&second).is_empty(), "no second full call chunk");
+        assert_eq!(content(&second), " tail");
+        assert_eq!(scanner.calls_emitted(), 1);
+    }
+
+    #[test]
+    fn whitespace_json_arguments_stay_one_final_call() {
+        let mut scanner = ToolCallStreamScanner::with_incremental(None, true);
+        let mut events = scanner.push(
+            "<tool_call>{\"name\": \"lookup\", \"arguments\": {\"city\": \"Taipei\"}}</tool_call>",
+        );
+        events.extend(scanner.finish());
+        assert!(
+            argument_pieces(&events).2.is_empty(),
+            "rewritten arguments must not stream raw"
+        );
+        let calls = calls(&events);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "lookup");
+        assert_eq!(calls[0].id, "call_0");
+    }
+
+    #[test]
+    fn qwen_function_calls_stay_one_final_chunk_when_incremental() {
+        let mut scanner = ToolCallStreamScanner::with_incremental(None, true);
+        let mut events = scanner.push(
+            "<tool_call><function=read>\n<parameter=path>\nsrc/main.rs\n</parameter>\n</function></tool_call>",
+        );
+        events.extend(scanner.finish());
+        assert!(argument_pieces(&events).2.is_empty());
+        assert_eq!(calls(&events).len(), 1);
     }
 }

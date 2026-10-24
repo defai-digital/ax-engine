@@ -1507,7 +1507,10 @@ impl GptOssHarmonyIds {
 ///   that channel anyway (re-emitting `thought\n` as plain text plus optional
 ///   reasoning) before closing it. Everything before such a stray close is
 ///   channel content, not the answer.
-fn split_gemma4_channels(tokens: &[u32], ids: Gemma4ChannelIds) -> (Vec<u32>, Vec<Vec<u32>>) {
+pub(crate) fn split_gemma4_channels(
+    tokens: &[u32],
+    ids: Gemma4ChannelIds,
+) -> (Vec<u32>, Vec<Vec<u32>>) {
     let mut kept = Vec::with_capacity(tokens.len());
     let mut channel_bodies = Vec::new();
     let mut i = 0;

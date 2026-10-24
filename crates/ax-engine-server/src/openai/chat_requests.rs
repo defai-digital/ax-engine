@@ -172,6 +172,9 @@ pub(crate) struct ChatPromptRenderOptions {
     /// edge (delegated backends, manifest-less paths); renderers then fall
     /// back to model-id heuristics (`chat::is_deepseek_v4_model`).
     pub(crate) deepseek_v4_framing: Option<bool>,
+    /// `AX_API_POLISH`. When on, tool-definition object keys are sorted
+    /// before they are rendered into the chat template.
+    pub(crate) api_polish: crate::openai::schema::ApiPolish,
 }
 
 /// Tools-free convenience wrapper for tests that don't care about tool
@@ -225,6 +228,20 @@ pub(crate) fn render_openai_chat_prompt_with_family(
     tool_choice: Option<&Value>,
     options: ChatPromptRenderOptions,
 ) -> Result<String, HttpErrorResponse> {
+    // Sorted object keys are part of the rendered prompt and therefore of
+    // prefix-cache identity. The first release that sorts keys a previous
+    // build left in insertion order changes that identity once. serde_json
+    // object maps are already BTreeMaps unless `preserve_order` is enabled,
+    // so this pass is a no-op for values parsed by the default map and does
+    // not move the cache identity of prompts rendered today. Array order is
+    // left unchanged. `AX_API_POLISH=0` skips the pass.
+    let canonical_tools;
+    let tools = if options.api_polish.0 {
+        canonical_tools = tools.map(canonicalize_tool_schema_keys);
+        canonical_tools.as_ref()
+    } else {
+        tools
+    };
     validate_openai_tool_names(messages, tools, tool_choice)?;
     // Always use the dedicated Gemma 4 renderer so multi-turn history,
     // tool-call turn continuation, and enable_thinking stay aligned with
@@ -2270,6 +2287,30 @@ fn append_tool_choice_instruction(message: &mut String, tool_choice: Option<&Val
         message.push_str(
             "\nThe current tool_choice requires using a tool when a matching function is available.",
         );
+    }
+}
+
+/// Recursively sort JSON object keys. Array order is preserved.
+///
+/// Tool definitions are rendered into the chat template, so key order is
+/// part of the prompt prefix. See [`render_openai_chat_prompt_with_family`].
+pub(crate) fn canonicalize_tool_schema_keys(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => {
+            Value::Array(items.iter().map(canonicalize_tool_schema_keys).collect())
+        }
+        Value::Object(object) => {
+            let mut keys: Vec<&String> = object.keys().collect();
+            keys.sort();
+            let mut sorted = serde_json::Map::new();
+            for key in keys {
+                if let Some(child) = object.get(key) {
+                    sorted.insert(key.clone(), canonicalize_tool_schema_keys(child));
+                }
+            }
+            Value::Object(sorted)
+        }
+        other => other.clone(),
     }
 }
 
@@ -5246,6 +5287,7 @@ mod deepseek_dsml_contract_tests {
                 enable_thinking: true,
                 preserve_thinking: false,
                 deepseek_v4_framing: None,
+                api_polish: crate::openai::schema::ApiPolish::default(),
             },
         )
         .expect("render");
@@ -5290,6 +5332,7 @@ mod deepseek_dsml_contract_tests {
                 enable_thinking: true,
                 preserve_thinking: false,
                 deepseek_v4_framing: None,
+                api_polish: crate::openai::schema::ApiPolish::default(),
             },
         )
         .expect("render");
@@ -5323,6 +5366,7 @@ mod deepseek_dsml_contract_tests {
                 enable_thinking: false,
                 preserve_thinking: true,
                 deepseek_v4_framing: None,
+                api_polish: crate::openai::schema::ApiPolish::default(),
             },
         )
         .expect("render");
@@ -5338,5 +5382,79 @@ mod deepseek_dsml_contract_tests {
             prompt.contains("<｜hy_Assistant｜><think></think>Bonjour!<eos:6124c78e>"),
             "canonical empty-think assistant turn: {prompt}"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tool_schema_key_order_tests {
+    use serde_json::json;
+
+    use super::{
+        ChatPromptRenderOptions, canonicalize_tool_schema_keys,
+        render_openai_chat_prompt_with_options,
+    };
+    use crate::openai::schema::{ApiPolish, OpenAiChatMessage};
+
+    #[test]
+    fn canonicalize_sorts_object_keys_recursively_and_keeps_array_order() {
+        let value = json!({
+            "z": 1,
+            "a": {"y": 1, "b": [3, 1, 2]},
+            "m": [{"z": 1, "a": 2}]
+        });
+        let text =
+            serde_json::to_string(&canonicalize_tool_schema_keys(&value)).expect("canonical json");
+        assert!(text.find("\"a\"").expect("a") < text.find("\"m\"").expect("m"));
+        assert!(text.find("\"b\"").expect("b") < text.find("\"y\"").expect("y"));
+        assert!(text.contains("[3,1,2]"), "{text}");
+    }
+
+    #[test]
+    fn rendered_tool_schema_uses_sorted_keys() {
+        let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+            {"role": "user", "content": "Hi"}
+        ]))
+        .expect("messages");
+        let tools = json!([{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"z": {"type": "string"}, "a": {"type": "integer"}},
+                    "required": ["z", "a"]
+                }
+            }
+        }]);
+        let prompt = render_openai_chat_prompt_with_options(
+            "qwen3",
+            &messages,
+            Some(&tools),
+            None,
+            ChatPromptRenderOptions::default(),
+        )
+        .expect("prompt");
+        let z = prompt.find("\"z\"").expect("z key");
+        let a = prompt.find("\"a\"").expect("a key");
+        assert!(a < z, "sorted keys in the rendered prompt: {prompt}");
+        assert!(
+            prompt.contains("[\"z\",\"a\"]") || prompt.contains("[\"z\", \"a\"]"),
+            "required array order is unchanged: {prompt}"
+        );
+        let unsorted = render_openai_chat_prompt_with_options(
+            "qwen3",
+            &messages,
+            Some(&tools),
+            None,
+            ChatPromptRenderOptions {
+                api_polish: ApiPolish(false),
+                ..Default::default()
+            },
+        )
+        .expect("prompt");
+        // Default serde_json maps are already sorted, so skipping the explicit
+        // pass does not change today's rendered prompt.
+        assert_eq!(prompt, unsorted);
     }
 }

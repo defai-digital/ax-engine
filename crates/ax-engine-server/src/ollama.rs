@@ -450,7 +450,8 @@ async fn ollama_chat_inner(
     let tools_requested = request.tools.is_some();
     let format_requested = request.format.is_some();
     let num_predict = resolve_ollama_num_predict(&live, request.options.num_predict)?;
-    let openai_request = ollama_chat_to_openai_request(request, thinking, num_predict)?;
+    let mut openai_request = ollama_chat_to_openai_request(request, thinking, num_predict)?;
+    openai_request.api_polish = crate::openai::schema::ApiPolish(state.env.api_polish);
     // Thinking may be on by model default (DeepSeek-R1, Ornith) even when
     // `think` is omitted; the buffered path is the only one that splits
     // reasoning from content, so gate on the effective state.
@@ -1043,6 +1044,7 @@ fn ollama_chat_to_openai_request(
         tool_choice: None,
         parallel_tool_calls: None,
         fit_max_tokens_to_context: num_predict.fill_context,
+        api_polish: crate::openai::schema::ApiPolish::default(),
     })
 }
 
@@ -2512,6 +2514,7 @@ mod tests {
                 completion_tokens: 2,
                 total_tokens: 5,
                 prompt_tokens_details: None,
+                completion_tokens_details: None,
             }),
         };
 

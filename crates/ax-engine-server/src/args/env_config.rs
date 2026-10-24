@@ -50,6 +50,10 @@ pub(crate) const AX_ENGINE_EMBED_MICROBATCH_MAX_BATCH_ENV: &str =
 pub(crate) const AX_ENGINE_EMBED_MICROBATCH_QUEUE_CAPACITY_ENV: &str =
     "AX_ENGINE_EMBED_MICROBATCH_QUEUE_CAPACITY";
 pub(crate) const AX_MLX_BATCHED_DECODE_MAX_ENV: &str = "AX_MLX_BATCHED_DECODE_MAX";
+/// OpenAI/Anthropic API polish (WP12). Default **on**. `0`, `false`, or
+/// `off` (trimmed, `false`/`off` case-insensitive) restores the previous
+/// contract. Anything else, including unset, keeps it on.
+pub(crate) const AX_API_POLISH_ENV: &str = "AX_API_POLISH";
 
 /// Start-up-resolved serving configuration sourced from the process
 /// environment.
@@ -142,6 +146,13 @@ pub(crate) struct ServerEnvConfig {
     /// can never disagree with the runner's effective cohort: **no
     /// trimming**, values `< 1` or unparseable fall back to 8.
     pub(crate) mlx_batched_decode_max: u64,
+    /// `AX_API_POLISH` (default **on**): OpenAI/Anthropic contract polish
+    /// (answer-only client stops on the Anthropic direct path, reasoning
+    /// token usage, incremental tool-argument deltas, sorted tool-schema
+    /// keys, `GET /v1/memory`, Anthropic context-overflow remap). Accepted:
+    /// `0`, `false`, or `off` (words case-insensitive) disable it; anything
+    /// else, including unset, keeps it on. Whitespace is trimmed.
+    pub(crate) api_polish: bool,
 }
 
 impl ServerEnvConfig {
@@ -197,6 +208,7 @@ impl ServerEnvConfig {
             mlx_batched_decode_max: mirror_mlx_batched_decode_cohort_cap(
                 vars(AX_MLX_BATCHED_DECODE_MAX_ENV).as_deref(),
             ),
+            api_polish: resolve_api_polish(vars(AX_API_POLISH_ENV).as_deref()),
         }
     }
 
@@ -217,6 +229,21 @@ impl Default for ServerEnvConfig {
     fn default() -> Self {
         // The all-keys-unset configuration.
         Self::from_vars(|_| None)
+    }
+}
+
+/// Resolve `AX_API_POLISH`. Same off-switch as
+/// [`crate::generation::service::resolve_long_prefill_exclusive`]: only
+/// trimmed `0`, `false`, or `off` disable it.
+pub(crate) fn resolve_api_polish(raw: Option<&str>) -> bool {
+    match raw {
+        Some(raw) => {
+            let value = raw.trim();
+            !(value == "0"
+                || value.eq_ignore_ascii_case("false")
+                || value.eq_ignore_ascii_case("off"))
+        }
+        None => true,
     }
 }
 
@@ -294,6 +321,23 @@ mod tests {
         assert_eq!(config.embed_microbatch_max_batch, 32);
         assert_eq!(config.embed_microbatch_queue_capacity, 1024);
         assert_eq!(config.mlx_batched_decode_max, 8);
+        assert!(config.api_polish);
+    }
+
+    #[test]
+    fn api_polish_defaults_on_and_explicit_off_disables_it() {
+        let resolve = |value: Option<&str>| {
+            ServerEnvConfig::from_vars(single_var(AX_API_POLISH_ENV, value)).api_polish
+        };
+        assert!(resolve(None));
+        assert!(resolve(Some("1")));
+        assert!(resolve(Some("true")));
+        assert!(resolve(Some("on")));
+        assert!(!resolve(Some("0")));
+        assert!(!resolve(Some("false")));
+        assert!(!resolve(Some("FALSE")));
+        assert!(!resolve(Some("Off")));
+        assert!(!resolve(Some(" off ")));
     }
 
     #[test]

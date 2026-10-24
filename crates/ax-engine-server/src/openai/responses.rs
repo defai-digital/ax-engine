@@ -7,8 +7,8 @@ use super::requests::{OpenAiResponseOptions, OpenAiToolContract};
 use super::schema::{
     OpenAiChatCompletionChoice, OpenAiChatCompletionResponse, OpenAiChatLogprobs,
     OpenAiChatMessageResponse, OpenAiChatTokenLogprob, OpenAiCompletionChoice,
-    OpenAiCompletionLogprobs, OpenAiCompletionResponse, OpenAiFunctionCall,
-    OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiToolCall, OpenAiUsage,
+    OpenAiCompletionLogprobs, OpenAiCompletionResponse, OpenAiCompletionTokensDetails,
+    OpenAiFunctionCall, OpenAiPromptTokensDetails, OpenAiStreamKind, OpenAiToolCall, OpenAiUsage,
 };
 use super::tool_names;
 use super::validation::unix_timestamp_secs;
@@ -180,12 +180,34 @@ pub(crate) fn openai_chat_completion_response(
             logprobs: if stop_hit {
                 None
             } else {
-                openai_chat_logprobs(response, options, tokenizer)
+                openai_chat_logprobs(response, &options, tokenizer)
             },
             finish_reason,
         }],
-        usage: openai_usage(response),
+        usage: chat_usage(response, &options, tokenizer),
     }
+}
+
+fn chat_usage(
+    response: &GenerateResponse,
+    options: &OpenAiResponseOptions,
+    tokenizer: Option<&EngineTokenizer>,
+) -> Option<OpenAiUsage> {
+    let mut usage = openai_usage(response)?;
+    if options.api_polish.0 && options.include_reasoning {
+        if let Some(tokenizer) = tokenizer {
+            if let Some(count) = reasoning_token_count(tokenizer, &response.output_tokens) {
+                // A count larger than the completion would mean the reasoning
+                // tokens were added on top of the completion. Drop it.
+                if count <= usage.completion_tokens {
+                    usage.completion_tokens_details = Some(OpenAiCompletionTokensDetails {
+                        reasoning_tokens: count,
+                    });
+                }
+            }
+        }
+    }
+    Some(usage)
 }
 
 fn openai_completion_logprobs(
@@ -244,7 +266,7 @@ fn openai_completion_logprobs(
 
 fn openai_chat_logprobs(
     response: &GenerateResponse,
-    options: OpenAiResponseOptions,
+    options: &OpenAiResponseOptions,
     tokenizer: Option<&EngineTokenizer>,
 ) -> Option<OpenAiChatLogprobs> {
     if !options.include_logprobs || response.output_tokens.is_empty() {
@@ -935,7 +957,147 @@ pub(crate) fn openai_usage(response: &GenerateResponse) -> Option<OpenAiUsage> {
         total_tokens: prompt_tokens.saturating_add(completion_tokens),
         prompt_tokens_details: (cached_tokens > 0)
             .then_some(OpenAiPromptTokensDetails { cached_tokens }),
+        completion_tokens_details: None,
     })
+}
+
+/// Count output tokens that fall inside a separated reasoning body.
+///
+/// Returns `None` when the token ids cannot be aligned to a monotonic
+/// decode (the count would be a guess). Returns `Some(0)` when alignment
+/// succeeds and no reasoning body is present. Gemma 4 channel bodies are
+/// counted from the token slices themselves; a channel body served as the
+/// answer fallback is not reasoning. The count is a subset of the
+/// completion tokens.
+pub(crate) fn reasoning_token_count(
+    tokenizer: &EngineTokenizer,
+    output_tokens: &[u32],
+) -> Option<u32> {
+    if output_tokens.is_empty() {
+        return None;
+    }
+    if let Some(ids) = crate::chat::Gemma4ChannelIds::from_tokenizer(tokenizer) {
+        return Some(count_gemma4_reasoning_tokens(output_tokens, ids));
+    }
+    count_tagged_reasoning_tokens(tokenizer, output_tokens)
+}
+
+fn count_gemma4_reasoning_tokens(tokens: &[u32], ids: crate::chat::Gemma4ChannelIds) -> u32 {
+    let (kept, bodies) = crate::chat::split_gemma4_channels(tokens, ids);
+    let reasoning = if kept.is_empty() && !bodies.is_empty() {
+        &bodies[..bodies.len() - 1]
+    } else {
+        bodies.as_slice()
+    };
+    reasoning
+        .iter()
+        .map(|body| body.len() as u32)
+        .fold(0u32, u32::saturating_add)
+}
+
+fn count_tagged_reasoning_tokens(
+    tokenizer: &EngineTokenizer,
+    output_tokens: &[u32],
+) -> Option<u32> {
+    let mut previous = String::new();
+    let mut spans = Vec::with_capacity(output_tokens.len());
+    for index in 0..output_tokens.len() {
+        let prefix = tokenizer.decode(&output_tokens[..=index], false).ok()?;
+        if prefix.len() < previous.len() || !prefix.starts_with(&previous) {
+            return None;
+        }
+        spans.push((previous.len(), prefix.len()));
+        previous = prefix;
+    }
+    let Some(ranges) = reasoning_body_byte_ranges(&previous) else {
+        return Some(0);
+    };
+    let mut count = 0u32;
+    for (start, end) in spans {
+        if token_span_is_reasoning(&previous, start, end, &ranges) {
+            count = count.saturating_add(1);
+        }
+    }
+    Some(count)
+}
+
+/// A token counts when its decoded span lies inside a reasoning body, or
+/// when the overlap contains a non-whitespace byte. A tag token whose only
+/// overlap is a decoder-inserted leading space does not count.
+fn token_span_is_reasoning(
+    text: &str,
+    start: usize,
+    end: usize,
+    ranges: &[(usize, usize)],
+) -> bool {
+    if start >= end || end > text.len() {
+        return false;
+    }
+    ranges.iter().any(|(range_start, range_end)| {
+        let overlap_start = start.max(*range_start);
+        let overlap_end = end.min(*range_end);
+        if overlap_start >= overlap_end {
+            return false;
+        }
+        let fully_inside = start >= *range_start && end <= *range_end;
+        fully_inside
+            || text[overlap_start..overlap_end]
+                .chars()
+                .any(|ch| !ch.is_whitespace())
+    })
+}
+
+/// Byte ranges of reasoning bodies only (the tags themselves are not
+/// reasoning tokens). `None` when the text has no reasoning framing.
+fn reasoning_body_byte_ranges(text: &str) -> Option<Vec<(usize, usize)>> {
+    let mut ranges = Vec::new();
+    let mut saw = false;
+    let mut cursor = 0usize;
+    if let Some(close) = text.find("</think>")
+        && !text[..close].contains("<think>")
+    {
+        saw = true;
+        if close > 0 {
+            ranges.push((0, close));
+        }
+        cursor = close + "</think>".len();
+    }
+    while let Some(relative) = text[cursor..].find("<think>") {
+        saw = true;
+        let body_start = cursor + relative + "<think>".len();
+        if let Some(end_rel) = text[body_start..].find("</think>") {
+            let body_end = body_start + end_rel;
+            if body_end > body_start {
+                ranges.push((body_start, body_end));
+            }
+            cursor = body_end + "</think>".len();
+        } else {
+            if body_start < text.len() {
+                ranges.push((body_start, text.len()));
+            }
+            break;
+        }
+    }
+    const CHANNEL_OPEN: &str = "<|channel>thought\n";
+    const CHANNEL_CLOSE: &str = "<channel|>";
+    let mut scan = 0usize;
+    while let Some(relative) = text[scan..].find(CHANNEL_OPEN) {
+        saw = true;
+        let body_start = scan + relative + CHANNEL_OPEN.len();
+        if let Some(end_rel) = text[body_start..].find(CHANNEL_CLOSE) {
+            let body_end = body_start + end_rel;
+            if body_end > body_start {
+                ranges.push((body_start, body_end));
+            }
+            scan = body_end + CHANNEL_CLOSE.len();
+        } else {
+            if body_start < text.len() {
+                ranges.push((body_start, text.len()));
+            }
+            break;
+        }
+    }
+    saw.then_some(ranges)
 }
 
 /// Returns the prompt tokens physically restored by the backend. MLX emits an

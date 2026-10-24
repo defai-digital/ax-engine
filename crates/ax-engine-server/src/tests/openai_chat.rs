@@ -1917,6 +1917,33 @@ async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
 }
 
 #[tokio::test]
+async fn openai_chat_context_overflow_is_the_same_error_for_stream_and_non_stream() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-context-stream-preflight");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+    for stream in [false, true] {
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "input_tokens": vec![1; 16 * 1024],
+            "max_tokens": 1,
+            "stream": stream
+        }))
+        .expect("sample chat request should deserialize");
+        let error = match build_openai_chat_request(&live, request) {
+            Ok(_) => panic!("context-overflowing chat request should fail before generation"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("context_length_exceeded")
+        );
+        assert_eq!(error.1.0.error.error_type, "invalid_request_error");
+    }
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_request_rejects_context_length_exceeded_before_generation() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-context-preflight");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
@@ -2487,6 +2514,7 @@ fn deepseek_replays_reasoning_per_turn_rules() {
         enable_thinking: true,
         preserve_thinking: false,
         deepseek_v4_framing: None,
+        api_polish: crate::openai::schema::ApiPolish::default(),
     };
     let prompt = render_openai_chat_prompt_with_options(
         "deepseek-ai/DeepSeek-R1",
@@ -2512,6 +2540,7 @@ fn deepseek_replays_reasoning_per_turn_rules() {
             enable_thinking: true,
             preserve_thinking: false,
             deepseek_v4_framing: None,
+            api_polish: crate::openai::schema::ApiPolish::default(),
         },
     )
     .expect("deepseek replay with tools should render");
@@ -2540,6 +2569,7 @@ fn deepseek_empty_tool_calls_array_is_not_tool_context() {
         enable_thinking: true,
         preserve_thinking: false,
         deepseek_v4_framing: None,
+        api_polish: crate::openai::schema::ApiPolish::default(),
     };
 
     let with_empty = render_openai_chat_prompt_with_options(

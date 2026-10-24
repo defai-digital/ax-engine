@@ -65,8 +65,8 @@ pub use io_rows::{
     DEFAULT_MAX_GATHER_BYTES, MAX_HEADER_BYTES, RowTensorMeta, SafetensorsRowReader,
 };
 pub use mempressure::{
-    device_active_bytes, device_cache_bytes, device_peak_bytes,
-    device_recommended_working_set_bytes, host_resident_bytes,
+    ProcessFootprint, device_active_bytes, device_cache_bytes, device_peak_bytes,
+    device_recommended_working_set_bytes, host_resident_bytes, process_memory_footprint,
 };
 pub use metal::{KernelOutputSpec, KernelTemplateArg, LazyKernel, MlxMetalKernel};
 pub use op_count::{OpTraceEntry, op_count_snapshot, op_count_take, op_trace_begin, op_trace_end};

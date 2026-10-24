@@ -279,7 +279,7 @@ async fn stream_buffered_openai_tool_chat_response(
         chat_final_chunk_with_finish_reason(request_id, chat_response.model, choice.finish_reason)
     };
     send_openai_chunk_async(&tx, &final_chunk).await;
-    if include_stream_usage && let Some(usage) = crate::openai::responses::openai_usage(&response) {
+    if include_stream_usage && let Some(usage) = chat_response.usage.clone() {
         let usage_chunk = crate::openai::chunks::stream_usage_chunk(
             request_id,
             response.model_id.clone(),
