@@ -919,12 +919,13 @@ fn is_false(value: &bool) -> bool {
 /// `axquant_manifest.json` field (`runtime.ax_engine.weight_layout.norm_weights`
 /// of `raw_delta` or `folded`, or `weight_sanitize` of `hf_norm_only`,
 /// `hf_to_mlx`, or `folded`). `HfNormOnly` and `HfToMlx` store a delta
-/// (`effective gain = 1 + weight`), added once in fp32. Folded gains are the
-/// effective multiplier already and are used as stored. `None` does not
-/// declare either contract. The loader refuses a missing or contradictory
-/// contract instead of inspecting tensor values or file names. GDN norms are
-/// never offset. `AX_FLASH_NEXT_NORM_CONTRACT=0` restores the previous Flash
-/// Next loader, which treated `None` as already folded.
+/// (`effective gain = 1 + weight`), added once in fp32. `Folded` stores the
+/// effective multiplier already and is accepted only for `qwen4_exp`; every
+/// other family rejects it. `None` does not declare either contract. The
+/// loader refuses a missing or contradictory contract instead of inspecting
+/// tensor values or file names. GDN norms are never offset.
+/// `AX_FLASH_NEXT_NORM_CONTRACT=0` restores the previous Flash Next loader,
+/// which treated `None` as already folded.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WeightSanitize {
@@ -950,6 +951,11 @@ pub enum WeightSanitize {
     /// and must NOT get `+1` (Muse Glimmer: `MuseRmsNorm::centered` for the
     /// four per-layer norms vs `standard` for the final norm).
     HfLayerNormsOnly,
+    /// Flash Next (`qwen4_exp`) gains are already the effective multiplier.
+    /// The loader does not add 1. Convolution axes stay as stored unless
+    /// another field asks for the HF-to-MLX swap. Other model families
+    /// reject this variant in manifest validation and in the generic loader.
+    Folded,
 }
 
 impl WeightSanitize {
@@ -1227,8 +1233,10 @@ pub struct NativeModelManifest {
     /// pre-sanitized layout) so existing manifests deserialize unchanged.
     /// Set to `hf_to_mlx` in raw HuggingFace checkpoints' manifests to
     /// have the loader apply the norm-delta and conv1d-axis transforms.
-    /// Flash Next requires an explicit delta or folded contract; an omitted
-    /// value is not a folded-norm declaration. See [`WeightSanitize`].
+    /// Flash Next requires an explicit delta or folded contract. Set this
+    /// field to `folded` when the pack stored effective gains and has no
+    /// `axquant_manifest.json`. An omitted value is not a folded-norm
+    /// declaration. See [`WeightSanitize`].
     #[serde(default, skip_serializing_if = "WeightSanitize::is_none")]
     pub weight_sanitize: WeightSanitize,
     /// Token ID for `<think>` (Qwen3 reasoning models: 151668).
@@ -1504,6 +1512,13 @@ pub(crate) fn validate_native_model_manifest(
     if manifest.model_family.trim().is_empty() {
         return Err(NativeModelError::InvalidManifest {
             message: "model_family must not be empty".to_string(),
+        });
+    }
+    if manifest.weight_sanitize == WeightSanitize::Folded && manifest.model_family != "qwen4_exp" {
+        return Err(NativeModelError::InvalidManifest {
+            message: "weight_sanitize \"folded\" is accepted only for model_family \
+\"qwen4_exp\""
+                .to_string(),
         });
     }
     let flash_next_experimental =
@@ -5507,6 +5522,37 @@ mod tests {
         )
         .expect("manifest should write");
         (dir, manifest)
+    }
+
+    #[test]
+    fn folded_weight_sanitize_is_accepted_only_for_qwen4_exp() {
+        let parsed: WeightSanitize = serde_json::from_str("\"folded\"").expect("folded token");
+        assert_eq!(parsed, WeightSanitize::Folded);
+        assert_eq!(
+            serde_json::to_string(&WeightSanitize::Folded).expect("folded serializes"),
+            "\"folded\""
+        );
+
+        let dir = unique_test_dir("folded-sanitize");
+        fs::create_dir_all(&dir).expect("fixture directory should create");
+        let mut other = base_manifest("llama3", 1);
+        other.weight_sanitize = WeightSanitize::Folded;
+        let rejected = validate_native_model_manifest(&dir, &other)
+            .expect_err("other families reject folded")
+            .to_string();
+        assert!(
+            rejected.contains(
+                "weight_sanitize \"folded\" is accepted only for model_family \"qwen4_exp\""
+            ),
+            "{rejected}"
+        );
+
+        let mut flash = base_manifest("qwen4_exp", 1);
+        flash.weight_sanitize = WeightSanitize::Folded;
+        let later = validate_native_model_manifest(&dir, &flash)
+            .expect_err("empty qwen4_exp manifest still fails geometry checks")
+            .to_string();
+        assert!(!later.contains("accepted only for model_family"), "{later}");
     }
 
     #[test]

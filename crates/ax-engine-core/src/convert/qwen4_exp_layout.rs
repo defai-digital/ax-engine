@@ -396,6 +396,55 @@ fn matches_declared_layout(value: &serde_json::Value) -> bool {
         ) == Some(DECLARED_CONV1D_AXES_MLX)
 }
 
+/// How a Flash Next norm gain is stored on disk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Qwen4ExpNormGainForm {
+    /// Stored weight is `effective gain - 1`. The loader adds 1 once, in fp32.
+    Delta,
+    /// Stored weight is already the effective gain.
+    Folded,
+}
+
+/// Norm contract parsed from pack metadata. Convolution is optional:
+/// `Some(true)` swaps HF conv1d axes to MLX, `Some(false)` means the axes
+/// are already MLX, and `None` does not speak about convolution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Qwen4ExpNormClaim {
+    pub gains: Qwen4ExpNormGainForm,
+    pub swap_conv: Option<bool>,
+}
+
+/// Identity match from `axquant_manifest.json`, with the label used when
+/// that claim contradicts another field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Qwen4ExpAxquantNormClaim {
+    pub claim: Qwen4ExpNormClaim,
+    pub source: &'static str,
+}
+
+/// Parsed norm claim for the audited AXQuant 1.9.0 exporter, or for the
+/// declared raw-delta MLX layout when the checkpoint tuple does not match.
+///
+/// `None` means this document is not one of those identities. Partial
+/// explicit fields stay with the loader. This is the only copy of the
+/// exporter tuple and its JSON readers.
+pub fn qwen4_exp_axquant_norm_claim(value: &serde_json::Value) -> Option<Qwen4ExpAxquantNormClaim> {
+    let source = if matches_audited_legacy_tuple(value) {
+        "the audited AXQuant exporter identity"
+    } else if matches_declared_layout(value) {
+        "the declared AXQuant weight layout"
+    } else {
+        return None;
+    };
+    Some(Qwen4ExpAxquantNormClaim {
+        claim: Qwen4ExpNormClaim {
+            gains: Qwen4ExpNormGainForm::Delta,
+            swap_conv: Some(false),
+        },
+        source,
+    })
+}
+
 fn validate_optional_mlx_vlm_commit(value: &serde_json::Value) -> Result<(), ConvertError> {
     let Some(commit) = value
         .get("software_versions")
@@ -709,6 +758,20 @@ mod tests {
                 },
             },
         })
+    }
+
+    #[test]
+    fn axquant_norm_claim_reads_the_audited_tuple_once() {
+        let audited = qwen4_exp_axquant_norm_claim(&audited_legacy_json()).expect("audited tuple");
+        assert_eq!(audited.claim.gains, Qwen4ExpNormGainForm::Delta);
+        assert_eq!(audited.claim.swap_conv, Some(false));
+        assert_eq!(audited.source, "the audited AXQuant exporter identity");
+        let declared =
+            qwen4_exp_axquant_norm_claim(&declared_layout_json("Qwen/Qwen4-Next-Preview"))
+                .expect("declared layout");
+        assert_eq!(declared.claim, audited.claim);
+        assert_eq!(declared.source, "the declared AXQuant weight layout");
+        assert!(qwen4_exp_axquant_norm_claim(&serde_json::json!({})).is_none());
     }
 
     #[test]

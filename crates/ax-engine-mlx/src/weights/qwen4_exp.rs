@@ -16,6 +16,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ax_engine_core::convert::qwen4_exp_layout::{
+    Qwen4ExpAxquantNormClaim, Qwen4ExpNormClaim as NormClaim, Qwen4ExpNormGainForm as GainForm,
+    qwen4_exp_axquant_norm_claim,
+};
 use ax_engine_core::{
     NativeModelArtifacts, NativeModelManifest, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
@@ -1395,9 +1399,25 @@ fn is_trunk_resident_role(role: NativeTensorRole) -> bool {
 /// legacy loader. Parsed once per process.
 const NORM_CONTRACT_ENV: &str = "AX_FLASH_NEXT_NORM_CONTRACT";
 
+/// Serializes the process env read with tests that set
+/// [`NORM_CONTRACT_ENV`]. The cached flag takes this lock only on its first
+/// call.
+static NORM_CONTRACT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn norm_contract_enforced() -> bool {
     static ENFORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENFORCED.get_or_init(|| crate::fastpath::env_flag_default_on(NORM_CONTRACT_ENV))
+    *ENFORCED.get_or_init(|| {
+        let _guard = NORM_CONTRACT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        norm_contract_enforced_from_env()
+    })
+}
+
+/// Uncached reader. Tests call this with the documented env name so a
+/// misspelled [`NORM_CONTRACT_ENV`] fails without touching the process cache.
+fn norm_contract_enforced_from_env() -> bool {
+    crate::fastpath::env_flag_default_on(NORM_CONTRACT_ENV)
 }
 
 /// How Flash Next RMSNorm gains are stored. Convolution swap is independent
@@ -1410,32 +1430,6 @@ enum NormGainContract {
     /// Stored value is already the effective gain.
     Folded { swap_conv: bool },
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GainForm {
-    Delta,
-    Folded,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct NormClaim {
-    gains: GainForm,
-    /// `Some(true)` swaps HF conv axes to MLX. `None` does not speak about
-    /// convolution and leaves the other claim's choice in place.
-    swap_conv: Option<bool>,
-}
-
-/// Audited AXQuant 1.9.0 / MLX-VLM Flash Next exporter. A match means raw
-/// norm deltas and conv1d already in MLX axis order. Kept aligned with
-/// `ax_engine_core::convert::qwen4_exp_layout`.
-const AUDITED_AXQUANT_SCHEMA: &str = "axquant.artifact.v2";
-const AUDITED_AXQUANT_VERSION: &str = "1.9.0";
-const AUDITED_QUANTIZER: &str = "axquant";
-const AUDITED_FORMAT: &str = "mlx";
-const AUDITED_ARCHITECTURE: &str = "Qwen4ExpForConditionalGeneration";
-const AUDITED_MODEL_ID: &str = "Qwen/Qwen3.8-Flash-Next";
-const AUDITED_REVISION: &str = "de4b8e4d43b917e7706784d8bb445c9af86a3540";
-const AUDITED_RUNTIME_NAME: &str = "mlx-vlm";
 
 fn norm_contract_error(message: String) -> WeightLoadError {
     WeightLoadError::UnsanitizedWeights(message)
@@ -1465,7 +1459,7 @@ fn resolve_norm_gain_contract(
         return Ok(match manifest.weight_sanitize {
             WeightSanitize::HfToMlx => NormGainContract::Delta { swap_conv: true },
             WeightSanitize::HfNormOnly => NormGainContract::Delta { swap_conv: false },
-            WeightSanitize::None | WeightSanitize::HfLayerNormsOnly => {
+            WeightSanitize::None | WeightSanitize::HfLayerNormsOnly | WeightSanitize::Folded => {
                 NormGainContract::Folded { swap_conv: false }
             }
         });
@@ -1475,12 +1469,13 @@ fn resolve_norm_gain_contract(
     let claim = match (manifest_claim, exporter_claim) {
         (None, None) => {
             return Err(norm_contract_error(
-                "Flash Next norm-weight contract is missing. Set model-manifest.json \
-weight_sanitize to hf_norm_only or hf_to_mlx when gains are deltas (effective gain = 1 + \
-stored weight, added once in fp32), or set axquant_manifest.json \
-runtime.ax_engine.weight_layout.norm_weights to \"folded\" (or weight_sanitize to \
-\"folded\") when the exporter already stored the effective gain. An omitted weight_sanitize \
-does not mean folded. The loader does not infer this from tensor values or file names."
+                "Flash Next norm-weight contract is missing. Set the model-manifest.json field \
+weight_sanitize to \"hf_norm_only\", \"hf_to_mlx\", or \"folded\", or set the \
+axquant_manifest.json field runtime.ax_engine.weight_layout.norm_weights to \"raw_delta\" or \
+\"folded\". The axquant_manifest.json field runtime.ax_engine.weight_sanitize (or the field \
+weight_sanitize) may be \"hf_norm_only\", \"hf_to_mlx\", or \"folded\". An omitted \
+weight_sanitize does not mean folded. The loader does not infer this from tensor values or \
+file names."
                     .to_string(),
             ));
         }
@@ -1505,6 +1500,10 @@ fn manifest_norm_claim(mode: WeightSanitize) -> Option<NormClaim> {
         WeightSanitize::HfToMlx => Some(NormClaim {
             gains: GainForm::Delta,
             swap_conv: Some(true),
+        }),
+        WeightSanitize::Folded => Some(NormClaim {
+            gains: GainForm::Folded,
+            swap_conv: None,
         }),
     }
 }
@@ -1571,73 +1570,15 @@ fn read_axquant_norm_claim(root: &Path) -> Result<Option<NormClaim>, WeightLoadE
 fn interpret_axquant_norm_claim(
     value: &serde_json::Value,
 ) -> Result<Option<NormClaim>, WeightLoadError> {
-    let explicit = explicit_norm_claim(value)?;
-    if let Some(audited) = audited_exporter_claim(value) {
-        return match explicit {
-            Some(explicit) => merge_norm_claims(
-                audited,
-                "the audited AXQuant exporter identity",
-                explicit,
-                "an explicit axquant_manifest.json norm field",
-            )
-            .map(Some),
-            None => Ok(Some(audited)),
-        };
-    }
-    if let Some(declared) = declared_layout_claim(value) {
-        return match explicit {
-            Some(explicit) => merge_norm_claims(
-                declared,
-                "the declared AXQuant weight layout",
-                explicit,
-                "an explicit axquant_manifest.json norm field",
-            )
-            .map(Some),
-            None => Ok(Some(declared)),
-        };
-    }
-    Ok(explicit)
+    // The audited identity is resolved before a partial explicit field can
+    // fail. A lone conv1d_axes value merges onto that identity.
+    explicit_norm_claim(value, qwen4_exp_axquant_norm_claim(value))
 }
 
-fn audited_exporter_claim(value: &serde_json::Value) -> Option<NormClaim> {
-    let matches = json_str(value, &["schema_version"]) == Some(AUDITED_AXQUANT_SCHEMA)
-        && json_str(value, &["axquant_version"]) == Some(AUDITED_AXQUANT_VERSION)
-        && json_str(value, &["quantizer"]) == Some(AUDITED_QUANTIZER)
-        && json_str(value, &["format"]) == Some(AUDITED_FORMAT)
-        && json_str(value, &["source_model", "architecture"]) == Some(AUDITED_ARCHITECTURE)
-        && json_str(value, &["source_model", "model_id"]) == Some(AUDITED_MODEL_ID)
-        && json_str(value, &["source_model", "revision"]) == Some(AUDITED_REVISION)
-        && json_str(value, &["runtime", "primary_runtime", "name"]) == Some(AUDITED_RUNTIME_NAME)
-        && json_bool(
-            value,
-            &["runtime", "primary_runtime", "standard_mlx_weights"],
-        ) == Some(true);
-    matches.then_some(NormClaim {
-        gains: GainForm::Delta,
-        swap_conv: Some(false),
-    })
-}
-
-fn declared_layout_claim(value: &serde_json::Value) -> Option<NormClaim> {
-    let matches = json_str(value, &["schema_version"]) == Some(AUDITED_AXQUANT_SCHEMA)
-        && json_str(value, &["quantizer"]) == Some(AUDITED_QUANTIZER)
-        && json_str(value, &["format"]) == Some(AUDITED_FORMAT)
-        && json_str(value, &["runtime", "ax_engine", "weight_sanitize"]) == Some("hf_norm_only")
-        && json_str(
-            value,
-            &["runtime", "ax_engine", "weight_layout", "norm_weights"],
-        ) == Some("raw_delta")
-        && json_str(
-            value,
-            &["runtime", "ax_engine", "weight_layout", "conv1d_axes"],
-        ) == Some("mlx");
-    matches.then_some(NormClaim {
-        gains: GainForm::Delta,
-        swap_conv: Some(false),
-    })
-}
-
-fn explicit_norm_claim(value: &serde_json::Value) -> Result<Option<NormClaim>, WeightLoadError> {
+fn explicit_norm_claim(
+    value: &serde_json::Value,
+    identity: Option<Qwen4ExpAxquantNormClaim>,
+) -> Result<Option<NormClaim>, WeightLoadError> {
     let norm_weights = optional_string_field(
         value,
         &["runtime", "ax_engine", "weight_layout", "norm_weights"],
@@ -1654,7 +1595,7 @@ fn explicit_norm_claim(value: &serde_json::Value) -> Result<Option<NormClaim>, W
         && top_sanitize.is_none()
         && conv_axes.is_none()
     {
-        return Ok(None);
+        return Ok(identity.map(|identity| identity.claim));
     }
     let mut claim = match norm_weights {
         Some("raw_delta") => Some(NormClaim {
@@ -1697,10 +1638,14 @@ runtime.ax_engine.weight_layout.conv1d_axes must be \"mlx\" or \"hf\", got {othe
                 )));
             }
         };
+        if claim.is_none() {
+            claim = identity.map(|identity| identity.claim);
+        }
         let Some(current) = claim else {
             return Err(norm_contract_error(
                 "Flash Next norm-weight contract declares conv1d axes without saying whether \
-norm gains are raw_delta or folded. Refusing to load rather than guess."
+norm gains are raw_delta or folded. Set runtime.ax_engine.weight_layout.norm_weights to \
+\"raw_delta\" or \"folded\", or set weight_sanitize. Refusing to load rather than guess."
                     .to_string(),
             ));
         };
@@ -1714,7 +1659,19 @@ norm gains are raw_delta or folded. Refusing to load rather than guess."
             "runtime.ax_engine.weight_layout.conv1d_axes",
         )?);
     }
-    Ok(claim)
+    let Some(claim) = claim else {
+        return Ok(identity.map(|identity| identity.claim));
+    };
+    match identity {
+        Some(identity) => merge_norm_claims(
+            identity.claim,
+            identity.source,
+            claim,
+            "an explicit axquant_manifest.json norm field",
+        )
+        .map(Some),
+        None => Ok(Some(claim)),
+    }
 }
 
 fn claim_from_sanitize_token(field: &str, token: &str) -> Result<NormClaim, WeightLoadError> {
@@ -1761,22 +1718,6 @@ fn optional_string_field<'a>(
     Ok(None)
 }
 
-fn json_str<'a>(value: &'a serde_json::Value, path: &[&str]) -> Option<&'a str> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_str()
-}
-
-fn json_bool(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_bool()
-}
-
 /// Historical `WeightSanitize` mapping, including `None` as a no-op.
 /// Test and replay callers that already hold a mode use this. The load path
 /// resolves metadata first and does not treat an omitted mode as folded.
@@ -1789,7 +1730,7 @@ fn sanitize_norms_and_convs(
     let contract = match mode {
         WeightSanitize::HfToMlx => NormGainContract::Delta { swap_conv: true },
         WeightSanitize::HfNormOnly => NormGainContract::Delta { swap_conv: false },
-        WeightSanitize::None | WeightSanitize::HfLayerNormsOnly => {
+        WeightSanitize::None | WeightSanitize::HfLayerNormsOnly | WeightSanitize::Folded => {
             NormGainContract::Folded { swap_conv: false }
         }
     };
@@ -3353,6 +3294,12 @@ mod tests {
         );
     }
 
+    fn conv_contract_spec(name: &str) -> NativeTensorSpec {
+        let mut spec = norm_contract_spec(name, NativeTensorRole::LinearAttentionConv1d);
+        spec.shape = vec![2, 3, 1];
+        spec
+    }
+
     fn norm_contract_spec(name: &str, role: NativeTensorRole) -> NativeTensorSpec {
         use ax_engine_core::NativeTensorDataType;
         NativeTensorSpec {
@@ -3601,6 +3548,18 @@ mod tests {
             "{missing}"
         );
         assert!(
+            missing.contains(
+                "model-manifest.json field weight_sanitize to \"hf_norm_only\", \"hf_to_mlx\", or \"folded\""
+            ),
+            "{missing}"
+        );
+        assert!(
+            missing.contains(
+                "axquant_manifest.json field runtime.ax_engine.weight_layout.norm_weights to \"raw_delta\" or \"folded\""
+            ),
+            "{missing}"
+        );
+        assert!(
             !missing.to_ascii_lowercase().contains("safetensor"),
             "{missing}"
         );
@@ -3652,6 +3611,170 @@ mod tests {
             tensors["layers.0.self_attn.q_norm.weight"].data_f32(),
             &[0.25, 1.25]
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn norm_contract_kill_switch_reads_the_documented_env_name() {
+        let documented = "AX_FLASH_NEXT_NORM_CONTRACT";
+        assert_eq!(NORM_CONTRACT_ENV, documented);
+        let _guard = NORM_CONTRACT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous = std::env::var(documented).ok();
+        // SAFETY: the lock above is held until this test returns, and the
+        // previous value is restored before the lock drops. The cached
+        // reader takes the same lock on its first call.
+        unsafe { std::env::set_var(documented, "0") };
+        assert!(
+            !norm_contract_enforced_from_env(),
+            "setting {documented}=0 must disable enforcement through {NORM_CONTRACT_ENV}"
+        );
+        unsafe { std::env::set_var(documented, "not-a-flag") };
+        assert!(!norm_contract_enforced_from_env());
+        unsafe {
+            match &previous {
+                Some(value) => std::env::set_var(documented, value),
+                None => std::env::remove_var(documented),
+            }
+        }
+        if previous.is_none() {
+            assert!(norm_contract_enforced_from_env());
+        }
+    }
+
+    #[test]
+    fn audited_identity_precedes_a_partial_conv1d_axes_field() {
+        let root = norm_contract_dir("audited-partial-conv");
+        let mut value = audited_flash_next_axquant();
+        value["runtime"]["ax_engine"]["weight_layout"]["conv1d_axes"] = serde_json::json!("mlx");
+        write_json(&root, "axquant_manifest.json", &value);
+        let contract =
+            resolve_norm_gain_contract(&root, &norm_contract_manifest(WeightSanitize::None), true)
+                .unwrap();
+        assert_eq!(contract, NormGainContract::Delta { swap_conv: false });
+
+        value["runtime"]["ax_engine"]["weight_layout"]["conv1d_axes"] = serde_json::json!("hf");
+        write_json(&root, "axquant_manifest.json", &value);
+        let contradictory =
+            resolve_norm_gain_contract(&root, &norm_contract_manifest(WeightSanitize::None), true)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            contradictory.contains("disagree on conv1d axis order"),
+            "{contradictory}"
+        );
+        assert!(
+            !contradictory.contains("without saying whether"),
+            "{contradictory}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn conv1d_axes_hf_swaps_convolution_and_lifts_raw_delta() {
+        let root = norm_contract_dir("conv-hf");
+        write_json(
+            &root,
+            "axquant_manifest.json",
+            &serde_json::json!({
+                "runtime": {"ax_engine": {"weight_layout": {
+                    "norm_weights": "raw_delta",
+                    "conv1d_axes": "hf"
+                }}}
+            }),
+        );
+        let specs = vec![
+            norm_contract_spec("q", NativeTensorRole::AttentionQNorm),
+            conv_contract_spec("conv"),
+        ];
+        let contract =
+            resolve_norm_gain_contract(&root, &norm_contract_manifest(WeightSanitize::None), true)
+                .unwrap();
+        assert_eq!(contract, NormGainContract::Delta { swap_conv: true });
+        let mut tensors = HashMap::from([
+            ("q".into(), MlxArray::from_f32_slice(&[0.25, 1.5])),
+            (
+                "conv".into(),
+                mlx_sys::reshape(
+                    &MlxArray::from_f32_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+                    &[2, 3, 1],
+                    None,
+                ),
+            ),
+        ]);
+        apply_norm_gain_contract(contract, &specs, &mut tensors).unwrap();
+        assert_eq!(tensors["q"].data_f32(), &[1.25, 2.5]);
+        assert_eq!(tensors["conv"].shape(), [2, 1, 3]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn folded_manifest_with_hf_conv_axes_swaps_convolution_only() {
+        let root = norm_contract_dir("folded-swap");
+        write_json(
+            &root,
+            "axquant_manifest.json",
+            &serde_json::json!({
+                "runtime": {"ax_engine": {"weight_layout": {
+                    "norm_weights": "folded",
+                    "conv1d_axes": "hf"
+                }}}
+            }),
+        );
+        let manifest = norm_contract_manifest(WeightSanitize::Folded);
+        let contract = resolve_norm_gain_contract(&root, &manifest, true).unwrap();
+        assert_eq!(contract, NormGainContract::Folded { swap_conv: true });
+        let specs = vec![
+            norm_contract_spec("q", NativeTensorRole::AttentionQNorm),
+            conv_contract_spec("conv"),
+        ];
+        let mut tensors = HashMap::from([
+            ("q".into(), MlxArray::from_f32_slice(&[0.25, 1.25])),
+            (
+                "conv".into(),
+                mlx_sys::reshape(
+                    &MlxArray::from_f32_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+                    &[2, 3, 1],
+                    None,
+                ),
+            ),
+        ]);
+        apply_norm_gain_contract(contract, &specs, &mut tensors).unwrap();
+        assert_eq!(tensors["q"].data_f32(), &[0.25, 1.25]);
+        assert_eq!(tensors["conv"].shape(), [2, 1, 3]);
+
+        let bare = norm_contract_dir("folded-bare");
+        let bare_contract = resolve_norm_gain_contract(
+            &bare,
+            &norm_contract_manifest(WeightSanitize::Folded),
+            true,
+        )
+        .unwrap();
+        assert_eq!(bare_contract, NormGainContract::Folded { swap_conv: false });
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(bare).unwrap();
+    }
+
+    #[test]
+    fn hf_to_mlx_manifest_contradicts_audited_exporter() {
+        let root = norm_contract_dir("hf-to-mlx-audited");
+        write_json(
+            &root,
+            "axquant_manifest.json",
+            &audited_flash_next_axquant(),
+        );
+        let err = resolve_norm_gain_contract(
+            &root,
+            &norm_contract_manifest(WeightSanitize::HfToMlx),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("contradictory"), "{err}");
+        assert!(err.contains("disagree on conv1d axis order"), "{err}");
+        assert!(err.contains("model-manifest.json weight_sanitize"), "{err}");
+        assert!(err.contains("axquant_manifest.json"), "{err}");
         std::fs::remove_dir_all(root).unwrap();
     }
 

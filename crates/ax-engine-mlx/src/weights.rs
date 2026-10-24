@@ -1486,6 +1486,7 @@ pub(crate) fn load_weights_with_session_budget(
             apply_hf_sanitize_transforms(specs, &mut name_map, false, false)
         }
         WeightSanitize::None => {}
+        WeightSanitize::Folded => return Err(folded_weight_sanitize_unsupported()),
     }
     normalize_f32_pack_to_bf16(
         artifacts.manifest().model_family.as_str(),
@@ -2379,6 +2380,7 @@ pub fn load_pipeline_stage_weights(
             apply_hf_sanitize_transforms(specs, &mut name_map, false, false)
         }
         WeightSanitize::None => {}
+        WeightSanitize::Folded => return Err(folded_weight_sanitize_unsupported()),
     }
 
     let token_embedding = (assignment.owns_embeddings || tied_output_embedding)
@@ -4959,6 +4961,12 @@ fn norm_mean_abs(norm: &MlxArray) -> Option<f32> {
         return None;
     }
     Some(data.iter().map(|v| v.abs()).sum::<f32>() / data.len() as f32)
+}
+
+fn folded_weight_sanitize_unsupported() -> WeightLoadError {
+    WeightLoadError::UnsanitizedWeights(
+        "weight_sanitize \"folded\" is accepted only for model_family \"qwen4_exp\"".to_string(),
+    )
 }
 
 /// When the manifest sets `weight_sanitize=None`, peek at the lowest-indexed
