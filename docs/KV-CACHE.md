@@ -170,20 +170,39 @@ temperature sampling and KV materialization share one GPU dispatch.
 
 ### Sequence length management
 
-`trim_to(prefix_len)` resets `seq_len` without touching GPU buffers:
+`trim_to(prefix_len) -> bool` lowers the logical boundary without rewriting
+KV data:
 
 ```rust
 self.seq_len = prefix_len.min(self.seq_len);
 ```
 
-This is O(1) and enables speculative decode rollback: if n-gram speculation
-is rejected, the cache is trimmed back to the accepted position and decode
-resumes from there.
+With the chunked layout this is O(1): the backing buffers keep their
+pre-allocated capacity and the next `append` overwrites the rejected draft
+positions. It returns `true` when the trim point was valid, and enables
+speculative decode rollback: if n-gram speculation is rejected, the cache is
+trimmed back to the accepted position and decode resumes from there.
 
-**Limitation**: `trim_to` does not reset `linear_layers`. Linear attention
+`trim_to` is **not** a universal rollback, and a refused trim is not an error:
+
+- Flash Next (`qwen4_exp`) returns `false` for any non-zero backward trim,
+  because its GDN and PLE state cannot be sliced. Only `trim_to(0)`, which
+  resets the cache, is accepted.
+- Physically rotated sliding-window layers accept a rollback only within their
+  slack: a token is still resident iff the rollback does not exceed
+  `capacity - window`. A protected prefix ring refuses every real trim.
+- An invalid (larger) `prefix_len` is clamped to the current length and
+  reported as invalid, so a release build cannot extend the cache and make
+  attention read unwritten positions.
+- A successful trim clears the retained fast-path views (they still span the
+  pre-trim write end), releases fully-empty trailing paged blocks back to the
+  pool, and rewinds DeepSeek V4 compressor bookkeeping to the new boundary.
+
+**Limitation**: `trim_to` never resets `linear_layers`. Linear attention
 recurrent state (Qwen3.5 GatedDeltaNet) is sequential and cannot be rolled
-back. The speculative decode retry interval is adjusted for linear-attention
-requests to compensate.
+back, which is why a linear or GDN checkpoint is only stored when the cache
+already sits at the cut. The speculative decode retry interval is adjusted for
+linear-attention requests to compensate.
 
 ---
 
@@ -253,6 +272,54 @@ MLX runner route metadata keeps that distinction visible:
 | `ax_mlx_prefix_cache_demoted_bytes_kib` | Serialized bytes retained via demote-on-evict, rounded to KiB |
 | `ax_mlx_prefix_cache_demotion_skips` | Native removals that kept the drop behavior (kill switch off, portable policy disabled, oversized or unserializable snapshot, already-resident snapshot, or portable budget refusal) |
 
+## Value-Priced Restore and Semantic Cuts (Opt-In)
+
+Two further prefix features are opt-in and both default off. They are resolved
+once per process in `ax-engine-core` so the request edge and the MLX runner
+agree: the edge must not pay to derive cut hints when the runner would ignore
+them, and the runner must not build a cut plan for a request that carries none.
+The truthy set is `1`, `true`, `yes`, or `on` (trimmed, case-insensitive);
+unset, empty, `0`, `false`, `off`, `no`, and junk all keep the feature off.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `AX_MLX_PREFIX_RESTORE_VALUE` | off | Ranks restore candidates by the prefill time they save minus their incremental restore cost, and restores only a candidate that beats the prefix the scheduler claim would restore anyway. Candidates must be strictly longer than that baseline and must clear a 10 ms safety margin; unknown cost inputs fail closed to the baseline, and ties prefer the longer prefix. |
+| `AX_MLX_PREFIX_SEMANTIC_CUTS` | off | Captures in-place snapshots at assistant-message starts supplied by the request edge, so a later turn can restore from a conversational boundary rather than only the terminal anchor or the block-aligned prefix. |
+
+`AX_MLX_PREFIX_RESTORE_VALUE` compares the fresh prefill cost of the candidate
+against the baseline (`benefit(p) = [C(p) - C(b)] - [restore_us(p) -
+restore_us(b)]`), charging only the *incremental* restore cost because both
+restores pay their own materialization. It only chooses among snapshots that
+already exist, so it **never changes the emitted text**; with the switch off,
+the historical longest-prefix decision is unchanged.
+
+`AX_MLX_PREFIX_SEMANTIC_CUTS` is partition-changing by design. Cut points are
+assistant-turn token starts taken from the prompt's single full tokenization,
+at least 256 tokens apart, with at most the three most recent kept below
+`prompt_len`; a terminal anchor aligned to `lcm(block_size_tokens, 256)` is
+always added as a fallback. Capturing a cut splits the cold prefill at that
+position, and the setting is part of the execution signature, so a snapshot is
+never adopted across a switch change. The exactness contract is therefore:
+
+- a semantic-cut run equals a cold run **under the same setting**, not
+  necessarily the switch-off output (that run used a different prefill chunk
+  partition);
+- restore-value never changes text at all, because it only picks among
+  existing snapshots.
+
+Both features ride the same durable identity. The disk key is canonical
+schema **v4** (`ax.mlx.disk_prefix_key.v4`), which additionally commits to the
+resolved KV quantization, the KV storage dtype, and the execution signature
+(arithmetic route, prefill split strategy, MLX/GPU identity). A v3 key can
+never alias a v4 key, so upgrading is a natural miss rather than a restore of
+state produced under a different execution contract.
+
+Telemetry: `ax_mlx_prefix_cache_semantic_cut_snapshots` counts stored
+semantic cuts, and the value path reports each decision separately as
+`ax_mlx_prefix_cache_restore_value_semantic_cut`,
+`ax_mlx_prefix_cache_restore_value_priced_restore`, or
+`ax_mlx_prefix_cache_restore_value_ram_baseline`.
+
 ## Disk-Durable Prefix Cache (Opt-In)
 
 The MLX runner can add a second, file-backed prefix-cache tier below the
@@ -305,7 +372,7 @@ sensitive local state; encryption at rest is not yet provided.
 
 ### File and Integrity Contract
 
-Each entry is named by the SHA-256 of canonical key schema **v3** bytes and uses
+Each entry is named by the SHA-256 of canonical key schema **v4** bytes and uses
 the `.axkv` extension. Outer file format **v3** stores:
 
 - `AXKV` magic and file version `3` (v1/v2 are clean misses);
@@ -781,25 +848,29 @@ tiered prefix-cache package): any persisted prefix material must round-trip
 through a canonical key and an integrity-checked file format, and **any
 mismatch must fall back to recomputation**. Partial trust is forbidden.
 
-### Canonical key encoding (schema v3)
+### Canonical key encoding (schema v4)
 
 `ax_engine_mlx::disk_prefix_cache::canonical_key_bytes` produces the byte
 string used to derive each file's on-disk name (SHA-256 of the bytes, hex,
 plus `.axkv` extension). Encoding is length-prefixed and domain-separated by
-`ax.mlx.disk_prefix_key.v3`. A field addition is a **key-schema version
-bump**, not a backwards-compatible extension.
+`ax.mlx.disk_prefix_key.v4`. A field addition is a **key-schema version
+bump**, not a backwards-compatible extension, and a v3 key can never alias a
+v4 key.
 
 Committed fields (order fixed in code):
 
-1. domain string `ax.mlx.disk_prefix_key.v3`
+1. domain string `ax.mlx.disk_prefix_key.v4`
 2. `model_id`
 3. `artifact_fingerprint_sha256` (content-derived; path/mtime alone is not enough)
 4. `route_policy`
 5. `layer_layout`
-6. `kv_payload_version` (`MlxKVCache::serialize_version()`, currently **4**)
-7. `block_size_tokens`
-8. `token_count`
-9. `token_content_sha256` (SHA-256 over little-endian token IDs)
+6. `kv_quantization` (resolved per-layer quantization identity, never the raw request option)
+7. `kv_dtype` (resolved KV storage dtype)
+8. `execution_signature` (arithmetic route, prefill split strategy, and the MLX/GPU identity that selects kernels)
+9. `kv_payload_version` (`MlxKVCache::serialize_version()`, currently **4**)
+10. `block_size_tokens`
+11. `token_count`
+12. `token_content_sha256` (SHA-256 over little-endian token IDs)
 
 When a model source cannot supply a content fingerprint, L2 is ineligible and
 telemetry reports `ArtifactIdentityUnavailable` (reason code 10). The disk

@@ -298,6 +298,37 @@ invite a scoped PR after the evidence and validation gate are agreed.
 Use `--disable-ngram-acceleration` when a direct same-policy comparison row is
 required. AX Engine does not expose deprecated decode-mode aliases.
 
+### Environment switches
+
+These process-environment keys are read from the environment, not from CLI
+flags. Placement and scheduling keys change *which* memory or route a request
+uses, never the model arithmetic; each row says what the default path is and
+what the kill switch restores.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `AX_MLX_PRICED_MEMORY` | on (unset is on) | Auto placement is decided by the priced memory plan: non-expert weights, KV cache, GDN/QSA state, prefill scratch, and runtime reserves are priced separately from the expert weights and the never-resident n-gram table. `0`, `false`, `no`, or `off` restores the legacy 48 GiB fixed-headroom formula. Placement only: the same weights and kernels run either way. |
+| `AX_STREAM_EXPERT_CACHE_BYTES` | unset (no operator byte cap) | Explicit byte budget for resident expert layer stacks. A positive integer wins over the priced plan's remainder; blank, zero, and unparsable values mean "no byte cap", leaving `AX_STREAM_EXPERT_LAYERS` as the only limit. Placement only. |
+| `AX_MLX_MEMORY_CEILING_BYTES` | unset (derived from host RAM) | Explicit load-admission ceiling in bytes. When RAM is known the value is clamped to `RAM - 4 GiB` so an override can never page the kernel out; when RAM is unknown it is used as is. Blank, zero, and unparsable values keep the derived ceiling. Placement only. |
+| `AX_FLASH_NEXT_MTP_COST` | on | Enables the measured Flash Next MTP cost policy. Under the `auto` policy a head whose rounds lose to direct decode is parked for the rest of the request, which switches the mechanism to direct decode without changing the accepted greedy token stream. `0` restores the pre-WP03 gate order exactly: the machine never arms and `cost_direct` stays false. `AX_FLASH_NEXT_MTP_COST_POLICY` selects the policy; `required` reports `would_park` and never parks, `disabled` never measures. |
+| `AX_MLX_BATCHED_STATE_MATERIALIZE` | on | Schedules the batched gated-delta conv/recurrent state for evaluation (`async_eval`, not a blocking `eval`) at the end of every batched decode step, so a long cohort does not keep one suspended graph per step alive. `0` restores the purely lazy state update. State bytes and logits are unchanged. |
+| `AX_FLASH_NEXT_NORM_CONTRACT` | on (strict) | The Flash Next loader refuses a pack whose RMSNorm gain contract (raw delta versus already folded) is omitted or contradictory, instead of guessing from tensor values or file names. `0` (read once, needs a process restart) restores the legacy loader that treated an omitted `weight_sanitize` as already folded. Metadata only; a correctly declared pack loads identically. |
+| `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` | off | Scores Flash Next QSA blocks in query tiles so a long prefill chunk is not rejected by the monolithic 256 MiB score workspace. Tiling runs only for the MLX 0.32.4 GEMM shapes whose tests match the monolithic score bits, so those gated shapes are bit-identical; every other shape keeps monolithic scores and the 256 MiB check. `1` opts in; unset or `0` keeps the default path. This does not by itself change the outer prefill chunk. |
+| `AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK` | unset | With tiled scores on and the runtime gate open (GPU architecture, MLX version, production score contract), runs the outer Flash Next prefill at `2048`, `4096`, or `8192` instead of the long-prompt clamp. Any other value, or tiled scores off, keeps the current chunk. This changes the prefill partition, so it is a measurement configuration: compare same-chunk A/B, and treat a chunk the monolithic check would reject as not a baseline. |
+| `AX_MLX_TREE_VERIFY` | off | Verifies a DFlash2 draft as a tree of at most four nodes (top-2 tokens at the first two draft positions) instead of one linear chain. Each root-to-leaf branch runs the canonical greedy verify on its own cache clone; the longest accepted prefix wins and a tie keeps the primary branch, so only target-greedy-accepted tokens are emitted and greedy output is identical to the linear path. `1` opts in; unset or `0` keeps the linear DFlash2 path. |
+| `AX_MLX_IDLE_TICK_MS` | `0` (off) | Positive interval in milliseconds (whitespace trimmed). After the last request the model worker submits one tiny GPU copy on that cadence so macOS keeps the model's buffers wired. The tick is skipped while a request runs, under memory pressure, and after shutdown; it never changes the wired, cache, or memory limit and does not affect model output. Unset, empty, non-numeric, or `0` leaves the worker on its blocking receive. Delegated builds ignore it. |
+| `AX_MLX_IDLE_TICK_MAX_S` | `900` | Seconds to keep ticking after the last request. Unset, empty, or non-numeric values keep 900; `0` is a zero window. Only bounds the keep-warm episode. |
+| `MLX_LIB_DIR` / `AX_MLX_EXPERIMENT_COMMIT` | unset | Build-time only, experiment path. `MLX_LIB_DIR` (with `MLX_INCLUDE_DIR`) is the first resolution choice for the MLX include and library directories. A dev-suffixed MLX version header is linked only when `AX_MLX_EXPERIMENT_COMMIT` names the exact full 40-hex commit embedded in that header and in the built `libmlx` provenance bytes; otherwise the build fails. Production stays on the pinned MLX release, and no bit-exactness claim applies to a dev build. |
+
+Memory rule: the usable ceiling is `RAM - max(8 GiB, 10% RAM)`, so a 128 GiB
+host reserves 12.8 GiB and admits about 115.2 GiB. The Metal
+`recommendedMaxWorkingSetSize` is reported but never bounds the ceiling: a
+measured Flash Next session ran resident above it. With the priced plan on,
+Auto keeps the whole pack resident when the priced working set fits under the
+ceiling, streams experts with a byte-budgeted cache when only the fixed part
+fits, and refuses the load when even the fixed part does not fit. A priced
+cache too small to hold one layer stack is refused rather than thrashed.
+
 ## Benchmarking
 
 Repo-owned MLX runtime throughput is benchmarked through the MLX
@@ -345,7 +376,7 @@ Interpretation rule:
 
 ### Phase 1 — mlx-sys crate
 
-- `bindgen` over `crates/mlx-sys/native/ax_shim.h`, linked against Homebrew `libmlx`
+- `bindgen` over `crates/mlx-sys/native/ax_shim.h`, originally linked against Homebrew `libmlx` (the build now links the pinned MLX wheel and refuses Homebrew unless `AX_MLX_ALLOW_HOMEBREW=1`)
 - Safe `MlxArray` (RAII, `Drop` calls `mlx_array_free`)
 - Core ops: matmul, add, multiply, softmax, reshape, transpose, astype, take,
   slice, slice_update, zeros, as_strided, repeat_axis, concatenate, argmax

@@ -222,6 +222,79 @@ Reference test:
 
 ---
 
+## Adaptive Prefill, Pressure Requeue, and Cancel Handoff (Opt-In)
+
+Three scheduling behaviours are opt-in. Each is enabled only when its
+environment variable is exactly `1` at engine construction (tests use the
+matching setter), and any other value, including unset, keeps the historical
+path:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `AX_ENGINE_ADAPTIVE_PREFILL` | off | Chooses a per-request text-prefill quantum instead of one chunk for the whole remaining prompt. |
+| `AX_MLX_PRESSURE_REQUEUE` | off | Spills an eligible prefill to restorable state when the MLX allocator nears its limit, then requeues it. |
+| `AX_MLX_CANCEL_KEEP_PREFIX` | off | Keeps the accepted prompt prefix of a cancelled request so a resubmission can adopt it. |
+
+### Per-request quantum
+
+The default policy is 2048 tokens while the engine is idle and 512 while a
+decode is executable in the same step. A prefill is not a decode competitor:
+the 512 quantum is selected only when some *other* candidate is actually a
+decode. An explicit prefill cap, fair share, pressure cap, global budget, and
+the 2048-token model safety cap each take the minimum. Multimodal prefills are
+never split.
+
+The quantum the scheduler applied is published per request as
+`ax_scheduler_adaptive_prefill_chunk_tokens.<request_id>`; the runner reads
+that key, so its internal chunk cannot shrink or enlarge the scheduler's
+choice. The unscoped `ax_scheduler_adaptive_prefill_chunk_tokens` key is the
+first text prefill's quantum and is telemetry only.
+
+### Frozen quantum for chunk-sensitive models
+
+For linear/GDN, MLA, DeepSeek V4, and Flash Next QSA models the first text
+quantum is frozen for the request and later steps reuse it: a decode or
+pressure step must not shrink a chunk and invalidate the recurrent state the
+model carries. A frozen quantum is never shrunk mid-request; when a step
+cannot fund it, the whole remainder is deferred. After 64 consecutive defers a
+partial chunk runs instead of starving, and that request's chunk history is
+marked non-reusable so it is never adopted as a prefix.
+
+### Pressure requeue
+
+The runner samples MLX active bytes, idle cache bytes, the next chunk's
+activation workspace, and the effective MLX limit `L`. The hard line is 90% of
+`L` and the resume line is 80%; the projection is `active - idle_cache +
+next_chunk_workspace`. Over the hard line the engine reclaims the idle cache
+and spills an eligible victim; the victim is admitted again only while the
+projection stays under the resume line.
+
+An eligible victim is a text, MTP-off prefill with a committed cursor and no
+output tokens. A request may be spilled at most twice; a request that still
+cannot proceed falls to the existing 64-step memory-block failure bound.
+Spill order is fixed: checkpoint, then release the restorable state. A failed
+checkpoint releases the request for recomputation, and a failed spill
+reservation writes no checkpoint at all.
+
+### Checkpoints and exactness
+
+Checkpoints go through the runner's prefix cache, and a cursor is adopted only
+when the tier actually accepted the snapshot and the adopter's chunk history
+matches the stored history and execution signature. A chunk-history mismatch
+is a miss, including the non-reusable mark written after the 64-defer fallback.
+
+Linear, GDN, and QSA models checkpoint only at exact positions: the runner
+stores a snapshot only when the cache already sits at the cut. `trim_to`
+cannot roll recurrent state back, so a longer cache is a counted miss rather
+than a trimmed snapshot that would silently carry post-cut state.
+
+Cancel handoff follows the same contract. Cancelling a request checkpoints
+only its accepted prompt prefix, never unconfirmed tokens, and a later
+resubmission of the same prefix restores it; the cancel checkpoint is
+idempotent per request.
+
+---
+
 ## Batch Routing and Route Compatibility
 
 Each request carries a `RouteMetadata` that describes how the model runner
