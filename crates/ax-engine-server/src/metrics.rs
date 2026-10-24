@@ -159,6 +159,24 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             .generation_completed_requests_total
             .load(Ordering::Relaxed),
     );
+    append_counter(
+        &mut body,
+        "ax_engine_idle_residency_ticks_total",
+        "Idle GPU keep-warm copies that completed. A false touch from a deterministic or delegated runner is not counted.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.idle_residency_tick_count())
+            .sum(),
+    );
+    append_counter(
+        &mut body,
+        "ax_engine_idle_residency_failures_total",
+        "Idle GPU keep-warm touches that failed. A false result from a deterministic or delegated runner is not a failure.",
+        lives
+            .iter()
+            .map(|live| live.generation_service.idle_residency_failure_count())
+            .sum(),
+    );
 
     let request_owners = state.request_owner_telemetry();
     for (name, help, value) in [

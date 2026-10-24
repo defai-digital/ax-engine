@@ -2,6 +2,10 @@ use crate::generation::{
     GenerationKind, GenerationProgress, GenerationStrategyDescriptor, WorkUnitKind,
 };
 use crate::ids::{RequestId, StepId};
+use crate::prefill_handoff::{
+    ADAPTIVE_PREFILL_CHUNK_ROUTE_KEY, AdaptivePrefillCapInputs, PrefillChunkPolicy,
+    adaptive_text_prefill_cap,
+};
 use crate::request::{RequestSnapshot, RequestState};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -33,6 +37,10 @@ pub struct SchedulerInput {
     /// tokens and `Some(0)` defers every prefill (the engine is repaying
     /// decode debt). Steps without a decode ignore it.
     pub prefill_cap_while_decoding: Option<u32>,
+    /// `AX_ENGINE_ADAPTIVE_PREFILL`. Off keeps the historical chunk choice.
+    pub adaptive_prefill: bool,
+    pub prefill_chunk_policy: PrefillChunkPolicy,
+    pub model_prefill_safety_cap: u32,
 }
 
 impl SchedulerInput {
@@ -55,6 +63,9 @@ impl SchedulerInput {
             available_kv_blocks: u32::MAX,
             total_kv_blocks: u32::MAX,
             prefill_cap_while_decoding: None,
+            adaptive_prefill: false,
+            prefill_chunk_policy: PrefillChunkPolicy::default(),
+            model_prefill_safety_cap: 0,
         }
     }
 }
@@ -489,6 +500,8 @@ impl Scheduler {
         // route without letting one route hold the anchor for a whole
         // generation. Every count is 0 until a route conflict actually defers
         // someone, so the ordering degenerates to (mode, arrival, id).
+        // Adaptive prefill changes the chunk size only. Same-mode order stays
+        // FIFO with route-deferral rotation.
         candidates.sort_by_key(|(snapshot, mode)| {
             (
                 execution_mode_priority(*mode),
@@ -497,6 +510,12 @@ impl Scheduler {
                 snapshot.request_id,
             )
         });
+        // A prefill is not a decode competitor for the idle/decoding quantum.
+        let decode_executable = input.adaptive_prefill
+            && candidates
+                .iter()
+                .any(|(_, mode)| *mode == ExecutionMode::Decode);
+        let mut scheduled_adaptive_quantum: Option<u32> = None;
 
         // Splittable-text prefill candidates share the fair chunk; multimodal
         // prefills stay atomic and are excluded from the fair-N denominator.
@@ -623,6 +642,27 @@ impl Scheduler {
                 }
                 _ => candidate_budget,
             };
+            let adaptive_quantum = (input.adaptive_prefill
+                && mode == ExecutionMode::Prefill
+                && !snapshot.has_multimodal_inputs)
+                .then(|| {
+                    adaptive_text_prefill_cap(AdaptivePrefillCapInputs {
+                        policy: input.prefill_chunk_policy,
+                        decode_executable,
+                        explicit_request_cap: input.max_prefill_tokens_per_request_per_step,
+                        fair_share: fair_active.then_some(fair_chunk),
+                        pressure_cap: pressure_prefill_budget,
+                        // The scheduled slice is already limited by
+                        // `candidate_budget`. The value handed to the runner
+                        // is the chunk size, not this request's leftover.
+                        global_budget: u32::MAX,
+                        model_safety_cap: input.model_prefill_safety_cap,
+                    })
+                });
+            let candidate_budget = match adaptive_quantum {
+                Some(quantum) => candidate_budget.min(quantum),
+                None => candidate_budget,
+            };
 
             let Some(item) = self.build_execution_item(snapshot, candidate_budget) else {
                 // Same accounting as the zero-budget and admission-cap defer
@@ -675,6 +715,12 @@ impl Scheduler {
                 admitted_prefill_requests = admitted_prefill_requests.saturating_add(1);
                 fair_telemetry.admitted_prefills =
                     fair_telemetry.admitted_prefills.saturating_add(1);
+                if !snapshot.has_multimodal_inputs
+                    && scheduled_adaptive_quantum.is_none()
+                    && let Some(quantum) = adaptive_quantum.filter(|quantum| *quantum > 0)
+                {
+                    scheduled_adaptive_quantum = Some(quantum);
+                }
             }
             token_budget.record_scheduled(item.mode, item.scheduled_token_count);
             if requested_tokens > item.scheduled_token_count {
@@ -700,6 +746,13 @@ impl Scheduler {
                 route_metadata_for_batch(route_seed_anchor.as_ref(), batch_mixes_prefill_decode);
             token_budget.append_route_decisions(&mut route_metadata);
             fair_telemetry.append_route_decisions(&mut route_metadata);
+            if let Some(quantum) = scheduled_adaptive_quantum {
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    ADAPTIVE_PREFILL_CHUNK_ROUTE_KEY,
+                    quantum,
+                );
+            }
             if let Some(cap) = decode_cap {
                 route_metadata.crossover_decisions.extend([
                     (

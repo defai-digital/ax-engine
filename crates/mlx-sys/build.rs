@@ -265,11 +265,25 @@ fn library_bytes(lib_dir: &str) -> Option<Vec<u8>> {
 
 /// True when this MLX header declares `scaled_dot_product_attention(..., int window_size, ...)`.
 ///
-/// The probe is syntax-only and is not linked. Failure means the pinned 0.32.4
-/// signature, so the windowed wrapper stays out of the build.
+/// The probe is syntax-only and is not linked. A compile failure means the
+/// pinned signature does not take the window argument, so the windowed
+/// wrapper stays out of the build. A failure to launch the compiler is
+/// warned: a dev machine without `c++` on `PATH` must not lose the
+/// capability silently when `cc` can still find a compiler.
 fn sdpa_window_argument_available(include_dir: &str) -> bool {
-    let status = std::process::Command::new("c++")
-        .arg("-std=c++20")
+    let mut build = cc::Build::new();
+    build.cpp(true).std("c++20");
+    let compiler = match build.try_get_compiler() {
+        Ok(compiler) => compiler,
+        Err(error) => {
+            println!(
+                "cargo:warning=mlx-sys: SDPA window capability probe could not resolve a C++ compiler ({error}); windowed SDPA stays out of this build"
+            );
+            return false;
+        }
+    };
+    let mut command = compiler.to_command();
+    let status = command
         .arg("-fsyntax-only")
         .arg("-Inative")
         .arg(format!("-I{include_dir}"))
@@ -277,7 +291,17 @@ fn sdpa_window_argument_available(include_dir: &str) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
-    matches!(status, Ok(status) if status.success())
+    match status {
+        Ok(status) if status.success() => true,
+        Ok(_) => false,
+        Err(error) => {
+            println!(
+                "cargo:warning=mlx-sys: SDPA window capability probe failed to run {} ({error}); windowed SDPA stays out of this build",
+                compiler.path().display()
+            );
+            false
+        }
+    }
 }
 
 fn enforce_mlx_provenance_and_version(dirs: &MlxDirs, provenance: MlxProvenance) {

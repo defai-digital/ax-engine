@@ -113,6 +113,58 @@ impl RequestManager {
         Ok(request_ids)
     }
 
+    pub(crate) fn memory_blocked_ids(&self) -> Vec<RequestId> {
+        self.sorted_request_ids(|record| record.state == RequestState::BlockedOnMemory)
+    }
+
+    pub(crate) fn unblock_memory_request(
+        &mut self,
+        request_id: RequestId,
+    ) -> Result<(), RequestManagerError> {
+        self.transition_request(request_id, RequestRecord::unblock_memory)
+    }
+
+    pub(crate) fn block_on_memory(
+        &mut self,
+        request_id: RequestId,
+    ) -> Result<(), RequestManagerError> {
+        self.transition_request(request_id, RequestRecord::mark_blocked_on_memory)
+    }
+
+    /// Count one step spent `BlockedOnMemory` without a resume. At
+    /// [`MEMORY_BLOCKED_STEP_LIMIT`] the request fails with the same error
+    /// the scheduler path uses.
+    pub(crate) fn sustain_memory_block(
+        &mut self,
+        request_id: RequestId,
+    ) -> Result<bool, RequestManagerError> {
+        let fail = {
+            let record = self
+                .records
+                .get_mut(&request_id)
+                .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+            if record.state != RequestState::BlockedOnMemory {
+                return Ok(false);
+            }
+            let count = record.memory_blocked_step_count.saturating_add(1);
+            if count >= MEMORY_BLOCKED_STEP_LIMIT {
+                true
+            } else {
+                record.memory_blocked_step_count = count;
+                false
+            }
+        };
+        if fail {
+            self.transition_request(request_id, |record| {
+                record.fail(
+                    "request could not obtain KV capacity within the memory-blocked step limit",
+                )
+            })?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub(crate) fn cancel(&mut self, request_id: RequestId) -> Result<(), RequestManagerError> {
         self.transition_request(request_id, RequestRecord::request_cancel)
     }

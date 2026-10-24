@@ -5,6 +5,7 @@ use crate::ids::{RequestId, StepId};
 use crate::kv::BlockTableView;
 use crate::metal::MetalDispatchTrace;
 use crate::model::NativeModelArtifactsSummary;
+use crate::prefill_handoff::{CheckpointReason, CheckpointReceipt, MemoryPressureSample};
 use crate::request::RequestMultimodalInputs;
 use crate::sampling::StopReason;
 use crate::scheduler::{ExecutionBatch, ExecutionMode, RouteMetadata};
@@ -370,6 +371,35 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     }
 
     fn release_request_state(&self, _request_id: RequestId) {}
+
+    /// Capture at most `committed_limit` tokens before preemption, cancel, or
+    /// a pressure spill releases runner state. The default reports an
+    /// unsupported layout so the engine recomputes and does not claim an SSD
+    /// hit. One call serializes once; this is not a per-chunk portable store.
+    fn checkpoint_request(
+        &self,
+        request_id: RequestId,
+        _reason: CheckpointReason,
+        committed_limit: u32,
+    ) -> CheckpointReceipt {
+        CheckpointReceipt::miss(request_id, committed_limit)
+    }
+
+    /// Drop restorable device state after a committed spill receipt.
+    fn release_restorable_state(&self, _request_id: RequestId) {}
+
+    /// MLX active-memory sample. `None` leaves pressure requeue off.
+    fn memory_pressure_sample(&self) -> Option<MemoryPressureSample> {
+        None
+    }
+
+    /// Return the idle MLX cache to the allocator before a pressure check.
+    fn reclaim_idle_cache(&self) {}
+
+    /// Model-based multi-token prediction is active for this runner.
+    fn mtp_active(&self) -> bool {
+        false
+    }
 
     fn metal_dispatch_trace(&self) -> Option<MetalDispatchTrace> {
         None

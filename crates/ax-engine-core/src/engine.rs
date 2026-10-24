@@ -10,6 +10,11 @@ use crate::ids::{RequestId, StepId};
 use crate::kv::{
     AllocationStatus, FreeResult, KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
+use crate::prefill_handoff::{
+    BackgroundPrefixWriter, CheckpointReason, CommittedPrefix, MAX_PRESSURE_SPILLS,
+    MODEL_PREFILL_SAFETY_CAP, MemoryPressureSample, PrefillChunkPolicy, SpillVictimProfile,
+    env_switch_enabled, spill_victim_eligible,
+};
 use crate::request::RequestRecord;
 use crate::request::RequestState;
 use crate::request::RequestSubmission;
@@ -130,6 +135,24 @@ pub struct EngineCore {
     scratch_logits_index: HashMap<RequestId, usize>,
     scratch_logits_handles: HashSet<RequestId>,
     scratch_item_index: HashMap<RequestId, usize>,
+    adaptive_prefill: bool,
+    prefill_chunk_policy: PrefillChunkPolicy,
+    pressure_requeue: bool,
+    cancel_keep_prefix: bool,
+    committed_prefixes: BTreeMap<RequestId, CommittedPrefix>,
+    chunk_histories: BTreeMap<RequestId, Vec<u32>>,
+    spill_attempts: BTreeMap<RequestId, u8>,
+    spill_excluded: BTreeSet<RequestId>,
+    spill_reservations: BTreeMap<RequestId, u64>,
+    spill_budget_bytes: u64,
+    spill_reserved_bytes: u64,
+    ssd_spill_hits: u32,
+    spill_preemption: PreemptionMetrics,
+    cancel_checkpoint_ids: BTreeSet<RequestId>,
+    cancel_checkpoints: Vec<CommittedPrefix>,
+    cancel_checkpoint_attempts: u32,
+    prefix_writer: BackgroundPrefixWriter,
+    prefix_writer_started: bool,
 }
 
 impl EngineCore {
@@ -161,7 +184,7 @@ impl EngineCore {
         R: ExecutionRunner + 'static,
         S: TokenSampler + 'static,
     {
-        Self {
+        let mut engine = Self {
             request_manager: RequestManager::new(kv_config.cache_group_id),
             kv_manager: KvManager::new(kv_config),
             scheduler: Scheduler::new(),
@@ -182,7 +205,77 @@ impl EngineCore {
             scratch_logits_index: HashMap::with_capacity(32),
             scratch_logits_handles: HashSet::with_capacity(32),
             scratch_item_index: HashMap::with_capacity(32),
+            adaptive_prefill: env_switch_enabled("AX_ENGINE_ADAPTIVE_PREFILL"),
+            prefill_chunk_policy: PrefillChunkPolicy::default(),
+            pressure_requeue: env_switch_enabled("AX_MLX_PRESSURE_REQUEUE"),
+            cancel_keep_prefix: env_switch_enabled("AX_MLX_CANCEL_KEEP_PREFIX"),
+            committed_prefixes: BTreeMap::new(),
+            chunk_histories: BTreeMap::new(),
+            spill_attempts: BTreeMap::new(),
+            spill_excluded: BTreeSet::new(),
+            spill_reservations: BTreeMap::new(),
+            spill_budget_bytes: 64 * 1024 * 1024,
+            spill_reserved_bytes: 0,
+            ssd_spill_hits: 0,
+            spill_preemption: PreemptionMetrics::default(),
+            cancel_checkpoint_ids: BTreeSet::new(),
+            cancel_checkpoints: Vec::new(),
+            cancel_checkpoint_attempts: 0,
+            prefix_writer: BackgroundPrefixWriter::disabled(),
+            prefix_writer_started: false,
+        };
+        engine.ensure_prefix_writer();
+        engine
+    }
+
+    fn ensure_prefix_writer(&mut self) {
+        if self.prefix_writer_started || !(self.pressure_requeue || self.cancel_keep_prefix) {
+            return;
         }
+        self.prefix_writer = BackgroundPrefixWriter::start();
+        self.prefix_writer_started = true;
+    }
+
+    /// `AX_ENGINE_ADAPTIVE_PREFILL`. The historical chunk choice stays in
+    /// place while this is off.
+    pub fn set_adaptive_prefill(&mut self, enabled: bool) {
+        self.adaptive_prefill = enabled;
+    }
+
+    /// `AX_MLX_PRESSURE_REQUEUE`.
+    pub fn set_pressure_requeue(&mut self, enabled: bool) {
+        self.pressure_requeue = enabled;
+        if enabled {
+            self.ensure_prefix_writer();
+        }
+    }
+
+    /// `AX_MLX_CANCEL_KEEP_PREFIX`.
+    pub fn set_cancel_keep_prefix(&mut self, enabled: bool) {
+        self.cancel_keep_prefix = enabled;
+        if enabled {
+            self.ensure_prefix_writer();
+        }
+    }
+
+    pub fn set_spill_budget_bytes(&mut self, bytes: u64) {
+        self.spill_budget_bytes = bytes;
+    }
+
+    pub fn ssd_spill_hits(&self) -> u32 {
+        self.ssd_spill_hits
+    }
+
+    pub fn spill_attempts_for(&self, request_id: RequestId) -> u8 {
+        self.spill_attempts.get(&request_id).copied().unwrap_or(0)
+    }
+
+    pub fn cancel_checkpoints(&self) -> &[CommittedPrefix] {
+        &self.cancel_checkpoints
+    }
+
+    pub fn cancel_checkpoint_attempts(&self) -> u32 {
+        self.cancel_checkpoint_attempts
     }
 
     pub fn request_manager(&self) -> &RequestManager {
@@ -308,6 +401,9 @@ impl EngineCore {
     }
 
     pub fn cancel(&mut self, request_id: RequestId) -> Result<(), EngineCoreError> {
+        if self.cancel_keep_prefix && self.request_manager.record(request_id).is_some() {
+            self.enqueue_cancel_checkpoint(request_id);
+        }
         self.request_manager.cancel(request_id)?;
         let _ = self.drain_terminal_cleanup()?;
         Ok(())
@@ -337,7 +433,21 @@ impl EngineCore {
         // must not admit or retry requests for a step that then fails.
         let step_id = self.allocate_step_id()?;
         let mut cleanup_results = self.drain_terminal_cleanup()?;
-        let retried_memory_blocked = self.request_manager.retry_memory_blocked()?;
+        self.spill_excluded.clear();
+        self.spill_preemption = PreemptionMetrics::default();
+        let pressure_sample = if self.pressure_requeue {
+            self.pressure_sample_after_reclaim()
+        } else {
+            None
+        };
+        let retried_memory_blocked = if let Some(sample) = pressure_sample {
+            self.retry_pressure_blocked(sample)?
+        } else {
+            self.request_manager.retry_memory_blocked()?
+        };
+        if pressure_sample.is_some_and(MemoryPressureSample::over_hard) {
+            self.spill_one_victim()?;
+        }
         let admitted_requests = self.request_manager.admit_waiting()?;
         step_span.record("step_id", step_id.0);
         trace!(
@@ -362,6 +472,21 @@ impl EngineCore {
         );
         let (mut schedule_plan, prefix_hits, preemption_metrics) =
             self.resolve_kv_schedule_plan(schedule_plan, global_token_budget)?;
+        // A failed spill already recomputed the victim. Keep it Runnable and
+        // out of this step's batch; the progress invariant still requires
+        // every Runnable request to appear on the plan.
+        for request_id in self.spill_excluded.iter().copied() {
+            let runnable = self
+                .request_manager
+                .record(request_id)
+                .is_some_and(|record| record.state == RequestState::Runnable);
+            let already_planned = schedule_plan.selected_requests.contains(&request_id)
+                || schedule_plan.deferred_requests.contains(&request_id)
+                || schedule_plan.memory_blocked_requests.contains(&request_id);
+            if runnable && !already_planned {
+                schedule_plan.deferred_requests.push(request_id);
+            }
+        }
         trace!(
             scheduled_requests = schedule_plan.selected_requests.len(),
             deferred_requests = schedule_plan.deferred_requests.len(),
@@ -464,8 +589,12 @@ impl EngineCore {
                     .count())
             .min(u32::MAX as usize) as u32,
             evictions,
-            preempted_requests: preemption_metrics.preempted_requests,
-            preempted_tokens: preemption_metrics.preempted_tokens,
+            preempted_requests: preemption_metrics
+                .preempted_requests
+                .saturating_add(self.spill_preemption.preempted_requests),
+            preempted_tokens: preemption_metrics
+                .preempted_tokens
+                .saturating_add(self.spill_preemption.preempted_tokens),
             cpu_time_us,
             runner_time_us,
         };
@@ -643,7 +772,7 @@ impl EngineCore {
                 request_id = candidate.0,
                 "preempting a partial prefill stalled by an exhausted pool"
             );
-            self.preempt_request(candidate, &mut preemption_metrics)?;
+            self.preempt_request(candidate, &mut preemption_metrics, true)?;
             // Keep the preempted request out of this step's candidate set.
             // Its retained prefix can otherwise be re-adopted immediately and
             // recreate the same full-pool state before the older prefill gets
@@ -730,7 +859,7 @@ impl EngineCore {
                 let Some(candidate) = self.find_preemption_candidate(rid, &preempted) else {
                     break;
                 };
-                self.preempt_request(candidate, &mut preemption_metrics)?;
+                self.preempt_request(candidate, &mut preemption_metrics, true)?;
                 preempted.insert(candidate);
                 if let Some(pos) = selected_requests.iter().position(|r| *r == candidate) {
                     selected_requests.remove(pos);
@@ -902,6 +1031,7 @@ impl EngineCore {
         &mut self,
         request_id: RequestId,
         metrics: &mut PreemptionMetrics,
+        capture: bool,
     ) -> Result<(), EngineCoreError> {
         let (prompt_tokens, prefix_reuse_enabled) = self
             .request_manager
@@ -915,6 +1045,19 @@ impl EngineCore {
             .ok_or(EngineCoreError::RequestManager(
                 RequestManagerError::UnknownRequest(request_id),
             ))?;
+        if capture && (self.pressure_requeue || self.cancel_keep_prefix) {
+            let committed_limit = self
+                .committed_prefixes
+                .get(&request_id)
+                .map(|prefix| prefix.cut)
+                .unwrap_or(0);
+            let _receipt = self.runner.checkpoint_request(
+                request_id,
+                CheckpointReason::Preempt,
+                committed_limit,
+            );
+        }
+        self.release_reservation(request_id);
         self.runner.release_request_state(request_id);
         self.kv_manager.free(request_id)?;
         self.kv_manager.register_request_with_prefix_reuse(
@@ -1063,6 +1206,18 @@ impl EngineCore {
         input.available_kv_blocks = allocatable_blocks;
         input.total_kv_blocks = kv_config.total_blocks;
         input.prefill_cap_while_decoding = self.prefill_stall.cap();
+        input.adaptive_prefill = self.adaptive_prefill;
+        input.prefill_chunk_policy = self.prefill_chunk_policy;
+        input.model_prefill_safety_cap = if self.adaptive_prefill {
+            MODEL_PREFILL_SAFETY_CAP
+        } else {
+            0
+        };
+        if !self.spill_excluded.is_empty() {
+            input
+                .request_snapshots
+                .retain(|snapshot| !self.spill_excluded.contains(&snapshot.request_id));
+        }
         input
     }
 
@@ -1216,6 +1371,7 @@ impl EngineCore {
             }
         };
         self.reconcile_runner_appended_kv(&execution_batch)?;
+        self.publish_committed_prefixes(&execution_batch);
 
         execution_batch.route_metadata = runner_output.route_metadata.clone();
         schedule_plan.execution_batch = Some(execution_batch);
@@ -1972,6 +2128,210 @@ impl EngineCore {
         ]);
         execution_batch.items = allocated_items;
         Some(execution_batch)
+    }
+
+    fn handoff_enabled(&self) -> bool {
+        self.pressure_requeue || self.cancel_keep_prefix
+    }
+
+    fn publish_committed_prefixes(&mut self, batch: &ExecutionBatch) {
+        if !self.handoff_enabled() {
+            return;
+        }
+        for item in &batch.items {
+            if item.mode != ExecutionMode::Prefill {
+                continue;
+            }
+            let Some(record) = self.request_manager.record(item.request_id) else {
+                continue;
+            };
+            if record.state.is_terminal() {
+                continue;
+            }
+            let cut = record.processed_prompt_tokens;
+            let Ok(cut_index) = usize::try_from(cut) else {
+                continue;
+            };
+            if cut == 0 || cut_index > record.prompt_tokens.len() {
+                continue;
+            }
+            let previous = self
+                .committed_prefixes
+                .get(&item.request_id)
+                .map(|prefix| prefix.cut)
+                .unwrap_or(0);
+            if cut <= previous {
+                continue;
+            }
+            let tokens = record.prompt_tokens[..cut_index].to_vec();
+            let history = self.chunk_histories.entry(item.request_id).or_default();
+            history.push(cut - previous);
+            let prefix = CommittedPrefix::from_committed_tokens(tokens, history.clone(), false);
+            self.committed_prefixes.insert(item.request_id, prefix);
+        }
+    }
+
+    fn enqueue_cancel_checkpoint(&mut self, request_id: RequestId) {
+        if !self.cancel_checkpoint_ids.insert(request_id) {
+            return;
+        }
+        let Some(prefix) = self.committed_prefixes.get(&request_id).cloned() else {
+            return;
+        };
+        self.cancel_checkpoint_attempts = self.cancel_checkpoint_attempts.saturating_add(1);
+        self.cancel_checkpoints.push(prefix.clone());
+        if !self.prefix_writer.try_submit(prefix.snapshot) {
+            warn!(
+                request_id = request_id.0,
+                "prefix checkpoint handoff was not queued"
+            );
+        }
+    }
+
+    fn pressure_sample_after_reclaim(&mut self) -> Option<MemoryPressureSample> {
+        let sample = self.runner.memory_pressure_sample()?;
+        if sample.limit_bytes == 0 {
+            return None;
+        }
+        if sample.idle_cache_bytes == 0 {
+            return Some(sample);
+        }
+        self.runner.reclaim_idle_cache();
+        let Some(after) = self.runner.memory_pressure_sample() else {
+            return Some(MemoryPressureSample {
+                idle_cache_bytes: 0,
+                ..sample
+            });
+        };
+        if after.limit_bytes == 0 {
+            return None;
+        }
+        Some(MemoryPressureSample {
+            active_bytes: after.active_bytes,
+            limit_bytes: after.limit_bytes,
+            idle_cache_bytes: 0,
+            next_chunk_workspace_bytes: after.next_chunk_workspace_bytes,
+        })
+    }
+
+    fn retry_pressure_blocked(
+        &mut self,
+        sample: MemoryPressureSample,
+    ) -> Result<Vec<RequestId>, EngineCoreError> {
+        let blocked = self.request_manager.memory_blocked_ids();
+        let mut retried = Vec::new();
+        for request_id in blocked {
+            if sample.ready_to_resume() {
+                if self.resume_spilled_prefix(request_id)? {
+                    self.request_manager.unblock_memory_request(request_id)?;
+                    retried.push(request_id);
+                }
+            } else {
+                self.request_manager.sustain_memory_block(request_id)?;
+            }
+        }
+        Ok(retried)
+    }
+
+    /// `true` when the caller should unblock a request that kept its cursor.
+    /// A miss recomputes and leaves the request runnable.
+    fn resume_spilled_prefix(&mut self, request_id: RequestId) -> Result<bool, EngineCoreError> {
+        let adopt = self
+            .committed_prefixes
+            .get(&request_id)
+            .is_some_and(|prefix| prefix.device_capture);
+        if adopt {
+            return Ok(true);
+        }
+        self.recompute_for_spill(request_id)?;
+        Ok(false)
+    }
+
+    fn spill_one_victim(&mut self) -> Result<(), EngineCoreError> {
+        let Some(victim) = self.select_spill_victim() else {
+            return Ok(());
+        };
+        let attempts = self.spill_attempts.get(&victim).copied().unwrap_or(0);
+        if attempts >= MAX_PRESSURE_SPILLS {
+            return Ok(());
+        }
+        self.spill_attempts
+            .insert(victim, attempts.saturating_add(1));
+        self.spill_excluded.insert(victim);
+        let Some(prefix) = self.committed_prefixes.get(&victim).cloned() else {
+            return self.recompute_for_spill(victim);
+        };
+        let bytes = u64::try_from(prefix.snapshot.len())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        if !self.try_reserve_spill(victim, bytes) {
+            return self.recompute_for_spill(victim);
+        }
+        let receipt =
+            self.runner
+                .checkpoint_request(victim, CheckpointReason::PressureSpill, prefix.cut);
+        if receipt.adopts_cursor(prefix.cut) {
+            self.runner.release_restorable_state(victim);
+            self.request_manager.block_on_memory(victim)?;
+            self.ssd_spill_hits = self.ssd_spill_hits.saturating_add(1);
+            if let Some(stored) = self.committed_prefixes.get_mut(&victim) {
+                stored.device_capture = true;
+            }
+            return Ok(());
+        }
+        self.release_reservation(victim);
+        self.recompute_for_spill(victim)
+    }
+
+    fn select_spill_victim(&self) -> Option<RequestId> {
+        let mtp_active = self.runner.mtp_active();
+        let mut best: Option<(crate::ids::SequenceNo, RequestId)> = None;
+        for record in self.request_manager.records_iter() {
+            let profile = SpillVictimProfile {
+                text: record.multimodal_inputs.is_empty()
+                    && record.generation_kind == GenerationKind::Autoregressive,
+                mtp_active,
+                generated_tokens: u32::try_from(record.generated_tokens.len()).unwrap_or(u32::MAX),
+                processed_prompt_tokens: record.processed_prompt_tokens,
+                prompt_len: u32::try_from(record.prompt_tokens.len()).unwrap_or(u32::MAX),
+                runnable: record.state == RequestState::Runnable,
+                spill_attempts: self
+                    .spill_attempts
+                    .get(&record.request_id)
+                    .copied()
+                    .unwrap_or(0),
+            };
+            if !spill_victim_eligible(profile) {
+                continue;
+            }
+            let candidate = (record.arrival_sequence, record.request_id);
+            if best.is_none_or(|current| candidate > current) {
+                best = Some(candidate);
+            }
+        }
+        best.map(|(_, request_id)| request_id)
+    }
+
+    fn recompute_for_spill(&mut self, request_id: RequestId) -> Result<(), EngineCoreError> {
+        let mut metrics = PreemptionMetrics::default();
+        self.preempt_request(request_id, &mut metrics, false)?;
+        self.spill_preemption = self.spill_preemption.merge(metrics);
+        Ok(())
+    }
+
+    fn try_reserve_spill(&mut self, request_id: RequestId, bytes: u64) -> bool {
+        if self.spill_reserved_bytes.saturating_add(bytes) > self.spill_budget_bytes {
+            return false;
+        }
+        self.spill_reserved_bytes = self.spill_reserved_bytes.saturating_add(bytes);
+        self.spill_reservations.insert(request_id, bytes);
+        true
+    }
+
+    fn release_reservation(&mut self, request_id: RequestId) {
+        if let Some(bytes) = self.spill_reservations.remove(&request_id) {
+            self.spill_reserved_bytes = self.spill_reserved_bytes.saturating_sub(bytes);
+        }
     }
 
     fn drain_terminal_cleanup(&mut self) -> Result<Vec<FreeResult>, EngineCoreError> {
@@ -4745,7 +5105,7 @@ mod tests {
             .unwrap();
         engine.step(8, true).unwrap();
         engine
-            .preempt_request(RequestId(1), &mut PreemptionMetrics::default())
+            .preempt_request(RequestId(1), &mut PreemptionMetrics::default(), true)
             .unwrap();
         let outcome = engine.step(8, true).unwrap();
         let item = &outcome

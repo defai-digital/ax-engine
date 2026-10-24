@@ -1522,6 +1522,9 @@ pub struct MlxRunner {
     rotating_sliding_decode: bool,
     /// Optional mlx_lm-style `clear_cache` cadence for the direct decode pipeline.
     direct_clear_cache_cadence: u32,
+    /// Effective MLX memory limit in bytes (`0` when the limit is unknown).
+    /// Pressure requeue uses 90% / 80% of this value and stays off at `0`.
+    mlx_memory_limit: u64,
     /// Weight-layout snapshot computed once at construction. `runner.run`
     /// emits this as `ax_mlx_dense_ffn_gate_up_packed_layers` /
     /// `ax_mlx_dense_ffn_split_gate_up_layers` and
@@ -3020,6 +3023,7 @@ impl MlxRunner {
             disk_prefix_writer,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
+            mlx_memory_limit: u64::try_from(memory_limit).unwrap_or(u64::MAX),
             dflash2: None,
             weight_layout_telemetry,
             affine_quant_telemetry,
@@ -4342,6 +4346,51 @@ struct StagedBatchedPrefill {
 }
 
 impl ExecutionRunner for MlxRunner {
+    fn checkpoint_request(
+        &self,
+        request_id: ax_engine_core::RequestId,
+        _reason: ax_engine_core::prefill_handoff::CheckpointReason,
+        committed_limit: u32,
+    ) -> ax_engine_core::prefill_handoff::CheckpointReceipt {
+        // Device KV capture is not available in this tree. Do not call the
+        // portable prefix store (that path is intentionally closed for partial
+        // prefills). A token-prefix blob cannot be adopted, so this is a miss
+        // and the engine recomputes without declaring an SSD hit.
+        let _ = (self, committed_limit);
+        ax_engine_core::prefill_handoff::CheckpointReceipt::miss(request_id, committed_limit)
+    }
+
+    fn release_restorable_state(&self, request_id: ax_engine_core::RequestId) {
+        self.release_request_state(request_id);
+    }
+
+    fn memory_pressure_sample(
+        &self,
+    ) -> Option<ax_engine_core::prefill_handoff::MemoryPressureSample> {
+        if self.mlx_memory_limit == 0 {
+            return None;
+        }
+        let active_bytes = mlx_sys::mempressure::device_active_bytes()?;
+        let idle_cache_bytes = mlx_sys::mempressure::device_cache_bytes().unwrap_or(0);
+        let chunk = self.cold_prefill_chunk.max(self.prefill_chunk).max(1) as u64;
+        Some(ax_engine_core::prefill_handoff::MemoryPressureSample {
+            active_bytes,
+            limit_bytes: self.mlx_memory_limit,
+            idle_cache_bytes,
+            // MLX activation workspace for the next text chunk. This is not a
+            // host RSS or mmap budget.
+            next_chunk_workspace_bytes: chunk.saturating_mul(64 * 1024),
+        })
+    }
+
+    fn reclaim_idle_cache(&self) {
+        clear_cache();
+    }
+
+    fn mtp_active(&self) -> bool {
+        self.mtp_requested && self.has_mtp()
+    }
+
     fn touch_idle_residency(&self) -> bool {
         // The worker thread already made this stream the default at load.
         // Pin it again so the copy and its eval stay on that stream.
@@ -4919,6 +4968,16 @@ impl ExecutionRunner for MlxRunner {
         // here; each row's result is consumed inside its own run_item call
         // below, so per-request bookkeeping and ordering are unchanged.
         let mut staged_prefill = self.stage_batched_prefill(&input, &mut route_metadata);
+        let adaptive_prefill_chunk = input
+            .execution_batch
+            .route_metadata
+            .crossover_decisions
+            .iter()
+            .find_map(|(key, value)| {
+                (*key == ax_engine_core::prefill_handoff::ADAPTIVE_PREFILL_CHUNK_ROUTE_KEY
+                    && *value > 0)
+                    .then_some(*value as usize)
+            });
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
                 continue;
@@ -4939,6 +4998,7 @@ impl ExecutionRunner for MlxRunner {
                 input.request_multimodal_inputs(item.request_id),
                 staged_prefill.remove(&item.request_id.0),
                 input.request_json_grammar(item.request_id),
+                adaptive_prefill_chunk,
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
@@ -6241,6 +6301,7 @@ impl MlxRunner {
         multimodal_inputs: Option<&RequestMultimodalInputs>,
         mut staged_batched_prefill: Option<StagedBatchedPrefill>,
         json_grammar: Option<&Arc<ax_engine_core::grammar::JsonGrammar>>,
+        adaptive_prefill_chunk: Option<usize>,
     ) -> MlxItemRun {
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
@@ -6880,12 +6941,16 @@ impl MlxRunner {
                         );
                     // Long remaining prompts clamp to the pure-thr chunk (512);
                     // short prompts keep the session base (e.g. 1536 for S0 TTFT).
-                    let prefill_chunk_for_request =
+                    // Scheduler adaptive quantum wins over the internal scale so
+                    // the two chunk choices do not cancel each other. Absent
+                    // when `AX_ENGINE_ADAPTIVE_PREFILL` is off.
+                    let prefill_chunk_for_request = adaptive_prefill_chunk.unwrap_or_else(|| {
                         crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
                             base_prefill_chunk,
                             prefill_tokens.len(),
                             &self.cfg.model_family,
-                        );
+                        )
+                    });
                     state.decode_telemetry.record_prefill_chunk_selection(
                         prefill_chunk_for_request,
                         matches!(

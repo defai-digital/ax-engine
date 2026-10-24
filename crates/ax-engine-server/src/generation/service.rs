@@ -591,11 +591,14 @@ struct ServiceState {
     last_step_scheduled_tokens: AtomicU32,
     /// Current sibling-active prefill quantum (tokens/turn).
     adaptive_prefill_tokens: AtomicU32,
-    /// Idle GPU keep-warm copies that completed. Stays zero unless
+    /// Idle GPU keep-warm copies that completed (`Ok(true)`). Stays zero unless
     /// `AX_MLX_IDLE_TICK_MS` is a positive interval and the touch returns true.
     idle_residency_ticks: AtomicU64,
-    /// Idle GPU keep-warm touches that returned false or panicked.
+    /// Idle GPU keep-warm touches that panicked. `Ok(false)` is the normal
+    /// result for deterministic and delegated runners and is not counted here.
     idle_residency_failures: AtomicU64,
+    /// `Ok(false)` touches. Not a failure and not exported as one.
+    idle_residency_noop: AtomicU64,
 }
 
 pub(crate) struct NativeGenerationService {
@@ -778,6 +781,7 @@ impl NativeGenerationService {
             ),
             idle_residency_ticks: AtomicU64::new(0),
             idle_residency_failures: AtomicU64::new(0),
+            idle_residency_noop: AtomicU64::new(0),
         });
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
@@ -1027,14 +1031,17 @@ impl NativeGenerationService {
         }
     }
 
-    #[cfg(test)]
-    fn idle_residency_tick_count(&self) -> u64 {
+    pub(crate) fn idle_residency_tick_count(&self) -> u64 {
         self.state.idle_residency_ticks.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
-    fn idle_residency_failure_count(&self) -> u64 {
+    pub(crate) fn idle_residency_failure_count(&self) -> u64 {
         self.state.idle_residency_failures.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn idle_residency_noop_count(&self) -> u64 {
+        self.state.idle_residency_noop.load(Ordering::Acquire)
     }
 
     pub(crate) async fn shutdown(&self) -> Result<(), GenerationServiceError> {
@@ -1348,7 +1355,12 @@ fn record_idle_tick(
         Ok(true) => {
             state.idle_residency_ticks.fetch_add(1, Ordering::Relaxed);
         }
-        Ok(false) | Err(_) => {
+        // Deterministic and delegated runners return false. That is the
+        // documented no-op, not a failed touch.
+        Ok(false) => {
+            state.idle_residency_noop.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(_) => {
             let prior = state
                 .idle_residency_failures
                 .fetch_add(1, Ordering::Relaxed);
@@ -3758,6 +3770,7 @@ mod tests {
             ),
             idle_residency_ticks: AtomicU64::new(0),
             idle_residency_failures: AtomicU64::new(0),
+            idle_residency_noop: AtomicU64::new(0),
         };
 
         rollback_failed_enqueue(&state);
@@ -3824,18 +3837,20 @@ mod tests {
         )
         .expect("service should start");
         let started = Instant::now();
-        while service.idle_residency_failure_count() == 0 {
+        while service.idle_residency_noop_count() == 0 {
             if started.elapsed() > Duration::from_secs(2) {
                 panic!("idle keep-warm tick did not fire");
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(service.idle_residency_tick_count(), 0);
+        assert_eq!(service.idle_residency_failure_count(), 0);
         service.shutdown().await.expect("worker should shut down");
-        let failures = service.idle_residency_failure_count();
-        assert!(failures >= 1, "failures={failures}");
+        let noops = service.idle_residency_noop_count();
+        assert!(noops >= 1, "noops={noops}");
         tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(service.idle_residency_failure_count(), failures);
+        assert_eq!(service.idle_residency_noop_count(), noops);
+        assert_eq!(service.idle_residency_failure_count(), 0);
         assert_eq!(service.idle_residency_tick_count(), 0);
     }
 }

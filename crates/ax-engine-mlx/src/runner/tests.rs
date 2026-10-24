@@ -3153,7 +3153,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
             state.cache.set_seq_len(native_tokens);
             state.multimodal_prefill_complete = complete;
             runner.states.lock().insert(item.request_id, state);
-            let result = runner.run_item(&item, None, "qwen3", 4, Some(media), None, None);
+            let result = runner.run_item(&item, None, "qwen3", 4, Some(media), None, None, None);
             assert_eq!(
                 result.update.error.as_deref(),
                 Some("multimodal decode requires a completed media prefill")
@@ -3190,7 +3190,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     assert!(state.multimodal_prefill_complete);
     state.cached_prefill_output_token = Some(5);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None, None);
     assert!(result.update.error.is_none(), "{:?}", result.update.error);
     assert_eq!(result.update.output_token, Some(5));
 
@@ -3202,7 +3202,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     assert_eq!(prompt, [vec![7; 8], vec![9, 10]].concat());
     assert!(!state.multimodal_prefill_complete);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None, None);
     assert_eq!(
         result.update.error.as_deref(),
         Some("multimodal decode requires a completed media prefill")
@@ -3222,7 +3222,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     state.cache.set_seq_len(8);
     state.cached_prefill_output_token = Some(5);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&empty), None, None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&empty), None, None, None);
     assert!(result.update.error.is_none(), "{:?}", result.update.error);
     assert_eq!(result.update.output_token, Some(5));
     fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
