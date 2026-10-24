@@ -204,23 +204,11 @@ for the full channel comparison and troubleshooting.
 
 ### Run AX Engine
 
-A native macOS app is also available as a [source build](docs/MACOS-APP.md), with model downloads, server controls and streaming chat. The CLI and TUI remain supported.
+Use [AX Engine for macOS](docs/MACOS-APP.md) for graphical model downloads,
+resource charts, server controls and streaming chat. The terminal UI has been
+retired; the CLI remains available for automation and local model paths.
 
-**Option A — interactive TUI** (pick a model, download, serve, chat):
-
-```bash
-ax-engine tui
-```
-
-<p align="center">
-  <img
-    src="docs/assets/ax-engine-tui-home.png"
-    width="720"
-    alt="AX Engine TUI Home: installed models, hardware fit, and quick serve actions"
-  >
-</p>
-
-**Option B — serve Qwen 3.8 27B AXQ MXFP4 MTP**, then request from another
+**Serve Qwen 3.8 27B AXQ MXFP4 MTP**, then request from another
 terminal. `qwen3.8-27b:axq` is the pinned AutomatosX MXFP4 MTP pack (same
 checkpoint as `ax-qwen3.8-27b`). The command reuses the cached snapshot when
 present and downloads it otherwise (about 17.4 GB; the first start waits for
@@ -251,14 +239,14 @@ Python wheel, source builds, and troubleshooting:
 
 ## Models
 
-### Managed AutomatosX catalog (download / TUI)
+### Public AutomatosX model downloads
 
 `ax-engine download --list` prints the curated public
 [AutomatosX model collection](https://huggingface.co/AutomatosX/models?sort=alphabetical).
-The TUI loads that organization's live model list from Hugging Face when it
-starts. **Models** is the remote AutomatosX catalog; **Downloads** is the
-independent local snapshot library for every publisher, with clickable Serve
-and Delete actions. **Transfers** inside Downloads shows download jobs.
+The GUI shows the runtime catalog in **Models → Catalog**, completed models in
+**Local Library**, and current downloads in **Transfers**. Downloads are public,
+unrestricted AutomatosX packs only; no Hugging Face account or token is needed.
+Download other models independently and use the CLI with a local model path.
 Local models remain accessible when the Hub is unavailable. Qwen 3.8 27B AXQ (MXFP4 MTP pack),
 Qwen 3.6, Qwen 3.5, and Gemma 4 variants published there (plain 4-bit/6-bit,
 QAT, OptiQ, AXQ where available) are first-class serve targets. Other native families (for example **GLM 4.7 Flash**, Nemotron

@@ -154,8 +154,8 @@ if [[ ! -f "$BENCH_BIN" ]]; then
     exit 1
 fi
 
-# The native `ax-engine` binary (second bin of the ax-engine-bench crate) hosts
-# the `ax-engine tui` subcommand, which the Python CLI execs.
+# The native `ax-engine` binary provides public downloads and orchestration
+# without requiring Python in standalone or macOS app distributions.
 NATIVE_BIN="$REPO_ROOT/target/release/ax-engine"
 if [[ ! -f "$NATIVE_BIN" ]]; then
     echo "error: expected binary at $NATIVE_BIN after cargo build"

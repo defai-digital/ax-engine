@@ -18,6 +18,14 @@ public struct LocalModel: Codable, Identifiable, Sendable, Equatable {
     public var source = "Local folder"
     public var displayName: String { name.components(separatedBy: " · ").first?.components(separatedBy: "/").last ?? name }
     public var id: String { path }
+    public var isAutomatosX: Bool {
+        let url = URL(fileURLWithPath: path)
+        if url.deletingLastPathComponent().lastPathComponent == "snapshots" {
+            return url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent.hasPrefix("models--AutomatosX--")
+        }
+        return managed && url.lastPathComponent.hasPrefix("AutomatosX--")
+    }
+
     public func isCatalogAssociated(_ catalog: [CatalogModel]) -> Bool {
         let url = URL(fileURLWithPath: path)
         if url.deletingLastPathComponent().lastPathComponent == "snapshots" {
@@ -75,6 +83,12 @@ public struct DownloadProgress: Equatable, Sendable {
 @MainActor
 public final class ModelStore: ObservableObject {
     @Published public private(set) var catalog: [CatalogModel] = []
+    @Published public private(set) var supportsNativeDownloads = false
+    public var productLibrary: [LocalModel] { library.filter(\.isAutomatosX) }
+    public func canSelectInGUI(_ path: String) -> Bool {
+        productLibrary.contains { $0.path == path && $0.ready && checkedPaths.contains(path) }
+    }
+
     @Published public private(set) var library: [LocalModel] = []
     @Published public private(set) var downloads: [DownloadItem] = []
     @Published public private(set) var error: String?
@@ -111,17 +125,18 @@ public final class ModelStore: ObservableObject {
 
     public func refresh(settings: AppSettings) async {
         guard !refreshing else { return }
-        refreshing = true; error = nil
+        refreshing = true; error = nil; supportsNativeDownloads = false
         async let libraryScan: Void = scan(settings: settings)
         do {
             let result = try await catalogJob.run(executable: settings.runtime(),
                 arguments: ["download", "--list", "--json"], timeout: 30)
             guard result.status == 0, !result.truncated else { throw AppFailure.message("Cannot read runtime catalog: " + String(result.stderr.suffix(2048))) }
-            struct Catalog: Decodable { let schemaVersion: String; let targets: [CatalogModel] }
+            struct Catalog: Decodable { let schemaVersion: String; let downloadBackend: String?; let targets: [CatalogModel] }
             let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
             let value = try decoder.decode(Catalog.self, from: Data(result.stdout.utf8))
             guard value.schemaVersion == "ax.download_options.v1" else { throw AppFailure.message("Unsupported runtime catalog version.") }
-            catalog = value.targets
+            catalog = value.targets.filter { $0.repoId.hasPrefix("AutomatosX/") }
+            supportsNativeDownloads = value.downloadBackend == "native-rust-public-v1"
         } catch { self.error = error.localizedDescription }
         refreshing = false
         await libraryScan
@@ -213,6 +228,7 @@ public final class ModelStore: ObservableObject {
             }
         }
         func add(_ path: URL, source: String, ready: Bool? = nil) {
+            guard !path.lastPathComponent.hasPrefix(".") else { return }
             let canonical = path.resolvingSymlinksInPath().standardizedFileURL.path
             guard !seen.contains(canonical), fm.fileExists(atPath: path.appendingPathComponent("config.json").path)
                 || fm.fileExists(atPath: path.appendingPathComponent("model-manifest.json").path) else { return }
@@ -266,7 +282,7 @@ public final class ModelStore: ObservableObject {
         return found.sorted { $0.path < $1.path }
     }
 
-    // Same readiness boundary as the TUI catalog: metadata plus complete
+    // Library readiness requires metadata plus complete
     // safetensor files. The runtime still performs format/admission validation.
     public nonisolated static func modelReady(_ path: URL) -> Bool {
         let fm = FileManager.default
@@ -327,6 +343,12 @@ public final class ModelStore: ObservableObject {
     public func enqueue(_ model: CatalogModel, settings: AppSettings) {
         guard !removing else { error = "Wait for model removal to finish."; return }
         guard !downloads.contains(where: { $0.model.target == model.target && ["Queued", "Downloading"].contains($0.state) }) else { return }
+        guard model.repoId.hasPrefix("AutomatosX/") else {
+            error = "GUI downloads support public AutomatosX models only. Download other models separately and use the AX Engine CLI."; return
+        }
+        guard supportsNativeDownloads else {
+            error = "Update AX Engine to a runtime with native public-model downloads, then refresh the catalog."; return
+        }
         guard model.repoId.split(separator: "/").count == 2,
               model.repoId.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil,
               model.revision?.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil || model.revision == nil else {

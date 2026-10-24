@@ -86,8 +86,8 @@ struct DashboardView: View {
                 DisclosureGroup("How these measurements work", isExpanded: $detailsExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("RAM is an estimate from active, wired and compressed pages, not model memory or an admission guarantee. CPU uses process averages normalized by logical cores. GPU is available when IOAccelerator exposes it. Missing and stale samples leave gaps. Live activity continues across pages and in the background while this window is open. Turn it off to stop recording. Activity history stays in memory for up to four hours and resets when the app quits. Longer charts preserve each time bucket’s low and high readings; hover reads an original sample.")
-                        Text("Storage shows the volume containing your download folder, including other files and APFS allocations. Imported models and caches can live on other volumes. The app does not scan model weights to estimate disk usage.")
-                        Text("Model counts cover discovered folders, not verified runtime support. One cached snapshot per repository is counted. Incomplete includes metadata-only folders; unchecked folders are retained from earlier scans.")
+                        Text("Storage shows the volume containing your download folder, including other files and APFS allocations. Model caches can live on other volumes. The app does not scan model weights to estimate disk usage.")
+                        Text("Model counts cover discovered AutomatosX folders, not verified runtime support. One cached snapshot per repository is counted. Incomplete includes metadata-only folders; unchecked folders are retained from earlier scans.")
                         Text("Last OS memory-pressure event: " + (monitor.pressure ?? "Not reported"))
                         Text("Download folder: " + model.settings.modelsDirectory).textSelection(.enabled)
                         if let snapshot = storage.snapshot {
@@ -185,8 +185,8 @@ private struct StorageCapacityCard: View {
 private struct ModelInventoryCard: View {
     @ObservedObject var models: ModelStore
     var body: some View {
-        let inventory = ModelInventory(library: models.library, checked: models.checkedPaths)
-        let hasInventory = models.lastScanAt != nil || !models.library.isEmpty
+        let inventory = ModelInventory(library: models.productLibrary, checked: models.checkedPaths)
+        let hasInventory = models.lastScanAt != nil || !models.productLibrary.isEmpty
         VStack(alignment: .leading, spacing: 14) {
             Label("Models on disk", systemImage: "square.stack.3d.up").font(.system(size: 13, weight: .semibold))
             HStack(alignment: .firstTextBaseline, spacing: 6) {

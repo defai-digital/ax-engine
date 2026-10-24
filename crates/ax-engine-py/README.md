@@ -55,7 +55,7 @@ ax-engine-server --help
 
 ### Native CLI and server (Homebrew, primary)
 
-For end users running the TUI, CLI, server, or benchmark tools, Homebrew is the
+For end users running the CLI, server, or benchmark tools, Homebrew is the
 primary installation channel:
 
 ```bash

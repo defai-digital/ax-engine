@@ -2304,11 +2304,11 @@ def download_model(
             model reference.
         RuntimeError: if the download is incomplete or the manifest cannot be generated.
     """
-    # Single source of truth: delegate to the bundled download helper (the same
-    # entry point the Rust/Python CLIs and the TUI use) so URL parsing,
+    # Delegate to the bundled Python download helper to share URL parsing,
     # revision pinning, disk preflight, atomic --dest copies, and manifest
-    # semantics cannot diverge. The legacy in-process path below remains as a
-    # fallback for stripped installs missing scripts/download_model.py.
+    # semantics with the Python CLI. The native CLI uses the Rust downloader.
+    # The legacy in-process path remains a fallback for stripped installs
+    # missing scripts/download_model.py.
     from ._repo_ref import parse_repo_ref, validate_revision
 
     input_repo_ref = repo_id

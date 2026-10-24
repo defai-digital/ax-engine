@@ -122,9 +122,6 @@ struct MainView: View {
                         TextField("Search models", text: $model.modelSearch).textFieldStyle(.roundedBorder).focused($searchFocused)
                         Button("Refresh", systemImage: "arrow.clockwise") { Task { await models.refresh(settings: model.settings) } }
                             .disabled(models.refreshing || models.scanning)
-                        if model.modelsSection == "library" {
-                            Button("Add Local Folder", systemImage: "folder.badge.plus") { importFolder() }
-                        }
                     }
                 }
             }.padding(26)
@@ -141,8 +138,17 @@ struct MainView: View {
         .task { if !models.scanning && !models.discoveryAttempted { await models.scan(settings: model.settings) } }
     }
     private var runtimeCatalog: some View {
-        Card("Runtime catalog", subtitle: "Pinned profiles come from your installed AX Engine runtime. A catalog entry is not a hardware qualification.") {
+        Card("Public AutomatosX models", subtitle: "Pinned profiles come from your installed AX Engine runtime. A catalog entry is not a hardware qualification.") {
+            Label("No Hugging Face account or token required", systemImage: "arrow.down.circle")
+                .font(.headline)
+            Text("AX Engine provides downloads for public AutomatosX models only. To use other models, download them separately and run them with the AX Engine CLI.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Divider()
             if models.refreshing { ProgressView("Reading runtime catalog…") }
+            if !models.refreshing && !models.supportsNativeDownloads {
+                Text("Update your AX Engine runtime for downloads without Python, then refresh the catalog.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             if models.catalog.isEmpty && !models.refreshing { Text("Select your AX Engine runtime in Settings, then refresh.").foregroundStyle(.secondary) }
             let matches = models.catalog.filter { model.modelSearch.isEmpty || $0.alias.localizedCaseInsensitiveContains(model.modelSearch) || $0.repoId.localizedCaseInsensitiveContains(model.modelSearch) }
             if matches.isEmpty && !model.modelSearch.isEmpty && !models.refreshing {
@@ -159,23 +165,16 @@ struct MainView: View {
                     Spacer()
                     Button(models.downloads.contains { $0.model.target == item.target && ["Queued", "Downloading"].contains($0.state) } ? "View Transfer" : "Download", systemImage: "arrow.down") {
                         models.enqueue(item, settings: model.settings); model.modelsSection = "transfers"; model.page = .models
-                    }
+                    }.disabled(!models.supportsNativeDownloads)
                 }.padding(.vertical, 7)
                 Divider()
             }
         }
     }
     private func localLibrary(filter: String = "") -> some View {
-        Card("Local library", subtitle: "\(models.library.count) folders · \(models.library.filter { $0.ready && models.checkedPaths.contains($0.path) }.count) with checked, complete weight files") {
-            Picker("Library filter", selection: $model.libraryScope) {
-                Text("All folders").tag("all")
-                Text("Catalog matches").tag("catalog")
-                Text("Other folders").tag("other")
-            }.pickerStyle(.segmented)
-            if model.libraryScope != "all" {
-                Text("Catalog association is not a compatibility check. Other folders may still be supported by AX Engine.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        Card("Local library", subtitle: "\(models.productLibrary.count) folders · \(models.productLibrary.filter { $0.ready && models.checkedPaths.contains($0.path) }.count) with checked, complete weight files") {
+            Text("Public AutomatosX models downloaded on this Mac. Other models can be used through the AX Engine CLI.")
+                .font(.caption).foregroundStyle(.secondary)
             if models.scanning {
                 HStack {
                     ProgressView("Checking folders · \(models.checkedPaths.count) found")
@@ -190,22 +189,20 @@ struct MainView: View {
             if let date = models.lastScanAt {
                 Text("Last complete scan: " + date.formatted(date: .omitted, time: .standard)).font(.caption).foregroundStyle(.secondary)
             }
-            if models.library.isEmpty && !models.scanning && models.libraryIssue == nil {
-                Text("No local models found. Browse Catalog to download one, or add an existing folder.")
+            if models.productLibrary.isEmpty && !models.scanning && models.libraryIssue == nil {
+                Text("No local models found. Browse Catalog to download a public AutomatosX model.")
                 Button("Browse Catalog") { model.modelSearch = ""; model.modelsSection = "catalog" }
             }
-            let matches = models.library.filter {
-                let associated = $0.isCatalogAssociated(models.catalog)
-                let included = model.libraryScope == "all" || (model.libraryScope == "catalog" ? associated : !associated)
-                return included && (filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter))
+            let matches = models.productLibrary.filter {
+                filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter)
             }.sorted { left, right in
                 let l = left.ready && models.checkedPaths.contains(left.path)
                 let r = right.ready && models.checkedPaths.contains(right.path)
                 return l == r ? left.path < right.path : l && !r
             }
-            if matches.isEmpty && (!filter.isEmpty || model.libraryScope != "all") {
+            if matches.isEmpty && !filter.isEmpty {
                 Text("No folders match this filter.").foregroundStyle(.secondary)
-                Button("Show all folders") { model.libraryScope = "all"; model.modelSearch = "" }
+                Button("Clear search") { model.modelSearch = "" }
             }
             ForEach(matches) { item in
                 VStack(alignment: .leading, spacing: 8) {
@@ -281,11 +278,11 @@ struct MainView: View {
                         Text("127.0.0.1:\(String(model.settings.port))").font(.system(.callout, design: .monospaced))
                         Button("Copy API URL", systemImage: "doc.on.doc") { copyText("http://127.0.0.1:\(model.settings.port)/v1") }
                     }
-                    TextField("Installed model path or cached model alias", text: $model.selectedPath).textFieldStyle(.roundedBorder)
-                        .disabled(runtime.owned || runtime.connection != nil)
+                    Text(model.selectedPath.isEmpty ? "Choose an installed AutomatosX model below." : model.selectedPath)
+                        .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack {
                         Menu("Choose Installed Model") {
-                            ForEach(models.library.filter { $0.ready && models.checkedPaths.contains($0.path) }) { item in Button(item.name) { model.selectedPath = item.path } }
+                            ForEach(models.productLibrary.filter { $0.ready && models.checkedPaths.contains($0.path) }) { item in Button(item.name) { model.selectedPath = item.path } }
                         }.disabled(runtime.owned || runtime.connection != nil)
                         Spacer()
                         if runtime.owned {
@@ -293,8 +290,8 @@ struct MainView: View {
                         } else if runtime.connection != nil {
                             Button("Disconnect") { Task { await chat.stop(); runtime.detach() } }
                         } else {
-                            Button("Start Server", systemImage: "play.fill") { runtime.start(model: model.selectedPath, settings: model.settings) }
-                                .buttonStyle(.borderedProminent).disabled(model.selectedPath.isEmpty || runtime.busy || models.removing)
+                            Button("Start Server", systemImage: "play.fill") { if models.canSelectInGUI(model.selectedPath) { runtime.start(model: model.selectedPath, settings: model.settings) } }
+                                .buttonStyle(.borderedProminent).disabled(!models.canSelectInGUI(model.selectedPath) || runtime.busy || models.removing)
                         }
                     }
                     Text("Startup is offline. MTP policy and expert streaming follow AX Engine defaults. No model performance or certification setting is changed.")
@@ -337,11 +334,6 @@ struct MainView: View {
         return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
     }
     private func metric(_ key: String) -> String { runtime.metrics[key].map { String(format: "%.0f", $0) } ?? "—" }
-    private func importFolder() {
-        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.prompt = "Add Model Folder"
-        if panel.runModal() == .OK, let url = panel.url { Task { await models.importFolder(url, settings: model.settings) } }
-    }
 }
 
 struct ErrorBanner: View {

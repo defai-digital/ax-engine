@@ -162,3 +162,25 @@ import Testing
     let short = history.plotPoints("cpu", window: 60, now: now)
     #expect(short.map(\.id) == raw.filter { $0.time >= now.addingTimeInterval(-60) }.map(\.id))
 }
+
+@Test func guiLibraryRestrictsPublisherWithoutRemovingOtherModels() {
+    let own = LocalModel(path: "/cache/models--AutomatosX--Pack/snapshots/rev", ready: true, managed: false)
+    let other = LocalModel(path: "/cache/models--community--Pack/snapshots/rev", ready: true, managed: false)
+    let managed = LocalModel(path: "/models/AutomatosX--Pack--rev", ready: true, managed: true)
+    let imported = LocalModel(path: "/downloads/other-model", ready: true, managed: false)
+    #expect(own.isAutomatosX)
+    #expect(managed.isAutomatosX)
+    #expect(!other.isAutomatosX)
+    #expect(!imported.isAutomatosX)
+}
+
+@Test @MainActor func guiRejectsThirdPartyDownloadBeforeStartingRuntime() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"))
+    store.enqueue(CatalogModel(alias: "Other", repoId: "community/Pack", revision: nil, mtpIncluded: false), settings: AppSettings())
+    #expect(store.downloads.isEmpty)
+    #expect(!store.downloading)
+    #expect(store.error != nil)
+    #expect(!store.canSelectInGUI("/downloads/other-model"))
+    await store.shutdown()
+}

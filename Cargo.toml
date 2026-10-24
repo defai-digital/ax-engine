@@ -2,6 +2,7 @@
 members = [
     "crates/ax-engine-bench",
     "crates/ax-engine-core",
+    "crates/ax-engine-download",
     "crates/ax-engine-microbench",
     "crates/ax-engine-mlx",
     "crates/ax-engine-pipeline",
@@ -20,26 +21,10 @@ version = "7.9.0"
 
 [workspace.dependencies]
 base64 = "0.22"
-# TUI chat: markdown rendering of assistant replies (MIT, parser-only features).
-pulldown-cmark = { version = "0.13", default-features = false }
-# TUI chat composer: display-width columns so CJK/emoji align (direct dep; also
-# pulled transitively by ratatui).
-unicode-width = "0.2"
 fs2 = "0.4"
 hound = "3"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png"] }
-# unstable-rendered-line-info: exposes Paragraph::line_count, which the TUI uses
-# to size scroll buffers (chat transcript, confirm modals) to the exact wrapped
-# height. Semver-exempt upstream, so a minor ratatui bump may require touching
-# the single call site:
-# crates/ax-engine-bench/src/tui/widgets.rs (wrapped_row_count).
-ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 serde = { version = "1", features = ["derive"] }
-# NOTE: tui-textarea (chat input editor) is deliberately absent: as of 0.7.0 it
-# still links ratatui 0.29, which cannot type-unify with ratatui 0.30 widgets
-# and would introduce a duplicate ratatui in the tree. Revisit when it releases
-# ratatui 0.30 support.
-tui-scrollview = "0.6"
 serde_json = "1"
 sha2 = "0.10"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }

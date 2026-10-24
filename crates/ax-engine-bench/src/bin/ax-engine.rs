@@ -11,8 +11,6 @@ mod environment_probe;
 #[path = "../error.rs"]
 #[allow(dead_code)]
 mod error;
-#[path = "../tui/mod.rs"]
-mod tui;
 
 use crate::environment_probe::{
     bytes_to_gib, command_stdout, detect_memory_bytes, detect_os_build, detect_os_version,
@@ -1574,7 +1572,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
         "doctor" => cmd_doctor(&args[1..]),
         "mtp-capability" => cmd_mtp_capability(&args[1..]),
         "convert-mtplx" => cmd_convert_mtplx(&args[1..]),
-        "tui" => tui::cmd_tui(&args[1..]),
+        "tui" => Err("The terminal UI has been retired. Open AX Engine for macOS for the graphical interface, or use ax-engine download / serve from the CLI. See docs/MACOS-APP.md.".into()),
         unknown => Err(format!(
             "unknown command: {unknown}\n\nRun `ax-engine --help` for usage."
         )),
@@ -1583,7 +1581,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine --version\n  ax-engine -V\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--offline|--local-only] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force|--local-only] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine mtp-capability [--json]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
+        "Usage:\n  ax-engine --version\n  ax-engine -V\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--offline|--local-only] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force|--local-only] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine mtp-capability [--json]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
     );
 }
 
@@ -2775,7 +2773,8 @@ fn local_model_artifacts_payload(root: &Path) -> Value {
     if let Ok(entries) = fs::read_dir(&root) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir()
+            if !entry.file_name().to_string_lossy().starts_with('.')
+                && path.is_dir()
                 && let Some(item) = local_model_artifact_payload(&path)
             {
                 items.push(item);
@@ -3063,11 +3062,6 @@ fn run_download(args: &DownloadArgs) -> Result<u8, String> {
         return Ok(2);
     };
 
-    // A local model directory is validated offline by the helper, so it must
-    // not require the optional Hub client. Only a real Hub download does.
-    if local_model_dir(model).is_none() {
-        ensure_download_python_deps()?;
-    }
     let profile = profile_for_model(model);
     let (code, summary, stderr) = run_download_summary(
         model,
@@ -3146,7 +3140,6 @@ fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
 }
 
 fn run_download_mtp(args: &DownloadMtpArgs) -> Result<u8, String> {
-    ensure_download_python_deps()?;
     let target = mtp_download_target_for_model(&args.model)
         .ok_or_else(|| format_unknown_download_mtp_target(&args.model))?;
     let (download_code, download_summary, download_stderr) = run_download_summary(
@@ -3374,62 +3367,68 @@ fn run_download_summary(
     hf_cache_root: Option<&OsStr>,
 ) -> Result<(u8, Value, String), String> {
     let (repo_id, profile, revision) = download_repo_id(model, profile)?;
-    let helper = find_helper(
-        "AX_ENGINE_DOWNLOAD_HELPER",
-        "ax-engine-download-model.py",
-        "download_model.py",
-    )?;
-    let mut command = Command::new(python());
-    command.arg(helper).arg(&repo_id).arg("--json");
-    if let Some(revision) = &revision {
-        // The resolved revision is already percent-decoded; the helper decodes
-        // its --revision once more, so re-escape literal `%` to hand it
-        // exactly this value.
-        command.arg(helper_value_option(
-            "--revision",
-            &revision.replace('%', "%25"),
-        ));
-    }
-    match progress {
-        DownloadProgress::Quiet => {}
-        DownloadProgress::Json => {
-            command.arg("--progress-json");
-        }
-        DownloadProgress::Bar => {
-            command.arg("--progress-bar");
-        }
-    }
-    if let Some(dest) = dest {
-        command.arg(helper_value_option("--dest", dest));
-    }
-    if force {
-        command.arg("--force");
-    }
-    if local_only {
-        command.arg("--local-only");
-    }
-    if let Some(root) = hf_cache_root {
-        command.env("HF_HUB_CACHE", root);
-    }
-    let (code, stdout, stderr) = if matches!(progress, DownloadProgress::Json) {
-        run_streaming_progress(command)?
-    } else {
-        let output = command
-            .stdout(Stdio::piped())
-            .stderr(if matches!(progress, DownloadProgress::Bar) {
-                Stdio::inherit()
-            } else {
-                Stdio::piped()
-            })
-            .output()
-            .map_err(|err| format!("failed to run download helper: {err}"))?;
-        (
-            output.status.code().unwrap_or(1).try_into().unwrap_or(1),
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        )
+    let options = ax_engine_download::Options {
+        repository: repo_id.clone(),
+        revision: revision.clone(),
+        destination: dest.map(expand_home),
+        cache: hf_cache_root
+            .map(PathBuf::from)
+            .unwrap_or_else(ax_engine_download::cache_root),
+        force,
+        local_only: local_only
+            || env::var("HF_HUB_OFFLINE").is_ok_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            }),
     };
-    let mut summary = parse_summary_json(&stdout).unwrap_or(Value::Null);
+    let result = ax_engine_download::download(
+        &options,
+        |path| {
+            let manifest_path = path.join(ax_engine_core::model::AX_NATIVE_MODEL_MANIFEST_FILE);
+            // Break a legacy HF blob link before generating mutable local metadata.
+            if manifest_path.is_symlink() {
+                let bytes = fs::read(&manifest_path).map_err(|e| e.to_string())?;
+                fs::remove_file(&manifest_path).map_err(|e| e.to_string())?;
+                fs::write(&manifest_path, bytes).map_err(|e| e.to_string())?;
+            }
+            let manifest =
+                ax_engine_core::convert::convert_hf_model_dir(path).map_err(|e| e.to_string())?;
+            ax_engine_core::convert::write_manifest(path, &manifest).map_err(|e| e.to_string())?;
+            ax_engine_core::convert::ensure_deepseek_v4_chat_template(path)
+                .map_err(|e| e.to_string())?;
+            ax_engine_core::model::NativeModelArtifacts::from_dir(path)
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        },
+        |done, total, file| {
+            use std::io::Write;
+            match progress {
+                DownloadProgress::Json => {
+                    println!(
+                        "{}",
+                        json!({"event":"progress","done":done,"total":total,"file":file})
+                    );
+                    let _ = std::io::stdout().flush();
+                }
+                DownloadProgress::Bar => eprintln!("{file}"),
+                DownloadProgress::Quiet => {}
+            }
+        },
+    );
+    let code = if result.is_ok() { 0 } else { 1 };
+    let stderr = result
+        .as_ref()
+        .err()
+        .map(|e| format!("{}\n", e.message))
+        .unwrap_or_default();
+    let mut summary = ax_engine_download::summary(
+        &repo_id,
+        revision.as_deref(),
+        &result,
+        options.destination.as_deref(),
+    );
     if let Value::Object(map) = &mut summary {
         map.insert("input".into(), json!(model));
         if let Some(revision) = &revision {
@@ -3447,60 +3446,6 @@ fn run_download_summary(
         }
     }
     Ok((code, summary, stderr))
-}
-
-fn helper_value_option(flag: &str, value: &str) -> OsString {
-    OsString::from(format!("{flag}={value}"))
-}
-
-/// Run the download helper forwarding `{"event":"progress",...}` stdout lines
-/// as they arrive (so a parent process observing our stdout sees live phase
-/// updates), while buffering the helper's final summary. The caller enriches
-/// and emits that summary as the one terminal NDJSON record.
-fn run_streaming_progress(mut command: Command) -> Result<(u8, String, String), String> {
-    use std::io::{BufRead, BufReader, Write};
-
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("failed to run download helper: {err}"))?;
-    let stderr_handle = child.stderr.take().map(|pipe| {
-        std::thread::spawn(move || {
-            let mut buf = String::new();
-            let mut reader = BufReader::new(pipe);
-            let _ = std::io::Read::read_to_string(&mut reader, &mut buf);
-            buf
-        })
-    });
-    let mut stdout_text = String::new();
-    if let Some(pipe) = child.stdout.take() {
-        for line in BufReader::new(pipe).lines().map_while(Result::ok) {
-            if line.contains("\"event\"")
-                && serde_json::from_str::<Value>(&line)
-                    .ok()
-                    .and_then(|v| v.get("event").and_then(Value::as_str).map(String::from))
-                    .as_deref()
-                    == Some("progress")
-            {
-                println!("{line}");
-                let _ = std::io::stdout().flush();
-            }
-            stdout_text.push_str(&line);
-            stdout_text.push('\n');
-        }
-    }
-    let status = child
-        .wait()
-        .map_err(|err| format!("failed to wait for download helper: {err}"))?;
-    let stderr_text = stderr_handle
-        .and_then(|handle| handle.join().ok())
-        .unwrap_or_default();
-    Ok((
-        status.code().unwrap_or(1).try_into().unwrap_or(1),
-        stdout_text,
-        stderr_text,
-    ))
 }
 
 fn run_download_gemma_assistant_mtp(
@@ -3976,14 +3921,16 @@ fn format_download_mtp_targets() -> String {
 fn download_options_payload() -> Value {
     json!({
         "schema_version": "ax.download_options.v1",
+        "download_backend": "native-rust-public-v1",
         "default_destination": {
             "kind": "huggingface_hub_cache",
             "env": ["HF_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"],
-            "dest_semantics": "--dest copies the resolved snapshot to an explicit directory",
+            "dest_semantics": "--dest stages and validates the pinned model before atomically replacing the explicit directory",
         },
         "targets": MODEL_PROFILES.iter().copied().filter(|profile| profile.is_downloadable()).map(|profile| {
             json!({
                 "alias": profile.label,
+                "approx_size_bytes": profile.approx_size_bytes,
                 "repo_id": profile.repo_id,
                 "revision": profile_revision(profile),
                 "certification": profile_certification(profile),
@@ -4000,7 +3947,7 @@ fn download_options_payload() -> Value {
             "ax-engine download ax-embeddinggemma-300m",
             "ax-engine download AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP --json",
             "ax-engine download https://huggingface.co/AutomatosX/AX-Qwen3.6-27B-MLX-6bit-MTP",
-            "ax-engine download owner/repo@revision",
+            "ax-engine download AutomatosX/model@revision",
         ],
     })
 }
@@ -4070,20 +4017,6 @@ fn print_download_summary(summary: &Value) {
         println!("Next:");
         println!("  ax-engine-bench generate-manifest {dest}");
     }
-}
-
-fn parse_summary_json(stdout: &str) -> Option<Value> {
-    if let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(stdout.trim()) {
-        return Some(value);
-    }
-    stdout.lines().rev().find_map(|line| {
-        let value = serde_json::from_str::<Value>(line.trim()).ok()?;
-        if value.get("schema_version").and_then(Value::as_str) == Some("ax.download_model.v1") {
-            Some(value)
-        } else {
-            None
-        }
-    })
 }
 
 fn qwen38_target_error(value: &str) -> Option<&'static str> {
@@ -4255,48 +4188,6 @@ fn verified_build_source_repo_root() -> Option<PathBuf> {
 
 fn python() -> OsString {
     env::var_os("AX_ENGINE_PYTHON").unwrap_or_else(|| OsString::from("python3"))
-}
-
-/// Fail closed before spawning the download helper when `huggingface_hub` is
-/// missing from the Python used by `AX_ENGINE_PYTHON` / `python3`.
-fn ensure_download_python_deps() -> Result<(), String> {
-    // Unit tests exercise enqueue/UI without a live HF install. Opt back in
-    // with AX_ENGINE_REQUIRE_DOWNLOAD_DEPS=1 when testing the preflight itself.
-    #[cfg(test)]
-    if env::var_os("AX_ENGINE_REQUIRE_DOWNLOAD_DEPS").is_none() {
-        return Ok(());
-    }
-
-    let py = python();
-    let output = Command::new(&py)
-        .args(["-c", "import huggingface_hub"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|err| {
-            format!(
-                "failed to invoke Python for download preflight ({}): {err}",
-                py.to_string_lossy()
-            )
-        })?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let py_display = py.to_string_lossy();
-    Err(format!(
-        "huggingface_hub is required for Hugging Face Hub downloads.\n\
-         This CLI downloads through: {py_display}\n\
-         Install it into that exact interpreter:\n\
-           {py_display} -m pip install 'ax-engine[download]'\n\
-         If that interpreter is managed by Homebrew or the OS (an\n\
-         externally-managed environment), use a venv instead:\n\
-           python3 -m venv ~/.local/share/ax-engine/download-env\n\
-           ~/.local/share/ax-engine/download-env/bin/pip install huggingface-hub\n\
-           export AX_ENGINE_PYTHON=~/.local/share/ax-engine/download-env/bin/python\n\
-         No Hugging Face account is needed for public repos. If you already have\n\
-         the weights on disk, skip the Hub entirely:\n\
-           ax-engine download /path/to/local/model-dir"
-    ))
 }
 
 fn expand_home(value: &str) -> PathBuf {
@@ -4484,6 +4375,25 @@ fn exec_or_status(program: PathBuf, args: &[OsString]) -> Result<u8, String> {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
+
+    #[test]
+    fn retired_tui_directs_users_to_gui_without_loading_terminal_code() {
+        let error = super::run(vec!["tui".into(), "--help".into()]).unwrap_err();
+        assert!(error.contains("terminal UI has been retired"));
+        assert!(error.contains("AX Engine for macOS"));
+    }
+
+    #[test]
+    fn native_download_contract_advertises_anonymous_public_backend() {
+        let payload = super::download_options_payload();
+        assert_eq!(payload["download_backend"], "native-rust-public-v1");
+        assert!(payload["targets"].as_array().unwrap().iter().all(|target| {
+            target["repo_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("AutomatosX/")
+        }));
+    }
     use super::*;
 
     /// Cross-repo contract: AXQuant's `probe_ax_engine_mtp_capability` parses
@@ -4809,18 +4719,6 @@ mod tests {
                 "schema_version": "ax.download_mtp.v1"
             }))
             .is_err()
-        );
-    }
-
-    #[test]
-    fn download_helper_value_options_preserve_leading_hyphens() {
-        assert_eq!(
-            helper_value_option("--revision", "-release"),
-            OsString::from("--revision=-release")
-        );
-        assert_eq!(
-            helper_value_option("--dest", "-models"),
-            OsString::from("--dest=-models")
         );
     }
 

@@ -61,7 +61,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public func runtime(bundle: Bundle = .main) throws -> URL {
         try RuntimeLocator.find(explicit: executable,
-            bundled: bundle.resourceURL?.appendingPathComponent("runtime/ax-engine").path,
+            bundled: bundle.bundleURL.appendingPathComponent("Contents/Helpers/AXEngineRuntime.bundle/Contents/MacOS/ax-engine").path,
             development: bundle.object(forInfoDictionaryKey: "AXEngineDevelopmentRuntime") as? String)
     }
 }
@@ -82,7 +82,9 @@ public enum RuntimeLocator {
             guard executable(selected) else { throw AppFailure.message("The selected runtime is unavailable. Check Settings or AX_ENGINE_BIN.") }
             return URL(fileURLWithPath: selected)
         }
-        var candidates = (environment["PATH"] ?? "").split(separator: ":").filter { $0.hasPrefix("/") }.map { String($0) + "/ax-engine" }
+        // A distribution uses its qualified runtime unless explicitly overridden.
+        var candidates = [bundled].compactMap { $0 }
+        candidates += (environment["PATH"] ?? "").split(separator: ":").filter { $0.hasPrefix("/") }.map { String($0) + "/ax-engine" }
         candidates += systemDirectories.map { $0 + "/ax-engine" }
         if let virtualEnv = environment["VIRTUAL_ENV"], virtualEnv.hasPrefix("/") {
             candidates.append(virtualEnv + "/bin/ax-engine")
@@ -109,7 +111,7 @@ public enum RuntimeLocator {
                 candidates.append(expected.path)
             }
         }
-        candidates += [bundled, development].compactMap { $0 }
+        candidates += [development].compactMap { $0 }
         let pythonRoot = home.appendingPathComponent("Library/Python")
         let pythonVersions = ((try? fm.contentsOfDirectory(at: pythonRoot, includingPropertiesForKeys: nil)) ?? [])
             .sorted { $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending }
