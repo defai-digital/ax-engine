@@ -1,0 +1,40 @@
+{
+ "schema_version": 1,
+ "purpose": "direct-default release-gate evidence for the published v7.9.0 release binaries on the ADR-049 standard host",
+ "release": "v7.9.0",
+ "release_source_commit": "9fdd783f5abee0b4ea4b000cbff33fa70f31054d",
+ "release_asset": "ax-engine-v7.9.0-macos-arm64.tar.gz",
+ "release_asset_sha256": "bc41b5d326d0236048aa62f96f4ff25c30072e2c9ff0c3befcb053c2d0585e05",
+ "release_asset_verification": "shasum -a 256 -c and minisign -V against ax-minisign.pub from the same release both passed",
+ "harness_commit": "9fdd783f (v7.9.0 tag checkout)",
+ "binaries_sha256": {
+  "ax-engine-server": "2b0aacdfcfd0b0e94a25c1a1c626313315e176c144f6f28dbf7b18170ea24fb0",
+  "ax-engine": "6c9b0182af10c12389878bc6139a3dca8544270105aff8abe86b508c6fb44efc",
+  "ax-engine-bench": "f1b3aea791642303c1b1157e8db3e53a907f0cfe60c764e5c9a348b416e051a4"
+ },
+ "mlx_assets_sha256": {
+  "libmlx.dylib": "6893323132feeb7fe1b7fa3c32ceb49d8076e8af688d4e0ec93884fb6d38f5db",
+  "libjaccl.dylib": "cca572a4e849e3f3f0770b86da5cb258ff011c9ec6d2316446952cf6cdbb1bed",
+  "mlx.metallib": "c6d7a3facb83568f6e4cb2cf4a8c736ee29302571a48343cb9a3a4d1cd3e3893"
+ },
+ "reference_runtime": {
+  "runtime": "mlx-vlm",
+  "commit": "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb",
+  "versions": {
+   "mlx": "0.32.2",
+   "mlx-metal": "0.32.2",
+   "mlx-vlm": "0.7.0rc0",
+   "transformers": "5.18.0.dev0",
+   "tokenizers": "0.23.2"
+  },
+  "language_sha256": "30f059d6289451bde0f5ef816090ff946ebc857d1b557f83415e2ba867d76199",
+  "runtime_files_bound": 1750
+ },
+ "pack_inventory_sha256": "97b890234af731ac6e07d2ed7dbe32b4b0fcb1f0aff01addaaa340a838b28cc6",
+ "repo_id": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+ "revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+ "hardware": "MacBook Pro, Apple M5 Max, 128 GB, internal NVMe SSD (Apple Fabric), macOS 27.0.1",
+ "qualification": false,
+ "release_ready": false,
+ "note": "Harness results carry qualification=false by design; the verdict is in release-verdict.json."
+}

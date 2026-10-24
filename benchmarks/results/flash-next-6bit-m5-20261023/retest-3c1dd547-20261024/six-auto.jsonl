@@ -1,0 +1,2 @@
+{"ttft": 56.37, "decode": null, "prompt": 24, "tokens": 1, "text": "Paris", "rss_gib": 14.1, "swap": "total = 3072.00M  used = 1770.94M  free = 1301.06M  (encrypted)"}
+{"ttft": 30.38, "decode": 0.17, "prompt": 26, "tokens": 32, "text": "```python\ndef fibonacci(n: int) -> int:\n    \"\"\"\n    Return the n-th Fibonacci number using an iterative approach.\n    \n ", "rss_gib": 14.2, "swap": "total = 3072.00M  used = 1770.94M  free = 1301.06M  (encrypted)"}

@@ -125,8 +125,7 @@ Qwen 3.8 caveat:
   single-stream resident (ADR-049). MXFP8 MTP admission is pending.
   CLI aliases `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4`
   select MXFP4 MTP; `qwen3.8-flash-next:axq-6bit` selects the affine 6-bit
-  MTP pack (ADR-050; its pinned Hub repository is not public yet, so it runs
-  from a local copy). On MacBook Pro M5 Max 128 GB start it with
+  MTP pack (ADR-050). On MacBook Pro M5 Max 128 GB start it with
   `--stream-experts off --max-concurrent-requests 1`: resident it decodes about
   41-46 tok/s at about 103 GiB; Auto streams its experts there at 0.17 tok/s. Other standalone affine widths stay unsupported and
   experimental flags cannot bypass this. MXFP8 MTP remains in scope

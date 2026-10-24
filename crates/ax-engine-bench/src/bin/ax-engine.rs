@@ -47,7 +47,7 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
             Some("ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3")
         }
         "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP" => {
-            Some("d514dcebf3086068ed7968caf395083c95ebcfca")
+            Some("3c1dd547d70cb7bf01dd0a89c41c400dde32ed39")
         }
         "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP" => {
             Some("6182ccbc41c7397ff90670f740c6d9eacfa4b09f")
@@ -267,10 +267,8 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen3.8-flash-next:axq-6bit",
             "qwen3.8-flash-next:6bit",
         ],
-        // The pinned Hub repository is not public yet, so the catalog does not
-        // offer it for download; a local copy of the pinned revision runs.
-        downloadable: false,
-        approx_size_bytes: Some(167_059_023_435),
+        downloadable: true,
+        approx_size_bytes: Some(167_059_030_405),
     },
     ModelProfile {
         label: "gemma4-12b",
@@ -4540,7 +4538,7 @@ mod tests {
         );
     }
 
-    const EXPECTED_AUTOMATOSX_REPOS: [&str; 74] = [
+    const EXPECTED_AUTOMATOSX_REPOS: [&str; 75] = [
         "AutomatosX/AX-Devstral-Small-2-24B-Instruct-2512-MLX-OptiQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-4bit",
         "AutomatosX/AX-Devstral-Small-2505-MLX-AXQ-6bit",
@@ -4615,6 +4613,7 @@ mod tests {
         "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-4bit",
         "AutomatosX/AX-gpt-oss-20b-MLX-AXQ-6bit",
         "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+        "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
     ];
 
     #[test]
@@ -4656,7 +4655,7 @@ mod tests {
                 .iter()
                 .filter(|target| target["mtp_included"] == true)
                 .count(),
-            33
+            34
         );
     }
 
@@ -4887,7 +4886,7 @@ mod tests {
         );
         assert_eq!(
             profile_revision(six),
-            Some("d514dcebf3086068ed7968caf395083c95ebcfca")
+            Some("3c1dd547d70cb7bf01dd0a89c41c400dde32ed39")
         );
         let flash = profile_for_model("qwen3.8-flash-next:axq").unwrap();
         assert_eq!(

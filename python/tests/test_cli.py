@@ -92,6 +92,7 @@ EXPECTED_AUTOMATOSX_REPOS = {
     "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-OptiQ-4bit-MTP",
     "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP",
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
     "AutomatosX/AX-Unlimited-OCR-3B-MoE-MLX-AXQ-MXFP8",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-4bit-MTP",
     "AutomatosX/AX-gemma-4-12b-MLX-AXQ-6bit-MTP",
@@ -135,7 +136,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
-        self.assertEqual(len(targets), 83)
+        self.assertEqual(len(targets), 84)
         self.assertTrue(
             all(
                 target["alias"].startswith(("ax-", "holo3-", "ornith-", "muse-glimmer-"))
@@ -2136,7 +2137,7 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         targets = payload["targets"]
         self.assertEqual({target["repo_id"] for target in targets}, EXPECTED_AUTOMATOSX_REPOS)
         self.assertTrue(all(target["mtp_target"] is None for target in targets))
-        self.assertEqual(sum(target["mtp_included"] for target in targets), 33)
+        self.assertEqual(sum(target["mtp_included"] for target in targets), 34)
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.

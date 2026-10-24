@@ -584,6 +584,14 @@ AUTOMATOSX_MODEL_PROFILES = (
         ),
     ),
     _automatosx_profile(
+        "ax-qwen3.8-flash-next-axq-6bit",
+        "AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+        (
+            "ax-qwen3.8-flash-next-6bit", "qwen3.8-flash-next:axq-6bit",
+            "qwen3.8-flash-next:6bit",
+        ),
+    ),
+    _automatosx_profile(
         "ax-qwen3.6-35b-4bit",
         "AX-Qwen3.6-35B-A3B-MLX-4bit-MTP",
         ("ax-qwen36-35b-4bit",),
@@ -986,6 +994,9 @@ _PINNED_PROFILE_REVISIONS = {
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP": (
         "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
     ),
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP": (
+        "3c1dd547d70cb7bf01dd0a89c41c400dde32ed39"
+    ),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP": ("6182ccbc41c7397ff90670f740c6d9eacfa4b09f"),
     "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-6bit-MTP": ("8c37715c7b5f5ebca00eda6f73be47116a3e4ebc"),
     "AutomatosX/AX-Qwen3-VL-30B-A3B-Instruct-MLX-AXQ-4bit": (
@@ -1097,6 +1108,7 @@ _CANDIDATE_PROFILE_REPOS = {
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-4bit",
     "AutomatosX/AX-Qwen3-ASR-1.7B-MLX-AXQ-6bit",
     "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+    "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
 }
 
 
@@ -1223,8 +1235,7 @@ def _reject_retired_qwen38_target(value: str) -> None:
         )
     )
     if flash_next_6bit:
-        # Flash Next affine 6-bit MTP is supported (ADR-050); the pinned Hub
-        # repository is not public yet, so it is not in the download catalog.
+        # Flash Next affine 6-bit MTP is supported (ADR-050).
         return
     if re.search(r"(?:^|[-:])(?:axq-)?(?:[2468]bit|mxfp4-base)(?:$|[-:])", normalized) or (
         normalized.startswith("automatosx/") and not normalized.endswith("-mxfp4-mtp")

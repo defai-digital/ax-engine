@@ -48,7 +48,7 @@ RELEASE_SCOPE = (
 )
 RELEASE_VERDICT = (
     Path(__file__).resolve().parents[1]
-    / "benchmarks/results/qualification/2026-10-23-flash-next-mxfp4-m5max-release-gates/release-verdict.json"
+    / "benchmarks/results/qualification/2026-10-24-flash-next-mxfp4-m5max-release-v7.9.0/release-verdict.json"
 )
 MTP_NOT_ASSESSED = {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")}
 
