@@ -424,10 +424,11 @@ pub struct WiredMemoryReport {
     pub wired_shortfall_bytes: Option<u64>,
     /// Suggested `iogpu.wired_limit_mb` covering the working set.
     pub remedy_mebibytes: Option<u64>,
-    /// Live decode sequences the priced plan charged for.
+    /// Live decode sequences the priced plan charged for. Reported only when
+    /// the plan reduced admission; `None` when the configured count fits.
     pub charged_live_sequences: Option<u32>,
-    /// Live decode sequences the engine admits: the plan's cap when the
-    /// configured count did not fit under the ceiling.
+    /// Live decode sequences the engine admits. Reported only when the plan
+    /// reduced admission (a cap strictly below the configured count).
     pub live_sequence_cap: Option<u32>,
 }
 
@@ -436,6 +437,15 @@ impl WiredMemoryReport {
     /// limit the runner resolved for this session.
     pub fn from_plan(plan: &MemoryPlan) -> Self {
         let needs_attention = plan.wired_shortfall_needs_attention();
+        // The live-sequence pair explains a reduced admission. When the
+        // configured count fits there is no cap to report, and publishing the
+        // charged count alone would imply a limit that `/v1/memory` readers
+        // cannot distinguish from a real one, so both stay null.
+        let (charged_live_sequences, live_sequence_cap) = if plan.live_sequences_reduced() {
+            (plan.charged_live_sequences, plan.live_sequence_cap)
+        } else {
+            (None, None)
+        };
         Self {
             wired_limit_bytes: plan.wired_limit_bytes,
             working_set_bytes: Some(plan.resident_working_set_bytes()),
@@ -445,8 +455,8 @@ impl WiredMemoryReport {
             } else {
                 None
             },
-            charged_live_sequences: plan.charged_live_sequences,
-            live_sequence_cap: plan.live_sequence_cap,
+            charged_live_sequences,
+            live_sequence_cap,
         }
     }
 
@@ -576,14 +586,16 @@ pub struct MemoryPlan {
     /// not part of this number and never shrinks with concurrency.
     pub state_bytes_per_live_sequence: u64,
     /// Live decode sequences the plan may actually admit. `None` when the plan
-    /// does not price live sequences at all.
+    /// does not price live sequences or when the configured count already
+    /// fits.
     ///
-    /// [`Self::with_fitting_live_sequences`] sets this to the largest count at
-    /// or below [`Self::charged_live_sequences`] whose resident working set
-    /// still fits under the ceiling, and re-prices [`MemoryPlan::state_bytes`]
-    /// at that count. A pack that only fits one live sequence therefore keeps
-    /// its experts resident and is served one request at a time instead of
-    /// paging every expert from disk for the default cohort.
+    /// [`Self::with_fitting_live_sequences`] sets this only when the largest
+    /// fitting count is strictly below [`Self::charged_live_sequences`], and
+    /// re-prices [`MemoryPlan::state_bytes`] at that count. A pack that only
+    /// fits one live sequence therefore keeps its experts resident and is
+    /// served one request at a time instead of paging every expert from disk
+    /// for the default cohort. Publishing `cap == charged` would instead make
+    /// the engine queue requests that the configured bound already admits.
     pub live_sequence_cap: Option<u32>,
     /// Whether [`Self::charged_live_sequences`] came from an explicit operator
     /// cap (`--max-concurrent-requests`) rather than the runner's cohort
@@ -792,21 +804,25 @@ impl MemoryPlan {
             .find(|live| self.working_set_bytes_for_live_sequences(*live) <= ceiling)
     }
 
-    /// Publish [`MemoryPlan::live_sequence_cap`] as the largest live-sequence
-    /// count that still fits.
+    /// Publish [`MemoryPlan::live_sequence_cap`] only when it actually limits.
     ///
     /// [`MemoryPlan::state_bytes`] keeps its configured-count pricing, so the
     /// charged working set stays available for logging; every derived number
     /// ([`Self::fixed_bytes`], [`Self::resident_working_set_bytes`],
-    /// [`Self::decide`]) charges the capped count instead. When nothing fits —
-    /// not even one live sequence — the cap stays unset and the stream/refuse
-    /// ladder decides on the configured pricing, bit-identically to before.
+    /// [`Self::decide`]) charges the capped count instead. A count equal to the
+    /// configured one publishes nothing: the plan already fits, and a cap at
+    /// that count would only make the engine queue requests it should admit.
+    /// When nothing fits — not even one live sequence — the cap also stays
+    /// unset and the stream/refuse ladder decides on the configured pricing,
+    /// bit-identically to before.
     #[must_use]
     pub fn with_fitting_live_sequences(mut self) -> Self {
-        if self.charged_live_sequences.is_none() {
+        let Some(charged) = self.charged_live_sequences else {
             return self;
-        }
-        self.live_sequence_cap = self.fitting_live_sequences();
+        };
+        self.live_sequence_cap = self
+            .fitting_live_sequences()
+            .filter(|fitting| *fitting < charged.max(1));
         self
     }
 
@@ -918,9 +934,13 @@ impl MemoryPlan {
         let live_sequences = self
             .charged_live_sequences
             .map_or_else(|| "unknown".to_string(), |live| live.to_string());
-        let live_sequence_cap = self
-            .live_sequence_cap
-            .map_or_else(|| "unknown".to_string(), |live| live.to_string());
+        // `uncapped` distinguishes "the configured count fits" from a plan that
+        // could not price live sequences at all (`unknown`).
+        let live_sequence_cap = match (self.charged_live_sequences, self.live_sequence_cap) {
+            (_, Some(cap)) => cap.to_string(),
+            (Some(_), None) => "uncapped".to_string(),
+            (None, None) => "unknown".to_string(),
+        };
         let live_sequence_warning = if self.live_sequences_reduced() {
             let charged = self.charged_live_sequences.unwrap_or(0);
             let cap = self.live_sequence_cap.unwrap_or(0);
@@ -1898,7 +1918,7 @@ mod tests {
     /// A plan that already fits keeps its configured count and warns about
     /// nothing: MXFP4 on the 128 GiB host must keep its full N.
     #[test]
-    fn a_fitting_plan_keeps_the_configured_live_sequence_count() {
+    fn a_fitting_plan_publishes_no_live_sequence_cap() {
         // Dense-pack pricing: 97 GiB of fixed cost and no experts, so all eight
         // rows fit with headroom.
         let fits = MemoryPlan {
@@ -1906,7 +1926,10 @@ mod tests {
             ..live_sequence_plan(8)
         }
         .with_fitting_live_sequences();
-        assert_eq!(fits.live_sequence_cap, Some(8));
+        // Fitting at the configured count publishes no cap: a cap equal to the
+        // configured bound would make the engine queue requests it should
+        // admit.
+        assert_eq!(fits.live_sequence_cap, None);
         assert_eq!(fits.effective_live_sequences(), Some(8));
         assert!(!fits.live_sequences_reduced());
         // Nothing was re-priced: the charged state term is the effective one.
@@ -1920,12 +1943,17 @@ mod tests {
         );
         let line = fits.log_line();
         assert!(
-            line.contains("live-sequences=8 live-sequence-cap=8"),
+            line.contains("live-sequences=8 live-sequence-cap=uncapped"),
             "{line}"
         );
         assert!(!line.contains("warning=live-sequences-capped"), "{line}");
+        // `/v1/memory` reports no live-sequence pair for an uncapped plan.
+        let fits_report = WiredMemoryReport::from_plan(&fits);
+        assert_eq!(fits_report.charged_live_sequences, None);
+        assert_eq!(fits_report.live_sequence_cap, None);
 
-        // A pack one row over the ceiling reduces by exactly one row.
+        // A pack one row over the ceiling reduces by exactly one row, and only
+        // then do the plan and the report publish the pair.
         let one_over = MemoryPlan {
             expert_bytes: 7 * GIB,
             ..live_sequence_plan(8)
@@ -1934,6 +1962,9 @@ mod tests {
         assert_eq!(one_over.live_sequence_cap, Some(7));
         assert!(one_over.decide().is_resident());
         assert!(one_over.working_set_bytes_for_live_sequences(8) > CEILING_128_GIB_HOST_BYTES);
+        let reduced_report = WiredMemoryReport::from_plan(&one_over);
+        assert_eq!(reduced_report.charged_live_sequences, Some(8));
+        assert_eq!(reduced_report.live_sequence_cap, Some(7));
     }
 
     /// A host that cannot hold the pack even at one row keeps the stream/refuse
@@ -1961,8 +1992,13 @@ mod tests {
         assert!(!priced.live_sequences_reduced());
         assert!(!priced.decide().is_resident());
         let line = priced.log_line();
-        assert!(line.contains("live-sequence-cap=unknown"), "{line}");
+        assert!(line.contains("live-sequence-cap=uncapped"), "{line}");
         assert!(!line.contains("warning=live-sequences-capped"), "{line}");
+        // Nothing was capped, so the `/v1/memory` pair stays null even though
+        // the plan could not fit the configured count.
+        let report = WiredMemoryReport::from_plan(&priced);
+        assert_eq!(report.charged_live_sequences, None);
+        assert_eq!(report.live_sequence_cap, None);
 
         // Unknown capacity cannot prove residency at any count either.
         let unknown = MemoryPlan {
@@ -2016,9 +2052,10 @@ mod tests {
             ..live_sequence_plan(8)
         };
         assert_eq!(stateless.fitting_live_sequences(), Some(8));
+        // Fitting is not limiting: a stateless pack publishes no cap either.
         assert_eq!(
             stateless.with_fitting_live_sequences().live_sequence_cap,
-            Some(8)
+            None
         );
     }
 

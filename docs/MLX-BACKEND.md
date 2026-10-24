@@ -363,7 +363,10 @@ L)`, and the reduction is announced once with a `configured=N admitted=L`
 warning. MXFP4 Flash Next keeps its full cohort: nothing is capped when the
 configured count fits. `GET /v1/memory` reports `memory_plan.live_sequences`
 (the configured count) and `memory_plan.live_sequence_cap` (the admitted one),
-so lower parallelism than requested is diagnosable without reading logs. A priced cache too small to hold one
+so lower parallelism than requested is diagnosable without reading logs. Both
+fields are `null` when the configured count fits (no cap) or when priced memory
+is off (`AX_MLX_PRICED_MEMORY=0` publishes no cap and keeps the historical
+0.9 wired scale). A priced cache too small to hold one
 layer stack is refused rather than thrashed. The prefill-scratch term is
 shape-derived from the configured chunk — residual/attention copies, gated-delta
 chunk intermediates, `chunk x top_k` MoE staging, the QSA score workspace and

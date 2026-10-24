@@ -887,9 +887,10 @@ pub struct PricedSessionResidency {
     /// Live decode sequences the engine may admit, when the plan resolved one.
     ///
     /// `Some(n)` means the pack stays resident while at most `n` requests
-    /// decode or prefill at once; `None` means either the pack cannot be priced
-    /// pre-load or it does not stay resident, so residency imposes no cap and
-    /// the operator's own admission limit stands.
+    /// decode or prefill at once, strictly below the configured count; `None`
+    /// means the configured count fits (or the pack cannot be priced pre-load,
+    /// or it does not stay resident), so residency imposes no cap and the
+    /// operator's own admission limit stands.
     pub live_sequence_cap: Option<u32>,
     /// Priced resident working set to size the wired limit against. `None`
     /// when the pack streams (there is no full working set to wire).
@@ -910,7 +911,37 @@ pub struct PricedSessionResidency {
 /// rather than guessing when the pack cannot be priced, requires streaming, or
 /// the plan decides to stream: a streamed pack has no full working set to
 /// wire and its expert cache, not its concurrency, is what bounds it.
+///
+/// `AX_MLX_PRICED_MEMORY=0` returns an empty report without pricing anything:
+/// the runner then wires the historical 0.9 share and publishes no cap, which
+/// is the admission behaviour that predates the priced plan.
 pub fn price_session_residency(
+    artifacts: &ax_engine_core::NativeModelArtifacts,
+    budget: SessionResidencyBudget,
+    max_live_sequences: u32,
+) -> PricedSessionResidency {
+    apply_priced_memory_switch(priced_memory_enabled(), || {
+        price_session_residency_priced(artifacts, budget, max_live_sequences)
+    })
+}
+
+/// Gate a priced residency behind the `AX_MLX_PRICED_MEMORY` kill switch.
+///
+/// With the switch off the closure is not run at all, so no sidecar is read and
+/// the caller sees exactly what an unpriced build reported: no cap and no
+/// working-set input.
+fn apply_priced_memory_switch(
+    priced_memory: bool,
+    price: impl FnOnce() -> PricedSessionResidency,
+) -> PricedSessionResidency {
+    if priced_memory {
+        price()
+    } else {
+        PricedSessionResidency::default()
+    }
+}
+
+fn price_session_residency_priced(
     artifacts: &ax_engine_core::NativeModelArtifacts,
     budget: SessionResidencyBudget,
     max_live_sequences: u32,
@@ -3831,6 +3862,48 @@ mod tests {
         );
     }
 
+    /// With the priced plan off the runner must see exactly the pre-wave
+    /// residency: no live-sequence cap and no working-set input, so the wired
+    /// limit falls back to the historical 0.9 share and admission stays
+    /// unbounded.
+    #[test]
+    fn priced_memory_kill_switch_clears_the_cap_and_the_working_set() {
+        let priced = PricedSessionResidency {
+            live_sequence_cap: Some(1),
+            resident_working_set_bytes: Some(113 * GIB),
+        };
+        let mut priced_ran = false;
+        let switched_off = apply_priced_memory_switch(false, || {
+            priced_ran = true;
+            priced
+        });
+        assert!(!priced_ran, "the kill switch must skip the pricing pass");
+        assert_eq!(switched_off, PricedSessionResidency::default());
+        assert_eq!(switched_off.live_sequence_cap, None);
+        assert_eq!(switched_off.resident_working_set_bytes, None);
+
+        // No working set keeps the historical wire; no cap keeps the
+        // historical admit-everything admission.
+        let recommended = 115_448_725_504usize;
+        let wired = crate::tiel_memory_policy::resolve_wired_limit(
+            recommended,
+            switched_off.resident_working_set_bytes,
+            None,
+        );
+        assert_eq!(
+            wired.scale,
+            crate::tiel_memory_policy::DEFAULT_WIRED_LIMIT_SCALE
+        );
+        assert_eq!(wired.limit_bytes, (recommended as f64 * 0.9) as u64);
+        assert_eq!(
+            wired.source,
+            crate::tiel_memory_policy::WiredLimitSource::Default
+        );
+
+        // With the switch on the priced numbers pass through unchanged.
+        assert_eq!(apply_priced_memory_switch(true, || priced), priced);
+    }
+
     #[test]
     fn pager_cache_respects_byte_budget() {
         let dir = synth_fixture("cache_bytes");
@@ -4287,7 +4360,8 @@ mod tests {
         assert!(line.contains("warning=live-sequences-capped"), "{line}");
 
         // The same pack at one explicitly configured row stays resident and
-        // keeps the full cap of one.
+        // publishes no cap: one row already fits, and a cap of one would only
+        // make the engine queue requests the configured bound already admits.
         let Some(single) = real_pack_plan(
             std::path::Path::new(SIX_BIT),
             HOST_RAM,
@@ -4298,8 +4372,13 @@ mod tests {
         };
         println!("{SIX_BIT} (1 live): {}", single.log_line());
         assert!(single.decide().is_resident(), "{}", single.log_line());
-        assert_eq!(single.live_sequence_cap, Some(1));
+        assert_eq!(single.live_sequence_cap, None);
         assert!(!single.live_sequences_reduced());
+        assert!(
+            single.log_line().contains("live-sequence-cap=uncapped"),
+            "{}",
+            single.log_line()
+        );
 
         // MXFP4 has ~33 GiB of headroom: the full cohort must survive. This is
         // the case a blanket concurrency reduction would have broken.
@@ -4312,12 +4391,17 @@ mod tests {
         assert!(mxfp4.decide().is_resident(), "{}", mxfp4.log_line());
         assert_eq!(
             mxfp4.live_sequence_cap,
-            Some(COHORT_LIVE_SEQUENCES),
-            "MXFP4 must keep its full N: {}",
+            None,
+            "MXFP4 fits its full cohort, so no cap is published: {}",
             mxfp4.log_line()
         );
         assert!(!mxfp4.live_sequences_reduced());
         assert!(!mxfp4.log_line().contains("warning=live-sequences-capped"));
+        assert!(
+            mxfp4.log_line().contains("live-sequence-cap=uncapped"),
+            "{}",
+            mxfp4.log_line()
+        );
         // Every case reports both sides of the wired limit, so an operator can
         // see why a resident pack still runs below the 0.9 share (or at the
         // full recommendation for the 6-bit single-stream case).

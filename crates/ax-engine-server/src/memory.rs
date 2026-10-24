@@ -57,7 +57,8 @@ pub(crate) fn memory_report() -> Value {
 /// (the rest wait in the scheduler) instead of paging the experts, so an
 /// operator who sees lower parallelism than `--max-concurrent-requests` asked
 /// for can read the reason here. `live_sequences` is the count the plan charged
-/// before that reduction.
+/// before that reduction. Both are null when the configured count fits: the
+/// plan publishes a cap only when it actually limits admission.
 fn wired_memory_plan_json(report: Option<WiredMemoryReport>) -> Option<Value> {
     let report = report?;
     let remedy = report
