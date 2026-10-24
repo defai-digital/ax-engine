@@ -480,6 +480,51 @@ mod tests {
     }
 
     #[test]
+    fn masks_preserve_unicode_continuations_across_token_boundaries() {
+        let pieces: &[&[u8]] = &[
+            b"\"",
+            b"\xed",
+            b"\xa0",
+            b"\x9f\xbf",
+            b"\\ud83d",
+            b"\\ude00",
+            b"a",
+        ];
+        let vocab = TokenVocab::from_token_bytes(
+            pieces
+                .iter()
+                .enumerate()
+                .map(|(id, bytes)| (id as u32, bytes.to_vec()))
+                .collect(),
+            8,
+        );
+        let grammar = JsonGrammar::from_schema(&json!({
+            "type": "string", "maxLength": 1
+        }))
+        .unwrap();
+        let mut workspace = MaskWorkspace::default();
+        let mut mask = Vec::new();
+        let mut matcher = grammar.matcher();
+        assert!(matcher.advance_bytes(&grammar, b"\"\xed"));
+        vocab.allowed_tokens(&grammar, &matcher, &[7], &mut workspace, &mut mask);
+        assert!(!mask_allows(&mask, 2), "encoded surrogates must be masked");
+        assert!(mask_allows(&mask, 3), "valid UTF-8 continuation");
+        let mut matcher = grammar.matcher();
+        assert!(matcher.advance_bytes(&grammar, b"\"\\ud83d"));
+        vocab.allowed_tokens(&grammar, &matcher, &[7], &mut workspace, &mut mask);
+        assert!(
+            mask_allows(&mask, 5),
+            "low surrogate completes the character"
+        );
+        for token in [0, 4, 6, 7] {
+            assert!(!mask_allows(&mask, token), "{token}");
+        }
+        assert!(matcher.advance_bytes(&grammar, b"\\ude00\""));
+        vocab.allowed_tokens(&grammar, &matcher, &[7], &mut workspace, &mut mask);
+        assert!(mask_allows(&mask, 7), "EOS after the paired string closes");
+    }
+
+    #[test]
     fn byte_level_tokenizer_json_maps_pieces_to_bytes() {
         let tokenizer = json!({
             "decoder": {"type": "ByteLevel"},

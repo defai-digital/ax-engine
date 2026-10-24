@@ -394,6 +394,19 @@ enum NumberState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum StringEscape {
+    None,
+    Start,
+    Unicode {
+        remaining: u8,
+        value: u16,
+        low_surrogate: bool,
+    },
+    LowBackslash,
+    LowU,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Frame {
     Value {
         node: NodeId,
@@ -412,8 +425,7 @@ enum Frame {
         min: u32,
         max: u32,
         chars: u32,
-        /// 0 plain, 1 after a backslash, 2..=5 hex digits of `\u` still due.
-        escape: u8,
+        escape: StringEscape,
         utf8: u8,
     },
     Number {
@@ -488,7 +500,7 @@ impl JsonMatcher {
             Frame::Str {
                 max,
                 chars,
-                escape: 0,
+                escape: StringEscape::None,
                 utf8: 0,
                 ..
             } => Some(max.saturating_sub(*chars)),
@@ -618,7 +630,7 @@ fn start_value(grammar: &JsonGrammar, node: NodeId, byte: u8) -> Option<Frame> {
                     min: *min_chars,
                     max: *max_chars,
                     chars: 0,
-                    escape: 0,
+                    escape: StringEscape::None,
                     utf8: 0,
                 }),
                 b'-' | b'0'..=b'9' if types & (TYPE_NUMBER | TYPE_INTEGER) != 0 => {
@@ -656,13 +668,20 @@ fn object_spec(grammar: &JsonGrammar, node: NodeId) -> Option<&ObjectSpec> {
 }
 
 /// Track a UTF-8 sequence inside a string or key. Returns the new pending
-/// continuation count and whether the byte starts a character.
+/// continuation state and whether the byte starts a character. States 4..=7
+/// constrain the second byte of a sequence to valid Unicode scalar values.
 fn utf8_step(pending: u8, byte: u8) -> Option<(u8, bool)> {
     match (pending, byte) {
         (0, 0x20..=0x7f) => Some((0, true)),
         (0, 0xc2..=0xdf) => Some((1, true)),
-        (0, 0xe0..=0xef) => Some((2, true)),
-        (0, 0xf0..=0xf4) => Some((3, true)),
+        (0, 0xe0) => Some((4, true)),
+        (0, 0xed) => Some((5, true)),
+        (0, 0xe1..=0xec | 0xee..=0xef) => Some((2, true)),
+        (0, 0xf0) => Some((6, true)),
+        (0, 0xf4) => Some((7, true)),
+        (0, 0xf1..=0xf3) => Some((3, true)),
+        (4, 0xa0..=0xbf) | (5, 0x80..=0x9f) => Some((1, false)),
+        (6, 0x90..=0xbf) | (7, 0x80..=0x8f) => Some((2, false)),
         (1..=3, 0x80..=0xbf) => Some((pending - 1, false)),
         _ => None,
     }
@@ -692,7 +711,7 @@ fn step_frame(grammar: &JsonGrammar, frame: &mut Frame, byte: u8) -> Step {
         } => {
             let mut next = (chars, escape, utf8);
             match escape {
-                0 => {
+                StringEscape::None => {
                     if utf8 == 0 && byte == b'"' {
                         return if chars >= min {
                             Step::Done
@@ -704,7 +723,7 @@ fn step_frame(grammar: &JsonGrammar, frame: &mut Frame, byte: u8) -> Step {
                         if chars >= max {
                             return Step::Reject;
                         }
-                        next = (chars + 1, 1, 0);
+                        next = (chars + 1, StringEscape::Start, 0);
                     } else {
                         let Some((pending, starts)) = utf8_step(utf8, byte) else {
                             return Step::Reject;
@@ -712,19 +731,80 @@ fn step_frame(grammar: &JsonGrammar, frame: &mut Frame, byte: u8) -> Step {
                         if starts && chars >= max {
                             return Step::Reject;
                         }
-                        next = (chars + u32::from(starts), 0, pending);
+                        next = (chars + u32::from(starts), StringEscape::None, pending);
                     }
                 }
-                1 => match byte {
-                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => next.1 = 0,
-                    b'u' => next.1 = 5,
+                StringEscape::Start => match byte {
+                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                        next.1 = StringEscape::None;
+                    }
+                    b'u' => {
+                        next.1 = StringEscape::Unicode {
+                            remaining: 4,
+                            value: 0,
+                            low_surrogate: false,
+                        };
+                    }
                     _ => return Step::Reject,
                 },
-                _ => {
-                    if !byte.is_ascii_hexdigit() {
+                StringEscape::Unicode {
+                    remaining,
+                    value,
+                    low_surrogate,
+                } => {
+                    let digit = match byte {
+                        b'0'..=b'9' => u16::from(byte - b'0'),
+                        b'a'..=b'f' => u16::from(byte - b'a' + 10),
+                        b'A'..=b'F' => u16::from(byte - b'A' + 10),
+                        _ => return Step::Reject,
+                    };
+                    let value = (value << 4) | digit;
+                    // Reject a prefix as soon as no valid code unit can
+                    // complete it, before the token mask reaches a dead end.
+                    if low_surrogate {
+                        if (remaining == 4 && value != 0xd)
+                            || (remaining == 3 && !(0xdc..=0xdf).contains(&value))
+                        {
+                            return Step::Reject;
+                        }
+                    } else if remaining == 3 && (0xdc..=0xdf).contains(&value) {
                         return Step::Reject;
                     }
-                    next.1 = if escape == 2 { 0 } else { escape - 1 };
+                    next.1 = if remaining > 1 {
+                        StringEscape::Unicode {
+                            remaining: remaining - 1,
+                            value,
+                            low_surrogate,
+                        }
+                    } else if low_surrogate {
+                        if !(0xdc00..=0xdfff).contains(&value) {
+                            return Step::Reject;
+                        }
+                        StringEscape::None
+                    } else {
+                        match value {
+                            0xd800..=0xdbff => StringEscape::LowBackslash,
+                            0xdc00..=0xdfff => return Step::Reject,
+                            _ => StringEscape::None,
+                        }
+                    };
+                }
+                StringEscape::LowBackslash => {
+                    if byte != b'\\' {
+                        return Step::Reject;
+                    }
+                    next.1 = StringEscape::LowU;
+                }
+                StringEscape::LowU => {
+                    if byte != b'u' {
+                        return Step::Reject;
+                    }
+                    // The high surrogate already counted this scalar value.
+                    next.1 = StringEscape::Unicode {
+                        remaining: 4,
+                        value: 0,
+                        low_surrogate: true,
+                    };
                 }
             }
             *frame = Frame::Str {
@@ -1063,6 +1143,71 @@ mod tests {
         assert!(!prefix_ok(&grammar, "{\"age\":1,\"age\""));
         // Empty name violates minLength.
         assert!(!prefix_ok(&grammar, "{\"name\":\"\""));
+    }
+
+    #[test]
+    fn strings_and_keys_reject_invalid_utf8_at_the_first_invalid_byte() {
+        let grammar = JsonGrammar::any_object();
+        for prefix in [b"{\"".as_slice(), b"{\"key\":\"".as_slice()] {
+            for invalid in [
+                b"\xe0\x80".as_slice(),
+                b"\xed\xa0".as_slice(),
+                b"\xf0\x80".as_slice(),
+                b"\xf4\x90".as_slice(),
+            ] {
+                let mut matcher = grammar.matcher();
+                assert!(matcher.advance_bytes(&grammar, prefix));
+                assert!(matcher.advance(&grammar, invalid[0]));
+                assert!(!matcher.advance(&grammar, invalid[1]), "{invalid:?}");
+            }
+            for valid in [
+                b"\xc2\x80".as_slice(),
+                b"\xe0\xa0\x80".as_slice(),
+                b"\xed\x9f\xbf".as_slice(),
+                b"\xef\xbf\xbf".as_slice(),
+                b"\xf0\x90\x80\x80".as_slice(),
+                b"\xf4\x8f\xbf\xbf".as_slice(),
+            ] {
+                let mut matcher = grammar.matcher();
+                assert!(matcher.advance_bytes(&grammar, prefix));
+                for byte in valid {
+                    assert!(matcher.advance(&grammar, *byte), "{valid:?}");
+                }
+                assert!(matcher.advance(&grammar, b'"'));
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_escapes_require_paired_surrogates_and_count_scalar_values() {
+        let grammar = JsonGrammar::from_schema(&json!({"type": "string"})).unwrap();
+        for text in [
+            r#""\ud83d""#,
+            r#""\ud83dx"#,
+            r#""\ude00"#,
+            r#""\ud83d\u0041"#,
+            r#""\ud83d\ud83d"#,
+            r#""\udc"#,
+            r#""\ud83d\u0"#,
+            r#""\ud83d\ud8"#,
+        ] {
+            assert!(!prefix_ok(&grammar, text), "{text}");
+        }
+        let one = JsonGrammar::from_schema(&json!({
+            "type": "string", "minLength": 1, "maxLength": 1
+        }))
+        .unwrap();
+        for text in [r#""\ud83d\ude00""#, r#""\uD83D\uDE00""#, r#""\u0041""#] {
+            assert!(accepts(&one, text), "{text}");
+            let parsed: String = serde_json::from_str(text).unwrap();
+            assert_eq!(parsed.chars().count(), 1);
+        }
+        let two = JsonGrammar::from_schema(&json!({
+            "type": "string", "minLength": 2, "maxLength": 2
+        }))
+        .unwrap();
+        assert!(!accepts(&two, r#""\ud83d\ude00""#));
+        assert!(accepts(&two, r#""\ud83d\ude00a""#));
     }
 
     #[test]
