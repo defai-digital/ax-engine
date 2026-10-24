@@ -25,8 +25,8 @@ use std::path::Path;
 
 use mlx_sys::{
     MlxArray, MlxDtype, MlxQuantizationMode, add, argmax, argpartition_axis, astype, concatenate,
-    contiguous, eval, matmul, multiply, reshape, rms_norm, rope, scaled_dot_product_attention,
-    silu_mul, slice, split, stack, sum_axis, take, take_along_axis, transpose,
+    contiguous, matmul, multiply, reshape, rms_norm, rope, scaled_dot_product_attention, silu_mul,
+    slice, split, stack, sum_axis, take, take_along_axis, transpose,
 };
 
 use crate::model::shared::qw;
@@ -647,19 +647,28 @@ impl Dflash2Drafter {
         block: i32,
     ) -> MlxArray {
         self.draft_block_inner(anchor, new_hidden, target, block, false)
+            .0
     }
 
     /// Same block as [`Self::draft_block`], and also records the runner-up
     /// token at the first two draft positions in [`Self::tree_alternatives`].
     /// The returned primary chain matches [`Self::draft_block`].
+    ///
+    /// `Err` means the runner-up read failed before any request cache write.
+    /// The caller declines the speculative step; this drafter's own cache was
+    /// already updated while the block graph was built.
     pub(crate) fn draft_block_capturing_alternatives(
         &mut self,
         anchor: u32,
         new_hidden: &MlxArray,
         target: &ModelWeights,
         block: i32,
-    ) -> MlxArray {
-        self.draft_block_inner(anchor, new_hidden, target, block, true)
+    ) -> Result<MlxArray, String> {
+        let (tokens, error) = self.draft_block_inner(anchor, new_hidden, target, block, true);
+        match error {
+            Some(error) => Err(error),
+            None => Ok(tokens),
+        }
     }
 
     fn draft_block_inner(
@@ -669,7 +678,7 @@ impl Dflash2Drafter {
         target: &ModelWeights,
         block: i32,
         capture_alternatives: bool,
-    ) -> MlxArray {
+    ) -> (MlxArray, Option<String>) {
         self.tree_alternatives = [None, None];
         let weights = self.weights.clone();
         let cfg = &weights.cfg;
@@ -794,10 +803,18 @@ impl Dflash2Drafter {
             // Greedy path: plain argmax of the target LM head.
             let tokens = astype(&argmax(&logits, None), MlxDtype::Uint32, None);
             self.mark("argmax", &tokens, &mut timer);
-            if capture_alternatives {
-                self.tree_alternatives = greedy_runner_up(&logits, &tokens);
-            }
-            return tokens;
+            let capture_error = if capture_alternatives {
+                match greedy_runner_up(&logits, &tokens) {
+                    Ok(alternatives) => {
+                        self.tree_alternatives = alternatives;
+                        None
+                    }
+                    Err(error) => Some(error),
+                }
+            } else {
+                None
+            };
+            return (tokens, capture_error);
         }
         self.select(
             &weights.selector,
@@ -937,7 +954,7 @@ impl Dflash2Drafter {
         logits: &MlxArray,
         anchor: u32,
         capture_alternatives: bool,
-    ) -> MlxArray {
+    ) -> (MlxArray, Option<String>) {
         let shape = logits.shape();
         let proposals = shape[1];
         let vocab = shape[2];
@@ -1011,21 +1028,32 @@ impl Dflash2Drafter {
             );
             path.push(predecessor.clone());
         }
-        if let Some(slots) = alt_slots.as_ref() {
-            self.tree_alternatives = selector_runner_up(slots, &path);
-        }
+        let capture_error = if let Some(slots) = alt_slots.as_ref() {
+            match selector_runner_up(slots, &path) {
+                Ok(alternatives) => {
+                    self.tree_alternatives = alternatives;
+                    None
+                }
+                Err(error) => Some(error),
+            }
+        } else {
+            None
+        };
         let refs: Vec<&MlxArray> = path.iter().collect();
-        astype(&stack(&refs, 1, None), MlxDtype::Uint32, None)
+        (
+            astype(&stack(&refs, 1, None), MlxDtype::Uint32, None),
+            capture_error,
+        )
     }
 }
 
 /// Runner-up token at the first two greedy draft positions. The primary id is
 /// read from `drafted`, the same array the caller returns, so a tie cannot
 /// make the alternative equal the committed chain.
-fn greedy_runner_up(logits: &MlxArray, drafted: &MlxArray) -> [Option<u32>; 2] {
+fn greedy_runner_up(logits: &MlxArray, drafted: &MlxArray) -> Result<[Option<u32>; 2], String> {
     let shape = logits.shape();
     if shape.len() != 3 || shape[1] < 1 || shape[2] < 2 {
-        return [None, None];
+        return Ok([None, None]);
     }
     let positions = shape[1].min(2);
     let vocab = shape[2];
@@ -1055,12 +1083,20 @@ fn greedy_runner_up(logits: &MlxArray, drafted: &MlxArray) -> [Option<u32>; 2] {
         MlxDtype::Uint32,
         None,
     );
-    eval(&[&top, &primary]);
+    // Draft capture only: the request cache is not written on this path.
+    if let Err(error) = mlx_sys::try_eval(&[&top, &primary]) {
+        tracing::warn!(
+            target: "ax_engine_mlx::dflash2",
+            %error,
+            "DFlash2 runner-up capture failed; declining speculation"
+        );
+        return Err(error);
+    }
     let primary_ids = primary.data_u32();
     let top_ids = top.data_u32();
     let mut out = [None, None];
     if primary_ids.len() < positions as usize || top_ids.len() < (positions as usize) * 2 {
-        return out;
+        return Ok(out);
     }
     for position in 0..positions as usize {
         let primary = primary_ids[position];
@@ -1068,7 +1104,7 @@ fn greedy_runner_up(logits: &MlxArray, drafted: &MlxArray) -> [Option<u32>; 2] {
         let second = top_ids[position * 2 + 1];
         out[position] = [first, second].into_iter().find(|token| *token != primary);
     }
-    out
+    Ok(out)
 }
 
 /// Highest-scoring candidate that is not `primary`. Equal scores keep the
@@ -1086,7 +1122,10 @@ fn distinct_runner_up(primary: u32, candidates: &[u32], scores: &[f32]) -> Optio
     best.map(|(token, _)| token)
 }
 
-fn selector_runner_up(slots: &[(MlxArray, MlxArray)], chosen: &[MlxArray]) -> [Option<u32>; 2] {
+fn selector_runner_up(
+    slots: &[(MlxArray, MlxArray)],
+    chosen: &[MlxArray],
+) -> Result<[Option<u32>; 2], String> {
     let mut out = [None, None];
     for (index, ((candidates, scores), chosen)) in slots.iter().zip(chosen).enumerate() {
         if index >= 2 {
@@ -1095,13 +1134,21 @@ fn selector_runner_up(slots: &[(MlxArray, MlxArray)], chosen: &[MlxArray]) -> [O
         let candidates = astype(candidates, MlxDtype::Uint32, None);
         let scores = astype(scores, MlxDtype::Float32, None);
         let chosen = astype(chosen, MlxDtype::Uint32, None);
-        eval(&[&candidates, &scores, &chosen]);
+        // Draft capture only: the request cache is not written on this path.
+        if let Err(error) = mlx_sys::try_eval(&[&candidates, &scores, &chosen]) {
+            tracing::warn!(
+                target: "ax_engine_mlx::dflash2",
+                %error,
+                "DFlash2 runner-up capture failed; declining speculation"
+            );
+            return Err(error);
+        }
         let Some(primary) = chosen.data_u32().first().copied() else {
             continue;
         };
         out[index] = distinct_runner_up(primary, candidates.data_u32(), scores.data_f32());
     }
-    out
+    Ok(out)
 }
 
 /// Directory name of the drafter's Hugging Face cache entry.
@@ -1199,6 +1246,65 @@ mod tests {
         assert_eq!(distinct_runner_up(4, &[4, 9, 2], &[3.0, 2.5, 2.5]), Some(9));
         assert_eq!(distinct_runner_up(4, &[4, 4], &[1.0, 1.0]), None);
         assert_eq!(distinct_runner_up(1, &[8, 3], &[f32::NAN, 0.5]), Some(3));
+    }
+
+    #[test]
+    fn runner_up_capture_reads_the_other_top_token() {
+        let logits = reshape(
+            &MlxArray::from_f32_slice(&[0.0, 5.0, 1.0, 3.0, 9.0, 1.0, 2.0, 0.0]),
+            &[1, 2, 4],
+            None,
+        );
+        let primary = [1_u32, 0];
+        let drafted = MlxArray::from_raw_data(
+            primary.as_ptr().cast(),
+            std::mem::size_of_val(&primary),
+            &[1, 2],
+            MlxDtype::Uint32,
+        );
+        assert_eq!(
+            greedy_runner_up(&logits, &drafted).unwrap(),
+            [Some(3), Some(2)]
+        );
+    }
+
+    #[test]
+    fn runner_up_capture_skips_a_head_that_has_no_second_token() {
+        let logits = reshape(&MlxArray::from_f32_slice(&[1.0]), &[1, 1, 1], None);
+        let primary = [0_u32];
+        let drafted = MlxArray::from_raw_data(
+            primary.as_ptr().cast(),
+            std::mem::size_of_val(&primary),
+            &[1, 1],
+            MlxDtype::Uint32,
+        );
+        assert_eq!(greedy_runner_up(&logits, &drafted).unwrap(), [None, None]);
+    }
+
+    #[test]
+    fn selector_runner_up_keeps_the_distinct_candidate_after_eval() {
+        let candidates = [4_u32, 9, 2];
+        let scores = [3.0_f32, 2.5, 2.5];
+        let chosen = [4_u32];
+        let slots = [(
+            MlxArray::from_raw_data(
+                candidates.as_ptr().cast(),
+                std::mem::size_of_val(&candidates),
+                &[3],
+                MlxDtype::Uint32,
+            ),
+            MlxArray::from_f32_slice(&scores),
+        )];
+        let chosen_arr = [MlxArray::from_raw_data(
+            chosen.as_ptr().cast(),
+            std::mem::size_of_val(&chosen),
+            &[1],
+            MlxDtype::Uint32,
+        )];
+        assert_eq!(
+            selector_runner_up(&slots, &chosen_arr).unwrap(),
+            [Some(9), None]
+        );
     }
 
     #[test]

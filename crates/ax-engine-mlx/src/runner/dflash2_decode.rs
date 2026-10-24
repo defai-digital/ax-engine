@@ -214,6 +214,19 @@ fn decline(reason: &'static str) -> Option<Vec<u32>> {
     None
 }
 
+/// Records the first MLX eval failure of a speculative step and logs it once.
+fn note_mlx_eval_failure(slot: &RefCell<Option<String>>, error: &str) {
+    if slot.borrow().is_some() {
+        return;
+    }
+    tracing::warn!(
+        target: "ax_engine_mlx::dflash2",
+        error,
+        "DFlash2 speculative evaluation failed; declining speculation"
+    );
+    *slot.borrow_mut() = Some(error.to_owned());
+}
+
 /// The greedy speculative walk: `drafts[i]` is checked against `predicted[i]`,
 /// the target's choice after row `i` of the verify window. Returns how many
 /// drafts were accepted and the committed tokens: the accepted drafts followed
@@ -435,12 +448,17 @@ impl MlxRunner {
             // The flag is read once per process. Unset and `0` call `draft_block`
             // and leave the linear verify below unchanged.
             let drafted = if crate::fastpath::tree_verify_enabled() {
-                dflash.drafter.draft_block_capturing_alternatives(
+                match dflash.drafter.draft_block_capturing_alternatives(
                     primary,
                     &hidden,
                     &self.weights,
                     cfg.block_size,
-                )
+                ) {
+                    Ok(tokens) => tokens,
+                    // Request KV is unchanged. `pending_hidden` stays consumed so
+                    // a later round cannot extend the drafter graph that failed.
+                    Err(_) => return decline("runner-up capture failed"),
+                }
             } else {
                 dflash
                     .drafter
@@ -471,17 +489,20 @@ impl MlxRunner {
         let _target_verify_scope = crate::fastpath::scoped_qwen_linear_mtp_exact(false);
         let _verify_qmm_scope = crate::model::shared::verify_qmm::QwenMtpVerifyQmmGuard::arm(true);
 
-        if crate::fastpath::tree_verify_enabled()
-            && let Some(tokens) = self.try_dflash2_tree_verify(
+        if crate::fastpath::tree_verify_enabled() {
+            match self.try_dflash2_tree_verify(
                 state,
                 primary,
                 &draft_arr,
                 token_offset,
                 options,
                 draft_wall_us,
-            )
-        {
-            return Some(tokens);
+            ) {
+                Ok(Some(tokens)) => return Some(tokens),
+                Ok(None) => {}
+                // Logged once at the eval site. Request KV was not written.
+                Err(()) => return decline("tree verify evaluation failed"),
+            }
         }
 
         // Linear-attention state cannot be trimmed: verify on a clone that
@@ -672,23 +693,46 @@ impl MlxRunner {
         token_offset: usize,
         options: &DecodeOneOptions<'_>,
         draft_wall_us: u32,
-    ) -> Option<Vec<u32>> {
+    ) -> Result<Option<Vec<u32>>, ()> {
         use super::tree_verify::{CommitLimits, DraftTree, verify_draft_tree};
 
         let remaining = options.request_context.map_or(0, |ctx| {
             ctx.max_output_tokens.saturating_sub(ctx.generated_len) as usize
         });
-        let capture_layers = self.dflash2.as_ref()?.config().target_layer_ids.clone();
-        eval(&[draft_arr]);
+        let Some(capture_layers) = self
+            .dflash2
+            .as_ref()
+            .map(|weights| weights.config().target_layer_ids.clone())
+        else {
+            return Ok(None);
+        };
+        // Draft ids only. The request cache is still the pre-round snapshot.
+        if let Err(error) = mlx_sys::try_eval(&[draft_arr]) {
+            tracing::warn!(
+                target: "ax_engine_mlx::dflash2",
+                %error,
+                "DFlash2 draft evaluation failed; declining speculation"
+            );
+            return Err(());
+        }
         let drafted = draft_arr.data_u32();
         if drafted.is_empty() {
-            return None;
+            return Ok(None);
         }
         let primary_len = drafted.len().min(2);
         let primary = drafted[..primary_len].to_vec();
-        let alternatives = state.dflash2.as_ref()?.drafter.tree_alternatives;
-        let tree = DraftTree::from_top2(&primary, &alternatives).ok()?;
+        let Some(alternatives) = state
+            .dflash2
+            .as_ref()
+            .map(|dflash| dflash.drafter.tree_alternatives)
+        else {
+            return Ok(None);
+        };
+        let Ok(tree) = DraftTree::from_top2(&primary, &alternatives) else {
+            return Ok(None);
+        };
         let hiddens: RefCell<Vec<Option<MlxArray>>> = RefCell::new(Vec::new());
+        let eval_error: RefCell<Option<String>> = RefCell::new(None);
         let verify_started = Instant::now();
         let decision = {
             let base = &state.cache;
@@ -700,6 +744,14 @@ impl MlxRunner {
                     eos: options.terminal_token_ids,
                 },
                 |cache, branch| {
+                    if eval_error.borrow().is_some() {
+                        return super::tree_verify::BranchVerification {
+                            accepted_drafts: 0,
+                            committed: Vec::new(),
+                            state: cache,
+                            usable: false,
+                        };
+                    }
                     let (verification, hidden) = self.forward_tree_branch(
                         cache,
                         anchor,
@@ -710,17 +762,30 @@ impl MlxRunner {
                             budget: remaining,
                             eos: options.terminal_token_ids,
                         },
+                        &eval_error,
                     );
                     hiddens.borrow_mut().push(hidden);
                     verification
                 },
             )
         };
-        let decision = decision.ok()?;
-        if decision.tokens.is_empty() {
-            return None;
+        // A branch clone failed to evaluate. Do not adopt any branch.
+        if eval_error.borrow().is_some() {
+            return Err(());
         }
-        let hidden = hiddens.into_inner().get(decision.branch_index)?.clone()?;
+        let Ok(decision) = decision else {
+            return Ok(None);
+        };
+        if decision.tokens.is_empty() {
+            return Ok(None);
+        }
+        let Some(hidden) = hiddens
+            .into_inner()
+            .get(decision.branch_index)
+            .and_then(Clone::clone)
+        else {
+            return Ok(None);
+        };
         let verify_wall_us = elapsed_us(verify_started);
         state.cache = decision.state;
         if let Some(dflash) = state.dflash2.as_mut() {
@@ -768,15 +833,16 @@ impl MlxRunner {
             emitted_tokens: saturating_u32(decision.tokens.len()),
             ..MtpStepTimings::default()
         });
-        Some(apply_decode_result(
+        Ok(Some(apply_decode_result(
             state,
             &decision.tokens,
             options.terminal_token_ids,
-        ))
+        )))
     }
 
     /// One linear greedy verify of `drafts` on a clone of `source`. The clone
     /// is the only cache this branch writes.
+    #[allow(clippy::too_many_arguments)]
     fn forward_tree_branch(
         &self,
         source: MlxKVCache,
@@ -785,6 +851,7 @@ impl MlxRunner {
         token_offset: usize,
         capture_layers: &[usize],
         limits: super::tree_verify::CommitLimits<'_>,
+        eval_error: &RefCell<Option<String>>,
     ) -> (
         super::tree_verify::BranchVerification<MlxKVCache>,
         Option<MlxArray>,
@@ -839,7 +906,12 @@ impl MlxRunner {
         let predicted_arr = argmax(&logits_all, None);
         let refs: Vec<&MlxArray> = captured.iter().collect();
         let hidden_all = astype(&concatenate(&refs, 2, None), MlxDtype::Bfloat16, None);
-        eval(&[&predicted_arr, &hidden_all]);
+        // `verify_cache` is a clone. The request cache is written only if a
+        // branch is adopted after every branch returns.
+        if let Err(error) = mlx_sys::try_eval(&[&predicted_arr, &hidden_all]) {
+            note_mlx_eval_failure(eval_error, &error);
+            return failed(source);
+        }
         let predicted = predicted_arr.data_u32().to_vec();
         if predicted.len() != verify_len {
             return failed(source);
@@ -865,14 +937,18 @@ impl MlxRunner {
             &[1, 1, 1],
             None,
         );
-        let cache = self.commit_tree_branch(
+        let (cache, eval_failed) = self.commit_tree_branch(
             source,
             verify_cache,
             anchor,
             drafts,
             cache_draft_rows,
             token_offset,
+            eval_error,
         );
+        if eval_failed {
+            return failed(cache);
+        }
         (
             BranchVerification {
                 accepted_drafts: accepted,
@@ -887,6 +963,10 @@ impl MlxRunner {
     /// Adopt, restore, or replay `source` so the cache keeps the anchor plus
     /// `cache_draft_rows` accepted drafts. `source` itself is not modified
     /// unless adoption fails and the committed prefix is recomputed on it.
+    ///
+    /// The bool is set when materializing the clone fails. The returned cache
+    /// is then the untouched `source`, and the request cache is not this clone.
+    #[allow(clippy::too_many_arguments)]
     fn commit_tree_branch(
         &self,
         source: MlxKVCache,
@@ -895,13 +975,18 @@ impl MlxRunner {
         drafts: &[u32],
         cache_draft_rows: usize,
         token_offset: usize,
-    ) -> MlxKVCache {
+        eval_error: &RefCell<Option<String>>,
+    ) -> (MlxKVCache, bool) {
         let retained = 1 + cache_draft_rows;
         let verify_len = drafts.len() + 1;
         let adopted = if retained == verify_len {
             if !crate::fastpath::mtp_lazy_adopt_state_enabled() {
                 let refs = verify_cache.collect_eval_refs();
-                eval(&refs);
+                // Full-window adopt still holds only the branch clone.
+                if let Err(error) = mlx_sys::try_eval(&refs) {
+                    note_mlx_eval_failure(eval_error, &error);
+                    return (source, true);
+                }
             }
             verify_cache.trim_to(token_offset + retained)
         } else if retained == 1 {
@@ -912,13 +997,17 @@ impl MlxRunner {
             let replayed = self.dflash2_replay_prefix(&source, &mut verify_cache, retained);
             if replayed && !crate::fastpath::mtp_lazy_adopt_state_enabled() {
                 let refs = verify_cache.collect_eval_refs();
-                eval(&refs);
+                // Replay wrote this clone, not the request cache. Drop it on failure.
+                if let Err(error) = mlx_sys::try_eval(&refs) {
+                    note_mlx_eval_failure(eval_error, &error);
+                    return (source, true);
+                }
             }
             replayed && verify_cache.trim_to(token_offset + retained)
         };
         if adopted {
             verify_cache.clear_linear_prefix_checkpoint();
-            verify_cache
+            (verify_cache, false)
         } else {
             let mut rebuilt = source;
             let kept = cache_draft_rows.min(drafts.len());
@@ -930,7 +1019,7 @@ impl MlxRunner {
                 &drafts[..kept],
                 token_offset,
             );
-            rebuilt
+            (rebuilt, false)
         }
     }
 }
