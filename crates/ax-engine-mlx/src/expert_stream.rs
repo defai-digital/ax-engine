@@ -20,7 +20,7 @@ pub(crate) use selected::take_selected_expert_read_stats;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 use ax_engine_core::{NativeTensorRole, NativeTensorSpec};
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,18 @@ pub enum ExpertStreamError {
     },
     #[error("expert stream paging failed: {0}")]
     Paging(String),
+    #[error(
+        "the priced plan can only keep {expert_cache_bytes} bytes of streamed expert cache \
+         resident, but one layer stack of this pack needs about {layer_bytes} bytes. Every \
+         decode step would re-read a whole layer from disk, so the load is refused instead of \
+         thrashing. Raise AX_MLX_MEMORY_CEILING_BYTES, shrink the context/pool, or select a \
+         smaller pack; an explicit --stream-experts load skips this byte cap and uses the \
+         layer-count budget (AX_STREAM_EXPERT_LAYERS) instead"
+    )]
+    ExpertCacheBelowLayerStack {
+        expert_cache_bytes: u64,
+        layer_bytes: u64,
+    },
 }
 
 /// `n` from the first `layers.<n>.` segment of a tensor name, when present.
@@ -461,6 +473,16 @@ pub struct AutoResidencyContext {
     /// Whole n-gram lexical table (weights plus scales/biases). Priced as
     /// disk/virtual: reported, never charged to the resident working set.
     pub ngram_table_bytes: u64,
+    /// Sum of the tensors the loader actually keeps resident: every tensor
+    /// the artifacts directory ships except the streamable expert stack and
+    /// the disk-served n-gram table. A publisher's
+    /// `estimated_*_resident_bytes` can understate what the loader
+    /// materializes (MTP/vision sidecars), so the plan floors its non-expert
+    /// share with this inventory instead of trusting the file. It never raises
+    /// the expert term: experts are priced from the manifest and are never
+    /// double counted.
+    /// Zero when the caller has no artifacts (raw constructors, doctor).
+    pub resident_tensor_inventory_bytes: u64,
     /// Physical unified memory (`hw.memsize`).
     pub host_ram_bytes: Option<u64>,
     /// Metal `recommendedMaxWorkingSetSize`, when the platform reports it.
@@ -559,11 +581,15 @@ pub(crate) fn memory_plan_for(
     if manifest.estimated_resident_bytes == 0 || manifest.estimated_full_resident_bytes == 0 {
         return None;
     }
+    // Never trust a manifest estimate that is smaller than the tensors the
+    // artifacts directory actually ships: MTP and vision sidecars are routinely
+    // missing from the publisher's resident estimate, and charging them as
+    // expert (streamable) bytes would admit a resident load that pages later.
+    // The delta lands on the resident share, which is the conservative side.
+    let (resident_non_expert_bytes, expert_bytes) = priced_weight_split(manifest, context);
     Some(ax_engine_core::memory_budget::MemoryPlan {
-        resident_non_expert_bytes: manifest.estimated_resident_bytes,
-        expert_bytes: manifest
-            .estimated_full_resident_bytes
-            .saturating_sub(manifest.estimated_resident_bytes),
+        resident_non_expert_bytes,
+        expert_bytes,
         ngram_table_bytes: context.ngram_table_bytes,
         kv_bytes: context.kv_bytes,
         state_bytes: context.state_bytes,
@@ -575,33 +601,80 @@ pub(crate) fn memory_plan_for(
     })
 }
 
+/// Split the plan's weight bytes into resident and streamable shares.
+///
+/// The resident share is floored by
+/// [`AutoResidencyContext::resident_tensor_inventory_bytes`], which the caller
+/// prices from the artifacts' own tensor list minus the streamable experts and
+/// the disk-served n-gram table. That is what lets the floor raise only
+/// genuinely resident bytes: the n-gram table is already discounted out of the
+/// manifest estimate (see [`discount_never_loaded_bytes`]), and the expert
+/// share is priced once from the manifest, so neither is double counted.
+fn priced_weight_split(
+    manifest: &ExpertStreamManifest,
+    context: &AutoResidencyContext,
+) -> (u64, u64) {
+    let resident_estimate = manifest.estimated_resident_bytes;
+    let expert_estimate = manifest
+        .estimated_full_resident_bytes
+        .saturating_sub(resident_estimate);
+    let resident = resident_estimate.max(context.resident_tensor_inventory_bytes);
+    // Do not let a stale/understated full estimate shrink the total below the
+    // resident floor plus the experts the manifest can page.
+    let full = manifest
+        .estimated_full_resident_bytes
+        .max(resident.saturating_add(expert_estimate));
+    (resident, full.saturating_sub(resident))
+}
+
 /// Activation element width used by the prefill scratch bound (f16/bf16).
 const ACTIVATION_BYTES: u64 = 2;
 /// Copies of one chunk's hidden state a prefill step can hold at once: the
 /// residual stream, the attention output, and the gate/up pair.
 const PREFILL_SCRATCH_MULTIPLIER: u64 = 4;
-/// KV bytes charged when the manifest geometry cannot be priced (MLA latent
-/// caches, diffusion, or a manifest that predates the KV estimator). Matches
-/// the flat floor the unpriced admission path already used.
+/// KV bytes charged when the manifest geometry cannot be priced (diffusion, or
+/// a manifest that predates the KV estimator). Matches the flat floor the
+/// unpriced admission path already used. MLA packs no longer land here: their
+/// latent cache is priced by `estimated_kv_pool_bytes`.
 pub(crate) const UNKNOWN_KV_BYTES: u64 = 768 * 1024 * 1024;
+
+/// Number of live decode sequences to charge per-request state for.
+///
+/// `configured` is the session's admitted concurrency bound (the server's
+/// `--max-concurrent-requests` when it has one); `batched_cap` is the runner's
+/// hard batched-cohort capacity. The configured bound is capped by the cohort
+/// capacity, and an absent bound falls back to the capacity. The result is
+/// never zero because one request always exists.
+pub(crate) fn resolved_live_sequences(configured: Option<u32>, batched_cap: usize) -> u32 {
+    let capacity = u32::try_from(batched_cap).unwrap_or(u32::MAX).max(1);
+    configured.map_or(capacity, |live| live.max(1).min(capacity))
+}
 
 /// KV-cache, hybrid-state, and prefill-scratch bytes this session charges.
 ///
 /// Conservative bounds, not allocator limits: the KV term is the pool-wide
 /// worst case from the manifest geometry at the admitted pool, the state term
-/// is one request's gated-delta-net state (every layer is charged, so hybrid
-/// packs are over- rather than under-estimated), and the scratch term bounds
-/// one prefill chunk's activations.
+/// is one request's gated-delta-net state plus its QSA index buffers multiplied
+/// by the number of live sequences the session can serve, and the scratch term
+/// bounds one prefill chunk's activations.
+///
+/// `max_live_sequences` is the served concurrency (`MemoryPlan::state_bytes`
+/// means exactly that). It is the runner's live-row bound, never zero: one
+/// request always exists. The runner resolves it with
+/// [`resolved_live_sequences`].
 pub(crate) fn estimate_auto_residency_costs(
     manifest: &ax_engine_core::NativeModelManifest,
     budget: SessionResidencyBudget,
+    max_live_sequences: u32,
 ) -> (u64, u64, u64) {
     let kv_bytes = manifest_kv_geometry(manifest)
         .and_then(|geometry| {
             ax_engine_core::memory_budget::estimated_kv_pool_bytes(&geometry, budget.kv_pool_tokens)
         })
         .unwrap_or(UNKNOWN_KV_BYTES);
-    let state_bytes = hybrid_state_bytes(manifest);
+    let per_request_state = hybrid_state_bytes(manifest)
+        .saturating_add(qsa_index_state_bytes(manifest, budget.kv_pool_tokens));
+    let state_bytes = per_request_state.saturating_mul(u64::from(max_live_sequences.max(1)));
     let prefill_scratch_bytes = (budget.prefill_chunk as u64)
         .saturating_mul(u64::from(manifest.hidden_size))
         .saturating_mul(ACTIVATION_BYTES)
@@ -619,8 +692,7 @@ fn manifest_kv_geometry(
 }
 
 /// One request's gated-delta-net state: the causal-conv ring plus the
-/// recurrent state for every linear-attention layer. QSA index and PLE row
-/// buffers are small and ride the plan's runtime reserve.
+/// recurrent state for every linear-attention layer.
 fn hybrid_state_bytes(manifest: &ax_engine_core::NativeModelManifest) -> u64 {
     let config = &manifest.linear_attention;
     let (Some(key_heads), Some(value_heads), Some(key_dim), Some(value_dim)) = (
@@ -646,6 +718,36 @@ fn hybrid_state_bytes(manifest: &ax_engine_core::NativeModelManifest) -> u64 {
     u64::from(manifest.layer_count)
         .saturating_mul(per_layer)
         .saturating_mul(4)
+}
+
+/// QSA per-request index state for the Flash Next (`qwen4_exp`) trunk: the raw
+/// index-key history plus the mean-pooled block keys per layer.
+///
+/// The index key cache is request-owned (`QsaIndexKeyCache`), so it is charged
+/// per live sequence like the GDN state. Every layer is charged: the indexer is
+/// built per layer, and a test-only subset would under-price the decode
+/// working set that the plan exists to prove.
+fn qsa_index_state_bytes(manifest: &ax_engine_core::NativeModelManifest, pool_tokens: u64) -> u64 {
+    let config = &manifest.qwen4_exp;
+    let (Some(head_dim), Some(compress_ratio)) =
+        (config.indexer_head_dim, config.indexer_compress_ratio)
+    else {
+        return 0;
+    };
+    if head_dim == 0 || compress_ratio == 0 {
+        return 0;
+    }
+    let head_dim = u64::from(head_dim);
+    let compress_ratio = u64::from(compress_ratio);
+    let raw_keys = pool_tokens
+        .saturating_mul(head_dim)
+        .saturating_mul(ACTIVATION_BYTES);
+    // One pooled block per complete `compress_ratio` window.
+    let pooled = pool_tokens
+        .saturating_div(compress_ratio)
+        .saturating_mul(head_dim)
+        .saturating_mul(ACTIVATION_BYTES);
+    u64::from(manifest.layer_count).saturating_mul(raw_keys.saturating_add(pooled))
 }
 
 /// Merge the session's installed context with this pack's n-gram table, the
@@ -755,6 +857,11 @@ pub fn unified_memory_bytes() -> Option<u64> {
 pub struct SessionResidencyBudget {
     pub kv_pool_tokens: u64,
     pub prefill_chunk: usize,
+    /// Configured session bound on concurrently live decode sequences (the
+    /// server's admitted concurrency). `None` falls back to the runner's
+    /// batched cohort capacity, which is the hard live-row bound. Either way
+    /// the effective value is never zero: one request always exists.
+    pub max_live_sequences: Option<u32>,
 }
 
 /// Whether the bounded Tiel session exception permits residency. This probes
@@ -787,6 +894,27 @@ pub(crate) fn discount_never_loaded_bytes(
         .estimated_resident_bytes
         .saturating_sub(never_loaded_bytes);
     manifest
+}
+
+/// Sum of the tensors the loader keeps resident.
+///
+/// Excludes the streamable expert stack, which is priced once from the manifest
+/// ([`priced_weight_split`]) and must not be counted twice. When
+/// `discount_ngram` mirrors `AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM`, the
+/// disk-served n-gram table is excluded too, exactly as
+/// [`discount_never_loaded_bytes`] removes it from the manifest estimate. With
+/// the switch off the table stays in the inventory, matching an undiscounted
+/// manifest.
+pub(crate) fn resident_tensor_inventory_bytes(
+    tensors: &[NativeTensorSpec],
+    discount_ngram: bool,
+) -> u64 {
+    tensors
+        .iter()
+        .filter(|spec| expert_role_to_proj(spec.role).is_none())
+        .filter(|spec| !(discount_ngram && crate::weights::qwen4_exp::is_ngram_table_tensor(spec)))
+        .map(|spec| spec.length_bytes)
+        .fold(0u64, u64::saturating_add)
 }
 
 pub(crate) fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
@@ -929,8 +1057,14 @@ where
                     ax_engine_core::memory_budget::MemoryPlanDecision::Resident { .. } => Ok(None),
                     ax_engine_core::memory_budget::MemoryPlanDecision::Stream {
                         expert_cache_bytes,
+                        ceiling_bytes,
                         ..
                     } => {
+                        let expert_cache_bytes = enforce_layer_stack_floor(
+                            &manifest,
+                            expert_cache_bytes,
+                            ceiling_bytes,
+                        )?;
                         set_priced_expert_cache_bytes(expert_cache_bytes);
                         Ok(Some(manifest))
                     }
@@ -943,12 +1077,74 @@ where
                     }),
                 };
             }
+            if priced_memory && plan_context.is_none() {
+                note_priced_memory_skipped();
+            }
             Ok(
                 should_auto_stream(manifest.estimated_full_resident_bytes, available_bytes)
                     .then_some(manifest),
             )
         }
     }
+}
+
+/// Refuse a streamed byte cap that cannot hold one layer stack.
+///
+/// `expert_cache_bytes` is the plan's remainder (`ceiling - fixed`). When it is
+/// below the largest streamed layer, the pager must evict the stack that the
+/// next decode step immediately needs, so every step re-reads a whole layer
+/// from disk: a hard stall, not a graceful degradation. The remainder cannot be
+/// raised without crossing the ceiling, so the load fails with an actionable
+/// error instead. Both numbers are named in the warning and in the error.
+fn enforce_layer_stack_floor(
+    manifest: &ExpertStreamManifest,
+    expert_cache_bytes: u64,
+    ceiling_bytes: Option<u64>,
+) -> Result<u64, ExpertStreamError> {
+    // No known ceiling means `decide()` returned the "unknown capacity" page
+    // path with a zero cap: the layer-count budget alone decides, so there is
+    // nothing to floor.
+    if ceiling_bytes.is_none() {
+        return Ok(expert_cache_bytes);
+    }
+    let layer_bytes = manifest.estimated_max_layer_expert_bytes;
+    if layer_bytes == 0 || expert_cache_bytes >= layer_bytes {
+        return Ok(expert_cache_bytes);
+    }
+    tracing::warn!(
+        target: "ax_engine_mlx::expert_stream",
+        expert_cache_bytes,
+        largest_layer_expert_bytes = layer_bytes,
+        "priced expert cache is smaller than one layer stack; refusing a load that would re-read the layer on every decode step"
+    );
+    Err(ExpertStreamError::ExpertCacheBelowLayerStack {
+        expert_cache_bytes,
+        layer_bytes,
+    })
+}
+
+/// Tell the operator once per process that Auto admission had no priced inputs
+/// and fell back to the legacy headroom formula.
+fn note_priced_memory_skipped() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        PRICED_MEMORY_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(
+            target: "ax_engine_mlx::expert_stream",
+            "priced memory inputs are not installed for this session; Auto expert-stream admission used the legacy headroom formula"
+        );
+    });
+}
+
+/// Process-wide count of the once-per-process skipped-priced-memory note.
+/// `Once` bounds it at one; exposed so the note's idempotence is testable
+/// without capturing tracing output.
+static PRICED_MEMORY_SKIPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// How many times the skipped-priced-memory note fired in this process.
+#[cfg(test)]
+pub(crate) fn priced_memory_skip_count() -> u32 {
+    PRICED_MEMORY_SKIPS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]
@@ -3286,5 +3482,412 @@ mod tests {
         assert_eq!(tight.cached_resident_bytes(), per_layer);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Priced state and KV components -------------------------------------
+
+    /// Minimal Flash Next manifest: three linear-attention layers plus the
+    /// QSA indexer contract, so both per-request state terms are priceable.
+    fn flash_next_state_manifest() -> ax_engine_core::NativeModelManifest {
+        let json = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "qwen4_exp",
+            "tensor_format": "safetensors",
+            "layer_count": 4,
+            "hidden_size": 128,
+            "attention_head_count": 4,
+            "attention_head_dim": 64,
+            "kv_head_count": 1,
+            "vocab_size": 1024,
+            "tensors": [],
+            "linear_attention": {
+                "num_key_heads": 4,
+                "num_value_heads": 4,
+                "key_head_dim": 16,
+                "value_head_dim": 16,
+                "conv_kernel_dim": 4
+            },
+            "qwen4_exp": {
+                "indexer_head_dim": 32,
+                "indexer_compress_ratio": 8,
+                "indexer_n_heads": 2,
+                "indexer_kv_heads": 1,
+                "indexer_budget": 64
+            }
+        });
+        serde_json::from_value(json).expect("flash next state manifest")
+    }
+
+    fn session_budget(kv_pool_tokens: u64) -> SessionResidencyBudget {
+        SessionResidencyBudget {
+            kv_pool_tokens,
+            prefill_chunk: 16,
+            max_live_sequences: None,
+        }
+    }
+
+    #[test]
+    fn resolved_live_sequences_uses_the_configured_bound_and_caps_at_the_cohort() {
+        // The server's admitted concurrency wins over the generic batched cap.
+        assert_eq!(resolved_live_sequences(Some(1), 8), 1);
+        assert_eq!(resolved_live_sequences(Some(4), 8), 4);
+        // Never price more live rows than the runner can actually hold.
+        assert_eq!(resolved_live_sequences(Some(32), 8), 8);
+        // An absent bound falls back to the cohort capacity...
+        assert_eq!(resolved_live_sequences(None, 8), 8);
+        // ...and neither path can price zero live sequences.
+        assert_eq!(resolved_live_sequences(Some(0), 8), 1);
+        assert_eq!(resolved_live_sequences(None, 0), 1);
+    }
+
+    #[test]
+    fn state_bytes_scale_with_live_sequences_and_price_the_qsa_index() {
+        let manifest = flash_next_state_manifest();
+        // One request: conv ring 4*16*2 + 4*16 = 192 wide, 3 taps; recurrent
+        // 4*16*16 = 1024; 1600 per layer * 4 layers * 4 bytes (f32).
+        let gdn = 4 * 1_600 * 4;
+        assert_eq!(hybrid_state_bytes(&manifest), gdn);
+        // QSA index: 4 layers * (1000 raw keys + 125 pooled blocks) * 32 dims
+        // * 2 bytes.
+        let qsa = 4 * (1_000 * 32 * 2 + 125 * 32 * 2);
+        assert_eq!(qsa_index_state_bytes(&manifest, 1_000), qsa);
+
+        let budget = session_budget(1_000);
+        let (_, one, _) = estimate_auto_residency_costs(&manifest, budget, 1);
+        let (_, eight, _) = estimate_auto_residency_costs(&manifest, budget, 8);
+        // `MemoryPlan::state_bytes` means the served concurrency, so eight live
+        // sequences cost eight requests' state, not one.
+        assert_eq!(one, gdn + qsa);
+        assert_eq!(eight, (gdn + qsa) * 8);
+
+        // A zero concurrency still charges the one request that exists.
+        let (_, zero, _) = estimate_auto_residency_costs(&manifest, budget, 0);
+        assert_eq!(zero, one);
+
+        // A manifest without the QSA contract prices only the GDN state.
+        let mut plain = flash_next_state_manifest();
+        plain.qwen4_exp.indexer_head_dim = None;
+        plain.qwen4_exp.indexer_compress_ratio = None;
+        assert_eq!(qsa_index_state_bytes(&plain, 1_000), 0);
+        let (_, plain_state, _) = estimate_auto_residency_costs(&plain, budget, 2);
+        assert_eq!(plain_state, gdn * 2);
+    }
+
+    #[test]
+    fn mla_pack_prices_the_latent_cache_not_the_unknown_floor() {
+        let json = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "glm4_moe",
+            "tensor_format": "safetensors",
+            "layer_count": 2,
+            "hidden_size": 128,
+            "attention_head_count": 4,
+            "attention_head_dim": 64,
+            "kv_head_count": 1,
+            "vocab_size": 1024,
+            "tensors": [],
+            "mla_attention": {"kv_lora_rank": 512, "qk_rope_head_dim": 64}
+        });
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(json).expect("mla manifest");
+        let (kv_bytes, _, _) = estimate_auto_residency_costs(&manifest, session_budget(1_000), 1);
+        // 2 layers * 1000 tokens * (512 + 64) latent elements * 2 bytes.
+        assert_eq!(kv_bytes, 2 * 1_000 * 576 * 2);
+        assert_ne!(
+            kv_bytes, UNKNOWN_KV_BYTES,
+            "MLA must be priced, not collapsed onto the flat 768 MiB floor"
+        );
+    }
+
+    #[test]
+    fn resident_inventory_floors_the_resident_share_without_double_counting_experts() {
+        // The manifest claims 10 GiB resident and 30 GiB streamable experts.
+        let manifest = priced_manifest(30 * GIB, 10 * GIB);
+        let context = AutoResidencyContext {
+            host_ram_bytes: Some(128 * GIB),
+            ..AutoResidencyContext::default()
+        };
+        let plan = memory_plan_for(&manifest, &context).expect("priced plan");
+        assert_eq!(plan.resident_non_expert_bytes, 10 * GIB);
+        assert_eq!(plan.expert_bytes, 30 * GIB);
+
+        // The artifacts directory ships 3 GiB more *resident* tensors than the
+        // manifest admits (MTP/vision sidecars). That delta is resident, never
+        // "streamable".
+        let floored = AutoResidencyContext {
+            resident_tensor_inventory_bytes: 13 * GIB,
+            ..context
+        };
+        let plan = memory_plan_for(&manifest, &floored).expect("priced plan");
+        assert_eq!(plan.resident_non_expert_bytes, 13 * GIB);
+        // Experts are priced once from the manifest: the resident floor never
+        // leaks into the expert term.
+        assert_eq!(plan.expert_bytes, 30 * GIB);
+        // Weights are exactly resident floor + experts; the plan's fixed
+        // runtime reserves sit on top of them.
+        assert_eq!(
+            plan.resident_working_set_bytes(),
+            plan.fixed_bytes() + 30 * GIB
+        );
+        assert!(plan.fixed_bytes() >= 13 * GIB);
+
+        // A smaller resident inventory cannot shrink the manifest's estimate.
+        let smaller = AutoResidencyContext {
+            resident_tensor_inventory_bytes: 5 * GIB,
+            ..context
+        };
+        let plan = memory_plan_for(&manifest, &smaller).expect("priced plan");
+        assert_eq!(plan.resident_non_expert_bytes, 10 * GIB);
+        assert_eq!(plan.expert_bytes, 30 * GIB);
+
+        // The floor applies only to the resident side even when the manifest's
+        // own full estimate is stale and smaller than the real resident bytes.
+        let stale = ExpertStreamManifest {
+            estimated_resident_bytes: GIB,
+            estimated_full_resident_bytes: 2 * GIB,
+            ..priced_manifest(30 * GIB, 10 * GIB)
+        };
+        let plan = memory_plan_for(&stale, &floored).expect("priced plan");
+        assert_eq!(plan.resident_non_expert_bytes, 13 * GIB);
+        assert_eq!(plan.expert_bytes, GIB);
+        assert_eq!(plan.resident_working_set_bytes(), plan.fixed_bytes() + GIB);
+    }
+
+    #[test]
+    fn resident_tensor_inventory_excludes_experts_and_the_ngram_table() {
+        let specs = vec![
+            infer_spec(
+                "language_model.model.embed_tokens.weight",
+                NativeTensorRole::TokenEmbedding,
+                0,
+                1,
+                4 * GIB,
+            ),
+            infer_spec(
+                "language_model.model.layers.0.mlp.switch_mlp.gate_proj.weight",
+                NativeTensorRole::FfnGateExps,
+                0,
+                4,
+                10 * GIB,
+            ),
+            infer_spec(
+                "language_model.model.layers.0.ngram_embedding.shards.0.weight",
+                NativeTensorRole::NgramEmbedding,
+                0,
+                1,
+                20 * GIB,
+            ),
+            // The quantized table's scales/biases do not carry the role; the
+            // name segment is what prices the whole table.
+            infer_spec(
+                "language_model.model.layers.0.ngram_embedding.shards.0.scales",
+                NativeTensorRole::LayerScalar,
+                0,
+                1,
+                3 * GIB,
+            ),
+        ];
+        // With the production default the table is disk-served: only the
+        // embedding is genuinely resident.
+        assert_eq!(resident_tensor_inventory_bytes(&specs, true), 4 * GIB);
+        // With the discount disabled the table is priced resident, matching an
+        // undiscounted manifest estimate.
+        assert_eq!(
+            resident_tensor_inventory_bytes(&specs, false),
+            4 * GIB + 20 * GIB + 3 * GIB
+        );
+    }
+
+    #[test]
+    fn real_flash_next_packs_price_resident_for_one_live_sequence() {
+        // The two pinned Flash Next packs on the qualification host. The test
+        // skips (not fails) on machines without them, and never writes into
+        // the model cache.
+        const PACKS: [&str; 2] = [
+            "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+            "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+        ];
+        const HOST_RAM: u64 = 128 * GIB;
+        // 4096 blocks x 16 tokens: the configured pool the log line reports.
+        const POOL_TOKENS: u64 = 4_096 * 16;
+        let mut planned = 0usize;
+        for pack in PACKS {
+            let Some(plan) = real_pack_plan(std::path::Path::new(pack), HOST_RAM, POOL_TOKENS, 1)
+            else {
+                eprintln!("skipping {pack}: local pack metadata not readable");
+                continue;
+            };
+            planned += 1;
+            println!("{pack}: {}", plan.log_line());
+            assert!(
+                plan.decide().is_resident(),
+                "one live sequence must keep the pack resident: {}",
+                plan.log_line()
+            );
+            // The 128 GiB host ceiling is `RAM - max(8 GiB, RAM/10)` =
+            // 115.20 GiB; the priced working set must stay under it.
+            let ceiling = plan.ceiling_bytes().expect("128 GiB host has a ceiling");
+            assert!(
+                plan.resident_working_set_bytes() <= ceiling,
+                "the working set must stay under the 115.20 GiB ceiling: {}",
+                plan.log_line()
+            );
+        }
+        if planned == 0 {
+            eprintln!("skipping: no Flash Next pack metadata is present on this host");
+        }
+    }
+
+    #[test]
+    fn real_flash_next_6bit_streams_for_eight_full_context_sequences() {
+        const PACK: &str = "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP";
+        const HOST_RAM: u64 = 128 * GIB;
+        // Eight live sequences each at the full 65,536-token pool cannot fit
+        // the per-request QSA state plus the expert set; the plan is allowed
+        // to stream here.
+        const POOL_TOKENS: u64 = 4_096 * 16;
+        let Some(plan) = real_pack_plan(std::path::Path::new(PACK), HOST_RAM, POOL_TOKENS, 8)
+        else {
+            eprintln!("skipping {PACK}: local pack metadata not readable");
+            return;
+        };
+        println!("{PACK} (8 live): {}", plan.log_line());
+        assert!(
+            matches!(
+                plan.decide(),
+                ax_engine_core::memory_budget::MemoryPlanDecision::Stream { .. }
+            ),
+            "eight full-context sequences must be allowed to stream: {}",
+            plan.log_line()
+        );
+    }
+
+    /// Price one real pack exactly as the runner does at load admission.
+    ///
+    /// Returns `None` when the directory (or its metadata) is absent, so the
+    /// tests skip on a host without the pinned packs. It only reads the
+    /// native manifest, `ax_expert_stream.json`, `config.json` and safetensors
+    /// headers; no tensor payload is loaded.
+    fn real_pack_plan(
+        dir: &std::path::Path,
+        host_ram_bytes: u64,
+        pool_tokens: u64,
+        live_sequences: u32,
+    ) -> Option<ax_engine_core::memory_budget::MemoryPlan> {
+        if !dir.is_dir() {
+            return None;
+        }
+        let artifacts = real_pack_artifacts(dir)?;
+        let file_manifest = ExpertStreamManifest::read_from_dir(dir).ok()??;
+        let discount_ngram = crate::fastpath::expert_stream_discount_ngram_enabled();
+        let never_loaded_bytes = if discount_ngram {
+            crate::weights::qwen4_exp::never_loaded_ngram_bytes(artifacts.tensor_specs())
+        } else {
+            0
+        };
+        let manifest = discount_never_loaded_bytes(file_manifest, never_loaded_bytes);
+        let budget = SessionResidencyBudget {
+            kv_pool_tokens: pool_tokens,
+            prefill_chunk: crate::generate::DEFAULT_PREFILL_CHUNK,
+            max_live_sequences: Some(live_sequences),
+        };
+        let (kv_bytes, state_bytes, prefill_scratch_bytes) =
+            estimate_auto_residency_costs(artifacts.manifest(), budget, live_sequences);
+        let context = AutoResidencyContext {
+            kv_bytes,
+            state_bytes,
+            prefill_scratch_bytes,
+            ngram_table_bytes: never_loaded_bytes,
+            resident_tensor_inventory_bytes: resident_tensor_inventory_bytes(
+                artifacts.tensor_specs(),
+                discount_ngram,
+            ),
+            host_ram_bytes: Some(host_ram_bytes),
+            metal_recommended_max_working_set_bytes: Some(115_448_725_504),
+            ceiling_override_bytes: None,
+        };
+        memory_plan_for(&manifest, &context)
+    }
+
+    /// Read a real pack's native manifest without writing into the pack.
+    ///
+    /// Some pinned packs ship `config.json` plus safetensors headers without a
+    /// generated `model-manifest.json`; those are converted in memory so the
+    /// test never mutates the model cache.
+    fn real_pack_artifacts(dir: &std::path::Path) -> Option<ax_engine_core::NativeModelArtifacts> {
+        if let Ok(artifacts) = ax_engine_core::NativeModelArtifacts::from_dir(dir) {
+            return Some(artifacts);
+        }
+        let manifest = ax_engine_core::convert::convert_hf_model_dir(dir).ok()?;
+        ax_engine_core::NativeModelArtifacts::from_manifest_and_root(dir.to_path_buf(), manifest)
+            .ok()
+    }
+
+    #[test]
+    fn auto_refuses_an_expert_cache_smaller_than_one_layer_stack() {
+        // 10 GiB resident + 80 GiB of experts on a 64 GiB host: the plan's
+        // remainder (57.6 GiB ceiling - 13 GiB fixed) cannot hold one layer.
+        let manifest = priced_manifest(80 * GIB, 10 * GIB);
+        let context = AutoResidencyContext {
+            host_ram_bytes: Some(64 * GIB),
+            ..AutoResidencyContext::default()
+        };
+        let error = resolve_expert_stream_inner(
+            StreamExpertsMode::Auto,
+            Some(manifest.clone()),
+            || Err(ExpertStreamError::ManifestMissing),
+            Some(64 * GIB),
+            Some(&context),
+            true,
+        )
+        .expect_err("a cache below one layer stack must refuse");
+        assert!(matches!(
+            error,
+            ExpertStreamError::ExpertCacheBelowLayerStack {
+                expert_cache_bytes,
+                layer_bytes
+            } if expert_cache_bytes < layer_bytes
+        ));
+
+        // Unknown capacity pages with no byte cap at all, so the pager's
+        // layer-count budget decides and there is nothing to floor.
+        let unknown = AutoResidencyContext::default();
+        assert!(
+            resolve_expert_stream_inner(
+                StreamExpertsMode::Auto,
+                Some(manifest),
+                || Err(ExpertStreamError::ManifestMissing),
+                None,
+                Some(&unknown),
+                true,
+            )
+            .expect("unknown capacity must still admit")
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn auto_without_priced_inputs_uses_the_legacy_formula_and_notes_it_once() {
+        set_auto_residency_context(None);
+        // 10 GiB resident + 40 GiB experts: the legacy formula pages this
+        // (50 GiB + 48 GiB headroom > 64 GiB), and the note fires once.
+        let manifest = priced_manifest(40 * GIB, 10 * GIB);
+        assert!(
+            resolve_expert_stream(
+                StreamExpertsMode::Auto,
+                Some(manifest),
+                || Err(ExpertStreamError::ManifestMissing),
+                Some(64 * GIB),
+            )
+            .expect("legacy admission")
+            .is_some()
+        );
+        note_priced_memory_skipped();
+        note_priced_memory_skipped();
+        assert_eq!(
+            priced_memory_skip_count(),
+            1,
+            "the skipped-priced-memory note must be logged at most once per process"
+        );
     }
 }

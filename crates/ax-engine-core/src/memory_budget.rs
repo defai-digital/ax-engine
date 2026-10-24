@@ -14,7 +14,10 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::model::{NativeDiffusionConfig, NativeLinearAttentionConfig, NativeMlaAttentionConfig};
+use crate::model::{
+    NativeDeepseekV4Config, NativeDiffusionConfig, NativeLinearAttentionConfig,
+    NativeMlaAttentionConfig,
+};
 
 /// Flat floor over on-disk weight bytes when the KV pool is not charged
 /// explicitly: quantized weights land in memory at ~disk size; the extra
@@ -34,6 +37,11 @@ const LOAD_FOOTPRINT_RUNTIME_FLOOR_BYTES: u64 = 512 * 1024 * 1024;
 /// K + V, at fp16/bf16 element width. Quantized-KV serving would shrink
 /// this; the admission bound stays at the unquantized worst case.
 const KV_CACHE_BYTES_PER_HEAD_ELEMENT: u64 = 2 * 2;
+
+/// One compressed MLA latent element (fp16/bf16). MLA stores a single
+/// `kv_lora_rank` latent plus the decoupled RoPE slice, not K and V per
+/// head, so it is charged at half [`KV_CACHE_BYTES_PER_HEAD_ELEMENT`].
+const MLA_CACHE_BYTES_PER_ELEMENT: u64 = 2;
 
 /// Estimated resident footprint for one model: on-disk weight bytes scaled
 /// by a runtime factor (`1 + 1/8`, since quantized weights land in memory at
@@ -88,6 +96,11 @@ pub struct ManifestKvGeometry {
     linear_attention: NativeLinearAttentionConfig,
     #[serde(default)]
     mla_attention: NativeMlaAttentionConfig,
+    /// DeepSeek V4's fused latent KV geometry (`head_dim` doubles as K and V).
+    /// Its `NativeMlaAttentionConfig` stays disabled, so the MLA branch needs
+    /// this config to price the latent cache instead of falling back.
+    #[serde(default)]
+    deepseek_v4: NativeDeepseekV4Config,
     #[serde(default)]
     diffusion: NativeDiffusionConfig,
 }
@@ -131,17 +144,28 @@ fn full_kv_head_count_for_layer(
 
 /// Worst-case KV-cache bytes for one model at its configured pool, from the
 /// manifest's attention geometry. `None` when the geometry is unknowable —
-/// MLA latent caches and diffusion follow different math, and a zero dim or
-/// an unresolvable hybrid interval means the manifest predates this
-/// estimator — in which case the caller falls back to the flat floor baked
-/// into [`estimated_footprint_bytes`] rather than guessing.
+/// diffusion keeps no autoregressive cache, and a zero dim or an unresolvable
+/// hybrid interval means the manifest predates this estimator — in which case
+/// the caller falls back to the flat floor baked into
+/// [`estimated_footprint_bytes`] rather than guessing.
+///
+/// MLA (GLM/DeepSeek) packs are priced from their latent width
+/// (`kv_lora_rank + qk_rope_head_dim`, or DeepSeek V4's fused `head_dim`), and
+/// fall back to the equivalent full-attention width when that geometry is
+/// missing: a latent cache is much smaller than K+V but is never free, and the
+/// old `None` here collapsed to a flat 768 MiB floor that under-priced every
+/// long-context MLA pool.
 ///
 /// The result is a pool-wide worst case for load admission. Returning `None`
 /// (the unknown-geometry fallback) is NOT proof that a request or the whole
 /// working set fits, and the returned bound is not a hard allocator limit.
 pub fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> Option<u64> {
-    if geometry.mla_attention.is_enabled() || geometry.diffusion.is_enabled() {
+    if geometry.diffusion.is_enabled() {
+        // Diffusion keeps no autoregressive KV cache at all.
         return None;
+    }
+    if geometry.mla_attention.is_enabled() || geometry.deepseek_v4.attention.head_dim.is_some() {
+        return estimated_mla_kv_pool_bytes(geometry, pool_tokens);
     }
     if geometry.layer_count == 0 || geometry.kv_head_count == 0 || geometry.attention_head_dim == 0
     {
@@ -243,6 +267,80 @@ pub fn estimated_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) 
         }
     }
     Some(total)
+}
+
+/// Latent KV-cache bytes for an MLA (GLM/DeepSeek) pack.
+///
+/// MLA keeps one compressed latent per token per layer instead of K and V per
+/// head, so the flat 768 MiB unknown-geometry floor massively under-prices a
+/// long-context pool and silently flipped these packs to a resident decision.
+/// The latent width is `kv_lora_rank + qk_rope_head_dim`; DeepSeek V4 fuses
+/// both into a single `head_dim` row. When neither config carries usable
+/// geometry, the pool is charged at the equivalent full-attention width rather
+/// than guessed at zero.
+fn estimated_mla_kv_pool_bytes(geometry: &ManifestKvGeometry, pool_tokens: u64) -> Option<u64> {
+    if geometry.layer_count == 0 {
+        return None;
+    }
+    let bytes_per_token_per_layer = mla_bytes_per_token_per_layer(geometry)
+        .or_else(|| full_attention_equivalent_bytes_per_token_per_layer(geometry))?;
+    let mut total = 0u64;
+    for layer_idx in 0..geometry.layer_count {
+        if geometry.kv_shared_source_layers.contains_key(&layer_idx) {
+            continue;
+        }
+        total = total.saturating_add(pool_tokens.saturating_mul(bytes_per_token_per_layer));
+    }
+    Some(total)
+}
+
+/// One layer's MLA latent width in bytes, from the narrowest available
+/// description of the compressed cache.
+fn mla_bytes_per_token_per_layer(geometry: &ManifestKvGeometry) -> Option<u64> {
+    // DeepSeek V4: one fused latent K/V row per token (`head_dim` covers both
+    // the nope and rope slices), single head.
+    if let Some(head_dim) = geometry
+        .deepseek_v4
+        .attention
+        .head_dim
+        .filter(|dim| *dim > 0)
+    {
+        return Some(u64::from(head_dim).saturating_mul(MLA_CACHE_BYTES_PER_ELEMENT));
+    }
+    // DeepSeek V2/V3-style MLA and GLM: compressed latent plus decoupled RoPE.
+    let latent = geometry.mla_attention.kv_lora_rank;
+    let rope = geometry.mla_attention.qk_rope_head_dim;
+    match (latent, rope) {
+        (Some(latent), Some(rope)) if latent > 0 && rope > 0 => Some(
+            u64::from(latent)
+                .saturating_add(u64::from(rope))
+                .saturating_mul(MLA_CACHE_BYTES_PER_ELEMENT),
+        ),
+        _ => None,
+    }
+}
+
+/// Conservative stand-in for an MLA pack whose latent geometry is missing:
+/// charge the widest conventional full-attention K+V row the manifest still
+/// describes. Never zero — an unpriced KV pool is what this branch exists to
+/// avoid.
+fn full_attention_equivalent_bytes_per_token_per_layer(
+    geometry: &ManifestKvGeometry,
+) -> Option<u64> {
+    let sliding =
+        u64::from(geometry.kv_head_count).saturating_mul(u64::from(geometry.attention_head_dim));
+    let full = u64::from(
+        geometry
+            .global_kv_head_count
+            .unwrap_or(geometry.kv_head_count),
+    )
+    .saturating_mul(u64::from(
+        geometry
+            .global_head_dim
+            .unwrap_or(geometry.attention_head_dim),
+    ));
+    let width = sliding.max(full);
+    (width > 0).then_some(width.saturating_mul(KV_CACHE_BYTES_PER_HEAD_ELEMENT))
 }
 
 /// MLX's own computed-graph buffer cache, charged to a priced load plan.
@@ -743,11 +841,16 @@ mod tests {
 
     #[test]
     fn kv_pool_bytes_fails_open_on_unknown_geometry() {
-        let mla = kv_geometry(serde_json::json!({
+        // An MLA pack whose latent width is missing is charged at the
+        // equivalent full-attention width, never guessed at zero.
+        let mla_unknown_width = kv_geometry(serde_json::json!({
             "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 2,
             "mla_attention": {"kv_lora_rank": 512}
         }));
-        assert_eq!(estimated_kv_pool_bytes(&mla, 1000), None);
+        assert_eq!(
+            estimated_kv_pool_bytes(&mla_unknown_width, 1000),
+            Some(4 * 1000 * 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT)
+        );
 
         let diffusion = kv_geometry(serde_json::json!({
             "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 2,
@@ -779,6 +882,54 @@ mod tests {
         assert_eq!(
             estimated_kv_pool_bytes(&sliding_without_window, 1000),
             Some(1000 * 2 * 128 * KV_CACHE_BYTES_PER_HEAD_ELEMENT)
+        );
+    }
+
+    #[test]
+    fn kv_pool_bytes_prices_the_mla_latent_cache() {
+        // GLM/DeepSeek V3 MLA: one compressed latent (`kv_lora_rank`) plus the
+        // decoupled RoPE slice per token per layer, single head.
+        let mla = kv_geometry(serde_json::json!({
+            "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 2,
+            "mla_attention": {"kv_lora_rank": 512, "qk_rope_head_dim": 64}
+        }));
+        assert_eq!(
+            estimated_kv_pool_bytes(&mla, 1_000),
+            Some(4 * 1_000 * (512 + 64) * MLA_CACHE_BYTES_PER_ELEMENT)
+        );
+
+        // DeepSeek V4: a single fused latent row of `head_dim` per token.
+        let v4 = kv_geometry(serde_json::json!({
+            "model_family": "deepseek_v4",
+            "layer_count": 8, "attention_head_dim": 128, "kv_head_count": 1,
+            "deepseek_v4": {"attention": {"head_dim": 576, "qk_rope_head_dim": 64}}
+        }));
+        assert_eq!(
+            estimated_kv_pool_bytes(&v4, 1_000),
+            Some(8 * 1_000 * 576 * MLA_CACHE_BYTES_PER_ELEMENT)
+        );
+
+        // Shared-KV layers allocate none of their own latent rows.
+        let shared = kv_geometry(serde_json::json!({
+            "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 2,
+            "mla_attention": {"kv_lora_rank": 512, "qk_rope_head_dim": 64},
+            "kv_shared_source_layers": {"3": 2}
+        }));
+        assert_eq!(
+            estimated_kv_pool_bytes(&shared, 1_000),
+            Some(3 * 1_000 * (512 + 64) * MLA_CACHE_BYTES_PER_ELEMENT)
+        );
+
+        // The latent width does not scale with the conventional KV head count:
+        // MLA keeps one compressed row per token, so a wider head table must
+        // not inflate the latent charge.
+        let wider_heads = kv_geometry(serde_json::json!({
+            "layer_count": 4, "attention_head_dim": 128, "kv_head_count": 32,
+            "mla_attention": {"kv_lora_rank": 512, "qk_rope_head_dim": 64}
+        }));
+        assert_eq!(
+            estimated_kv_pool_bytes(&wider_heads, 1_000),
+            Some(4 * 1_000 * (512 + 64) * MLA_CACHE_BYTES_PER_ELEMENT)
         );
     }
 

@@ -207,6 +207,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
         prefill_stall_target_ms: 0,
+        max_concurrent_requests: None,
         backend_request: PreviewBackendRequest {
             support_tier: SupportTier::MlxPreview,
             llama_cli_path: PathBuf::from("llama-cli"),
@@ -256,6 +257,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
         prefill_stall_target_ms: 0,
+        max_concurrent_requests: None,
         backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
             PathBuf::from("llama-cli"),
             None,
@@ -380,6 +382,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
         prefill_stall_target_ms: 0,
+        max_concurrent_requests: None,
         backend_request: PreviewBackendRequest {
             support_tier: SupportTier::MlxLmDelegated,
             mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),

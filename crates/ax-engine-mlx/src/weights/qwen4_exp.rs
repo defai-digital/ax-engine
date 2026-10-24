@@ -217,7 +217,7 @@ pub(crate) fn load_with_paging_policy(
 /// whole table (57.6 GB on the Flash Next 6-bit pack, not the 51.2 GB of
 /// weights alone), which is what Auto admission must discount to keep a pack
 /// that fits residency-resident.
-fn never_loaded_ngram_bytes(tensors: &[NativeTensorSpec]) -> u64 {
+pub(crate) fn never_loaded_ngram_bytes(tensors: &[NativeTensorSpec]) -> u64 {
     tensors
         .iter()
         .filter(|spec| is_ngram_table_tensor(spec))
@@ -229,7 +229,7 @@ fn never_loaded_ngram_bytes(tensors: &[NativeTensorSpec]) -> u64 {
 ///
 /// PLE head metadata (`ngram_heads_offsets`, `ngram_heads_vocab_sizes`) is
 /// resident and deliberately does not match.
-fn is_ngram_table_tensor(spec: &NativeTensorSpec) -> bool {
+pub(crate) fn is_ngram_table_tensor(spec: &NativeTensorSpec) -> bool {
     spec.role == NativeTensorRole::NgramEmbedding || spec.name.contains("ngram_embedding")
 }
 

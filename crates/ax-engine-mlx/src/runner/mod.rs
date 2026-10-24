@@ -755,6 +755,15 @@ struct FlashNextMtpTelemetry {
     verified_steps: u32,
     /// Verified steps whose draft token was accepted.
     accepted_steps: u32,
+    /// Decode steps served direct by the measured cost policy (WP03 park and
+    /// the bounded calibration direct window), not by a fallback reason.
+    cost_parked_steps: u32,
+    /// Times the cost policy parked the request.
+    cost_parks: u32,
+    /// Times a probe window resumed MTP after a park.
+    cost_resumes: u32,
+    /// Times the `required` policy reported `would_park` without parking.
+    cost_would_parks: u32,
     /// Decode steps served direct while the candidate was requested.
     direct_fallback_steps: u32,
     /// `direct_fallback_steps` split by the block or error reason that forced
@@ -789,6 +798,10 @@ impl Default for FlashNextMtpTelemetry {
             cursor_pause_overflows: 0,
             verified_steps: 0,
             accepted_steps: 0,
+            cost_parked_steps: 0,
+            cost_parks: 0,
+            cost_resumes: 0,
+            cost_would_parks: 0,
             direct_fallback_steps: 0,
             direct_fallback_by_reason: [0; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
             step_errors: 0,
@@ -823,6 +836,12 @@ impl FlashNextMtpTelemetry {
             .saturating_add(other.cursor_pause_overflows);
         self.verified_steps = self.verified_steps.saturating_add(other.verified_steps);
         self.accepted_steps = self.accepted_steps.saturating_add(other.accepted_steps);
+        self.cost_parked_steps = self
+            .cost_parked_steps
+            .saturating_add(other.cost_parked_steps);
+        self.cost_parks = self.cost_parks.saturating_add(other.cost_parks);
+        self.cost_resumes = self.cost_resumes.saturating_add(other.cost_resumes);
+        self.cost_would_parks = self.cost_would_parks.saturating_add(other.cost_would_parks);
         self.direct_fallback_steps = self
             .direct_fallback_steps
             .saturating_add(other.direct_fallback_steps);
@@ -877,6 +896,16 @@ impl FlashNextMtpTelemetry {
             ),
             ("ax_mlx_flash_next_mtp_verified_steps", self.verified_steps),
             ("ax_mlx_flash_next_mtp_accepted_steps", self.accepted_steps),
+            (
+                "ax_mlx_flash_next_mtp_cost_parked_steps",
+                self.cost_parked_steps,
+            ),
+            ("ax_mlx_flash_next_mtp_cost_parks", self.cost_parks),
+            ("ax_mlx_flash_next_mtp_cost_resumes", self.cost_resumes),
+            (
+                "ax_mlx_flash_next_mtp_cost_would_parks",
+                self.cost_would_parks,
+            ),
             (
                 "ax_mlx_flash_next_mtp_direct_fallback_steps",
                 self.direct_fallback_steps,
@@ -972,7 +1001,7 @@ impl FlashNextMtpDecodeBlock {
             Self::ThinkControl => FlashNextMtpFallbackReason::ThinkControl,
             Self::PendingDirect => FlashNextMtpFallbackReason::PendingDirect,
             Self::NoBudget => FlashNextMtpFallbackReason::NoBudget,
-            Self::CursorUnavailable | Self::CursorPaused => {
+            Self::CursorUnavailable | Self::CursorPaused | Self::CostParked => {
                 FlashNextMtpFallbackReason::CursorUnavailable
             }
         }
@@ -1041,6 +1070,41 @@ enum FlashNextMtpDecodeBlock {
     /// The cursor is retained but deliberately behind the trunk: this step
     /// continues the paused catch-up instead of proposing.
     CursorPaused,
+    /// The measured cost policy parked the head: every completed round lost to
+    /// direct decode, so this step serves direct on the paused catch-up route.
+    /// Distinct from `CursorPaused` because the parked state is a *decision*
+    /// and must not be flushed away inside the same step.
+    CostParked,
+}
+
+/// WP03 cost gate, evaluated before the regular decode gate.
+///
+/// `cost_direct` is `true` for a parked request and for the bounded direct
+/// window a fresh evidence band calibrates with. The park only opens when
+/// every cursor-independent gate already cleared, so it can never replace a
+/// step that would have decoded direct anyway, and it is checked before
+/// `CursorPaused` so a park is not mistaken for a pause that one absorb can
+/// end. `AX_FLASH_NEXT_MTP_COST=0` leaves `cost_direct` false for the whole
+/// request and restores the pre-WP03 gate order exactly.
+const fn flash_next_mtp_cost_park_block(
+    cost_direct: bool,
+    strict_greedy: bool,
+    think_soft_close_armed: bool,
+    think_budget_close_due: bool,
+    pending_direct: bool,
+    remaining_output: usize,
+) -> Option<FlashNextMtpDecodeBlock> {
+    if cost_direct
+        && strict_greedy
+        && !think_soft_close_armed
+        && !think_budget_close_due
+        && !pending_direct
+        && remaining_output > 0
+    {
+        Some(FlashNextMtpDecodeBlock::CostParked)
+    } else {
+        None
+    }
 }
 
 /// Decode-time admission for the Flash Next cursor. Pure so the gate order is
@@ -1409,6 +1473,33 @@ type EmbedGemmaBatchCompileKey = (
     Vec<usize>,
 );
 
+/// Session-level MTP policy, mirroring the SDK's `MlxMtpPolicy`.
+///
+/// The MLX crate cannot depend on the SDK, so the session builder maps its
+/// tri-state onto this enum. It qualifies the Flash Next measured cost policy:
+/// `Required` still measures and reports `would_park`, but never parks;
+/// `Disabled` never measures or probes; `Auto` may park a losing head.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MtpSessionPolicy {
+    /// The default: the cost policy may park a losing head.
+    #[default]
+    Auto,
+    /// The force-MTP contract (`--mlx-mtp-policy required`): report only.
+    Required,
+    /// No MTP at all: the cost machine never arms.
+    Disabled,
+}
+
+impl MtpSessionPolicy {
+    const fn flash_next_cost_policy(self) -> FlashNextCostPolicy {
+        match self {
+            Self::Auto => FlashNextCostPolicy::Auto,
+            Self::Required => FlashNextCostPolicy::Required,
+            Self::Disabled => FlashNextCostPolicy::Disabled,
+        }
+    }
+}
+
 /// ExecutionRunner backed by the MLX inference path.
 pub struct MlxRunner {
     cfg: ModelConfig,
@@ -1479,6 +1570,10 @@ pub struct MlxRunner {
     /// request sampling are available. Studio deliberately disables n-gram
     /// while leaving this enabled for validated MTP packages.
     mtp_requested: bool,
+    /// Session MTP policy (`--mlx-mtp-policy`). The SDK sets it at
+    /// construction; it qualifies the Flash Next cost policy so a `required`
+    /// session reports `would_park` and never parks.
+    mtp_session_policy: MtpSessionPolicy,
     /// Immutable, model-scoped MTP family/default/safety policy. The setter
     /// cannot bypass its hard route gate.
     mtp_model_policy: MtpModelPolicy,
@@ -2204,6 +2299,20 @@ impl MlxRunner {
         self.mtp_requested
     }
 
+    /// Latch the session's MTP policy (`--mlx-mtp-policy`).
+    ///
+    /// The SDK calls this next to [`Self::set_mtp_requested`]. It is the only
+    /// input that can make the Flash Next measured cost machine report-only:
+    /// `Required` keeps measuring and emitting `would_park` telemetry but never
+    /// parks, which is the force-MTP harness contract (`required` never parks).
+    pub fn set_mtp_session_policy(&mut self, policy: MtpSessionPolicy) {
+        self.mtp_session_policy = policy;
+    }
+
+    pub fn mtp_session_policy(&self) -> MtpSessionPolicy {
+        self.mtp_session_policy
+    }
+
     /// Whether this pack is certified for *default-on* model MTP
     /// (`MlxMtpPolicy::Auto`). Dense QwenCalibrated still requires publisher
     /// certification. Linear Qwen candidates require an explicit opt-in until
@@ -2332,6 +2441,14 @@ impl MlxRunner {
 
     /// Build a session with its admitted KV pool available to load-time Auto
     /// residency. Existing raw constructors retain conservative admission.
+    ///
+    /// `max_live_sequences` is the session's configured bound on concurrently
+    /// live decode sequences (the server's admitted concurrency). The priced
+    /// plan charges per-request hybrid/QSA state once per live row, so it must
+    /// see the bound the session is actually started with rather than a
+    /// generic upper bound. `None` falls back to the runner's batched cohort
+    /// capacity.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_artifacts_with_session_budget(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
@@ -2340,6 +2457,7 @@ impl MlxRunner {
         prefix_cache_store: Option<MlxPrefixCacheStore>,
         shared_weights: Option<&MlxSharedWeightsCell>,
         kv_pool_tokens: u64,
+        max_live_sequences: Option<u32>,
     ) -> Result<Self, MlxRunnerError> {
         Self::from_artifacts_inner(
             artifacts,
@@ -2351,6 +2469,7 @@ impl MlxRunner {
             Some(crate::expert_stream::SessionResidencyBudget {
                 kv_pool_tokens,
                 prefill_chunk,
+                max_live_sequences,
             }),
         )
     }
@@ -2504,19 +2623,50 @@ impl MlxRunner {
         // safetensors read + GPU eval entirely.
         let preloaded_weights = shared_weights.and_then(MlxSharedWeightsCell::get);
         let reused_shared_weights = preloaded_weights.is_some();
+        // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
+        // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
+        let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&c| c >= 1)
+            .unwrap_or(8);
+        // `batched_cap` is the runner's hard bound on live decode sequences. The
+        // priced plan charges per-request hybrid/QSA state once per live row,
+        // but the effective count also honours the session's admitted
+        // concurrency (`SessionResidencyBudget::max_live_sequences`): a server
+        // limited to one request must not be priced for eight.
+        let live_sequences = crate::expert_stream::resolved_live_sequences(
+            session_budget.and_then(|budget| budget.max_live_sequences),
+            batched_cap,
+        );
         // Priced-plan inputs for this session, installed on the thread that
         // loads the weights (the same per-session latch pattern as
         // `set_stream_experts_mode`). Builders without an admitted session
         // budget clear it, so a later load cannot inherit this one's pool.
         crate::expert_stream::set_auto_residency_context(session_budget.map(|budget| {
             let (kv_bytes, state_bytes, prefill_scratch_bytes) =
-                crate::expert_stream::estimate_auto_residency_costs(artifacts.manifest(), budget);
+                crate::expert_stream::estimate_auto_residency_costs(
+                    artifacts.manifest(),
+                    budget,
+                    live_sequences,
+                );
+            // Floor the plan's resident share with the tensors the loader
+            // actually keeps resident. The streamed expert stack is priced from
+            // the manifest and the disk-served n-gram table is already
+            // discounted out of the manifest estimate, so neither is added back
+            // here.
+            let resident_tensor_inventory_bytes =
+                crate::expert_stream::resident_tensor_inventory_bytes(
+                    artifacts.tensor_specs(),
+                    crate::fastpath::expert_stream_discount_ngram_enabled(),
+                );
             crate::expert_stream::AutoResidencyContext {
                 kv_bytes,
                 state_bytes,
                 prefill_scratch_bytes,
                 // Filled per pack by the loader (the table is a pack property).
                 ngram_table_bytes: 0,
+                resident_tensor_inventory_bytes,
                 host_ram_bytes: crate::expert_stream::unified_memory_bytes(),
                 metal_recommended_max_working_set_bytes:
                     crate::expert_stream::metal_recommended_working_set_bytes(),
@@ -2912,13 +3062,8 @@ impl MlxRunner {
         let batched_decode_model_eligible = batched_decode_capabilities
             .eligible(allow_uncertified_batched_decode)
             && weights.qwen4_exp.is_none();
-        // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
-        // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
-        let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .filter(|&c| c >= 1)
-            .unwrap_or(8);
+        // Capacity for the batched cohort: `batched_cap`, computed above before
+        // the priced-plan context so both read the same live-row bound.
         let batched_session = Mutex::new(BatchedDecodeSession::new(cfg.layer_count, batched_cap));
         // The CLI n-gram switch controls only the independent n-gram drafter.
         // AX_NO_SPEC remains the process-wide kill switch for every speculative
@@ -3018,6 +3163,7 @@ impl MlxRunner {
             _wired_residency: wired_residency,
             disable_ngram_acceleration,
             mtp_requested,
+            mtp_session_policy: MtpSessionPolicy::default(),
             mtp_model_policy,
             qwen_linear_mtp_exact_eligible,
             qwen_linear_mtp_exact_enabled,
@@ -9644,6 +9790,71 @@ impl MlxRunner {
             .or_else(|| input_tokens.last().copied());
         let strict_greedy = ctx.is_some() && is_greedy && !sampling.uses_logits_processors();
         let mut cursor_aligned = self.flash_next_cursor_aligned(state, primary);
+        // WP03 measured cost policy. The route is read before any gate so a
+        // parked step can serve direct while keeping the cursor buffering, and
+        // it only takes effect where the regular gate would have proposed (see
+        // `flash_next_mtp_cost_park_block`). Both routes walk the same target
+        // distribution, so the committed tokens do not depend on the route.
+        let cost_key = FlashNextCostBucketKey::new(
+            1,
+            state.cache.seq_len(),
+            self.native_expert_streaming_active(),
+        );
+        let (cost_route, cost_event) = state.mtp_cost_depth.flash_next_cost_mut().route(cost_key);
+        if let Some(event) = cost_event {
+            self.note_flash_next_cost_event(state, cost_key, event);
+        }
+        let cost_block = flash_next_mtp_cost_park_block(
+            cost_route == FlashNextCostRoute::Direct,
+            strict_greedy,
+            state.think_soft_close_armed,
+            think_budget_close_due,
+            state.pending_direct.is_some(),
+            remaining_budget as usize,
+        );
+        if state.mtp_cost_depth.flash_next_cost().enabled()
+            && matches!(cost_block, Some(FlashNextMtpDecodeBlock::CostParked))
+        {
+            if state.flash_next_mtp.cursor.is_none() {
+                // No draft history left to park: stop routing on it and let the
+                // regular gate account the cursor gap.
+                let event = state.mtp_cost_depth.flash_next_cost_mut().disarm();
+                if let Some(event) = event {
+                    self.note_flash_next_cost_event(state, cost_key, event);
+                }
+            } else if state.flash_next_mtp.paused.is_some() || cursor_aligned {
+                // Parked (or calibrating) direct step. The cursor keeps its
+                // line exactly like a pause, so the probe window can absorb the
+                // buffered rows at a commit boundary.
+                if state.flash_next_mtp.paused.is_none() {
+                    state.flash_next_mtp.paused = Some(FlashNextCursorPauseBuffer::default());
+                }
+                let started = Instant::now();
+                let step = self.run_flash_next_mtp_cost_parked_step(
+                    state,
+                    input_tokens,
+                    sampling,
+                    options,
+                );
+                let wall_us = elapsed_us(started).max(1);
+                let Some(tokens) = step else {
+                    state.flash_next_mtp.paused = None;
+                    let event = state.mtp_cost_depth.flash_next_cost_mut().disarm();
+                    if let Some(event) = event {
+                        self.note_flash_next_cost_event(state, cost_key, event);
+                    }
+                    return None;
+                };
+                let event = state
+                    .mtp_cost_depth
+                    .flash_next_cost_mut()
+                    .record_direct_step(cost_key, wall_us);
+                if let Some(event) = event {
+                    self.note_flash_next_cost_event(state, cost_key, event);
+                }
+                return Some(tokens);
+            }
+        }
         let mut block = flash_next_mtp_decode_block(
             strict_greedy,
             state.think_soft_close_armed,
@@ -9659,6 +9870,12 @@ impl MlxRunner {
             // head up now so this same step can propose again; when the flush
             // fails the cursor is already gone (fail closed) and the pause is
             // over without a catch-up.
+            //
+            // A cost park never reaches this arm: while the cost policy parked
+            // the request, a paused cursor *is* the parked state — it buffers
+            // rows for the next probe window — and the `CostParked` branch above
+            // already returned. Flushing here would propose an MTP round
+            // mid-park and contaminate the probe window's evidence.
             if !self.flush_flash_next_mtp_pause(state) {
                 return self.run_flash_next_mtp_paused_step(
                     state,
@@ -9795,6 +10012,22 @@ impl MlxRunner {
             ..MtpStepTimings::default()
         });
         state.decode_telemetry.record_production_decode_eval();
+        // WP03 cost accounting: one complete round prices the draft plus the
+        // verify (which already folds correction, bonus, rejection and the eval
+        // sync) against the tokens it committed.
+        let round_wall_us = step
+            .draft_wall_us
+            .saturating_add(step.verify_wall_us)
+            .max(1);
+        let round_tokens = saturating_u32(step.emitted.len());
+        let cost_event = state.mtp_cost_depth.flash_next_cost_mut().record_mtp_round(
+            cost_key,
+            round_wall_us,
+            round_tokens,
+        );
+        if let Some(event) = cost_event {
+            self.note_flash_next_cost_event(state, cost_key, event);
+        }
         let flash_next = &mut state.flash_next_mtp;
         flash_next.telemetry.verified_steps = flash_next.telemetry.verified_steps.saturating_add(1);
         flash_next.telemetry.accepted_steps = flash_next
@@ -9855,6 +10088,56 @@ impl MlxRunner {
         telemetry.direct_fallback_steps = telemetry.direct_fallback_steps.saturating_add(1);
         let slot = &mut telemetry.direct_fallback_by_reason[reason.index()];
         *slot = slot.saturating_add(1);
+    }
+
+    /// Cost-policy accounting plus one transition log line.
+    ///
+    /// Telemetry only: no prompt text and no token content. `ctx_band` is the
+    /// coarse context band, never the exact position.
+    fn note_flash_next_cost_event(
+        &self,
+        state: &mut RequestState,
+        key: FlashNextCostBucketKey,
+        event: FlashNextCostEvent,
+    ) {
+        let snapshot = state.mtp_cost_depth.flash_next_cost().snapshot(key);
+        let state_label = state.mtp_cost_depth.flash_next_cost().state().label();
+        let policy = state.mtp_cost_depth.flash_next_cost().policy();
+        let telemetry = &mut state.flash_next_mtp.telemetry;
+        match event {
+            FlashNextCostEvent::Parked => {
+                telemetry.cost_parks = telemetry.cost_parks.saturating_add(1);
+            }
+            FlashNextCostEvent::ProbeResumed => {
+                telemetry.cost_resumes = telemetry.cost_resumes.saturating_add(1);
+            }
+            FlashNextCostEvent::WouldPark => {
+                telemetry.cost_would_parks = telemetry.cost_would_parks.saturating_add(1);
+            }
+            FlashNextCostEvent::Activated
+            | FlashNextCostEvent::ProbeOpened
+            | FlashNextCostEvent::ProbeFailed
+            | FlashNextCostEvent::Recalibrating
+            | FlashNextCostEvent::Disarmed => {}
+        }
+        tracing::info!(
+            target: "ax_engine_mlx::runner",
+            ?event,
+            cost_state = state_label,
+            cost_policy = ?policy,
+            cost_state_code = snapshot.state,
+            ctx_band = key.ctx_label(),
+            rows = key.rows,
+            streamed = key.streamed,
+            samples = snapshot.samples,
+            direct_ms = snapshot.direct_ms,
+            round_ms = snapshot.round_ms,
+            speedup_x1000 = snapshot.estimated_speedup_x1000,
+            parks = snapshot.parks,
+            resumes = snapshot.resumes,
+            would_parks = snapshot.would_parks,
+            "Flash Next MTP cost transition"
+        );
     }
 
     /// Whether the live cursor ends exactly at the trunk boundary, so this step
@@ -9964,12 +10247,52 @@ impl MlxRunner {
         self.record_flash_next_mtp_direct_fallback(state, reason);
         let telemetry = &mut state.flash_next_mtp.telemetry;
         telemetry.cursor_paused_steps = telemetry.cursor_paused_steps.saturating_add(1);
+        self.run_flash_next_mtp_paused_body(state, input_tokens, sampling, Some(reason), options)
+    }
 
+    /// One decode step served direct because the measured cost policy parked
+    /// the head (or because the current evidence band is still calibrating its
+    /// direct baseline), not because a gate blocked the cursor.
+    ///
+    /// The cursor keeps its line exactly like a pause: every consumed token's
+    /// stream row is buffered so the probe window can absorb at a commit
+    /// boundary. This is a routing decision, not a fallback, so it does not
+    /// touch the per-reason fallback counters.
+    fn run_flash_next_mtp_cost_parked_step(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        sampling: MlxSamplingParams,
+        options: &DecodeOneOptions<'_>,
+    ) -> Option<Vec<u32>> {
+        if state.flash_next_mtp.cursor.is_none() {
+            state.flash_next_mtp.paused = None;
+            return None;
+        }
+        // Direct decode from here on: the generic n-gram route would make the
+        // measured step incomparable with the MTP round and could interleave a
+        // second drafter into the parked request.
+        state.flash_next_mtp.blocked_direct = true;
+        let telemetry = &mut state.flash_next_mtp.telemetry;
+        telemetry.cost_parked_steps = telemetry.cost_parked_steps.saturating_add(1);
+        self.run_flash_next_mtp_paused_body(state, input_tokens, sampling, None, options)
+    }
+
+    /// Shared paused/parked direct body. `reason` is `None` for a cost-parked
+    /// step, which has no fallback bucket to charge.
+    fn run_flash_next_mtp_paused_body(
+        &self,
+        state: &mut RequestState,
+        input_tokens: &[u32],
+        sampling: MlxSamplingParams,
+        reason: Option<FlashNextMtpFallbackReason>,
+        options: &DecodeOneOptions<'_>,
+    ) -> Option<Vec<u32>> {
         let last_token = state
             .next_model_last_token
             .or_else(|| input_tokens.last().copied())
             .unwrap_or(0);
-        if reason == FlashNextMtpFallbackReason::PendingDirect {
+        if reason == Some(FlashNextMtpFallbackReason::PendingDirect) {
             // The lazy token already occupies the next position and its row was
             // captured by the step that consumed it: materialize it and stop
             // extending the double buffer so the next step can propose again.
@@ -9981,7 +10304,7 @@ impl MlxRunner {
                 return Some(vec![tok]);
             }
         }
-        let (tokens, consumed) = if reason == FlashNextMtpFallbackReason::ThinkControl {
+        let (tokens, consumed) = if reason == Some(FlashNextMtpFallbackReason::ThinkControl) {
             // Think control needs materialized logits for its rank probe and
             // commits nothing beyond the feed token, so it stays on single
             // decode even while paused.
@@ -10005,10 +10328,8 @@ impl MlxRunner {
                     target: "ax_engine_mlx::runner",
                     "Flash Next paused step has no trunk stream row; dropping the cursor"
                 );
-                self.record_flash_next_mtp_direct_fallback(
-                    state,
-                    FlashNextMtpFallbackReason::ComponentsUnavailable,
-                );
+                let reason = reason.unwrap_or(FlashNextMtpFallbackReason::ComponentsUnavailable);
+                self.record_flash_next_mtp_direct_fallback(state, reason);
                 state.flash_next_mtp.drop_cursor();
                 return None;
             };
@@ -13851,6 +14172,25 @@ impl MlxRunner {
             mtp_cost_depth_width(qwen_linear_max_verify_drafts(), self.mtp_max_depth()),
         );
         state.mtp_cost_steps_since_decision = 0;
+        // Flash Next measured cost policy (WP03). `reset` above clears the
+        // machine, so arm it afterwards. Only a greedy Flash Next session under
+        // the `auto` policy (or its `required` reporting twin) measures at all;
+        // `AX_FLASH_NEXT_MTP_COST=0` leaves it inert and the pre-WP03 route
+        // returns exactly.
+        //
+        // The session policy (`--mlx-mtp-policy`) is folded in here, keeping the
+        // stricter of the two: a `required` session must never be read as
+        // `auto` just because the environment did not set the force-MTP harness
+        // contract, and an explicit `disabled` must survive an `auto` session.
+        let mut flash_next_cost_config = flash_next_mtp_cost_config_from_env();
+        flash_next_cost_config.policy = strictest_flash_next_cost_policy(
+            self.mtp_session_policy.flash_next_cost_policy(),
+            flash_next_cost_config.policy,
+        );
+        state.mtp_cost_depth.flash_next_cost_mut().reset(
+            is_greedy && self.flash_next_mtp_session(),
+            flash_next_cost_config,
+        );
         let profitability_config = mtp_profitability_config_from_env();
         let profitability_max_tokens_per_round =
             if crate::fastpath::mtp_profitability_throughput_enabled()
@@ -17070,3 +17410,59 @@ mod flash_next_tests;
 
 #[cfg(test)]
 mod flash_next_pause_tests;
+
+/// Weight-free controls for the WP03 cost-park gate.
+#[cfg(test)]
+mod flash_next_cost_gate_tests {
+    use super::*;
+
+    #[test]
+    fn cost_park_gate_requires_every_cursor_independent_gate_clear() {
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, false, false, false, 8),
+            Some(FlashNextMtpDecodeBlock::CostParked)
+        );
+        // An inert cost machine must leave the route untouched.
+        assert_eq!(
+            flash_next_mtp_cost_park_block(false, true, false, false, false, 8),
+            None
+        );
+        // A park may only replace a step that would have proposed; every other
+        // gate keeps its own reason and its own accounting.
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, false, false, false, false, 8),
+            None
+        );
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, true, false, false, 8),
+            None
+        );
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, false, true, false, 8),
+            None
+        );
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, false, false, true, 8),
+            None
+        );
+        assert_eq!(
+            flash_next_mtp_cost_park_block(true, true, false, false, false, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_cost_park_is_not_a_cursor_pause() {
+        // The regular gate must never report the parked state: the parked step
+        // is a routing decision, and the `CursorPaused` arm would flush it away
+        // inside the same step.
+        assert_eq!(
+            flash_next_mtp_decode_block(true, false, false, false, 8, false, true),
+            None
+        );
+        assert_eq!(
+            FlashNextMtpDecodeBlock::CostParked.fallback_reason(),
+            FlashNextMtpFallbackReason::CursorUnavailable
+        );
+    }
+}

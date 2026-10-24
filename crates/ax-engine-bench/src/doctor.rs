@@ -1133,6 +1133,9 @@ fn doctor_expert_stream_report(
             expert_stream::SessionResidencyBudget {
                 kv_pool_tokens: pool_tokens,
                 prefill_chunk,
+                // Doctor models a single-stream session, so per-request state
+                // is priced for one live sequence.
+                max_live_sequences: Some(1),
             },
             &manifest,
         )

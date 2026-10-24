@@ -240,6 +240,10 @@ pub(super) struct MtpCostDepthController {
     since_probe_cycles: u32,
     park_streak: u32,
     parked: bool,
+    /// Flash Next cost machine. A request owns exactly one MTP cost
+    /// controller: the depth machinery above prices the generic Qwen linear
+    /// head, this prices the Flash Next cursor's fixed depth-one round.
+    flash_next: FlashNextMtpCostController,
 }
 
 impl Default for MtpCostDepthController {
@@ -265,6 +269,7 @@ impl Default for MtpCostDepthController {
             since_probe_cycles: 0,
             park_streak: 0,
             parked: false,
+            flash_next: FlashNextMtpCostController::default(),
         }
     }
 }
@@ -272,6 +277,9 @@ impl Default for MtpCostDepthController {
 impl MtpCostDepthController {
     /// Per-generation reset. The controller is request-local: a park latch
     /// never crosses a generation boundary.
+    ///
+    /// The reset also clears the Flash Next cost machine; a request that runs
+    /// Flash Next arms it afterwards through [`Self::flash_next_cost_mut`].
     pub(super) fn reset(&mut self, enabled: bool, config: MtpCostDepthConfig, width: usize) {
         let width = width.min(MTP_COST_MAX_DEPTH);
         *self = Self {
@@ -283,6 +291,16 @@ impl MtpCostDepthController {
             warmup_remaining: width,
             ..Self::default()
         };
+    }
+
+    /// Flash Next cost machine (read-only).
+    pub(super) fn flash_next_cost(&self) -> &FlashNextMtpCostController {
+        &self.flash_next
+    }
+
+    /// Flash Next cost machine (mutable).
+    pub(super) fn flash_next_cost_mut(&mut self) -> &mut FlashNextMtpCostController {
+        &mut self.flash_next
     }
 
     /// Whether this request owns its depth decisions.
@@ -785,6 +803,734 @@ pub(super) fn mtp_cost_depth_cycle_depth(
     } else {
         legacy_depth
     }
+}
+
+// ---------------------------------------------------------------------------
+// Flash Next MTP cost control
+// ---------------------------------------------------------------------------
+//
+// The depth controller above prices draft *depth* for the generic Qwen linear
+// head. Flash Next serves one canonical depth through its own cursor
+// (`Qwen4ExpDraftCursor`), so the only question its head can answer is
+// "is this round cheaper per emitted token than a direct step?" — measured on
+// the M5 Max at 47.4 vs 51.4 tok/s (0.92x) for MXFP4 while the 27B target runs
+// ~1.85x. The state machine below lives inside the same request-local
+// controller so a request has exactly one MTP cost owner.
+//
+// Calibrating -> Active -> Parked -> Probe
+//
+// `AX_FLASH_NEXT_MTP_COST=0` restores the pre-WP03 route exactly (the machine
+// never arms), and only the `auto` policy may park: `required` reports
+// `would_park` and keeps serving MTP, `disabled` never measures or probes.
+
+/// Context bands the cost model keeps separate: ≤2k, ≤8k, ≤16k, and 16k+
+/// (the ≤32k band also absorbs longer contexts).
+pub(super) const FLASH_NEXT_COST_CTX_BUCKETS: usize = 4;
+/// Batch-row bands: one row, and every multi-row batch.
+pub(super) const FLASH_NEXT_COST_ROWS_BUCKETS: usize = 2;
+/// Resident weights versus streamed experts.
+pub(super) const FLASH_NEXT_COST_RESIDENCY_BUCKETS: usize = 2;
+/// Total evidence buckets.
+pub(super) const FLASH_NEXT_COST_BUCKETS: usize =
+    FLASH_NEXT_COST_ROWS_BUCKETS * FLASH_NEXT_COST_CTX_BUCKETS * FLASH_NEXT_COST_RESIDENCY_BUCKETS;
+
+/// Who owns the park decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FlashNextCostPolicy {
+    /// May park a losing head.
+    Auto,
+    /// Reports `would_park` and never parks: the force-MTP harness contract
+    /// (`AX_MLX_MTP_BYPASS_THRESHOLD=0`) and explicit `required` sessions must
+    /// bind evidence to a fixed mechanism.
+    Required,
+    /// Never measures, never probes, never parks.
+    Disabled,
+}
+
+impl FlashNextCostPolicy {
+    fn parse(raw: Option<&str>) -> Option<Self> {
+        match raw?.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "required" => Some(Self::Required),
+            "disabled" | "off" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+/// Combine two policy sources, keeping the stricter one.
+///
+/// The process-wide env/harness policy and the request's session policy are
+/// independent inputs: an operator's `AX_FLASH_NEXT_MTP_COST=0` or `disabled`
+/// must survive an `auto` session, and a session started with `required` must
+/// never be downgraded to `auto` just because the environment did not set the
+/// force-MTP harness contract. `disabled` is therefore the strongest, then
+/// `required`, then `auto`.
+pub(super) const fn strictest_flash_next_cost_policy(
+    left: FlashNextCostPolicy,
+    right: FlashNextCostPolicy,
+) -> FlashNextCostPolicy {
+    match (left, right) {
+        (FlashNextCostPolicy::Disabled, _) | (_, FlashNextCostPolicy::Disabled) => {
+            FlashNextCostPolicy::Disabled
+        }
+        (FlashNextCostPolicy::Required, _) | (_, FlashNextCostPolicy::Required) => {
+            FlashNextCostPolicy::Required
+        }
+        _ => FlashNextCostPolicy::Auto,
+    }
+}
+
+/// State of the Flash Next cost machine.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum FlashNextCostState {
+    /// Collecting the direct baseline and the first complete rounds (the
+    /// warmup rounds are excluded from every window).
+    #[default]
+    Calibrating,
+    /// The measured round beats direct; serve MTP and watch the ratio.
+    Active,
+    /// The measured round lost to direct; serve direct and keep the cursor
+    /// buffering every consumed token until the next probe window.
+    Parked,
+    /// A bounded probe window is open: serve MTP for the configured rounds
+    /// and decide whether the head has recovered.
+    Probe,
+}
+
+impl FlashNextCostState {
+    /// Stable telemetry code (0 = calibrating, 1 = active, 2 = parked,
+    /// 3 = probe).
+    pub(super) const fn code(self) -> u32 {
+        match self {
+            Self::Calibrating => 0,
+            Self::Active => 1,
+            Self::Parked => 2,
+            Self::Probe => 3,
+        }
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Calibrating => "calibrating",
+            Self::Active => "active",
+            Self::Parked => "parked",
+            Self::Probe => "probe",
+        }
+    }
+}
+
+/// Route the next Flash Next decode step must take.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FlashNextCostRoute {
+    Mtp,
+    Direct,
+}
+
+/// One state-machine transition. The runner logs exactly one line per event
+/// (no prompt or token content).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FlashNextCostEvent {
+    /// Calibration finished: the head has a measured verdict.
+    Activated,
+    /// The round lost to direct for a full streak.
+    Parked,
+    /// A parked request opened its bounded probe window.
+    ProbeOpened,
+    /// The probe window beat the resume margin.
+    ProbeResumed,
+    /// The probe window did not beat the resume margin; parked again.
+    ProbeFailed,
+    /// `required` policy: the head would have parked.
+    WouldPark,
+    /// The evidence band changed; the new band re-measures from scratch.
+    Recalibrating,
+    /// The draft cursor is gone, so cost control has nothing to route.
+    Disarmed,
+}
+
+/// Bucket key for one measured band. This WP only fills the single-row bands,
+/// but the key stays explicit so a later multi-row batch cannot silently
+/// borrow single-row evidence.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct FlashNextCostBucketKey {
+    pub(super) rows: u16,
+    pub(super) ctx_tokens: usize,
+    pub(super) streamed: bool,
+}
+
+impl FlashNextCostBucketKey {
+    pub(super) const fn new(rows: usize, ctx_tokens: usize, streamed: bool) -> Self {
+        Self {
+            rows: if rows > u16::MAX as usize {
+                u16::MAX
+            } else {
+                rows as u16
+            },
+            ctx_tokens,
+            streamed,
+        }
+    }
+
+    const fn ctx_band(self) -> usize {
+        if self.ctx_tokens <= 2_048 {
+            0
+        } else if self.ctx_tokens <= 8_192 {
+            1
+        } else if self.ctx_tokens <= 16_384 {
+            2
+        } else {
+            3
+        }
+    }
+
+    const fn rows_band(self) -> usize {
+        if self.rows <= 1 { 0 } else { 1 }
+    }
+
+    const fn residency_band(self) -> usize {
+        if self.streamed { 1 } else { 0 }
+    }
+
+    const fn index(self) -> usize {
+        (self.rows_band() * FLASH_NEXT_COST_CTX_BUCKETS + self.ctx_band())
+            * FLASH_NEXT_COST_RESIDENCY_BUCKETS
+            + self.residency_band()
+    }
+
+    /// Stable telemetry label for the context band.
+    pub(super) const fn ctx_label(self) -> &'static str {
+        match self.ctx_band() {
+            0 => "le2k",
+            1 => "le8k",
+            2 => "le16k",
+            _ => "gt16k",
+        }
+    }
+}
+
+/// Direct and MTP evidence for one bucket. Direct steps are single-row greedy
+/// steps that emit exactly one token each, so the direct rate is
+/// `direct_steps / direct_wall_us` without a separate token counter.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct FlashNextCostSamples {
+    direct_steps: u32,
+    direct_wall_us: u64,
+    mtp_rounds: u32,
+    mtp_warmup_rounds: u32,
+    mtp_wall_us: u64,
+    mtp_tokens: u64,
+    hard_loss_streak: u32,
+    soft_loss_streak: u32,
+}
+
+impl FlashNextCostSamples {
+    /// MTP tokens/ms over direct tokens/ms. `None` until both sides have
+    /// evidence, so a half-measured band can never decide anything.
+    fn speedup(&self) -> Option<f32> {
+        if self.direct_steps == 0
+            || self.direct_wall_us == 0
+            || self.mtp_wall_us == 0
+            || self.mtp_tokens == 0
+        {
+            return None;
+        }
+        let mtp_per_us = self.mtp_tokens as f64 / self.mtp_wall_us as f64;
+        let direct_per_us = f64::from(self.direct_steps) / self.direct_wall_us as f64;
+        (direct_per_us > 0.0 && mtp_per_us.is_finite())
+            .then_some((mtp_per_us / direct_per_us) as f32)
+    }
+}
+
+/// Measured Flash Next cost policy (`AX_FLASH_NEXT_MTP_COST*`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FlashNextMtpCostConfig {
+    pub(super) enabled: bool,
+    pub(super) policy: FlashNextCostPolicy,
+    /// Rounds excluded from every window (compile and cold-cache cost).
+    pub(super) warmup_rounds: u32,
+    /// Direct steps a band needs before it can be judged.
+    pub(super) direct_samples: u32,
+    /// Complete MTP rounds a band needs before it can be judged.
+    pub(super) mtp_rounds: u32,
+    /// A round below this ratio is a clear loss.
+    pub(super) hard_loss: f32,
+    /// Consecutive clear losses that park the request.
+    pub(super) hard_loss_streak: u32,
+    /// A round below this ratio is a soft loss (0.92 measured on MXFP4).
+    pub(super) soft_loss: f32,
+    /// Consecutive soft losses that park the request.
+    pub(super) soft_loss_streak: u32,
+    /// Direct steps a parked request serves before opening a probe window.
+    pub(super) parked_probe_steps: u32,
+    /// MTP rounds in one probe window.
+    pub(super) probe_rounds: u32,
+    /// Ratio a probe window must clear to resume MTP.
+    pub(super) resume_margin: f32,
+}
+
+impl Default for FlashNextMtpCostConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            policy: FlashNextCostPolicy::Auto,
+            warmup_rounds: 2,
+            direct_samples: 4,
+            mtp_rounds: 8,
+            hard_loss: 0.90,
+            hard_loss_streak: 4,
+            soft_loss: 1.00,
+            soft_loss_streak: 16,
+            parked_probe_steps: 128,
+            probe_rounds: 8,
+            resume_margin: 1.05,
+        }
+    }
+}
+
+/// Process-wide Flash Next cost configuration.
+///
+/// `AX_FLASH_NEXT_MTP_COST` is the kill switch (default ON for the auto
+/// policy). `AX_MLX_MTP_BYPASS_THRESHOLD=0` is the existing force-MTP harness
+/// contract, which downgrades the policy to `required`: MTP-P evidence must
+/// bind to a fixed mechanism, so that contract never parks silently.
+pub(super) fn flash_next_mtp_cost_config_from_env() -> FlashNextMtpCostConfig {
+    static CACHED: OnceLock<FlashNextMtpCostConfig> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let defaults = FlashNextMtpCostConfig::default();
+        let policy_raw = std::env::var("AX_FLASH_NEXT_MTP_COST_POLICY").ok();
+        let default_policy = if mtp_bypass_threshold() > 0.0 {
+            defaults.policy
+        } else {
+            FlashNextCostPolicy::Required
+        };
+        FlashNextMtpCostConfig {
+            enabled: crate::fastpath::env_flag_default_on("AX_FLASH_NEXT_MTP_COST"),
+            policy: FlashNextCostPolicy::parse(policy_raw.as_deref()).unwrap_or(default_policy),
+            warmup_rounds: parse_u32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_WARMUP_ROUNDS")
+                    .ok()
+                    .as_deref(),
+                defaults.warmup_rounds,
+                0,
+                64,
+            ),
+            direct_samples: parse_u32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_DIRECT_SAMPLES")
+                    .ok()
+                    .as_deref(),
+                defaults.direct_samples,
+                1,
+                64,
+            ),
+            mtp_rounds: parse_u32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_MTP_ROUNDS")
+                    .ok()
+                    .as_deref(),
+                defaults.mtp_rounds,
+                1,
+                256,
+            ),
+            hard_loss: parse_f32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_HARD_LOSS")
+                    .ok()
+                    .as_deref(),
+                defaults.hard_loss,
+                0.5,
+                1.5,
+            ),
+            hard_loss_streak: parse_u32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_HARD_STREAK")
+                    .ok()
+                    .as_deref(),
+                defaults.hard_loss_streak,
+                1,
+                256,
+            ),
+            soft_loss: parse_f32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_SOFT_LOSS")
+                    .ok()
+                    .as_deref(),
+                defaults.soft_loss,
+                0.5,
+                1.5,
+            ),
+            soft_loss_streak: parse_u32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_SOFT_STREAK")
+                    .ok()
+                    .as_deref(),
+                defaults.soft_loss_streak,
+                1,
+                1024,
+            ),
+            parked_probe_steps: parse_u32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_PARKED_PROBE_STEPS")
+                    .ok()
+                    .as_deref(),
+                defaults.parked_probe_steps,
+                8,
+                4_096,
+            ),
+            probe_rounds: parse_u32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_PROBE_ROUNDS")
+                    .ok()
+                    .as_deref(),
+                defaults.probe_rounds,
+                1,
+                64,
+            ),
+            resume_margin: parse_f32(
+                std::env::var("AX_FLASH_NEXT_MTP_COST_RESUME_MARGIN")
+                    .ok()
+                    .as_deref(),
+                defaults.resume_margin,
+                1.0,
+                2.0,
+            ),
+        }
+    })
+}
+
+/// Route telemetry for one measured band.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct FlashNextMtpCostSnapshot {
+    pub(super) state: u32,
+    /// Complete MTP rounds in the band (the effective sample count).
+    pub(super) samples: u32,
+    /// Mean direct step wall, ms.
+    pub(super) direct_ms: u32,
+    /// Mean complete MTP round wall, ms.
+    pub(super) round_ms: u32,
+    pub(super) estimated_speedup_x1000: u32,
+    pub(super) parks: u32,
+    pub(super) resumes: u32,
+    pub(super) would_parks: u32,
+}
+
+/// Request-local Flash Next cost machine. `Copy` so the async committed fold
+/// can preview it the same way it previews the depth controller.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FlashNextMtpCostController {
+    config: FlashNextMtpCostConfig,
+    active: bool,
+    state: FlashNextCostState,
+    buckets: [FlashNextCostSamples; FLASH_NEXT_COST_BUCKETS],
+    bucket: usize,
+    bucket_seen: bool,
+    /// Per-band evidence at the moment the request parked, so the probe window
+    /// prices only its own rounds.
+    park_mark: FlashNextCostSamples,
+    parked_steps: u32,
+    probe_rounds: u32,
+    parks: u32,
+    resumes: u32,
+    would_parks: u32,
+}
+
+impl Default for FlashNextMtpCostController {
+    fn default() -> Self {
+        Self {
+            config: FlashNextMtpCostConfig::default(),
+            active: false,
+            state: FlashNextCostState::Calibrating,
+            buckets: [FlashNextCostSamples::default(); FLASH_NEXT_COST_BUCKETS],
+            bucket: 0,
+            bucket_seen: false,
+            park_mark: FlashNextCostSamples::default(),
+            parked_steps: 0,
+            probe_rounds: 0,
+            parks: 0,
+            resumes: 0,
+            would_parks: 0,
+        }
+    }
+}
+
+impl FlashNextMtpCostController {
+    /// Per-generation reset. `enabled` folds the kill switch, the request's
+    /// sampling mode and the Flash Next session gate; a disabled machine is
+    /// fully inert and the runner keeps its pre-WP03 route.
+    pub(super) fn reset(&mut self, enabled: bool, config: FlashNextMtpCostConfig) {
+        let active = enabled
+            && config.enabled
+            && config.policy != FlashNextCostPolicy::Disabled
+            && config.direct_samples > 0
+            && config.mtp_rounds > 0
+            && config.probe_rounds > 0;
+        *self = Self {
+            config,
+            active,
+            ..Self::default()
+        };
+    }
+
+    pub(super) fn enabled(&self) -> bool {
+        self.active
+    }
+
+    pub(super) fn state(&self) -> FlashNextCostState {
+        self.state
+    }
+
+    pub(super) fn policy(&self) -> FlashNextCostPolicy {
+        self.config.policy
+    }
+
+    /// Route for the next step, plus the transition the band change implies.
+    ///
+    /// The direct window of a fresh band is served before any MTP round so the
+    /// baseline is measured on the same request, never inferred.
+    pub(super) fn route(
+        &mut self,
+        key: FlashNextCostBucketKey,
+    ) -> (FlashNextCostRoute, Option<FlashNextCostEvent>) {
+        let event = self.sync_bucket(key);
+        let route = if !self.active {
+            FlashNextCostRoute::Mtp
+        } else {
+            match self.state {
+                FlashNextCostState::Calibrating => {
+                    if self.buckets[key.index()].direct_steps < self.config.direct_samples {
+                        FlashNextCostRoute::Direct
+                    } else {
+                        FlashNextCostRoute::Mtp
+                    }
+                }
+                FlashNextCostState::Active | FlashNextCostState::Probe => FlashNextCostRoute::Mtp,
+                FlashNextCostState::Parked => FlashNextCostRoute::Direct,
+            }
+        };
+        (route, event)
+    }
+
+    /// Record one direct single-token step, in µs.
+    pub(super) fn record_direct_step(
+        &mut self,
+        key: FlashNextCostBucketKey,
+        wall_us: u32,
+    ) -> Option<FlashNextCostEvent> {
+        if !self.active || wall_us == 0 {
+            return None;
+        }
+        let bucket_event = self.sync_bucket(key);
+        let index = key.index();
+        {
+            let bucket = &mut self.buckets[index];
+            bucket.direct_steps = bucket.direct_steps.saturating_add(1);
+            bucket.direct_wall_us = bucket.direct_wall_us.saturating_add(u64::from(wall_us));
+        }
+        match self.state {
+            FlashNextCostState::Parked => {
+                self.parked_steps = self.parked_steps.saturating_add(1);
+                if self.parked_steps >= self.config.parked_probe_steps {
+                    self.state = FlashNextCostState::Probe;
+                    self.probe_rounds = 0;
+                    self.park_mark = self.buckets[index];
+                    return Some(FlashNextCostEvent::ProbeOpened);
+                }
+                bucket_event
+            }
+            FlashNextCostState::Calibrating => self.maybe_activate(index).or(bucket_event),
+            FlashNextCostState::Active | FlashNextCostState::Probe => bucket_event,
+        }
+    }
+
+    /// Record one complete MTP round: draft plus verify (verify already folds
+    /// correction, bonus, rejection and the eval sync) and its emitted tokens.
+    pub(super) fn record_mtp_round(
+        &mut self,
+        key: FlashNextCostBucketKey,
+        wall_us: u32,
+        tokens: u32,
+    ) -> Option<FlashNextCostEvent> {
+        if !self.active || wall_us == 0 || tokens == 0 {
+            return None;
+        }
+        let bucket_event = self.sync_bucket(key);
+        let index = key.index();
+        if self.buckets[index].mtp_warmup_rounds < self.config.warmup_rounds {
+            self.buckets[index].mtp_warmup_rounds =
+                self.buckets[index].mtp_warmup_rounds.saturating_add(1);
+            return bucket_event;
+        }
+        {
+            let bucket = &mut self.buckets[index];
+            bucket.mtp_rounds = bucket.mtp_rounds.saturating_add(1);
+            bucket.mtp_wall_us = bucket.mtp_wall_us.saturating_add(u64::from(wall_us));
+            bucket.mtp_tokens = bucket.mtp_tokens.saturating_add(u64::from(tokens));
+        }
+        match self.state {
+            FlashNextCostState::Calibrating => self.maybe_activate(index).or(bucket_event),
+            FlashNextCostState::Active => self.decide(index).or(bucket_event),
+            FlashNextCostState::Probe => {
+                self.probe_rounds = self.probe_rounds.saturating_add(1);
+                if self.probe_rounds < self.config.probe_rounds {
+                    return bucket_event;
+                }
+                self.finish_probe(index).or(bucket_event)
+            }
+            FlashNextCostState::Parked => bucket_event,
+        }
+    }
+
+    /// Stop routing when the draft cursor is gone: a parked request with no
+    /// cursor has nothing left to measure.
+    pub(super) fn disarm(&mut self) -> Option<FlashNextCostEvent> {
+        if !self.active {
+            return None;
+        }
+        self.active = false;
+        self.state = FlashNextCostState::Calibrating;
+        Some(FlashNextCostEvent::Disarmed)
+    }
+
+    pub(super) fn snapshot(&self, key: FlashNextCostBucketKey) -> FlashNextMtpCostSnapshot {
+        let bucket = self.buckets[key.index()];
+        let direct_ms = mean_ms(bucket.direct_wall_us, u64::from(bucket.direct_steps));
+        let round_ms = mean_ms(bucket.mtp_wall_us, u64::from(bucket.mtp_rounds));
+        FlashNextMtpCostSnapshot {
+            state: self.state.code(),
+            samples: bucket.mtp_rounds,
+            direct_ms,
+            round_ms,
+            estimated_speedup_x1000: bucket
+                .speedup()
+                .map(|ratio| (ratio * 1000.0).round().clamp(0.0, u32::MAX as f32) as u32)
+                .unwrap_or(0),
+            parks: self.parks,
+            resumes: self.resumes,
+            would_parks: self.would_parks,
+        }
+    }
+
+    /// Keep one band's evidence together. A band change restarts the parked
+    /// window and re-measures an active verdict: 0.92x at 1k says nothing
+    /// about 30k, where the round cost is dominated by verifier traffic.
+    fn sync_bucket(&mut self, key: FlashNextCostBucketKey) -> Option<FlashNextCostEvent> {
+        let index = key.index();
+        if self.bucket_seen && index == self.bucket {
+            return None;
+        }
+        self.bucket = index;
+        self.bucket_seen = true;
+        match self.state {
+            FlashNextCostState::Parked => {
+                self.parked_steps = 0;
+                self.probe_rounds = 0;
+                self.park_mark = self.buckets[index];
+                None
+            }
+            FlashNextCostState::Probe => {
+                self.state = FlashNextCostState::Parked;
+                self.parked_steps = 0;
+                self.probe_rounds = 0;
+                self.park_mark = self.buckets[index];
+                Some(FlashNextCostEvent::ProbeFailed)
+            }
+            FlashNextCostState::Active => {
+                self.state = FlashNextCostState::Calibrating;
+                Some(FlashNextCostEvent::Recalibrating)
+            }
+            FlashNextCostState::Calibrating => None,
+        }
+    }
+
+    fn maybe_activate(&mut self, index: usize) -> Option<FlashNextCostEvent> {
+        if self.state != FlashNextCostState::Calibrating {
+            return None;
+        }
+        let bucket = self.buckets[index];
+        let ready = bucket.direct_steps >= self.config.direct_samples
+            && bucket.mtp_rounds >= self.config.mtp_rounds;
+        if !ready {
+            return None;
+        }
+        self.state = FlashNextCostState::Active;
+        Some(FlashNextCostEvent::Activated)
+    }
+
+    /// One measured decision. A clear loss parks after four decisions; the
+    /// softer sub-1.00 loss needs sixteen, which catches the measured 0.92x
+    /// MXFP4 head without touching the 27B's 1.85x.
+    fn decide(&mut self, index: usize) -> Option<FlashNextCostEvent> {
+        let speedup = self.buckets[index].speedup()?;
+        let config = self.config;
+        let losing = {
+            let bucket = &mut self.buckets[index];
+            bucket.hard_loss_streak = if speedup < config.hard_loss {
+                bucket.hard_loss_streak.saturating_add(1)
+            } else {
+                0
+            };
+            bucket.soft_loss_streak = if speedup < config.soft_loss {
+                bucket.soft_loss_streak.saturating_add(1)
+            } else {
+                0
+            };
+            bucket.hard_loss_streak >= config.hard_loss_streak
+                || bucket.soft_loss_streak >= config.soft_loss_streak
+        };
+        if !losing {
+            return None;
+        }
+        if config.policy != FlashNextCostPolicy::Auto {
+            // `required`: report the verdict, keep serving MTP, and restart
+            // the streak so one long losing run is not re-reported forever.
+            self.would_parks = self.would_parks.saturating_add(1);
+            self.buckets[index].hard_loss_streak = 0;
+            self.buckets[index].soft_loss_streak = 0;
+            return Some(FlashNextCostEvent::WouldPark);
+        }
+        self.state = FlashNextCostState::Parked;
+        self.parked_steps = 0;
+        self.probe_rounds = 0;
+        self.parks = self.parks.saturating_add(1);
+        self.park_mark = self.buckets[index];
+        Some(FlashNextCostEvent::Parked)
+    }
+
+    /// Close the probe window. The window is valid only when it holds the
+    /// configured rounds and the band has a real direct baseline; resuming
+    /// needs a strict margin so a near-tie does not oscillate.
+    fn finish_probe(&mut self, index: usize) -> Option<FlashNextCostEvent> {
+        self.probe_rounds = 0;
+        let bucket = self.buckets[index];
+        let mark = self.park_mark;
+        let window = FlashNextCostSamples {
+            direct_steps: bucket.direct_steps,
+            direct_wall_us: bucket.direct_wall_us,
+            mtp_rounds: bucket.mtp_rounds.saturating_sub(mark.mtp_rounds),
+            mtp_wall_us: bucket.mtp_wall_us.saturating_sub(mark.mtp_wall_us),
+            mtp_tokens: bucket.mtp_tokens.saturating_sub(mark.mtp_tokens),
+            ..FlashNextCostSamples::default()
+        };
+        let valid = window.mtp_rounds >= self.config.probe_rounds
+            && bucket.direct_steps >= self.config.direct_samples;
+        if valid
+            && window
+                .speedup()
+                .is_some_and(|ratio| ratio > self.config.resume_margin)
+        {
+            self.state = FlashNextCostState::Active;
+            self.buckets[index].hard_loss_streak = 0;
+            self.buckets[index].soft_loss_streak = 0;
+            self.resumes = self.resumes.saturating_add(1);
+            return Some(FlashNextCostEvent::ProbeResumed);
+        }
+        self.state = FlashNextCostState::Parked;
+        self.parked_steps = 0;
+        self.park_mark = self.buckets[index];
+        Some(FlashNextCostEvent::ProbeFailed)
+    }
+}
+
+fn mean_ms(total_us: u64, count: u64) -> u32 {
+    if count == 0 {
+        return 0;
+    }
+    (total_us as f64 / count as f64 / 1000.0)
+        .round()
+        .clamp(0.0, u32::MAX as f64) as u32
 }
 
 #[cfg(test)]
@@ -1419,5 +2165,427 @@ mod tests {
         assert_eq!(controller.p_accept[0], Some(1.0));
         assert_eq!(controller.p_accept[1], Some(0.0));
         assert_eq!(controller.p_accept[2], None);
+    }
+
+    fn flash_next_cost_config() -> FlashNextMtpCostConfig {
+        FlashNextMtpCostConfig::default()
+    }
+
+    fn flash_next_cost_controller(policy: FlashNextCostPolicy) -> FlashNextMtpCostController {
+        let mut controller = FlashNextMtpCostController::default();
+        controller.reset(
+            true,
+            FlashNextMtpCostConfig {
+                policy,
+                ..flash_next_cost_config()
+            },
+        );
+        controller
+    }
+
+    fn flash_next_bucket(ctx_tokens: usize) -> FlashNextCostBucketKey {
+        FlashNextCostBucketKey::new(1, ctx_tokens, false)
+    }
+
+    /// Drive calibration exactly as the runner does: the band's direct window
+    /// first, then the MTP rounds the policy asks for.
+    fn drive_flash_next_calibration(
+        controller: &mut FlashNextMtpCostController,
+        key: FlashNextCostBucketKey,
+        direct_us: u32,
+        round_us: u32,
+        tokens: u32,
+    ) {
+        for _ in 0..128 {
+            if controller.state() != FlashNextCostState::Calibrating {
+                return;
+            }
+            match controller.route(key).0 {
+                FlashNextCostRoute::Direct => {
+                    controller.record_direct_step(key, direct_us);
+                }
+                FlashNextCostRoute::Mtp => {
+                    controller.record_mtp_round(key, round_us, tokens);
+                }
+            }
+        }
+        assert_eq!(
+            controller.state(),
+            FlashNextCostState::Active,
+            "calibration never completed"
+        );
+    }
+
+    fn drive_flash_next_decisions(
+        controller: &mut FlashNextMtpCostController,
+        key: FlashNextCostBucketKey,
+        round_us: u32,
+        tokens: u32,
+        decisions: usize,
+    ) -> Option<FlashNextCostEvent> {
+        let mut last = None;
+        for _ in 0..decisions {
+            last = controller.record_mtp_round(key, round_us, tokens);
+        }
+        last
+    }
+
+    #[test]
+    fn cost_parks_clear_loss_after_four_decisions() {
+        let key = flash_next_bucket(1_024);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Auto);
+        // Direct 20 ms/token (50 tok/s); one emitted token per 40 ms round
+        // (25 tok/s) is the measured 0.50x clear loss.
+        drive_flash_next_calibration(&mut controller, key, 20_000, 40_000, 1);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.snapshot(key).estimated_speedup_x1000, 500);
+        for decision in 1..4 {
+            assert_eq!(
+                controller.record_mtp_round(key, 40_000, 1),
+                None,
+                "decision {decision} must not park yet"
+            );
+            assert_eq!(controller.state(), FlashNextCostState::Active);
+        }
+        assert_eq!(
+            controller.record_mtp_round(key, 40_000, 1),
+            Some(FlashNextCostEvent::Parked)
+        );
+        assert_eq!(controller.state(), FlashNextCostState::Parked);
+        assert_eq!(controller.route(key).0, FlashNextCostRoute::Direct);
+        assert_eq!(controller.snapshot(key).parks, 1);
+    }
+
+    #[test]
+    fn cost_parks_092_after_sixteen() {
+        let key = flash_next_bucket(1_024);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Auto);
+        // Direct 23 ms/token; two tokens per 50 ms round is the measured
+        // 0.92x MXFP4 head: a soft loss, never a clear one.
+        drive_flash_next_calibration(&mut controller, key, 23_000, 50_000, 2);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.snapshot(key).estimated_speedup_x1000, 920);
+        for decision in 1..16 {
+            assert_eq!(
+                controller.record_mtp_round(key, 50_000, 2),
+                None,
+                "decision {decision} stays on MTP"
+            );
+            assert_eq!(controller.state(), FlashNextCostState::Active);
+        }
+        assert_eq!(
+            controller.record_mtp_round(key, 50_000, 2),
+            Some(FlashNextCostEvent::Parked)
+        );
+        assert_eq!(controller.state(), FlashNextCostState::Parked);
+    }
+
+    #[test]
+    fn cost_keeps_185x_active() {
+        let key = flash_next_bucket(1_024);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Auto);
+        // Two tokens per 50 ms round against a 46.25 ms direct step: the 27B
+        // target's measured 1.85x.
+        drive_flash_next_calibration(&mut controller, key, 46_250, 50_000, 2);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.snapshot(key).estimated_speedup_x1000, 1_850);
+        for _ in 0..64 {
+            assert_eq!(controller.record_mtp_round(key, 50_000, 2), None);
+            assert_eq!(controller.state(), FlashNextCostState::Active);
+        }
+        let snapshot = controller.snapshot(key);
+        assert_eq!(snapshot.parks, 0);
+        assert_eq!(snapshot.would_parks, 0);
+        assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+    }
+
+    #[test]
+    fn strictest_policy_keeps_the_required_and_disabled_sessions() {
+        use FlashNextCostPolicy::{Auto, Disabled, Required};
+        // A session started with `--mlx-mtp-policy required` must not be read
+        // as `auto` just because the environment did not set the force-MTP
+        // harness contract.
+        assert_eq!(strictest_flash_next_cost_policy(Required, Auto), Required);
+        assert_eq!(strictest_flash_next_cost_policy(Auto, Required), Required);
+        // An explicit operator kill switch outranks every session policy.
+        assert_eq!(
+            strictest_flash_next_cost_policy(Required, Disabled),
+            Disabled
+        );
+        assert_eq!(strictest_flash_next_cost_policy(Disabled, Auto), Disabled);
+        assert_eq!(
+            strictest_flash_next_cost_policy(Disabled, Disabled),
+            Disabled
+        );
+        // Nothing forces a session that has no requirement of its own.
+        assert_eq!(strictest_flash_next_cost_policy(Auto, Auto), Auto);
+        assert_eq!(strictest_flash_next_cost_policy(Auto, Disabled), Disabled);
+    }
+
+    #[test]
+    fn required_session_never_parks_with_sub_090_evidence() {
+        // The env/harness policy a `required` session typically resolves with
+        // when the force-MTP harness did not set the bypass threshold.
+        let merged_policy = strictest_flash_next_cost_policy(
+            FlashNextCostPolicy::Required,
+            FlashNextCostPolicy::Auto,
+        );
+        assert_eq!(merged_policy, FlashNextCostPolicy::Required);
+        let key = flash_next_bucket(1_024);
+        let config = FlashNextMtpCostConfig {
+            policy: merged_policy,
+            ..flash_next_cost_config()
+        };
+
+        // 0.50x: four clear losses would park an `auto` session.
+        let mut controller = FlashNextMtpCostController::default();
+        controller.reset(true, config);
+        drive_flash_next_calibration(&mut controller, key, 20_000, 40_000, 1);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        for step in 1..=32 {
+            let event = controller.record_mtp_round(key, 40_000, 1);
+            assert_ne!(
+                event,
+                Some(FlashNextCostEvent::Parked),
+                "required session parked on clear-loss step {step}"
+            );
+            assert_eq!(controller.state(), FlashNextCostState::Active);
+            assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+        }
+        let snapshot = controller.snapshot(key);
+        assert_eq!(snapshot.parks, 0);
+        assert!(snapshot.would_parks > 0, "required must still report");
+
+        // 0.92x: sixteen soft losses would park an `auto` session.
+        let mut controller = FlashNextMtpCostController::default();
+        controller.reset(true, config);
+        drive_flash_next_calibration(&mut controller, key, 23_000, 50_000, 2);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.snapshot(key).estimated_speedup_x1000, 920);
+        for step in 1..=64 {
+            let event = controller.record_mtp_round(key, 50_000, 2);
+            assert_ne!(
+                event,
+                Some(FlashNextCostEvent::Parked),
+                "required session parked on soft-loss step {step}"
+            );
+            assert_eq!(controller.state(), FlashNextCostState::Active);
+        }
+        let snapshot = controller.snapshot(key);
+        assert_eq!(snapshot.parks, 0);
+        assert!(snapshot.would_parks > 0, "required must still report");
+        assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+    }
+
+    #[test]
+    fn required_reports_without_parking() {
+        let key = flash_next_bucket(1_024);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Required);
+        drive_flash_next_calibration(&mut controller, key, 20_000, 40_000, 1);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+
+        let event = drive_flash_next_decisions(&mut controller, key, 40_000, 1, 8);
+        assert_eq!(event, Some(FlashNextCostEvent::WouldPark));
+        let snapshot = controller.snapshot(key);
+        // Four clear losses per report, so eight losing decisions report twice.
+        assert_eq!(snapshot.would_parks, 2);
+        assert_eq!(snapshot.parks, 0);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+
+        // The probe window is never opened either: `required` never parks, so
+        // there are no parked direct steps to count.
+        for _ in 0..256 {
+            controller.record_mtp_round(key, 40_000, 1);
+            assert_eq!(controller.state(), FlashNextCostState::Active);
+        }
+    }
+
+    #[test]
+    fn disabled_never_probes() {
+        let key = flash_next_bucket(1_024);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Disabled);
+        assert!(!controller.enabled());
+        for _ in 0..256 {
+            assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+            assert_eq!(controller.record_mtp_round(key, 500_000, 1), None);
+            assert_eq!(controller.record_direct_step(key, 1_000), None);
+            assert_eq!(controller.state(), FlashNextCostState::Calibrating);
+        }
+        assert_eq!(
+            controller.snapshot(key),
+            FlashNextMtpCostSnapshot::default()
+        );
+
+        // The `AX_FLASH_NEXT_MTP_COST=0` kill switch uses the same inert path.
+        let mut controller = FlashNextMtpCostController::default();
+        controller.reset(false, flash_next_cost_config());
+        assert!(!controller.enabled());
+        assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+        assert_eq!(controller.record_mtp_round(key, 1, 1), None);
+    }
+
+    #[test]
+    fn parked_probe_resumes_only_above_105() {
+        let key = flash_next_bucket(1_024);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Auto);
+        drive_flash_next_calibration(&mut controller, key, 20_000, 40_000, 1);
+        drive_flash_next_decisions(&mut controller, key, 40_000, 1, 4);
+        assert_eq!(controller.state(), FlashNextCostState::Parked);
+
+        // 127 direct steps stay parked; the 128th opens the probe window.
+        for step in 1..128 {
+            assert_eq!(controller.record_direct_step(key, 20_000), None);
+            assert_eq!(
+                controller.state(),
+                FlashNextCostState::Parked,
+                "step {step} must not probe yet"
+            );
+        }
+        assert_eq!(
+            controller.record_direct_step(key, 20_000),
+            Some(FlashNextCostEvent::ProbeOpened)
+        );
+        assert_eq!(controller.state(), FlashNextCostState::Probe);
+
+        // 1.04x is below the resume margin: parked again.
+        let failed = drive_flash_next_decisions(&mut controller, key, 38_462, 2, 8);
+        assert_eq!(failed, Some(FlashNextCostEvent::ProbeFailed));
+        assert_eq!(controller.state(), FlashNextCostState::Parked);
+        assert_eq!(controller.snapshot(key).resumes, 0);
+
+        for _ in 0..128 {
+            controller.record_direct_step(key, 20_000);
+        }
+        assert_eq!(controller.state(), FlashNextCostState::Probe);
+
+        // 1.061x clears the 1.05 resume margin.
+        let resumed = drive_flash_next_decisions(&mut controller, key, 37_700, 2, 8);
+        assert_eq!(resumed, Some(FlashNextCostEvent::ProbeResumed));
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.snapshot(key).resumes, 1);
+        assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+    }
+
+    #[test]
+    fn cost_buckets_do_not_mix() {
+        let small = flash_next_bucket(1_000);
+        let large = flash_next_bucket(12_000);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Auto);
+        drive_flash_next_calibration(&mut controller, small, 20_000, 40_000, 1);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.snapshot(small).estimated_speedup_x1000, 500);
+
+        // The larger band has no evidence of its own, and crossing into it
+        // re-measures instead of inheriting the verdict.
+        let fresh = controller.snapshot(large);
+        assert_eq!(fresh.samples, 0);
+        assert_eq!(fresh.direct_ms, 0);
+        assert_eq!(fresh.round_ms, 0);
+        assert_eq!(fresh.estimated_speedup_x1000, 0);
+        let (route, event) = controller.route(large);
+        assert_eq!(event, Some(FlashNextCostEvent::Recalibrating));
+        assert_eq!(route, FlashNextCostRoute::Direct);
+        assert_eq!(controller.state(), FlashNextCostState::Calibrating);
+
+        // Three losing decisions in the small band...
+        drive_flash_next_decisions(&mut controller, small, 40_000, 1, 3);
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.parks, 0);
+        assert_eq!(controller.snapshot(small).samples, 11);
+
+        // ...must not carry into the large band: it starts its own streak
+        // instead of completing the small band's fourth decision.
+        let (route, event) = controller.route(large);
+        assert_eq!(event, Some(FlashNextCostEvent::Recalibrating));
+        assert_eq!(route, FlashNextCostRoute::Direct);
+        drive_flash_next_calibration(&mut controller, large, 20_000, 40_000, 1);
+        assert_eq!(
+            controller.record_mtp_round(large, 40_000, 1),
+            None,
+            "a park streak must not span evidence bands"
+        );
+        assert_eq!(controller.state(), FlashNextCostState::Active);
+        assert_eq!(controller.snapshot(small).samples, 11);
+        assert_eq!(controller.snapshot(small).estimated_speedup_x1000, 500);
+        assert_eq!(controller.snapshot(large).samples, 9);
+        assert_eq!(controller.snapshot(large).estimated_speedup_x1000, 500);
+
+        // The fourth consecutive loss in this band parks it.
+        assert_eq!(controller.record_mtp_round(large, 40_000, 1), None);
+        assert_eq!(controller.record_mtp_round(large, 40_000, 1), None);
+        assert_eq!(
+            controller.record_mtp_round(large, 40_000, 1),
+            Some(FlashNextCostEvent::Parked)
+        );
+    }
+
+    #[test]
+    fn park_resume_preserves_greedy_tokens() {
+        /// Deterministic greedy continuation of a committed prefix. The token
+        /// depends only on the prefix, so any route that commits the same
+        /// prefix must emit the same tokens.
+        fn greedy(prefix: &[u32], count: usize) -> Vec<u32> {
+            let mut prefix = prefix.to_vec();
+            let mut out = Vec::with_capacity(count);
+            for _ in 0..count {
+                let next = prefix.iter().fold(7_u32, |acc, token| {
+                    acc.wrapping_mul(31).wrapping_add(*token)
+                }) % 4_096;
+                prefix.push(next);
+                out.push(next);
+            }
+            out
+        }
+
+        let key = flash_next_bucket(1_024);
+        let mut baseline = Vec::new();
+        for _ in 0..200 {
+            let chunk = greedy(&baseline, 2);
+            baseline.extend(chunk);
+        }
+
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Auto);
+        let mut committed: Vec<u32> = Vec::new();
+        let mut events = Vec::new();
+        for _ in 0..400 {
+            if committed.len() >= baseline.len() {
+                break;
+            }
+            let state_before = controller.state();
+            let (route, event) = controller.route(key);
+            // Routing is a pre-commit decision: the route call itself never
+            // changes state inside a fixed evidence band.
+            assert_eq!(controller.state(), state_before);
+            if let Some(event) = event {
+                events.push(event);
+            }
+            match route {
+                FlashNextCostRoute::Direct => {
+                    let chunk = greedy(&committed, 1);
+                    committed.extend(chunk);
+                    if let Some(event) = controller.record_direct_step(key, 20_000) {
+                        events.push(event);
+                    }
+                }
+                FlashNextCostRoute::Mtp => {
+                    let chunk = greedy(&committed, 2);
+                    committed.extend(chunk);
+                    // 0.80x: parks after four decisions, so the run crosses
+                    // Calibrating -> Active -> Parked -> Probe -> Parked.
+                    if let Some(event) = controller.record_mtp_round(key, 50_000, 2) {
+                        events.push(event);
+                    }
+                }
+            }
+            let shared = committed.len().min(baseline.len());
+            assert_eq!(&committed[..shared], &baseline[..shared]);
+        }
+        assert!(committed.len() >= baseline.len());
+        assert_eq!(&committed[..baseline.len()], baseline.as_slice());
+        assert!(events.contains(&FlashNextCostEvent::Activated));
+        assert!(events.contains(&FlashNextCostEvent::Parked));
+        assert!(events.contains(&FlashNextCostEvent::ProbeOpened));
+        assert!(events.contains(&FlashNextCostEvent::ProbeFailed));
     }
 }

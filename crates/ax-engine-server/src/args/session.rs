@@ -106,6 +106,20 @@ impl ServerArgs {
         let mlx_mtp_disable_ngram_stacking =
             self.mlx_mtp_disable_ngram_stacking || !self.mlx_mtp_enable_ngram_stacking;
 
+        // The priced memory plan charges per-request hybrid/QSA state once per
+        // live decode sequence, so the session must see the concurrency it is
+        // admitted under. When both the process-wide and per-model caps are
+        // set, the smaller one is the real bound for any single model.
+        let max_concurrent_requests = match (
+            self.resolved_max_concurrent_requests(),
+            self.resolved_max_concurrent_requests_per_model(),
+        ) {
+            (Some(process), Some(per_model)) => Some(process.min(per_model)),
+            (Some(process), None) => Some(process),
+            (None, Some(per_model)) => Some(per_model),
+            (None, None) => None,
+        };
+
         EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             cache_group_id: ax_engine_sdk::CacheGroupId(self.cache_group_id),
             block_size_tokens: self.block_size_tokens,
@@ -134,6 +148,7 @@ impl ServerArgs {
             max_prefill_tokens_per_request_per_step: self.max_prefill_tokens_per_request_per_step,
             max_inflight_prefill_requests: self.max_inflight_prefill_requests,
             prefill_stall_target_ms: self.prefill_stall_target_ms,
+            max_concurrent_requests,
         })
         .map_err(|error| error.to_string())
     }
