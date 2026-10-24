@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AXEngineAppCore
 
 struct ChatView: View {
@@ -9,6 +10,7 @@ struct ChatView: View {
     @State private var clearConfirmation = false
     private var modelID: String { runtime.models.contains(where: { $0.id == chat.selectedModel }) ? chat.selectedModel : runtime.models.first?.id ?? "" }
     private var supportsTemperature: Bool { runtime.models.first(where: { $0.id == modelID })?.capabilities?.temperature == true }
+    private var canSend: Bool { !chat.generating && runtime.ready && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -69,9 +71,21 @@ struct ChatView: View {
             Divider()
             VStack(alignment: .leading, spacing: 10) {
                 TextField("Message your model…", text: $chat.draft, axis: .vertical)
+                    .onSubmit { send() }
+                    .onKeyPress(.return, phases: .down) { key in
+                        // Keep native selection, undo and IME handling. Let
+                        // unmodified Return reach the field's submit action.
+                        guard key.modifiers.contains(.shift),
+                              let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+                              !editor.hasMarkedText() else { return .ignored }
+                        editor.insertNewlineIgnoringFieldEditor(nil)
+                        return .handled
+                    }
                     .lineLimit(2...7).textFieldStyle(.plain).padding(12)
                     .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 10))
                     .disabled(chat.generating)
+                Text("Enter to send · Shift+Enter for a new line")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     if let seconds = chat.firstTokenSeconds { Text(String(format: "First text %.2fs", seconds)).font(.caption).foregroundStyle(.secondary) }
                     if let seconds = chat.elapsedSeconds { Text(String(format: "Elapsed %.1fs", seconds)).font(.caption).foregroundStyle(.secondary) }
@@ -82,7 +96,7 @@ struct ChatView: View {
                     if chat.generating { Button("Stop", systemImage: "stop.fill") { Task { await chat.stop() } } }
                     else { Button("Send", systemImage: "arrow.up") { send() }.buttonStyle(.borderedProminent)
                             .keyboardShortcut(.return, modifiers: .command)
-                            .disabled(chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !runtime.ready) }
+                            .disabled(!canSend) }
                 }
             }.padding(20)
         }
@@ -95,7 +109,7 @@ struct ChatView: View {
         } message: { Text("This removes the saved local conversation.") }
     }
     private func send() {
-        guard let connection = runtime.connection else { return }
+        guard canSend, let connection = runtime.connection else { return }
         chat.send(chat.draft, model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature)
         if chat.generating { chat.draft = "" }
     }
