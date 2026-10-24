@@ -264,3 +264,161 @@ fn sticky_kill_switch_restores_legacy_drop_on_every_block() {
         env_default
     );
 }
+
+/// Drive the measured-cost park branch exactly as the decode loop does.
+///
+/// Order under test: calibrate, park on a losing streak, serve the parked
+/// direct window while buffering every consumed row, open the probe window at
+/// the configured bound, then absorb the buffered rows and resume MTP. The
+/// branch is weight-free, so the routing invariants (no speculative step
+/// while parked, no gap in the row history, resume only from a measured probe)
+/// are checked here; the greedy token identity across a parked run is covered
+/// by the real-pack runner tests.
+#[test]
+fn cost_parked_branch_buffers_direct_steps_then_resumes() {
+    let key = FlashNextCostBucketKey::new(1, 1_024, false);
+    let mut controller = FlashNextMtpCostController::default();
+    controller.reset(
+        true,
+        FlashNextMtpCostConfig {
+            policy: FlashNextCostPolicy::Auto,
+            parked_probe_steps: 8,
+            probe_rounds: 4,
+            ..FlashNextMtpCostConfig::default()
+        },
+    );
+
+    // Calibration: the Auto policy serves its direct window first, then the
+    // measured rounds. Direct 20 ms/token against a 40 ms one-token round is
+    // the 0.50x clear loss.
+    let mut routed_direct = 0u32;
+    while controller.state() == FlashNextCostState::Calibrating {
+        match controller.route(key).0 {
+            FlashNextCostRoute::Direct => {
+                routed_direct += 1;
+                controller.record_direct_step(key, 20_000);
+            }
+            FlashNextCostRoute::Mtp => {
+                controller.record_mtp_round(key, 40_000, 1);
+            }
+        }
+    }
+    assert_eq!(controller.state(), FlashNextCostState::Active);
+    assert_eq!(routed_direct, 4, "the calibration window is direct_samples");
+
+    // Four clear losses park the head.
+    for _ in 0..4 {
+        controller.record_mtp_round(key, 40_000, 1);
+    }
+    assert_eq!(controller.state(), FlashNextCostState::Parked);
+    let (route, _) = controller.route(key);
+    assert_eq!(route, FlashNextCostRoute::Direct);
+    assert_eq!(
+        flash_next_mtp_cost_park_block(
+            route == FlashNextCostRoute::Direct,
+            true,
+            false,
+            false,
+            false,
+            8,
+        ),
+        Some(FlashNextMtpDecodeBlock::CostParked)
+    );
+    // A cursor-independent gate still wins: a non-greedy step decodes direct
+    // through the regular gate, not through the park.
+    assert_eq!(
+        flash_next_mtp_cost_park_block(true, false, false, false, false, 8),
+        None
+    );
+
+    // Parked direct steps: every consumed token's stream row joins the
+    // catch-up buffer and the probe opens exactly at the configured window.
+    let mut buffer = FlashNextCursorPauseBuffer::default();
+    let consumed = [11u32, 12, 13, 14, 15, 16, 17, 18];
+    let mut opened_at = None;
+    for (index, token) in consumed.iter().enumerate() {
+        assert!(
+            buffer.push(*token, row_array(index as f32)),
+            "buffer row {index}"
+        );
+        assert_eq!(
+            controller.route(key).0,
+            FlashNextCostRoute::Direct,
+            "a parked step must never route MTP on parked step {index}"
+        );
+        if controller.record_direct_step(key, 20_000) == Some(FlashNextCostEvent::ProbeOpened) {
+            opened_at = Some(index + 1);
+            break;
+        }
+    }
+    assert_eq!(opened_at, Some(consumed.len()));
+    assert_eq!(controller.state(), FlashNextCostState::Probe);
+    // No gap: the catch-up token list is exactly the consumed tokens in trunk
+    // order, stacked into the `[1, count, width]` tensor `absorb` takes.
+    let (tokens, rows) = buffer.try_absorb_parts().expect("catch-up parts");
+    assert_eq!(tokens, consumed);
+    assert_eq!(rows.shape()[0], 1);
+    assert_eq!(rows.shape()[1] as usize, consumed.len());
+    assert_eq!(rows.shape()[2], 1);
+
+    // The probe window prices only its own rounds; a window that beats the
+    // resume margin brings MTP back.
+    let mut resumed = None;
+    for _ in 0..4 {
+        assert_eq!(
+            controller.route(key).0,
+            FlashNextCostRoute::Mtp,
+            "an open probe window serves MTP"
+        );
+        resumed = controller.record_mtp_round(key, 10_000, 2);
+    }
+    assert_eq!(resumed, Some(FlashNextCostEvent::ProbeResumed));
+    assert_eq!(controller.state(), FlashNextCostState::Active);
+    let snapshot = controller.snapshot(key);
+    assert_eq!(snapshot.resumes, 1);
+    assert_eq!(snapshot.parks, 1);
+    assert_eq!(controller.route(key).0, FlashNextCostRoute::Mtp);
+}
+
+/// A parked window whose probe window still loses must park again rather than
+/// resume: the resume decision needs a strict margin.
+#[test]
+fn cost_parked_probe_that_loses_parks_again_without_losing_the_cursor() {
+    let key = FlashNextCostBucketKey::new(1, 1_024, false);
+    let mut controller = FlashNextMtpCostController::default();
+    controller.reset(
+        true,
+        FlashNextMtpCostConfig {
+            policy: FlashNextCostPolicy::Auto,
+            parked_probe_steps: 8,
+            probe_rounds: 2,
+            ..FlashNextMtpCostConfig::default()
+        },
+    );
+    while controller.state() == FlashNextCostState::Calibrating {
+        match controller.route(key).0 {
+            FlashNextCostRoute::Direct => {
+                controller.record_direct_step(key, 20_000);
+            }
+            FlashNextCostRoute::Mtp => {
+                controller.record_mtp_round(key, 40_000, 1);
+            }
+        }
+    }
+    for _ in 0..4 {
+        controller.record_mtp_round(key, 40_000, 1);
+    }
+    assert_eq!(controller.state(), FlashNextCostState::Parked);
+    for _ in 0..8 {
+        controller.record_direct_step(key, 20_000);
+    }
+    assert_eq!(controller.state(), FlashNextCostState::Probe);
+    // Still 0.50x in the window: it fails and re-parks at the same step.
+    let mut failed = None;
+    for _ in 0..2 {
+        failed = controller.record_mtp_round(key, 40_000, 1);
+    }
+    assert_eq!(failed, Some(FlashNextCostEvent::ProbeFailed));
+    assert_eq!(controller.state(), FlashNextCostState::Parked);
+    assert_eq!(controller.snapshot(key).resumes, 0);
+}

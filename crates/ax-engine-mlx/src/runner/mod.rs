@@ -249,6 +249,14 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTED_BYTES_KIB: &str =
     "ax_mlx_prefix_cache_demoted_bytes_kib";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DEMOTION_SKIPS: &str =
     "ax_mlx_prefix_cache_demotion_skips";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_SEMANTIC_CUT_SNAPSHOTS: &str =
+    "ax_mlx_prefix_cache_semantic_cut_snapshots";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_SEMANTIC_CUT: &str =
+    "ax_mlx_prefix_cache_restore_value_semantic_cut";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_PRICED_RESTORE: &str =
+    "ax_mlx_prefix_cache_restore_value_priced_restore";
+const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_RAM_BASELINE: &str =
+    "ax_mlx_prefix_cache_restore_value_ram_baseline";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS: &str = "ax_mlx_prefix_cache_disk_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cache_disk_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
@@ -768,6 +776,9 @@ struct FlashNextMtpTelemetry {
     cost_resumes: u32,
     /// Times the `required` policy reported `would_park` without parking.
     cost_would_parks: u32,
+    /// Cost-parked steps that found a misaligned cursor with no catch-up
+    /// buffer, so the park could not keep it and the step decoded direct.
+    cost_parked_misaligned: u32,
     /// Decode steps served direct while the candidate was requested.
     direct_fallback_steps: u32,
     /// `direct_fallback_steps` split by the block or error reason that forced
@@ -806,6 +817,7 @@ impl Default for FlashNextMtpTelemetry {
             cost_parks: 0,
             cost_resumes: 0,
             cost_would_parks: 0,
+            cost_parked_misaligned: 0,
             direct_fallback_steps: 0,
             direct_fallback_by_reason: [0; FLASH_NEXT_MTP_FALLBACK_REASON_COUNT],
             step_errors: 0,
@@ -846,6 +858,9 @@ impl FlashNextMtpTelemetry {
         self.cost_parks = self.cost_parks.saturating_add(other.cost_parks);
         self.cost_resumes = self.cost_resumes.saturating_add(other.cost_resumes);
         self.cost_would_parks = self.cost_would_parks.saturating_add(other.cost_would_parks);
+        self.cost_parked_misaligned = self
+            .cost_parked_misaligned
+            .saturating_add(other.cost_parked_misaligned);
         self.direct_fallback_steps = self
             .direct_fallback_steps
             .saturating_add(other.direct_fallback_steps);
@@ -909,6 +924,10 @@ impl FlashNextMtpTelemetry {
             (
                 "ax_mlx_flash_next_mtp_cost_would_parks",
                 self.cost_would_parks,
+            ),
+            (
+                "ax_mlx_flash_next_mtp_cost_parked_misaligned",
+                self.cost_parked_misaligned,
             ),
             (
                 "ax_mlx_flash_next_mtp_direct_fallback_steps",
@@ -7514,7 +7533,7 @@ impl MlxRunner {
                         {
                             continue;
                         }
-                        prefix_cache.merge_from(self.store_at_cut(
+                        let stored = self.store_at_cut(
                             model_id,
                             block_size_tokens,
                             &state,
@@ -7522,7 +7541,12 @@ impl MlxRunner {
                             &cut_cache,
                             u64::from(cold_prefill_us),
                             media_key,
-                        ));
+                        );
+                        if stored.stores > 0 {
+                            prefix_cache.semantic_cut_snapshots =
+                                prefix_cache.semantic_cut_snapshots.saturating_add(1);
+                        }
+                        prefix_cache.merge_from(stored);
                     }
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
                     // Record pure prefill wall time before initialize_generation_state.
@@ -8556,6 +8580,15 @@ impl MlxRunner {
         })
         .flatten();
         let planned_cut = priced_tokens.is_some_and(|tokens| cut_plan.cuts.contains(&tokens.len()));
+        if crate::fastpath::prefix_restore_value_enabled()
+            || crate::fastpath::prefix_semantic_cuts_enabled()
+        {
+            telemetry.record_restore_value_decision(match priced_tokens {
+                Some(_) if planned_cut => RestoreValueDecision::SemanticCut,
+                Some(_) => RestoreValueDecision::PricedRestore,
+                None => RestoreValueDecision::RamBaseline,
+            });
+        }
         let probed_tokens = match priced_tokens {
             Some(tokens) => tokens.to_vec(),
             None => Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item),
@@ -10227,6 +10260,32 @@ impl MlxRunner {
                     self.note_flash_next_cost_event(state, cost_key, event);
                 }
                 return Some(tokens);
+            } else {
+                // The park wants a direct step, but the cursor is misaligned
+                // with the trunk and no catch-up buffer exists. The rows
+                // between the cursor boundary and the trunk are gone, so the
+                // cursor can never catch up: fail closed, but never silently.
+                // This is a routing decision with its own counter: the `None`
+                // return hands the step to the caller's generic direct route.
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    cost_state = state.mtp_cost_depth.flash_next_cost().state().label(),
+                    cache_seq_len = state.cache.seq_len(),
+                    "Flash Next cost-parked step found a misaligned cursor and no pause buffer; keeping direct decode and dropping the cursor"
+                );
+                let telemetry = &mut state.flash_next_mtp.telemetry;
+                telemetry.cost_parked_misaligned =
+                    telemetry.cost_parked_misaligned.saturating_add(1);
+                self.record_flash_next_mtp_direct_fallback(
+                    state,
+                    FlashNextMtpFallbackReason::CursorUnavailable,
+                );
+                state.flash_next_mtp.drop_cursor();
+                let event = state.mtp_cost_depth.flash_next_cost_mut().disarm();
+                if let Some(event) = event {
+                    self.note_flash_next_cost_event(state, cost_key, event);
+                }
+                return None;
             }
         }
         let mut block = flash_next_mtp_decode_block(
@@ -10510,6 +10569,7 @@ impl MlxRunner {
             parks = snapshot.parks,
             resumes = snapshot.resumes,
             would_parks = snapshot.would_parks,
+            would_park_known = snapshot.would_park_known,
             "Flash Next MTP cost transition"
         );
     }

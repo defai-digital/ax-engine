@@ -788,9 +788,13 @@ pub(crate) fn token_starts_for_byte_starts(
 ) -> Vec<u32> {
     let mut out = Vec::new();
     for start in assistant_byte_starts {
+        // The token that consumes the first byte of the turn: its end is past
+        // the offset. A zero-width token sitting exactly on the boundary does
+        // not consume that byte (special tokens carry `(n, n)` offsets), so it
+        // must not be selected as the cut.
         let index = token_offsets
             .iter()
-            .position(|(token_start, token_end)| *token_end > *start || token_start >= start);
+            .position(|(_, token_end)| *token_end > *start);
         if let Some(index) = index {
             let index = u32::try_from(index).unwrap_or(u32::MAX);
             if out.last() != Some(&index) {
@@ -1889,6 +1893,55 @@ mod tests {
                 .map(|start| (*start / 2) as u32)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn assistant_offsets_skip_zero_width_tokens_on_the_boundary() {
+        // A special token with a zero-width offset sits exactly on the turn
+        // start. It does not consume the turn's first byte, so the cut must be
+        // the following token.
+        let token_offsets = vec![(0usize, 4usize), (4, 4), (4, 9), (9, 12)];
+        let cuts = token_starts_for_byte_starts(&token_offsets, &[4]);
+        assert_eq!(cuts, vec![2]);
+        // The first turn starts at byte 0, which the first token covers.
+        assert_eq!(token_starts_for_byte_starts(&token_offsets, &[0]), vec![0]);
+    }
+
+    #[test]
+    fn two_turn_qwen_chat_reports_a_semantic_cut_after_a_long_first_turn() {
+        // The WP07 shape: a ~300-byte first user turn, an assistant reply and a
+        // second user turn. The assistant turn and the generation prompt are
+        // both cut candidates, and the first one must sit past the 256-token
+        // minimum spacing the snapshot planner applies.
+        let long_user = "word ".repeat(60);
+        let messages = vec![
+            ("user".to_string(), long_user.clone()),
+            ("assistant".to_string(), "ack".to_string()),
+            ("user".to_string(), "and now?".to_string()),
+        ];
+        let rendered = render_prompt_with_template_and_framing_offsets(
+            "Qwen3.8-27B-4bit",
+            ChatPromptTemplate::QwenChatMl,
+            &messages,
+            false,
+            None,
+        )
+        .expect("two-turn qwen chat renders");
+        assert_eq!(rendered.assistant_byte_starts.len(), 2);
+        // One token per byte stands in for the full tokenization: the point is
+        // that the offsets index the rendered prompt, not per-message encodes.
+        let token_offsets = (0..rendered.text.len())
+            .map(|index| (index, index + 1))
+            .collect::<Vec<_>>();
+        let cuts = token_starts_for_byte_starts(&token_offsets, &rendered.assistant_byte_starts);
+        assert_eq!(cuts.len(), 2, "both assistant turns must map");
+        assert!(
+            cuts[0] >= 256,
+            "the first assistant turn starts well past the 256-token cut spacing, got {}",
+            cuts[0]
+        );
+        assert!((cuts[1] as usize) < rendered.text.len());
+        assert!(cuts[0] < cuts[1]);
     }
 
     /// ADR-025 behavior-preservation gate: for every registered family, the

@@ -552,6 +552,33 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
                 value,
             );
         }
+        append_metric(
+            &mut body,
+            "ax_engine_mlx_semantic_cut_snapshots_total",
+            "In-place MLX prefix snapshots stored at a semantic (assistant-turn) cut (AX_MLX_PREFIX_SEMANTIC_CUTS).",
+            "counter",
+            process.mlx_prefix_cache_semantic_cut_snapshots_total,
+        );
+        append_labeled_counter(
+            &mut body,
+            "ax_engine_mlx_prefix_restore_value_decisions_total",
+            "Value-priced MLX prefix restore decisions by outcome.",
+            "decision",
+            &[
+                (
+                    "semantic_cut",
+                    process.mlx_prefix_cache_restore_value_decisions_total[0],
+                ),
+                (
+                    "priced_restore",
+                    process.mlx_prefix_cache_restore_value_decisions_total[1],
+                ),
+                (
+                    "ram_baseline",
+                    process.mlx_prefix_cache_restore_value_decisions_total[2],
+                ),
+            ],
+        );
         if emit_gauges {
             for (name, help, value) in [
                 (
@@ -1278,6 +1305,34 @@ fn append_gauge_f64(body: &mut String, name: &str, help: &str, value: f64) {
 fn append_optional_gauge(body: &mut String, name: &str, help: &str, value: Option<u64>) {
     if let Some(value) = value {
         append_gauge(body, name, help, value);
+    }
+}
+
+/// Append one counter family whose samples all carry the same single label.
+fn append_labeled_counter(
+    body: &mut String,
+    name: &str,
+    help: &str,
+    label: &str,
+    samples: &[(&str, u64)],
+) {
+    body.push_str("# HELP ");
+    body.push_str(name);
+    body.push(' ');
+    body.push_str(help);
+    body.push('\n');
+    body.push_str("# TYPE ");
+    body.push_str(name);
+    body.push_str(" counter\n");
+    for (label_value, count) in samples {
+        body.push_str(name);
+        body.push('{');
+        body.push_str(label);
+        body.push_str("=\"");
+        body.push_str(label_value);
+        body.push_str("\"} ");
+        body.push_str(&count.to_string());
+        body.push('\n');
     }
 }
 

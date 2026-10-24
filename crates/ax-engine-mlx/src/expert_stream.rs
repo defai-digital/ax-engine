@@ -20,7 +20,7 @@ pub(crate) use selected::take_selected_expert_read_stats;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 
 use ax_engine_core::{NativeTensorRole, NativeTensorSpec};
 use serde::{Deserialize, Serialize};
@@ -652,11 +652,15 @@ pub(crate) fn resolved_live_sequences(configured: Option<u32>, batched_cap: usiz
 
 /// KV-cache, hybrid-state, and prefill-scratch bytes this session charges.
 ///
-/// Conservative bounds, not allocator limits: the KV term is the pool-wide
-/// worst case from the manifest geometry at the admitted pool, the state term
-/// is one request's gated-delta-net state plus its QSA index buffers multiplied
-/// by the number of live sequences the session can serve, and the scratch term
-/// bounds one prefill chunk's activations.
+/// Conservative bounds, not allocator limits. The KV term is the pool-wide
+/// worst case from the manifest geometry at the admitted pool. The state term
+/// splits by ownership: gated-delta-net conv/recurrent state is per live
+/// sequence (each live row owns one), while per-token state (the QSA index
+/// keys and their pooled blocks) lives inside the shared KV pool and can never
+/// exceed it, so it is charged once at the pool token bound. Charging the
+/// index per sequence at full context double-counts the pool by the
+/// concurrency and priced a resident pack out of the default eight-row
+/// cohort. The scratch term bounds one prefill chunk's activations.
 ///
 /// `max_live_sequences` is the served concurrency (`MemoryPlan::state_bytes`
 /// means exactly that). It is the runner's live-row bound, never zero: one
@@ -672,9 +676,10 @@ pub(crate) fn estimate_auto_residency_costs(
             ax_engine_core::memory_budget::estimated_kv_pool_bytes(&geometry, budget.kv_pool_tokens)
         })
         .unwrap_or(UNKNOWN_KV_BYTES);
-    let per_request_state = hybrid_state_bytes(manifest)
-        .saturating_add(qsa_index_state_bytes(manifest, budget.kv_pool_tokens));
-    let state_bytes = per_request_state.saturating_mul(u64::from(max_live_sequences.max(1)));
+    let sequence_state =
+        hybrid_state_bytes(manifest).saturating_mul(u64::from(max_live_sequences.max(1)));
+    let pool_state = qsa_index_state_bytes(manifest, budget.kv_pool_tokens);
+    let state_bytes = sequence_state.saturating_add(pool_state);
     let prefill_scratch_bytes = (budget.prefill_chunk as u64)
         .saturating_mul(u64::from(manifest.hidden_size))
         .saturating_mul(ACTIVATION_BYTES)
@@ -723,10 +728,14 @@ fn hybrid_state_bytes(manifest: &ax_engine_core::NativeModelManifest) -> u64 {
 /// QSA per-request index state for the Flash Next (`qwen4_exp`) trunk: the raw
 /// index-key history plus the mean-pooled block keys per layer.
 ///
-/// The index key cache is request-owned (`QsaIndexKeyCache`), so it is charged
-/// per live sequence like the GDN state. Every layer is charged: the indexer is
-/// built per layer, and a test-only subset would under-price the decode
-/// working set that the plan exists to prove.
+/// The index describes prompt positions, so it is bounded by the shared KV
+/// pool, not by one request's context: the pool admits at most
+/// `kv_pool_tokens` positions across every live sequence. It is therefore
+/// charged once at the pool size in
+/// [`estimate_auto_residency_costs`], never multiplied by the concurrency.
+/// Every layer is charged: the indexer is built per layer, and a test-only
+/// subset would under-price the decode working set that the plan exists to
+/// prove.
 fn qsa_index_state_bytes(manifest: &ax_engine_core::NativeModelManifest, pool_tokens: u64) -> u64 {
     let config = &manifest.qwen4_exp;
     let (Some(head_dim), Some(compress_ratio)) =
@@ -1126,18 +1135,33 @@ fn enforce_layer_stack_floor(
 /// Tell the operator once per process that Auto admission had no priced inputs
 /// and fell back to the legacy headroom formula.
 fn note_priced_memory_skipped() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
+    static FIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if note_priced_memory_skipped_once(&FIRED) {
         PRICED_MEMORY_SKIPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(
             target: "ax_engine_mlx::expert_stream",
             "priced memory inputs are not installed for this session; Auto expert-stream admission used the legacy headroom formula"
         );
-    });
+    }
+}
+
+/// Claim the once-per-process note. Returns `true` only for the caller that
+/// won the latch, so the note's idempotence is testable on its own state
+/// instead of on the process-wide counter another test may already have
+/// advanced.
+fn note_priced_memory_skipped_once(fired: &std::sync::atomic::AtomicBool) -> bool {
+    fired
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok()
 }
 
 /// Process-wide count of the once-per-process skipped-priced-memory note.
-/// `Once` bounds it at one; exposed so the note's idempotence is testable
+/// The latch bounds it at one; exposed so the note's idempotence is testable
 /// without capturing tracing output.
 static PRICED_MEMORY_SKIPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -3555,10 +3579,11 @@ mod tests {
         let budget = session_budget(1_000);
         let (_, one, _) = estimate_auto_residency_costs(&manifest, budget, 1);
         let (_, eight, _) = estimate_auto_residency_costs(&manifest, budget, 8);
-        // `MemoryPlan::state_bytes` means the served concurrency, so eight live
-        // sequences cost eight requests' state, not one.
+        // The gated-delta-net state is per live row; the QSA index is priced
+        // once at the pool bound because the pool already caps every position
+        // it can describe.
         assert_eq!(one, gdn + qsa);
-        assert_eq!(eight, (gdn + qsa) * 8);
+        assert_eq!(eight, gdn * 8 + qsa);
 
         // A zero concurrency still charges the one request that exists.
         let (_, zero, _) = estimate_auto_residency_costs(&manifest, budget, 0);
@@ -3710,28 +3735,37 @@ mod tests {
         const HOST_RAM: u64 = 128 * GIB;
         // 4096 blocks x 16 tokens: the configured pool the log line reports.
         const POOL_TOKENS: u64 = 4_096 * 16;
+        // The default server passes no `--max-concurrent-requests`, so the plan
+        // resolves the runner's cohort cap (`resolved_live_sequences(None, 8)`).
+        const NO_LIMIT_LIVE_SEQUENCES: u32 = 8;
         let mut planned = 0usize;
         for pack in PACKS {
-            let Some(plan) = real_pack_plan(std::path::Path::new(pack), HOST_RAM, POOL_TOKENS, 1)
-            else {
-                eprintln!("skipping {pack}: local pack metadata not readable");
-                continue;
-            };
-            planned += 1;
-            println!("{pack}: {}", plan.log_line());
-            assert!(
-                plan.decide().is_resident(),
-                "one live sequence must keep the pack resident: {}",
-                plan.log_line()
-            );
-            // The 128 GiB host ceiling is `RAM - max(8 GiB, RAM/10)` =
-            // 115.20 GiB; the priced working set must stay under it.
-            let ceiling = plan.ceiling_bytes().expect("128 GiB host has a ceiling");
-            assert!(
-                plan.resident_working_set_bytes() <= ceiling,
-                "the working set must stay under the 115.20 GiB ceiling: {}",
-                plan.log_line()
-            );
+            for live_sequences in [1u32, NO_LIMIT_LIVE_SEQUENCES] {
+                let Some(plan) = real_pack_plan(
+                    std::path::Path::new(pack),
+                    HOST_RAM,
+                    POOL_TOKENS,
+                    live_sequences,
+                ) else {
+                    eprintln!("skipping {pack}: local pack metadata not readable");
+                    break;
+                };
+                planned += 1;
+                println!("{pack} ({live_sequences} live): {}", plan.log_line());
+                assert!(
+                    plan.decide().is_resident(),
+                    "{live_sequences} live sequences must keep the pack resident: {}",
+                    plan.log_line()
+                );
+                // The 128 GiB host ceiling is `RAM - max(8 GiB, RAM/10)` =
+                // 115.20 GiB; the priced working set must stay under it.
+                let ceiling = plan.ceiling_bytes().expect("128 GiB host has a ceiling");
+                assert!(
+                    plan.resident_working_set_bytes() <= ceiling,
+                    "the working set must stay under the 115.20 GiB ceiling: {}",
+                    plan.log_line()
+                );
+            }
         }
         if planned == 0 {
             eprintln!("skipping: no Flash Next pack metadata is present on this host");
@@ -3739,25 +3773,31 @@ mod tests {
     }
 
     #[test]
-    fn real_flash_next_6bit_streams_for_eight_full_context_sequences() {
+    fn real_flash_next_6bit_streams_when_the_host_cannot_hold_the_experts() {
         const PACK: &str = "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP";
-        const HOST_RAM: u64 = 128 * GIB;
-        // Eight live sequences each at the full 65,536-token pool cannot fit
-        // the per-request QSA state plus the expert set; the plan is allowed
-        // to stream here.
+        // 96 GiB cannot hold the 6-bit pack's ~91 GiB expert set next to its
+        // ~23 GiB fixed part, so the plan must page experts. The 128 GiB case
+        // at the same pool and cohort is resident (see the test above): the
+        // corrected per-token pricing is what moved it.
+        const HOST_RAM: u64 = 96 * GIB;
         const POOL_TOKENS: u64 = 4_096 * 16;
-        let Some(plan) = real_pack_plan(std::path::Path::new(PACK), HOST_RAM, POOL_TOKENS, 8)
-        else {
+        const LIVE_SEQUENCES: u32 = 8;
+        let Some(plan) = real_pack_plan(
+            std::path::Path::new(PACK),
+            HOST_RAM,
+            POOL_TOKENS,
+            LIVE_SEQUENCES,
+        ) else {
             eprintln!("skipping {PACK}: local pack metadata not readable");
             return;
         };
-        println!("{PACK} (8 live): {}", plan.log_line());
+        println!("{PACK} (8 live, 96 GiB): {}", plan.log_line());
         assert!(
             matches!(
                 plan.decide(),
                 ax_engine_core::memory_budget::MemoryPlanDecision::Stream { .. }
             ),
-            "eight full-context sequences must be allowed to stream: {}",
+            "a host that cannot hold the expert set must stream: {}",
             plan.log_line()
         );
     }
@@ -3868,9 +3908,31 @@ mod tests {
 
     #[test]
     fn auto_without_priced_inputs_uses_the_legacy_formula_and_notes_it_once() {
+        // The latch is exercised on its own state: an earlier test in this
+        // process may already have fired the process-wide note, which would
+        // make a bare counter assertion pass without testing anything.
+        let fired = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            note_priced_memory_skipped_once(&fired),
+            "the first caller must win the latch"
+        );
+        assert!(
+            !note_priced_memory_skipped_once(&fired),
+            "the latch must refuse every later caller"
+        );
+        assert!(!note_priced_memory_skipped_once(&fired));
+
+        // Re-calling the process-wide note never adds more than the one claim
+        // it is allowed, whatever the rest of the test binary did.
+        let before = priced_memory_skip_count();
+        note_priced_memory_skipped();
+        note_priced_memory_skipped();
+        let delta = priced_memory_skip_count().saturating_sub(before);
+        assert!(delta <= 1, "the note fired {delta} times in two calls");
+
         set_auto_residency_context(None);
         // 10 GiB resident + 40 GiB experts: the legacy formula pages this
-        // (50 GiB + 48 GiB headroom > 64 GiB), and the note fires once.
+        // (50 GiB + 48 GiB headroom > 64 GiB).
         let manifest = priced_manifest(40 * GIB, 10 * GIB);
         assert!(
             resolve_expert_stream(
@@ -3881,13 +3943,6 @@ mod tests {
             )
             .expect("legacy admission")
             .is_some()
-        );
-        note_priced_memory_skipped();
-        note_priced_memory_skipped();
-        assert_eq!(
-            priced_memory_skip_count(),
-            1,
-            "the skipped-priced-memory note must be logged at most once per process"
         );
     }
 }

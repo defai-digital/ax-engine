@@ -209,6 +209,19 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_mlx_prefill_forward_wall_us_total 700\n"));
     assert!(body.contains("ax_engine_mlx_prefill_prefix_cache_wall_us_total 200\n"));
     assert!(body.contains("ax_engine_mlx_prefill_generation_state_wall_us_total 100\n"));
+    // WP07 semantic cuts and value-priced restores are observable so an
+    // operator can tell "the switch is on but nothing fired" from "the switch
+    // is off": the snapshot counter is unlabeled, the decisions are labeled.
+    assert!(body.contains("ax_engine_mlx_semantic_cut_snapshots_total 0\n"));
+    assert!(body.contains(
+        "ax_engine_mlx_prefix_restore_value_decisions_total{decision=\"semantic_cut\"} 0\n"
+    ));
+    assert!(body.contains(
+        "ax_engine_mlx_prefix_restore_value_decisions_total{decision=\"priced_restore\"} 0\n"
+    ));
+    assert!(body.contains(
+        "ax_engine_mlx_prefix_restore_value_decisions_total{decision=\"ram_baseline\"} 0\n"
+    ));
     // 0/1 policy flags are exported per model only; a cross-model sum would
     // read as a model count rather than a flag.
     assert!(body.contains("ax_engine_mlx_mtp_model_policy_active{model=\"qwen3\"} 0\n"));

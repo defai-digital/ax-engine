@@ -402,8 +402,8 @@ pub struct MemoryPlan {
     pub ngram_table_bytes: u64,
     /// KV cache bytes for the configured context at the admitted pool.
     pub kv_bytes: u64,
-    /// GDN/QSA/PLE per-request state (conv rings, recurrent state, index and
-    /// pooled buffers) for the served concurrency.
+    /// GDN/QSA/PLE state: conv rings and recurrent state per live sequence
+    /// plus the index and pooled buffers once at the shared pool bound.
     pub state_bytes: u64,
     /// Bound on prefill activations for one chunk.
     pub prefill_scratch_bytes: u64,

@@ -32,6 +32,15 @@ use std::time::Instant;
 /// (`AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP_DEPTH`).
 pub(super) const MTP_COST_MAX_DEPTH: usize = 7;
 
+/// Largest parked direct window that can still be caught up.
+///
+/// A parked Flash Next step buffers one stream row per consumed token, and the
+/// runner's catch-up buffer holds `FLASH_NEXT_CURSOR_PAUSE_ROW_CAP` rows. A
+/// longer parked window would overflow that buffer, drop the cursor, and make
+/// the probe/resume window unreachable, so the configured
+/// `AX_FLASH_NEXT_MTP_COST_PARKED_PROBE_STEPS` is capped here.
+pub(super) const PARKED_PROBE_STEP_CAP: u32 = super::FLASH_NEXT_CURSOR_PAUSE_ROW_CAP as u32;
+
 /// Weight a cycle-wall sample above twice the current EMA moves at.
 const SPIKE_DAMPING_WEIGHT: f32 = 0.25;
 
@@ -1169,7 +1178,7 @@ pub(super) fn flash_next_mtp_cost_config_from_env() -> FlashNextMtpCostConfig {
                     .as_deref(),
                 defaults.parked_probe_steps,
                 8,
-                4_096,
+                PARKED_PROBE_STEP_CAP,
             ),
             probe_rounds: parse_u32(
                 std::env::var("AX_FLASH_NEXT_MTP_COST_PROBE_ROUNDS")
@@ -1205,6 +1214,10 @@ pub(super) struct FlashNextMtpCostSnapshot {
     pub(super) parks: u32,
     pub(super) resumes: u32,
     pub(super) would_parks: u32,
+    /// Whether `would_parks` is a verdict at all. A `required` session never
+    /// serves the calibration direct window, so unless direct evidence arrived
+    /// from elsewhere its park verdict is unknown rather than "no".
+    pub(super) would_park_known: bool,
 }
 
 /// Request-local Flash Next cost machine. `Copy` so the async committed fold
@@ -1279,7 +1292,10 @@ impl FlashNextMtpCostController {
     /// Route for the next step, plus the transition the band change implies.
     ///
     /// The direct window of a fresh band is served before any MTP round so the
-    /// baseline is measured on the same request, never inferred.
+    /// baseline is measured on the same request, never inferred. A `required`
+    /// session is the exception: it must serve MTP on every step, so it never
+    /// takes that window and can only price `would_park` from direct evidence
+    /// that arrived some other way (see [`Self::snapshot`]).
     pub(super) fn route(
         &mut self,
         key: FlashNextCostBucketKey,
@@ -1290,7 +1306,11 @@ impl FlashNextMtpCostController {
         } else {
             match self.state {
                 FlashNextCostState::Calibrating => {
-                    if self.buckets[key.index()].direct_steps < self.config.direct_samples {
+                    if self.config.policy == FlashNextCostPolicy::Required {
+                        // The force-MTP contract binds evidence to a fixed
+                        // mechanism: a `required` step never decodes direct.
+                        FlashNextCostRoute::Mtp
+                    } else if self.buckets[key.index()].direct_steps < self.config.direct_samples {
                         FlashNextCostRoute::Direct
                     } else {
                         FlashNextCostRoute::Mtp
@@ -1322,7 +1342,13 @@ impl FlashNextMtpCostController {
         match self.state {
             FlashNextCostState::Parked => {
                 self.parked_steps = self.parked_steps.saturating_add(1);
-                if self.parked_steps >= self.config.parked_probe_steps {
+                // Never park past the catch-up buffer: a longer window would
+                // overflow it, drop the cursor, and make resume unreachable.
+                let probe_after = self
+                    .config
+                    .parked_probe_steps
+                    .clamp(1, PARKED_PROBE_STEP_CAP);
+                if self.parked_steps >= probe_after {
                     self.state = FlashNextCostState::Probe;
                     self.probe_rounds = 0;
                     self.park_mark = self.buckets[index];
@@ -1400,6 +1426,7 @@ impl FlashNextMtpCostController {
             parks: self.parks,
             resumes: self.resumes,
             would_parks: self.would_parks,
+            would_park_known: bucket.speedup().is_some(),
         }
     }
 
@@ -2216,6 +2243,40 @@ mod tests {
         );
     }
 
+    /// Drive a `required` session to `Active` without ever routing direct.
+    ///
+    /// A required session never serves the calibration direct window, so its
+    /// baseline can only come from direct evidence measured elsewhere. This
+    /// records exactly that: direct samples as they would arrive from another
+    /// route, then the MTP rounds. The routed step must be MTP throughout.
+    fn drive_required_calibration(
+        controller: &mut FlashNextMtpCostController,
+        key: FlashNextCostBucketKey,
+        direct_us: u32,
+        round_us: u32,
+        tokens: u32,
+    ) {
+        for step in 0..64usize {
+            assert_eq!(
+                controller.route(key).0,
+                FlashNextCostRoute::Mtp,
+                "required must never route direct"
+            );
+            if controller.state() != FlashNextCostState::Calibrating {
+                return;
+            }
+            if step < controller.config.direct_samples as usize {
+                controller.record_direct_step(key, direct_us);
+            }
+            controller.record_mtp_round(key, round_us, tokens);
+        }
+        assert_eq!(
+            controller.state(),
+            FlashNextCostState::Active,
+            "calibration never completed"
+        );
+    }
+
     fn drive_flash_next_decisions(
         controller: &mut FlashNextMtpCostController,
         key: FlashNextCostBucketKey,
@@ -2340,7 +2401,7 @@ mod tests {
         // 0.50x: four clear losses would park an `auto` session.
         let mut controller = FlashNextMtpCostController::default();
         controller.reset(true, config);
-        drive_flash_next_calibration(&mut controller, key, 20_000, 40_000, 1);
+        drive_required_calibration(&mut controller, key, 20_000, 40_000, 1);
         assert_eq!(controller.state(), FlashNextCostState::Active);
         for step in 1..=32 {
             let event = controller.record_mtp_round(key, 40_000, 1);
@@ -2359,7 +2420,7 @@ mod tests {
         // 0.92x: sixteen soft losses would park an `auto` session.
         let mut controller = FlashNextMtpCostController::default();
         controller.reset(true, config);
-        drive_flash_next_calibration(&mut controller, key, 23_000, 50_000, 2);
+        drive_required_calibration(&mut controller, key, 23_000, 50_000, 2);
         assert_eq!(controller.state(), FlashNextCostState::Active);
         assert_eq!(controller.snapshot(key).estimated_speedup_x1000, 920);
         for step in 1..=64 {
@@ -2381,7 +2442,7 @@ mod tests {
     fn required_reports_without_parking() {
         let key = flash_next_bucket(1_024);
         let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Required);
-        drive_flash_next_calibration(&mut controller, key, 20_000, 40_000, 1);
+        drive_required_calibration(&mut controller, key, 20_000, 40_000, 1);
         assert_eq!(controller.state(), FlashNextCostState::Active);
 
         let event = drive_flash_next_decisions(&mut controller, key, 40_000, 1, 8);
@@ -2399,6 +2460,70 @@ mod tests {
             controller.record_mtp_round(key, 40_000, 1);
             assert_eq!(controller.state(), FlashNextCostState::Active);
         }
+    }
+
+    #[test]
+    fn required_never_serves_the_calibration_direct_window() {
+        // Without any outside direct evidence a `required` session has no
+        // baseline, so its park verdict is unknown, not "no". It must still
+        // serve MTP on every step, including the ones an `auto` session would
+        // have spent measuring direct decode.
+        let key = flash_next_bucket(1_024);
+        let mut controller = flash_next_cost_controller(FlashNextCostPolicy::Required);
+        for step in 1..=32 {
+            assert_eq!(
+                controller.route(key).0,
+                FlashNextCostRoute::Mtp,
+                "required routed direct on calibration step {step}"
+            );
+            controller.record_mtp_round(key, 40_000, 1);
+        }
+        assert_eq!(controller.state(), FlashNextCostState::Calibrating);
+        let snapshot = controller.snapshot(key);
+        assert_eq!(snapshot.would_parks, 0);
+        assert!(
+            !snapshot.would_park_known,
+            "a required session with no direct evidence must report would_park as unknown"
+        );
+
+        // An `auto` session at the same point is measuring direct decode.
+        let mut auto = flash_next_cost_controller(FlashNextCostPolicy::Auto);
+        assert_eq!(auto.route(key).0, FlashNextCostRoute::Direct);
+    }
+
+    #[test]
+    fn parked_probe_window_is_capped_to_the_catch_up_buffer() {
+        // A configured window longer than the runner's pause buffer would
+        // overflow it and drop the cursor, so resume could never be reached.
+        let key = flash_next_bucket(1_024);
+        let mut controller = FlashNextMtpCostController::default();
+        controller.reset(
+            true,
+            FlashNextMtpCostConfig {
+                parked_probe_steps: 4_096,
+                ..flash_next_cost_config()
+            },
+        );
+        drive_flash_next_calibration(&mut controller, key, 20_000, 40_000, 1);
+        for _ in 0..4 {
+            controller.record_mtp_round(key, 40_000, 1);
+        }
+        assert_eq!(controller.state(), FlashNextCostState::Parked);
+
+        let mut opened_at = None;
+        for step in 1..=PARKED_PROBE_STEP_CAP {
+            let event = controller.record_direct_step(key, 20_000);
+            if event == Some(FlashNextCostEvent::ProbeOpened) {
+                opened_at = Some(step);
+                break;
+            }
+        }
+        assert_eq!(
+            opened_at,
+            Some(PARKED_PROBE_STEP_CAP),
+            "the probe window must open at the catch-up buffer cap, not the configured value"
+        );
+        assert_eq!(controller.state(), FlashNextCostState::Probe);
     }
 
     #[test]
