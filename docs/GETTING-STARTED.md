@@ -284,7 +284,7 @@ Without `uv` or Homebrew, use the official Python macOS installer:
 python3.13 -m venv "$HOME/.venvs/ax-engine"
 source "$HOME/.venvs/ax-engine/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=7.8.0,<8"
+python -m pip install --upgrade "ax-engine[download]>=7.9.0,<8"
 ax-engine doctor
 ```
 
@@ -301,7 +301,7 @@ Python version instead:
 ```bash
 uv venv --python 3.12 .venv
 source .venv/bin/activate
-uv pip install --upgrade "ax-engine[download]>=7.8.0,<8"
+uv pip install --upgrade "ax-engine[download]>=7.9.0,<8"
 python -c 'import importlib.metadata; print(importlib.metadata.version("ax-engine"))'
 which -a ax-engine
 ax-engine doctor
@@ -344,7 +344,7 @@ Common failures and their fixes:
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `No matching distribution found for ax-engine` | Python older than 3.12 (macOS ships 3.9), or macOS older than 26 — the wheel is tagged `macosx_26_0_arm64` | Check `python --version` and `sw_vers -productVersion`; recreate the environment with Python 3.13 below |
-| `ResolutionImpossible` mentioning `mlx` | Python 3.15 (or another version MLX has no wheel for) with the `download` extra | Use Python 3.12–3.14, or install `"ax-engine>=7.8.0,<8"` and `huggingface-hub` without the extra |
+| `ResolutionImpossible` mentioning `mlx` | Python 3.15 (or another version MLX has no wheel for) with the `download` extra | Use Python 3.12–3.14, or install `"ax-engine>=7.9.0,<8"` and `huggingface-hub` without the extra |
 | `ax-engine: command not found` in a new Terminal | The virtual environment is not active and not on `PATH` | `source "$HOME/.venvs/ax-engine/bin/activate"`, or add `$HOME/.venvs/ax-engine/bin` to `PATH` |
 | `python3.13: command not found` after the installer | Terminal opened before the install | Quit and reopen Terminal, or call `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13` |
 | `xcode-select: note: No developer tools were found` prompt | Bare `python3`/`git` ran without Xcode Command Line Tools | Cancel it and use `python3.13` from python.org; AX Engine itself does not need Xcode |
@@ -360,7 +360,7 @@ python3.13 -m venv "$HOME/.venvs/ax-engine-py313"
 source "$HOME/.venvs/ax-engine-py313/bin/activate"
 python --version
 python -m pip install --upgrade pip
-python -m pip install --upgrade "ax-engine[download]>=7.8.0,<8"
+python -m pip install --upgrade "ax-engine[download]>=7.9.0,<8"
 ax-engine doctor
 ```
 
@@ -533,7 +533,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install with
-`python3 -m pip install --upgrade "ax-engine[download]>=7.8.0,<8"`.
+`python3 -m pip install --upgrade "ax-engine[download]>=7.9.0,<8"`.
 
 Or via the script:
 
