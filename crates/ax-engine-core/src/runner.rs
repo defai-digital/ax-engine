@@ -23,6 +23,13 @@ pub struct RunnerInput {
     pub block_tables: Vec<ResolvedBlockTable>,
     pub request_contexts: Vec<RunnerRequestContext>,
     pub request_multimodal_inputs: Vec<RunnerRequestMultimodalInput>,
+    /// `logit_bias` of the requests in this batch that set one. Kept out of
+    /// the `Copy` [`RunnerRequestContext`]; `logit_bias_active` there marks
+    /// the requests listed here.
+    pub request_logit_biases: Vec<RunnerRequestLogitBias>,
+    /// Grammars of the requests in this batch that are constrained;
+    /// `json_grammar_active` in [`RunnerRequestContext`] marks them.
+    pub request_json_grammars: Vec<RunnerRequestJsonGrammar>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -53,6 +60,15 @@ pub struct RunnerRequestContext {
     pub repetition_penalty: f32,
     /// Number of most-recent prompt/generated tokens considered by repetition penalty.
     pub repetition_context_size: Option<u32>,
+    /// OpenAI-style additive penalties over generated tokens (0 disables).
+    pub presence_penalty: f32,
+    pub frequency_penalty: f32,
+    /// True when the request sets a `logit_bias`; the entries travel in
+    /// [`RunnerInput::request_logit_biases`].
+    pub logit_bias_active: bool,
+    /// True when every generated token must follow a grammar; it travels in
+    /// [`RunnerInput::request_json_grammars`].
+    pub json_grammar_active: bool,
     /// N-gram size that must not be generated twice. Zero disables the processor.
     pub no_repeat_ngram_size: u32,
     /// Maximum recent history inspected by the no-repeat n-gram processor.
@@ -71,6 +87,19 @@ pub struct RunnerRequestContext {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct RunnerRequestLogitBias {
+    pub request_id: RequestId,
+    /// `(token_id, bias)` sorted by token id, no duplicates, never empty.
+    pub logit_bias: Vec<(u32, f32)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunnerRequestJsonGrammar {
+    pub request_id: RequestId,
+    pub grammar: std::sync::Arc<crate::grammar::JsonGrammar>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct RunnerRequestMultimodalInput {
     pub request_id: RequestId,
     pub inputs: RequestMultimodalInputs,
@@ -85,6 +114,25 @@ impl RunnerInput {
             .iter()
             .find(|entry| entry.request_id == request_id)
             .map(|entry| &entry.inputs)
+    }
+
+    /// The request's `logit_bias`, empty when it set none.
+    pub fn request_logit_bias(&self, request_id: RequestId) -> &[(u32, f32)] {
+        self.request_logit_biases
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+            .map_or(&[], |entry| entry.logit_bias.as_slice())
+    }
+
+    /// The request's grammar, if it is constrained.
+    pub fn request_json_grammar(
+        &self,
+        request_id: RequestId,
+    ) -> Option<&std::sync::Arc<crate::grammar::JsonGrammar>> {
+        self.request_json_grammars
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+            .map(|entry| &entry.grammar)
     }
 }
 
@@ -494,6 +542,10 @@ mod tests {
                     top_k: 0,
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
+                    presence_penalty: 0.0,
+                    frequency_penalty: 0.0,
+                    logit_bias_active: false,
+                    json_grammar_active: false,
                     no_repeat_ngram_size: 0,
                     ngram_window: 128,
                     ignore_eos: false,
@@ -517,6 +569,10 @@ mod tests {
                     top_k: 0,
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
+                    presence_penalty: 0.0,
+                    frequency_penalty: 0.0,
+                    logit_bias_active: false,
+                    json_grammar_active: false,
                     no_repeat_ngram_size: 0,
                     ngram_window: 128,
                     ignore_eos: false,
@@ -528,6 +584,8 @@ mod tests {
                 },
             ],
             request_multimodal_inputs: Vec::new(),
+            request_logit_biases: Vec::new(),
+            request_json_grammars: Vec::new(),
         });
 
         assert_eq!(output.execution_status, ExecutionStatus::Success);
@@ -608,6 +666,8 @@ mod tests {
             ],
             request_contexts: Vec::new(),
             request_multimodal_inputs: Vec::new(),
+            request_logit_biases: Vec::new(),
+            request_json_grammars: Vec::new(),
         });
 
         assert_eq!(output.kv_write_summary.blocks_touched, 3);
@@ -662,6 +722,10 @@ mod tests {
                 top_k: 0,
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
+                presence_penalty: 0.0,
+                frequency_penalty: 0.0,
+                logit_bias_active: false,
+                json_grammar_active: false,
                 no_repeat_ngram_size: 0,
                 ngram_window: 128,
                 ignore_eos: false,
@@ -672,6 +736,8 @@ mod tests {
                 answer_reserve_tokens: None,
             }],
             request_multimodal_inputs: Vec::new(),
+            request_logit_biases: Vec::new(),
+            request_json_grammars: Vec::new(),
         });
 
         assert_eq!(output.route_metadata, RouteMetadata::empty());

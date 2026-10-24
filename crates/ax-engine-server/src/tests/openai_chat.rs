@@ -2066,12 +2066,8 @@ async fn openai_chat_request_rejects_unsupported_sampling_params() {
     });
     let live = state.snapshot();
 
-    for (field, value) in [
-        ("n", json!(2)),
-        ("frequency_penalty", json!(0.5)),
-        ("presence_penalty", json!(-0.2)),
-        ("logit_bias", json!({"50256": -100})),
-    ] {
+    {
+        let (field, value) = ("n", json!(2));
         let mut body = json!({
             "messages": [{"role": "user", "content": "Hello"}],
             "max_tokens": 8
@@ -3323,7 +3319,7 @@ async fn openai_chat_image_against_text_only_checkpoint_reports_missing_vision_s
 }
 
 #[tokio::test]
-async fn flash_next_chat_rejects_inline_media_before_gemma_preprocessing() {
+async fn flash_next_chat_routes_images_to_qwen_visual_and_rejects_audio() {
     let artifact_dir = minimal_tokenizer_artifact("flash-next-media-boundary");
     fs::write(
         artifact_dir.join("model-manifest.json"),
@@ -3353,10 +3349,41 @@ async fn flash_next_chat_rejects_inline_media_before_gemma_preprocessing() {
             );
             state.swap_live(live);
         }
+        // Audio has no Flash Next path and is refused before any media
+        // preprocessing.
+        let request = serde_json::from_value(json!({
+            "model":"flash-next-candidate",
+            "messages":[{"role":"user","content":[
+                {"type":"text","text":"hello"},
+                {"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}
+            ]}],
+            "max_tokens":8,
+        }))
+        .unwrap();
+        let error = build_openai_chat_request(&state.snapshot(), request)
+            .err()
+            .unwrap();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_modality")
+        );
+        assert!(error.1.0.error.message.contains("audio"));
+        assert!(!error.1.0.error.message.contains("Gemma4"));
+        assert!(
+            !error
+                .1
+                .0
+                .error
+                .message
+                .contains(&artifact_dir.display().to_string())
+        );
+        // Images take the Qwen visual renderer, never the Gemma4 adapter and
+        // never the audio/video gate (this fixture has no real image or
+        // processor, so the request still fails, but further along).
         for part in [
             json!({"type":"image_url","image_url":{"url":"https://example.com/image.png"}}),
             json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}),
-            json!({"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}),
         ] {
             let request = serde_json::from_value(json!({
                 "model":"flash-next-candidate",
@@ -3364,24 +3391,18 @@ async fn flash_next_chat_rejects_inline_media_before_gemma_preprocessing() {
                 "max_tokens":8,
             }))
             .unwrap();
-            let error = build_openai_chat_request(&state.snapshot(), request)
-                .err()
-                .unwrap();
-            assert_eq!(error.0, StatusCode::BAD_REQUEST);
-            assert_eq!(
-                error.1.0.error.code.as_deref(),
-                Some("unsupported_modality")
-            );
-            assert!(error.1.0.error.message.contains("text-only"));
-            assert!(!error.1.0.error.message.contains("Gemma4"));
-            assert!(
-                !error
-                    .1
-                    .0
-                    .error
-                    .message
-                    .contains(&artifact_dir.display().to_string())
-            );
+            if let Err(error) = build_openai_chat_request(&state.snapshot(), request) {
+                assert!(
+                    !error.1.0.error.message.contains("Gemma4"),
+                    "{:?}",
+                    error.1.0.error
+                );
+                assert!(
+                    !error.1.0.error.message.contains("audio and video"),
+                    "{:?}",
+                    error.1.0.error
+                );
+            }
         }
     }
     fs::remove_dir_all(artifact_dir).unwrap();
@@ -3898,6 +3919,125 @@ async fn openai_qwen_chat_sampled_default_penalty_follows_mtp_policy() {
 
         fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
     }
+}
+
+#[tokio::test]
+async fn openai_chat_logit_bias_reaches_sampling_and_is_validated() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-logit-bias");
+    let state = native_mlx_openai_builder_state_with_mtp_policy(
+        "Qwen3.6-27B-4bit",
+        &artifact_dir,
+        MlxMtpPolicy::Auto,
+    );
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [{"role": "user", "content": "hello openai chat"}],
+        "max_tokens": 8,
+        "logit_bias": {"50256": -100, "7": 2.5}
+    }))
+    .expect("sample chat request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
+    let bias = &built.generate_request.sampling.logit_bias;
+    assert_eq!(bias.get(&50256), Some(&-100.0));
+    assert_eq!(bias.get(&7), Some(&2.5));
+    assert_eq!(bias.len(), 2);
+
+    for (value, why) in [
+        (json!({"50256": -101}), "bias below -100"),
+        (json!({"50256": "high"}), "non-numeric bias"),
+        (json!({"hello": 1}), "non-numeric token id"),
+        (json!({"-3": 1}), "negative token id"),
+        (json!([[50256, -100]]), "array form"),
+        (json!({" 7 ": 1}), "padded token id"),
+        (json!({"7": 1, "+7": 2}), "duplicate token id"),
+    ] {
+        let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+            "model": "Qwen3.6-27B-4bit",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 8,
+            "logit_bias": value
+        }))
+        .expect("sample chat request should deserialize");
+        let error = match build_openai_chat_request(&live, request) {
+            Ok(_) => panic!("{why} must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{why}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("invalid_request_error"),
+            "{why}"
+        );
+    }
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_presence_and_frequency_penalties_reach_sampling() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-presence-penalty");
+    let state = native_mlx_openai_builder_state_with_mtp_policy(
+        "Qwen3.6-27B-4bit",
+        &artifact_dir,
+        MlxMtpPolicy::Auto,
+    );
+    let live = state.snapshot();
+    // Qwen's published sampling settings: presence_penalty with no
+    // repetition_penalty. The server's 1.1 default must not stack on top.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [{"role": "user", "content": "hello openai chat"}],
+        "max_tokens": 64,
+        "temperature": 0.7,
+        "presence_penalty": 1.5,
+        "frequency_penalty": -0.25
+    }))
+    .expect("sample chat request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
+    assert_eq!(built.generate_request.sampling.presence_penalty, 1.5);
+    assert_eq!(built.generate_request.sampling.frequency_penalty, -0.25);
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.0);
+
+    // An explicit repetition penalty still wins.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "messages": [{"role": "user", "content": "hello openai chat"}],
+        "max_tokens": 64,
+        "temperature": 0.7,
+        "presence_penalty": 1.5,
+        "repetition_penalty": 1.05
+    }))
+    .expect("sample chat request should deserialize");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.05);
+
+    for (field, value) in [
+        ("presence_penalty", json!(2.5)),
+        ("frequency_penalty", json!(-3.0)),
+    ] {
+        let mut body = json!({
+            "model": "Qwen3.6-27B-4bit",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 8
+        });
+        body.as_object_mut()
+            .expect("chat body is an object")
+            .insert(field.to_string(), value);
+        let request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body).expect("sample chat request should deserialize");
+        let error = match build_openai_chat_request(&live, request) {
+            Ok(_) => panic!("out-of-range {field} must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{field}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("invalid_request_error"),
+            "{field}"
+        );
+    }
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]

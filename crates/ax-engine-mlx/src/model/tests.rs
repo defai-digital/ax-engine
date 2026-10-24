@@ -640,6 +640,7 @@ fn qwen_prefill_bf16_embed_dequant_matches_f32_dequant_cast() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let token_ids = [0_u32, 3, 7, 1];
     let ids = MlxArray::from_raw_data(
@@ -881,6 +882,7 @@ fn quantized_zero_weight(packed_shape: &[i32], scale_shape: &[i32]) -> Quantized
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     }
 }
 
@@ -4184,6 +4186,7 @@ fn batched_decode_embed_rows_match_single_token_embed() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let plain = QuantizedWeight {
         weight: weight.clone(),
@@ -4197,6 +4200,7 @@ fn batched_decode_embed_rows_match_single_token_embed() {
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
 
     for embedding in [&quantized, &plain] {

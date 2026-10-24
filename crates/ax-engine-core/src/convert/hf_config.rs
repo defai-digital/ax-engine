@@ -422,7 +422,7 @@ pub(crate) fn runtime_status_for_model_type(model_type: &str) -> NativeRuntimeSt
             blockers: Vec::new(),
             notes: vec![
                 "n-gram embedding table must not be eval'd at load_weights".to_string(),
-                "qualification target: Mac Studio, Ultra-class Apple Silicon (M2 Ultra+), 192 GiB+, MXFP4 MTP; target qualification pending"
+                "qualification standard: MacBook Pro M5 Max 128 GB, single-stream resident, MXFP4 MTP; target qualification pending"
                     .to_string(),
             ],
         };
@@ -1093,9 +1093,31 @@ pub(crate) fn parse_layer_types(
 
     // qwen4_exp layers are linear / full / sparse attention; the sliding
     // window fallback below would synthesize types its own validator
-    // rejects, so an explicit `layer_types` is the only accepted source.
+    // rejects. Without an explicit `layer_types`, derive the Qwen hybrid
+    // pattern from `full_attention_interval` (layer i is full attention when
+    // (i + 1) is a multiple of it, as in Qwen3-Next / Qwen3.5); a config
+    // with neither yields no types and fails the validator's length check.
     if is_qwen4_exp_family(model_type) {
-        return Vec::new();
+        let interval = config
+            .get("full_attention_interval")
+            .or_else(|| {
+                config
+                    .get("text_config")
+                    .and_then(|tc| tc.get("full_attention_interval"))
+            })
+            .and_then(|v| v.as_u64())
+            .filter(|&interval| interval > 0);
+        return interval.map_or_else(Vec::new, |interval| {
+            (0..layer_count)
+                .map(|i| {
+                    if (u64::from(i) + 1).is_multiple_of(interval) {
+                        "full_attention".to_string()
+                    } else {
+                        "linear_attention".to_string()
+                    }
+                })
+                .collect()
+        });
     }
 
     let pattern = arch_u64(config, model_type, "sliding_window_pattern")

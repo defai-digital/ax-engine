@@ -16,8 +16,8 @@ use crate::errors::{ErrorResponse, error_response};
 use crate::metadata::context_length;
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
 use crate::openai::schema::{
-    OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiCompletionHttpRequest,
-    OpenAiPromptInput, OpenAiStopInput,
+    OpenAiChatCompletionHttpRequest, OpenAiChatContent, OpenAiChatMessage,
+    OpenAiCompletionHttpRequest, OpenAiPromptInput, OpenAiStopInput,
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
@@ -27,10 +27,10 @@ pub(crate) use crate::openai::chat_requests::delegated_chat_template_kwargs;
 use crate::openai::chat_requests::{
     ChatPromptRenderOptions, is_minicpm_v46_model_id, is_nemotron_omni_model_dir,
     is_nemotron_omni_model_id, is_qwen3_vl_model_id, messages_contain_inline_media,
-    openai_tool_choice_disables_tools, reject_video_chat_content,
-    render_gemma4_unified_chat_with_media, render_minicpm_v46_chat_with_media,
-    render_nemotron_omni_chat_with_media, render_openai_chat_prompt_with_family,
-    render_qwen3_vl_chat_with_media,
+    messages_contain_inline_non_image_media, openai_tool_choice_disables_tools,
+    reject_video_chat_content, render_gemma4_unified_chat_with_media,
+    render_minicpm_v46_chat_with_media, render_nemotron_omni_chat_with_media,
+    render_openai_chat_prompt_with_family, render_qwen3_vl_chat_with_media,
 };
 use crate::openai::json_schema::{JsonSchemaContract, parse_json_schema_response_format};
 use crate::openai::stop::validate_client_stop_sequences;
@@ -329,7 +329,7 @@ impl OpenAiResponseOptions {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct OpenAiSamplingParams {
     temperature: Option<f32>,
     top_p: Option<f32>,
@@ -337,6 +337,9 @@ struct OpenAiSamplingParams {
     min_p: Option<f32>,
     repetition_penalty: Option<f32>,
     repetition_context_size: Option<u32>,
+    presence_penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
+    logit_bias: std::collections::BTreeMap<u32, f32>,
     seed: Option<u64>,
 }
 
@@ -349,6 +352,10 @@ impl OpenAiSamplingParams {
             min_p: request.min_p,
             repetition_penalty: request.repetition_penalty,
             repetition_context_size: request.repetition_context_size,
+            presence_penalty: request.presence_penalty,
+            frequency_penalty: request.frequency_penalty,
+            // Validated by `reject_unsupported_sampling_params` first.
+            logit_bias: parse_openai_logit_bias(request.logit_bias.as_ref()).unwrap_or_default(),
             seed: request.seed,
         }
     }
@@ -361,6 +368,10 @@ impl OpenAiSamplingParams {
             min_p: request.min_p,
             repetition_penalty: request.repetition_penalty,
             repetition_context_size: request.repetition_context_size,
+            presence_penalty: request.presence_penalty,
+            frequency_penalty: request.frequency_penalty,
+            // Validated by `reject_unsupported_sampling_params` first.
+            logit_bias: parse_openai_logit_bias(request.logit_bias.as_ref()).unwrap_or_default(),
             seed: request.seed,
         }
     }
@@ -482,7 +493,7 @@ pub(crate) fn build_openai_chat_request(
 
 fn build_openai_chat_request_with_control(
     live: &LiveState,
-    request: OpenAiChatCompletionHttpRequest,
+    mut request: OpenAiChatCompletionHttpRequest,
     control: Option<&BlockingTaskControl>,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_video_chat_content(
@@ -491,6 +502,19 @@ fn build_openai_chat_request_with_control(
     )?;
     let max_output_tokens = openai_max_tokens(request.max_completion_tokens, request.max_tokens);
     let mut response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    // Masking constrains what the model may write, not what it plans: tell
+    // it the format too, so it does not plan past the schema's limits.
+    if let Some(schema) = native_json_constraint(live, &response_options) {
+        let instruction = if response_options.json_schema.is_some() {
+            format!(
+                "Respond only with JSON that conforms to this JSON Schema, with no code fences \
+                 or other text:\n{schema}"
+            )
+        } else {
+            "Respond only with a JSON object, with no code fences or other text.".to_string()
+        };
+        add_system_instruction(&mut request.messages, &instruction);
+    }
     let prompt_options = openai_chat_prompt_render_options_for_live(&request, live);
     // Reasoning extraction must follow the prompt's resolved thinking state.
     // The prompt falls back to the live model id when `model` is omitted; a
@@ -527,14 +551,28 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
         .as_ref()
         .map(|model| model.model_family.as_str())
         .or(artifact_family.as_deref());
+    // Flash Next accepts images through its Qwen3-VL style tower; audio and
+    // video have no AX path for it.
     if live.runtime_report.selected_backend == SelectedBackend::Mlx
         && native_family == Some("qwen4_exp")
+        && messages_contain_inline_non_image_media(&request.messages)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_modality",
+            "Flash Next chat in AX Engine accepts text and images; inline audio and video are not supported".to_string(),
+        ));
+    }
+    if live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && native_family == Some("qwen4_exp")
+        && !crate::metadata::qwen4_exp_vision_enabled()
         && messages_contain_inline_media(&request.messages)
     {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "unsupported_modality",
-            "Flash Next currently supports text-only chat in AX Engine; inline image and audio media are not supported".to_string(),
+            "Flash Next image input is an opt-in preview; start the server with AX_MLX_QWEN4_EXP_VISION=1"
+                .to_string(),
         ));
     }
     let streaming_reasoning_supported = live.runtime_report.selected_backend
@@ -597,7 +635,16 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 }
             };
             let model_id = live.model_id.as_ref();
-            let artifact_family = crate::metadata::model_family_from_artifacts(live);
+            // The loaded runtime identity wins over on-disk metadata, as in
+            // the Flash Next modality gate above: an auto-converted snapshot
+            // need not persist a manifest.
+            let artifact_family = live
+                .runtime_report
+                .mlx_model
+                .as_ref()
+                .map(|model| model.model_family.clone())
+                .filter(|family| family == "qwen4_exp")
+                .or_else(|| crate::metadata::model_family_from_artifacts(live));
             if is_minicpm_v46_model_id(model_id)
                 || artifact_family.as_deref() == Some("minicpmv4_6")
             {
@@ -624,12 +671,19 @@ does not advertise native reasoning support (/v1/models capabilities.reasoning=f
                 || artifact_family.as_deref().is_some_and(|f| {
                     matches!(
                         f,
-                        "qwen3_vl" | "qwen3_vl_moe" | "qwen3_5" | "qwen3_5_moe" | "qwen3_next"
+                        "qwen3_vl"
+                            | "qwen3_vl_moe"
+                            | "qwen3_5"
+                            | "qwen3_5_moe"
+                            | "qwen3_next"
+                            // Qwen 3.8 Flash Next ships the same tower.
+                            | "qwen4_exp"
                     )
                 })
             {
                 if let Some(prompt) = render_qwen3_vl_chat_with_media(
                     model_id,
+                    artifact_family.as_deref(),
                     model_dir,
                     &request.messages,
                     request.tools.as_ref(),
@@ -871,6 +925,8 @@ fn build_openai_generate_request(
         max_output_tokens,
         response_options.fit_max_tokens_to_context,
     )?;
+    let mut payload = payload;
+    payload.sampling.json_schema = native_json_constraint(live, &response_options);
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
@@ -888,6 +944,57 @@ fn build_openai_generate_request(
         stream: payload.stream,
         response_options,
     })
+}
+
+/// Append `instruction` to a leading text system message, or add one.
+/// A leading multi-part system message is left alone.
+fn add_system_instruction(messages: &mut Vec<OpenAiChatMessage>, instruction: &str) {
+    match messages.first_mut() {
+        Some(OpenAiChatMessage {
+            role,
+            content: Some(OpenAiChatContent::Text(text)),
+            ..
+        }) if role == "system" => {
+            text.push_str("\n\n");
+            text.push_str(instruction);
+        }
+        Some(OpenAiChatMessage { role, .. }) if role == "system" => {}
+        _ => messages.insert(
+            0,
+            OpenAiChatMessage {
+                role: "system".to_string(),
+                content: Some(OpenAiChatContent::Text(instruction.to_string())),
+                tool_calls: None,
+                reasoning_content: None,
+                _tool_call_id: None,
+                _name: None,
+            },
+        ),
+    }
+}
+
+/// The schema the native MLX backend constrains decoding to for a
+/// `response_format` request. Tool-calling requests keep post-hoc validation
+/// only, because a tool-call span is not the JSON answer. Schemas the
+/// grammar cannot enforce exactly also stay post-hoc only.
+fn native_json_constraint(
+    live: &LiveState,
+    response_options: &OpenAiResponseOptions,
+) -> Option<serde_json::Value> {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx
+        || response_options.parse_tool_calls
+        || !crate::metadata::json_constrained_decoding_enabled()
+    {
+        return None;
+    }
+    let schema = match response_options.json_schema.as_ref() {
+        Some(contract) => contract.schema.clone(),
+        None if response_options.validate_json_object => serde_json::json!({"type": "object"}),
+        None => return None,
+    };
+    ax_engine_core::grammar::JsonGrammar::from_schema(&schema)
+        .is_ok()
+        .then_some(schema)
 }
 
 fn fit_openai_max_output_tokens_to_context(
@@ -1112,6 +1219,17 @@ fn build_openai_sampling_with_default_repetition_penalty(
     let temperature = params.temperature.unwrap_or(0.0);
     let client_seed = params.seed;
     let seed = client_seed.unwrap_or_else(|| default_openai_seed(temperature));
+    let presence_penalty = params.presence_penalty.unwrap_or(0.0);
+    let frequency_penalty = params.frequency_penalty.unwrap_or(0.0);
+    // A client that asks for OpenAI-style penalties (Qwen's published
+    // sampling settings use `presence_penalty`) gets them instead of, not on
+    // top of, the server's mild default repetition penalty.
+    let default_repetition_penalty =
+        if ax_engine_sdk::presence_frequency_penalty_active(presence_penalty, frequency_penalty) {
+            1.0
+        } else {
+            default_repetition_penalty
+        };
     GenerateSampling {
         temperature,
         top_p: params.top_p.unwrap_or(1.0),
@@ -1121,8 +1239,12 @@ fn build_openai_sampling_with_default_repetition_penalty(
             .repetition_penalty
             .unwrap_or(default_repetition_penalty),
         repetition_context_size: params.repetition_context_size,
+        presence_penalty,
+        frequency_penalty,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
+        logit_bias: params.logit_bias,
+        json_schema: None,
         seed,
         seed_explicit: client_seed.is_some() || seed != 0,
         deterministic: None,
@@ -1353,9 +1475,11 @@ fn openai_response_format_is_json_object(response_format: Option<&Value>) -> boo
     }
 }
 
-/// OpenAI sampling params AX does not implement. Non-default values fail
-/// closed instead of being silently dropped, so a caller relying on them
-/// learns immediately — same policy as the logprobs handling below.
+/// OpenAI sampling params AX does not implement fail closed instead of being
+/// silently dropped, so a caller relying on them learns immediately — same
+/// policy as the logprobs handling below. `presence_penalty`,
+/// `frequency_penalty` and `logit_bias` are implemented and only validated
+/// here.
 fn reject_unsupported_sampling_params(
     n: Option<u32>,
     best_of: Option<u32>,
@@ -1378,25 +1502,64 @@ fn reject_unsupported_sampling_params(
             "best_of above 1 is not supported; AX generates one choice per request",
         );
     }
-    if frequency_penalty.unwrap_or(0.0) != 0.0 {
-        return unsupported(
-            "frequency_penalty is not supported; use the repetition_penalty extension instead",
-        );
+    for (name, value) in [
+        ("frequency_penalty", frequency_penalty),
+        ("presence_penalty", presence_penalty),
+    ] {
+        if let Some(value) = value
+            && !(value.is_finite() && (-2.0..=2.0).contains(&value))
+        {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                format!("{name} must be a number between -2.0 and 2.0, got {value}"),
+            ));
+        }
     }
-    if presence_penalty.unwrap_or(0.0) != 0.0 {
-        return unsupported(
-            "presence_penalty is not supported; use the repetition_penalty extension instead",
-        );
-    }
-    let logit_bias_requested = logit_bias.is_some_and(|value| match value {
-        Value::Null => false,
-        Value::Object(map) => !map.is_empty(),
-        _ => true,
-    });
-    if logit_bias_requested {
-        return unsupported("logit_bias is not supported");
-    }
+    parse_openai_logit_bias(logit_bias).map_err(|message| {
+        error_response(StatusCode::BAD_REQUEST, "invalid_request_error", message)
+    })?;
     Ok(())
+}
+
+/// Most `logit_bias` entries one request may set.
+const MAX_LOGIT_BIAS_ENTRIES: usize = 1024;
+
+/// Parse OpenAI `logit_bias`: an object mapping token-id strings to a bias in
+/// [-100, 100]. `null` and `{}` mean none. Token ids outside the model
+/// vocabulary are ignored at sampling time.
+fn parse_openai_logit_bias(
+    value: Option<&Value>,
+) -> Result<std::collections::BTreeMap<u32, f32>, String> {
+    let map = match value {
+        None | Some(Value::Null) => return Ok(Default::default()),
+        Some(Value::Object(map)) => map,
+        Some(_) => return Err("logit_bias must be an object of token id to bias".to_string()),
+    };
+    if map.len() > MAX_LOGIT_BIAS_ENTRIES {
+        return Err(format!(
+            "logit_bias has {} entries; at most {MAX_LOGIT_BIAS_ENTRIES} are allowed",
+            map.len()
+        ));
+    }
+    let mut parsed = std::collections::BTreeMap::new();
+    for (key, bias) in map {
+        let token = key
+            .parse::<u32>()
+            .map_err(|_| format!("logit_bias key {key:?} is not a token id"))?;
+        let bias = bias
+            .as_f64()
+            .filter(|bias| bias.is_finite() && (-100.0..=100.0).contains(bias))
+            .ok_or_else(|| {
+                format!("logit_bias for token {token} must be a number between -100 and 100")
+            })?;
+        // "7" and "+7" name the same token; refuse instead of letting the
+        // key order decide which bias wins.
+        if parsed.insert(token, bias as f32).is_some() {
+            return Err(format!("logit_bias sets token {token} more than once"));
+        }
+    }
+    Ok(parsed)
 }
 
 /// AX has no effort levels: thinking is an on/off switch plus a token budget.
@@ -1626,6 +1789,9 @@ mod tests {
                 min_p: None,
                 repetition_penalty: None,
                 repetition_context_size: None,
+                presence_penalty: None,
+                frequency_penalty: None,
+                logit_bias: Default::default(),
                 seed: Some(0),
             },
             1.0,
@@ -1645,6 +1811,9 @@ mod tests {
                 min_p: None,
                 repetition_penalty: None,
                 repetition_context_size: None,
+                presence_penalty: None,
+                frequency_penalty: None,
+                logit_bias: Default::default(),
                 seed: None,
             },
             1.0,

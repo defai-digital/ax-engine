@@ -22,6 +22,7 @@ use tracing_subscriber::EnvFilter;
 
 mod admission;
 mod anthropic;
+mod anthropic_bridge;
 mod app_state;
 mod args;
 mod audio;

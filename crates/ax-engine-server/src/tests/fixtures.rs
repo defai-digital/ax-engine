@@ -307,6 +307,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
+        prefill_stall_target_ms: 0,
         grpc_bind_address: None,
         max_concurrent_requests: None,
         max_concurrent_requests_per_model: None,

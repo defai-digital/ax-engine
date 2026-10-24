@@ -207,6 +207,15 @@ pub(crate) fn load_with_paging_policy(
     load_with_schedule_admission(root, manifest, mode, budget_layers, audited_mxfp4)
 }
 
+/// Bytes of the n-gram lexical table, which this loader never makes resident.
+fn never_loaded_ngram_bytes(tensors: &[NativeTensorSpec]) -> u64 {
+    tensors
+        .iter()
+        .filter(|spec| spec.role == NativeTensorRole::NgramEmbedding)
+        .map(|spec| spec.length_bytes)
+        .fold(0u64, u64::saturating_add)
+}
+
 fn load_with_schedule_admission(
     root: &Path,
     manifest: &NativeModelManifest,
@@ -225,14 +234,26 @@ fn load_with_schedule_admission(
             "qwen4_exp does not support weight_sanitize=HfLayerNormsOnly".to_string(),
         ));
     }
+    // The n-gram table is served by row gathers and never loaded, so
+    // admission prices only what is resident (ADR-044; see the fastpath flag).
+    let never_loaded_bytes = if crate::fastpath::expert_stream_discount_ngram_enabled() {
+        never_loaded_ngram_bytes(&manifest.tensors)
+    } else {
+        0
+    };
     let stream_manifest = crate::expert_stream::resolve_expert_stream(
         mode,
-        crate::expert_stream::ExpertStreamManifest::read_from_dir(root)?,
+        crate::expert_stream::ExpertStreamManifest::read_from_dir(root)?.map(|file| {
+            crate::expert_stream::discount_never_loaded_bytes(file, never_loaded_bytes)
+        }),
         || {
             crate::expert_stream::infer_layer_stack_manifest(
                 &manifest.tensors,
                 manifest.moe.experts_per_token.unwrap_or(1),
             )
+            .map(|inferred| {
+                crate::expert_stream::discount_never_loaded_bytes(inferred, never_loaded_bytes)
+            })
         },
         crate::expert_stream::unified_memory_bytes(),
     )?;
@@ -428,13 +449,21 @@ fn load_with_schedule_admission(
     } else {
         Some(resolve_eos_token(root, manifest.vocab_size)?)
     };
-    let ple_embed_dim = require_u32(cfg.ple_embed_dim, "ple_embed_dim")?;
-    let ple_kernel = as_usize(
-        require_u32(cfg.ple_conv_kernel_size, "ple_conv_kernel_size")?,
-        "ple_conv_kernel_size",
-    )?;
-    let ngram_size = require_u32(cfg.ngram_size, "ngram_size")?;
-    let heads_per_ngram = require_u32(cfg.heads_per_ngram, "heads_per_ngram")?;
+    // PLE / n-gram geometry is only required when some layer carries a PLE
+    // bundle; a checkpoint with an empty `ple_layer_ids` needs none of it.
+    let ple_params = if ple_layer_ids.is_empty() {
+        None
+    } else {
+        Some((
+            require_u32(cfg.ple_embed_dim, "ple_embed_dim")?,
+            as_usize(
+                require_u32(cfg.ple_conv_kernel_size, "ple_conv_kernel_size")?,
+                "ple_conv_kernel_size",
+            )?,
+            require_u32(cfg.ngram_size, "ngram_size")?,
+            require_u32(cfg.heads_per_ngram, "heads_per_ngram")?,
+        ))
+    };
 
     let token_embedding = take_weight(
         specs,
@@ -541,6 +570,12 @@ fn load_with_schedule_admission(
         )?;
 
         let ple = if ple_layer_ids.contains(&(layer + 1)) {
+            let (ple_embed_dim, ple_kernel, ngram_size, heads_per_ngram) =
+                ple_params.ok_or_else(|| {
+                    WeightLoadError::InvalidLayer(format!(
+                        "qwen4_exp layer {layer}: ple layer has no PLE geometry"
+                    ))
+                })?;
             let eos = eos.ok_or_else(|| {
                 WeightLoadError::InvalidLayer(format!(
                     "qwen4_exp layer {layer}: ple layer requires an eos token but none was resolved"
@@ -954,6 +989,69 @@ pub(super) fn resolve_in_root(
             root.display()
         ))
     })
+}
+
+/// Load the Qwen3-VL style `vision_tower.*` tensors a qwen4_exp pack ships
+/// next to the trunk. They are not listed in `model-manifest.json`, so they
+/// are read from the safetensors index directly. `None` when the pack has no
+/// tower or `AX_MLX_QWEN4_EXP_VISION` is not set. A tower that needs DeepStack fails
+/// closed: the qwen4_exp forward has no DeepStack injection.
+pub(crate) fn load_vision_tower(
+    root: &Path,
+) -> Result<Option<crate::qwen3_vl::Qwen3VlVisionWeights>, WeightLoadError> {
+    if !crate::fastpath::qwen4_exp_vision_enabled() {
+        return Ok(None);
+    }
+    let canonical_root = root.canonicalize().map_err(|e| {
+        WeightLoadError::FileMissing(format!("cannot resolve root {}: {e}", root.display()))
+    })?;
+    let Some(index) = read_weight_index(root, &canonical_root)? else {
+        return Ok(None);
+    };
+    let mut files: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    for (name, file) in &index {
+        if name.starts_with("vision_tower.") {
+            files.entry(file.clone()).or_default().insert(name.clone());
+        }
+    }
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let config_path = root.join("config.json");
+    let config: serde_json::Value = std::fs::read(&config_path)
+        .map_err(|e| {
+            WeightLoadError::FileMissing(format!("cannot read {}: {e}", config_path.display()))
+        })
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|e| {
+                WeightLoadError::InvalidLayer(format!(
+                    "cannot parse {}: {e}",
+                    config_path.display()
+                ))
+            })
+        })?;
+    let deepstack = config
+        .get("vision_config")
+        .and_then(|vision| vision.get("deepstack_visual_indexes"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|indexes| !indexes.is_empty());
+    if deepstack {
+        return Err(WeightLoadError::InvalidLayer(
+            "qwen4_exp vision tower declares deepstack_visual_indexes; DeepStack injection \
+             is not implemented for qwen4_exp"
+                .to_string(),
+        ));
+    }
+    let mut name_map = HashMap::new();
+    for (path, names) in files {
+        let tensors = load_safetensors_filtered(&path, SafetensorsNameFilter::Keep(&names))
+            .map_err(WeightLoadError::FileMissing)?;
+        mlx_sys::try_eval(&tensors.values().collect::<Vec<_>>()).map_err(|e| {
+            WeightLoadError::InvalidLayer(format!("qwen4_exp vision tower evaluation: {e}"))
+        })?;
+        name_map.extend(tensors);
+    }
+    crate::qwen3_vl::load_qwen3_vl_vision_weights(&[], &mut name_map, Some(&config))
 }
 
 /// `model.safetensors.index.json` `weight_map`, resolved to in-root absolute
@@ -1778,6 +1876,7 @@ pub(crate) fn split_packed_expert_gate_up(
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         })
     };
     Ok((build(0)?, build(expert_intermediate)?))
@@ -2036,6 +2135,21 @@ fn build_ple_bundle(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    /// Loads the real Qwen3-VL style tower of the pinned Flash Next pack when
+    /// `AX_ENGINE_FLASH_NEXT_PACK_DIR` points at it (skipped otherwise).
+    #[test]
+    fn pinned_flash_next_pack_vision_tower_loads() {
+        let Some(pack) = std::env::var_os("AX_ENGINE_FLASH_NEXT_PACK_DIR") else {
+            return;
+        };
+        let tower = load_vision_tower(Path::new(&pack))
+            .expect("vision tower loads")
+            .expect("the pinned pack ships a tower");
+        assert_eq!(tower.layers.len(), 27);
+        assert!(tower.config.deepstack_visual_indexes.is_empty());
+        assert_eq!(tower.mrope_section, vec![11, 11, 10]);
+    }
 
     fn test_index(root: &Path, canonical: &Path) -> Option<HashMap<String, PathBuf>> {
         read_weight_index(root, canonical).unwrap()
@@ -2605,7 +2719,8 @@ mod tests {
             records.push(serde_json::json!({"step": step, "position": position,
                 "output_sha256": format!("{:x}", Sha256::digest(&delta)),
                 "input_sha256": format!("{:x}", Sha256::digest(&payload)),
-                "cache": [fingerprint(cache.keys().unwrap()), fingerprint(cache.values().unwrap()),
+                "cache": [fingerprint(&cache.flat_keys().unwrap()),
+                    fingerprint(&cache.flat_values().unwrap()),
                     fingerprint(cache.index().keys().unwrap())]}));
             eprintln!("qsa replay position={position}");
         }

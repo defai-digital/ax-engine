@@ -70,7 +70,8 @@ configurations:
 | Hardware | Recommended memory | Best fit |
 | --- | ---: | --- |
 | Mac mini M4 Pro | 64 GB RAM | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) |
-| Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Qualification target for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. |
+| MacBook Pro M5 Max | 128 GB RAM | Qualification and certification standard for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. Start the server with `--max-concurrent-requests 1`. Measured 32 / 32 / 28 tok/s decode at 2k / 8k / 32k context; two concurrent long requests or MTP at 32k push memory past the safe margin. |
+| Mac Studio (Ultra-class, M2 Ultra or newer) | 192 GB+ RAM | Larger-memory host for the same Flash Next pack. The 2026-10-05 direct-default release gates were measured here and stay bound to this host. |
 
 ## What model stack should I run on high-memory Apple Silicon?
 
@@ -268,8 +269,10 @@ on that pack is **31.05 tok/s** decode on Mac mini M4 Pro 64 GB and
 direct AR, which already saturates DRAM. Do not mix those dense-27B decode
 numbers with Tiel completion tok/s.
 
-Qwen 3.8 Flash Next MXFP4 MTP is a second SKU for Mac Studio, Ultra-class
-Apple Silicon (M2 Ultra or newer), 192 GB+ (ADR-037). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
+Qwen 3.8 Flash Next MXFP4 MTP is a second SKU. Its qualification and
+certification standard is MacBook Pro M5 Max 128 GB, single-stream resident
+(ADR-049). The Ultra-class 192 GB+ Studio is a larger-memory host. MXFP8 MTP
+admission is pending.
 See [Supported Models](SUPPORTED-MODELS.md).
 
 ## Which runtime path should I choose first?

@@ -1,0 +1,740 @@
+{
+ "host": "Apple M5 Max 128 GB (campaign host)",
+ "note": "decode_delta_pct is arm_b against arm_a; every comparison has identical generated text",
+ "kv_segments": {
+  "arm_a": "AX_FLASH_NEXT_KV_SEGMENTS=0",
+  "arm_b": "default",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "off": {
+     "decode_tok_s": [
+      42.31,
+      42.32
+     ],
+     "ttft_s": [
+      2.382,
+      2.375
+     ]
+    },
+    "def": {
+     "decode_tok_s": [
+      42.36,
+      42.2
+     ],
+     "ttft_s": [
+      2.378,
+      2.384
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.08
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "off": {
+     "decode_tok_s": [
+      39.97,
+      40.04
+     ],
+     "ttft_s": [
+      13.65,
+      13.689
+     ]
+    },
+    "def": {
+     "decode_tok_s": [
+      40.67,
+      40.45
+     ],
+     "ttft_s": [
+      13.603,
+      13.641
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 1.39
+   },
+   {
+    "file": "long32.txt",
+    "prompt_tokens": 39225,
+    "off": {
+     "decode_tok_s": [
+      32.75,
+      32.73
+     ],
+     "ttft_s": [
+      75.696,
+      75.277
+     ]
+    },
+    "def": {
+     "decode_tok_s": [
+      37.56,
+      37.44
+     ],
+     "ttft_s": [
+      74.855,
+      74.886
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 14.54
+   }
+  ]
+ },
+ "gdn_native_kernel": {
+  "arm_a": "portable recurrence",
+  "arm_b": "AX_MLX_FLASH_NEXT_GDN_METAL=1",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "off": {
+     "decode_tok_s": [
+      42.06,
+      42.09
+     ],
+     "ttft_s": [
+      2.371,
+      2.384
+     ]
+    },
+    "on": {
+     "decode_tok_s": [
+      43.52,
+      43.6
+     ],
+     "ttft_s": [
+      2.378,
+      2.382
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 3.53
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "off": {
+     "decode_tok_s": [
+      44.36,
+      44.25
+     ],
+     "ttft_s": [
+      1.424,
+      1.426
+     ]
+    },
+    "on": {
+     "decode_tok_s": [
+      45.86,
+      46.04
+     ],
+     "ttft_s": [
+      1.423,
+      1.425
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 3.71
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "off": {
+     "decode_tok_s": [
+      40.4,
+      40.37
+     ],
+     "ttft_s": [
+      13.595,
+      13.642
+     ]
+    },
+    "on": {
+     "decode_tok_s": [
+      41.61,
+      41.88
+     ],
+     "ttft_s": [
+      13.637,
+      13.671
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 3.37
+   }
+  ]
+ },
+ "glue_t9": {
+  "arm_a": "previous build",
+  "arm_b": "pooled cache, rotary stretches, weight view, native GDN",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "prev": {
+     "decode_tok_s": [
+      42.15,
+      42.44
+     ],
+     "ttft_s": [
+      2.372,
+      2.382
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.21,
+      44.37
+     ],
+     "ttft_s": [
+      2.64,
+      2.386
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 4.72
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "prev": {
+     "decode_tok_s": [
+      40.43,
+      40.68
+     ],
+     "ttft_s": [
+      13.605,
+      13.647
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      42.95,
+      43.02
+     ],
+     "ttft_s": [
+      13.565,
+      13.648
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 5.99
+   },
+   {
+    "file": "long32.txt",
+    "prompt_tokens": 39225,
+    "prev": {
+     "decode_tok_s": [
+      37.41,
+      37.61
+     ],
+     "ttft_s": [
+      75.358,
+      74.871
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      41.97,
+      41.97
+     ],
+     "ttft_s": [
+      74.478,
+      74.829
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 11.89
+   }
+  ]
+ },
+ "glue_wave2": {
+  "arm_a": "previous build",
+  "arm_b": "grouped GDN heads, f32 gains, gate/route-tail stretches, identity slices",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "prev": {
+     "decode_tok_s": [
+      44.49,
+      44.25
+     ],
+     "ttft_s": [
+      2.376,
+      2.375
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.81,
+      44.96
+     ],
+     "ttft_s": [
+      2.375,
+      2.387
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 1.16
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "prev": {
+     "decode_tok_s": [
+      43.23,
+      43.11
+     ],
+     "ttft_s": [
+      13.578,
+      13.564
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      43.54,
+      43.6
+     ],
+     "ttft_s": [
+      13.609,
+      13.595
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 0.93
+   },
+   {
+    "file": "long32.txt",
+    "prompt_tokens": 39225,
+    "prev": {
+     "decode_tok_s": [
+      41.99,
+      42.03
+     ],
+     "ttft_s": [
+      75.652,
+      74.452
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      42.53,
+      42.46
+     ],
+     "ttft_s": [
+      74.89,
+      74.702
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 1.15
+   }
+  ]
+ },
+ "gdn_native_gate_kernels": {
+  "arm_a": "mask without gdn_native_decay/gdn_native_qk",
+  "arm_b": "default mask",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "old": {
+     "decode_tok_s": [
+      44.83,
+      44.64,
+      44.65
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      45.18,
+      44.98,
+      45.02
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 0.79
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "old": {
+     "decode_tok_s": [
+      47.04,
+      46.79,
+      46.91
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      47.46,
+      47.2,
+      47.3
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 0.87
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "old": {
+     "decode_tok_s": [
+      43.58,
+      43.34,
+      43.44
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      43.91,
+      43.76,
+      43.77
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": 0.83
+   }
+  ]
+ },
+ "hc_native_read_vs_previous_build": {
+  "arm_a": "previous build",
+  "arm_b": "first-version hc_native_low_gate on (opt-in)",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "prev": {
+     "decode_tok_s": [
+      44.68,
+      44.65,
+      44.74
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.29,
+      44.27,
+      44.21
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.97
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "prev": {
+     "decode_tok_s": [
+      47.0,
+      46.77,
+      46.81
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      46.54,
+      46.56,
+      46.47
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.72
+   },
+   {
+    "file": "long1.txt",
+    "prompt_tokens": 8976,
+    "prev": {
+     "decode_tok_s": [
+      43.59,
+      43.37,
+      43.57
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      43.16,
+      43.31,
+      43.1
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.74
+   }
+  ],
+  "version": "first version (merged GEMV + ax_hc_low_gate_v1), later replaced by hc_gemv_epilogue_read"
+ },
+ "hc_native_read_same_binary": {
+  "arm_a": "mask without hc_native_low_gate",
+  "arm_b": "hc_native_low_gate on",
+  "prompts": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "old": {
+     "decode_tok_s": [
+      45.15,
+      44.67,
+      44.79
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.45,
+      44.49,
+      44.3
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -1.02
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "old": {
+     "decode_tok_s": [
+      47.23,
+      46.94,
+      47.02
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      46.67,
+      46.82,
+      46.56
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.81
+   }
+  ],
+  "version": "first version (merged GEMV + ax_hc_low_gate_v1), later replaced by hc_gemv_epilogue_read"
+ },
+ "hc_native_read_ballast_control": {
+  "old_vs_ballast": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "old": {
+     "decode_tok_s": [
+      44.81,
+      44.76,
+      44.71
+     ]
+    },
+    "ballast": {
+     "decode_tok_s": [
+      44.67,
+      44.59,
+      44.54
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.36
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "old": {
+     "decode_tok_s": [
+      46.97,
+      46.97,
+      46.87
+     ]
+    },
+    "ballast": {
+     "decode_tok_s": [
+      46.88,
+      46.84,
+      46.86
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.16
+   }
+  ],
+  "old_vs_native": [
+   {
+    "file": "p1.txt",
+    "prompt_tokens": 2207,
+    "old": {
+     "decode_tok_s": [
+      44.81,
+      44.76,
+      44.71
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      44.49,
+      44.33,
+      44.31
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.86
+   },
+   {
+    "file": "p3.txt",
+    "prompt_tokens": 1905,
+    "old": {
+     "decode_tok_s": [
+      46.97,
+      46.97,
+      46.87
+     ]
+    },
+    "new": {
+     "decode_tok_s": [
+      46.69,
+      46.55,
+      46.51
+     ]
+    },
+    "text_identical": true,
+    "decode_delta_pct": -0.75
+   }
+  ],
+  "version": "first version (merged GEMV + ax_hc_low_gate_v1), later replaced by hc_gemv_epilogue_read"
+ },
+ "hc_gemv_epilogue_read": {
+  "what": "ax_hc_down_gate_v1 + ax_hc_up_mix_v1: MLX-gemv-equivalent kernels with the low/gate and mix epilogues fused; default-on",
+  "m5_same_binary_ab": {
+   "arm_a": "default mask without hc_native_low_gate",
+   "arm_b": "default mask with hc_native_low_gate",
+   "rounds": 3,
+   "prompts": [
+    {
+     "file": "p1.txt",
+     "prompt_tokens": 2207,
+     "base": {
+      "decode_tok_s": [
+       45.19,
+       45.04,
+       44.93
+      ]
+     },
+     "hc": {
+      "decode_tok_s": [
+       47.03,
+       47.0,
+       46.99
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 4.34
+    },
+    {
+     "file": "p3.txt",
+     "prompt_tokens": 1905,
+     "base": {
+      "decode_tok_s": [
+       47.44,
+       47.58,
+       47.18
+      ]
+     },
+     "hc": {
+      "decode_tok_s": [
+       49.81,
+       49.76,
+       49.71
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 4.98
+    },
+    {
+     "file": "long1.txt",
+     "prompt_tokens": 8976,
+     "base": {
+      "decode_tok_s": [
+       43.9,
+       43.87,
+       43.76
+      ]
+     },
+     "hc": {
+      "decode_tok_s": [
+       45.82,
+       45.71,
+       45.77
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 4.39
+    }
+   ]
+  },
+  "m2_ultra_same_binary_ab": {
+   "arm_a": "default mask without hc_native_low_gate",
+   "arm_b": "default (kernels on)",
+   "rounds": 2,
+   "prompts": [
+    {
+     "file": "p1.txt",
+     "nohc": {
+      "decode_tok_s": [
+       31.31,
+       31.39
+      ]
+     },
+     "default": {
+      "decode_tok_s": [
+       31.43,
+       31.6
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 0.53
+    },
+    {
+     "file": "p3.txt",
+     "nohc": {
+      "decode_tok_s": [
+       33.28,
+       33.24
+      ]
+     },
+     "default": {
+      "decode_tok_s": [
+       33.51,
+       33.58
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 0.86
+    },
+    {
+     "file": "long1.txt",
+     "nohc": {
+      "decode_tok_s": [
+       30.49,
+       30.37
+      ]
+     },
+     "default": {
+      "decode_tok_s": [
+       30.48,
+       30.57
+      ]
+     },
+     "text_identical": true,
+     "decode_delta_pct": 0.31
+    }
+   ]
+  },
+  "ops_per_step": {
+   "before": 3712,
+   "after": 3040,
+   "census": "raw/op-census-m2-dev-shipping-hcgemv.json"
+  }
+ }
+}

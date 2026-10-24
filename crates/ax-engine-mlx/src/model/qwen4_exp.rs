@@ -7,10 +7,77 @@ use std::io::Read;
 #[cfg(test)]
 pub(crate) mod profiling;
 
+/// The prompt a chunked prefill is working through, so the n-gram rows of the
+/// next chunk can be read while this chunk computes. Row IDs depend only on
+/// token IDs, never on activations, which is what makes the read-ahead exact.
+pub(crate) mod lookahead {
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    thread_local! {
+        static PROMPT: RefCell<Option<(usize, Arc<[u32]>)>> = const { RefCell::new(None) };
+    }
+
+    /// Clears the lookahead when the prefill that installed it ends.
+    pub(crate) struct Scope;
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            PROMPT.with_borrow_mut(|prompt| *prompt = None);
+        }
+    }
+
+    /// `prompt` is what the prefill is about to feed, starting at cache
+    /// position `base_position`.
+    pub(crate) fn scope(base_position: usize, prompt: &[u32]) -> Scope {
+        PROMPT.with_borrow_mut(|slot| *slot = Some((base_position, Arc::from(prompt))));
+        Scope
+    }
+
+    /// The tokens expected in the chunk after one that ends at `end_position`
+    /// and was `chunk_len` long. Prefill feeds the last prompt token alone, so
+    /// the prefetched chunk stops one short of the prompt end. A guess that
+    /// does not match the real next chunk costs a synchronous read, nothing
+    /// else.
+    pub(crate) fn next_chunk(end_position: usize, chunk_len: usize) -> Option<Vec<u32>> {
+        PROMPT.with_borrow(|slot| {
+            let (base, prompt) = slot.as_ref()?;
+            let start = end_position.checked_sub(*base)?;
+            let prefix_end = prompt.len().saturating_sub(1);
+            if chunk_len < 2 || start >= prefix_end {
+                return None;
+            }
+            let end = start.saturating_add(chunk_len).min(prefix_end);
+            Some(prompt[start..end].to_vec())
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn next_chunk_follows_the_prompt_and_stops_before_the_last_token() {
+            let prompt: Vec<u32> = (0..10).collect();
+            assert_eq!(next_chunk(4, 4), None, "no scope installed");
+            let scope = scope(100, &prompt);
+            assert_eq!(next_chunk(104, 4), Some(vec![4, 5, 6, 7]));
+            assert_eq!(next_chunk(108, 4), Some(vec![8]), "stops at the singleton");
+            assert_eq!(next_chunk(109, 4), None);
+            assert_eq!(next_chunk(100 - 1, 4), None, "before the prompt");
+            assert_eq!(next_chunk(104, 1), None, "decode steps never read ahead");
+            drop(scope);
+            assert_eq!(next_chunk(104, 4), None, "scope cleared on drop");
+        }
+    }
+}
+
 use mlx_sys::{MlxArray, MlxDtype, add, astype, reshape};
 
 use super::shared::qwen4_exp_attention::Qwen4ExpAttentionCache;
 use super::shared::qwen4_exp_gdn::Qwen4ExpGdnState;
+#[cfg(test)]
+use super::shared::qwen4_exp_kv_history::KvHistory;
 use super::shared::qwen4_exp_ple::Qwen4ExpPleConvState;
 use super::shared::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::kv_cache::MlxKVCacheSerializeError;
@@ -125,6 +192,10 @@ pub(crate) struct Qwen4ExpState {
     owner: u64,
     position: usize,
     layers: Vec<LayerState>,
+    /// MRoPE positions of a request with image input; `None` for text.
+    /// Rotary calls read them through [`crate::qwen4_exp_qsa::scoped_media`]
+    /// for the duration of each forward over this state.
+    media: Option<std::sync::Arc<crate::qwen4_exp_qsa::Qwen4ExpMediaPositions>>,
 }
 
 impl Qwen4ExpState {
@@ -132,6 +203,7 @@ impl Qwen4ExpState {
         Self {
             owner,
             position: 0,
+            media: None,
             layers: weights
                 .layers
                 .iter()
@@ -155,6 +227,22 @@ impl Qwen4ExpState {
         self.position
     }
 
+    /// Attach image MRoPE positions to a fresh request state.
+    pub(crate) fn with_media(
+        mut self,
+        media: std::sync::Arc<crate::qwen4_exp_qsa::Qwen4ExpMediaPositions>,
+    ) -> Self {
+        self.media = Some(media);
+        self
+    }
+
+    /// Whether this request carries image positions. Such state has no
+    /// portable snapshot encoding: restoring it as text would rotate later
+    /// tokens at the wrong positions.
+    pub(crate) fn has_media(&self) -> bool {
+        self.media.is_some()
+    }
+
     pub(crate) fn arrays(&self) -> Vec<&MlxArray> {
         let mut result = Vec::new();
         for layer in &self.layers {
@@ -165,9 +253,14 @@ impl Qwen4ExpState {
                 }
                 AttentionState::Gdn(None) => {}
                 AttentionState::Qsa(state) => {
-                    result.extend(state.keys());
-                    result.extend(state.values());
+                    result.extend(state.keys().arrays());
+                    result.extend(state.values().arrays());
                     result.extend(state.index().keys());
+                    // Derived pooled block keys: evaluated with the state so
+                    // their lazy concat chain cannot grow across steps.
+                    if let Some(pooled) = state.index().pooled_blocks() {
+                        result.push(pooled);
+                    }
                 }
             }
             if let Some(conv) = layer.ple.as_ref().and_then(|s| s.conv.as_ref()) {
@@ -175,6 +268,27 @@ impl Qwen4ExpState {
             }
         }
         result
+    }
+
+    /// One descriptor per physical K/V segment: the sealed prefix under the
+    /// base kind and the tail under the tail kind. A history that only has a
+    /// tail keeps the base kind, so one-segment caches look unchanged.
+    #[cfg(test)]
+    fn push_history_segments(
+        result: &mut Vec<Qwen4ExpStateArray>,
+        layer: usize,
+        kind: &'static str,
+        tail_kind: &'static str,
+        history: &KvHistory,
+    ) {
+        let (sealed, tail) = history.segments();
+        if sealed.is_some() {
+            result.push(Qwen4ExpStateArray::new(result.len(), layer, kind));
+        }
+        if tail.is_some() {
+            let kind = if sealed.is_some() { tail_kind } else { kind };
+            result.push(Qwen4ExpStateArray::new(result.len(), layer, kind));
+        }
     }
 
     /// Names for [`Self::arrays`] in the same order. PLE n-gram token
@@ -195,14 +309,25 @@ impl Qwen4ExpState {
                 }
                 AttentionState::Gdn(None) => {}
                 AttentionState::Qsa(state) => {
-                    if state.keys().is_some() {
-                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.k"));
-                    }
-                    if state.values().is_some() {
-                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.v"));
-                    }
+                    Self::push_history_segments(
+                        &mut result,
+                        layer,
+                        "qsa.k",
+                        "qsa.k.tail",
+                        state.keys(),
+                    );
+                    Self::push_history_segments(
+                        &mut result,
+                        layer,
+                        "qsa.v",
+                        "qsa.v.tail",
+                        state.values(),
+                    );
                     if state.index().keys().is_some() {
                         result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.index"));
+                    }
+                    if state.index().pooled_blocks().is_some() {
+                        result.push(Qwen4ExpStateArray::new(result.len(), layer, "qsa.pooled"));
                     }
                 }
             }
@@ -213,6 +338,47 @@ impl Qwen4ExpState {
                 .is_some()
             {
                 result.push(Qwen4ExpStateArray::new(result.len(), layer, "ple.conv"));
+            }
+        }
+        result
+    }
+
+    /// Request state as logical tensors: every QSA K/V history is flattened to
+    /// one tensor, so two states with the same content compare equal whatever
+    /// their segmentation (a batched window and a run of singleton steps seal
+    /// at different rows). Names match [`Self::array_descriptors`] of an
+    /// unsegmented state.
+    #[cfg(test)]
+    pub(crate) fn logical_arrays(&self) -> Vec<(Qwen4ExpStateArray, MlxArray)> {
+        let mut result: Vec<(Qwen4ExpStateArray, MlxArray)> = Vec::new();
+        let push = |result: &mut Vec<(Qwen4ExpStateArray, MlxArray)>,
+                    layer: usize,
+                    kind: &'static str,
+                    array: MlxArray| {
+            let descriptor = Qwen4ExpStateArray::new(result.len(), layer, kind);
+            result.push((descriptor, array));
+        };
+        for (layer, layer_state) in self.layers.iter().enumerate() {
+            match &layer_state.attention {
+                AttentionState::Gdn(Some(state)) => {
+                    push(&mut result, layer, "gdn.conv", state.conv.clone());
+                    push(&mut result, layer, "gdn.recurrent", state.recurrent.clone());
+                }
+                AttentionState::Gdn(None) => {}
+                AttentionState::Qsa(state) => {
+                    if let Some(keys) = state.keys().flat() {
+                        push(&mut result, layer, "qsa.k", keys);
+                    }
+                    if let Some(values) = state.values().flat() {
+                        push(&mut result, layer, "qsa.v", values);
+                    }
+                    if let Some(index) = state.index().keys() {
+                        push(&mut result, layer, "qsa.index", index.clone());
+                    }
+                }
+            }
+            if let Some(conv) = layer_state.ple.as_ref().and_then(|s| s.conv.as_ref()) {
+                push(&mut result, layer, "ple.conv", conv.array().clone());
             }
         }
         result
@@ -239,9 +405,10 @@ impl Qwen4ExpState {
                 AttentionState::Qsa(state) if state.keys().is_some() => {
                     let bytes = state
                         .keys()
-                        .into_iter()
-                        .chain(state.values())
+                        .arrays()
+                        .chain(state.values().arrays())
                         .chain(state.index().keys())
+                        .chain(state.index().pooled_blocks())
                         .fold(0u64, |total, array| {
                             total.saturating_add(array.nbytes() as u64)
                         });
@@ -289,6 +456,7 @@ impl Qwen4ExpState {
         Some(Self {
             owner,
             position,
+            media: None,
             layers: vec![LayerState {
                 attention: AttentionState::Qsa(cache),
                 ple: None,
@@ -321,11 +489,13 @@ impl Qwen4ExpState {
             }
             AttentionState::Qsa(cache) => {
                 out.push(ATTENTION_TAG_QSA);
-                match (cache.keys(), cache.values()) {
+                // The wire carries the flat logical tensor whatever the
+                // in-memory segmentation.
+                match (cache.keys().flat(), cache.values().flat()) {
                     (Some(keys), Some(values)) => {
                         out.push(TAG_PRESENT);
-                        write_tensor(out, keys);
-                        write_tensor(out, values);
+                        write_tensor(out, &keys);
+                        write_tensor(out, &values);
                     }
                     _ => out.push(TAG_ABSENT),
                 }
@@ -478,6 +648,7 @@ impl Qwen4ExpState {
         let state = Self {
             owner,
             position,
+            media: None,
             layers: built,
         };
         state
@@ -540,8 +711,8 @@ impl Qwen4ExpState {
                     }
                     for array in cache
                         .keys()
-                        .into_iter()
-                        .chain(cache.values())
+                        .arrays()
+                        .chain(cache.values().arrays())
                         .chain(cache.index().keys())
                     {
                         if array.shape()[0] != 1
@@ -821,6 +992,30 @@ pub(crate) fn advance_prepared_qsa_cache(
     Ok(next)
 }
 
+/// Run the trunk from token embeddings the caller prepared (image features
+/// already scattered over their placeholder tokens). PLE still hashes the
+/// raw `tokens`, placeholders included.
+pub(crate) fn forward_embedded_rows(
+    weights: &Qwen4ExpWeights,
+    tokens: &[u32],
+    embedded: &MlxArray,
+    state: &Qwen4ExpState,
+    owner: u64,
+    rows: LogitRows,
+) -> Result<Qwen4ExpOutput, String> {
+    let hidden = weights.layout.expand(embedded).map_err(|e| e.to_string())?;
+    forward_prepared_rows(
+        weights,
+        tokens,
+        hidden,
+        state,
+        owner,
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::Shared,
+        rows,
+    )
+}
+
 /// Run AX-owned layers from an explicitly prepared packed residual. The MTP
 /// candidate uses this boundary with its separately owned one-layer graph.
 pub(crate) fn forward_prepared(
@@ -867,6 +1062,8 @@ fn forward_prepared_rows(
     rows: LogitRows,
 ) -> Result<Qwen4ExpOutput, String> {
     let (end, vocabulary) = validate_prepared_input(weights, tokens, &hidden, state, owner)?;
+    // Image requests rotate attention and QSA keys at their MRoPE positions.
+    let _media_scope = crate::qwen4_exp_qsa::scoped_media(state.media.clone());
     #[cfg(test)]
     profiling::begin_chunk(state.position, tokens.len());
     #[cfg(test)]
@@ -882,6 +1079,13 @@ fn forward_prepared_rows(
                 #[cfg(test)]
                 profiling::mark("ngram_lookup", &[]);
                 let rows = ple.table.gather(&lookup.rows)?;
+                // Read the next prefill chunk's rows while this chunk computes.
+                if let Some(next) =
+                    lookahead::next_chunk(state.position + tokens.len(), tokens.len())
+                    && let Ok(next) = ple.layout.plan(&lookup.next_history, &next)
+                {
+                    ple.table.prefetch(next.rows);
+                }
                 #[cfg(test)]
                 {
                     profiling::dump_ngram_lookup(tokens.len(), &lookup.rows, &rows);
@@ -945,8 +1149,8 @@ fn forward_prepared_rows(
                 #[cfg(test)]
                 {
                     let mut arrays = vec![&delta];
-                    arrays.extend(cache.keys());
-                    arrays.extend(cache.values());
+                    arrays.extend(cache.keys().arrays());
+                    arrays.extend(cache.values().arrays());
                     arrays.extend(cache.index().keys());
                     profiling::mark("qsa", &arrays);
                 }
@@ -1166,6 +1370,7 @@ mod tests {
         let populated = Qwen4ExpState {
             owner,
             position: 2,
+            media: None,
             layers: vec![
                 LayerState {
                     attention: AttentionState::Gdn(Some(Qwen4ExpGdnState {
@@ -1194,6 +1399,7 @@ mod tests {
         let fresh = Qwen4ExpState {
             owner,
             position: 0,
+            media: None,
             layers: vec![
                 LayerState {
                     attention: AttentionState::Gdn(None),
@@ -1247,8 +1453,8 @@ mod tests {
         }
         match &restored.layers[1].attention {
             AttentionState::Qsa(cache) => {
-                assert_eq!(cache.keys().unwrap().dtype(), MlxDtype::Bfloat16);
-                assert_eq!(cache.values().unwrap().dtype(), MlxDtype::Bfloat16);
+                assert_eq!(cache.flat_keys().unwrap().dtype(), MlxDtype::Bfloat16);
+                assert_eq!(cache.flat_values().unwrap().dtype(), MlxDtype::Bfloat16);
                 assert_eq!(cache.index().keys().unwrap().dtype(), MlxDtype::Bfloat16);
             }
             _ => panic!("expected QSA state"),
@@ -1279,6 +1485,80 @@ mod tests {
         );
         assert!(fresh.arrays().is_empty());
         assert!(fresh.array_descriptors().is_empty());
+    }
+
+    #[test]
+    fn qsa_wire_bytes_ignore_kv_segmentation() {
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        let rows: Vec<MlxArray> = (0..12)
+            .map(|step| {
+                astype(
+                    &array_f32(&[step as f32, step as f32 + 0.5], &[1, 1, 1, 2]),
+                    MlxDtype::Bfloat16,
+                    None,
+                )
+            })
+            .collect();
+        let build = |segments: Option<(usize, usize)>| {
+            let (keys, values) = with_kv_segments(segments, || {
+                let mut keys = KvHistory::empty();
+                let mut values = KvHistory::empty();
+                for row in &rows {
+                    keys = keys.append(row);
+                    values = values.append(row);
+                }
+                (keys, values)
+            });
+            assert_eq!(keys.token_count(), rows.len());
+            assert_eq!(values.token_count(), rows.len());
+            Qwen4ExpAttentionCache::from_histories(
+                keys,
+                values,
+                QsaIndexKeyCache::from_serialized(Some(rows[0].clone())),
+            )
+        };
+        let state = |cache: Qwen4ExpAttentionCache| Qwen4ExpState {
+            owner: 7,
+            position: rows.len(),
+            media: None,
+            layers: vec![LayerState {
+                attention: AttentionState::Qsa(cache),
+                ple: None,
+            }],
+        };
+        let wire = |state: &Qwen4ExpState| {
+            let mut out = Vec::new();
+            state.write_layer(0, &mut out, test_write_tensor);
+            out
+        };
+
+        let flat = build(None);
+        let segmented = build(Some((8, 4)));
+        assert!(
+            segmented.keys().segments().1.is_some(),
+            "expected a live K tail after 12 single-row appends"
+        );
+        assert!(segmented.values().segments().1.is_some());
+        assert!(flat.keys().segments().1.is_none());
+        let (flat_state, segmented_state) = (state(flat), state(segmented));
+        assert_eq!(
+            wire(&flat_state),
+            wire(&segmented_state),
+            "wire bytes must not depend on the in-memory segmentation"
+        );
+        // Physical enumeration differs (the segmented state has more arrays),
+        // but the logical view used by the parity diagnostics must not.
+        assert_ne!(flat_state.arrays().len(), segmented_state.arrays().len());
+        let flat_logical = flat_state.logical_arrays();
+        let segmented_logical = segmented_state.logical_arrays();
+        assert_eq!(flat_logical.len(), segmented_logical.len());
+        for ((flat_descriptor, flat_array), (segmented_descriptor, segmented_array)) in
+            flat_logical.iter().zip(&segmented_logical)
+        {
+            assert_eq!(flat_descriptor, segmented_descriptor);
+            assert_eq!(flat_array.shape(), segmented_array.shape());
+        }
     }
 
     #[test]
@@ -1355,6 +1635,7 @@ mod tests {
         let empty_layer = Qwen4ExpState {
             owner: 1,
             position: 3,
+            media: None,
             layers: vec![LayerState {
                 attention: AttentionState::Gdn(None),
                 ple: None,
@@ -1367,6 +1648,7 @@ mod tests {
         let populated_layer = Qwen4ExpState {
             owner: 1,
             position: 3,
+            media: None,
             layers: vec![LayerState {
                 attention: AttentionState::Gdn(Some(Qwen4ExpGdnState {
                     conv: array_f32(&[0.0], &[1, 1, 1]),

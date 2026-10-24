@@ -136,9 +136,9 @@ MTP-D default promotion, 8h/72h
 endurance, long-context decode-at-depth, peer ranking, multi-model residency,
 multimodal quality, MXFP4/MXFP8 format-specific qualification. 27B campaign runs belong on the
 Mac mini M4 Pro 64 GB SKU. Qwen 3.8 Flash Next MXFP4 MTP is a
-second SKU on Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GiB+
+second SKU whose qualification and certification standard is MacBook Pro M5 Max 128 GB
 (`python3 scripts/qualify_qwen38_flash_next.py --dry-run`).
-Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
+Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending.
 Audited affine 4-bit/group64 and 6-bit/group64 packs load with no environment
 variable. The Flash Next development comparison uses a pinned MLX-VLM
 reference because `mlx_lm` has no `qwen4_exp` model. Passing `--skip-mlx-lm`

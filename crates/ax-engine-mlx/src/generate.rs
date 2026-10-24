@@ -803,10 +803,14 @@ pub(crate) fn chunked_prefill_qwen3_vl_with_sampling_buffers(
     sampling_logits_buf: &mut Vec<f32>,
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
-    let prepared =
-        crate::qwen3_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
-            .map_err(|error| error.to_string())?;
-    let logits = forward_qwen_visual_prefill(cfg, weights, prompt_tokens, prepared, cache)?;
+    let logits = if cfg.model_family == "qwen4_exp" {
+        crate::model::qwen4_exp_visual_prefill(cfg, weights, prompt_tokens, inputs, cache)?
+    } else {
+        let prepared =
+            crate::qwen3_vl::build_vl_prefill_embeddings(cfg, weights, prompt_tokens, inputs)
+                .map_err(|error| error.to_string())?;
+        forward_qwen_visual_prefill(cfg, weights, prompt_tokens, prepared, cache)?
+    };
     finish_prefill_sampling(
         &logits,
         prompt_tokens,

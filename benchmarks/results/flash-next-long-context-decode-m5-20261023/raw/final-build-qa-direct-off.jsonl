@@ -1,0 +1,8 @@
+{"ttft": 2.382, "tokens": 128, "prompt_tokens": 2207, "decode_tok_s": 41.71, "sha": "6189ecc27de45897", "file": "p1.txt"}
+{"ttft": 1.431, "tokens": 128, "prompt_tokens": 1905, "decode_tok_s": 44.22, "sha": "8c0545060f84c30b", "file": "p3.txt"}
+{"ttft": 2.719, "tokens": 128, "prompt_tokens": 2560, "decode_tok_s": 41.8, "sha": "71fe3d02ce66dd14", "file": "p5.txt"}
+{"ttft": 0.295, "tokens": 89, "prompt_tokens": 28, "decode_tok_s": 45.23, "sha": "17cb400c2f817b18", "file": "s1.txt"}
+{"ttft": 0.312, "tokens": 128, "prompt_tokens": 34, "decode_tok_s": 45.61, "sha": "cfc9856c3cc35cc3", "file": "s2.txt"}
+{"ttft": 0.289, "tokens": 128, "prompt_tokens": 33, "decode_tok_s": 45.55, "sha": "e579c9d7ad401844", "file": "s3.txt"}
+{"ttft": 13.648, "tokens": 128, "prompt_tokens": 8976, "decode_tok_s": 39.48, "sha": "c14a851241e3a98f", "file": "long1.txt"}
+{"ttft": 76.323, "tokens": 128, "prompt_tokens": 39225, "decode_tok_s": 32.35, "sha": "a3ac5cb9493c449f", "file": "long32.txt"}

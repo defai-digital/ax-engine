@@ -571,6 +571,33 @@ enum LinearAttentionProjectionRowSource {
 /// (`mlx_array_set`), and per-layer compiled closures (e.g. the compiled
 /// shared-expert forward) need to capture cloned `QuantizedWeight`s as graph
 /// constants.
+/// Lazily built `[in, out]` transposed *view* (no copy) of an unquantized
+/// `[out, in]` weight, reused by every matmul instead of rebuilding the view
+/// per call.
+///
+/// A clone starts EMPTY on purpose: code that clones a weight and then swaps
+/// the clone's `weight` must never inherit a view of the old tensor. Replacing
+/// `weight` in place on a weight that may already have served a projection
+/// requires [`QuantizedWeight::invalidate_weight_t_view`].
+#[derive(Default)]
+pub struct WeightViewCell(std::sync::OnceLock<MlxArray>);
+
+impl Clone for WeightViewCell {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl WeightViewCell {
+    pub(crate) fn get_or_init(&self, build: impl FnOnce() -> MlxArray) -> &MlxArray {
+        self.0.get_or_init(build)
+    }
+
+    fn reset(&mut self) {
+        self.0 = std::sync::OnceLock::new();
+    }
+}
+
 #[derive(Clone)]
 pub struct QuantizedWeight {
     pub weight: MlxArray,
@@ -599,6 +626,14 @@ pub struct QuantizedWeight {
     pub decode_q2_weight: Option<MlxArray>,
     pub decode_q2_scales: Option<MlxArray>,
     pub decode_q2_biases: Option<MlxArray>,
+    /// Lazily built `[in, out]` transposed *view* of an unquantized `[out, in]`
+    /// weight (no copy); reused by every decode/prefill matmul instead of
+    /// rebuilding the view per call.
+    ///
+    /// An MLX transpose is metadata only, so this cached view is bit-identical
+    /// to a per-call transpose: `matmul` sees the same strided operand either
+    /// way. Quantized weights never take that path and leave the lock empty.
+    pub weight_t_view: WeightViewCell,
 }
 
 /// Decode-only `lm_head` cache. 2-bit gs64 cuts ~2.14 GB/token vs BF16
@@ -638,12 +673,22 @@ impl QuantizedWeight {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: WeightViewCell::default(),
         }
     }
 
     pub(crate) fn with_linear_bias(mut self, linear_bias: Option<MlxArray>) -> Self {
         self.linear_bias = linear_bias;
         self
+    }
+
+    /// Drop the cached `[in, out]` transposed view.
+    ///
+    /// Required whenever `weight` is replaced in place after a projection could
+    /// already have cached the view: a cached transpose is a view of the old
+    /// tensor, so it must never outlive it.
+    pub(crate) fn invalidate_weight_t_view(&mut self) {
+        self.weight_t_view.reset();
     }
 
     /// Keep the checkpoint's target head identical across prefill, decode, and verification.
@@ -675,6 +720,7 @@ impl QuantizedWeight {
         // Drop the original [out, in] allocation. Readers that still want
         // that layout go through a lazy view of the single W_t buffer.
         self.weight = transpose(&transposed, &[1, 0], None);
+        self.invalidate_weight_t_view();
         self.decode_weight_t = Some(transposed);
     }
 
@@ -817,6 +863,9 @@ impl QuantizedWeight {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            // `weight` is a brand-new concatenated array, so its transposed view
+            // must be rebuilt rather than inherited from either input.
+            weight_t_view: WeightViewCell::default(),
         })
     }
 
@@ -944,6 +993,7 @@ pub(crate) fn requant_affine_to_prefill_q2(src: &QuantizedWeight) -> Option<Quan
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -996,6 +1046,7 @@ pub(crate) fn requant_affine_to_prefill_gs64(src: &QuantizedWeight) -> Option<Qu
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -1045,6 +1096,7 @@ pub(crate) fn requant_affine_to_prefill_q3(src: &QuantizedWeight) -> Option<Quan
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -1076,6 +1128,7 @@ pub(crate) fn contiguous_affine_weight(src: &QuantizedWeight) -> QuantizedWeight
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     }
 }
 
@@ -1244,6 +1297,20 @@ pub(crate) fn load_weights_with_session_budget(
         let lm_head = dedicated.lm_head.clone();
         let expert_stream = dedicated.expert_stream.clone();
         let qwen4_exp_mtp = load_flash_next_mtp_candidate(artifacts, &dedicated);
+        // The tower only serves image requests: a pack whose tower does not
+        // load keeps serving text, and image requests then fail with a
+        // missing-tower error.
+        let qwen3_vl_vision = match qwen4_exp::load_vision_tower(artifacts.root_dir()) {
+            Ok(tower) => tower,
+            Err(error) => {
+                tracing::warn!(
+                    target: "ax_engine_mlx::weights",
+                    error = %error,
+                    "qwen4_exp vision tower not loaded; serving text only",
+                );
+                None
+            }
+        };
         return Ok(ModelWeights {
             token_embedding,
             final_norm: None,
@@ -1266,7 +1333,7 @@ pub(crate) fn load_weights_with_session_budget(
             deepseek_v4_head: None,
             deepseek_v4_nextn: None,
             unlimited_ocr_vision: None,
-            qwen3_vl_vision: None,
+            qwen3_vl_vision,
             minicpm_v46_vision: None,
             nemotron_omni: None,
             expert_stream,
@@ -2715,6 +2782,7 @@ fn mtp_take_weight(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -2908,6 +2976,7 @@ fn mtp_take_mxfp4_experts(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let down = QuantizedWeight {
         weight: stack(&down_weight_refs, 0, None),
@@ -2921,6 +2990,7 @@ fn mtp_take_mxfp4_experts(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     Some((gate_up, down))
 }
@@ -3094,6 +3164,7 @@ fn mtp_take_per_expert_qwen_moe(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     let down = QuantizedWeight {
         weight: stack(&down_refs, 0, None),
@@ -3117,6 +3188,7 @@ fn mtp_take_per_expert_qwen_moe(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     };
     tracing::info!(
         target: "ax_mlx::weights",
@@ -3167,6 +3239,35 @@ fn runtime_draft_lm_head_spec_enabled() -> bool {
         .map(|v| v != "0")
         .unwrap_or(false)
 }
+
+/// Width of the automatically derived draft-only lm_head, or `None` to draft
+/// on the target head itself. `quantized_bits` is `None` for a dense head.
+/// A dense head is requantized when `dense_enabled`; a quantized head only
+/// when `quantized_enabled`, it is at least [`MIN_REQUANTIZED_HEAD_BITS`]
+/// wide, and wider than `draft_bits`. The 8-bit 27B head gained +9.8% MTP
+/// decode; the 4-bit 35B-A3B head gained nothing measurable (M5 Max), so
+/// narrow heads keep drafting on themselves. The logical input width must
+/// divide the draft group size (64).
+fn default_draft_lm_head_bits(
+    quantized_bits: Option<i32>,
+    input_dim: i32,
+    is_matrix: bool,
+    dense_enabled: bool,
+    quantized_enabled: bool,
+    draft_bits: i32,
+) -> Option<i32> {
+    if !is_matrix || input_dim <= 0 || input_dim % 64 != 0 {
+        return None;
+    }
+    match quantized_bits {
+        None => dense_enabled.then_some(draft_bits),
+        Some(bits) => (quantized_enabled && bits >= MIN_REQUANTIZED_HEAD_BITS && bits > draft_bits)
+            .then_some(draft_bits),
+    }
+}
+
+/// Narrowest quantized target head worth requantizing for drafting.
+const MIN_REQUANTIZED_HEAD_BITS: i32 = 6;
 
 fn valid_draft_lm_head_spec(bits: i32, group_size: i32) -> Option<DraftLmHeadSpec> {
     // Keep this in lockstep with MLX's affine quantizer. Passing an unsupported
@@ -3248,6 +3349,7 @@ fn build_draft_lm_head(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -4427,16 +4529,41 @@ fn load_mtp(
                 // accepted tokens per cycle and greedy identity unchanged),
                 // unlike the 2-bit decode overlay whose acceptance collapse
                 // tripped the MTP bypass gate in the 2026-08-19 M5 A/B.
+                // A quantized head wider than the draft width (the 8-bit
+                // head of the 27B MXFP4 pack) gets the same treatment; see
+                // `mtp_quantized_head_draft_enabled`.
                 let head_shape = lm_head.weight.shape();
-                if lm_head.scales.is_none()
-                    && crate::fastpath::mtp_dense_head_draft_q4_enabled()
-                    && head_shape.len() == 2
-                    && head_shape.last().is_some_and(|last| last % 64 == 0)
-                {
-                    valid_draft_lm_head_spec(crate::fastpath::mtp_dense_head_draft_bits(), 64)
-                } else {
-                    None
-                }
+                let input_dim = head_shape.last().copied().unwrap_or(0);
+                let logical_input_dim = match &lm_head.scales {
+                    None => input_dim,
+                    Some(scales) => {
+                        // Packed uint32 columns and per-group scales must agree
+                        // on the logical width; a head whose recorded bits or
+                        // group size are only defaults fails this and keeps
+                        // drafting on itself.
+                        let from_packed = input_dim.saturating_mul(32) / lm_head.bits.max(1);
+                        let from_scales = scales
+                            .shape()
+                            .last()
+                            .copied()
+                            .unwrap_or(0)
+                            .saturating_mul(lm_head.group_size);
+                        if from_packed == from_scales {
+                            from_packed
+                        } else {
+                            0
+                        }
+                    }
+                };
+                default_draft_lm_head_bits(
+                    lm_head.scales.is_some().then_some(lm_head.bits),
+                    logical_input_dim,
+                    head_shape.len() == 2,
+                    crate::fastpath::mtp_dense_head_draft_q4_enabled(),
+                    crate::fastpath::mtp_quantized_head_draft_enabled(),
+                    crate::fastpath::mtp_dense_head_draft_bits(),
+                )
+                .and_then(|bits| valid_draft_lm_head_spec(bits, 64))
             })
             .and_then(|spec| build_draft_lm_head(lm_head, spec)),
         pre_fc_norm_embedding,
@@ -4582,6 +4709,7 @@ fn apply_rotated_checkpoint(
                 }
                 require_rotation_eligible_dim(&key, logical_inner)?;
                 target.weight = rotated_w.clone();
+                target.invalidate_weight_t_view();
                 target.scales = Some(scales.clone());
                 target.biases = Some(biases.clone());
                 target.bits = bits_calc as i32;
@@ -4593,6 +4721,7 @@ fn apply_rotated_checkpoint(
                 require_rotation_eligible_dim(&key, inner)?;
                 let cast = astype(rotated_w, MlxDtype::Bfloat16, None);
                 target.weight = cast;
+                target.invalidate_weight_t_view();
                 target.scales = None;
                 target.biases = None;
             }
@@ -6210,6 +6339,7 @@ fn split_deepseek_kv_b_projection(
                 decode_q2_weight: None,
                 decode_q2_scales: None,
                 decode_q2_biases: None,
+                weight_t_view: Default::default(),
             },
             QuantizedWeight {
                 weight: unembed_out,
@@ -6224,6 +6354,7 @@ fn split_deepseek_kv_b_projection(
                 decode_q2_weight: None,
                 decode_q2_scales: None,
                 decode_q2_biases: None,
+                weight_t_view: Default::default(),
             },
         ))
     }
@@ -6265,6 +6396,7 @@ fn requantize_affine_weight(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -6350,6 +6482,7 @@ fn concat_quantized_weight_rows(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -6513,6 +6646,7 @@ fn slice_quantized_weight_rows(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 
@@ -6750,6 +6884,7 @@ fn pack_linear_attention_projection_rows(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 

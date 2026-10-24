@@ -17,8 +17,12 @@ pub(super) fn proto_sampling_to_sdk(s: proto::GenerateSampling) -> GenerateSampl
             s.repetition_penalty
         },
         repetition_context_size: None,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
+        logit_bias: Default::default(),
+        json_schema: None,
         seed: s.seed,
         // proto3 scalar has no presence; only a non-zero seed is explicit.
         seed_explicit: s.seed != 0,

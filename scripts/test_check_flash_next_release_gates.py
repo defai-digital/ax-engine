@@ -20,7 +20,7 @@ import qualify_qwen38_flash_next as qualify  # noqa: E402
 TH = json.loads(mod.THRESHOLDS.read_text())
 GIB_KIB = 1024 * 1024
 FAILURES = ["format_csv_pair", "format_status_colon", "instruction_alphabet_first", "knowledge_water_formula"]
-HARDWARE = {"form_factor": "Mac Studio", "soc": "Apple M2 Ultra", "memory_bytes": 192 * 1024**3}
+HARDWARE = {"form_factor": "MacBook Pro", "soc": "Apple M5 Max", "memory_bytes": 128 * 1024**3}
 CELL_HASHES = {f"cell-{length}-{run}": f"h{length}{run}" for length in (512, 2048, 8192)
                for run in range(5)}
 COMMON = {"server_sha256": "s", "inventory_sha256": "i", "hardware": HARDWARE,

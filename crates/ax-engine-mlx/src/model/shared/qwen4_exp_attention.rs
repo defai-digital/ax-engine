@@ -12,24 +12,60 @@
 //! state only after the rest of the step succeeds.
 
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, astype, concatenate, contiguous,
+    MlxArray, MlxClosure, MlxDtype, ScaledDotProductAttentionMask, astype, concatenate, contiguous,
     greater_equal, maximum, multiply, reshape, rms_norm, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask, slice, split, take, transpose,
 };
 use thiserror::Error;
 
+use super::qwen4_exp_fused::{self, Stretch};
+use super::qwen4_exp_kv_history::{KvHistory, gather_selected};
 use super::qwen4_exp_residual::{
     Qwen4ExpResidualError, sigmoid_projection_dtype, validate_projection,
 };
 use super::utils::{ProjectionBatchPolicy, qw_with_policy};
 use crate::qwen4_exp_qsa::{
-    QsaError, QsaIndexKeyCache, QsaIndexer, QsaSelection, apply_qsa_rotary_offset,
+    QsaError, QsaIndexKeyCache, QsaIndexer, QsaSelection, apply_qsa_rotary_offset, dtype_key,
 };
 use crate::weights::QuantizedWeight;
 
 type Result<T> = std::result::Result<T, Qwen4ExpAttentionError>;
 
-fn gated_attention_output(attention: &MlxArray, gate: &MlxArray, dtype: MlxDtype) -> MlxArray {
+/// Closure body of the output gate: the attention product with the sigmoid of
+/// the gate projection, cast to the caller's dtype. The dtype is baked in
+/// because the final cast is part of the fused tail, and the registry key
+/// carries both dtypes so a dtype switch rebuilds instead of reusing a stale
+/// body.
+fn qsa_gate_closure(dtype: MlxDtype) -> Option<MlxClosure> {
+    qwen4_exp_fused::compile(move |inputs| {
+        let (attention, gate) = (inputs.get(0), inputs.get(1));
+        vec![astype(
+            &multiply(&attention, &sigmoid_projection_dtype(&gate), None),
+            dtype,
+            None,
+        )]
+    })
+}
+
+/// The attention output gate: `attention * sigmoid(gate)` cast back to
+/// `dtype`, compiled as one stretch when [`Stretch::QsaGate`] applies. `seq`
+/// is the sequence length of the call and gates the fusion like every other
+/// stretch; the eager fallback is the original op sequence.
+fn gated_attention_output(
+    attention: &MlxArray,
+    gate: &MlxArray,
+    dtype: MlxDtype,
+    seq: i32,
+) -> MlxArray {
+    if let Some(gated) = qwen4_exp_fused::apply(
+        Stretch::QsaGate,
+        seq,
+        [dtype_key(dtype), dtype_key(gate.dtype()), 0, 0],
+        || qsa_gate_closure(dtype),
+        &[attention, gate],
+    ) {
+        return gated;
+    }
     // Official QSA rounds sigmoid before the separate attention product.
     let gated = multiply(attention, &sigmoid_projection_dtype(gate), None);
     astype(&gated, dtype, None)
@@ -182,46 +218,73 @@ pub(crate) struct Qwen4ExpAttentionWeights {
     pub k_norm: MlxArray,
 }
 
-/// Request-owned K/V plus the indexer key history. Never mutated in place.
+/// Request-owned K/V histories plus the indexer key history. Never mutated in
+/// place: an append stages a new history and the caller publishes it.
 #[derive(Clone)]
 pub(crate) struct Qwen4ExpAttentionCache {
-    keys: Option<MlxArray>,
-    values: Option<MlxArray>,
+    keys: KvHistory,
+    values: KvHistory,
     index: QsaIndexKeyCache,
 }
 
 impl Qwen4ExpAttentionCache {
     pub(crate) fn empty() -> Self {
         Self {
-            keys: None,
-            values: None,
+            keys: KvHistory::empty(),
+            values: KvHistory::empty(),
             index: QsaIndexKeyCache::empty(),
         }
     }
 
-    pub(crate) fn keys(&self) -> Option<&MlxArray> {
-        self.keys.as_ref()
+    pub(crate) fn keys(&self) -> &KvHistory {
+        &self.keys
     }
 
-    pub(crate) fn values(&self) -> Option<&MlxArray> {
-        self.values.as_ref()
+    pub(crate) fn values(&self) -> &KvHistory {
+        &self.values
+    }
+
+    /// Flat K rows for tests that compare whole tensors.
+    #[cfg(test)]
+    pub(crate) fn flat_keys(&self) -> Option<MlxArray> {
+        self.keys.flat()
+    }
+
+    /// Flat V rows for tests that compare whole tensors.
+    #[cfg(test)]
+    pub(crate) fn flat_values(&self) -> Option<MlxArray> {
+        self.values.flat()
     }
 
     pub(crate) fn index(&self) -> &QsaIndexKeyCache {
         &self.index
     }
 
+    /// Test-only: assemble a cache from already-built histories.
+    #[cfg(test)]
+    pub(crate) fn from_histories(
+        keys: KvHistory,
+        values: KvHistory,
+        index: QsaIndexKeyCache,
+    ) -> Self {
+        Self {
+            keys,
+            values,
+            index,
+        }
+    }
+
     pub(crate) fn token_count(&self) -> Result<usize> {
-        match (&self.keys, &self.values) {
-            (None, None) => Ok(0),
-            (Some(keys), Some(values)) => {
-                let key_len = cache_tokens("key cache", keys)?;
-                let value_len = cache_tokens("value cache", values)?;
+        match (self.keys.is_some(), self.values.is_some()) {
+            (false, false) => Ok(0),
+            (true, true) => {
+                let key_len = self.keys.token_count();
+                let value_len = self.values.token_count();
                 if key_len != value_len {
                     return Err(Qwen4ExpAttentionError::TensorShape {
                         tensor: "value cache",
                         expected: format!("[batch, {key_len}, kv_heads, head_dim]"),
-                        actual: values.shape(),
+                        actual: self.values.first().map_or_else(Vec::new, MlxArray::shape),
                     });
                 }
                 Ok(key_len)
@@ -250,8 +313,8 @@ impl Qwen4ExpAttentionCache {
             return Err(Qwen4ExpAttentionError::IncompleteCache);
         }
         Ok(Self {
-            keys,
-            values,
+            keys: keys.map_or_else(KvHistory::empty, KvHistory::from_flat),
+            values: values.map_or_else(KvHistory::empty, KvHistory::from_flat),
             index,
         })
     }
@@ -266,7 +329,7 @@ impl Qwen4ExpAttentionCache {
         dtype: MlxDtype,
     ) -> std::result::Result<(), String> {
         let cached_tokens = self.token_count().map_err(|e| e.to_string())?;
-        if let Some(keys) = self.keys() {
+        for keys in self.keys().arrays() {
             expect_cache_layout(
                 "key cache",
                 keys,
@@ -277,7 +340,7 @@ impl Qwen4ExpAttentionCache {
             )
             .map_err(|e| e.to_string())?;
         }
-        if let Some(values) = self.values() {
+        for values in self.values().arrays() {
             expect_cache_layout(
                 "value cache",
                 values,
@@ -336,8 +399,15 @@ pub(crate) struct Qwen4ExpAttention {
     k_proj: QuantizedWeight,
     v_proj: QuantizedWeight,
     o_proj: QuantizedWeight,
+    /// Raw gains; production reads the pre-cast f32 copies below.
+    #[cfg_attr(not(test), allow(dead_code))]
     q_norm: MlxArray,
+    #[cfg_attr(not(test), allow(dead_code))]
     k_norm: MlxArray,
+    /// The gains widened to f32 once in the constructor: the cast is a
+    /// constant of the layer, so every RMS call skips rebuilding it.
+    q_norm_f32: MlxArray,
+    k_norm_f32: MlxArray,
     indexer: QsaIndexer,
 }
 
@@ -383,6 +453,8 @@ impl Qwen4ExpAttention {
         )?;
         validate_gain("q_norm", &weights.q_norm, config.head_dim)?;
         validate_gain("k_norm", &weights.k_norm, config.head_dim)?;
+        let q_norm_f32 = astype(&weights.q_norm, MlxDtype::Float32, None);
+        let k_norm_f32 = astype(&weights.k_norm, MlxDtype::Float32, None);
         Ok(Self {
             config,
             q_proj: weights.q_proj,
@@ -391,6 +463,8 @@ impl Qwen4ExpAttention {
             o_proj: weights.o_proj,
             q_norm: weights.q_norm,
             k_norm: weights.k_norm,
+            q_norm_f32,
+            k_norm_f32,
             indexer,
         })
     }
@@ -515,6 +589,8 @@ impl Qwen4ExpAttention {
         ] {
             crate::model::qwen4_exp::profiling::dump(stage, &[array]);
         }
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_a_proj", &[&q_packed, &k_raw, &v_raw]);
 
         let packed = reshape(
             &q_packed,
@@ -526,7 +602,7 @@ impl Qwen4ExpAttention {
         let [queries, gate] = <[MlxArray; 2]>::try_from(halves)
             .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("query/gate split"))?;
 
-        let queries = rms_with_gain(&queries, &self.q_norm, cfg.rms_eps);
+        let queries = rms_with_scale_f32(&queries, &self.q_norm_f32, cfg.rms_eps);
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::dump("qsa_normalized_query", &[&queries]);
         let queries = apply_qsa_rotary_offset(
@@ -538,7 +614,7 @@ impl Qwen4ExpAttention {
         );
 
         let keys = reshape(&k_raw, &[batch, seq, cfg.kv_heads, cfg.head_dim], None);
-        let keys = rms_with_gain(&keys, &self.k_norm, cfg.rms_eps);
+        let keys = rms_with_scale_f32(&keys, &self.k_norm_f32, cfg.rms_eps);
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::dump("qsa_normalized_key", &[&keys]);
         let keys = apply_qsa_rotary_offset(
@@ -554,15 +630,29 @@ impl Qwen4ExpAttention {
         let dtype = hidden.dtype();
         let keys = astype(&keys, dtype, None);
         let values = astype(&values, dtype, None);
-        let staged_keys = append_cache(cache.keys(), &keys)?;
-        let staged_values = append_cache(cache.values(), &values)?;
         #[cfg(test)]
-        for (stage, array) in [
-            ("qsa_queries", &queries),
-            ("qsa_keys", &staged_keys),
-            ("qsa_values", &staged_values),
-        ] {
-            crate::model::qwen4_exp::profiling::dump(stage, &[array]);
+        crate::model::qwen4_exp::profiling::mark("qsa_b_prep", &[&queries, &keys, &values]);
+        let staged_keys = cache.keys().append(&keys);
+        let staged_values = cache.values().append(&values);
+        // No flattening on the selected path: the gather reads rows straight
+        // from the sealed prefix and the tail. The dense kernels and the test
+        // dumps still need one contiguous array, built only where used.
+        #[cfg(test)]
+        {
+            let mut staged = Vec::new();
+            staged.extend(staged_keys.arrays());
+            staged.extend(staged_values.arrays());
+            crate::model::qwen4_exp::profiling::mark("qsa_c_append", &staged);
+            crate::model::qwen4_exp::profiling::dump("qsa_queries", &[&queries]);
+            // `dump` writes one tensor per stage, so the two segments are
+            // flattened, and only when this stage is actually being dumped.
+            for (stage, history) in [("qsa_keys", &staged_keys), ("qsa_values", &staged_values)] {
+                if crate::model::qwen4_exp::profiling::dump_requested(stage)
+                    && let Some(rows) = history.flat()
+                {
+                    crate::model::qwen4_exp::profiling::dump(stage, &[&rows]);
+                }
+            }
         }
 
         let attn = match &selection {
@@ -576,17 +666,23 @@ impl Qwen4ExpAttention {
                 && seq > 1
                 && seq <= VERIFY_ROWWISE_MAX_QUERIES =>
             {
-                attend_dense_rowwise(&queries, &staged_keys, &staged_values, cfg)
+                let (key_rows, value_rows) = flat_pair(&staged_keys, &staged_values)?;
+                attend_dense_rowwise(&queries, &key_rows, &value_rows, cfg)
             }
-            None => attend_dense(&queries, &staged_keys, &staged_values, cfg),
+            None => {
+                let (key_rows, value_rows) = flat_pair(&staged_keys, &staged_values)?;
+                attend_dense(&queries, &key_rows, &value_rows, cfg)
+            }
         };
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::mark("qsa_d_attend", &[&attn]);
         let attn = reshape(
             &transpose(&attn, &[0, 2, 1, 3], None),
             &[batch, seq, cfg.query_width],
             None,
         );
         let gate = reshape(&gate, &[batch, seq, cfg.query_width], None);
-        let gated = gated_attention_output(&attn, &gate, dtype);
+        let gated = gated_attention_output(&attn, &gate, dtype, seq);
         let output_policy =
             if self.o_proj.mlx_quantization_mode() == mlx_sys::MlxQuantizationMode::Mxfp4 {
                 verifier_policy
@@ -615,8 +711,8 @@ impl Qwen4ExpAttention {
         Ok(Qwen4ExpAttentionOutput {
             delta,
             next_state: Qwen4ExpAttentionCache {
-                keys: Some(staged_keys),
-                values: Some(staged_values),
+                keys: staged_keys,
+                values: staged_values,
                 index: match selection {
                     Some(selection) => selection.into_next_cache(),
                     None => next_index,
@@ -661,10 +757,10 @@ impl Qwen4ExpAttention {
             });
         }
         let cfg = self.config;
-        if let Some(keys) = cache.keys() {
+        for keys in cache.keys().arrays() {
             expect_cache_layout("key cache", keys, batch, cfg.kv_heads, cfg.head_dim, dtype)?;
         }
-        if let Some(values) = cache.values() {
+        for values in cache.values().arrays() {
             expect_cache_layout(
                 "value cache",
                 values,
@@ -789,52 +885,112 @@ fn attend_dense_rowwise(
     concatenate(&refs, 2, None)
 }
 
+/// One contiguous array per history, for the dense kernels. Costs one
+/// full-history copy, which is why only the dense arms call it.
+fn flat_pair(keys: &KvHistory, values: &KvHistory) -> Result<(MlxArray, MlxArray)> {
+    let keys = keys.flat().ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
+    let values = values
+        .flat()
+        .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
+    Ok((keys, values))
+}
+
+/// Rows a selected-attention call gathers from: a segmented [`KvHistory`], or a
+/// caller-built single array (tests that compare whole tensors directly).
+trait SelectedRows {
+    fn history(&self) -> std::borrow::Cow<'_, KvHistory>;
+}
+
+impl SelectedRows for KvHistory {
+    fn history(&self) -> std::borrow::Cow<'_, KvHistory> {
+        std::borrow::Cow::Borrowed(self)
+    }
+}
+
+impl SelectedRows for MlxArray {
+    fn history(&self) -> std::borrow::Cow<'_, KvHistory> {
+        std::borrow::Cow::Owned(KvHistory::from_flat(self.clone()))
+    }
+}
+
 fn attend_selected(
     queries: &MlxArray,
-    keys: &MlxArray,
-    values: &MlxArray,
+    keys: &impl SelectedRows,
+    values: &impl SelectedRows,
     selection: &QsaSelection,
     cfg: Qwen4ExpAttentionConfig,
 ) -> Result<MlxArray> {
+    let keys = keys.history();
+    let values = values.history();
     let q_shape = queries.shape();
-    let k_shape = keys.shape();
     let (batch, q_heads, seq, dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
-    let tokens = k_shape[1];
+    let tokens = i32::try_from(keys.token_count())
+        .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("cache token count"))?;
+    // K and V advance in lockstep, so their segment boundaries must agree;
+    // a difference would mix rows from different positions silently.
+    if keys.sealed_rows() != values.sealed_rows() {
+        return Err(Qwen4ExpAttentionError::InvalidScalar("kv history segments"));
+    }
+    let batched = selection.device_tokens().is_none()
+        && seq >= BATCHED_ATTENTION_MIN_QUERIES
+        && batched_attention_enabled();
+    // Padded sub-batches reshape one contiguous array per batch row; the
+    // per-query decode path gathers straight from the segments.
+    let flat = if batched {
+        Some(flat_pair(&keys, &values)?)
+    } else {
+        None
+    };
     let mut batch_out = Vec::new();
     batch_out
         .try_reserve_exact(batch as usize)
         .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("attention batch buffer"))?;
+    // A full-range slice is the identity: cloning the input is a refcount
+    // bump with the same values, so singleton batch rows and query rows skip
+    // the op entirely.
+    let identity_batch = batch == 1;
     for b in 0..batch {
-        let q_b = slice(
-            queries,
-            &[b, 0, 0, 0],
-            &[b + 1, q_heads, seq, dim],
-            &[1, 1, 1, 1],
-            None,
-        );
-        let k_b = slice(
-            keys,
-            &[b, 0, 0, 0],
-            &[b + 1, tokens, cfg.kv_heads, dim],
-            &[1, 1, 1, 1],
-            None,
-        );
-        let v_b = slice(
-            values,
-            &[b, 0, 0, 0],
-            &[b + 1, tokens, cfg.kv_heads, dim],
-            &[1, 1, 1, 1],
-            None,
-        );
-        if selection.device_tokens().is_none()
-            && seq >= BATCHED_ATTENTION_MIN_QUERIES
-            && batched_attention_enabled()
-        {
+        let q_b = if identity_batch {
+            queries.clone()
+        } else {
+            slice(
+                queries,
+                &[b, 0, 0, 0],
+                &[b + 1, q_heads, seq, dim],
+                &[1, 1, 1, 1],
+                None,
+            )
+        };
+        if let Some((key_rows, value_rows)) = &flat {
+            let k_b = if identity_batch {
+                key_rows.clone()
+            } else {
+                slice(
+                    key_rows,
+                    &[b, 0, 0, 0],
+                    &[b + 1, tokens, cfg.kv_heads, dim],
+                    &[1, 1, 1, 1],
+                    None,
+                )
+            };
+            let v_b = if identity_batch {
+                value_rows.clone()
+            } else {
+                slice(
+                    value_rows,
+                    &[b, 0, 0, 0],
+                    &[b + 1, tokens, cfg.kv_heads, dim],
+                    &[1, 1, 1, 1],
+                    None,
+                )
+            };
             batch_out.push(attend_selected_batched(
                 &q_b, &k_b, &v_b, selection, b as usize, cfg,
             )?);
             continue;
         }
+        let key_rows = keys.batch_slice(b);
+        let value_rows = values.batch_slice(b);
         let mut seq_out = Vec::new();
         seq_out
             .try_reserve_exact(seq as usize)
@@ -863,15 +1019,21 @@ fn attend_selected(
                 }
                 index_array(chosen)?
             };
-            let k_sel = transpose(&take(&k_b, &idx, 1, None), &[0, 2, 1, 3], None);
-            let v_sel = transpose(&take(&v_b, &idx, 1, None), &[0, 2, 1, 3], None);
-            let q_s = slice(
-                &q_b,
-                &[0, 0, s, 0],
-                &[1, q_heads, s + 1, dim],
-                &[1, 1, 1, 1],
-                None,
-            );
+            let (k_sel, v_sel) = gather_selected(&key_rows, &value_rows, &idx)
+                .ok_or(Qwen4ExpAttentionError::IncompleteCache)?;
+            let k_sel = transpose(&k_sel, &[0, 2, 1, 3], None);
+            let v_sel = transpose(&v_sel, &[0, 2, 1, 3], None);
+            let q_s = if seq == 1 {
+                q_b.clone()
+            } else {
+                slice(
+                    &q_b,
+                    &[0, 0, s, 0],
+                    &[1, q_heads, s + 1, dim],
+                    &[1, 1, 1, 1],
+                    None,
+                )
+            };
             // Native GQA: the fused kernel broadcasts the `kv_heads`-wide K/V
             // across each contiguous query-head group (query head `h` reads KV
             // head `h / groups`), so the selected K/V stay at their true
@@ -1055,14 +1217,6 @@ fn attend_selected_batched(
 /// Queries inspected to size a sub-batch before its exact padding is known.
 const BATCHED_ATTENTION_PROBE_QUERIES: usize = 512;
 
-fn append_cache(past: Option<&MlxArray>, new: &MlxArray) -> Result<MlxArray> {
-    let staged = match past {
-        Some(past) => concatenate(&[past, new], 1, None),
-        None => new.clone(),
-    };
-    Ok(contiguous(&staged, None))
-}
-
 #[cfg(test)]
 fn rope_bhsd(x: &MlxArray, rotary_dim: i32, rope_base: f32, offset: i32) -> MlxArray {
     mlx_sys::rope(
@@ -1077,11 +1231,23 @@ fn rope_bhsd(x: &MlxArray, rotary_dim: i32, rope_base: f32, offset: i32) -> MlxA
     )
 }
 
+/// RMS norm with a gain cast per call, kept for callers without a pre-cast
+/// gain and for the differential tests of [`rms_with_scale_f32`].
+#[cfg_attr(not(test), allow(dead_code))]
 fn rms_with_gain(x: &MlxArray, weight: &MlxArray, eps: f32) -> MlxArray {
     let dtype = x.dtype();
     let x32 = astype(x, MlxDtype::Float32, None);
     let scale = astype(weight, MlxDtype::Float32, None);
     astype(&rms_norm(&x32, Some(&scale), eps, None), dtype, None)
+}
+
+/// RMS norm with the gain already widened to f32: callers holding the layer's
+/// cached `*_norm_f32` skip the per-call `astype` of the gain, and the result
+/// is bit-identical to [`rms_with_gain`].
+fn rms_with_scale_f32(x: &MlxArray, scale_f32: &MlxArray, eps: f32) -> MlxArray {
+    let dtype = x.dtype();
+    let x32 = astype(x, MlxDtype::Float32, None);
+    astype(&rms_norm(&x32, Some(scale_f32), eps, None), dtype, None)
 }
 
 fn index_array(tokens: &[i32]) -> Result<MlxArray> {
@@ -1107,18 +1273,6 @@ fn concat_owned(parts: &[MlxArray], axis: i32) -> MlxArray {
     }
     let refs: Vec<&MlxArray> = parts.iter().collect();
     concatenate(&refs, axis, None)
-}
-
-fn cache_tokens(tensor: &'static str, array: &MlxArray) -> Result<usize> {
-    let shape = array.shape();
-    if shape.len() != 4 || shape[1] < 0 {
-        return Err(Qwen4ExpAttentionError::TensorShape {
-            tensor,
-            expected: "[batch, tokens, kv_heads, head_dim]".to_string(),
-            actual: shape,
-        });
-    }
-    Ok(shape[1] as usize)
 }
 
 fn expect_cache_layout(
@@ -1203,7 +1357,7 @@ mod tests {
         );
         let gate = astype(&array(&fixture["gate"], &shape), MlxDtype::Bfloat16, None);
         let actual = astype(
-            &gated_attention_output(&attention, &gate, MlxDtype::Bfloat16),
+            &gated_attention_output(&attention, &gate, MlxDtype::Bfloat16, shape[1]),
             MlxDtype::Float32,
             None,
         );
@@ -1386,13 +1540,13 @@ mod tests {
         label: &str,
     ) {
         close(
-            actual.keys().unwrap(),
-            expected.keys().unwrap(),
+            &actual.flat_keys().unwrap(),
+            &expected.flat_keys().unwrap(),
             &format!("{label} keys"),
         );
         close(
-            actual.values().unwrap(),
-            expected.values().unwrap(),
+            &actual.flat_values().unwrap(),
+            &expected.flat_values().unwrap(),
             &format!("{label} values"),
         );
         close(
@@ -1468,6 +1622,82 @@ mod tests {
         close_state(&cache, whole.next_state(), "token-step");
     }
 
+    fn f32_value_bits(array: &MlxArray) -> Vec<u32> {
+        let widened = contiguous(&astype(array, MlxDtype::Float32, None), None);
+        eval(&[&widened]);
+        widened
+            .data_f32()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    #[test]
+    fn kv_segments_state_equals_flat_state() {
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        let (_, module) = oracle();
+        let rows = 26i32;
+        let prefix_rows = 5i32;
+        let data: Vec<f32> = (0..rows * 16)
+            .map(|i| ((i * 37 + 11) % 1013 - 506) as f32 / 512.0)
+            .collect();
+        let input = array_f32(&data, &[1, rows, 16]);
+        let prefix = slice(&input, &[0, 0, 0], &[1, prefix_rows, 16], &[1, 1, 1], None);
+
+        let chain = |segments: Option<(usize, usize)>| {
+            with_kv_segments(segments, || {
+                let mut cache = Qwen4ExpAttentionCache::empty();
+                let first = run(&module, &prefix, &cache, 0);
+                let mut deltas = vec![first.delta().clone()];
+                cache = first.into_next_state();
+                for token in prefix_rows..rows {
+                    let row = slice(
+                        &input,
+                        &[0, token, 0],
+                        &[1, token + 1, 16],
+                        &[1, 1, 1],
+                        None,
+                    );
+                    let step = run(&module, &row, &cache, token as usize);
+                    deltas.push(step.delta().clone());
+                    cache = step.into_next_state();
+                }
+                (deltas, cache)
+            })
+        };
+
+        let (flat_deltas, flat_cache) = chain(None);
+        let (segmented_deltas, segmented_cache) = chain(Some((8, 4)));
+        assert_eq!(flat_deltas.len(), segmented_deltas.len());
+        assert_eq!(
+            segmented_deltas.len(),
+            rows as usize - prefix_rows as usize + 1
+        );
+        for (step, (flat, segmented)) in flat_deltas.iter().zip(&segmented_deltas).enumerate() {
+            assert_eq!(
+                f32_value_bits(flat),
+                f32_value_bits(segmented),
+                "delta bits at step {step}"
+            );
+        }
+        assert_eq!(segmented_cache.token_count().unwrap(), rows as usize);
+        assert_eq!(
+            segmented_cache.flat_keys().unwrap().shape(),
+            flat_cache.flat_keys().unwrap().shape()
+        );
+        assert_eq!(
+            f32_value_bits(&segmented_cache.flat_keys().unwrap()),
+            f32_value_bits(&flat_cache.flat_keys().unwrap()),
+            "K history bits"
+        );
+        assert_eq!(
+            f32_value_bits(&segmented_cache.flat_values().unwrap()),
+            f32_value_bits(&flat_cache.flat_values().unwrap()),
+            "V history bits"
+        );
+    }
+
     #[test]
     fn request_fork_isolation_and_rejected_calls_preserve_state() {
         let (f, module) = oracle();
@@ -1476,7 +1706,7 @@ mod tests {
         let suffix = slice(&input, &[0, 8, 0], &[1, 19, 16], &[1, 1, 1], None);
         let first = run(&module, &prefix, &Qwen4ExpAttentionCache::empty(), 0);
         let original = first.next_state().fork();
-        let snapshot_k = first.next_state().keys().unwrap().clone();
+        let snapshot_k = first.next_state().flat_keys().unwrap();
         eval(&[&snapshot_k]);
         let snapshot = snapshot_k.data_f32().to_vec();
 
@@ -1501,24 +1731,24 @@ mod tests {
                 .is_err()
         );
         close(
-            first.next_state().keys().unwrap(),
+            &first.next_state().flat_keys().unwrap(),
             &array_f32(&snapshot, &snapshot_k.shape()),
             "source cache after rejected calls",
         );
         close(
-            original.keys().unwrap(),
+            &original.flat_keys().unwrap(),
             &array_f32(&snapshot, &snapshot_k.shape()),
             "forked cache after rejected calls",
         );
 
         let published = run(&module, &suffix, first.next_state(), 8);
         close(
-            first.next_state().keys().unwrap(),
+            &first.next_state().flat_keys().unwrap(),
             &array_f32(&snapshot, &snapshot_k.shape()),
             "source cache after a later forward",
         );
         close(
-            original.keys().unwrap(),
+            &original.flat_keys().unwrap(),
             &array_f32(&snapshot, &snapshot_k.shape()),
             "forked cache after a later forward",
         );
@@ -1530,7 +1760,7 @@ mod tests {
             "fork next state",
         );
         assert_ne!(
-            eval_len(published.next_state().keys().unwrap()),
+            eval_len(&published.next_state().flat_keys().unwrap()),
             snapshot.len()
         );
 
@@ -1792,5 +2022,661 @@ mod tests {
         let array = contiguous(array, None);
         eval(&[&array]);
         array.data_f32().len()
+    }
+
+    // ------------------------------------------------------------------
+    // Segment gather parity (sealed prefix + tail vs one flat array)
+    // ------------------------------------------------------------------
+
+    const SEG_Q_HEADS: i32 = 4;
+    const SEG_KV_HEADS: i32 = 2;
+    const SEG_HEAD_DIM: i32 = 8;
+    const SEG_HIDDEN: i32 = 16;
+    /// Tokens already in the index/KV cache when a window starts.
+    const SEG_PREFIX: i32 = 8;
+    /// Queries in one verifier window.
+    const SEG_WINDOW: i32 = 3;
+
+    fn seg_cfg() -> Qwen4ExpAttentionConfig {
+        Qwen4ExpAttentionConfig::new(
+            (SEG_Q_HEADS * SEG_HEAD_DIM) as usize,
+            SEG_Q_HEADS as usize,
+            SEG_KV_HEADS as usize,
+            SEG_HEAD_DIM as usize,
+            4,
+            BASE,
+            EPS,
+        )
+        .unwrap()
+    }
+
+    fn seg_indexer() -> QsaIndexer {
+        QsaIndexer::new(
+            QsaConfig::new(
+                2,
+                1,
+                4,
+                4,
+                SEG_PREFIX as usize,
+                SEG_PREFIX as usize,
+                SEG_HIDDEN as usize,
+                EPS,
+                BASE,
+            )
+            .unwrap(),
+            QsaIndexerWeights {
+                qk_proj: QuantizedWeight::new(
+                    array_f32(
+                        &(0..(12 * SEG_HIDDEN))
+                            .map(|i| (i as f32 * 0.017).sin())
+                            .collect::<Vec<_>>(),
+                        &[12, SEG_HIDDEN],
+                    ),
+                    None,
+                    None,
+                ),
+                q_norm: array_f32(&[1.0; 4], &[4]),
+                k_norm: array_f32(&[1.0; 4], &[4]),
+            },
+        )
+        .unwrap()
+    }
+
+    fn seg_hidden(rows: i32, seed: f32) -> MlxArray {
+        array_f32(
+            &(0..(rows as usize * SEG_HIDDEN as usize))
+                .map(|i| (i as f32 * 0.031 + seed).cos())
+                .collect::<Vec<_>>(),
+            &[1, rows, SEG_HIDDEN],
+        )
+    }
+
+    /// `[1, rows, kv_heads, head_dim]` queries or K/V with a distinct value
+    /// per element, so a wrong row changes every output.
+    fn seg_queries(rows: i32, dtype: MlxDtype, seed: f32) -> MlxArray {
+        astype(
+            &array_f32(
+                &(0..(rows as usize * SEG_Q_HEADS as usize * SEG_HEAD_DIM as usize))
+                    .map(|i| (i as f32 * 0.023 + seed).sin())
+                    .collect::<Vec<_>>(),
+                &[1, SEG_Q_HEADS, rows, SEG_HEAD_DIM],
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    fn seg_kv(rows: i32, dtype: MlxDtype, seed: f32) -> MlxArray {
+        astype(
+            &array_f32(
+                &(0..(rows as usize * SEG_KV_HEADS as usize * SEG_HEAD_DIM as usize))
+                    .map(|i| (i as f32 * 0.05 + seed).sin())
+                    .collect::<Vec<_>>(),
+                &[1, rows, SEG_KV_HEADS, SEG_HEAD_DIM],
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    /// The same logical rows as one sealed prefix plus a live tail.
+    fn segmented_history(full: &MlxArray, sealed: i32) -> KvHistory {
+        use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+
+        let shape = full.shape();
+        let rows = shape[1];
+        let head = slice(
+            full,
+            &[0, 0, 0, 0],
+            &[1, sealed, shape[2], shape[3]],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let tail = slice(
+            full,
+            &[0, sealed, 0, 0],
+            &[1, rows, shape[2], shape[3]],
+            &[1, 1, 1, 1],
+            None,
+        );
+        // `seal_tokens == sealed` makes the first append seal and the second
+        // one land in the tail, so the history is really split.
+        with_kv_segments(Some((2, sealed as usize)), || {
+            KvHistory::empty().append(&head).append(&tail)
+        })
+    }
+
+    /// A singleton device selection, a multi-query device window and a
+    /// host-indexed window over the same `SEG_PREFIX`-token index cache.
+    fn seg_selections() -> Vec<(&'static str, QsaSelection, i32, bool)> {
+        use crate::qwen4_exp_qsa::{with_device_select, with_device_select_multi};
+
+        let indexer = seg_indexer();
+        let prefix = indexer
+            .select(&seg_hidden(SEG_PREFIX, 0.0), &QsaIndexKeyCache::empty(), 0)
+            .unwrap();
+        let singleton = with_device_select(true, || {
+            indexer
+                .select(
+                    &seg_hidden(1, 1.0),
+                    prefix.next_cache(),
+                    SEG_PREFIX as usize,
+                )
+                .unwrap()
+        });
+        let device_window = with_device_select_multi(true, || {
+            indexer
+                .select(
+                    &seg_hidden(SEG_WINDOW, 2.0),
+                    prefix.next_cache(),
+                    SEG_PREFIX as usize,
+                )
+                .unwrap()
+        });
+        let host_window = with_device_select_multi(false, || {
+            indexer
+                .select(
+                    &seg_hidden(SEG_WINDOW, 3.0),
+                    prefix.next_cache(),
+                    SEG_PREFIX as usize,
+                )
+                .unwrap()
+        });
+        vec![
+            ("singleton device", singleton, 1, true),
+            ("window device", device_window, SEG_WINDOW, true),
+            ("window host", host_window, SEG_WINDOW, false),
+        ]
+    }
+
+    /// Selected attention over a segmented history must be bit-identical to
+    /// the same rows in one flat array: the gather is a pure copy either way.
+    #[test]
+    fn segmented_attention_matches_flat_attention() {
+        use crate::model::shared::qwen4_exp_kv_history::{
+            flat_concats_for_test, reset_counters_for_test, segmented_gathers_for_test,
+        };
+
+        let cfg = seg_cfg();
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            for (label, selection, seq, device) in seg_selections() {
+                assert_eq!(
+                    selection.device_tokens().is_some(),
+                    device,
+                    "{label}: selection kind"
+                );
+                let total = SEG_PREFIX + seq;
+                let queries = seg_queries(seq, dtype, 0.5);
+                let keys = seg_kv(total, dtype, 0.75);
+                let values = seg_kv(total, dtype, 1.25);
+                let flat_keys = KvHistory::from_flat(keys.clone());
+                let flat_values = KvHistory::from_flat(values.clone());
+                let split_keys = segmented_history(&keys, SEG_PREFIX);
+                let split_values = segmented_history(&values, SEG_PREFIX);
+                assert!(
+                    split_keys.segments().1.is_some() && split_values.segments().1.is_some(),
+                    "{label}: expected a live tail"
+                );
+
+                let flat =
+                    attend_selected(&queries, &flat_keys, &flat_values, &selection, cfg).unwrap();
+                reset_counters_for_test();
+                let split =
+                    attend_selected(&queries, &split_keys, &split_values, &selection, cfg).unwrap();
+                assert_eq!(
+                    flat_concats_for_test(),
+                    0,
+                    "{label}: selected attention must not flatten the history"
+                );
+                assert!(
+                    segmented_gathers_for_test() > 0,
+                    "{label}: expected at least one two-segment gather"
+                );
+                assert_eq!(
+                    f32_value_bits(&flat),
+                    f32_value_bits(&split),
+                    "{dtype:?} {label}: attention bits"
+                );
+            }
+        }
+    }
+
+    /// A decode step on a segmented history gathers from the segments and
+    /// never rebuilds the whole tensor; only the dense kernel may flatten.
+    #[test]
+    fn segmented_decode_step_never_flattens() {
+        use crate::model::shared::qwen4_exp_kv_history::{
+            flat_concats_for_test, reset_counters_for_test, segmented_gathers_for_test,
+            with_kv_segments,
+        };
+
+        let (f, module) = oracle();
+        let input = array(&f["input"], &[1, 19, 16]);
+        let prefix = slice(&input, &[0, 0, 0], &[1, 4, 16], &[1, 1, 1], None);
+        let row = slice(&input, &[0, 4, 0], &[1, 5, 16], &[1, 1, 1], None);
+        with_kv_segments(Some((2, 4)), || {
+            with_dense_attention(false, || {
+                let first = run(&module, &prefix, &Qwen4ExpAttentionCache::empty(), 0);
+                let cache = first.into_next_state();
+                assert!(
+                    cache.keys().segments().1.is_none(),
+                    "a four-row prefill seals with no tail"
+                );
+
+                reset_counters_for_test();
+                let step = run(&module, &row, &cache, 4);
+                assert_eq!(
+                    flat_concats_for_test(),
+                    0,
+                    "a selected decode must not rebuild the history"
+                );
+                assert!(
+                    segmented_gathers_for_test() > 0,
+                    "a selected decode must gather from the two segments"
+                );
+                assert!(
+                    step.next_state().keys().segments().1.is_some(),
+                    "the decode row lands in the tail"
+                );
+
+                // Five logical rows sit inside the oracle's dense window
+                // (`token_budget + ratio - 1`), so the dense kernel still
+                // consumes one contiguous copy of the same history.
+                reset_counters_for_test();
+                let dense = with_dense_attention(true, || run(&module, &row, &cache, 4));
+                assert!(
+                    flat_concats_for_test() > 0,
+                    "the dense kernel needs one contiguous array"
+                );
+                assert_eq!(dense.delta().shape(), step.delta().shape());
+            });
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Host-glue stretches: cached f32 gains and the output gate
+    // ------------------------------------------------------------------
+
+    /// One adversarial f32 sample from a cyclic table: NaN payloads,
+    /// infinities, signed zeros, subnormals, units and large finite values.
+    fn adversarial_value(index: usize) -> f32 {
+        const TABLE: [f32; 12] = [
+            f32::NAN,
+            f32::from_bits(0x7fc0_0001), // quiet NaN, payload 1
+            f32::from_bits(0xffc0_abcd), // negative quiet NaN, payload
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            -0.0,
+            f32::from_bits(1),           // smallest subnormal
+            f32::from_bits(0x0070_1234), // subnormal
+            1.0,
+            -1.0,
+            1.0e30,
+        ];
+        TABLE[index % TABLE.len()]
+    }
+
+    /// `shape` adversarial gate input of `dtype`, built through an f32
+    /// widening (the same path the projections take into the model dtype).
+    fn adversarial_gate_input(shape: &[i32], dtype: MlxDtype, offset: usize) -> MlxArray {
+        let len: i32 = shape.iter().product();
+        let data: Vec<f32> = (0..len as usize)
+            .map(|index| adversarial_value(index + offset))
+            .collect();
+        astype(
+            &MlxArray::from_raw_data(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data.as_slice()),
+                shape,
+                MlxDtype::Float32,
+            ),
+            dtype,
+            None,
+        )
+    }
+
+    /// RMS with a pre-widened f32 gain must equal RMS with the raw gain bit
+    /// for bit in every dtype: the constructor-cached gain only removes the
+    /// per-call `astype`, never changes the arithmetic.
+    #[test]
+    fn rms_with_scale_f32_matches_rms_with_gain() {
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16] {
+            for rows in [1, 3] {
+                let x = astype(
+                    &array_f32(
+                        &(0..rows as usize * 8)
+                            .map(|i| (i as f32 * 0.31).sin())
+                            .collect::<Vec<_>>(),
+                        &[1, rows, 8],
+                    ),
+                    dtype,
+                    None,
+                );
+                let gain = astype(
+                    &array_f32(&[1.0, 0.5, 2.0, 0.25, 1.5, 0.75, 1.25, 0.125], &[8]),
+                    MlxDtype::Bfloat16,
+                    None,
+                );
+                let with_gain = rms_with_gain(&x, &gain, EPS);
+                let with_scale =
+                    rms_with_scale_f32(&x, &astype(&gain, MlxDtype::Float32, None), EPS);
+                assert_eq!(
+                    f32_value_bits(&with_gain),
+                    f32_value_bits(&with_scale),
+                    "{dtype:?} rows {rows}: pre-widened gain diverged"
+                );
+            }
+        }
+    }
+
+    /// The constructor caches both gains widened to f32, and the cache is
+    /// exactly `astype(gain)`.
+    #[test]
+    fn attention_constructor_caches_the_f32_gains() {
+        let (_, module) = oracle();
+        for (name, gain, cached) in [
+            ("q_norm", &module.q_norm, &module.q_norm_f32),
+            ("k_norm", &module.k_norm, &module.k_norm_f32),
+        ] {
+            assert_eq!(cached.dtype(), MlxDtype::Float32, "{name} cache dtype");
+            assert_eq!(
+                f32_value_bits(cached),
+                f32_value_bits(&astype(gain, MlxDtype::Float32, None)),
+                "{name}: the cached f32 gain drifted from astype(gain)"
+            );
+        }
+    }
+
+    /// The `QsaGate` stretch — the gated attention output — against forced
+    /// eager and the original inline ops, bit for bit, on adversarial inputs
+    /// for every dtype and fuse row count.
+    #[test]
+    fn qsa_gate_stretch_matches_eager_on_adversarial_inputs() {
+        qwen4_exp_fused::reset_registry_for_test();
+        for (dtype_index, dtype) in [MlxDtype::Float32, MlxDtype::Bfloat16, MlxDtype::Float16]
+            .into_iter()
+            .enumerate()
+        {
+            for rows in 1..=8i32 {
+                let shape = [1, rows, 32];
+                let attention = adversarial_gate_input(&shape, dtype, dtype_index);
+                let gate = adversarial_gate_input(&shape, dtype, 7);
+                let inline = astype(
+                    &multiply(&attention, &sigmoid_projection_dtype(&gate), None),
+                    dtype,
+                    None,
+                );
+                let eager = {
+                    let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                    gated_attention_output(&attention, &gate, dtype, rows)
+                };
+                assert_eq!(
+                    f32_value_bits(&eager),
+                    f32_value_bits(&inline),
+                    "{dtype:?} rows {rows}: eager drifted from the inline ops"
+                );
+
+                qwen4_exp_fused::reset_registry_for_test();
+                let before = qwen4_exp_fused::applied_for_test(Stretch::QsaGate);
+                let fused = {
+                    let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                    gated_attention_output(&attention, &gate, dtype, rows)
+                };
+                assert!(
+                    qwen4_exp_fused::applied_for_test(Stretch::QsaGate) > before,
+                    "{dtype:?} rows {rows}: QsaGate never applied"
+                );
+                assert_eq!(
+                    f32_value_bits(&fused),
+                    f32_value_bits(&inline),
+                    "{dtype:?} rows {rows}: fused diverged"
+                );
+            }
+        }
+        qwen4_exp_fused::reset_registry_for_test();
+    }
+
+    /// Rows past the fuse cap never apply the stretch and still get the eager
+    /// result.
+    #[test]
+    fn qsa_gate_stays_eager_above_the_row_cap() {
+        qwen4_exp_fused::reset_registry_for_test();
+        for rows in [9i32, 16] {
+            let shape = [1, rows, 32];
+            let attention = adversarial_gate_input(&shape, MlxDtype::Bfloat16, 0);
+            let gate = adversarial_gate_input(&shape, MlxDtype::Bfloat16, 5);
+            let eager = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                gated_attention_output(&attention, &gate, MlxDtype::Bfloat16, rows)
+            };
+            let before = qwen4_exp_fused::applied_for_test(Stretch::QsaGate);
+            let fused = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                gated_attention_output(&attention, &gate, MlxDtype::Bfloat16, rows)
+            };
+            assert_eq!(
+                qwen4_exp_fused::applied_for_test(Stretch::QsaGate),
+                before,
+                "rows {rows} must stay above the fuse cap (QsaGate)"
+            );
+            assert_eq!(
+                f32_value_bits(&fused),
+                f32_value_bits(&eager),
+                "rows {rows} must equal the eager result"
+            );
+        }
+        qwen4_exp_fused::reset_registry_for_test();
+    }
+
+    /// The registry is never reset across dtypes: the key must select one
+    /// closure per output/gate dtype pair, and a revisited dtype must reuse
+    /// its entry without stale specialisation.
+    #[test]
+    fn qsa_gate_registry_key_survives_dtype_switches() {
+        qwen4_exp_fused::reset_registry_for_test();
+        for (dtype_index, dtype) in [
+            MlxDtype::Float32,
+            MlxDtype::Bfloat16,
+            MlxDtype::Float16,
+            MlxDtype::Bfloat16,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let shape = [1, 2, 32];
+            let attention = adversarial_gate_input(&shape, dtype, dtype_index + 1);
+            let gate = adversarial_gate_input(&shape, dtype, dtype_index + 3);
+            let inline = astype(
+                &multiply(&attention, &sigmoid_projection_dtype(&gate), None),
+                dtype,
+                None,
+            );
+            let eager = {
+                let _eager = qwen4_exp_fused::force_for_test(Some(false));
+                gated_attention_output(&attention, &gate, dtype, 2)
+            };
+            assert_eq!(
+                f32_value_bits(&eager),
+                f32_value_bits(&inline),
+                "{dtype:?}: eager drifted from the inline ops"
+            );
+            let before = qwen4_exp_fused::applied_for_test(Stretch::QsaGate);
+            let fused = {
+                let _fused = qwen4_exp_fused::force_for_test(Some(true));
+                gated_attention_output(&attention, &gate, dtype, 2)
+            };
+            assert!(
+                qwen4_exp_fused::applied_for_test(Stretch::QsaGate) > before,
+                "{dtype:?}: the fused path must run after a dtype switch"
+            );
+            assert_eq!(
+                f32_value_bits(&fused),
+                f32_value_bits(&inline),
+                "{dtype:?} must match the inline ops after a dtype switch"
+            );
+        }
+        qwen4_exp_fused::reset_registry_for_test();
+    }
+
+    /// An injected apply failure tombstones exactly this stretch, falls back
+    /// to the eager ops bit for bit, and the tombstone holds on the next call.
+    #[test]
+    fn qsa_gate_failure_injection_falls_back_to_eager() {
+        qwen4_exp_fused::reset_registry_for_test();
+        let shape = [1, 1, 32];
+        let attention = adversarial_gate_input(&shape, MlxDtype::Bfloat16, 2);
+        let gate = adversarial_gate_input(&shape, MlxDtype::Bfloat16, 4);
+        let eager = {
+            let _eager = qwen4_exp_fused::force_for_test(Some(false));
+            gated_attention_output(&attention, &gate, MlxDtype::Bfloat16, 1)
+        };
+        let eager_bits = f32_value_bits(&eager);
+        qwen4_exp_fused::reset_registry_for_test();
+        let injected = {
+            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+            qwen4_exp_fused::fail_next_apply_for_test(Stretch::QsaGate);
+            gated_attention_output(&attention, &gate, MlxDtype::Bfloat16, 1)
+        };
+        assert_eq!(
+            f32_value_bits(&injected),
+            eager_bits,
+            "the result with an injected failure diverged"
+        );
+        assert!(
+            qwen4_exp_fused::tombstoned_for_test(Stretch::QsaGate),
+            "the injected failure must tombstone"
+        );
+        // The tombstone holds on the next call, still on the eager bits.
+        let after = {
+            let _fused = qwen4_exp_fused::force_for_test(Some(true));
+            gated_attention_output(&attention, &gate, MlxDtype::Bfloat16, 1)
+        };
+        assert_eq!(
+            f32_value_bits(&after),
+            eager_bits,
+            "the post-tombstone result diverged"
+        );
+        qwen4_exp_fused::reset_registry_for_test();
+    }
+
+    // ------------------------------------------------------------------
+    // Identity slices (batch 1 / seq 1)
+    // ------------------------------------------------------------------
+
+    /// The pre-change schedule spelled inline: every batch row and query row
+    /// issues its full-range slice.
+    fn legacy_attend_selected(
+        queries: &MlxArray,
+        keys: &MlxArray,
+        values: &MlxArray,
+        selection: &QsaSelection,
+        cfg: Qwen4ExpAttentionConfig,
+    ) -> MlxArray {
+        let q_shape = queries.shape();
+        let (batch, q_heads, seq, dim) = (q_shape[0], q_shape[1], q_shape[2], q_shape[3]);
+        let tokens = keys.shape()[1];
+        let mut batch_out = Vec::new();
+        for b in 0..batch {
+            let q_b = slice(
+                queries,
+                &[b, 0, 0, 0],
+                &[b + 1, q_heads, seq, dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let key_rows = KvHistory::from_flat(slice(
+                keys,
+                &[b, 0, 0, 0],
+                &[b + 1, tokens, cfg.kv_heads, dim],
+                &[1, 1, 1, 1],
+                None,
+            ));
+            let value_rows = KvHistory::from_flat(slice(
+                values,
+                &[b, 0, 0, 0],
+                &[b + 1, tokens, cfg.kv_heads, dim],
+                &[1, 1, 1, 1],
+                None,
+            ));
+            let mut seq_out = Vec::new();
+            for s in 0..seq {
+                let idx = index_array(selection.tokens_for_query(b as usize, s as usize)).unwrap();
+                let (k_sel, v_sel) =
+                    gather_selected(&key_rows.batch_slice(0), &value_rows.batch_slice(0), &idx)
+                        .unwrap();
+                let k_sel = transpose(&k_sel, &[0, 2, 1, 3], None);
+                let v_sel = transpose(&v_sel, &[0, 2, 1, 3], None);
+                let q_s = slice(
+                    &q_b,
+                    &[0, 0, s, 0],
+                    &[1, q_heads, s + 1, dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                seq_out.push(scaled_dot_product_attention(
+                    &contiguous(&q_s, None),
+                    &contiguous(&k_sel, None),
+                    &contiguous(&v_sel, None),
+                    cfg.scale,
+                    false,
+                    None,
+                ));
+            }
+            batch_out.push(concat_owned(&seq_out, 2));
+        }
+        concat_owned(&batch_out, 0)
+    }
+
+    /// The identity-slice short-circuit (batch 1 / seq 1) must give the same
+    /// bits as the pre-change schedule that issued every slice, and batch 2 /
+    /// seq 3 must still run through the sliced path unchanged.
+    #[test]
+    fn attend_selected_identity_slices_match_the_previous_slicing() {
+        use crate::qwen4_exp_qsa::{with_device_select, with_device_select_multi};
+
+        let cfg = seg_cfg();
+        let indexer = seg_indexer();
+        for dtype in [MlxDtype::Float32, MlxDtype::Bfloat16] {
+            // batch 1 / seq 1: one query keeping token 0 of a longer history.
+            let hidden1 = seg_hidden(1, 0.5);
+            let selection1 = with_device_select(false, || {
+                indexer
+                    .select(&hidden1, &QsaIndexKeyCache::empty(), 0)
+                    .unwrap()
+            });
+            let queries1 = seg_queries(1, dtype, 1.5);
+            let keys1 = seg_kv(5, dtype, 0.75);
+            let values1 = seg_kv(5, dtype, 1.25);
+            let legacy1 = legacy_attend_selected(&queries1, &keys1, &values1, &selection1, cfg);
+            let fast1 = attend_selected(&queries1, &keys1, &values1, &selection1, cfg).unwrap();
+            assert_eq!(
+                f32_value_bits(&fast1),
+                f32_value_bits(&legacy1),
+                "{dtype:?} batch 1 seq 1 diverged from the previous slicing"
+            );
+
+            // batch 2 / seq 3: the sliced path must be untouched.
+            let hidden2 = concatenate(&[&seg_hidden(3, 2.5), &seg_hidden(3, 4.5)], 0, None);
+            let selection2 = with_device_select_multi(false, || {
+                indexer
+                    .select(&hidden2, &QsaIndexKeyCache::empty(), 0)
+                    .unwrap()
+            });
+            let queries2 = concatenate(
+                &[&seg_queries(3, dtype, 0.25), &seg_queries(3, dtype, 2.75)],
+                0,
+                None,
+            );
+            let keys2 = concatenate(&[&seg_kv(3, dtype, 1.0), &seg_kv(3, dtype, 3.0)], 0, None);
+            let values2 = concatenate(&[&seg_kv(3, dtype, 1.5), &seg_kv(3, dtype, 3.5)], 0, None);
+            let legacy2 = legacy_attend_selected(&queries2, &keys2, &values2, &selection2, cfg);
+            let fast2 = attend_selected(&queries2, &keys2, &values2, &selection2, cfg).unwrap();
+            assert_eq!(
+                f32_value_bits(&fast2),
+                f32_value_bits(&legacy2),
+                "{dtype:?} batch 2 seq 3 diverged from the previous slicing"
+            );
+        }
     }
 }

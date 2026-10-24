@@ -322,6 +322,72 @@ pub(crate) fn build_vl_prefill_embeddings(
     })
 }
 
+/// Qwen 3.8 Flash Next (`qwen4_exp`) prefill embeddings: token embeddings
+/// with each image's tower features over its placeholder tokens, plus the
+/// per-token `(t, h, w)` MRoPE positions and the decode position delta.
+/// The tower must not use DeepStack (the loader refuses one that does).
+pub(crate) fn qwen4_exp_visual_embeddings(
+    vision: &Qwen3VlVisionWeights,
+    token_embedding: &crate::weights::QuantizedWeight,
+    hidden_size: usize,
+    token_ids: &[u32],
+    inputs: &Qwen3VlRuntimeInputs,
+) -> Result<(MlxArray, Vec<[i32; 3]>, i32), Qwen3VlError> {
+    if !vision.config.deepstack_visual_indexes.is_empty() {
+        return Err(Qwen3VlError::InvalidGeometry(
+            "qwen4_exp has no DeepStack injection".into(),
+        ));
+    }
+    let mut hidden = embed_tokens(token_ids, token_embedding, hidden_size);
+    for media in &inputs.images {
+        validate_qwen3_vl_patch_buffer_len(
+            media.patches.len(),
+            media.num_patches,
+            media.patch_dim,
+        )?;
+        let patches = MlxArray::from_raw_data(
+            media.patches.as_ptr().cast(),
+            std::mem::size_of_val(media.patches.as_slice()),
+            &[media.num_patches as i32, media.patch_dim as i32],
+            MlxDtype::Float32,
+        );
+        let grid_h = media.height / media.patch_size;
+        let grid_w = media.width / media.patch_size;
+        let (soft, _deepstack) =
+            vision_encoder_forward(vision, &patches, (media.grid_t, grid_h, grid_w))?;
+        let produced = soft.shape().get(1).copied().unwrap_or(0);
+        if produced != media.soft_token_count as i32 {
+            return Err(Qwen3VlError::InvalidGeometry(format!(
+                "vision tower produced {produced} soft tokens, request declared {}",
+                media.soft_token_count
+            )));
+        }
+        let end = media
+            .placeholder_index
+            .checked_add(media.soft_token_count as usize)
+            .filter(|&end| end <= token_ids.len())
+            .ok_or_else(|| {
+                Qwen3VlError::Scatter(format!(
+                    "visual token range at {} exceeds prompt length {}",
+                    media.placeholder_index,
+                    token_ids.len()
+                ))
+            })?;
+        let positions: Vec<usize> = (media.placeholder_index..end).collect();
+        hidden = scatter_vision_into_text(&hidden, &soft, &positions)?;
+    }
+    let axes = qwen_mrope_position_axes(token_ids.len(), inputs)?;
+    let max_position = axes
+        .iter()
+        .flat_map(|position| position.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let prompt_len = i32::try_from(token_ids.len()).unwrap_or(i32::MAX);
+    let rope_delta = max_position.saturating_add(1).saturating_sub(prompt_len);
+    Ok((hidden, axes, rope_delta))
+}
+
 fn qwen_mrope_position_axes(
     prompt_len: usize,
     inputs: &Qwen3VlRuntimeInputs,
@@ -549,6 +615,8 @@ pub(crate) fn load_qwen3_vl_vision_weights(
                     | "qwen3.6"
                     | "qwen3_6"
                     | "qwen3_5_moe_text"
+                    // Qwen 3.8 Flash Next ships the same tower.
+                    | "qwen4_exp"
             )
         });
     if !is_qwen_visual_config {

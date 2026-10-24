@@ -1000,8 +1000,12 @@ fn qw_direct_mlx(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
     } else if let Some(weight_t) = &qw.decode_weight_t {
         matmul(x, weight_t, None)
     } else {
-        let wt = transpose(&qw.weight, &[1, 0], None);
-        matmul(x, &wt, None)
+        // Same cached metadata-only `[in, out]` view as `qw_direct`: matmul
+        // sees the same strided operand, so the result bits are unchanged.
+        let wt = qw
+            .weight_t_view
+            .get_or_init(|| transpose(&qw.weight, &[1, 0], None));
+        matmul(x, wt, None)
     };
     if let Some(bias) = &qw.linear_bias {
         add(&y, bias, None)
@@ -1346,8 +1350,13 @@ fn qw_direct(x: &MlxArray, qw: &QuantizedWeight) -> MlxArray {
             matmul(x, weight_t, None)
         }
     } else {
-        let wt = transpose(&qw.weight, &[1, 0], None);
-        matmul(x, &wt, None)
+        // Metadata-only transpose of the dense `[out, in]` weight. Build the
+        // view once per weight instead of per call: matmul sees the same
+        // strided operand, so the result bits are unchanged.
+        let wt = qw
+            .weight_t_view
+            .get_or_init(|| transpose(&qw.weight, &[1, 0], None));
+        matmul(x, wt, None)
     };
     if let Some(bias) = &qw.linear_bias {
         add(&y, bias, None)
@@ -1860,6 +1869,7 @@ fn invariant_projection_metal_impl_with_kernel(
                     decode_q2_weight: None,
                     decode_q2_scales: None,
                     decode_q2_biases: None,
+                    weight_t_view: Default::default(),
                 };
                 let qw_rem = QuantizedWeight {
                     weight: w_rem,
@@ -1873,6 +1883,7 @@ fn invariant_projection_metal_impl_with_kernel(
                     decode_q2_weight: None,
                     decode_q2_scales: None,
                     decode_q2_biases: None,
+                    weight_t_view: Default::default(),
                 };
                 // The aligned prefix hits qmv_fast.
                 let y_al = invariant_projection_metal_impl_with_kernel(&x_al, &qw_al, bf16_q4)?;

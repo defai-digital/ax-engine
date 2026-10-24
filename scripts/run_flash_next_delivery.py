@@ -204,11 +204,11 @@ def main() -> int:
     if not all(required):
         parser.error("live run requires ax-engine, python, cache-root, inventory, server-bin and output")
     if platform.system() != "Darwin":
-        parser.error("live run requires macOS on the Ultra-class 192 GiB+ target")
+        parser.error("live run requires macOS on the Flash Next standard host")
     memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True))
     chip = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
-    if "Ultra" not in chip or memory < 192 * 1024**3:
-        parser.error("live run requires the Ultra-class 192 GiB+ Flash Next target")
+    if not native.is_target_host(chip, memory):
+        parser.error(f"live run requires the Flash Next standard host ({native.TARGET_DESCRIPTION})")
     transport = parse_transport(args.transport_env)
     resuming = args.previous_attempt is not None
     started_empty = check_fresh(args.cache_root, resuming)

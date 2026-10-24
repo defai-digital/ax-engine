@@ -1,0 +1,142 @@
+{
+ "host": "Apple M5 Max, 128 GB, internal SSD",
+ "pack": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP ff2a2848",
+ "protocol": "page cache purged before each arm; new prompts per row; greedy 128 tokens; MTP off; prefill chunk 2048; one request at a time",
+ "arms": [
+  "before",
+  "n-gram reads + read-ahead",
+  "plus fused stretches"
+ ],
+ "prompts": {
+  "p1.txt": {
+   "before": {
+    "prompt_tokens": 2207,
+    "completion_tokens": 128,
+    "ttft_s": 5.445,
+    "prefill_tok_s": 405.3,
+    "decode_tok_s": 31.25,
+    "text_sha": "6189ecc27de45897"
+   },
+   "n-gram reads + read-ahead": {
+    "prompt_tokens": 2207,
+    "completion_tokens": 128,
+    "ttft_s": 2.49,
+    "prefill_tok_s": 886.4,
+    "decode_tok_s": 37.08,
+    "text_sha": "6189ecc27de45897"
+   },
+   "plus fused stretches": {
+    "prompt_tokens": 2207,
+    "completion_tokens": 128,
+    "ttft_s": 2.49,
+    "prefill_tok_s": 886.2,
+    "decode_tok_s": 40.11,
+    "text_sha": "6189ecc27de45897"
+   }
+  },
+  "p3.txt": {
+   "before": {
+    "prompt_tokens": 1905,
+    "completion_tokens": 128,
+    "ttft_s": 4.386,
+    "prefill_tok_s": 434.3,
+    "decode_tok_s": 33.1,
+    "text_sha": "8c0545060f84c30b"
+   },
+   "n-gram reads + read-ahead": {
+    "prompt_tokens": 1905,
+    "completion_tokens": 128,
+    "ttft_s": 1.62,
+    "prefill_tok_s": 1175.8,
+    "decode_tok_s": 39.33,
+    "text_sha": "8c0545060f84c30b"
+   },
+   "plus fused stretches": {
+    "prompt_tokens": 1905,
+    "completion_tokens": 128,
+    "ttft_s": 1.612,
+    "prefill_tok_s": 1181.4,
+    "decode_tok_s": 42.36,
+    "text_sha": "8c0545060f84c30b"
+   }
+  },
+  "p5.txt": {
+   "before": {
+    "prompt_tokens": 2560,
+    "completion_tokens": 128,
+    "ttft_s": 7.29,
+    "prefill_tok_s": 351.2,
+    "decode_tok_s": 31.61,
+    "text_sha": "71fe3d02ce66dd14"
+   },
+   "n-gram reads + read-ahead": {
+    "prompt_tokens": 2560,
+    "completion_tokens": 128,
+    "ttft_s": 2.868,
+    "prefill_tok_s": 892.7,
+    "decode_tok_s": 36.91,
+    "text_sha": "71fe3d02ce66dd14"
+   },
+   "plus fused stretches": {
+    "prompt_tokens": 2560,
+    "completion_tokens": 128,
+    "ttft_s": 2.869,
+    "prefill_tok_s": 892.3,
+    "decode_tok_s": 39.97,
+    "text_sha": "71fe3d02ce66dd14"
+   }
+  },
+  "p6.txt": {
+   "before": {
+    "prompt_tokens": 1773,
+    "completion_tokens": 128,
+    "ttft_s": 3.793,
+    "prefill_tok_s": 467.5,
+    "decode_tok_s": 33.62,
+    "text_sha": "d2c7085efba28918"
+   },
+   "n-gram reads + read-ahead": {
+    "prompt_tokens": 1773,
+    "completion_tokens": 128,
+    "ttft_s": 1.571,
+    "prefill_tok_s": 1128.9,
+    "decode_tok_s": 39.3,
+    "text_sha": "d2c7085efba28918"
+   },
+   "plus fused stretches": {
+    "prompt_tokens": 1773,
+    "completion_tokens": 128,
+    "ttft_s": 1.57,
+    "prefill_tok_s": 1129.5,
+    "decode_tok_s": 42.39,
+    "text_sha": "d2c7085efba28918"
+   }
+  },
+  "long1.txt": {
+   "before": {
+    "prompt_tokens": 8976,
+    "completion_tokens": 128,
+    "ttft_s": 28.9,
+    "prefill_tok_s": 310.6,
+    "decode_tok_s": 30.38,
+    "text_sha": "9b2e15a28d0b8473"
+   },
+   "n-gram reads + read-ahead": {
+    "prompt_tokens": 8976,
+    "completion_tokens": 128,
+    "ttft_s": 13.952,
+    "prefill_tok_s": 643.4,
+    "decode_tok_s": 35.28,
+    "text_sha": "9b2e15a28d0b8473"
+   },
+   "plus fused stretches": {
+    "prompt_tokens": 8976,
+    "completion_tokens": 128,
+    "ttft_s": 13.964,
+    "prefill_tok_s": 642.8,
+    "decode_tok_s": 37.92,
+    "text_sha": "9b2e15a28d0b8473"
+   }
+  }
+ }
+}

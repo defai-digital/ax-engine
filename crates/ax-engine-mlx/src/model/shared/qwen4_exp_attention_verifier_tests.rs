@@ -143,11 +143,11 @@ fn exact(actual: &MlxArray, expected: &MlxArray) {
     assert_eq!(values(actual), values(expected));
 }
 
-fn cache_arrays(cache: &Qwen4ExpAttentionCache) -> [&MlxArray; 3] {
+fn cache_arrays(cache: &Qwen4ExpAttentionCache) -> [MlxArray; 3] {
     [
-        cache.keys().unwrap(),
-        cache.values().unwrap(),
-        cache.index().keys().unwrap(),
+        cache.flat_keys().unwrap(),
+        cache.flat_values().unwrap(),
+        cache.index().keys().unwrap().clone(),
     ]
 }
 
@@ -157,7 +157,7 @@ fn exact_cache(actual: &Qwen4ExpAttentionCache, expected: &Qwen4ExpAttentionCach
         expected.token_count().unwrap()
     );
     for (actual, expected) in cache_arrays(actual).into_iter().zip(cache_arrays(expected)) {
-        exact(actual, expected);
+        exact(&actual, &expected);
     }
 }
 
@@ -183,8 +183,9 @@ fn singletons(
 }
 
 fn evaluate(output: &Qwen4ExpAttentionOutput) {
+    let owned = cache_arrays(output.next_state());
     let mut arrays = vec![output.delta()];
-    arrays.extend(cache_arrays(output.next_state()));
+    arrays.extend(owned.iter());
     eval(&arrays);
 }
 
@@ -227,7 +228,7 @@ fn mxfp4_verifier_key_and_index_histories_match_singletons_across_block_boundary
     );
     let input = input();
     let cache = prefill(&module, &input);
-    let snapshot = cache_arrays(&cache).map(values);
+    let snapshot = cache_arrays(&cache).map(|array| values(&array));
     let suffix = span(&input, PREFIX, PREFIX + 2);
     let verifier = module
         .forward_with_verifier_policy(&suffix, &cache, PREFIX as usize, SHARED, ROW_EXACT)
@@ -240,8 +241,8 @@ fn mxfp4_verifier_key_and_index_histories_match_singletons_across_block_boundary
         (PREFIX + 2) as usize
     );
     exact(
-        verifier.next_state().keys().unwrap(),
-        direct.keys().unwrap(),
+        &verifier.next_state().flat_keys().unwrap(),
+        &direct.flat_keys().unwrap(),
     );
     exact(
         verifier.next_state().index().keys().unwrap(),
@@ -252,8 +253,8 @@ fn mxfp4_verifier_key_and_index_histories_match_singletons_across_block_boundary
         .zip(cache_arrays(&cache))
         .zip(snapshot)
     {
-        exact(&span(updated, 0, PREFIX), original);
-        assert_eq!(values(original), saved, "caller cache changed");
+        exact(&span(&updated, 0, PREFIX), &original);
+        assert_eq!(values(&original), saved, "caller cache changed");
     }
 
     let selected = module
@@ -355,23 +356,23 @@ fn verifier_policy_checks_key_and_index_quantization_independently() {
             .unwrap();
         let direct = singletons(&module, &input, &cache, SHARED);
         let expected_keys = if key_mode == MlxQuantizationMode::Mxfp4 {
-            direct.keys().unwrap()
+            direct.flat_keys().unwrap()
         } else {
-            ordinary.next_state().keys().unwrap()
+            ordinary.next_state().flat_keys().unwrap()
         };
         let expected_index = if index_mode == MlxQuantizationMode::Mxfp4 {
             direct.index().keys().unwrap()
         } else {
             ordinary.next_state().index().keys().unwrap()
         };
-        exact(verifier.next_state().keys().unwrap(), expected_keys);
+        exact(&verifier.next_state().flat_keys().unwrap(), &expected_keys);
         exact(
             verifier.next_state().index().keys().unwrap(),
             expected_index,
         );
         exact(
-            verifier.next_state().values().unwrap(),
-            ordinary.next_state().values().unwrap(),
+            &verifier.next_state().flat_values().unwrap(),
+            &ordinary.next_state().flat_values().unwrap(),
         );
     }
 }
@@ -385,7 +386,7 @@ fn mxfp4_verifier_query_output_delta_and_continuation_match_ordinary_singletons(
         let input = input();
         let cache = prefill(&module, &input);
         let original = cache.fork();
-        let snapshot = cache_arrays(&cache).map(values);
+        let snapshot = cache_arrays(&cache).map(|array| values(&array));
         let verifier = module
             .forward_with_verifier_policy(
                 &span(&input, PREFIX, PREFIX + 2),
@@ -406,8 +407,8 @@ fn mxfp4_verifier_query_output_delta_and_continuation_match_ordinary_singletons(
             .zip(cache_arrays(&cache))
             .zip(snapshot)
         {
-            exact(&span(updated, 0, PREFIX), original);
-            assert_eq!(values(original), saved, "caller cache changed");
+            exact(&span(&updated, 0, PREFIX), &original);
+            assert_eq!(values(&original), saved, "caller cache changed");
         }
 
         let next = span(&input, PREFIX + 2, PREFIX + 3);

@@ -79,6 +79,7 @@ fn base_args() -> ServerArgs {
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
+        prefill_stall_target_ms: 0,
         grpc_bind_address: None,
         max_concurrent_requests: None,
         max_concurrent_requests_per_model: None,
@@ -205,6 +206,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
+        prefill_stall_target_ms: 0,
         backend_request: PreviewBackendRequest {
             support_tier: SupportTier::MlxPreview,
             llama_cli_path: PathBuf::from("llama-cli"),
@@ -253,6 +255,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
+        prefill_stall_target_ms: 0,
         backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
             PathBuf::from("llama-cli"),
             None,
@@ -376,6 +379,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         multi_prefill_fair: false,
         max_prefill_tokens_per_request_per_step: 0,
         max_inflight_prefill_requests: 0,
+        prefill_stall_target_ms: 0,
         backend_request: PreviewBackendRequest {
             support_tier: SupportTier::MlxLmDelegated,
             mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),

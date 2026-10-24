@@ -36,6 +36,9 @@ struct Sample {
     layer: Option<usize>,
     stage: &'static str,
     seconds: f64,
+    /// MLX op wrappers invoked on this thread since the previous mark: the
+    /// graph-construction cost a stage adds regardless of device time.
+    ops: u64,
     chunk_offset: usize,
     chunk_len: usize,
 }
@@ -104,6 +107,7 @@ pub(crate) fn layer_loaded(layer: u32, materialized_payload_bytes: usize, second
 struct Capture {
     layer: Option<usize>,
     previous: Instant,
+    previous_ops: u64,
     samples: Vec<Sample>,
     paging: Vec<PagingSample>,
 }
@@ -151,6 +155,7 @@ pub(crate) fn begin_chunk(offset: usize, len: usize) {
     CAPTURE.with_borrow_mut(|capture| {
         if let Some(capture) = capture {
             capture.previous = Instant::now();
+            capture.previous_ops = mlx_sys::op_count_snapshot();
         }
     });
 }
@@ -415,6 +420,12 @@ fn dump_selected(root: &Path, stage: &str, array: &MlxArray, wanted: &BTreeSet<u
     }
 }
 
+/// Whether `dump(stage, ..)` would write anything right now, so a caller can
+/// skip building an expensive array (such as a flattened K/V history).
+pub(crate) fn dump_requested(stage: &str) -> bool {
+    dump_root().is_some() && should_dump(stage)
+}
+
 pub(crate) fn dump(stage: &'static str, arrays: &[&MlxArray]) {
     let Some(root) = dump_root() else {
         return;
@@ -517,14 +528,17 @@ pub(crate) fn mark(stage: &'static str, arrays: &[&MlxArray]) {
             eval(arrays);
             note_eval();
             let now = Instant::now();
+            let ops_now = mlx_sys::op_count_snapshot();
             capture.samples.push(Sample {
                 layer: capture.layer,
                 stage,
                 seconds: now.duration_since(capture.previous).as_secs_f64(),
+                ops: ops_now.saturating_sub(capture.previous_ops),
                 chunk_offset: DUMP_OFFSET.get(),
                 chunk_len: DUMP_CHUNK_LEN.get(),
             });
             capture.previous = now;
+            capture.previous_ops = ops_now;
         }
     });
 }
@@ -739,6 +753,7 @@ fn layer_stage_records_split_qsa_gdn_moe_and_ple() {
                 layer,
                 stage,
                 seconds,
+                ops: 0,
                 chunk_offset: offset,
                 chunk_len: len,
             }
@@ -823,6 +838,7 @@ fn flash_next_synchronized_operator_profile() {
         ("prefill", &tokens[..tokens.len() - 1], &initial),
         ("singleton", tail, &prefix.state),
     ] {
+        let control_ops_start = mlx_sys::op_count_snapshot();
         let start = Instant::now();
         let control = forward(
             trunk,
@@ -833,11 +849,13 @@ fn flash_next_synchronized_operator_profile() {
         )
         .unwrap();
         let control_seconds = start.elapsed().as_secs_f64();
+        let control_ops = mlx_sys::op_count_take(control_ops_start);
         CAPTURE.with_borrow_mut(|capture| {
             assert!(capture.is_none());
             *capture = Some(Capture {
                 layer: None,
                 previous: Instant::now(),
+                previous_ops: mlx_sys::op_count_snapshot(),
                 samples: Vec::new(),
                 paging: Vec::new(),
             });
@@ -861,6 +879,7 @@ fn flash_next_synchronized_operator_profile() {
         }
         records.push(serde_json::json!({
             "name": name, "tokens": input.len(), "control_seconds": control_seconds,
+            "control_ops": control_ops,
             "stage_seconds": totals, "samples": capture.samples,
             "expert_paging": capture.paging,
             "logits_exact": true, "state_bytes_exact": true,
@@ -1024,6 +1043,7 @@ fn run_chunked_prefill(
             *slot = Some(Capture {
                 layer: None,
                 previous: Instant::now(),
+                previous_ops: mlx_sys::op_count_snapshot(),
                 samples: Vec::new(),
                 paging: Vec::new(),
             });
@@ -1246,6 +1266,7 @@ fn paging_capture_preserves_context_without_evaluation() {
         *slot = Some(Capture {
             layer: None,
             previous: Instant::now(),
+            previous_ops: mlx_sys::op_count_snapshot(),
             samples: Vec::new(),
             paging: Vec::new(),
         });
@@ -1275,4 +1296,951 @@ fn paging_capture_preserves_context_without_evaluation() {
     assert_eq!(events[2]["event"]["materialized_payload_bytes"], 4096);
     assert_eq!(events[3]["event"]["kind"], "layer_cache_hit");
     assert!(CAPTURE.with_borrow(Option::is_none));
+}
+
+/// Fused elementwise stretches against the eager graph on a real pack: every
+/// output must match bit for bit, because verifier windows and the exact MTP
+/// profile compare decode rows with singleton rows and a compiled stretch that
+/// rounded differently would silently break that contract.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (>= 24 ids)"]
+fn flash_next_fused_matches_eager_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_fused::{
+        ForceGuard, ForceOnlyGuard, Stretch, applied_for_test, force_for_test, force_only_for_test,
+    };
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    // The prefill prefix is `len - 17` rows and must exceed the fuse limit (8).
+    assert!(tokens.len() >= 26, "need at least 26 prompt ids");
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    // `AX_FUSE_TEST_ONLY=gdn_beta,gdn_post` bisects a divergence to named stretches.
+    let only: Option<Vec<Stretch>> = std::env::var("AX_FUSE_TEST_ONLY").ok().map(|raw| {
+        let selected: Vec<Stretch> = raw
+            .split(',')
+            .map(|name| {
+                Stretch::ALL
+                    .iter()
+                    .copied()
+                    .find(|s| s.name() == name.trim())
+                    .unwrap_or_else(|| panic!("AX_FUSE_TEST_ONLY: unknown stretch {name:?}"))
+            })
+            .collect();
+        assert!(!selected.is_empty(), "AX_FUSE_TEST_ONLY selected nothing");
+        selected
+    });
+    let fused_mode = || -> (Option<ForceGuard>, Option<ForceOnlyGuard>) {
+        match &only {
+            Some(stretches) => (None, Some(force_only_for_test(stretches))),
+            None => (Some(force_for_test(Some(true))), None),
+        }
+    };
+    let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+        forward(trunk, input, state, owner, policy).unwrap()
+    };
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+
+    // Every stretch. Aggregate counters cannot prove that each one ran, so all
+    // checks below are per stretch; stretches outside the enabled set must not
+    // run at all.
+    const WATCH: [Stretch; Stretch::COUNT] = Stretch::ALL;
+    let enabled_in_fused: Vec<Stretch> = only.clone().unwrap_or_else(|| WATCH.to_vec());
+    // A compiled stretch whose work a native kernel took over (`replaced_by`)
+    // counts as exercised when its native twin ran instead.
+    let replacement_ran = |stretch: Stretch, before: &[u64], after: &[u64]| -> bool {
+        stretch
+            .replaced_by()
+            .and_then(|native| WATCH.iter().position(|w| *w == native))
+            .is_some_and(|index| after[index] > before[index])
+    };
+    let snapshot_counts = || {
+        let mut counts = [0u64; Stretch::COUNT];
+        for (index, stretch) in WATCH.iter().enumerate() {
+            counts[index] = applied_for_test(*stretch);
+        }
+        counts
+    };
+
+    let initial = Qwen4ExpState::new(trunk, owner);
+    let split = tokens.len() - 17;
+    // Prefill is never fused (rows > 8); it only provides the shared state.
+    // Even with fusion forced on, a prefill chunk must not apply any stretch.
+    let before_prefill = snapshot_counts();
+    let prefix = {
+        let _mode = fused_mode();
+        run(&tokens[..split], &initial, ProjectionBatchPolicy::Shared)
+    };
+    assert_eq!(
+        before_prefill,
+        snapshot_counts(),
+        "prefill chunks have more than 8 rows and must never fuse"
+    );
+
+    // Verifier windows from the same state, both policies.
+    for policy in [
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::RowExact,
+    ] {
+        for rows in [1usize, 2, 3, 4, 8] {
+            let window = &tokens[split..split + rows];
+            let eager = {
+                let _mode = force_for_test(Some(false));
+                run(window, &prefix.state, policy)
+            };
+            let before_fused = snapshot_counts();
+            let fused = {
+                let _mode = fused_mode();
+                run(window, &prefix.state, policy)
+            };
+            let after_fused = snapshot_counts();
+            for (index, stretch) in WATCH.iter().enumerate() {
+                // The native hyper-connection read is a single-token path.
+                if *stretch == Stretch::HcNativeLowGate && rows > 1 {
+                    continue;
+                }
+                if enabled_in_fused.contains(stretch) {
+                    assert!(
+                        after_fused[index] > before_fused[index]
+                            || replacement_ran(*stretch, &before_fused, &after_fused),
+                        "{policy:?} rows {rows}: stretch {} never fused",
+                        stretch.name(),
+                    );
+                } else {
+                    assert_eq!(
+                        after_fused[index],
+                        before_fused[index],
+                        "{policy:?} rows {rows}: stretch {} ran while disabled",
+                        stretch.name(),
+                    );
+                }
+            }
+            assert_eq!(bits(&eager), bits(&fused), "{policy:?} rows {rows}: logits");
+            assert_eq!(
+                snapshot(eager.state),
+                snapshot(fused.state),
+                "{policy:?} rows {rows}: retained state"
+            );
+        }
+    }
+
+    // A 16-step singleton chain: errors compound through the recurrent state,
+    // so equal logits at every step and equal final state is the strong check.
+    let mut eager_state = prefix.state.clone();
+    let mut fused_state = prefix.state.clone();
+    let before_chain = snapshot_counts();
+    let (mut eager_secs, mut fused_secs) = (0.0f64, 0.0f64);
+    for step in 0..16 {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let eager = {
+            let _mode = force_for_test(Some(false));
+            run(&token, &eager_state, ProjectionBatchPolicy::Shared)
+        };
+        eval(&[&eager.logits]);
+        eager_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let fused = {
+            let _mode = fused_mode();
+            run(&token, &fused_state, ProjectionBatchPolicy::Shared)
+        };
+        eval(&[&fused.logits]);
+        fused_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&eager), bits(&fused), "singleton step {step}: logits");
+        eager_state = eager.state;
+        fused_state = fused.state;
+    }
+    assert_eq!(snapshot(eager_state), snapshot(fused_state), "chain state");
+    let after_chain = snapshot_counts();
+    let mut hc_applied = [0u64; Stretch::COUNT];
+    for (index, stretch) in WATCH.iter().enumerate() {
+        let applied = after_chain[index] - before_chain[index];
+        hc_applied[index] = applied;
+        if !enabled_in_fused.contains(stretch) {
+            assert_eq!(applied, 0, "stretch {} ran while disabled", stretch.name());
+            continue;
+        }
+        if replacement_ran(*stretch, &before_chain, &after_chain) {
+            continue;
+        }
+        // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
+        // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu,
+        // 24 q/k rotations for the qsa_rope halves (the 96-id prompt stays
+        // inside the dense context limit, so the indexer never runs), 12
+        // output gates for qsa_gate and 48 routing tails for moe_route_tail.
+        // Deliberately loose lower bounds.
+        let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
+            30
+        } else if stretch.name().starts_with("moe_") {
+            40
+        } else if stretch.name().starts_with("qsa_rope") {
+            20
+        } else if stretch.name() == "qsa_gate" {
+            10
+        } else {
+            48
+        };
+        assert!(
+            applied >= 16 * per_token_floor,
+            "stretch {}: applied only {applied} times over the 16-step chain \
+             (lower bound {})",
+            stretch.name(),
+            16 * per_token_floor,
+        );
+    }
+    eprintln!(
+        "FUSED_VS_EAGER chain16 eager_ms={:.1} fused_ms={:.1} applied={} hc_applied=[{}]",
+        eager_secs * 1e3,
+        fused_secs * 1e3,
+        hc_applied.iter().sum::<u64>(),
+        hc_applied
+            .iter()
+            .map(|count| count.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    // The same 16-step chain under the verifier RowExact projection policy:
+    // per-row exact projections trace a different eager graph, so the fused
+    // stretches must still match bit for bit and hit the same per-stretch
+    // floors.
+    let mut rowexact_eager_state = prefix.state.clone();
+    let mut rowexact_fused_state = prefix.state.clone();
+    let before_rowexact = snapshot_counts();
+    let (mut rowexact_eager_secs, mut rowexact_fused_secs) = (0.0f64, 0.0f64);
+    for step in 0..16 {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let eager = {
+            let _mode = force_for_test(Some(false));
+            run(
+                &token,
+                &rowexact_eager_state,
+                ProjectionBatchPolicy::RowExact,
+            )
+        };
+        eval(&[&eager.logits]);
+        rowexact_eager_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let fused = {
+            let _mode = fused_mode();
+            run(
+                &token,
+                &rowexact_fused_state,
+                ProjectionBatchPolicy::RowExact,
+            )
+        };
+        eval(&[&fused.logits]);
+        rowexact_fused_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&eager), bits(&fused), "RowExact step {step}: logits");
+        rowexact_eager_state = eager.state;
+        rowexact_fused_state = fused.state;
+    }
+    assert_eq!(
+        snapshot(rowexact_eager_state),
+        snapshot(rowexact_fused_state),
+        "RowExact chain state"
+    );
+    let after_rowexact = snapshot_counts();
+    let mut rowexact_applied = [0u64; Stretch::COUNT];
+    for (index, stretch) in WATCH.iter().enumerate() {
+        let applied = after_rowexact[index] - before_rowexact[index];
+        rowexact_applied[index] = applied;
+        if !enabled_in_fused.contains(stretch) {
+            assert_eq!(applied, 0, "stretch {} ran while disabled", stretch.name());
+            continue;
+        }
+        if replacement_ran(*stretch, &before_rowexact, &after_rowexact) {
+            continue;
+        }
+        // Per token: 96 reads and 96 writes for the HC stretches, 36 layers for
+        // the GDN stretches, 48 applies for moe_combine and 96 for moe_swiglu,
+        // 24 q/k rotations for the qsa_rope halves (the 96-id prompt stays
+        // inside the dense context limit, so the indexer never runs), 12
+        // output gates for qsa_gate and 48 routing tails for moe_route_tail.
+        // Deliberately loose lower bounds.
+        let per_token_floor: u64 = if stretch.name().starts_with("gdn_") {
+            30
+        } else if stretch.name().starts_with("moe_") {
+            40
+        } else if stretch.name().starts_with("qsa_rope") {
+            20
+        } else if stretch.name() == "qsa_gate" {
+            10
+        } else {
+            48
+        };
+        assert!(
+            applied >= 16 * per_token_floor,
+            "stretch {}: applied only {applied} times over the 16-step RowExact chain \
+             (lower bound {})",
+            stretch.name(),
+            16 * per_token_floor,
+        );
+    }
+    eprintln!(
+        "FUSED_VS_EAGER_ROWEXACT chain16 eager_ms={:.1} fused_ms={:.1} applied={} hc_applied=[{}]",
+        rowexact_eager_secs * 1e3,
+        rowexact_fused_secs * 1e3,
+        rowexact_applied.iter().sum::<u64>(),
+        rowexact_applied
+            .iter()
+            .map(|count| count.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+}
+
+/// The QSA rotary table cache builds each cos/sin table once per decode step
+/// instead of once per layer and call. The cached arrays are the outputs of the
+/// same ops, so logits and the retained state must match the uncached run bit
+/// for bit. Use a prompt long enough (> 2,200 ids) that the selected-attention
+/// path and its pooled block keys are active for the last rows, so the block
+/// table cache is exercised as well as the query/key tables.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,200 ids)"]
+fn flash_next_rope_cache_matches_uncached_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::qwen4_exp_qsa::with_rope_cache;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(tokens.len() > 2_200, "need more than 2,200 prompt ids");
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+        forward(trunk, input, state, owner, policy).unwrap()
+    };
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+
+    let initial = Qwen4ExpState::new(trunk, owner);
+    let split = tokens.len() - 17;
+    // Prefill chunks use the same cached tables (many rows, one table per key).
+    let prefix_uncached = with_rope_cache(false, || {
+        run(&tokens[..split], &initial, ProjectionBatchPolicy::Shared)
+    });
+    let prefix = with_rope_cache(true, || {
+        run(&tokens[..split], &initial, ProjectionBatchPolicy::Shared)
+    });
+    assert_eq!(bits(&prefix_uncached), bits(&prefix), "prefill logits");
+    assert_eq!(
+        snapshot(prefix_uncached.state.clone()),
+        snapshot(prefix.state.clone()),
+        "prefill state"
+    );
+
+    for policy in [
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::RowExact,
+    ] {
+        for rows in [1usize, 2, 3, 4, 8] {
+            let window = &tokens[split..split + rows];
+            let uncached = with_rope_cache(false, || run(window, &prefix.state, policy));
+            let cached = with_rope_cache(true, || run(window, &prefix.state, policy));
+            assert_eq!(bits(&uncached), bits(&cached), "{policy:?} rows {rows}");
+            assert_eq!(
+                snapshot(uncached.state),
+                snapshot(cached.state),
+                "{policy:?} rows {rows}: retained state"
+            );
+        }
+    }
+
+    let mut uncached_state = prefix.state.clone();
+    let mut cached_state = prefix.state.clone();
+    let (mut uncached_secs, mut cached_secs) = (0.0f64, 0.0f64);
+    for step in 0..16 {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let uncached = with_rope_cache(false, || {
+            run(&token, &uncached_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&uncached.logits]);
+        uncached_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let cached = with_rope_cache(true, || {
+            run(&token, &cached_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&cached.logits]);
+        cached_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&uncached), bits(&cached), "singleton step {step}");
+        uncached_state = uncached.state;
+        cached_state = cached.state;
+    }
+    assert_eq!(
+        snapshot(uncached_state),
+        snapshot(cached_state),
+        "chain state"
+    );
+    eprintln!(
+        "ROPE_CACHE_VS_UNCACHED chain16 uncached_ms={:.1} cached_ms={:.1}",
+        uncached_secs * 1e3,
+        cached_secs * 1e3
+    );
+}
+
+/// Synchronized decode attribution at long context: chunked prefill of all but
+/// the last `AX_FLASH_NEXT_PROFILE_STEPS` (default 8) ids, then that many
+/// singleton decode steps, each replayed once as an unmeasured control and once
+/// under capture. Reports per-step averages of the stage seconds and MLX ops,
+/// so QSA cost can be compared between a short and a long prompt.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS; synchronized attribution only"]
+fn flash_next_decode_context_stage_profile() {
+    // `AX_FLASH_NEXT_PROFILE_GDN_METAL=1` profiles the production GDN path (the
+    // native singleton kernel); unit tests default to the portable recurrence.
+    let native = std::env::var("AX_FLASH_NEXT_PROFILE_GDN_METAL").as_deref() == Ok("1");
+    let _ = crate::model::shared::qwen4_exp_gdn_metal::with_mode(
+        native,
+        decode_context_stage_profile_body,
+    );
+}
+
+fn decode_context_stage_profile_body() {
+    use crate::model::ModelConfig;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    let steps = env_usize("AX_FLASH_NEXT_PROFILE_STEPS").unwrap_or(8);
+    assert!(
+        steps >= 1 && tokens.len() > steps + 1,
+        "need more ids than steps"
+    );
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+
+    let prefix_len = tokens.len() - steps;
+    let mut state = Qwen4ExpState::new(trunk, owner);
+    // The QSA score workspace (256 MiB) caps chunk x context; 1,024-token chunks
+    // stay inside it up to about 70k tokens.
+    let chunk_size = env_usize("AX_FLASH_NEXT_PREFILL_CHUNK_SIZE").unwrap_or(1024);
+    for (offset, end) in chunk_ranges(prefix_len, chunk_size) {
+        let output = forward(
+            trunk,
+            &tokens[offset..end],
+            &state,
+            owner,
+            ProjectionBatchPolicy::Shared,
+        )
+        .unwrap();
+        eval(&[&output.logits]);
+        state = output.state;
+    }
+    // Serializing evaluates every cache array, so the first measured step does
+    // not pay for the prefill graph.
+    drop(snapshot(state.clone()));
+
+    let mut stage_seconds: BTreeMap<&'static str, f64> = BTreeMap::new();
+    let mut stage_ops: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut control_seconds = 0.0f64;
+    for step in 0..steps {
+        let input = [tokens[prefix_len + step]];
+        let started = Instant::now();
+        let control = forward(trunk, &input, &state, owner, ProjectionBatchPolicy::Shared).unwrap();
+        eval(&[&control.logits]);
+        control_seconds += started.elapsed().as_secs_f64();
+        CAPTURE.with_borrow_mut(|capture| {
+            assert!(capture.is_none());
+            *capture = Some(Capture {
+                layer: None,
+                previous: Instant::now(),
+                previous_ops: mlx_sys::op_count_snapshot(),
+                samples: Vec::new(),
+                paging: Vec::new(),
+            });
+        });
+        let guard = CaptureGuard;
+        let measured =
+            forward(trunk, &input, &state, owner, ProjectionBatchPolicy::Shared).unwrap();
+        let capture = CAPTURE.with_borrow_mut(Option::take).unwrap();
+        drop(guard);
+        assert_eq!(measured.logits.data_f32(), control.logits.data_f32());
+        for sample in &capture.samples {
+            *stage_seconds.entry(sample.stage).or_insert(0.0) += sample.seconds;
+            *stage_ops.entry(sample.stage).or_insert(0) += sample.ops;
+        }
+        state = measured.state;
+    }
+
+    // Optional op census: one extra singleton forward under the per-thread op
+    // trace, so the evidence records WHICH MLX ops the step issues and from
+    // which engine function. No capture, no eval — forward's own dispatches
+    // are the census. The last prompt id is reused because there is no next
+    // id; the logits are discarded, only the bump sites matter.
+    let mut op_trace_json = serde_json::Value::Null;
+    if std::env::var("AX_FLASH_NEXT_OP_TRACE").as_deref() == Ok("1") {
+        let input = [tokens[tokens.len() - 1]];
+        mlx_sys::op_trace_begin();
+        let traced = forward(trunk, &input, &state, owner, ProjectionBatchPolicy::Shared).unwrap();
+        let entries = mlx_sys::op_trace_end();
+        drop(traced);
+        eprintln!(
+            "OP_TRACE distinct={} showing top {}",
+            entries.len(),
+            entries.len().min(60)
+        );
+        for entry in entries.iter().take(60) {
+            eprintln!("{:>8}  {:<28} {}", entry.count, entry.op, entry.caller);
+        }
+        op_trace_json = serde_json::json!(
+            entries
+                .iter()
+                .take(150)
+                .map(|entry| serde_json::json!({
+                    "caller": entry.caller,
+                    "op": entry.op,
+                    "count": entry.count,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    let per_step = |total: f64| total / steps as f64;
+    let evidence = serde_json::json!({
+        "qualification": false,
+        "method": "synchronized per-step stage attribution at long context",
+        "context_tokens": prefix_len,
+        "steps": steps,
+        "control_seconds_per_step": per_step(control_seconds),
+        "stage_seconds_per_step": stage_seconds
+            .iter()
+            .map(|(stage, seconds)| (stage.to_string(), per_step(*seconds)))
+            .collect::<BTreeMap<_, _>>(),
+        "stage_ops_per_step": stage_ops
+            .iter()
+            .map(|(stage, ops)| (stage.to_string(), *ops / steps as u64))
+            .collect::<BTreeMap<_, _>>(),
+        "op_trace": op_trace_json,
+    });
+    if let Some(path) = std::env::var_os("AX_FLASH_NEXT_PROFILE_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+    eprintln!("{evidence}");
+}
+
+/// The QSA K/V history stored as a sealed prefix plus a short tail must give
+/// bit-identical logits and serialized state to the single flat array. Small
+/// limits (`AX_KV_TEST_LIMITS=min,seal`, default `64,32`) make the 70-step
+/// chain and the verifier windows cross several seal boundaries on a short
+/// prompt; the prompt must have more than 2,200 ids so the selected-attention
+/// path is active, and windows run from the same prefix state so a discarded
+/// (rejected) staged state is replayed from an unsealed history.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,300 ids)"]
+fn flash_next_kv_segments_match_flat_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_kv_history::with_kv_segments;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(tokens.len() > 2_300, "need more than 2,300 prompt ids");
+    let limits = std::env::var("AX_KV_TEST_LIMITS").unwrap_or_else(|_| "64,32".to_string());
+    let (min_tokens, seal_tokens) = {
+        let (min, seal) = limits.split_once(',').expect("AX_KV_TEST_LIMITS=min,seal");
+        (
+            min.trim().parse::<usize>().unwrap(),
+            seal.trim().parse::<usize>().unwrap(),
+        )
+    };
+    let segmented = Some((min_tokens, seal_tokens));
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+        forward(trunk, input, state, owner, policy).unwrap()
+    };
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+    let chain_steps = 70usize;
+    let split = tokens.len() - chain_steps - 10;
+    let prefill = |limits: Option<(usize, usize)>| {
+        with_kv_segments(limits, || {
+            let mut state = Qwen4ExpState::new(trunk, owner);
+            let mut last_bits = Vec::new();
+            for (offset, end) in chunk_ranges(split, 1024) {
+                let output = run(&tokens[offset..end], &state, ProjectionBatchPolicy::Shared);
+                if end == split {
+                    last_bits = bits(&output);
+                }
+                state = output.state;
+            }
+            (state, last_bits)
+        })
+    };
+    let (flat_prefix, flat_last) = prefill(None);
+    let (seg_prefix, seg_last) = prefill(segmented);
+    assert_eq!(flat_last, seg_last, "prefill logits");
+    assert_eq!(
+        snapshot(flat_prefix.clone()),
+        snapshot(seg_prefix.clone()),
+        "prefill state"
+    );
+
+    for policy in [
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::RowExact,
+    ] {
+        for rows in [1usize, 2, 3, 4, 8] {
+            let window = &tokens[split..split + rows];
+            let flat = with_kv_segments(None, || run(window, &flat_prefix, policy));
+            let seg = with_kv_segments(segmented, || run(window, &seg_prefix, policy));
+            assert_eq!(bits(&flat), bits(&seg), "{policy:?} rows {rows}: logits");
+            assert_eq!(
+                snapshot(flat.state),
+                snapshot(seg.state),
+                "{policy:?} rows {rows}: retained state"
+            );
+        }
+    }
+
+    let mut flat_state = flat_prefix.clone();
+    let mut seg_state = seg_prefix.clone();
+    let (mut flat_secs, mut seg_secs) = (0.0f64, 0.0f64);
+    // Proof that the decode chain really gathers from the two segments and
+    // never rebuilds the whole history (snapshots below are outside the loop).
+    crate::model::shared::qwen4_exp_kv_history::reset_counters_for_test();
+    for step in 0..chain_steps {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let flat = with_kv_segments(None, || {
+            run(&token, &flat_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&flat.logits]);
+        flat_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let seg = with_kv_segments(segmented, || {
+            run(&token, &seg_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&seg.logits]);
+        seg_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&flat), bits(&seg), "singleton step {step}");
+        flat_state = flat.state;
+        seg_state = seg.state;
+    }
+    let segmented_gathers =
+        crate::model::shared::qwen4_exp_kv_history::segmented_gathers_for_test();
+    let flat_concats = crate::model::shared::qwen4_exp_kv_history::flat_concats_for_test();
+    assert!(
+        segmented_gathers >= 12 * (chain_steps as u64 / 2),
+        "segmented gathers only {segmented_gathers} times over the chain"
+    );
+    assert_eq!(flat_concats, 0, "the decode chain rebuilt a flat history");
+    assert_eq!(snapshot(flat_state), snapshot(seg_state), "chain state");
+    eprintln!(
+        "KV_SEGMENTS_VS_FLAT limits={min_tokens},{seal_tokens} chain{chain_steps} flat_ms={:.1} segmented_ms={:.1}",
+        flat_secs * 1e3,
+        seg_secs * 1e3
+    );
+}
+
+/// The cached pooled block keys (extended by newly completed blocks only)
+/// must give bit-identical logits and serialized state to recomputing every
+/// block each step. The prompt needs more than 2,300 ids so the selected
+/// attention path (and with it the indexer's block scoring) is active; the
+/// 70-step chain completes a new block every fourth token, and the verifier
+/// windows run from the same prefix so a rejected staged cache is replayed
+/// from the committed one.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,300 ids)"]
+fn flash_next_pooled_cache_matches_full_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::qwen4_exp_qsa::with_pooled_cache;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(tokens.len() > 2_300, "need more than 2,300 prompt ids");
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+        forward(trunk, input, state, owner, policy).unwrap()
+    };
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+    let chain_steps = 70usize;
+    let split = tokens.len() - chain_steps - 10;
+    let prefill = |enabled: bool| {
+        with_pooled_cache(enabled, || {
+            let mut state = Qwen4ExpState::new(trunk, owner);
+            let mut last_bits = Vec::new();
+            for (offset, end) in chunk_ranges(split, 1024) {
+                let output = run(&tokens[offset..end], &state, ProjectionBatchPolicy::Shared);
+                if end == split {
+                    last_bits = bits(&output);
+                }
+                state = output.state;
+            }
+            (state, last_bits)
+        })
+    };
+    let (full_prefix, full_last) = prefill(false);
+    let (cached_prefix, cached_last) = prefill(true);
+    assert_eq!(full_last, cached_last, "prefill logits");
+    assert_eq!(
+        snapshot(full_prefix.clone()),
+        snapshot(cached_prefix.clone()),
+        "prefill state"
+    );
+
+    for policy in [
+        ProjectionBatchPolicy::Shared,
+        ProjectionBatchPolicy::RowExact,
+    ] {
+        for rows in [1usize, 2, 3, 4, 8] {
+            let window = &tokens[split..split + rows];
+            let full = with_pooled_cache(false, || run(window, &full_prefix, policy));
+            let cached = with_pooled_cache(true, || run(window, &cached_prefix, policy));
+            assert_eq!(bits(&full), bits(&cached), "{policy:?} rows {rows}: logits");
+            assert_eq!(
+                snapshot(full.state),
+                snapshot(cached.state),
+                "{policy:?} rows {rows}: retained state"
+            );
+        }
+    }
+
+    let mut full_state = full_prefix.clone();
+    let mut cached_state = cached_prefix.clone();
+    let (mut full_secs, mut cached_secs) = (0.0f64, 0.0f64);
+    for step in 0..chain_steps {
+        let token = [tokens[split + step]];
+        let started = Instant::now();
+        let full = with_pooled_cache(false, || {
+            run(&token, &full_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&full.logits]);
+        full_secs += started.elapsed().as_secs_f64();
+        let started = Instant::now();
+        let cached = with_pooled_cache(true, || {
+            run(&token, &cached_state, ProjectionBatchPolicy::Shared)
+        });
+        eval(&[&cached.logits]);
+        cached_secs += started.elapsed().as_secs_f64();
+        assert_eq!(bits(&full), bits(&cached), "singleton step {step}");
+        full_state = full.state;
+        cached_state = cached.state;
+    }
+    assert_eq!(snapshot(full_state), snapshot(cached_state), "chain state");
+    eprintln!(
+        "POOLED_CACHE_VS_FULL chain{chain_steps} full_ms={:.1} cached_ms={:.1}",
+        full_secs * 1e3,
+        cached_secs * 1e3
+    );
+}
+
+/// Long-prompt exactness of the decode-path switches against an all-off
+/// baseline: the compiled stretches (including the QSA rotary stretches, which
+/// only reach the indexer and the pooled blocks once selected attention is
+/// active), the native GDN singleton kernel, and both together. Every arm must
+/// give bit-identical logits for the chunked prefill, verifier windows of
+/// 1/2/3/4/8 rows under Shared and RowExact, and a 16-step chain, and an
+/// identical final serialized state. The prompt needs more than 2,300 ids.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS (> 2,300 ids)"]
+fn flash_next_long_context_arms_match_baseline_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_fused::{
+        Stretch, applied_for_test, force_for_test, force_only_for_test,
+    };
+    use crate::model::shared::qwen4_exp_gdn_metal::with_mode;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    assert!(tokens.len() > 2_300, "need more than 2,300 prompt ids");
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+    let bits = |output: &Qwen4ExpOutput| -> Vec<u32> {
+        let logits = astype(&output.logits, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        logits.data_f32().iter().map(|v| v.to_bits()).collect()
+    };
+    let chain_steps = 16usize;
+    let split = tokens.len() - chain_steps - 10;
+
+    struct Observed {
+        logits: Vec<(String, Vec<u32>)>,
+        final_state: Vec<u8>,
+    }
+    let compiled_only: Vec<Stretch> = Stretch::ALL
+        .iter()
+        .copied()
+        .filter(|stretch| !stretch.is_native())
+        .collect();
+    let observe = |fuse: bool, only_compiled: bool, metal: bool| -> (Observed, u64) {
+        let _fuse = (!only_compiled).then(|| force_for_test(Some(fuse)));
+        let _only = only_compiled.then(|| force_only_for_test(&compiled_only));
+        let (observed, dispatches) = with_mode(metal, || {
+            let run = |input: &[u32], state: &Qwen4ExpState, policy: ProjectionBatchPolicy| {
+                forward(trunk, input, state, owner, policy).unwrap()
+            };
+            let mut logits = Vec::new();
+            let mut state = Qwen4ExpState::new(trunk, owner);
+            for (offset, end) in chunk_ranges(split, 1024) {
+                let output = run(&tokens[offset..end], &state, ProjectionBatchPolicy::Shared);
+                if end == split {
+                    logits.push(("prefill".to_string(), bits(&output)));
+                }
+                state = output.state;
+            }
+            for policy in [
+                ProjectionBatchPolicy::Shared,
+                ProjectionBatchPolicy::RowExact,
+            ] {
+                for rows in [1usize, 2, 3, 4, 8] {
+                    let output = run(&tokens[split..split + rows], &state, policy);
+                    logits.push((format!("{policy:?} rows {rows}"), bits(&output)));
+                }
+            }
+            for step in 0..chain_steps {
+                let output = run(
+                    &[tokens[split + step]],
+                    &state,
+                    ProjectionBatchPolicy::Shared,
+                );
+                logits.push((format!("chain step {step}"), bits(&output)));
+                state = output.state;
+            }
+            Observed {
+                logits,
+                final_state: snapshot(state),
+            }
+        });
+        (observed, dispatches)
+    };
+
+    let (baseline, baseline_dispatches) = observe(false, false, false);
+    assert_eq!(
+        baseline_dispatches, 0,
+        "the baseline must not use the GDN kernel"
+    );
+    for (name, fuse, only_compiled, metal) in [
+        ("fuse", true, false, false),
+        ("compiled_only", true, true, false),
+        ("gdn_metal", false, false, true),
+        ("fuse+gdn_metal", true, false, true),
+        ("compiled_only+gdn_metal", true, true, true),
+    ] {
+        let native_before = (
+            applied_for_test(Stretch::GdnNativeDecay),
+            applied_for_test(Stretch::GdnNativeQk),
+            applied_for_test(Stretch::HcNativeLowGate),
+        );
+        let rope_before = (
+            applied_for_test(Stretch::QsaRopeLo),
+            applied_for_test(Stretch::QsaRopeHi),
+        );
+        let gate_before = applied_for_test(Stretch::QsaGate);
+        let tail_before = applied_for_test(Stretch::MoeRouteTail);
+        let (arm, dispatches) = observe(fuse, only_compiled, metal);
+        assert_eq!(arm.logits.len(), baseline.logits.len());
+        for ((label, expected), (_, actual)) in baseline.logits.iter().zip(&arm.logits) {
+            assert_eq!(expected, actual, "{name}: logits differ at {label}");
+        }
+        assert_eq!(baseline.final_state, arm.final_state, "{name}: final state");
+        if metal {
+            assert!(dispatches > 0, "{name}: the native GDN kernel never ran");
+        } else {
+            assert_eq!(dispatches, 0, "{name}: the native GDN kernel ran");
+        }
+        let rope_after = (
+            applied_for_test(Stretch::QsaRopeLo),
+            applied_for_test(Stretch::QsaRopeHi),
+        );
+        let gate_after = applied_for_test(Stretch::QsaGate);
+        let tail_after = applied_for_test(Stretch::MoeRouteTail);
+        if fuse {
+            // 12 QSA layers x (attention q, attention k, indexer q) per decode
+            // row at least over the 16-step chain, 12 output gates and 48
+            // routing tails per row.
+            assert!(
+                rope_after.0 - rope_before.0 >= 16 * 36 && rope_after.1 - rope_before.1 >= 16 * 36,
+                "{name}: QSA rotary stretches applied only {rope_before:?} -> {rope_after:?}"
+            );
+            assert!(
+                gate_after - gate_before >= 16 * 10,
+                "{name}: QsaGate applied only {gate_before} -> {gate_after}"
+            );
+            assert!(
+                tail_after - tail_before >= 16 * 40,
+                "{name}: MoeRouteTail applied only {tail_before} -> {tail_after}"
+            );
+        } else {
+            assert_eq!(rope_before, rope_after, "{name}: stretches ran while off");
+            assert_eq!(gate_before, gate_after, "{name}: QsaGate ran while off");
+            assert_eq!(
+                tail_before, tail_after,
+                "{name}: MoeRouteTail ran while off"
+            );
+        }
+        let native_after = (
+            applied_for_test(Stretch::GdnNativeDecay),
+            applied_for_test(Stretch::GdnNativeQk),
+            applied_for_test(Stretch::HcNativeLowGate),
+        );
+        if fuse && !only_compiled {
+            // 36 GDN layers (decay/beta and q/k/v scale) and 96 hyper-connection
+            // reads per decode row, over the 16-step chain (loose bounds).
+            assert!(
+                native_after.0 - native_before.0 >= 16 * 30
+                    && native_after.1 - native_before.1 >= 16 * 30
+                    && native_after.2 - native_before.2 >= 16 * 40,
+                "{name}: native stretches applied only {native_before:?} -> {native_after:?}"
+            );
+        } else {
+            assert_eq!(
+                native_before, native_after,
+                "{name}: native stretches ran while off"
+            );
+        }
+        eprintln!("LONG_ARM {name}: identical, gdn kernel dispatches {dispatches}");
+    }
 }

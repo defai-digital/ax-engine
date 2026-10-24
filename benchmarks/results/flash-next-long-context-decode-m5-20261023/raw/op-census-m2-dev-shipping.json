@@ -1,0 +1,758 @@
+{
+  "context_tokens": 2598,
+  "control_seconds_per_step": 0.393603021,
+  "method": "synchronized per-step stage attribution at long context",
+  "op_trace": [
+    {
+      "caller": "ax_engine_mlx::per_layer_compile::try_apply_with_abort_safety::{closure#0} @per_layer_compile.rs:58",
+      "count": 903,
+      "op": "?"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::qw_direct::{closure#0}::{closure#0}::{closure#0} @utils.rs:1312",
+      "count": 471,
+      "op": "quantized_matmul_with_mode"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::qw_direct @utils.rs:1359",
+      "count": 290,
+      "op": "matmul"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::qw_gather @utils.rs:2395",
+      "count": 144,
+      "op": "gather_qmm_with_mode"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1129",
+      "count": 84,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1114",
+      "count": 48,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1129",
+      "count": 48,
+      "op": "transpose"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1166",
+      "count": 48,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1171",
+      "count": 48,
+      "op": "expand_dims_axes"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1171",
+      "count": 48,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1171",
+      "count": 48,
+      "op": "softmax"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1171",
+      "count": 48,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::mlp::top_k_by_argpartition @mlp.rs:6245",
+      "count": 48,
+      "op": "argpartition_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::mlp::top_k_by_argpartition @mlp.rs:6246",
+      "count": 48,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::mlp::top_k_by_argpartition @mlp.rs:6252",
+      "count": 48,
+      "op": "take_along_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::squeeze_switch_singleton @utils.rs:2372",
+      "count": 48,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::linear_attention_conv1d_pre_activation @linear_attention_ops.rs:236",
+      "count": 36,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::linear_attention_conv1d_pre_activation @linear_attention_ops.rs:238",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::linear_attention_conv1d_pre_activation @linear_attention_ops.rs:245",
+      "count": 36,
+      "op": "conv1d"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::split_linear_attention_qkv @linear_attention_ops.rs:803",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::split_linear_attention_qkv @linear_attention_ops.rs:804",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::split_linear_attention_qkv @linear_attention_ops.rs:805",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::split_linear_attention_qkv @linear_attention_ops.rs:808",
+      "count": 36,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::split_linear_attention_qkv @linear_attention_ops.rs:818",
+      "count": 36,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::split_linear_attention_qkv @linear_attention_ops.rs:828",
+      "count": 36,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1129",
+      "count": 36,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1129",
+      "count": 36,
+      "op": "contiguous"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_gdn_metal::launch @qwen4_exp_gdn_metal.rs:157",
+      "count": 36,
+      "op": "sum_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_gdn_metal::launch @qwen4_exp_gdn_metal.rs:174",
+      "count": 36,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_gdn_metal::launch @qwen4_exp_gdn_metal.rs:175",
+      "count": 36,
+      "op": "sum_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_split @qwen4_exp_qsa.rs:1086",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_split @qwen4_exp_qsa.rs:1087",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_split @qwen4_exp_qsa.rs:1109",
+      "count": 36,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_split @qwen4_exp_qsa.rs:1110",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1129",
+      "count": 24,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1129",
+      "count": 24,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::rms_with_scale_f32 @qwen4_exp_attention.rs:1249",
+      "count": 24,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::rms_with_scale_f32 @qwen4_exp_attention.rs:1250",
+      "count": 24,
+      "op": "rms_norm"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::rms_with_scale_f32 @qwen4_exp_attention.rs:1250",
+      "count": 24,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::gather_selected @qwen4_exp_kv_history.rs:265",
+      "count": 24,
+      "op": "take"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1129",
+      "count": 12,
+      "op": "split"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory> @qwen4_exp_attention.rs:1002",
+      "count": 12,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory> @qwen4_exp_attention.rs:1002",
+      "count": 12,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory> @qwen4_exp_attention.rs:1024",
+      "count": 12,
+      "op": "transpose"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory> @qwen4_exp_attention.rs:1025",
+      "count": 12,
+      "op": "transpose"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory> @qwen4_exp_attention.rs:1044",
+      "count": 12,
+      "op": "try_scaled_dot_product_attention"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory> @qwen4_exp_attention.rs:1045",
+      "count": 12,
+      "op": "contiguous"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory> @qwen4_exp_attention.rs:1046",
+      "count": 12,
+      "op": "contiguous"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory> @qwen4_exp_attention.rs:1047",
+      "count": 12,
+      "op": "contiguous"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1418",
+      "count": 12,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1419",
+      "count": 12,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1420",
+      "count": 12,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1421",
+      "count": 12,
+      "op": "transpose"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1422",
+      "count": 12,
+      "op": "matmul"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1423",
+      "count": 12,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1424",
+      "count": 12,
+      "op": "maximum"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1425",
+      "count": 12,
+      "op": "sum_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores @qwen4_exp_qsa.rs:1426",
+      "count": 12,
+      "op": "divide"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::project @qwen4_exp_qsa.rs:804",
+      "count": 12,
+      "op": "quantized_matmul_with_mode"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::rms_with_scale_f32 @qwen4_exp_qsa.rs:835",
+      "count": 12,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::rms_with_scale_f32 @qwen4_exp_qsa.rs:836",
+      "count": 12,
+      "op": "rms_norm"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::rms_with_scale_f32 @qwen4_exp_qsa.rs:836",
+      "count": 12,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1566",
+      "count": 12,
+      "op": "argsort_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1566",
+      "count": 12,
+      "op": "negative"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1567",
+      "count": 12,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1580",
+      "count": 12,
+      "op": "expand_dims_axes"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1581",
+      "count": 12,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1581",
+      "count": 12,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1585",
+      "count": 12,
+      "op": "arange"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1586",
+      "count": 12,
+      "op": "add"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1587",
+      "count": 12,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1606",
+      "count": 12,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device @qwen4_exp_qsa.rs:1608",
+      "count": 12,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1101",
+      "count": 6,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1101",
+      "count": 4,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin @qwen4_exp_qsa.rs:1160",
+      "count": 4,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm @qwen4_exp_residual.rs:291",
+      "count": 3,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm @qwen4_exp_residual.rs:292",
+      "count": 3,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm @qwen4_exp_residual.rs:296",
+      "count": 3,
+      "op": "rms_norm"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm @qwen4_exp_residual.rs:297",
+      "count": 3,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm @qwen4_exp_residual.rs:298",
+      "count": 3,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm @qwen4_exp_residual.rs:299",
+      "count": 3,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm @qwen4_exp_residual.rs:299",
+      "count": 3,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_with_verifier_policy_rows @qwen4_exp.rs:912",
+      "count": 2,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::scalar_like @utils.rs:2326",
+      "count": 2,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::cached_rotary_trig @qwen4_exp_qsa.rs:1204",
+      "count": 2,
+      "op": "arange"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::cached_rotary_trig @qwen4_exp_qsa.rs:1213",
+      "count": 2,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::cached_rotary_trig @qwen4_exp_qsa.rs:1214",
+      "count": 2,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::cached_rotary_trig @qwen4_exp_qsa.rs:1217",
+      "count": 2,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::cached_rotary_trig @qwen4_exp_qsa.rs:1218",
+      "count": 2,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin @qwen4_exp_qsa.rs:1155",
+      "count": 2,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin @qwen4_exp_qsa.rs:1155",
+      "count": 2,
+      "op": "outer"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin @qwen4_exp_qsa.rs:1156",
+      "count": 2,
+      "op": "cos"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin @qwen4_exp_qsa.rs:1157",
+      "count": 2,
+      "op": "sin"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin @qwen4_exp_qsa.rs:1158",
+      "count": 2,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin @qwen4_exp_qsa.rs:1159",
+      "count": 2,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr @mod.rs:438",
+      "count": 1,
+      "op": "clip"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr @mod.rs:445",
+      "count": 1,
+      "op": "take"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr @mod.rs:446",
+      "count": 1,
+      "op": "take"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr @mod.rs:451",
+      "count": 1,
+      "op": "dequantize_with_mode"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr @mod.rs:462",
+      "count": 1,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr::{closure#0} @mod.rs:447",
+      "count": 1,
+      "op": "take"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1081",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1081",
+      "count": 1,
+      "op": "dequantize"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1094",
+      "count": 1,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1095",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1101",
+      "count": 1,
+      "op": "conv1d"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1101",
+      "count": 1,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1101",
+      "count": 1,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1101",
+      "count": 1,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1101",
+      "count": 1,
+      "op": "add"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1103",
+      "count": 1,
+      "op": "add"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1183",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1189",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows @qwen4_exp.rs:1220",
+      "count": 1,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_with_verifier_policy_rows @qwen4_exp.rs:912",
+      "count": 1,
+      "op": "broadcast_to"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot @qwen4_exp_ple.rs:45",
+      "count": 1,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot @qwen4_exp_ple.rs:47",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot @qwen4_exp_ple.rs:47",
+      "count": 1,
+      "op": "sum_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot @qwen4_exp_ple.rs:48",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot @qwen4_exp_ple.rs:50",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot @qwen4_exp_ple.rs:51",
+      "count": 1,
+      "op": "divide"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot @qwen4_exp_ple.rs:51",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:418",
+      "count": 1,
+      "op": "negative"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:418",
+      "count": 1,
+      "op": "maximum"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:419",
+      "count": 1,
+      "op": "maximum"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:419",
+      "count": 1,
+      "op": "power"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:420",
+      "count": 1,
+      "op": "less"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:421",
+      "count": 1,
+      "op": "less"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:422",
+      "count": 1,
+      "op": "where_cond"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:425",
+      "count": 1,
+      "op": "where_cond"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::signed_sqrt_floor @qwen4_exp_ple.rs:428",
+      "count": 1,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::sigmoid_projection_dtype @qwen4_exp_residual.rs:50",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::sigmoid_projection_dtype @qwen4_exp_residual.rs:51",
+      "count": 1,
+      "op": "sigmoid"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::sigmoid_projection_dtype @qwen4_exp_residual.rs:51",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::silu_projection_dtype @qwen4_exp_residual.rs:42",
+      "count": 1,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::silu_projection_dtype @qwen4_exp_residual.rs:43",
+      "count": 1,
+      "op": "sigmoid"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::silu_projection_dtype @qwen4_exp_residual.rs:43",
+      "count": 1,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::silu_projection_dtype @qwen4_exp_residual.rs:43",
+      "count": 1,
+      "op": "astype"
+    }
+  ],
+  "qualification": false,
+  "stage_ops_per_step": {
+    "attention_hc_read": 384,
+    "attention_hc_write": 48,
+    "embedding": 0,
+    "expert_resolve": 0,
+    "final_mixer": 6,
+    "gdn": 108,
+    "gdn_chunked": 648,
+    "lm_head": 3,
+    "mlp_hc_read": 384,
+    "mlp_hc_write": 48,
+    "moe_compute": 624,
+    "moe_routing": 336,
+    "ngram_lookup": 0,
+    "ple_operator": 64,
+    "ple_rows": 2,
+    "qsa": 60,
+    "qsa_a_proj": 36,
+    "qsa_b_prep": 324,
+    "qsa_c_append": 48,
+    "qsa_d_attend": 120,
+    "qsa_i_proj": 168,
+    "qsa_indexer": 126,
+    "qsa_j_stage": 24,
+    "qsa_k_pool": 96,
+    "qsa_l_scores": 108
+  },
+  "stage_seconds_per_step": {
+    "attention_hc_read": 0.022035209999999996,
+    "attention_hc_write": 0.012534834500000005,
+    "embedding": 0.0003112085,
+    "expert_resolve": 0.00013099849999999996,
+    "final_mixer": 0.00033883350000000003,
+    "gdn": 0.0102288535,
+    "gdn_chunked": 0.0166979365,
+    "lm_head": 0.0011823954999999999,
+    "mlp_hc_read": 0.015949918499999993,
+    "mlp_hc_write": 0.012422811,
+    "moe_compute": 0.018191417,
+    "moe_routing": 0.013002376000000003,
+    "ngram_lookup": 8.812499999999999e-6,
+    "ple_operator": 0.000706833,
+    "ple_rows": 0.000699646,
+    "qsa": 0.0029752084999999993,
+    "qsa_a_proj": 0.0030505205,
+    "qsa_b_prep": 0.0032987285,
+    "qsa_c_append": 0.004867813,
+    "qsa_d_attend": 0.005421832499999998,
+    "qsa_i_proj": 0.0031004170000000003,
+    "qsa_indexer": 0.003137917500000001,
+    "qsa_j_stage": 0.0032754995,
+    "qsa_k_pool": 0.0207855625,
+    "qsa_l_scores": 0.0030392910000000004
+  },
+  "steps": 2
+}

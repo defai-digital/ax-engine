@@ -785,6 +785,52 @@ def result_usage(result: Any, prompt_tokens: list[int]) -> dict[str, int]:
     )
 
 
+# The pre-tokenizer split regex Qwen3.5-generation models were trained with
+# (combining marks stay in the word) and the legacy Qwen2 regex some packs
+# still ship. Mirrors `ax-engine-sdk` `restore_qwen3_pretokenizer`.
+_LEGACY_QWEN2_PRETOKENIZER_SPLIT = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}|"
+    r" ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+_QWEN3_PRETOKENIZER_SPLIT = (
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}|"
+    r" ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+
+
+def _is_qwen3_pretokenizer_family(config: dict[str, Any]) -> bool:
+    model_types = [config.get("model_type"), (config.get("text_config") or {}).get("model_type")]
+    return any(
+        isinstance(model_type, str) and model_type.startswith(("qwen3_5", "qwen4"))
+        for model_type in model_types
+    )
+
+
+def restore_qwen3_pretokenizer(tokenizer_json: str) -> str | None:
+    """Swap the legacy split regex for the Qwen3 one; None when nothing changed."""
+    legacy = json.dumps(_LEGACY_QWEN2_PRETOKENIZER_SPLIT)
+    if legacy not in tokenizer_json:
+        return None
+    return tokenizer_json.replace(legacy, json.dumps(_QWEN3_PRETOKENIZER_SPLIT))
+
+
+def load_tokenizer(tokenizer_path: str | Path, tokenizer_cls: Any) -> Any:
+    """Load tokenizer.json, restoring the Qwen3 regex for Qwen3.5+ packs."""
+    path = Path(tokenizer_path)
+    try:
+        config = json.loads((path.parent / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        config = {}
+    if isinstance(config, dict) and _is_qwen3_pretokenizer_family(config):
+        fixed = restore_qwen3_pretokenizer(path.read_text(encoding="utf-8"))
+        if fixed is not None:
+            try:
+                return tokenizer_cls.from_str(fixed)
+            except Exception:  # noqa: BLE001 - fall back to the file as shipped
+                pass
+    return tokenizer_cls.from_file(str(path))
+
+
 def create_app(
     *,
     model_id: str = "qwen3_dense",
@@ -805,7 +851,7 @@ def create_app(
             "Install with: pip install 'ax-engine[openai]'"
         ) from error
 
-    tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    tokenizer = load_tokenizer(tokenizer_path, Tokenizer)
     session = build_session(
         model_id=model_id,
         mlx_model_artifacts_dir=mlx_model_artifacts_dir,

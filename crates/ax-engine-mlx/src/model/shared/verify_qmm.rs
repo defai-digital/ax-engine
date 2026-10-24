@@ -29,6 +29,10 @@ const MIN_ROUTE_N: i32 = 16_384;
 #[cfg(test)]
 const SPLIT_K_TEST_N: i32 = 16_384;
 const MSG_ROUTE_N: i32 = 100_000;
+/// Widest verify window the affine kernels serve. The accumulators are
+/// `4 * rows` floats per simdgroup, which fits the 32-lane reduction up to 8
+/// rows; 7 and 8 rows serve DFlash2's 8-row windows.
+const AFFINE_MAX_ROWS: i32 = 8;
 const DEFAULT_MSG_SIMDGROUPS: i32 = 8;
 
 /// Minimum output width routed through the verify QMM.
@@ -61,6 +65,31 @@ fn msg_simdgroups() -> i32 {
             .and_then(|raw| raw.trim().parse::<i32>().ok())
             .filter(|value| matches!(value, 2 | 4 | 8 | 16))
             .unwrap_or(DEFAULT_MSG_SIMDGROUPS)
+    })
+}
+
+/// `AX_MLX_MTP_VERIFY_QMM_MXFP4` (default on; `0` disables): route MXFP4 verify
+/// matmuls of 3..=8 rows through the fused window kernel. On the M5 Max with
+/// Qwen 3.8 27B MXFP4 MTP over 17 prompts it decodes 1.138x faster than the
+/// stock MLX matmul (every prompt faster, run-to-run noise under 0.2%) and
+/// stays as close to direct decode as the stock route (12/17 vs 11/17 prompts
+/// token-identical).
+fn mxfp4_window_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| crate::fastpath::env_flag_default_on("AX_MLX_MTP_VERIFY_QMM_MXFP4"))
+}
+
+/// Minimum output width routed through the MXFP4 window kernel. Zero routes
+/// every eligible projection: the M5 FFN-chain probe gained on the narrow
+/// down projection (N = hidden size) as much as on the wide gate/up one.
+fn mxfp4_window_min_n() -> i32 {
+    static CACHED: OnceLock<i32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_VERIFY_QMM_MXFP4_MIN_N")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .filter(|value| *value >= 0)
+            .unwrap_or(0)
     })
 }
 
@@ -117,6 +146,15 @@ static VERIFY_QMM_MSG: LazyKernel = LazyKernel::new(
     true,
 );
 
+static VERIFY_QMM_MXFP4_WINDOW: LazyKernel = LazyKernel::new(
+    "ax_qwen_mtp_verify_qmm_mxfp4_window_v1",
+    &["x", "weight", "scales"],
+    &["out"],
+    VERIFY_QMM_MXFP4_WINDOW_SOURCE,
+    VERIFY_QMM_MXFP4_WINDOW_HEADER,
+    true,
+);
+
 /// Test-only switch that forces the lazy verify-QMM kernels to report as
 /// unavailable, so the fail-closed fallback route can be exercised without a
 /// genuine Metal compile failure.
@@ -131,6 +169,15 @@ fn verify_qmm_split_k_kernel() -> Option<&'static MlxMetalKernel> {
         return None;
     }
     VERIFY_QMM_SPLIT_K.get()
+}
+
+/// Fail-closed lookup for the MXFP4 window verify kernel.
+fn verify_qmm_mxfp4_window_kernel() -> Option<&'static MlxMetalKernel> {
+    #[cfg(test)]
+    if FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    VERIFY_QMM_MXFP4_WINDOW.get()
 }
 
 /// Fail-closed lookup for the multi-simdgroup verify kernel.
@@ -450,6 +497,191 @@ const VERIFY_QMM_MSG_SOURCE: &str = r#"
     }
 "#;
 
+/// FP4 (e2m1) decode by bit placement: the three magnitude bits go to the top
+/// of a half's exponent/mantissa field and the sign bit to bit 15, which reads
+/// back as the FP4 value times 2^14 (exact, including the subnormal case). The
+/// caller folds 2^14 and the e8m0 group scale into one multiply per group.
+const VERIFY_QMM_MXFP4_WINDOW_HEADER: &str = r#"
+inline float fp4_scaled(uint nib) {
+    ushort bits = ushort(((nib & 7u) << 9) | ((nib & 8u) << 12));
+    return float(as_type<half>(bits));
+}
+"#;
+
+/// Fused multi-row MXFP4 matmul for speculative verify windows: every weight
+/// word is read and decoded once and applied to all `Rows` activation rows
+/// held in registers (qmv generalised to 3..=8 rows). Two simdgroups per
+/// threadgroup, two output columns per simdgroup, eight K values per lane per
+/// step.
+const VERIFY_QMM_MXFP4_WINDOW_SOURCE: &str = r#"
+    constexpr int SimdGroups = 2;
+    constexpr int Results = 2;
+    constexpr int Lanes = 32;
+    constexpr int ValuesPerLane = 8;
+    uint sg = simdgroup_index_in_threadgroup;
+    uint lane = thread_index_in_simdgroup;
+    uint col0 = (threadgroup_position_in_grid.x * SimdGroups + sg) * Results;
+    if (col0 >= NDim) {
+        return;
+    }
+
+    float acc[Results][Rows];
+    _Pragma("clang loop unroll(full)")
+    for (int c = 0; c < Results; c++) {
+        _Pragma("clang loop unroll(full)")
+        for (int m = 0; m < Rows; m++) {
+            acc[c][m] = 0.0f;
+        }
+    }
+
+    for (int k0 = 0; k0 < KDim; k0 += Lanes * ValuesPerLane) {
+        int kk = k0 + int(lane) * ValuesPerLane;
+        float xv[Rows][ValuesPerLane];
+        _Pragma("clang loop unroll(full)")
+        for (int m = 0; m < Rows; m++) {
+            _Pragma("clang loop unroll(full)")
+            for (int i = 0; i < ValuesPerLane; i++) {
+                xv[m][i] = float(x[m * KDim + kk + i]);
+            }
+        }
+        _Pragma("clang loop unroll(full)")
+        for (int c = 0; c < Results; c++) {
+            uint col = col0 + uint(c);
+            uint word = weight[col * uint(KDim / 8) + uint(kk / 8)];
+            float group_scale =
+                as_type<float>(uint(scales[col * uint(KDim / 32) + uint(kk / 32)]) << 23) * 16384.0f;
+            float part[Rows];
+            _Pragma("clang loop unroll(full)")
+            for (int m = 0; m < Rows; m++) {
+                part[m] = 0.0f;
+            }
+            _Pragma("clang loop unroll(full)")
+            for (int i = 0; i < ValuesPerLane; i++) {
+                float v = fp4_scaled((word >> (4 * i)) & 0xFu);
+                _Pragma("clang loop unroll(full)")
+                for (int m = 0; m < Rows; m++) {
+                    part[m] += v * xv[m][i];
+                }
+            }
+            _Pragma("clang loop unroll(full)")
+            for (int m = 0; m < Rows; m++) {
+                acc[c][m] += part[m] * group_scale;
+            }
+        }
+    }
+
+    _Pragma("clang loop unroll(full)")
+    for (int c = 0; c < Results; c++) {
+        _Pragma("clang loop unroll(full)")
+        for (int m = 0; m < Rows; m++) {
+            float r = simd_sum(acc[c][m]);
+            if (lane == 0) {
+                out[m * NDim + col0 + uint(c)] = static_cast<InputT>(r);
+            }
+        }
+    }
+"#;
+
+const MXFP4_WINDOW_MIN_ROWS: i32 = 3;
+const MXFP4_WINDOW_MAX_ROWS: i32 = 8;
+/// Output columns per threadgroup: 2 simdgroups x 2 results.
+const MXFP4_WINDOW_COLUMNS_PER_GROUP: i32 = 4;
+/// K values consumed per loop step: 32 lanes x 8 values.
+const MXFP4_WINDOW_K_STEP: i32 = 256;
+
+fn mxfp4_window_eligible(
+    x: &MlxArray,
+    weight: &QuantizedWeight,
+    min_n: i32,
+) -> Option<(i32, i32, i32)> {
+    if !verify_qmm_armed()
+        || !matches!(x.dtype(), MlxDtype::Bfloat16 | MlxDtype::Float16)
+        || !matches!(
+            weight.mlx_quantization_mode(),
+            mlx_sys::MlxQuantizationMode::Mxfp4
+        )
+        || weight.bits != 4
+        || weight.group_size != 32
+        || weight.biases.is_some()
+        || weight.weight.dtype() != MlxDtype::Uint32
+    {
+        return None;
+    }
+    let shape = x.shape();
+    if shape.len() != 3
+        || shape[0] != 1
+        || !(MXFP4_WINDOW_MIN_ROWS..=MXFP4_WINDOW_MAX_ROWS).contains(&shape[1])
+    {
+        return None;
+    }
+    let (m, k) = (shape[1], shape[2]);
+    let weight_shape = weight.weight.shape();
+    if weight_shape.len() != 2 {
+        return None;
+    }
+    let n = weight_shape[0];
+    if k <= 0
+        || n < min_n
+        || k % MXFP4_WINDOW_K_STEP != 0
+        || n % MXFP4_WINDOW_COLUMNS_PER_GROUP != 0
+        || weight_shape[1] != k / 8
+    {
+        return None;
+    }
+    let scales = weight.scales.as_ref()?;
+    if scales.dtype() != MlxDtype::Uint8 || scales.shape() != [n, k / 32] {
+        return None;
+    }
+    Some((m, k, n))
+}
+
+fn try_mxfp4_window_qmm(x: &MlxArray, weight: &QuantizedWeight) -> Option<MlxArray> {
+    if !mxfp4_window_enabled() {
+        return None;
+    }
+    mxfp4_window_qmm(x, weight, mxfp4_window_min_n())
+}
+
+fn mxfp4_window_qmm(x: &MlxArray, weight: &QuantizedWeight, min_n: i32) -> Option<MlxArray> {
+    let (m, k, n) = mxfp4_window_eligible(x, weight, min_n)?;
+    let scales = weight.scales.as_ref()?;
+    let kernel = verify_qmm_mxfp4_window_kernel()?;
+    let x_flat = contiguous(&reshape(x, &[m, k], None), None);
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[&x_flat, &weight.weight, scales],
+            &[KernelOutputSpec {
+                shape: vec![m, n],
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "InputT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "Rows",
+                    value: m,
+                },
+                KernelTemplateArg::Int {
+                    name: "KDim",
+                    value: k,
+                },
+                KernelTemplateArg::Int {
+                    name: "NDim",
+                    value: n,
+                },
+            ],
+            (n / MXFP4_WINDOW_COLUMNS_PER_GROUP * 64, 1, 1),
+            (64, 1, 1),
+            None,
+        )
+        .ok()?;
+    let flat = outputs.pop()?;
+    // The projection caller adds the separate dense Linear bias once.
+    Some(reshape(&flat, &[1, m, n], None))
+}
+
 fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<(i32, i32, i32)> {
     if !verify_qmm_armed()
         || !matches!(x.dtype(), MlxDtype::Bfloat16 | MlxDtype::Float16)
@@ -463,7 +695,7 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
         return None;
     }
     let shape = x.shape();
-    if shape.len() != 3 || shape[0] != 1 || !(3..=6).contains(&shape[1]) {
+    if shape.len() != 3 || shape[0] != 1 || !(3..=AFFINE_MAX_ROWS).contains(&shape[1]) {
         return None;
     }
     let m = shape[1];
@@ -497,6 +729,12 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
 }
 
 pub(crate) fn try_qwen_mtp_verify_qmm(x: &MlxArray, weight: &QuantizedWeight) -> Option<MlxArray> {
+    if matches!(
+        weight.mlx_quantization_mode(),
+        mlx_sys::MlxQuantizationMode::Mxfp4
+    ) {
+        return try_mxfp4_window_qmm(x, weight);
+    }
     try_qwen_mtp_verify_qmm_for_min_n(x, weight, min_route_n())
 }
 
@@ -665,6 +903,7 @@ mod tests {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         let input_data: Vec<f32> = (0..(m * k) as usize)
             .map(|index| ((index % 29) as f32 - 14.0) / 128.0)
@@ -735,6 +974,7 @@ mod tests {
             decode_q2_weight: None,
             decode_q2_scales: None,
             decode_q2_biases: None,
+            weight_t_view: Default::default(),
         };
         let input_data: Vec<f32> = (0..(m * k) as usize)
             .map(|index| ((index % 29) as f32 - 14.0) / 128.0)
@@ -782,6 +1022,14 @@ mod tests {
     }
 
     #[test]
+    fn wide_windows_of_seven_and_eight_rows_match_affine_qmm() {
+        for m in [7, 8] {
+            assert_route_matches_affine_qmm(SPLIT_K_TEST_N, SPLIT_K_TEST_N, m, "wide split-K");
+            assert_route_matches_affine_qmm(MSG_ROUTE_N, MIN_ROUTE_N, m, "wide multi-simdgroup");
+        }
+    }
+
+    #[test]
     fn four_partition_split_k_matches_small_projection() {
         assert_route_matches_affine_qmm(2048, 0, 3, "small split-K");
     }
@@ -789,5 +1037,131 @@ mod tests {
     #[test]
     fn multi_simdgroup_matches_affine_qmm_on_large_n_shape() {
         assert_route_matches_affine_qmm(MSG_ROUTE_N, MIN_ROUTE_N, 3, "multi-simdgroup");
+    }
+
+    fn mxfp4_test_weight(n: i32, k: i32) -> QuantizedWeight {
+        let dense_data: Vec<f32> = (0..(n * k) as usize)
+            .map(|index| ((index * 7 % 251) as f32 - 125.0) / 512.0)
+            .collect();
+        let dense = astype(
+            &reshape(&MlxArray::from_f32_slice(&dense_data), &[n, k], None),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let quantized = quantize(
+            &dense,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Mxfp4,
+            None,
+            None,
+        );
+        QuantizedWeight {
+            weight: quantized[0].clone(),
+            scales: Some(quantized[1].clone()),
+            biases: None,
+            group_size: 32,
+            bits: 4,
+            mode: "mxfp4".to_owned(),
+            linear_bias: None,
+            decode_weight_t: None,
+            decode_q2_weight: None,
+            decode_q2_scales: None,
+            decode_q2_biases: None,
+            weight_t_view: Default::default(),
+        }
+    }
+
+    fn mxfp4_test_input(m: i32, k: i32) -> MlxArray {
+        let data: Vec<f32> = (0..(m * k) as usize)
+            .map(|index| ((index * 13 % 61) as f32 - 30.0) / 64.0)
+            .collect();
+        astype(
+            &reshape(&MlxArray::from_f32_slice(&data), &[1, m, k], None),
+            MlxDtype::Bfloat16,
+            None,
+        )
+    }
+
+    fn mxfp4_reference(x: &MlxArray, weight: &QuantizedWeight) -> MlxArray {
+        quantized_matmul_with_mode(
+            x,
+            &weight.weight,
+            weight.scales.as_ref().unwrap(),
+            None,
+            true,
+            Some(weight.group_size),
+            Some(weight.bits),
+            MlxQuantizationMode::Mxfp4,
+            None,
+        )
+    }
+
+    #[test]
+    fn mxfp4_window_matches_mxfp4_qmm_for_every_supported_row_count() {
+        // K covers one and several 256-value steps; N is not a multiple of the
+        // tile in the second case beyond the 4-column requirement.
+        for (n, k) in [(64, 256), (132, 768)] {
+            let weight = mxfp4_test_weight(n, k);
+            let _guard = QwenMtpVerifyQmmGuard::arm(true);
+            for m in MXFP4_WINDOW_MIN_ROWS..=MXFP4_WINDOW_MAX_ROWS {
+                let input = mxfp4_test_input(m, k);
+                let routed = mxfp4_window_qmm(&input, &weight, 0)
+                    .unwrap_or_else(|| panic!("eligible MXFP4 window route m={m} n={n} k={k}"));
+                let reference = mxfp4_reference(&input, &weight);
+                assert_eq!(routed.dtype(), MlxDtype::Bfloat16);
+                assert_eq!(routed.shape(), vec![1, m, n]);
+                let routed_f32 = astype(&routed, MlxDtype::Float32, None);
+                let reference_f32 = astype(&reference, MlxDtype::Float32, None);
+                eval(&[&routed_f32, &reference_f32]);
+                let max_abs = routed_f32
+                    .data_f32()
+                    .iter()
+                    .zip(reference_f32.data_f32())
+                    .map(|(left, right)| (left - right).abs())
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    max_abs <= 0.03125,
+                    "m={m} n={n} k={k}: max abs diff {max_abs}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mxfp4_window_declines_what_it_cannot_serve() {
+        let weight = mxfp4_test_weight(64, 256);
+        let input = mxfp4_test_input(4, 256);
+        // Not armed: no route.
+        assert!(mxfp4_window_qmm(&input, &weight, 0).is_none());
+        let _guard = QwenMtpVerifyQmmGuard::arm(true);
+        assert!(mxfp4_window_qmm(&input, &weight, 0).is_some());
+        // One and two rows stay on MLX's own qmv path; nine rows exceed the window.
+        for m in [1, 2, 9] {
+            assert!(
+                mxfp4_window_qmm(&mxfp4_test_input(m, 256), &weight, 0).is_none(),
+                "m={m}"
+            );
+        }
+        // K not a multiple of the 256-value step.
+        let narrow = mxfp4_test_weight(64, 160);
+        assert!(mxfp4_window_qmm(&mxfp4_test_input(4, 160), &narrow, 0).is_none());
+        // Output narrower than the configured floor.
+        assert!(mxfp4_window_qmm(&input, &weight, 65).is_none());
+        // Affine weights (they carry group biases) never take the MXFP4 route.
+        // A 4-bit/group-32 weight without biases is MXFP4 whatever its label,
+        // which is how `mlx_quantization_mode` treats real packs.
+        let mut affine = mxfp4_test_weight(64, 256);
+        affine.mode = "affine".to_owned();
+        affine.biases = affine.scales.clone();
+        assert!(mxfp4_window_qmm(&input, &affine, 0).is_none());
+        let mut mislabeled = mxfp4_test_weight(64, 256);
+        mislabeled.mode = "affine".to_owned();
+        assert!(mxfp4_window_qmm(&input, &mislabeled, 0).is_some());
+        // An unavailable kernel falls back instead of panicking.
+        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.store(true, std::sync::atomic::Ordering::Release);
+        let unavailable = mxfp4_window_qmm(&input, &weight, 0);
+        FORCE_VERIFY_QMM_KERNEL_UNAVAILABLE.store(false, std::sync::atomic::Ordering::Release);
+        assert!(unavailable.is_none());
     }
 }

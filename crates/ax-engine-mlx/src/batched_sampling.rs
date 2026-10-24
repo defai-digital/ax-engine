@@ -66,6 +66,11 @@ pub(crate) fn batched_sampling_class(
     sampling: MlxSamplingParams,
     deterministic_argmax_sampling: bool,
 ) -> Option<BatchedSamplingClass> {
+    // `logit_bias` entries and grammar masks live in a per-item scope the
+    // batched paths do not install; keep such requests on the per-item path.
+    if sampling.uses_scoped_processors() {
+        return None;
+    }
     if deterministic_argmax_sampling {
         return Some(BatchedSamplingClass::Greedy);
     }

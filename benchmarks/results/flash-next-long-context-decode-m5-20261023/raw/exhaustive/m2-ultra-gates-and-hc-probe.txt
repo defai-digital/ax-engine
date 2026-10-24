@@ -1,0 +1,17 @@
+test model::qwen4_exp::profiling::flash_next_long_context_arms_match_baseline_on_real_pack ... LONG_ARM fuse: identical, gdn kernel dispatches 0
+LONG_ARM compiled_only: identical, gdn kernel dispatches 0
+LONG_ARM gdn_metal: identical, gdn kernel dispatches 1296
+LONG_ARM fuse+gdn_metal: identical, gdn kernel dispatches 1296
+LONG_ARM compiled_only+gdn_metal: identical, gdn kernel dispatches 1296
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1946 filtered out; finished in 158.31s
+test model::qwen4_exp::profiling::flash_next_pooled_cache_matches_full_on_real_pack ... POOLED_CACHE_VS_FULL chain70 full_ms=2913.6 cached_ms=2892.0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1946 filtered out; finished in 43.89s
+test model::qwen4_exp::profiling::flash_next_kv_segments_match_flat_on_real_pack ... KV_SEGMENTS_VS_FLAT limits=64,32 chain70 flat_ms=2893.6 segmented_ms=2937.2
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1946 filtered out; finished in 47.07s
+test model::qwen4_exp::profiling::flash_next_fused_matches_eager_on_real_pack ... FUSED_VS_EAGER chain16 eager_ms=629.5 fused_ms=496.5 applied=13680 hc_applied=[1552,16,1552,0,1536,0,576,576,0,0,1152,0,0,1536,768,384,384,192,768,576,576,1536]
+FUSED_VS_EAGER_ROWEXACT chain16 eager_ms=623.5 fused_ms=496.5 applied=13680 hc_applied=[1552,16,1552,0,1536,0,576,576,0,0,1152,0,0,1536,768,384,384,192,768,576,576,1536]
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1946 filtered out; finished in 30.32s
+test model::shared::qwen4_exp_residual::tests::hc_read_gpu_cost_probe ... HC_READ_COST round 0 compiled: sync 342.9 us/read, batched 40.0 us/read (host build 6.29 us/read)
+HC_READ_COST round 0 native: sync 307.5 us/read, batched 33.0 us/read (host build 7.40 us/read)
+HC_READ_COST round 1 compiled: sync 310.8 us/read, batched 32.9 us/read (host build 5.49 us/read)
+HC_READ_COST round 1 native: sync 306.0 us/read, batched 31.0 us/read (host build 6.26 us/read)

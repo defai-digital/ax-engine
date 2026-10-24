@@ -110,12 +110,15 @@ use crate::unlimited_ocr::preprocess_document_rgb_u8;
 use crate::weights::{LayerWeights, QuantizedWeight};
 use crate::weights::{ModelWeights, load_weights};
 
+mod dflash2_decode;
+mod grammar;
 mod manifest_validation;
 mod mtp_depth_controller;
 mod mtp_model_policy;
 mod mtp_ngram_gates;
 mod mtp_profitability;
 mod mtp_routing;
+mod mtp_step_trace;
 mod mtp_tuning;
 mod pipeline;
 mod prefix_cache;
@@ -366,6 +369,10 @@ struct RequestState {
     /// state does not roll back). `(boundary_token_len, cache_at_boundary)`;
     /// consumed by `store_prompt_prefix_snapshots` after the prefill item.
     prefill_boundary_snapshot: Option<(usize, MlxKVCache)>,
+    /// Lazy cache clone at the last prefill-chunk grid rung of a completed
+    /// linear-attention prompt (`linear_grid_rung_head_len`), the restore
+    /// point of a sibling prompt or follow-up turn.
+    prefill_grid_snapshot: Option<(usize, MlxKVCache)>,
     ngram: NgramTable,
     /// Per-request PRNG for sampling-capable paths. Seeded from the request's
     /// sampling seed so repeated deterministic requests are reproducible.
@@ -554,6 +561,8 @@ struct RequestState {
     /// Initialized from prompt tokens. Used to gate n-gram acceleration to think
     /// regions only, where repetition density is high for reasoning models.
     ngram_in_think: bool,
+    /// Grammar progress of a `response_format`-constrained request.
+    json_grammar: Option<grammar::RequestGrammar>,
     /// Tokens emitted while inside an open think block (budget controller).
     think_emitted_tokens: u32,
     /// Recomputed each decode step: inside an open think block within the
@@ -574,6 +583,9 @@ struct RequestState {
     /// portable prefix snapshots (via
     /// `Qwen4ExpDraftCursor::prefix_snapshot_parts`).
     flash_next_mtp: FlashNextMtpRequestState,
+    /// Request-local DFlash2 drafter state (ADR-045). `None` until a prefill
+    /// under an eligible request captured hidden states.
+    dflash2: Option<dflash2_decode::Dflash2RequestState>,
 }
 
 /// Draft history for the Flash Next candidate plus its route counters.
@@ -1148,6 +1160,7 @@ impl RequestState {
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
             prefill_boundary_snapshot: None,
+            prefill_grid_snapshot: None,
             ngram: NgramTable::new(),
             rng: crate::sampling::request_rng(explicit_seed, fallback_seed),
             sampling_probs_buf: Vec::new(),
@@ -1203,11 +1216,13 @@ impl RequestState {
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
+            json_grammar: None,
             think_emitted_tokens: 0,
             think_soft_close_armed: false,
             ngram_self_tune: NgramSelfTuneState::default(),
             mtp_ngram_utility_hysteresis_remaining: 0,
             flash_next_mtp: FlashNextMtpRequestState::default(),
+            dflash2: None,
         }
     }
 
@@ -1220,8 +1235,12 @@ impl RequestState {
         additional_prompt_tokens: &[u32],
         sampling: MlxSamplingParams,
     ) -> Vec<u32> {
-        if !sampling.uses_logits_processors() {
+        if !sampling.uses_history_processors() {
             return Vec::new();
+        }
+        if sampling.history_is_generated_only() {
+            // Presence/frequency penalties alone count generated tokens only.
+            return self.generated_tokens.clone();
         }
 
         let total_len = self
@@ -1395,6 +1414,9 @@ pub struct MlxRunner {
     cfg: ModelConfig,
     cfg_arc: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
+    /// DFlash2 block drafter (ADR-045), loaded only when `AX_MLX_DFLASH2_DIR`
+    /// names a drafter that matches this target. Greedy text requests only.
+    dflash2: Option<Arc<crate::dflash2::Dflash2Weights>>,
     /// Chunk size used for warm-extend prefill (snapshot restore + suffix).
     /// MLA models force this to `MLA_DEFAULT_PREFILL_CHUNK` (16) so the
     /// SDPA shape sequence matches the cold-of-full equivalence path.
@@ -1417,6 +1439,8 @@ pub struct MlxRunner {
     kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
     terminal_token_ids: Vec<u32>,
+    /// Byte vocabulary for grammar-constrained requests, loaded on first use.
+    grammar_vocab: OnceLock<Option<Arc<ax_engine_core::grammar::TokenVocab>>>,
     /// Canonicalized model artifacts directory, folded into the disk
     /// prefix-cache key (see `prefix_cache_layer_layout`). A hot-swap via
     /// `POST /v1/model/load` can reuse the same caller-supplied `model_id`
@@ -1598,6 +1622,57 @@ impl fmt::Debug for MlxRunner {
             .field("vocab", &self.cfg.vocab_size)
             .finish()
     }
+}
+
+/// Loads the DFlash2 drafter in `dir` when it fits this target (Qwen 3.8 hybrid
+/// dense: same hidden width and vocabulary, capture layers inside the stack).
+/// Any mismatch or load failure leaves the runner on its normal decode routes.
+fn load_dflash2_drafter(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    dir: &std::path::Path,
+) -> Option<Arc<crate::dflash2::Dflash2Weights>> {
+    let precision = if crate::fastpath::dflash2_bf16_enabled() {
+        crate::dflash2::DrafterPrecision::Bf16
+    } else {
+        crate::dflash2::DrafterPrecision::Mxfp4
+    };
+    let drafter = match crate::dflash2::Dflash2Weights::load(dir, precision) {
+        Ok(drafter) => drafter,
+        Err(error) => {
+            tracing::warn!(
+                target: "ax_engine_mlx::runner",
+                %error,
+                "failed to load the DFlash2 drafter; decoding without it"
+            );
+            return None;
+        }
+    };
+    let drafter_cfg = drafter.config();
+    let fits = drafter_cfg.hidden_size as usize == cfg.hidden_size
+        && drafter_cfg.vocab_size as usize == cfg.vocab_size
+        && drafter_cfg
+            .target_layer_ids
+            .iter()
+            .all(|&layer| layer < cfg.layer_count);
+    if !fits {
+        tracing::warn!(
+            target: "ax_engine_mlx::runner",
+            "the DFlash2 drafter does not match this target's hidden width, vocabulary or depth; ignoring it"
+        );
+        return None;
+    }
+    drafter.materialize();
+    let drafter = Arc::new(drafter);
+    crate::dflash2::Dflash2Drafter::new(Arc::clone(&drafter)).warm_up(weights);
+    tracing::info!(
+        target: "ax_engine_mlx::runner",
+        ?precision,
+        block = drafter.config().block_size,
+        dir = %dir.display(),
+        "DFlash2 drafter loaded (greedy text requests)"
+    );
+    Some(drafter)
 }
 
 fn load_gemma4_assistant_mtp_runtime(
@@ -1922,6 +1997,57 @@ impl MlxRunner {
             && self.weights.qwen4_exp_mtp.is_some()
     }
 
+    /// Grammar masks of the MTP verify rows after `drafts` (one more row
+    /// than drafts); empty for unconstrained requests.
+    fn grammar_row_masks(
+        &self,
+        request_grammar: Option<&grammar::RequestGrammar>,
+        in_think: bool,
+        drafts: &[u32],
+        sampling: MlxSamplingParams,
+    ) -> Vec<Option<Vec<u64>>> {
+        if !sampling.json_grammar_active {
+            return Vec::new();
+        }
+        match self.grammar_vocab().zip(request_grammar) {
+            Some((vocab, request_grammar)) => request_grammar
+                .cursor(
+                    vocab,
+                    self.think_token_ids(),
+                    in_think,
+                    &self.terminal_token_ids,
+                )
+                .row_masks(drafts),
+            None => Vec::new(),
+        }
+    }
+
+    fn think_token_ids(&self) -> (Option<u32>, Option<u32>) {
+        (self.cfg.think_start_token_id, self.cfg.think_end_token_id)
+    }
+
+    fn grammar_vocab(&self) -> Option<&Arc<ax_engine_core::grammar::TokenVocab>> {
+        self.grammar_vocab
+            .get_or_init(|| {
+                grammar::load_token_vocab(&self.model_artifacts_root, self.cfg.vocab_size)
+            })
+            .as_ref()
+    }
+
+    /// Qwen linear MTP request whose logits processors the verifier applies
+    /// on the host (`AX_MLX_MTP_PENALIZED_VERIFY`): temperature above zero
+    /// (or any grammar-constrained request, greedy included),
+    /// deterministic-delta drafts, and no no-repeat n-gram ban.
+    fn penalized_mtp_verify(&self, sampling: MlxSamplingParams) -> bool {
+        crate::fastpath::mtp_penalized_verify_enabled()
+            && (sampling.temperature > 0.0 || sampling.json_grammar_active)
+            && sampling.uses_logits_processors()
+            && !sampling.uses_no_repeat_ngram()
+            && self.weights.mtp.is_some()
+            && self.cfg.linear_attention.is_some()
+            && crate::mtp::mtp_draft_mode_from_env() == crate::mtp::MtpDraftMode::Greedy
+    }
+
     /// Prefill may carry draft history only for requests the cursor can
     /// decode: argmax sampling without logits processors.
     fn flash_next_mtp_prefill_eligible(
@@ -2014,6 +2140,55 @@ impl MlxRunner {
             telemetry.prefill_absorb_failures = telemetry.prefill_absorb_failures.saturating_add(1);
         }
         token
+    }
+
+    /// Attaches the DFlash2 block drafter (ADR-045) to a Qwen 3.8 27B session
+    /// (identified by the pack's recorded source model) when one can be found: `AX_MLX_DFLASH2_DIR`, else `dflash2/` in the
+    /// model directory, else the Hugging Face cache snapshot of
+    /// `z-lab/Qwen3.8-27B-DFlash2`. On by default; `AX_MLX_DFLASH2=0`, the
+    /// process-wide speculation kill switch, a direct-baseline session and a
+    /// missing or mismatched drafter leave the session on its normal routes.
+    /// Returns whether a drafter is now attached.
+    pub fn attach_dflash2(&mut self, model_dir: &std::path::Path) -> bool {
+        if !crate::fastpath::dflash2_enabled()
+            || self.disable_ngram_acceleration
+            || self.cfg.model_family != "qwen3_5"
+            || self.cfg.linear_attention.is_none()
+            || self.cfg.moe_expert_count > 0
+        {
+            return false;
+        }
+        let explicit = crate::fastpath::dflash2_dir();
+        // An explicit directory is the user's choice; discovery only serves the
+        // target the drafter was trained for.
+        if explicit.is_none() && !crate::dflash2::target_is_qwen38_27b(model_dir) {
+            tracing::debug!(
+                target: "ax_engine_mlx::runner",
+                "the DFlash2 drafter serves Qwen 3.8 27B only; this model is something else"
+            );
+            return false;
+        }
+        let Some(dir) = crate::dflash2::locate_drafter(
+            explicit,
+            model_dir,
+            crate::fastpath::hf_hub_cache_roots(),
+        ) else {
+            if let Some(dir) = explicit {
+                tracing::warn!(
+                    target: "ax_engine_mlx::runner",
+                    dir = %dir.display(),
+                    "AX_MLX_DFLASH2_DIR does not hold a DFlash2 drafter (config.json and model.safetensors); decoding without it"
+                );
+            } else {
+                tracing::debug!(
+                    target: "ax_engine_mlx::runner",
+                    "no DFlash2 drafter found; decoding without it"
+                );
+            }
+            return false;
+        };
+        self.dflash2 = load_dflash2_drafter(&self.cfg, &self.weights, &dir);
+        self.dflash2.is_some()
     }
 
     /// Request or suppress model-based MTP independently from the n-gram
@@ -2623,6 +2798,21 @@ impl MlxRunner {
                 mtp_dummy_cache.reset();
             }
         }
+        // Flash Next n-gram aux-plane page-cache warm-up. It must run after the
+        // weights are fully read (the generation warm-up above materialises
+        // them): the ~70 GB weight read would otherwise evict the ~6 GB of
+        // scales/biases planes, which then save a cold read per first-seen row.
+        // Best-effort and off the request path; `AX_FLASH_NEXT_NGRAM_WARM_AUX=0`
+        // disables it.
+        if crate::fastpath::flash_next_ngram_warm_aux_enabled()
+            && let Some(qwen4) = weights.qwen4_exp.as_ref()
+        {
+            for layer in &qwen4.layers {
+                if let Some(ple) = layer.ple.as_ref() {
+                    ple.table.warm_aux_in_background();
+                }
+            }
+        }
         let _ = take_gemma4_moe_profile_snapshot();
         let _ = take_moe_profile_snapshot();
         let _ = take_linear_attention_profile_snapshot();
@@ -2636,6 +2826,23 @@ impl MlxRunner {
         let (prefix_cache, disk_prefix_cache, disk_prefix_writer) = prefix_cache_store
             .unwrap_or_else(MlxPrefixCacheStore::from_env)
             .into_parts();
+        {
+            // Size the default capacity for this model so long hybrid-model
+            // prompts are admitted (see `model_aware_max_bytes`).
+            let mut cache = prefix_cache.lock();
+            let previous_max_bytes = cache.policy.max_bytes;
+            cache.policy = cache.policy.with_model_aware_default(
+                PrefixSnapshotShape::from_config(&cfg),
+                crate::expert_stream::unified_memory_bytes(),
+            );
+            if cache.policy.max_bytes != previous_max_bytes {
+                tracing::info!(
+                    target: "ax_engine_mlx::runner",
+                    prefix_cache_max_mib = cache.policy.max_bytes / (1024 * 1024),
+                    "sized the prefix cache for this model (AX_MLX_PREFIX_CACHE_MAX_BYTES overrides)"
+                );
+            }
+        }
         let native_prefix_cache_policy = prefix_cache.lock().policy;
 
         let cfg_arc = Arc::new(cfg.clone());
@@ -2778,6 +2985,7 @@ impl MlxRunner {
             kv_layer_windows,
             binding_summary,
             terminal_token_ids,
+            grammar_vocab: OnceLock::new(),
             model_artifacts_root: artifacts.root_dir().to_string_lossy().into_owned(),
             artifact_fingerprint: crate::artifact_identity::artifact_fingerprint_sha256_with_domain(
                 artifacts,
@@ -2812,6 +3020,7 @@ impl MlxRunner {
             disk_prefix_writer,
             rotating_sliding_decode,
             direct_clear_cache_cadence,
+            dflash2: None,
             weight_layout_telemetry,
             affine_quant_telemetry,
             embed_compile_cache: Mutex::new(HashMap::new()),
@@ -2888,6 +3097,9 @@ fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams
     MlxSamplingParams::new(ctx.temperature, ctx.top_p, ctx.top_k)
         .with_min_p(ctx.min_p)
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
+        .with_presence_frequency_penalty(ctx.presence_penalty, ctx.frequency_penalty)
+        .with_logit_bias_active(ctx.logit_bias_active)
+        .with_json_grammar_active(ctx.json_grammar_active)
         .with_no_repeat_ngram(ctx.no_repeat_ngram_size, ctx.ngram_window)
         .with_seed((ctx.seed != 0 || ctx.seed_explicit).then_some(ctx.seed))
 }
@@ -4710,6 +4922,9 @@ impl ExecutionRunner for MlxRunner {
                 .iter()
                 .find(|c| c.request_id == item.request_id);
 
+            // The request's `logit_bias` (if any) for the host sampler.
+            let _logit_bias_scope =
+                crate::sampling::scoped_logit_bias(input.request_logit_bias(item.request_id));
             let result = self.run_item(
                 item,
                 ctx,
@@ -4717,6 +4932,7 @@ impl ExecutionRunner for MlxRunner {
                 input.block_size_tokens,
                 input.request_multimodal_inputs(item.request_id),
                 staged_prefill.remove(&item.request_id.0),
+                input.request_json_grammar(item.request_id),
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
@@ -6009,6 +6225,7 @@ impl MlxRunner {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_item(
         &self,
         item: &ax_engine_core::ExecutionItem,
@@ -6017,6 +6234,7 @@ impl MlxRunner {
         block_size_tokens: u32,
         multimodal_inputs: Option<&RequestMultimodalInputs>,
         mut staged_batched_prefill: Option<StagedBatchedPrefill>,
+        json_grammar: Option<&Arc<ax_engine_core::grammar::JsonGrammar>>,
     ) -> MlxItemRun {
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
@@ -6116,6 +6334,9 @@ impl MlxRunner {
                 MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
                     .with_min_p(c.min_p)
                     .with_repetition_penalty(c.repetition_penalty, c.repetition_context_size)
+                    .with_presence_frequency_penalty(c.presence_penalty, c.frequency_penalty)
+                    .with_logit_bias_active(c.logit_bias_active)
+                    .with_json_grammar_active(c.json_grammar_active)
                     .with_no_repeat_ngram(c.no_repeat_ngram_size, c.ngram_window)
                     // Non-zero seeds are explicit for backward compatibility;
                     // `seed_explicit` additionally makes seed 0 reproducible.
@@ -6132,8 +6353,7 @@ impl MlxRunner {
                     || (c.temperature <= 0.0
                         && c.top_k == 0
                         && c.top_p >= 1.0
-                        && (c.repetition_penalty - 1.0).abs() < f32::EPSILON
-                        && c.no_repeat_ngram_size == 0)
+                        && !sampling.uses_logits_processors())
             })
             .unwrap_or(sampling == MlxSamplingParams::greedy());
 
@@ -6157,6 +6377,38 @@ impl MlxRunner {
                 )
             })
         };
+        // Grammar-constrained requests sample every row through the host
+        // sampler with the mask of the current grammar position.
+        let grammar_vocab = sampling
+            .json_grammar_active
+            .then(|| self.grammar_vocab())
+            .flatten();
+        if let Some(grammar) = json_grammar.filter(|_| sampling.json_grammar_active)
+            && state
+                .json_grammar
+                .as_ref()
+                .is_none_or(|current| !current.is_for(grammar))
+        {
+            state.json_grammar = Some(grammar::RequestGrammar::new(grammar.clone()));
+        }
+        let _token_mask_scope = crate::sampling::scoped_token_mask(
+            grammar_vocab
+                .zip(state.json_grammar.as_ref())
+                .and_then(|(vocab, request_grammar)| {
+                    // A prefill samples after the whole prompt; decode
+                    // continues from the tracked think state.
+                    let in_think = if is_prefill {
+                        let before =
+                            compute_think_state(&self.cfg, false, &state.prompt_prefix_tokens);
+                        compute_think_state(&self.cfg, before, token_ids)
+                    } else {
+                        state.ngram_in_think
+                    };
+                    request_grammar
+                        .cursor(vocab, self.think_token_ids(), in_think, terminal_token_ids)
+                        .mask()
+                }),
+        );
         // A fresh media request must project its media before decode, regardless
         // of the reuse flag or a token-only scheduler claim. A cache miss here
         // must never fall through to text-only prefix warmup.
@@ -6184,6 +6436,13 @@ impl MlxRunner {
         } else {
             Some(String::new())
         };
+        // DFlash2 conditions on hidden states captured while the prompt runs
+        // through the target. A request whose prefix is restored from a snapshot
+        // has no such rows and decodes on the normal routes: prefix reuse keeps
+        // its time to first token.
+        let dflash2_prefill = is_prefill
+            && !has_native_multimodal_prefill
+            && self.dflash2_request_eligible(sampling, is_greedy, false);
         let mut prefix_cache =
             if has_native_multimodal_prefill && !multimodal_prefix_reuse_enabled() {
                 MlxPrefixCacheTelemetry::default()
@@ -6340,7 +6599,9 @@ impl MlxRunner {
                             first_token: tok,
                             prefill_started,
                             prefill_forward_wall_us,
-                            publish_prefix_snapshot: true,
+                            // qwen4_exp image state has no portable
+                            // snapshot (its MRoPE positions stay request-local).
+                            publish_prefix_snapshot: self.cfg.model_family != "qwen4_exp",
                             model_id,
                             block_size_tokens,
                             media_key: media_key.as_deref(),
@@ -6350,6 +6611,11 @@ impl MlxRunner {
                             is_greedy,
                         },
                     );
+                    if self.cfg.model_family == "qwen4_exp" {
+                        // The Flash Next draft cursor has no image positions;
+                        // decode this request on the trunk alone.
+                        state.mtp_bypassed = true;
+                    }
                     Some(tok)
                 } else if let Some(inputs) = minicpm_v46_inputs {
                     if !prefill_completes_prompt {
@@ -6517,13 +6783,31 @@ impl MlxRunner {
                     );
                     Some(tok)
                 } else {
+                    // Hidden states of the prompt rows for the DFlash2 drafter,
+                    // captured across every forward of this item and read back
+                    // right after the prefill forward (before generation-state
+                    // setup, whose warm-up forwards are not prompt rows).
+                    let dflash2_capture = (dflash2_prefill
+                        && state.dflash2_prefill_open()
+                        && (state.cache.seq_len() == 0 || state.dflash2.is_some()))
+                    .then(|| self.dflash2_begin_prefill_capture())
+                    .flatten();
                     let full_recompute_tokens = full_prefill_recompute_tokens_for_warmup_fallback(
                         item,
                         token_ids,
                         &prefix_cache,
                         &state,
                     );
-                    let prefill_tokens_base = full_recompute_tokens.as_deref().unwrap_or(token_ids);
+                    // A restore floored to the chunk grid below the
+                    // scheduler claim: replay the claimed gap on top of it.
+                    let gap_replay_tokens = full_recompute_tokens
+                        .is_none()
+                        .then(|| scheduler_gap_replay_tokens(item, token_ids, &state))
+                        .flatten();
+                    let prefill_tokens_base = full_recompute_tokens
+                        .as_deref()
+                        .or(gap_replay_tokens.as_deref())
+                        .unwrap_or(token_ids);
                     if full_recompute_tokens.is_some() {
                         state.cache.reset();
                         state.prompt_prefix_tokens.clear();
@@ -6537,17 +6821,29 @@ impl MlxRunner {
                     // slicing them off, chunked_prefill would write
                     // duplicate K/V past the existing seq_len. Detect
                     // that gap and skip the leading reused portion.
-                    let probe_over_claim = if full_recompute_tokens.is_some() {
-                        0
-                    } else {
-                        runner_probe_over_claim(state.cache.seq_len(), item)
-                    };
+                    let probe_over_claim =
+                        if full_recompute_tokens.is_some() || gap_replay_tokens.is_some() {
+                            0
+                        } else {
+                            runner_probe_over_claim(state.cache.seq_len(), item)
+                        };
                     let prefill_tokens = if probe_over_claim < prefill_tokens_base.len() {
                         &prefill_tokens_base[probe_over_claim..]
                     } else {
                         &[][..]
                     };
                     let mut effective_prefill_token_count = prefill_tokens.len();
+                    // Flash Next reads each chunk's n-gram rows while the
+                    // previous chunk computes; this tells the trunk which
+                    // tokens come next.
+                    let _flash_next_lookahead = (self.weights.qwen4_exp.is_some()
+                        && crate::fastpath::flash_next_ngram_prefetch_enabled())
+                    .then(|| {
+                        crate::model::qwen4_exp::lookahead::scope(
+                            state.cache.seq_len(),
+                            prefill_tokens,
+                        )
+                    });
                     let repetition_history = state.repetition_history(prefill_tokens, sampling);
                     if crate::fastpath::should_clear_mlx_cache_before_cold_prefill(
                         state.cache.seq_len(),
@@ -6602,6 +6898,50 @@ impl MlxRunner {
                     // below prefill the remainder. The clone is handle-only;
                     // its one real cost is a single non-donated full-attention
                     // K/V append on the following chunk.
+                    // Restore floors a multi-token warm extension to the
+                    // prefill-chunk grid, and linear state cannot be trimmed
+                    // down to it, so the block-aligned boundary snapshot
+                    // alone never serves a sibling prompt or a follow-up
+                    // turn. Split once more at the last grid rung of the
+                    // completed prompt: the head is whole chunks the cold
+                    // trajectory already runs, so no chunk shape changes and
+                    // a warm restore at the rung replays the same tail.
+                    let rung_head = if self.cfg.linear_attention.is_some()
+                        && !flash_next_mtp_prefill
+                        && prefill_completes_prompt
+                        && crate::fastpath::linear_prefix_grid_rung_enabled()
+                        && self.prefix_cache.lock().enabled()
+                    {
+                        Self::linear_grid_rung_head_len(
+                            block_size_tokens as usize,
+                            self.prefill_chunk,
+                            prefill_chunk_for_request,
+                            state.cache.seq_len(),
+                            prefill_tokens.len(),
+                        )
+                        // A rung this item just restored is already stored.
+                        .filter(|&head| head > 0 || prefix_cache.hits == 0)
+                    } else {
+                        None
+                    };
+                    let prefill_tokens = if let Some(head) = rung_head {
+                        if head > 0 {
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                &prefill_tokens[..head],
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                CacheOnlyPrefillLayout::Batched,
+                                crate::generate::CacheOnlyBarrier::Blocking,
+                            );
+                        }
+                        state.prefill_grid_snapshot =
+                            Some((state.cache.seq_len(), state.cache.clone()));
+                        &prefill_tokens[head..]
+                    } else {
+                        prefill_tokens
+                    };
                     let prefill_tokens = if self.cfg.linear_attention.is_some()
                         && self.prefix_cache.lock().enabled()
                         && let Some(head) = Self::linear_boundary_capture_head_len(
@@ -6863,9 +7203,16 @@ impl MlxRunner {
                         ))
                     };
                     let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
+                    if let Some(capture) = dflash2_capture {
+                        // Read the rows while the scope is still open.
+                        self.dflash2_finish_prefill_capture(&mut state);
+                        drop(capture);
+                    }
                     let prefill_token_count = effective_prefill_token_count;
                     if let Some(tokens) = full_recompute_tokens {
                         state.prompt_prefix_tokens = tokens;
+                    } else if let Some(tokens) = gap_replay_tokens.as_deref() {
+                        state.prompt_prefix_tokens.extend_from_slice(tokens);
                     } else {
                         extend_prompt_prefix_tokens(&mut state, item, token_ids);
                     }
@@ -6905,6 +7252,22 @@ impl MlxRunner {
                             },
                         ),
                     );
+                    if let Some((rung_len, rung_cache)) = state.prefill_grid_snapshot.take()
+                        && let Some(media_key) = media_key.as_deref()
+                        && rung_cache.seq_len() == rung_len
+                        && rung_len <= state.prompt_prefix_tokens.len()
+                        && !rung_cache.has_rotated_sliding_layers()
+                    {
+                        prefix_cache.merge_from(self.store_linear_boundary_snapshot(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            rung_len,
+                            &rung_cache,
+                            u64::from(cold_prefill_us),
+                            media_key,
+                        ));
+                    }
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
                     // Record pure prefill wall time before initialize_generation_state.
                     // MTP warmup and generation-state init are decode preparation, not
@@ -7070,6 +7433,17 @@ impl MlxRunner {
             // under-count the budget. A single-token step is unchanged.
             for &sampled_token in &sampled_tokens {
                 let in_think = state.ngram_in_think;
+                if let Some((vocab, request_grammar)) =
+                    grammar_vocab.zip(state.json_grammar.as_mut())
+                {
+                    request_grammar.commit(
+                        vocab,
+                        self.think_token_ids(),
+                        in_think,
+                        terminal_token_ids,
+                        sampled_token,
+                    );
+                }
                 state.generated_tokens.push(sampled_token);
                 update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
                 if in_think {
@@ -7372,6 +7746,44 @@ impl MlxRunner {
         (boundary > prior_seq_len).then(|| boundary - prior_seq_len)
     }
 
+    /// Relative length of the cache-only head that ends on the last
+    /// prefill-chunk grid rung strictly before the final prompt token, the
+    /// length a later warm extension restores (`grid_aligned_prefix_restore_len`).
+    /// `Some(0)` when the item starts on that rung (capture before any
+    /// prefill). `None` unless the request chunk equals the restore grid (so
+    /// a warm replay runs the same chunks), the prior context sits on the
+    /// grid, the rung is block-aligned, non-zero and not inside the prior
+    /// context, and the rung is not already the block-aligned boundary
+    /// capture.
+    pub fn linear_grid_rung_head_len(
+        block_size: usize,
+        grid: usize,
+        request_chunk: usize,
+        prior_seq_len: usize,
+        item_len: usize,
+    ) -> Option<usize> {
+        if block_size == 0 || grid == 0 || item_len == 0 || request_chunk != grid {
+            return None;
+        }
+        if !prior_seq_len.is_multiple_of(grid) || !grid.is_multiple_of(block_size) {
+            return None;
+        }
+        let total = prior_seq_len + item_len;
+        let rung = (total - 1) / grid * grid;
+        if rung == 0 || rung < prior_seq_len {
+            return None;
+        }
+        if rung == prior_seq_len {
+            // A scheduler-split prompt reaches its final item already on the
+            // rung: capture the cache as it stands, no split needed.
+            return Some(0);
+        }
+        let boundary_capture =
+            Self::linear_boundary_capture_head_len(block_size, prior_seq_len, item_len)
+                .map(|head| prior_seq_len + head);
+        (boundary_capture != Some(rung)).then(|| rung - prior_seq_len)
+    }
+
     fn longest_block_aligned_prefix_by_probe<F>(
         block_size_tokens: u32,
         input: &[u32],
@@ -7671,9 +8083,13 @@ impl MlxRunner {
         // under one chunk is cheaper than any drift risk. Restores that
         // need no multi-token extension (warm_repeat tails of <=1 token)
         // keep their full length.
-        let Some(restore_len) =
-            grid_aligned_prefix_restore_len(item, reused_tokens.len(), self.prefill_chunk.max(1))
-        else {
+        let Some(restore_len) = grid_aligned_prefix_restore_len(
+            item,
+            reused_tokens.len(),
+            self.prefill_chunk.max(1),
+            self.cfg.linear_attention.is_some()
+                && crate::fastpath::linear_prefix_grid_rung_enabled(),
+        ) else {
             // The scheduler already removed this prefix from the input slice.
             // Recompute prefix+suffix together instead of leaving a context gap.
             telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
@@ -9028,6 +9444,15 @@ impl MlxRunner {
         {
             return tokens;
         }
+        // DFlash2 block speculation (ADR-045): eligible greedy requests whose
+        // prompt hidden states were captured. Ineligible steps fall through to
+        // the generic routes, which never see the drafter.
+        if self.dflash2.is_some()
+            && let Some(tokens) =
+                self.try_dflash2_decode(state, input_tokens, sampling, is_greedy, &options)
+        {
+            return tokens;
+        }
 
         let pure_direct_pipeline = !think_hard_close_due
             && v4_uncertified_uses_pure_direct_pipeline(
@@ -9054,6 +9479,9 @@ impl MlxRunner {
             || flash_next_blocked_greedy
             || (!state.think_soft_close_armed
                 && !think_hard_close_due
+                // The double buffer is argmax-only: repetition, presence /
+                // frequency penalties and logit_bias need the host sampler.
+                && !sampling.uses_logits_processors()
                 && should_use_session_direct_pipeline(
                     self.disable_ngram_acceleration,
                     is_greedy || sampling.temperature <= 0.0,
@@ -10485,11 +10913,14 @@ impl MlxRunner {
         // (otherwise we need to verify the pending draft first).
         let (skip_logits, skip_argmax, skip_hidden) =
             take_mtp_skip_state(state, forced_greedy_replay);
+        // The skip-state primary is sampled without the request's history,
+        // so penalised verification never takes it.
         let can_skip_qwen = skip_logits.is_some()
             && skip_hidden.is_some()
             && pending.is_empty()
             && self.weights.mtp.is_some()
-            && self.mtp_skip_state;
+            && self.mtp_skip_state
+            && !self.penalized_mtp_verify(sampling);
         let can_skip_gemma = skip_logits.is_some()
             && skip_hidden.is_some()
             && pending.is_empty()
@@ -10837,7 +11268,10 @@ impl MlxRunner {
                     replay_kill_switch,
                     self.qwen_linear_mtp_force_replay,
                 );
+                // Replay recomputes the correction with an unmasked argmax,
+                // so grammar-constrained requests keep the verifier rows.
                 let exact_linear_replay = !projected_replay
+                    && !sampling.json_grammar_active
                     && linear_mtp_requires_singleton_replay(
                         pending.len(),
                         crate::fastpath::qwen_linear_mtp_exact_enabled(),
@@ -10950,6 +11384,11 @@ impl MlxRunner {
                 // Target probabilities for rejection-sampling acceptance.
                 // Full-vocab softmax by default; top-k approximation when
                 // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
+                // Committed history for penalised verification, taken before
+                // the target-probability workspace borrows the request state.
+                let penalized_history = self
+                    .penalized_mtp_verify(sampling)
+                    .then(|| state.repetition_history(&[], sampling));
                 let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
                 let target_prob_workspace =
                     if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
@@ -10958,16 +11397,23 @@ impl MlxRunner {
                         &mut local_target_prob_workspace
                     };
                 let target_softmax_started = Instant::now();
-                let lazy_target_probs = compute_mtp_target_probs(
-                    &logits_all,
-                    &pending,
-                    acceptance_log_probs,
-                    vocab,
-                    sampling,
-                    self.mtp_target_softmax_topk,
-                    target_filter,
-                    target_prob_workspace,
-                );
+                // Penalised verification samples every row on the host from
+                // processed logits instead of the device softmax.
+                let penalized_verify = self.penalized_mtp_verify(sampling);
+                let lazy_target_probs = if penalized_verify {
+                    None
+                } else {
+                    compute_mtp_target_probs(
+                        &logits_all,
+                        &pending,
+                        acceptance_log_probs,
+                        vocab,
+                        sampling,
+                        self.mtp_target_softmax_topk,
+                        target_filter,
+                        target_prob_workspace,
+                    )
+                };
                 mtp_timings.target_softmax_wall_us = mtp_timings
                     .target_softmax_wall_us
                     .saturating_add(elapsed_us(target_softmax_started));
@@ -10979,13 +11425,14 @@ impl MlxRunner {
                 // `predicted` download. The async-draft window compares
                 // against the lazy device tokens because host `pending` still
                 // holds placeholders here.
-                let device_greedy_accept = mtp_device_greedy_accept_allowed(
-                    crate::fastpath::mtp_device_greedy_accept_enabled(),
-                    sampling.temperature,
-                    exact_linear_replay,
-                    pending.len(),
-                    &state.mtp_pending_draft_sources,
-                );
+                let device_greedy_accept = !penalized_verify
+                    && mtp_device_greedy_accept_allowed(
+                        crate::fastpath::mtp_device_greedy_accept_enabled(),
+                        sampling.temperature,
+                        exact_linear_replay,
+                        pending.len(),
+                        &state.mtp_pending_draft_sources,
+                    );
                 let device_accept_packed = if device_greedy_accept {
                     let drafts_dev = if let Some(lazy) = deferred_lazy_draft.as_ref() {
                         if lazy.tokens.len() == 1 {
@@ -11040,6 +11487,9 @@ impl MlxRunner {
                 if let Some(ref packed) = device_accept_packed {
                     accept_targets.push(packed);
                 }
+                if penalized_verify {
+                    accept_targets.push(&logits_all);
+                }
                 let verify_eval_started = Instant::now();
                 if split_verify_hidden_eval {
                     // MTPLX's lazy-logits verifier deliberately fences the
@@ -11080,9 +11530,69 @@ impl MlxRunner {
                         .unwrap_or_default()
                 };
                 let target_softmax_extract_started = Instant::now();
-                let target_probs_cpu = lazy_target_probs
-                    .as_ref()
-                    .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                // A greedy request constrained only by its grammar masks the
+                // verify rows on the device and reads back token ids, not
+                // full-vocabulary rows.
+                let device_grammar_argmax = sampling.temperature <= 0.0
+                    && sampling.json_grammar_active
+                    && !sampling.uses_history_processors()
+                    && !sampling.logit_bias_active;
+                if device_grammar_argmax {
+                    let row_masks = self.grammar_row_masks(
+                        state.json_grammar.as_ref(),
+                        state.ngram_in_think,
+                        &pending,
+                        sampling,
+                    );
+                    predicted = grammar_masked_argmax(&logits_all, &row_masks, vocab);
+                }
+                let penalized_rows = penalized_history
+                    .as_deref()
+                    .filter(|_| !device_grammar_argmax)
+                    .map(|history| {
+                        // Grammar masks follow the drafts row by row, like the
+                        // history does.
+                        let row_masks = self.grammar_row_masks(
+                            state.json_grammar.as_ref(),
+                            state.ngram_in_think,
+                            &pending,
+                            sampling,
+                        );
+                        penalized_mtp_target_rows(
+                            &logits_all,
+                            history,
+                            &pending,
+                            vocab,
+                            sampling,
+                            &row_masks,
+                        )
+                    });
+                // Greedy constrained rows accept against the masked argmax.
+                if sampling.temperature <= 0.0
+                    && let Some(rows) = penalized_rows.as_ref()
+                {
+                    predicted = rows
+                        .iter()
+                        .map(|row| crate::sampling::argmax_f32(row))
+                        .collect();
+                }
+                let penalized_target_probs: Option<Vec<f32>> =
+                    penalized_rows.as_ref().map(|rows| {
+                        pending
+                            .iter()
+                            .zip(rows)
+                            .map(|(&token, row)| {
+                                token_distribution(row, sampling)
+                                    .map_or(0.0, |target| target.probability(token))
+                            })
+                            .collect()
+                    });
+                let target_probs_cpu = match penalized_target_probs.as_deref() {
+                    Some(probs) => Some(probs),
+                    None => lazy_target_probs
+                        .as_ref()
+                        .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace)),
+                };
                 mtp_timings.target_softmax_wall_us = mtp_timings
                     .target_softmax_wall_us
                     .saturating_add(elapsed_us(target_softmax_extract_started));
@@ -11122,15 +11632,21 @@ impl MlxRunner {
                 let all_accepted = accept.all_accepted;
                 let exact_rejection_correction = (!all_accepted
                     && proposal_law == MtpProposalLaw::DeterministicDelta)
-                    .then(|| {
-                        sample_exact_mtp_delta_rejection_correction(
+                    .then(|| match penalized_rows.as_ref() {
+                        // The residual of the processed target row.
+                        Some(rows) => token_distribution(&rows[ac], sampling)
+                            .zip(TokenDistribution::new(vec![(pending[ac], 1.0)]))
+                            .and_then(|(target, draft)| {
+                                sample_residual_token_distribution(&target, &draft, &mut state.rng)
+                            }),
+                        None => sample_exact_mtp_delta_rejection_correction(
                             &logits_all,
                             ac,
                             vocab,
                             sampling,
                             pending[ac],
                             &mut state.rng,
-                        )
+                        ),
                     })
                     .flatten();
                 let exact_residual_correction_applied = exact_rejection_correction.is_some();
@@ -12190,6 +12706,43 @@ impl MlxRunner {
                 .residual_correction_tokens
                 .saturating_add(1);
             correction_argmax_tok
+        } else if self.penalized_mtp_verify(sampling) {
+            // The bonus row continues after the accepted drafts, so its
+            // processors see them as history, as direct decode would.
+            let mut history = state.repetition_history(&[], sampling);
+            history.extend_from_slice(&pending[..accept_count]);
+            let _token_mask_scope = crate::sampling::scoped_token_mask(
+                self.grammar_row_masks(
+                    state.json_grammar.as_ref(),
+                    state.ngram_in_think,
+                    &pending[..accept_count],
+                    sampling,
+                )
+                .pop()
+                .flatten(),
+            );
+            let position = accept_count as i32;
+            let row = astype(
+                &slice(
+                    &logits_all,
+                    &[position, 0],
+                    &[position + 1, vocab],
+                    &[1, 1],
+                    None,
+                ),
+                MlxDtype::Float32,
+                None,
+            );
+            eval(&[&row]);
+            sample_categorical_into(
+                row.data_f32(),
+                sampling,
+                &history,
+                &mut state.rng,
+                &mut state.sampling_probs_buf,
+                &mut state.sampling_logits_buf,
+                &mut state.sampling_candidates_buf,
+            )
         } else {
             sample_logit_row(
                 &logits_all,
@@ -12320,6 +12873,22 @@ impl MlxRunner {
                 );
             }
         }
+
+        // The verified draft's log-probs are overwritten by the next draft
+        // below, so the trace copies them here and writes after the draft.
+        let step_trace =
+            (mtp_step_trace::mtp_step_trace_enabled() && !pending.is_empty()).then(|| {
+                (
+                    state
+                        .mtp_pending_draft_log_probs
+                        .iter()
+                        .take(pending.len())
+                        .copied()
+                        .collect::<Vec<f32>>(),
+                    state.generated_tokens.len(),
+                    state.mtp_adaptive_max_depth,
+                )
+            });
 
         mtp_timings.ngram_submitted_tokens = saturating_u32(
             state
@@ -13133,6 +13702,22 @@ impl MlxRunner {
                 .gemma4_assistant_mtp_telemetry
                 .record_submitted(gemma4_assistant_submitted, mtp_timings.draft_wall_us);
         }
+        if let Some((draft_log_probs, generated, depth)) = step_trace {
+            mtp_step_trace::record_mtp_step_trace(&mtp_step_trace::MtpStepTraceRecord {
+                t_us: mtp_step_trace::mtp_step_trace_now_us(),
+                ctx: token_offset,
+                generated,
+                depth,
+                used: pending.len(),
+                accepted: accept_count,
+                pure_mtp: pure_qwen_mtp_pending,
+                temperature: sampling.temperature,
+                verify_forward_us: mtp_timings.verify_forward_wall_us,
+                verify_eval_us: mtp_timings.verify_eval_wall_us,
+                draft_us: mtp_timings.draft_wall_us,
+                draft_log_probs: &draft_log_probs,
+            });
+        }
         state.mtp_telemetry.record_timings(mtp_timings);
         if std::env::var_os("AX_MLX_MTP_DEBUG_FINAL_SUMMARY").is_some()
             && ctx.is_some_and(|ctx| {
@@ -13525,7 +14110,9 @@ impl MlxRunner {
             self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
         ) && (self.mtp_optimistic
             || mtp_auto_optimistic_enabled_from_env());
-        let exact_supported = mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
+        let penalized_verify = self.penalized_mtp_verify(sampling);
+        let exact_supported = mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk)
+            || penalized_verify;
         let mtp_uses_direct_pipeline = mtp_fallback_primes_direct_pipeline(
             mtp_request_route(
                 self.has_generic_mtp(),
@@ -13533,7 +14120,7 @@ impl MlxRunner {
                 exact_supported,
                 approximate_profile,
                 false,
-                sampling.uses_logits_processors(),
+                sampling.uses_logits_processors() && !penalized_verify,
             ),
             is_greedy,
             sampling.uses_logits_processors(),
@@ -13606,6 +14193,7 @@ impl MlxRunner {
             && !think_close_due_at_first_token
             && !gemma_moe_long_mt_singleton
             && !flash_next_cursor_owns_decode
+            && !sampling.uses_logits_processors()
             && (is_greedy || (self.disable_ngram_acceleration && sampling.temperature <= 0.0))
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
@@ -13686,8 +14274,10 @@ impl MlxRunner {
             self.weights.glm_mtp.is_some() || self.weights.deepseek_v4_nextn.is_some(),
         ) && (self.mtp_optimistic
             || mtp_auto_optimistic_enabled_from_env());
+        let penalized_verify = self.penalized_mtp_verify(sampling);
         let exact_supported = state.mtp_pending_draft_distributions.is_empty()
-            && mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk);
+            && (mtp_exact_sampling_supported(sampling, self.mtp_target_softmax_topk)
+                || penalized_verify);
         let mtp_direct_only = state.mtp_bypassed || state.mtp_suspended_for_batched_decode;
         match mtp_request_route(
             self.has_generic_mtp(),
@@ -13695,7 +14285,7 @@ impl MlxRunner {
             exact_supported,
             approximate_profile,
             mtp_direct_only,
-            sampling.uses_logits_processors(),
+            sampling.uses_logits_processors() && !penalized_verify,
         ) {
             MtpRequestRoute::DirectFallback => {
                 // Mixed batches keep the outer exact-verifier scope enabled
@@ -14986,6 +15576,71 @@ fn compute_mtp_target_probs(
     }
 }
 
+/// Processed target logits of every verify row of a penalised sampled MTP
+/// window (`AX_MLX_MTP_PENALIZED_VERIFY`): row `i` is processed with the
+/// committed history plus `pending[..i]`, the history direct decode would
+/// have at that position.
+fn penalized_mtp_target_rows(
+    logits_all: &MlxArray,
+    base_history: &[u32],
+    pending: &[u32],
+    vocab: i32,
+    sampling: MlxSamplingParams,
+    row_masks: &[Option<Vec<u64>>],
+) -> Vec<Vec<f32>> {
+    let logits = astype(logits_all, MlxDtype::Float32, None);
+    eval(&[&logits]);
+    let data = logits.data_f32();
+    let vocab = vocab as usize;
+    let rows = data.len() / vocab.max(1);
+    let mut history = base_history.to_vec();
+    let mut buffer = Vec::new();
+    let mut out = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let raw = &data[row * vocab..(row + 1) * vocab];
+        let _token_mask_scope =
+            crate::sampling::scoped_token_mask(row_masks.get(row).cloned().flatten());
+        out.push(crate::sampling::processed_logits(raw, sampling, &history, &mut buffer).to_vec());
+        if let Some(&token) = pending.get(row) {
+            history.push(token);
+        }
+    }
+    out
+}
+
+/// Greedy tokens of every verify row with each row's grammar mask applied on
+/// the device; a row without a mask is unconstrained.
+fn grammar_masked_argmax(
+    logits_all: &MlxArray,
+    row_masks: &[Option<Vec<u64>>],
+    vocab: i32,
+) -> Vec<u32> {
+    let shape = logits_all.shape();
+    let vocab = vocab.max(1) as usize;
+    let rows = shape.iter().map(|dim| *dim as usize).product::<usize>() / vocab;
+    let mut allowed = vec![1u8; rows * vocab];
+    for (row, mask) in row_masks.iter().enumerate().take(rows) {
+        let Some(mask) = mask else { continue };
+        for (token, byte) in allowed[row * vocab..(row + 1) * vocab]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = u8::from(ax_engine_core::grammar::mask_allows(mask, token as u32));
+        }
+    }
+    let condition =
+        MlxArray::from_raw_data(allowed.as_ptr(), allowed.len(), &shape, MlxDtype::Bool);
+    let masked = mlx_sys::ops::where_cond(
+        &condition,
+        logits_all,
+        &mlx_sys::ops::cached_scalar(f32::NEG_INFINITY, logits_all.dtype()),
+        None,
+    );
+    let tokens = argmax(&masked, None);
+    eval(&[&tokens]);
+    tokens.data_u32().to_vec()
+}
+
 fn sample_exact_mtp_delta_rejection_correction(
     logits_all: &MlxArray,
     position: usize,
@@ -15950,10 +16605,17 @@ fn extend_prompt_prefix_tokens(
 }
 
 /// Select a cold-grid restore boundary, or require a full scheduler-prefix replay.
+///
+/// With `allow_gap_replay`, a Prefill restore that floors below the
+/// scheduler claim keeps its grid rung: the prefill then replays the claimed
+/// tokens past the rung ahead of the item's own input
+/// (`scheduler_gap_replay_tokens`), which is the cold trajectory from the
+/// rung on. A rung of zero still falls back to the full replay.
 fn grid_aligned_prefix_restore_len(
     item: &ax_engine_core::ExecutionItem,
     candidate_len: usize,
     chunk: usize,
+    allow_gap_replay: bool,
 ) -> Option<usize> {
     let scheduler_claim = item.reused_prefix_token_slice.len();
     let extension_tokens = if item.mode == ExecutionMode::Prefill && scheduler_claim > 0 {
@@ -15967,11 +16629,38 @@ fn grid_aligned_prefix_restore_len(
     } else {
         candidate_len
     };
-    if item.mode == ExecutionMode::Prefill && restore_len < scheduler_claim {
+    if item.mode == ExecutionMode::Prefill
+        && restore_len < scheduler_claim
+        && !(allow_gap_replay && restore_len > 0)
+    {
         None
     } else {
         Some(restore_len)
     }
+}
+
+/// Tokens a Prefill item must run after a restore that stopped short of the
+/// scheduler claim: the claimed tokens past the restored length, then the
+/// item's own input. `None` when the restore covered the claim (or did not
+/// happen) or the restored prefix does not match the claim.
+fn scheduler_gap_replay_tokens(
+    item: &ax_engine_core::ExecutionItem,
+    token_ids: &[u32],
+    state: &RequestState,
+) -> Option<Vec<u32>> {
+    let claim = &item.reused_prefix_token_slice;
+    let restored = state.cache.seq_len();
+    if item.mode != ExecutionMode::Prefill
+        || restored == 0
+        || restored >= claim.len()
+        || state.prompt_prefix_tokens.as_slice() != &claim[..restored]
+    {
+        return None;
+    }
+    let mut tokens = Vec::with_capacity(claim.len() - restored + token_ids.len());
+    tokens.extend_from_slice(&claim[restored..]);
+    tokens.extend_from_slice(token_ids);
+    Some(tokens)
 }
 
 fn full_prefill_recompute_tokens_for_warmup_fallback(

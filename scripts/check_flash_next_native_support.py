@@ -99,14 +99,32 @@ def validate_inventory(root: Path, inventory: dict[str, Any],
     return {"model-manifest.json": sha256(manifest)} if manifest.exists() else {}
 
 
-# Mac Studio hardware identifiers (2022 M1 Ultra/Max, 2023 M2 Ultra/Max).
-STUDIO_MODELS = frozenset({"Mac13,1", "Mac13,2", "Mac14,13", "Mac14,14"})
+# Qualification and certification standard for Flash Next (ADR-049, 2026-10-23):
+# MacBook Pro, Apple M5 Max, 128 GB, single-stream resident. It replaces the
+# Ultra-class Mac Studio 192 GiB+ target of ADR-037.
+TARGET_FORM_FACTOR = "MacBook Pro"
+TARGET_SOC = "Apple M5 Max"
+TARGET_MEMORY_GIB = 128
+TARGET_DESCRIPTION = "MacBook Pro, Apple M5 Max, 128 GB unified memory"
+# MacBook Pro hardware identifiers proven to carry the M5 Max.
+MACBOOK_PRO_MODELS = frozenset({"Mac17,6"})
 
 
 def form_factor() -> str:
     """Name the form factor only when the hardware model identifier proves it."""
     model = subprocess.check_output(["sysctl", "-n", "hw.model"], text=True).strip()
-    return "Mac Studio" if model in STUDIO_MODELS else f"unrecognized ({model})"
+    return TARGET_FORM_FACTOR if model in MACBOOK_PRO_MODELS else f"unrecognized ({model})"
+
+
+def is_target_host(soc: str, memory_bytes: int) -> bool:
+    """Whether a chip name and memory size are the Flash Next standard host."""
+    return soc.strip() == TARGET_SOC and memory_bytes >= TARGET_MEMORY_GIB * 1024**3
+
+
+def is_target_hardware(hardware: dict[str, Any]) -> bool:
+    """Whether a recorded `hardware` block names the Flash Next standard host."""
+    return (hardware.get("form_factor") == TARGET_FORM_FACTOR
+            and is_target_host(str(hardware.get("soc", "")), int(hardware.get("memory_bytes", 0) or 0)))
 
 
 def storage_info(root: Path) -> dict[str, Any]:
@@ -242,7 +260,8 @@ def server_command(server: Path, root: Path, mode: str, port: int) -> list[str]:
         raise ValueError(f"unknown control mode {mode!r}; expected one of {SERVER_MODES}")
     base = [str(server), "--mlx", "--model-id", "qwen3.8-flash-next:mxfp4",
             "--mlx-model-artifacts-dir", str(root)]
-    tail = ["--host", "127.0.0.1", "--port", str(port)]
+    # ADR-049 standard envelope: one request at a time on the 128 GB host.
+    tail = ["--max-concurrent-requests", "1", "--host", "127.0.0.1", "--port", str(port)]
     if mode == "default":
         return [*base, *tail]
     return [*base, "--mlx-mtp-policy", mode, "--disable-ngram-acceleration",
@@ -381,11 +400,11 @@ def main() -> int:
     if not all((args.model_dir, args.inventory, args.server_bin, args.output)):
         parser.error("live controls require model-dir, inventory, server-bin and output")
     if platform.system() != "Darwin":
-        parser.error("live controls require macOS on the Ultra-class 192 GiB+ target")
+        parser.error("live controls require macOS on the Flash Next standard host")
     memory = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True))
     chip = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], text=True).strip()
-    if "Ultra" not in chip or memory < 192 * 1024**3:
-        parser.error("live controls require the Ultra-class 192 GiB+ Flash Next target")
+    if not is_target_host(chip, memory):
+        parser.error(f"live controls require the Flash Next standard host ({TARGET_DESCRIPTION})")
     storage = storage_info(args.model_dir)
     executable_before = sha256(args.server_bin)
     receipt_before = sha256(args.inventory)

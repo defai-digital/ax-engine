@@ -491,6 +491,9 @@ impl SyntheticRequestSpec {
     }
 }
 
+// Replay events are a short, one-shot list built from the trace file;
+// boxing the submit spec would only add indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub(crate) enum ReplayEvent {
     Submit {

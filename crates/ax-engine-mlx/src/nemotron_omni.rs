@@ -626,6 +626,7 @@ pub(super) fn load_quantized_linear(
         decode_q2_weight: None,
         decode_q2_scales: None,
         decode_q2_biases: None,
+        weight_t_view: Default::default(),
     })
 }
 

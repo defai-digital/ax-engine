@@ -306,6 +306,81 @@ struct ExpectedTensor {
 
 /// Manifest-derived dimensions. Trunk analogs are logical (unpacked) shapes
 /// so a quantized trunk still yields the dense sidecar geometry.
+/// MTP head geometry declared in `config.json` (`text_config` or top level).
+/// Absent fields inherit the trunk; declared values the single-layer head
+/// cannot honour fail closed instead of drafting with the trunk's geometry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MtpHeadConfig {
+    hidden_layers: Option<u64>,
+    experts: Option<u64>,
+    experts_per_token: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResolvedMtpHead {
+    experts_per_token: u64,
+}
+
+impl MtpHeadConfig {
+    fn read(root: &Path) -> Result<Self, WeightLoadError> {
+        let path = root.join("config.json");
+        let Ok(bytes) = std::fs::read(&path) else {
+            return Ok(Self::default());
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| invalid(format!("cannot parse {}: {e}", path.display())))?;
+        Ok(Self::from_config(&value))
+    }
+
+    fn from_config(value: &serde_json::Value) -> Self {
+        let field = |name: &str| {
+            value
+                .get("text_config")
+                .and_then(|text| text.get(name))
+                .or_else(|| value.get(name))
+                .and_then(serde_json::Value::as_u64)
+        };
+        Self {
+            hidden_layers: field("mtp_num_hidden_layers"),
+            experts: field("mtp_num_experts"),
+            experts_per_token: field("mtp_num_experts_per_tok"),
+        }
+    }
+
+    fn resolve(
+        self,
+        trunk_experts: u64,
+        trunk_experts_per_token: u64,
+    ) -> Result<ResolvedMtpHead, WeightLoadError> {
+        if let Some(layers) = self.hidden_layers
+            && layers != 1
+        {
+            return Err(invalid(format!(
+                "config.json mtp_num_hidden_layers={layers} is not supported (single-layer MTP head only)"
+            )));
+        }
+        if let Some(experts) = self.experts
+            && experts != trunk_experts
+        {
+            return Err(invalid(format!(
+                "config.json mtp_num_experts={experts} differs from the trunk's {trunk_experts}; \
+a separate MTP expert pool is not supported"
+            )));
+        }
+        let experts_per_token = self.experts_per_token.unwrap_or(trunk_experts_per_token);
+        if experts_per_token == 0 || experts_per_token > trunk_experts {
+            return Err(invalid(format!(
+                "config.json mtp_num_experts_per_tok={experts_per_token} is out of range 1..={trunk_experts}"
+            )));
+        }
+        Ok(ResolvedMtpHead { experts_per_token })
+    }
+}
+
+fn as_usize_u64(value: u64, field: &str) -> Result<usize, WeightLoadError> {
+    usize::try_from(value).map_err(|_| invalid(format!("{field} {value} does not fit usize")))
+}
+
 struct MtpGeometry {
     hidden: u64,
     expert_count: u64,
@@ -412,6 +487,13 @@ pub(crate) fn load(
     })?;
     let norm_layout = read_norm_layout(root, &canonical_root)?;
     let expected = MtpGeometry::from_manifest(manifest)?.expected()?;
+    let head_config = MtpHeadConfig::read(root)?.resolve(
+        u64::from(require_u32(manifest.moe.expert_count, "moe.expert_count")?),
+        u64::from(require_u32(
+            manifest.moe.experts_per_token,
+            "moe.experts_per_token",
+        )?),
+    )?;
     let sidecar = resolve_in_root(root, &canonical_root, Path::new(MTP_SIDECAR_FILE))?;
     let manifest_specs: Vec<NativeTensorSpec> = manifest
         .tensors
@@ -567,7 +649,7 @@ pub(crate) fn load(
             manifest.moe.expert_intermediate_size,
             "moe.expert_intermediate_size",
         )?,
-        config_usize(manifest.moe.experts_per_token, "moe.experts_per_token")?,
+        as_usize_u64(head_config.experts_per_token, "mtp_num_experts_per_tok")?,
         manifest.moe_norm_topk_prob,
         None,
     )?;
@@ -914,6 +996,46 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use ax_engine_core::NativeTensorQuantization;
+
+    #[test]
+    fn mtp_head_config_inherits_the_trunk_when_absent() {
+        let head = MtpHeadConfig::from_config(&serde_json::json!({"text_config": {}}));
+        assert_eq!(head, MtpHeadConfig::default());
+        assert_eq!(
+            head.resolve(512, 10).unwrap(),
+            ResolvedMtpHead {
+                experts_per_token: 10
+            }
+        );
+    }
+
+    #[test]
+    fn mtp_head_config_uses_a_declared_top_k() {
+        let head = MtpHeadConfig::from_config(&serde_json::json!({
+            "text_config": {"mtp_num_hidden_layers": 1, "mtp_num_experts": 512, "mtp_num_experts_per_tok": 8}
+        }));
+        assert_eq!(head.resolve(512, 10).unwrap().experts_per_token, 8);
+        // Top-level fields are accepted when there is no text_config entry.
+        let flat = MtpHeadConfig::from_config(&serde_json::json!({"mtp_num_experts_per_tok": 6}));
+        assert_eq!(flat.resolve(512, 10).unwrap().experts_per_token, 6);
+    }
+
+    #[test]
+    fn mtp_head_config_fails_closed_on_unsupported_geometry() {
+        for config in [
+            serde_json::json!({"text_config": {"mtp_num_hidden_layers": 2}}),
+            serde_json::json!({"text_config": {"mtp_num_experts": 256}}),
+            serde_json::json!({"text_config": {"mtp_num_experts_per_tok": 0}}),
+            serde_json::json!({"text_config": {"mtp_num_experts_per_tok": 600}}),
+        ] {
+            assert!(
+                MtpHeadConfig::from_config(&config)
+                    .resolve(512, 10)
+                    .is_err(),
+                "{config}"
+            );
+        }
+    }
 
     struct TempRoot(PathBuf);
     impl Drop for TempRoot {

@@ -21,6 +21,75 @@ fn checked_mul(a: u64, b: u64, field: &str) -> Result<u64, NativeModelError> {
         .ok_or_else(|| invalid(format!("qwen4_exp {field} overflow")))
 }
 
+/// Per-layer n-gram (PLE) geometry, required only when `ple_layer_ids` is
+/// non-empty: a checkpoint of the same architecture without n-gram layers
+/// carries none of these fields.
+struct PleGeometry {
+    embed_dim: u32,
+    kernel: u32,
+    ngram_size: u32,
+    heads: u64,
+    row_width: u64,
+}
+
+fn ple_geometry(cfg: &NativeQwen4ExpConfig) -> Result<PleGeometry, NativeModelError> {
+    let ple_embed_dim = require_u32(cfg.ple_embed_dim, "ple_embed_dim")?;
+    let ple_kernel = require_u32(cfg.ple_conv_kernel_size, "ple_conv_kernel_size")?;
+    let ngram_size = require_u32(cfg.ngram_size, "ngram_size")?;
+    let heads_per_ngram = require_u32(cfg.heads_per_ngram, "heads_per_ngram")?;
+    let ngram_divisor = require_u32(cfg.ngram_vocab_divisor, "ngram_vocab_divisor")?;
+    let ngram_base = require_u32(cfg.ngram_vocab_size_base, "ngram_vocab_size_base")?;
+    let split_parts = require_u32(cfg.split_ngram_parts, "split_ngram_parts")?;
+    for (v, n) in [
+        (ple_embed_dim, "ple_embed_dim"),
+        (ple_kernel, "ple_conv_kernel_size"),
+        (ngram_size, "ngram_size"),
+        (heads_per_ngram, "heads_per_ngram"),
+        (ngram_divisor, "ngram_vocab_divisor"),
+        (ngram_base, "ngram_vocab_size_base"),
+        (split_parts, "split_ngram_parts"),
+    ] {
+        require_i32(v, n)?;
+    }
+    if cfg.ngram_seed.is_none() {
+        return Err(invalid("qwen4_exp ngram_seed is required".to_string()));
+    }
+    if ngram_size < 2 {
+        return Err(invalid(format!(
+            "qwen4_exp ngram_size must be >= 2, got {ngram_size}"
+        )));
+    }
+    let orders = u64::from(ngram_size - 1);
+    let ple_heads = checked_mul(orders, u64::from(heads_per_ngram), "ple head count")?;
+    if ple_heads == 0 || ple_heads > u64::from(i32::MAX as u32) {
+        return Err(invalid(format!(
+            "qwen4_exp ple head count {ple_heads} invalid"
+        )));
+    }
+    if u64::from(ple_embed_dim) % ple_heads != 0 {
+        return Err(invalid(format!(
+            "qwen4_exp ple_embed_dim {} must be divisible by (ngram_size-1)*heads_per_ngram {}",
+            ple_embed_dim, ple_heads
+        )));
+    }
+    let ngram_row_width = u64::from(ple_embed_dim) / ple_heads;
+    let conv_state_len = u64::from(ple_kernel - 1)
+        .checked_mul(u64::from(ngram_size))
+        .ok_or_else(|| invalid("qwen4_exp ple conv state overflow".to_string()))?;
+    if conv_state_len > u64::from(i32::MAX as u32) {
+        return Err(invalid(format!(
+            "qwen4_exp ple conv state {conv_state_len} exceeds i32"
+        )));
+    }
+    Ok(PleGeometry {
+        embed_dim: ple_embed_dim,
+        kernel: ple_kernel,
+        ngram_size,
+        heads: ple_heads,
+        row_width: ngram_row_width,
+    })
+}
+
 pub(super) fn validate(manifest: &NativeModelManifest) -> Result<(), NativeModelError> {
     if manifest.model_family != "qwen4_exp" {
         return Err(invalid(format!(
@@ -135,6 +204,18 @@ pub(super) fn validate(manifest: &NativeModelManifest) -> Result<(), NativeModel
             "qwen4_exp indexer_budget {indexer_budget} must be divisible by indexer_compress_ratio {indexer_ratio}"
         )));
     }
+    // The qwen4_exp attention and QSA indexer build plain RoPE from
+    // rope_theta. A scaled checkpoint (YaRN, llama3, linear) would load and
+    // silently run unscaled positions, so refuse it until scaling is wired.
+    if !matches!(
+        manifest.rope_scaling_type.as_deref(),
+        None | Some("default")
+    ) {
+        return Err(invalid(format!(
+            "qwen4_exp rope_scaling type {:?} is not supported (plain RoPE only)",
+            manifest.rope_scaling_type
+        )));
+    }
     let factor = manifest
         .partial_rotary_factor
         .ok_or_else(|| invalid("qwen4_exp partial_rotary_factor is required".to_string()))?;
@@ -238,54 +319,11 @@ pub(super) fn validate(manifest: &NativeModelManifest) -> Result<(), NativeModel
             moe.shared_expert_count
         )));
     }
-    let ple_embed_dim = require_u32(cfg.ple_embed_dim, "ple_embed_dim")?;
-    let ple_kernel = require_u32(cfg.ple_conv_kernel_size, "ple_conv_kernel_size")?;
-    let ngram_size = require_u32(cfg.ngram_size, "ngram_size")?;
-    let heads_per_ngram = require_u32(cfg.heads_per_ngram, "heads_per_ngram")?;
-    let ngram_divisor = require_u32(cfg.ngram_vocab_divisor, "ngram_vocab_divisor")?;
-    let ngram_base = require_u32(cfg.ngram_vocab_size_base, "ngram_vocab_size_base")?;
-    let split_parts = require_u32(cfg.split_ngram_parts, "split_ngram_parts")?;
-    for (v, n) in [
-        (ple_embed_dim, "ple_embed_dim"),
-        (ple_kernel, "ple_conv_kernel_size"),
-        (ngram_size, "ngram_size"),
-        (heads_per_ngram, "heads_per_ngram"),
-        (ngram_divisor, "ngram_vocab_divisor"),
-        (ngram_base, "ngram_vocab_size_base"),
-        (split_parts, "split_ngram_parts"),
-    ] {
-        require_i32(v, n)?;
-    }
-    if cfg.ngram_seed.is_none() {
-        return Err(invalid("qwen4_exp ngram_seed is required".to_string()));
-    }
-    if ngram_size < 2 {
-        return Err(invalid(format!(
-            "qwen4_exp ngram_size must be >= 2, got {ngram_size}"
-        )));
-    }
-    let orders = u64::from(ngram_size - 1);
-    let ple_heads = checked_mul(orders, u64::from(heads_per_ngram), "ple head count")?;
-    if ple_heads == 0 || ple_heads > u64::from(i32::MAX as u32) {
-        return Err(invalid(format!(
-            "qwen4_exp ple head count {ple_heads} invalid"
-        )));
-    }
-    if u64::from(ple_embed_dim) % ple_heads != 0 {
-        return Err(invalid(format!(
-            "qwen4_exp ple_embed_dim {} must be divisible by (ngram_size-1)*heads_per_ngram {}",
-            ple_embed_dim, ple_heads
-        )));
-    }
-    let ngram_row_width = u64::from(ple_embed_dim) / ple_heads;
-    let conv_state_len = u64::from(ple_kernel - 1)
-        .checked_mul(u64::from(ngram_size))
-        .ok_or_else(|| invalid("qwen4_exp ple conv state overflow".to_string()))?;
-    if conv_state_len > u64::from(i32::MAX as u32) {
-        return Err(invalid(format!(
-            "qwen4_exp ple conv state {conv_state_len} exceeds i32"
-        )));
-    }
+    let ple = if cfg.ple_layer_ids.is_empty() {
+        None
+    } else {
+        Some(ple_geometry(cfg)?)
+    };
     if manifest.layer_types.len() != manifest.layer_count as usize {
         return Err(invalid(format!(
             "qwen4_exp layer_types must contain one entry per layer, got {} for {}",
@@ -312,11 +350,6 @@ pub(super) fn validate(manifest: &NativeModelManifest) -> Result<(), NativeModel
         return Err(invalid(
             "qwen4_exp requires at least one linear_attention and one full_attention layer"
                 .to_string(),
-        ));
-    }
-    if cfg.ple_layer_ids.is_empty() {
-        return Err(invalid(
-            "qwen4_exp ple_layer_ids must not be empty".to_string(),
         ));
     }
     {
@@ -829,21 +862,21 @@ pub(super) fn validate(manifest: &NativeModelManifest) -> Result<(), NativeModel
             ),
             (NativeTensorRole::Qwen4ExpPleMultipliers, "ple_multipliers"),
         ];
-        if is_ple_layer(layer) {
+        if let Some(ple) = ple.as_ref().filter(|_| is_ple_layer(layer)) {
             let key = required_layer_tensor_spec(
                 manifest,
                 layer,
                 NativeTensorRole::Qwen4ExpPleKeyProj,
                 "ple_key_proj",
             )?;
-            expect_matrix_shape(key, packed, u64::from(ple_embed_dim), "ple_key_proj")?;
+            expect_matrix_shape(key, packed, u64::from(ple.embed_dim), "ple_key_proj")?;
             let value = required_layer_tensor_spec(
                 manifest,
                 layer,
                 NativeTensorRole::Qwen4ExpPleValueProj,
                 "ple_value_proj",
             )?;
-            expect_matrix_shape(value, hidden, u64::from(ple_embed_dim), "ple_value_proj")?;
+            expect_matrix_shape(value, hidden, u64::from(ple.embed_dim), "ple_value_proj")?;
             for (role, label) in [
                 (NativeTensorRole::Qwen4ExpPleNormQuery, "ple_norm_query"),
                 (NativeTensorRole::Qwen4ExpPleNormKey, "ple_norm_key"),
@@ -858,29 +891,29 @@ pub(super) fn validate(manifest: &NativeModelManifest) -> Result<(), NativeModel
                 NativeTensorRole::Qwen4ExpPleConv1d,
                 "ple_conv1d",
             )?;
-            expect_ple_conv(conv, packed, u64::from(ple_kernel), hf_conv)?;
+            expect_ple_conv(conv, packed, u64::from(ple.kernel), hf_conv)?;
             let mult = required_layer_tensor_spec(
                 manifest,
                 layer,
                 NativeTensorRole::Qwen4ExpPleMultipliers,
                 "ple_multipliers",
             )?;
-            expect_hash_buffer(mult, u64::from(ngram_size), "ple_multipliers")?;
+            expect_hash_buffer(mult, u64::from(ple.ngram_size), "ple_multipliers")?;
             let offsets = required_layer_tensor_spec(
                 manifest,
                 layer,
                 NativeTensorRole::Qwen4ExpPleHeadOffsets,
                 "ple_head_offsets",
             )?;
-            expect_hash_buffer(offsets, ple_heads, "ple_head_offsets")?;
+            expect_hash_buffer(offsets, ple.heads, "ple_head_offsets")?;
             let sizes = required_layer_tensor_spec(
                 manifest,
                 layer,
                 NativeTensorRole::Qwen4ExpPleHeadVocabSizes,
                 "ple_head_vocab_sizes",
             )?;
-            expect_hash_buffer(sizes, ple_heads, "ple_head_vocab_sizes")?;
-            validate_ngram_shards(manifest, layer, ngram_row_width)?;
+            expect_hash_buffer(sizes, ple.heads, "ple_head_vocab_sizes")?;
+            validate_ngram_shards(manifest, layer, ple.row_width)?;
         } else {
             for (role, label) in ple_roles {
                 if manifest_tensor(manifest, role, Some(layer)).is_some() {
@@ -1637,6 +1670,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_scaled_rope_until_it_is_implemented() {
+        let mut manifest = valid_manifest();
+        manifest.rope_scaling_type = Some("default".to_string());
+        validate(&manifest).expect("explicit default rope is plain RoPE");
+        for kind in ["yarn", "llama3", "linear"] {
+            manifest.rope_scaling_type = Some(kind.to_string());
+            manifest.rope_scaling_factor = Some(4.0);
+            expect_err_contains(&manifest, "rope_scaling");
+        }
+    }
+
+    #[test]
     fn rejects_bad_ple_ids_and_generic_norms() {
         let mut manifest = valid_manifest();
         manifest.qwen4_exp.ple_layer_ids = vec![2];
@@ -1649,6 +1694,49 @@ mod tests {
             vec![8],
         ));
         expect_err_contains(&manifest, "generic role");
+    }
+
+    #[test]
+    fn checkpoint_without_ngram_layers_needs_no_ple_geometry() {
+        let is_ple_tensor = |role: NativeTensorRole| {
+            matches!(
+                role,
+                NativeTensorRole::Qwen4ExpPleKeyProj
+                    | NativeTensorRole::Qwen4ExpPleValueProj
+                    | NativeTensorRole::Qwen4ExpPleConv1d
+                    | NativeTensorRole::Qwen4ExpPleNormQuery
+                    | NativeTensorRole::Qwen4ExpPleNormKey
+                    | NativeTensorRole::Qwen4ExpPleNormConv
+                    | NativeTensorRole::Qwen4ExpPleHeadOffsets
+                    | NativeTensorRole::Qwen4ExpPleHeadVocabSizes
+                    | NativeTensorRole::Qwen4ExpPleMultipliers
+                    | NativeTensorRole::NgramEmbedding
+            )
+        };
+        let mut manifest = valid_manifest();
+        let stray = manifest
+            .tensors
+            .iter()
+            .find(|t| t.role == NativeTensorRole::Qwen4ExpPleKeyProj)
+            .cloned()
+            .expect("synthetic manifest has a PLE layer");
+        manifest.tensors.retain(|t| !is_ple_tensor(t.role));
+        manifest.qwen4_exp.ple_layer_ids.clear();
+        manifest.qwen4_exp.ple_embed_dim = None;
+        manifest.qwen4_exp.ple_conv_kernel_size = None;
+        manifest.qwen4_exp.ngram_size = None;
+        manifest.qwen4_exp.heads_per_ngram = None;
+        manifest.qwen4_exp.ngram_seed = None;
+        validate(&manifest).expect("no n-gram layers: PLE geometry is not required");
+
+        // Without declared PLE layers, any PLE tensor is still a stray.
+        manifest.tensors.push(stray);
+        expect_err_contains(&manifest, "stray ple_key_proj");
+
+        // Declared PLE layers still require their geometry.
+        let mut manifest = valid_manifest();
+        manifest.qwen4_exp.ple_embed_dim = None;
+        expect_err_contains(&manifest, "ple_embed_dim is required");
     }
 
     #[test]

@@ -572,3 +572,35 @@ pub(crate) fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u
         .min(context_length)
         .max(1)
 }
+
+/// Mirrors the runtime's `AX_MLX_QWEN4_EXP_VISION` (default off while image
+/// input is a preview; `1`, `true`, `yes` or `on` turn it on), which decides
+/// whether the Flash Next vision tower was loaded. Read once per process,
+/// like the runtime's own flag.
+pub(crate) fn qwen4_exp_vision_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_MLX_QWEN4_EXP_VISION").is_ok_and(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+    })
+}
+
+/// `AX_ENGINE_JSON_CONSTRAINED_DECODING` (default on; `0`, `false`, `no` or
+/// `off` turn it off): native MLX `response_format` requests constrain
+/// decoding to their grammar instead of relying on post-hoc validation
+/// alone. Read once per process.
+pub(crate) fn json_constrained_decoding_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_ENGINE_JSON_CONSTRAINED_DECODING").map_or(true, |raw| {
+            !matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+    })
+}

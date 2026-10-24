@@ -489,6 +489,27 @@ pub fn session_auto_resident_fits(
     crate::tiel_memory_policy::session_auto_resident_fits(artifacts, budget, manifest)
 }
 
+/// Remove bytes the loader never makes resident (Flash Next's disk-served
+/// n-gram table: about 53.6 GiB of a 132 GB pack) from a manifest's resident
+/// estimates, so Auto admission prices what is actually loaded. Without this
+/// the pinned Flash Next pack (about 69.5 GiB truly resident) is paged on a
+/// 128 GiB host even though it fits with the full headroom.
+pub(crate) fn discount_never_loaded_bytes(
+    mut manifest: ExpertStreamManifest,
+    never_loaded_bytes: u64,
+) -> ExpertStreamManifest {
+    // An estimate that does not even cover the never-loaded bytes cannot have
+    // counted them: leave it untouched rather than pricing the pack at zero.
+    if never_loaded_bytes >= manifest.estimated_full_resident_bytes {
+        return manifest;
+    }
+    manifest.estimated_full_resident_bytes -= never_loaded_bytes;
+    manifest.estimated_resident_bytes = manifest
+        .estimated_resident_bytes
+        .saturating_sub(never_loaded_bytes);
+    manifest
+}
+
 pub(crate) fn should_auto_stream(full_resident_bytes: u64, available_bytes: Option<u64>) -> bool {
     match available_bytes {
         // Unknown capacity (both sysctl probes failed, e.g. a sandboxed
@@ -1132,6 +1153,7 @@ impl ExpertStackPager {
                 decode_q2_weight: None,
                 decode_q2_scales: None,
                 decode_q2_biases: None,
+                weight_t_view: Default::default(),
             };
             stack.insert(proj, quantized);
         }
@@ -1686,6 +1708,87 @@ mod tests {
         )
         .unwrap();
         assert!(decided.is_some_and(|manifest| manifest.required));
+    }
+
+    /// Pinned Flash Next MXFP4 manifest (axquant): 132,229,016,568 bytes
+    /// "full resident", of which the never-loaded n-gram table is 53.64 GiB.
+    fn flash_next_manifest() -> ExpertStreamManifest {
+        let mut file =
+            ExpertStreamManifest::parse(&serde_json::to_vec(&manifest_json(false)).unwrap())
+                .unwrap();
+        file.estimated_full_resident_bytes = 132_229_016_568;
+        file.estimated_resident_bytes = 68_056_165_368;
+        file
+    }
+    const FLASH_NEXT_NGRAM_BYTES: u64 = 57_595_000_000;
+    const M5_MAX_128_GIB: u64 = 128 * 1024 * 1024 * 1024;
+
+    #[test]
+    fn flash_next_pages_on_128gb_when_ngram_is_counted() {
+        let decided = resolve_expert_stream(
+            StreamExpertsMode::Auto,
+            Some(flash_next_manifest()),
+            || Err(ExpertStreamError::ManifestMissing),
+            Some(M5_MAX_128_GIB),
+        )
+        .unwrap();
+        assert!(decided.is_some(), "legacy accounting pages the pack");
+    }
+
+    #[test]
+    fn flash_next_stays_resident_on_128gb_once_ngram_is_discounted() {
+        let file = discount_never_loaded_bytes(flash_next_manifest(), FLASH_NEXT_NGRAM_BYTES);
+        assert_eq!(file.estimated_full_resident_bytes, 74_634_016_568);
+        assert_eq!(file.estimated_resident_bytes, 10_461_165_368);
+        let decided = resolve_expert_stream(
+            StreamExpertsMode::Auto,
+            Some(file.clone()),
+            || Err(ExpertStreamError::ManifestMissing),
+            Some(M5_MAX_128_GIB),
+        )
+        .unwrap();
+        assert!(decided.is_none(), "about 69.5 GiB + 48 GiB fits in 128 GiB");
+        // A 96 GiB host still pages, and explicit On still pages.
+        assert!(
+            resolve_expert_stream(
+                StreamExpertsMode::Auto,
+                Some(file.clone()),
+                || Err(ExpertStreamError::ManifestMissing),
+                Some(96 * 1024 * 1024 * 1024),
+            )
+            .unwrap()
+            .is_some()
+        );
+        assert!(
+            resolve_expert_stream(
+                StreamExpertsMode::On,
+                Some(file),
+                || Err(ExpertStreamError::ManifestMissing),
+                Some(M5_MAX_128_GIB),
+            )
+            .unwrap()
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn discount_never_drops_a_required_pack_or_reaches_zero() {
+        let mut required = flash_next_manifest();
+        required.required = true;
+        // An estimate smaller than the never-loaded bytes is left untouched.
+        let discounted = discount_never_loaded_bytes(required, u64::MAX);
+        assert_eq!(discounted.estimated_full_resident_bytes, 132_229_016_568);
+        assert_eq!(discounted.estimated_resident_bytes, 68_056_165_368);
+        assert!(
+            resolve_expert_stream(
+                StreamExpertsMode::Auto,
+                Some(discounted),
+                || Err(ExpertStreamError::ManifestMissing),
+                Some(M5_MAX_128_GIB),
+            )
+            .unwrap()
+            .is_some_and(|manifest| manifest.required)
+        );
     }
 
     #[test]

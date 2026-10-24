@@ -3,6 +3,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -99,13 +100,27 @@ struct AnthropicUsage {
 
 pub(crate) async fn anthropic_messages(
     State(state): State<AppState>,
-    payload: Result<Json<AnthropicMessagesRequest>, JsonRejection>,
-) -> Result<Json<AnthropicMessageResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let Json(request) = payload.map_err(|rejection| {
+    payload: Result<Json<Value>, JsonRejection>,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let Json(body) = payload.map_err(|rejection| {
         error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             format!("invalid request body: {}", rejection.body_text()),
+        )
+    })?;
+    // Streaming, tools, thinking and non-text blocks ride the OpenAI chat
+    // path; plain text keeps the direct path (it reports stop_sequence).
+    if crate::anthropic_bridge::needs_bridge(&body) {
+        select_openai_model(&state, body.get("model").and_then(Value::as_str))?;
+        let request_id = state.allocate_request_id();
+        return crate::anthropic_bridge::run_bridged(state, body, request_id).await;
+    }
+    let request: AnthropicMessagesRequest = serde_json::from_value(body).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("invalid request body: {error}"),
         )
     })?;
     let live = select_openai_model(&state, request.model.as_deref())?;
@@ -116,7 +131,8 @@ pub(crate) async fn anthropic_messages(
         request_id,
         &response,
         stop_sequence,
-    )))
+    ))
+    .into_response())
 }
 
 impl AnthropicMessagesRequest {
@@ -153,7 +169,7 @@ impl AnthropicMessagesRequest {
 
         let mut messages = Vec::new();
         if let Some(system) = self.system {
-            let content = system.into_text("system")?;
+            let content = system.into_system_text()?;
             if !content.trim().is_empty() {
                 messages.push(OpenAiChatMessage {
                     role: "system".to_string(),
@@ -231,6 +247,30 @@ impl AnthropicMessagesRequest {
 }
 
 impl AnthropicContent {
+    /// System text with billing-header blocks dropped (their random values
+    /// would otherwise defeat the prefix cache every turn).
+    fn into_system_text(self) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+        match self {
+            Self::Text(text)
+                if text.starts_with(crate::anthropic_bridge::BILLING_HEADER_PREFIX) =>
+            {
+                Ok(String::new())
+            }
+            Self::Blocks(blocks) => Self::Blocks(
+                blocks
+                    .into_iter()
+                    .filter(|block| {
+                        !block.text.as_deref().is_some_and(|text| {
+                            text.starts_with(crate::anthropic_bridge::BILLING_HEADER_PREFIX)
+                        })
+                    })
+                    .collect(),
+            )
+            .into_text("system"),
+            other => other.into_text("system"),
+        }
+    }
+
     fn into_text(
         self,
         field_name: &'static str,

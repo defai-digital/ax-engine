@@ -39,6 +39,7 @@ denominator.
 
 | Session | Engine / peers | Host | When |
 | --- | --- | --- | --- |
+| Qwen 3.6 35B-A3B AXQ 6-bit MTP (peer rerun) | AX **7.8.0** `77242419` · MTPLX **2.12.2** · OMLX **0.7.2** · mlx-lm **0.32.2** | Apple **M5 Max** 128 GB | [2026-10-22](../benchmarks/results/mtp-axq-peer/2026-10-22-apple-m5-max-128gb-qwen36-35b-6bit/) · **250.6** decode / **2364** prefill (`flappy`) · [analysis](mtp/qwen36-35b-6bit-peer-m5-2026-10-22.md) |
 | Qwen 3.8 27B AXQ 6-bit MTP (Engine default) | AX **7.4.0** `ad999f3f` · MTPLX **2.11.3** · OMLX **0.6.4** · mlx-lm **0.31.3** | Mac mini **M4 Pro 64 GB** | [2026-09-17](../benchmarks/results/mtp-axq-peer/2026-09-17-mac-mini-m4-pro-64gb/) · **31.05** decode / **120.3** prefill |
 | Qwen 3.8 27B AXQ 6-bit MTP (campaign host) | AX **7.4.0** product-path MTP · MTPLX **2.11.2** · OMLX **0.6.4** · mlx-lm **0.31.3** | Apple **M5 Max** 128 GB | [2026-09-15](../benchmarks/results/mtp-axq-peer/2026-09-15-apple-m5-max-128gb/) · **76.90** decode / **795.3** prefill |
 | Tiel / Cyber-Tiel resident native API | AX candidate on `574d2d19` + Python mode fix · MTPLX **2.11.3** | M5 Max 128 GiB / M4 Pro 64 GiB / M2 Ultra 192 GiB / M3 Ultra 512 GiB | [2026-09-20](../benchmarks/results/inference/tiel-mxfp4-mtp/2026-09-20-peer/RESULTS.md) |

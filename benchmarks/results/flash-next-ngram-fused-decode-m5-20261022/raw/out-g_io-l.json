@@ -1,0 +1,16 @@
+{
+ "label": "g_io-l",
+ "bin": "~/build/fn-ab/ax-engine-server-fuse2",
+ "rows": [
+  {
+   "file": "long1.txt",
+   "prompt_tokens": 8976,
+   "completion_tokens": 128,
+   "ttft_s": 13.952,
+   "prefill_tok_s": 643.4,
+   "decode_tok_s": 35.28,
+   "text_head": "This codebase implements a **distributed LLM inference gateway** (likely for a m",
+   "text_sha": "9b2e15a28d0b8473"
+  }
+ ]
+}

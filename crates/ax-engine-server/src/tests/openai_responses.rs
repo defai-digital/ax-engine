@@ -978,6 +978,34 @@ fn json_object_validation_rejects_invalid_model_output() {
 }
 
 #[test]
+fn json_object_validation_checks_the_answer_after_reasoning() {
+    // A thinking prompt pre-fills `<think>`, so the decoded output carries
+    // only the close tag before the answer.
+    let response = sample_generate_response(
+        "Berlin is the capital.\n</think>\n\n{\"city\":\"Berlin\"}",
+        Vec::new(),
+        Vec::new(),
+    );
+    let reasoning = OpenAiResponseOptions {
+        validate_json_object: true,
+        include_reasoning: true,
+        ..Default::default()
+    };
+    validate_openai_response_format(&response, &reasoning)
+        .expect("the answer after the thinking block is the response");
+    // Without a reasoning contract the whole text is the answer.
+    let error = validate_openai_response_format(
+        &response,
+        &OpenAiResponseOptions {
+            validate_json_object: true,
+            ..Default::default()
+        },
+    )
+    .expect_err("thinking text is not JSON");
+    assert_eq!(error.1.0.error.code.as_deref(), Some("invalid_output"));
+}
+
+#[test]
 fn json_object_validation_accepts_json_objects_only() {
     let object_response = sample_generate_response(r#"{"ok":true}"#, Vec::new(), Vec::new());
     let options = OpenAiResponseOptions {

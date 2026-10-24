@@ -2451,6 +2451,10 @@ impl MlxKVCache {
     /// claims tokens but restores as empty.
     pub(crate) fn has_unserializable_layers(&self) -> bool {
         self.deepseek_v4_layers.iter().any(Option::is_some)
+            || self
+                .qwen4_exp
+                .as_ref()
+                .is_some_and(crate::model::qwen4_exp::Qwen4ExpState::has_media)
     }
 
     pub(crate) fn serialize_to_bytes(&self) -> Vec<u8> {
@@ -2461,7 +2465,7 @@ impl MlxKVCache {
         // backstop for any future caller that forgets the gate.
         assert!(
             !self.has_unserializable_layers(),
-            "cannot serialize a cache with DeepSeek V4 compressor layers"
+            "cannot serialize a cache with DeepSeek V4 compressor layers or qwen4_exp image positions"
         );
         let mut out = Vec::new();
         out.extend_from_slice(Self::SERIALIZE_MAGIC);

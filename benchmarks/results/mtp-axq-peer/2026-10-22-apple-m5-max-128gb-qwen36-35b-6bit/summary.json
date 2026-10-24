@@ -1,0 +1,568 @@
+{
+  "campaign": "qwen36-35b-a3b-axq-6bit-mtp-peer-fair-2026-10-22",
+  "supersedes": "the 2026-09-21 Qwen 3.6 35B-A3B 6-bit rows (MTPLX 127.87, OMLX unsupported)",
+  "host": {
+    "descriptor": "MacBook Pro, Apple M5 Max, 128 GB unified memory, internal SSD",
+    "os": "macOS 27.0.1 (26A434)",
+    "power": "AC",
+    "thermal": "no thermal or performance warning recorded",
+    "role": "campaign host, signal only; not a certification run, not the Mac mini M4 Pro SKU"
+  },
+  "window_utc": {
+    "pass_A_forward": "2026-10-22T19:24:49Z .. 20:19",
+    "pass_B_reverse": "2026-10-22T20:19:04Z .. 20:47",
+    "pass_C_controls": "2026-10-22T21:13:07Z .. 21:30"
+  },
+  "runtimes": {
+    "ax_engine": "7.8.0, branch commit 77242419 (unmerged at recording; main db2a8b92 plus the DFlash2 branch, which does not engage on a Qwen 3.6 pack), release build, cargo 1.99.1 (Homebrew), MLX 0.32.4",
+    "mtplx": "2.12.2 (latest release 2026-10-03), sustained profile, own venv: MLX 0.32.2, mlx-lm 0.31.3",
+    "omlx": "0.7.2 (latest release 2026-10-21), Lightning MTP, MLX 0.32.4, mlx-vlm 0.7.8",
+    "mlx_lm": "0.32.2 (latest release 2026-10-16), direct autoregressive, MLX 0.32.4"
+  },
+  "model": {
+    "repo": "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP",
+    "revision": "6a4c220734f81112555ee8783d91e0065c54301c",
+    "source_model": "Qwen/Qwen3.6-35B-A3B",
+    "weights": "AXQ mixed precision: 24.3% of parameters at 6 bit, 68.7% at 4 bit, 2.0% at 8 bit, 5.0% bf16; bf16 MTP head",
+    "oMLX_variant": {
+      "built_by": "axquant export-runtime --target omlx --source-trunk-norm-layout mlx_multiplier (profile qwen35-mtp-v1, AXQuant branch feat/qwen35-omlx-export 3a65347, unmerged)",
+      "trunk_shards": "five shards byte-identical to the stock pack (SHA-256 checked)",
+      "head": "7 RMSNorm gains shifted +1 (raw_hf_delta -> mlx_multiplier), indexed as model-mtp.safetensors; vision sidecar omitted",
+      "why": "oMLX repairs only 4 of the 7 head norms of a raw-delta head: 3.8% draft acceptance on the stock pack, 97.6% on the variant"
+    }
+  },
+  "contract": {
+    "suites": {
+      "flappy": "4 prompts, 273-432 tokens",
+      "long_code": "4 prompts, 451-852 tokens"
+    },
+    "generated_tokens": 256,
+    "sampling": "greedy, seed 0",
+    "thinking": "off (chat template)",
+    "warmups": 2,
+    "measured": 5,
+    "cooldown_s": 3,
+    "prefix_cache": "off",
+    "gate": "three consecutive CPU-idle samples >= 94% before every lane",
+    "statistic": "median of 20 measured runs per suite",
+    "mtp_depth": "MTPLX and OMLX at 1, 2, 3; AX default controller and fixed 2, 1",
+    "decode": "rate after the first generated token",
+    "prefill_engine": "AX runner prefill_tok_s; MTPLX prompt_tokens / prompt_eval_time_s; mlx-lm prompt_tps; OMLX reports none",
+    "prefill_client": "prompt_tokens / client time to first token (AX over HTTP; others in process)"
+  },
+  "results": {
+    "flappy": {
+      "ax_tp": {
+        "decode": 250.56,
+        "decode_case_medians": {
+          "flappy_pipes": 250.9,
+          "flappy_score_gates": 239.8,
+          "flappy_collision_checks": 250.3,
+          "flappy_sound_channels": 252.1
+        },
+        "prefill_engine": 2363.8,
+        "prefill_client": 2337.0,
+        "ttft_ms": 137.4,
+        "e2e": 219.19,
+        "accept": 0.985,
+        "text_identical_to_ax_direct": null
+      },
+      "ax_exact": {
+        "decode": 250.58,
+        "decode_case_medians": {
+          "flappy_pipes": 250.8,
+          "flappy_score_gates": 239.9,
+          "flappy_collision_checks": 249.8,
+          "flappy_sound_channels": 251.5
+        },
+        "prefill_engine": 2393.8,
+        "prefill_client": 2366.0,
+        "ttft_ms": 136.0,
+        "e2e": 220.58,
+        "accept": 0.985,
+        "text_identical_to_ax_direct": null
+      },
+      "ax_d2": {
+        "decode": 215.03,
+        "decode_case_medians": {
+          "flappy_pipes": 215.2,
+          "flappy_score_gates": 210.0,
+          "flappy_collision_checks": 214.9,
+          "flappy_sound_channels": 216.0
+        },
+        "prefill_engine": 2407.5,
+        "prefill_client": 2380.2,
+        "ttft_ms": 135.0,
+        "e2e": 191.89,
+        "accept": 0.991,
+        "text_identical_to_ax_direct": null
+      },
+      "ax_d1": {
+        "decode": 167.52,
+        "decode_case_medians": {
+          "flappy_pipes": 167.5,
+          "flappy_score_gates": 165.3,
+          "flappy_collision_checks": 166.6,
+          "flappy_sound_channels": 167.6
+        },
+        "prefill_engine": 2408.8,
+        "prefill_client": 2382.1,
+        "ttft_ms": 134.8,
+        "e2e": 153.59,
+        "accept": 0.996,
+        "text_identical_to_ax_direct": null
+      },
+      "ax_direct": {
+        "decode": 122.35,
+        "decode_case_medians": {
+          "flappy_pipes": 122.7,
+          "flappy_score_gates": 122.3,
+          "flappy_collision_checks": 122.3,
+          "flappy_sound_channels": 122.4
+        },
+        "prefill_engine": 2198.8,
+        "prefill_client": 2176.1,
+        "ttft_ms": 146.8,
+        "e2e": 114.16,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      },
+      "mtplx_d3": {
+        "decode": 202.68,
+        "decode_case_medians": {
+          "flappy_pipes": 205.8,
+          "flappy_score_gates": 191.6,
+          "flappy_collision_checks": 214.8,
+          "flappy_sound_channels": 200.0
+        },
+        "prefill_engine": 1764.5,
+        "prefill_client": null,
+        "ttft_ms": 184.8,
+        "e2e": 177.31,
+        "accept": 0.991,
+        "text_identical_to_ax_direct": null
+      },
+      "mtplx_d2": {
+        "decode": 186.97,
+        "decode_case_medians": {
+          "flappy_pipes": 239.5,
+          "flappy_score_gates": 177.0,
+          "flappy_collision_checks": 192.9,
+          "flappy_sound_channels": 181.0
+        },
+        "prefill_engine": 1748.1,
+        "prefill_client": null,
+        "ttft_ms": 184.7,
+        "e2e": 164.11,
+        "accept": 0.998,
+        "text_identical_to_ax_direct": null
+      },
+      "mtplx_d1": {
+        "decode": 158.41,
+        "decode_case_medians": {
+          "flappy_pipes": 208.3,
+          "flappy_score_gates": 149.9,
+          "flappy_collision_checks": 166.9,
+          "flappy_sound_channels": 144.3
+        },
+        "prefill_engine": 1742.4,
+        "prefill_client": null,
+        "ttft_ms": 184.9,
+        "e2e": 141.54,
+        "accept": 1.0,
+        "text_identical_to_ax_direct": null
+      },
+      "omlx_d3": {
+        "decode": 207.14,
+        "decode_case_medians": {
+          "flappy_pipes": 225.1,
+          "flappy_score_gates": 186.2,
+          "flappy_collision_checks": 212.4,
+          "flappy_sound_channels": 202.3
+        },
+        "prefill_engine": null,
+        "prefill_client": 1193.1,
+        "ttft_ms": 301.2,
+        "e2e": 168.54,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      },
+      "omlx_d2": {
+        "decode": 191.66,
+        "decode_case_medians": {
+          "flappy_pipes": 217.2,
+          "flappy_score_gates": 174.4,
+          "flappy_collision_checks": 197.3,
+          "flappy_sound_channels": 186.9
+        },
+        "prefill_engine": null,
+        "prefill_client": 1193.2,
+        "ttft_ms": 298.6,
+        "e2e": 158.34,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      },
+      "omlx_d1": {
+        "decode": 172.22,
+        "decode_case_medians": {
+          "flappy_pipes": 193.1,
+          "flappy_score_gates": 154.6,
+          "flappy_collision_checks": 178.2,
+          "flappy_sound_channels": 166.5
+        },
+        "prefill_engine": null,
+        "prefill_client": 1195.8,
+        "ttft_ms": 300.3,
+        "e2e": 145.7,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      },
+      "mlx_lm": {
+        "decode": 113.86,
+        "decode_case_medians": {
+          "flappy_pipes": 114.1,
+          "flappy_score_gates": 113.9,
+          "flappy_collision_checks": 113.4,
+          "flappy_sound_channels": 113.9
+        },
+        "prefill_engine": 1242.0,
+        "prefill_client": 1085.9,
+        "ttft_ms": 298.2,
+        "e2e": 100.89,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      }
+    },
+    "long_code": {
+      "ax_tp": {
+        "decode": 242.79,
+        "decode_case_medians": {
+          "long_code_c_audit": 248.3,
+          "long_code_api_audit": 240.0,
+          "long_code_test_stubs": 239.8,
+          "long_code_sql_schema": 246.1
+        },
+        "prefill_engine": 3550.3,
+        "prefill_client": 3524.2,
+        "ttft_ms": 203.9,
+        "e2e": 203.81,
+        "accept": 0.975,
+        "text_identical_to_ax_direct": null
+      },
+      "ax_exact": {
+        "decode": 242.75,
+        "decode_case_medians": {
+          "long_code_c_audit": 247.8,
+          "long_code_api_audit": 239.4,
+          "long_code_test_stubs": 239.3,
+          "long_code_sql_schema": 246.2
+        },
+        "prefill_engine": 3569.5,
+        "prefill_client": 3543.4,
+        "ttft_ms": 202.8,
+        "e2e": 203.7,
+        "accept": 0.975,
+        "text_identical_to_ax_direct": null
+      },
+      "ax_d2": {
+        "decode": 209.29,
+        "decode_case_medians": {
+          "long_code_c_audit": 212.2,
+          "long_code_api_audit": 206.8,
+          "long_code_test_stubs": 209.1,
+          "long_code_sql_schema": 209.3
+        },
+        "prefill_engine": 3569.4,
+        "prefill_client": 3543.3,
+        "ttft_ms": 202.0,
+        "e2e": 180.15,
+        "accept": 0.98,
+        "text_identical_to_ax_direct": null
+      },
+      "ax_d1": {
+        "decode": 164.26,
+        "decode_case_medians": {
+          "long_code_c_audit": 165.4,
+          "long_code_api_audit": 163.1,
+          "long_code_test_stubs": 163.8,
+          "long_code_sql_schema": 165.9
+        },
+        "prefill_engine": 3572.5,
+        "prefill_client": 3545.8,
+        "ttft_ms": 201.4,
+        "e2e": 145.03,
+        "accept": 0.994,
+        "text_identical_to_ax_direct": null
+      },
+      "ax_direct": {
+        "decode": 121.56,
+        "decode_case_medians": {
+          "long_code_c_audit": 121.7,
+          "long_code_api_audit": 121.3,
+          "long_code_test_stubs": 121.4,
+          "long_code_sql_schema": 121.7
+        },
+        "prefill_engine": 3515.4,
+        "prefill_client": 3488.6,
+        "ttft_ms": 204.9,
+        "e2e": 110.5,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      },
+      "mtplx_d3": {
+        "decode": 247.62,
+        "decode_case_medians": {
+          "long_code_c_audit": 243.3,
+          "long_code_api_audit": 251.8,
+          "long_code_test_stubs": 347.1,
+          "long_code_sql_schema": 229.9
+        },
+        "prefill_engine": 3135.7,
+        "prefill_client": null,
+        "ttft_ms": 228.6,
+        "e2e": 201.04,
+        "accept": 1.0,
+        "text_identical_to_ax_direct": null
+      },
+      "mtplx_d2": {
+        "decode": 255.53,
+        "decode_case_medians": {
+          "long_code_c_audit": 241.0,
+          "long_code_api_audit": 270.2,
+          "long_code_test_stubs": 362.7,
+          "long_code_sql_schema": 226.3
+        },
+        "prefill_engine": 3146.7,
+        "prefill_client": null,
+        "ttft_ms": 227.5,
+        "e2e": 205.87,
+        "accept": 1.0,
+        "text_identical_to_ax_direct": null
+      },
+      "mtplx_d1": {
+        "decode": 223.82,
+        "decode_case_medians": {
+          "long_code_c_audit": 207.9,
+          "long_code_api_audit": 239.0,
+          "long_code_test_stubs": 337.8,
+          "long_code_sql_schema": 195.0
+        },
+        "prefill_engine": 3128.3,
+        "prefill_client": null,
+        "ttft_ms": 229.4,
+        "e2e": 184.71,
+        "accept": 1.0,
+        "text_identical_to_ax_direct": null
+      },
+      "omlx_d3": {
+        "decode": 240.06,
+        "decode_case_medians": {
+          "long_code_c_audit": 231.8,
+          "long_code_api_audit": 228.9,
+          "long_code_test_stubs": 277.7,
+          "long_code_sql_schema": 249.1
+        },
+        "prefill_engine": null,
+        "prefill_client": 1963.3,
+        "ttft_ms": 366.2,
+        "e2e": 188.94,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      },
+      "omlx_d2": {
+        "decode": 230.71,
+        "decode_case_medians": {
+          "long_code_c_audit": 223.7,
+          "long_code_api_audit": 214.4,
+          "long_code_test_stubs": 265.0,
+          "long_code_sql_schema": 238.9
+        },
+        "prefill_engine": null,
+        "prefill_client": 1981.0,
+        "ttft_ms": 364.0,
+        "e2e": 183.72,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      },
+      "omlx_d1": {
+        "decode": 209.44,
+        "decode_case_medians": {
+          "long_code_c_audit": 203.0,
+          "long_code_api_audit": 192.0,
+          "long_code_test_stubs": 249.7,
+          "long_code_sql_schema": 215.7
+        },
+        "prefill_engine": null,
+        "prefill_client": 1972.0,
+        "ttft_ms": 364.2,
+        "e2e": 169.31,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      },
+      "mlx_lm": {
+        "decode": 113.07,
+        "decode_case_medians": {
+          "long_code_c_audit": 113.2,
+          "long_code_api_audit": 112.9,
+          "long_code_test_stubs": 112.9,
+          "long_code_sql_schema": 113.5
+        },
+        "prefill_engine": 2129.3,
+        "prefill_client": 2004.6,
+        "ttft_ms": 357.9,
+        "e2e": 97.95,
+        "accept": null,
+        "text_identical_to_ax_direct": null
+      }
+    }
+  },
+  "pass_B_reverse_order_decode": {
+    "flappy": {
+      "ax_tp": {
+        "A": 250.56,
+        "B": 250.71
+      },
+      "mtplx_d3": {
+        "A": 202.68,
+        "B": 202.51
+      },
+      "omlx_d3": {
+        "A": 207.14,
+        "B": 206.86
+      },
+      "mlx_lm": {
+        "A": 113.86,
+        "B": 114.04
+      }
+    },
+    "long_code": {
+      "ax_tp": {
+        "A": 242.79,
+        "B": 242.95
+      },
+      "mtplx_d3": {
+        "A": 247.62,
+        "B": 247.68
+      },
+      "omlx_d3": {
+        "A": 240.06,
+        "B": 240.53
+      },
+      "mlx_lm": {
+        "A": 113.07,
+        "B": 113.29
+      }
+    }
+  },
+  "text_agreement_with_ax_direct_pass_B": {
+    "flappy": {
+      "ax_direct": "4/4",
+      "ax_exact": "3/4",
+      "ax_tp": "3/4",
+      "mlx_lm": "3/4",
+      "mtplx_d3": "3/4",
+      "omlx_d3": "3/4"
+    },
+    "long_code": {
+      "ax_direct": "4/4",
+      "ax_exact": "2/4",
+      "ax_tp": "2/4",
+      "mlx_lm": "2/4",
+      "mtplx_d3": "2/4",
+      "omlx_d3": "3/4"
+    }
+  },
+  "context_copy_control_pass_C": {
+    "flappy": {
+      "ax_stack": {
+        "decode": 251.08,
+        "prefill_engine": 2398.4,
+        "ttft_ms": 137.0,
+        "e2e": 220.09,
+        "accept": 0.985
+      },
+      "ax_tp": {
+        "decode": 250.95,
+        "prefill_engine": 2390.2,
+        "ttft_ms": 136.3,
+        "e2e": 219.76,
+        "accept": 0.985
+      },
+      "mtplx_d3": {
+        "decode": 203.21,
+        "prefill_engine": 1780.2,
+        "ttft_ms": 185.2,
+        "e2e": 177.8,
+        "accept": 0.991
+      },
+      "mtplx_nocopy_d3": {
+        "decode": 214.85,
+        "prefill_engine": 1788.0,
+        "ttft_ms": 182.9,
+        "e2e": 185.71,
+        "accept": 0.991
+      }
+    },
+    "long_code": {
+      "ax_stack": {
+        "decode": 242.91,
+        "prefill_engine": 3506.8,
+        "ttft_ms": 206.1,
+        "e2e": 203.49,
+        "accept": 0.975
+      },
+      "ax_tp": {
+        "decode": 243.13,
+        "prefill_engine": 3563.0,
+        "ttft_ms": 203.4,
+        "e2e": 203.94,
+        "accept": 0.975
+      },
+      "mtplx_d3": {
+        "decode": 247.6,
+        "prefill_engine": 3130.7,
+        "ttft_ms": 229.0,
+        "e2e": 200.61,
+        "accept": 1.0
+      },
+      "mtplx_nocopy_d3": {
+        "decode": 211.11,
+        "prefill_engine": 3145.2,
+        "ttft_ms": 228.1,
+        "e2e": 176.22,
+        "accept": 0.994
+      }
+    }
+  },
+  "ratios": {
+    "flappy": {
+      "ax_vs_mtplx_d3_decode": 1.236,
+      "ax_vs_mtplx_best_depth_decode": 1.236,
+      "ax_vs_mtplx_copy_off_decode": 1.166,
+      "ax_vs_omlx_d3_decode": 1.21,
+      "ax_vs_mlx_lm_decode": 2.201,
+      "ax_mtp_vs_ax_direct_decode": 2.048,
+      "ax_vs_mtplx_prefill_engine": 1.34,
+      "ax_vs_omlx_prefill_client": 1.959,
+      "ax_vs_mlx_lm_prefill_client": 2.152
+    },
+    "long_code": {
+      "ax_vs_mtplx_d3_decode": 0.98,
+      "ax_vs_mtplx_best_depth_decode": 0.95,
+      "ax_vs_mtplx_copy_off_decode": 1.15,
+      "ax_vs_omlx_d3_decode": 1.011,
+      "ax_vs_mlx_lm_decode": 2.147,
+      "ax_mtp_vs_ax_direct_decode": 1.997,
+      "ax_vs_mtplx_prefill_engine": 1.132,
+      "ax_vs_omlx_prefill_client": 1.795,
+      "ax_vs_mlx_lm_prefill_client": 1.758
+    }
+  },
+  "decode_harmonic_mean_8_prompts": {
+    "ax_tp": 245.8,
+    "mtplx_d3": 228.3,
+    "omlx_d3": 223.7,
+    "mlx_lm": 113.5,
+    "ax_direct": 122.0
+  }
+}

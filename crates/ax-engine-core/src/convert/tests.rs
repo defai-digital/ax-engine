@@ -470,10 +470,33 @@ fn gpt_oss_layer_types_from_config_and_default_alternate() {
 
     // qwen4_exp never receives the sliding-window fallback: its validator
     // accepts only linear / full / sparse attention, so an omitted
-    // `layer_types` must surface as the clear length error, not as
-    // synthesized sliding_attention entries.
+    // `layer_types` without `full_attention_interval` must surface as the
+    // clear length error, not as synthesized sliding_attention entries.
     let qwen4 = serde_json::json!({ "model_type": "qwen4_exp" });
     assert!(parse_layer_types(&qwen4, "qwen4_exp", 4).is_empty());
+    // With only the interval, derive the Qwen hybrid pattern (the pinned
+    // Flash Next pack's 48-layer list equals this rule at interval 4).
+    let qwen4_interval = serde_json::json!({
+        "model_type": "qwen4_exp",
+        "text_config": { "full_attention_interval": 4 }
+    });
+    assert_eq!(
+        parse_layer_types(&qwen4_interval, "qwen4_exp", 8),
+        [
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+        ]
+        .map(String::from)
+        .to_vec()
+    );
+    let qwen4_zero = serde_json::json!({ "model_type": "qwen4_exp", "full_attention_interval": 0 });
+    assert!(parse_layer_types(&qwen4_zero, "qwen4_exp", 4).is_empty());
     let qwen4_explicit = serde_json::json!({
         "model_type": "qwen4_exp",
         "layer_types": ["linear_attention", "full_attention"]
@@ -5494,7 +5517,7 @@ fn converts_qwen4_exp_flash_next_but_load_stays_fail_closed() {
         );
         assert!(
             manifest.runtime_status.notes.iter().any(|n| {
-                n.contains("Mac Studio, Ultra-class Apple Silicon (M2 Ultra+), 192 GiB+, MXFP4 MTP")
+                n.contains("MacBook Pro M5 Max 128 GB, single-stream resident, MXFP4 MTP")
                     && n.contains("target qualification pending")
             }),
             "{model_type}: {:?}",

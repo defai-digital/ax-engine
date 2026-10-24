@@ -39,6 +39,7 @@ fn apply_scheduler_policy(core: &mut EngineCore, config: &EngineSessionConfig) {
         config.max_prefill_tokens_per_request_per_step,
         config.max_inflight_prefill_requests,
     );
+    core.set_prefill_stall_target_ms(config.prefill_stall_target_ms);
 }
 
 #[cfg(feature = "mlx-native")]
@@ -147,6 +148,12 @@ fn build_mlx_core(
         config.mlx_mtp_policy,
         runner.mtp_certified_default_on(),
     ));
+    // DFlash2 block speculation (ADR-045) is on by default for greedy text
+    // requests on the Qwen 3.8 27B target when a drafter checkpoint can be
+    // found; an explicit `disabled` MTP policy keeps every model drafter off.
+    if config.mlx_mtp_policy != MlxMtpPolicy::Disabled {
+        runner.attach_dflash2(artifacts.root_dir());
+    }
     // Validate the resolved activation, including the process kill switch.
     // A usable attached head alone does not mean the setter enabled MTP.
     validate_mtp_activation(

@@ -81,6 +81,106 @@ drop-on-block behavior remains available as
 `ax_mlx_flash_next_mtp_cursor_paused_steps` /
 `ax_mlx_flash_next_mtp_cursor_resumed` route keys.
 
+Qwen MTP drafts read the vocabulary projection once per draft step. When the
+target head is quantized at 6 bits or more (the 8-bit head of the Qwen 3.8
+27B MXFP4 pack), AX builds a draft-only 3-bit copy at load
+(`AX_MLX_MTP_QUANTIZED_HEAD_DRAFT=0` disables it; `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS`
+sets the width; `AX_MLX_MTP_DRAFT_LM_HEAD_BITS` overrides both). Verification
+still uses the target head, so committed tokens are decided as before. On an
+M5 Max 128 GB with the 27B MXFP4 pack (17 real prompts, greedy, depth 3) MTP
+decode rose from 70.3 to 77.2 tok/s with all 17 outputs token-identical to
+MTP with the full-width head, not to direct decode (see the next paragraph);
+the
+4-bit Qwen 3.6 35B-A3B head is left unchanged (3 bits measured +0.3% there).
+
+Default Qwen linear MTP is not token-identical to direct decode. Since
+d9a45f77 (2026-08-26) an explicitly requested Qwen linear MTP session uses the
+throughput profile (`AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP`, default on): depth 3,
+projected-replay rollback and a relaxed target verifier built from stock MLX
+arithmetic. A multi-row verify forward does not reproduce single-row decode
+arithmetic, so near-tie tokens can flip. On an M5 Max with 17 real prompts,
+greedy, 256 tokens: 27B MXFP4 MTP output differed from direct decode on 5
+prompts, and 35B-A3B AXQ-4bit on 9. Forcing the exact profile on the MXFP4
+27B (`AX_MLX_QWEN_LINEAR_THROUGHPUT_MTP=0`,
+`AX_MLX_QWEN_LINEAR_MTP_CERTIFICATION_CANDIDATE=1`,
+`AX_MLX_QWEN_LINEAR_MTP_EXACT=1`) is slower (47 vs 61 tok/s on the streaming
+chat route) and still differed on 7 prompts: MXFP4 has no certified
+row-exact verifier. n-gram verification matched direct decode on all 17.
+Treat throughput MTP as an approximate mode, not an exact path: greedy output
+can differ from direct decode. MTP stays explicit opt-in, and no flag here is
+named or documented as exact until a row-exact MXFP4 verifier is certified.
+When token identity with direct decode matters, use direct decode or n-gram
+verification.
+
+Sampled requests with a repetition, presence or frequency penalty or a
+`logit_bias` keep Qwen linear MTP (`AX_MLX_MTP_PENALIZED_VERIFY`, default on).
+Drafts stay unpenalised; every verify row is sampled on the host from the
+target logits processed with the committed history plus the drafts before
+it, which is the law direct decode samples from, and the rejection residual
+and bonus token use the same rows. On an M5 Max with the 27B MXFP4 pack (17
+real prompts, 256 tokens) Qwen's sampled settings with presence penalty 1.5
+decode at 47.7 tok/s against 29.3 on the direct route. Greedy penalised
+requests and no-repeat n-gram bans still decode directly.
+
+MXFP4 verify windows of 3 to 8 rows use a fused matmul
+(`AX_MLX_MTP_VERIFY_QMM_MXFP4`, default on; `=0` restores MLX's own quantized
+matmul, `AX_MLX_MTP_VERIFY_QMM_MXFP4_MIN_N` sets an output-width floor). MLX's
+quantized matmul pays 2.4 to 5.6 ms per extra row on the 27B FFN chain and
+switches kernels at 13 rows; the fused kernel reads and decodes each weight
+once and applies it to every row. On an M5 Max the 64-layer FFN chain at eight
+rows drops from 46.2 to 29.6 ms and at four rows from 24.7 to 18.8 ms. With the
+27B MXFP4 pack, depth-3 MTP, greedy, 256 tokens and 17 real prompts it decodes
+1.138x faster than the stock route (median 1.151x, every prompt between 1.046x
+and 1.206x; a repeat of the stock arm agreed within 0.2%), 2.32x direct decode
+against 2.04x. The sum order differs from MLX's, so outputs change: 11 of 17
+prompts match the stock MTP route, and against direct decode 12 of 17 match
+with the fused route and 11 of 17 with the stock one, so it is no further from
+direct decode than the route it replaces. It applies to dense MXFP4 weights
+during a throughput-profile verify forward only; the exact profile, Flash Next
+and MoE experts are unchanged.
+
+DFlash2 block drafting is on by default for greedy text requests on the Qwen 3.8
+27B target (the pack's recorded source model must be `Qwen/Qwen3.8-27B`: Qwen 3.6
+27B has the same shapes but other weights) whenever the Apache-2.0 `z-lab/Qwen3.8-27B-DFlash2`
+checkpoint (`config.json` and `model.safetensors`, about 3.6 GB in bf16, held as
+MXFP4 in memory) can be found: `AX_MLX_DFLASH2_DIR`, else a `dflash2/` directory
+inside the model directory, else the Hugging Face cache (`HF_HUB_CACHE`,
+`HF_HOME/hub`, `~/.cache/huggingface/hub`). The checkpoint is not part of the
+model pack and is never downloaded by the server; without it nothing changes.
+`AX_MLX_DFLASH2=0`, `--mlx-mtp-policy disabled`, `--disable-ngram-acceleration`
+and `AX_NO_SPEC` keep it off; `AX_MLX_DFLASH2_BF16=1` keeps the weights in bf16.
+A five-layer drafter conditions on the target's hidden states at layers 5, 19, 33,
+47 and 61 and proposes seven tokens per round; the target verifies the first few
+of them in one forward with the same fused multi-row matmul and the same rollback
+as MTP. The verify window (3 to 8 rows) follows the request: drafts that keep
+being accepted earn the full window and prose settles at four rows
+(`AX_MLX_DFLASH2_WINDOW=N` pins it). On an M5 Max with the 27B MXFP4 pack (17 real
+prompts, 256 tokens, greedy) it decodes 1.28x faster than fused depth-3 MTP on the
+11 code prompts (1.08x to 1.40x, up to 127 tok/s) and 1.02x on the 6 prose and chat
+prompts (0.99x to 1.07x), 90.8 against 79.0 tok/s over the suite. Outputs are
+approximate like MTP's: 11 of 17 prompts match direct decode, against 12 of 17 for
+MTP. The drafter needs the hidden states of the whole prompt, so a request whose
+prefix is restored from the prefix cache decodes on the normal routes; only a
+request that prefills its prompt itself uses it. Sampled requests, requests with
+logits processors or a grammar, image input and other models use the normal routes.
+
+`AX_MLX_MTP_STEP_TRACE=<path>` is a capture-only diagnostic that appends one
+JSON line per verified MTP cycle (verify window, accepted prefix, context
+length, draft log-probs when the draft path computed them, timestamp). It adds
+no device synchronization. `scripts/simulate_mtp_verify_prefix.py` replays
+such traces to price verify-window truncation policies (confidence threshold,
+calibrated cost model, oracle) against measured fixed-depth cycle costs before
+any runtime change. Pass a fixed-depth trace per verify width with
+`--cost-trace`, and a calibration trace captured with a non-zero
+`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` of at least `0.001` (smaller values round to
+a zero gate and keep the lazy draft path, which records no log-probs). On an
+M5 Max 128 GB with Qwen 3.8 27B MXFP4 and Qwen 3.6 35B-A3B 4-bit (depth 3,
+greedy, 17 real prompts), even oracle truncation was worth at most +4.3% and
++3.3% respectively, the synchronous gated draft path that truncation needs
+cost about 5% and 8% decode by itself, and real threshold truncation at gates
+0.70 / 0.80 lost 14-27%. Full-window verification with a zero gate remains
+the default, and simulated gains should be read as upper bounds.
+
 ## Where To Go
 
 | Need | Read |
@@ -93,6 +193,7 @@ drop-on-block behavior remains available as
 | Review Gemma assistant-MTP depth work | [Gemma 4 assistant MTP multi-depth drafting](gemma4-assistant-multi-depth.md) |
 | Review Qwen3.6 peer-engine MTP results | [Qwen3.6 MTP peer benchmark](qwen36-peer-comparison.md) |
 | Review the 2026-09-21 7.5.3 Qwen / Gemma M5 Max peer campaign | [Qwen / Gemma M5 Max peer campaign](qwen-gemma-peer-m5-2026-09-21.md) |
+| Review the 2026-10-22 Qwen 3.6 35B-A3B 6-bit rerun (AX, MTPLX 2.12.2, OMLX 0.7.2, mlx-lm 0.32.2) | [Qwen 3.6 35B-A3B peer rerun](qwen36-35b-6bit-peer-m5-2026-10-22.md) |
 | Review archived Qwen3.6 AX-only multi-suite MTP results | [Qwen3.6 AX-only multi-suite MTP results](qwen36-matrix-refresh.md) |
 | AX Engine native MTP vs Youssofal MTPLX bundle | [AX MTP vs Youssofal MTPLX-Optimized](ax-mtp-vs-youssofal.md) |
 | Review tree-draft investigation history | [Tree draft phase A](tree-draft-phase-a.md) |

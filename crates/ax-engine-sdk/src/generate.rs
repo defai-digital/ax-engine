@@ -402,12 +402,28 @@ pub struct GenerateSampling {
     /// None lets each backend use its own default (typically 64 for llama.cpp, 20 for mlx-lm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repetition_context_size: Option<u32>,
+    /// OpenAI-style presence penalty over generated tokens (0 disables).
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub presence_penalty: f32,
+    /// OpenAI-style frequency penalty over generated tokens (0 disables).
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub frequency_penalty: f32,
     /// N-gram size that must not repeat. Zero disables the processor.
     #[serde(default)]
     pub no_repeat_ngram_size: u32,
     /// Maximum recent token history inspected for repeated n-grams.
     #[serde(default = "default_ngram_window")]
     pub ngram_window: u32,
+    /// OpenAI-style `logit_bias`: token id -> bias added to its logit
+    /// (JSON keys are token-id strings). Empty disables it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub logit_bias: std::collections::BTreeMap<u32, f32>,
+    /// JSON Schema every generated answer must follow (`response_format`
+    /// json_schema; `{"type":"object"}` for json_object). Native MLX
+    /// sessions constrain decoding to it; a schema the grammar compiler
+    /// cannot enforce exactly is left to the caller's post-hoc validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<serde_json::Value>,
     #[serde(default)]
     pub seed: u64,
     /// True when `seed` was explicitly supplied, including zero. Non-zero
@@ -438,8 +454,12 @@ impl Default for GenerateSampling {
             min_p: None,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
+            logit_bias: std::collections::BTreeMap::new(),
+            json_schema: None,
             seed: 0,
             seed_explicit: false,
             deterministic: None,
@@ -469,8 +489,16 @@ impl GenerateSampling {
             min_p: self.min_p,
             repetition_penalty: self.repetition_penalty,
             repetition_context_size: self.repetition_context_size,
+            presence_penalty: self.presence_penalty,
+            frequency_penalty: self.frequency_penalty,
             no_repeat_ngram_size: self.no_repeat_ngram_size,
             ngram_window: self.ngram_window,
+            logit_bias: self.logit_bias.into_iter().collect(),
+            json_grammar: self
+                .json_schema
+                .as_ref()
+                .and_then(|schema| ax_engine_core::grammar::JsonGrammar::from_schema(schema).ok())
+                .map(std::sync::Arc::new),
             seed: self.seed,
             seed_explicit: self.seed_explicit || self.seed != 0,
             deterministic,
@@ -676,6 +704,10 @@ impl GenerateFinishReason {
 
 const fn default_top_p() -> f32 {
     1.0
+}
+
+fn is_zero_f32(value: &f32) -> bool {
+    *value == 0.0
 }
 
 const fn default_repetition_penalty() -> f32 {

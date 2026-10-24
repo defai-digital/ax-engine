@@ -20,19 +20,27 @@ from pathlib import Path
 from typing import Any, Sequence
 
 FAMILY = "qwen4_exp"
-HOST_CLASS = "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+"
+HOST_CLASS = "MacBook Pro M5 Max, 128 GB"
+STANDARD_ENVELOPE = (
+    "single-stream resident: one request at a time (--max-concurrent-requests 1), "
+    "MTP off, contexts up to 32k"
+)
 PRIMARY_ALIAS = "qwen3.8-flash-next:mxfp4"
 PRIMARY_REPO = "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP"
 PACK_REVISION = "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3"
 SOURCE_REVISION = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
 STATUS_OPEN = (
-    "Second SKU. MXFP4 MTP target; native functional controls verified; checkpoint qualification pending. MTP Tier 2 pending. "
-    "AX certification record: Candidate (gates open)."
+    "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
+    "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
+    "MXFP4 MTP target; native functional controls verified; checkpoint qualification pending on this standard. "
+    "MTP Tier 2 pending. AX certification record: Candidate (gates open)."
 )
 STATUS_RELEASED = (
-    "Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; "
+    "Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, "
+    "single-stream resident (one request at a time, MTP off, contexts up to 32k). "
+    "MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; "
     "model MTP is an explicit experimental opt-in. MTP Tier 2 pending. "
-    "AX certification record: Candidate (direct-default release gates passed; MTP gates open)."
+    "AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open)."
 )
 RELEASE_SCOPE = (
     "Direct decoding is the default product path; model MTP stays an explicit, experimental opt-in "
@@ -40,7 +48,7 @@ RELEASE_SCOPE = (
 )
 RELEASE_VERDICT = (
     Path(__file__).resolve().parents[1]
-    / "benchmarks/results/qualification/2026-10-05-flash-next-mxfp4-release-gates/release-verdict.json"
+    / "benchmarks/results/qualification/2026-10-23-flash-next-mxfp4-m5max-release-gates/release-verdict.json"
 )
 MTP_NOT_ASSESSED = {gate: "not_assessed" for gate in ("MTP-S", "MTP-P", "MTP-D")}
 
@@ -106,6 +114,11 @@ def contract() -> dict[str, Any]:
         "sixbit_in_target_scope": False,
         "source_revision": SOURCE_REVISION,
         "host_class": HOST_CLASS,
+        "standard_envelope": STANDARD_ENVELOPE,
+        "larger_host_evidence": (
+            "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+; "
+            "2026-10-05 direct-default release gates stay bound to that host"
+        ),
         "status": status(),
         "ci": "dry-run only; do not mount Flash Next weights on CI",
         "fail_closed": True,

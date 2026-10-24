@@ -1,13 +1,13 @@
 {
   "contract": "ax-engine flash next peer benchmark",
   "version": 2,
-  "goal": "Prepare a source-reviewed comparison of AX Engine Flash Next with oMLX, MTPLX and ds4 on the Ultra-class 192 GiB+ target. This is not an executable benchmark harness.",
+  "goal": "Prepare a source-reviewed comparison of AX Engine Flash Next with oMLX, MTPLX and ds4 on the MacBook Pro M5 Max 128 GB standard host. This is not an executable benchmark harness.",
   "comparison_only": true,
   "note": "Source review establishes CLI and format differences only. Commands and exact-pack peer compatibility remain unvalidated; host resources and tools on PATH cannot establish readiness. No qualification or performance result is recorded.",
   "target_host": {
-    "description": "Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GiB or more",
+    "description": "MacBook Pro, Apple M5 Max, 128 GB unified memory (ADR-049 standard host)",
     "requires_apple_silicon": true,
-    "min_memory_gib": 192
+    "min_memory_gib": 128
   },
   "pack": {
     "repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",

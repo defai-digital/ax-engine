@@ -123,6 +123,7 @@ pub use config::{
     LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 
+pub(crate) mod layer_capture;
 pub(crate) mod qwen4_exp;
 #[cfg(test)]
 mod qwen4_exp_integration_tests;
@@ -206,6 +207,31 @@ pub fn layer_forward(
     layer_idx: usize,
     token_offset: usize,
     per_layer_input: Option<&MlxArray>, // [1, seq, per_layer_dim] or None
+    shared_mask: Option<&Option<MlxArray>>,
+) -> MlxArray {
+    let output = layer_forward_uncaptured(
+        cfg,
+        w,
+        hidden,
+        cache,
+        layer_idx,
+        token_offset,
+        per_layer_input,
+        shared_mask,
+    );
+    layer_capture::observe(layer_idx, &output);
+    output
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layer_forward_uncaptured(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &mut MlxKVCache,
+    layer_idx: usize,
+    token_offset: usize,
+    per_layer_input: Option<&MlxArray>,
     shared_mask: Option<&Option<MlxArray>>,
 ) -> MlxArray {
     // Nemotron-H owns all of its hybrid mixers (Mamba-2 / attention / MoE);
@@ -1209,6 +1235,85 @@ fn qwen4_exp_forward_with_cache_rows(
         *sink = Some(output.stream_hidden.clone());
     }
     output
+}
+
+/// Prompt chunk of the qwen4_exp image prefill; bounds the QSA score
+/// workspace like the text prefill chunks do.
+const QWEN4_EXP_VISUAL_PREFILL_CHUNK: usize = 512;
+
+/// Prefill a qwen4_exp (Qwen 3.8 Flash Next) prompt carrying images on a
+/// fresh request: token embeddings with the tower's features over the image
+/// placeholders, attention and QSA rotary at the interleaved MRoPE positions.
+/// The request state keeps those positions for decode, which therefore
+/// continues at `physical + delta` on every axis. Returns the last-position
+/// logits `[vocab]`; the caller advances the cache.
+pub(crate) fn qwen4_exp_visual_prefill(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    inputs: &ax_engine_core::qwen3_vl::Qwen3VlRuntimeInputs,
+    cache: &mut MlxKVCache,
+) -> Result<MlxArray, String> {
+    let trunk = weights
+        .qwen4_exp
+        .as_ref()
+        .ok_or("qwen4_exp image prefill requires the Flash Next trunk")?;
+    let vision = weights
+        .qwen3_vl_vision
+        .as_ref()
+        .ok_or("qwen4_exp image input requires the vision tower (AX_MLX_QWEN4_EXP_VISION)")?;
+    if token_ids.is_empty() || cache.seq_len() != 0 || cache.qwen4_exp.is_some() {
+        return Err(
+            "qwen4_exp image prefill requires a fresh request and a nonempty prompt".into(),
+        );
+    }
+    let (embedded, axes, delta) = crate::qwen3_vl::qwen4_exp_visual_embeddings(
+        vision,
+        &trunk.token_embedding,
+        trunk.layout.hidden_size(),
+        token_ids,
+        inputs,
+    )
+    .map_err(|error| error.to_string())?;
+    let media =
+        crate::qwen4_exp_qsa::Qwen4ExpMediaPositions::new(axes, delta, &vision.mrope_section)
+            .map_err(|error| error.to_string())?;
+    let mut state = qwen4_exp::Qwen4ExpState::new(trunk, cfg.compile_cache_identity)
+        .with_media(std::sync::Arc::new(media));
+    let hidden_size = trunk.layout.hidden_size() as i32;
+    let mut logits = None;
+    let mut start = 0usize;
+    while start < token_ids.len() {
+        let end = (start + QWEN4_EXP_VISUAL_PREFILL_CHUNK).min(token_ids.len());
+        let chunk = slice(
+            &embedded,
+            &[0, start as i32, 0],
+            &[1, end as i32, hidden_size],
+            &[1, 1, 1],
+            None,
+        );
+        let rows = if end == token_ids.len() {
+            qwen4_exp::LogitRows::Last
+        } else {
+            qwen4_exp::LogitRows::Skip
+        };
+        let output = qwen4_exp::forward_embedded_rows(
+            trunk,
+            &token_ids[start..end],
+            &chunk,
+            &state,
+            cfg.compile_cache_identity,
+            rows,
+        )?;
+        state = output.state;
+        if end == token_ids.len() {
+            logits = Some(output.logits);
+        }
+        start = end;
+    }
+    cache.qwen4_exp = Some(state);
+    let logits = logits.ok_or("qwen4_exp image prefill produced no logits")?;
+    Ok(qwen4_exp_last_logits(cfg, &logits, token_ids.len()))
 }
 
 /// Primary prefill output with packed residual rows for the separate draft history.

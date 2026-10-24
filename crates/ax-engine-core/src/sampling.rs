@@ -15,8 +15,20 @@ pub struct SamplingParams {
     pub min_p: Option<f32>,
     pub repetition_penalty: f32,
     pub repetition_context_size: Option<u32>,
+    /// OpenAI-style additive penalties over the tokens generated so far:
+    /// `logit -= frequency_penalty * count + presence_penalty * (count > 0)`.
+    /// Zero disables each.
+    pub presence_penalty: f32,
+    pub frequency_penalty: f32,
     pub no_repeat_ngram_size: u32,
     pub ngram_window: u32,
+    /// OpenAI-style `logit_bias`: `(token_id, bias)` pairs added to the raw
+    /// logits before any other processor, sorted by token id with no
+    /// duplicates. Empty disables it.
+    pub logit_bias: Vec<(u32, f32)>,
+    /// Grammar every generated token must follow (`response_format`
+    /// json_object / json_schema). `None` disables it.
+    pub json_grammar: Option<std::sync::Arc<crate::grammar::JsonGrammar>>,
     pub seed: u64,
     /// True when `seed` was explicitly supplied, including zero. Non-zero
     /// seeds count as explicit even when this is false, preserving the
@@ -35,8 +47,12 @@ impl Default for SamplingParams {
             min_p: None,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
+            logit_bias: Vec::new(),
+            json_grammar: None,
             seed: 0,
             seed_explicit: false,
             deterministic: true,
@@ -53,7 +69,63 @@ pub(crate) fn sampling_params_allow_deterministic_argmax_fast_path(
         && params.top_k == 0
         && params.top_p >= 1.0
         && params.repetition_penalty == 1.0
+        && !presence_frequency_penalty_active(params.presence_penalty, params.frequency_penalty)
         && params.no_repeat_ngram_size == 0
+        && params.logit_bias.is_empty()
+        && params.json_grammar.is_none()
+}
+
+/// Add OpenAI-style `logit_bias` entries to `logits` in place. Out-of-range
+/// token ids and non-finite biases are ignored.
+pub fn apply_logit_bias_in_place(logits: &mut [f32], logit_bias: &[(u32, f32)]) {
+    for &(token, bias) in logit_bias {
+        if bias.is_finite()
+            && let Some(logit) = logits.get_mut(token as usize)
+        {
+            *logit += bias;
+        }
+    }
+}
+
+/// Whether either OpenAI-style additive penalty is in effect.
+pub fn presence_frequency_penalty_active(presence_penalty: f32, frequency_penalty: f32) -> bool {
+    (presence_penalty.is_finite() && presence_penalty != 0.0)
+        || (frequency_penalty.is_finite() && frequency_penalty != 0.0)
+}
+
+/// Apply OpenAI-style presence and frequency penalties in place:
+/// `logit -= frequency_penalty * count + presence_penalty` for every token
+/// that occurs `count > 0` times in `generated_tokens`. Non-finite penalties
+/// are ignored.
+pub fn apply_presence_frequency_penalty_in_place(
+    logits: &mut [f32],
+    presence_penalty: f32,
+    frequency_penalty: f32,
+    generated_tokens: &[u32],
+) {
+    let presence = if presence_penalty.is_finite() {
+        presence_penalty
+    } else {
+        0.0
+    };
+    let frequency = if frequency_penalty.is_finite() {
+        frequency_penalty
+    } else {
+        0.0
+    };
+    if (presence == 0.0 && frequency == 0.0) || generated_tokens.is_empty() {
+        return;
+    }
+    let mut counts: std::collections::HashMap<u32, u32> =
+        std::collections::HashMap::with_capacity(generated_tokens.len());
+    for &token in generated_tokens {
+        *counts.entry(token).or_insert(0) += 1;
+    }
+    for (token, count) in counts {
+        if let Some(logit) = logits.get_mut(token as usize) {
+            *logit -= frequency * count as f32 + presence;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -110,6 +182,7 @@ impl TokenSampler for DeterministicSampler {
                         logits,
                         &request.sampling_params,
                         &request.recent_tokens,
+                        request.generated_len,
                     )
                 });
                 let invalid_logits = request.logits.is_some() && sampled_from_logits.is_none();
@@ -146,6 +219,7 @@ fn sample_argmax_with_logprob_and_logits_processors(
     logits: &[f32],
     sampling: &SamplingParams,
     recent_tokens: &[u32],
+    generated_len: u32,
 ) -> Option<(u32, f32)> {
     // `recent_tokens` is sized for the wider of the two processors so the
     // n-gram ban sees its full window; the penalty must still honour its own
@@ -154,16 +228,34 @@ fn sample_argmax_with_logprob_and_logits_processors(
         Some(size) => &recent_tokens[recent_tokens.len().saturating_sub(size as usize)..],
         None => recent_tokens,
     };
+    // Presence/frequency penalties count generated tokens only (OpenAI /
+    // vLLM semantics): the trailing `generated_len` entries of the history.
+    let generated_tokens =
+        &recent_tokens[recent_tokens.len().saturating_sub(generated_len as usize)..];
+    let presence_frequency =
+        presence_frequency_penalty_active(sampling.presence_penalty, sampling.frequency_penalty)
+            && !generated_tokens.is_empty();
     let mut adjusted_logits_buf: Vec<f32>;
     let logits = if repetition_penalty_applies(sampling.repetition_penalty, penalty_tokens)
         || no_repeat_ngram_applies(sampling.no_repeat_ngram_size, recent_tokens)
+        || presence_frequency
+        || !sampling.logit_bias.is_empty()
     {
         adjusted_logits_buf = logits.to_vec();
+        apply_logit_bias_in_place(&mut adjusted_logits_buf, &sampling.logit_bias);
         if repetition_penalty_applies(sampling.repetition_penalty, penalty_tokens) {
             apply_repetition_penalty_in_place(
                 &mut adjusted_logits_buf,
                 sampling.repetition_penalty,
                 penalty_tokens,
+            );
+        }
+        if presence_frequency {
+            apply_presence_frequency_penalty_in_place(
+                &mut adjusted_logits_buf,
+                sampling.presence_penalty,
+                sampling.frequency_penalty,
+                generated_tokens,
             );
         }
         apply_no_repeat_ngram_in_place(
@@ -315,14 +407,75 @@ mod tests {
         let history = [0, 5, 6];
         let logits = [4.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         let (token, _) =
-            sample_argmax_with_logprob_and_logits_processors(&logits, &sampling, &history)
+            sample_argmax_with_logprob_and_logits_processors(&logits, &sampling, &history, 0)
                 .expect("sample");
         assert_eq!(token, 0);
         // Inside the window the penalty still applies.
         let (token, _) =
-            sample_argmax_with_logprob_and_logits_processors(&logits, &sampling, &[5, 0])
+            sample_argmax_with_logprob_and_logits_processors(&logits, &sampling, &[5, 0], 0)
                 .expect("sample");
         assert_eq!(token, 1);
+    }
+
+    #[test]
+    fn presence_and_frequency_penalties_count_generated_tokens_only() {
+        let mut logits = [5.0f32, 5.0, 5.0, 5.0];
+        apply_presence_frequency_penalty_in_place(&mut logits, 1.5, 0.5, &[1, 1, 2]);
+        // token 1: 2 * 0.5 + 1.5; token 2: 0.5 + 1.5; others untouched.
+        assert_eq!(logits, [5.0, 2.5, 3.0, 5.0]);
+        let mut untouched = [1.0f32, 2.0];
+        apply_presence_frequency_penalty_in_place(&mut untouched, f32::NAN, 0.0, &[0, 1]);
+        assert_eq!(untouched, [1.0, 2.0]);
+        assert!(!presence_frequency_penalty_active(0.0, 0.0));
+        assert!(presence_frequency_penalty_active(0.0, -0.5));
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn logit_bias_shifts_the_argmax_and_disables_the_fast_path() {
+        let mut logits = [1.0f32, 2.0, 3.0];
+        apply_logit_bias_in_place(&mut logits, &[(0, 5.0), (2, f32::NAN), (9, 1.0)]);
+        assert_eq!(
+            logits,
+            [6.0, 2.0, 3.0],
+            "NaN bias and out-of-range ids ignored"
+        );
+
+        let sampling = SamplingParams {
+            logit_bias: vec![(2, -100.0)],
+            ..SamplingParams::default()
+        };
+        assert!(!sampling_params_allow_deterministic_argmax_fast_path(
+            &sampling
+        ));
+        let (token, _) =
+            sample_argmax_with_logprob_and_logits_processors(&[1.0, 2.0, 3.0], &sampling, &[], 0)
+                .expect("sample");
+        assert_eq!(token, 1, "banned argmax falls to the runner-up");
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn deterministic_sampler_applies_presence_penalty_to_the_generated_tail() {
+        let sampling = SamplingParams {
+            presence_penalty: 2.0,
+            ..SamplingParams::default()
+        };
+        // Token 0 leads by 1.0 but was already generated; token 1 appears
+        // only in the prompt part of the history and is not penalised.
+        let logits = [4.0, 3.0, 0.0];
+        let history = [1, 0];
+        let (token, _) =
+            sample_argmax_with_logprob_and_logits_processors(&logits, &sampling, &history, 1)
+                .expect("sample");
+        assert_eq!(token, 1);
+        let (token, _) =
+            sample_argmax_with_logprob_and_logits_processors(&logits, &sampling, &history, 0)
+                .expect("sample");
+        assert_eq!(token, 0, "no generated tokens yet");
+        assert!(!sampling_params_allow_deterministic_argmax_fast_path(
+            &sampling
+        ));
     }
 
     #[test]

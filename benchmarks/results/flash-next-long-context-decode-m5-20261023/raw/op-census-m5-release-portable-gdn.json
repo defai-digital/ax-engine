@@ -1,0 +1,618 @@
+{
+  "context_tokens": 8996,
+  "control_seconds_per_step": 0.11682188525,
+  "method": "synchronized per-step stage attribution at long context",
+  "op_trace": [
+    {
+      "caller": "ax_engine_mlx::per_layer_compile::try_apply_with_abort_safety",
+      "count": 951,
+      "op": "?"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::qw_direct::{closure#0}::{closure#0}",
+      "count": 471,
+      "op": "quantized_matmul_with_mode"
+    },
+    {
+      "caller": "ax_engine_mlx::flash_next_gdn::portable_recurrence",
+      "count": 324,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::qw_with_policy",
+      "count": 290,
+      "op": "transpose"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::qw_with_policy",
+      "count": 290,
+      "op": "matmul"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 262,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::flash_next_gdn::portable_recurrence",
+      "count": 180,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::flash_next_gdn::portable_recurrence",
+      "count": 180,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::qw_gather",
+      "count": 144,
+      "op": "gather_qmm_with_mode"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_shaped",
+      "count": 144,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 138,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::split_linear_attention_qkv",
+      "count": 108,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::split_linear_attention_qkv",
+      "count": 108,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::rms_with_gain",
+      "count": 108,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::flash_next_gdn::expand_heads",
+      "count": 72,
+      "op": "take"
+    },
+    {
+      "caller": "ax_engine_mlx::flash_next_gdn::portable_recurrence",
+      "count": 72,
+      "op": "sum_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_gdn::l2_normalize",
+      "count": 72,
+      "op": "power"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_shaped",
+      "count": 72,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_shaped",
+      "count": 72,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 48,
+      "op": "sum_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 48,
+      "op": "divide"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 48,
+      "op": "transpose"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 48,
+      "op": "expand_dims_axes"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 48,
+      "op": "softmax"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::mlp::top_k_by_argpartition",
+      "count": 48,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::mlp::top_k_by_argpartition",
+      "count": 48,
+      "op": "take_along_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::mlp::top_k_by_argpartition",
+      "count": 48,
+      "op": "argpartition_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::batch_row",
+      "count": 48,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::gather_selected",
+      "count": 48,
+      "op": "take"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::utils::squeeze_switch_singleton",
+      "count": 48,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 37,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::flash_next_gdn::portable_recurrence",
+      "count": 36,
+      "op": "subtract"
+    },
+    {
+      "caller": "ax_engine_mlx::flash_next_gdn::portable_recurrence",
+      "count": 36,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::flash_next_gdn::portable_recurrence",
+      "count": 36,
+      "op": "add"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::linear_attention_conv1d_pre_activation",
+      "count": 36,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::linear_attention_conv1d_pre_activation",
+      "count": 36,
+      "op": "conv1d"
+    },
+    {
+      "caller": "ax_engine_mlx::linear_attention_ops::linear_attention_conv1d_pre_activation",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 36,
+      "op": "contiguous"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 36,
+      "op": "log1p"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory>",
+      "count": 36,
+      "op": "contiguous"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory>",
+      "count": 36,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_shaped",
+      "count": 36,
+      "op": "negative"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::apply_rotary_trig_shaped",
+      "count": 36,
+      "op": "add"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::rms_with_gain",
+      "count": 36,
+      "op": "rms_norm"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_moe::sigmoid_projection_dtype",
+      "count": 26,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 25,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory>",
+      "count": 24,
+      "op": "transpose"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::gather_selected",
+      "count": 24,
+      "op": "where_cond"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores",
+      "count": 24,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores",
+      "count": 24,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 24,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_moe::sigmoid_projection_dtype",
+      "count": 13,
+      "op": "sigmoid"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 12,
+      "op": "split"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 12,
+      "op": "quantized_matmul_with_mode"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory>",
+      "count": 12,
+      "op": "try_scaled_dot_product_attention"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::attend_selected::<ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory, ax_engine_mlx::model::shared::qwen4_exp_kv_history::KvHistory>",
+      "count": 12,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::gated_attention_output",
+      "count": 12,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_attention::gated_attention_output",
+      "count": 12,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::gather_selected",
+      "count": 12,
+      "op": "less"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::gather_selected",
+      "count": 12,
+      "op": "maximum"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::gather_selected",
+      "count": 12,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::gather_selected",
+      "count": 12,
+      "op": "minimum"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_kv_history::gather_selected",
+      "count": 12,
+      "op": "subtract"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores",
+      "count": 12,
+      "op": "maximum"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores",
+      "count": 12,
+      "op": "divide"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores",
+      "count": 12,
+      "op": "sum_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores",
+      "count": 12,
+      "op": "matmul"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::block_scores",
+      "count": 12,
+      "op": "transpose"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "negative"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "argsort_axis"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "expand_dims_axes"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "arange"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "add"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "slice"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::select_tokens_device",
+      "count": 12,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm",
+      "count": 9,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm",
+      "count": 6,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin",
+      "count": 6,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot",
+      "count": 4,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::cached_rotary_trig",
+      "count": 4,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin",
+      "count": 4,
+      "op": "concatenate"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr",
+      "count": 3,
+      "op": "take"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm",
+      "count": 3,
+      "op": "rms_norm"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_residual::qwen4_exp_grouped_rms_norm",
+      "count": 3,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr",
+      "count": 2,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 2,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 2,
+      "op": "less"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 2,
+      "op": "add"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 2,
+      "op": "maximum"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 2,
+      "op": "where_cond"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_with_verifier_policy_rows",
+      "count": 2,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_moe::silu_projection_dtype",
+      "count": 2,
+      "op": "astype"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::cached_rotary_trig",
+      "count": 2,
+      "op": "arange"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin",
+      "count": 2,
+      "op": "outer"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin",
+      "count": 2,
+      "op": "cos"
+    },
+    {
+      "caller": "ax_engine_mlx::qwen4_exp_qsa::qsa_rotary_cos_sin",
+      "count": 2,
+      "op": "sin"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr",
+      "count": 1,
+      "op": "dequantize_with_mode"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr",
+      "count": 1,
+      "op": "reshape"
+    },
+    {
+      "caller": "ax_engine_mlx::model::embed_tokens_arr",
+      "count": 1,
+      "op": "clip"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 1,
+      "op": "dequantize"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 1,
+      "op": "power"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 1,
+      "op": "negative"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_prepared_rows",
+      "count": 1,
+      "op": "conv1d"
+    },
+    {
+      "caller": "ax_engine_mlx::model::qwen4_exp::forward_with_verifier_policy_rows",
+      "count": 1,
+      "op": "broadcast_to"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_moe::silu_projection_dtype",
+      "count": 1,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_moe::silu_projection_dtype",
+      "count": 1,
+      "op": "sigmoid"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot",
+      "count": 1,
+      "op": "multiply"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot",
+      "count": 1,
+      "op": "divide"
+    },
+    {
+      "caller": "ax_engine_mlx::model::shared::qwen4_exp_ple::scaled_dot",
+      "count": 1,
+      "op": "sum_axis"
+    }
+  ],
+  "qualification": false,
+  "stage_ops_per_step": {
+    "attention_hc_read": 528,
+    "attention_hc_write": 48,
+    "embedding": 0,
+    "expert_resolve": 0,
+    "final_mixer": 8,
+    "gdn": 108,
+    "gdn_chunked": 1800,
+    "lm_head": 3,
+    "mlp_hc_read": 528,
+    "mlp_hc_write": 48,
+    "moe_compute": 624,
+    "moe_routing": 432,
+    "ngram_lookup": 0,
+    "ple_operator": 64,
+    "ple_rows": 2,
+    "qsa": 108,
+    "qsa_a_proj": 36,
+    "qsa_b_prep": 444,
+    "qsa_c_append": 42,
+    "qsa_d_attend": 300,
+    "qsa_i_proj": 228,
+    "qsa_indexer": 129,
+    "qsa_j_stage": 24,
+    "qsa_k_pool": 63,
+    "qsa_l_scores": 108
+  },
+  "stage_seconds_per_step": {
+    "attention_hc_read": 0.010100884499999992,
+    "attention_hc_write": 0.00784456125,
+    "embedding": 0.00015979175,
+    "expert_resolve": 0.00004425949999999996,
+    "final_mixer": 0.000214542,
+    "gdn": 0.007359302749999999,
+    "gdn_chunked": 0.011265655000000001,
+    "lm_head": 0.0013137287500000002,
+    "mlp_hc_read": 0.010253395249999998,
+    "mlp_hc_write": 0.007796158250000002,
+    "moe_compute": 0.012485852500000007,
+    "moe_routing": 0.008777439499999998,
+    "ngram_lookup": 2.9684999999999996e-6,
+    "ple_operator": 0.00042519775,
+    "ple_rows": 0.000391292,
+    "qsa": 0.0021741259999999997,
+    "qsa_a_proj": 0.0022599697499999993,
+    "qsa_b_prep": 0.00220210275,
+    "qsa_c_append": 0.0013710212500000003,
+    "qsa_d_attend": 0.00310815675,
+    "qsa_i_proj": 0.002121375,
+    "qsa_indexer": 0.0022345835,
+    "qsa_j_stage": 0.0019098445000000003,
+    "qsa_k_pool": 0.000532333,
+    "qsa_l_scores": 0.00203613525
+  },
+  "steps": 4
+}

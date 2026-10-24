@@ -9,6 +9,7 @@ pub mod engine;
 pub mod execution_plan;
 pub mod gemma4_unified;
 pub mod generation;
+pub mod grammar;
 pub mod ids;
 pub mod kv;
 pub mod loop_detection;
@@ -21,6 +22,7 @@ pub mod model;
 pub mod multimodal_adapter;
 pub mod nemotron_omni;
 pub mod prefill_cohort;
+pub mod prefill_stall;
 mod qwen38_quantization;
 pub mod qwen3_vl;
 pub mod repo_ref;
@@ -114,11 +116,12 @@ pub use runner::{
     DeterministicRunner, DiffusionScheduleUpdate, EmbeddingMatrix, EmbeddingPooling,
     ExecutionRunner, ExecutionStatus, KvWriteSummary, NativeModelBindingSummary,
     RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable, RunnerInput, RunnerOutput,
-    RunnerRequestMultimodalInput,
+    RunnerRequestJsonGrammar, RunnerRequestLogitBias, RunnerRequestMultimodalInput,
 };
 pub use sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, SamplingParams, StopReason,
-    TokenSampler,
+    TokenSampler, apply_logit_bias_in_place, apply_presence_frequency_penalty_in_place,
+    presence_frequency_penalty_active,
 };
 pub use scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, PositionRange,

@@ -120,6 +120,12 @@ static COMPILE_CACHE_REFRESH_THRESHOLD: LazyLock<u64> = LazyLock::new(|| {
         .unwrap_or(10_000)
 });
 
+/// Successful applies after which a cached compiled closure is dropped and
+/// rebuilt (`AX_MLX_COMPILE_CACHE_REFRESH_THRESHOLD`).
+pub(crate) fn compile_cache_refresh_threshold() -> u64 {
+    *COMPILE_CACHE_REFRESH_THRESHOLD
+}
+
 /// Per-layer Gemma4 dual-path (dense + expert) decode closure cache.
 ///
 /// Maps `(model_identity, layer_index, thread_id)` to a compiled closure that performs the

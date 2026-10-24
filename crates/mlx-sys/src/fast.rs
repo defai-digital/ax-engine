@@ -66,7 +66,7 @@ pub fn try_gated_delta_update(
     {
         return Err("gated_delta_update binding requires float32 tensors".into());
     }
-    crate::op_count::bump();
+    crate::op_count::bump_named("try_gated_delta_update");
     ensure_error_handler();
     let mut output = MlxArray::empty();
     let mut final_state = MlxArray::empty();
@@ -94,7 +94,7 @@ pub fn rms_norm(
     eps: f32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
+    crate::op_count::bump_named("rms_norm");
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let weight_raw = weight.map(|w| w.inner).unwrap_or_else(null_ffi_array);
@@ -119,7 +119,7 @@ pub fn rope(
     freqs: Option<&MlxArray>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
+    crate::op_count::bump_named("rope");
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let base_opt = ffi::mlx_optional_float_ {
@@ -163,7 +163,7 @@ pub fn rope_dynamic(
     freqs: Option<&MlxArray>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
+    crate::op_count::bump_named("rope_dynamic");
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let base_opt = ffi::mlx_optional_float_ {
@@ -257,7 +257,7 @@ pub fn try_scaled_dot_product_attention(
     force_fused: bool,
     s: Option<&MlxStream>,
 ) -> Result<MlxArray, String> {
-    crate::op_count::bump();
+    crate::op_count::bump_named("try_scaled_dot_product_attention");
     ensure_error_handler();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);

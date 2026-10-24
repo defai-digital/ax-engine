@@ -83,6 +83,69 @@ fn parse_bool_value(raw: &str) -> bool {
         || trimmed.eq_ignore_ascii_case("on")
 }
 
+/// Reader threads per Flash Next n-gram gather. 32 and 64 beat 16 by 2-5% of
+/// cold TTFT on the M5 Max (random-read IOPS scale to about 32 threads);
+/// `AX_FLASH_NEXT_NGRAM_READ_THREADS` overrides it, clamped to 1..=128, read once.
+pub(crate) fn flash_next_ngram_read_threads() -> usize {
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THREADS.get_or_init(|| {
+        std::env::var("AX_FLASH_NEXT_NGRAM_READ_THREADS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .map_or(32, |n| n.clamp(1, 128))
+    })
+}
+
+/// Flash Next reads the next prefill chunk's n-gram rows while the current
+/// chunk computes. Kill switch: `AX_FLASH_NEXT_NGRAM_PREFETCH=0`.
+pub(crate) fn flash_next_ngram_prefetch_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_PREFETCH"))
+}
+
+/// Flash Next keeps the QSA K/V history as a sealed prefix plus a short tail
+/// so a decode step copies only the tail. Kill switch:
+/// `AX_FLASH_NEXT_KV_SEGMENTS=0`.
+pub(crate) fn flash_next_kv_segments_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_KV_SEGMENTS"))
+}
+
+/// Flash Next runs the singleton (one-row) GDN recurrence as two native pointwise
+/// kernels that keep both MLX reductions, instead of the ~26-op portable
+/// sequence; bit-identical to the portable recurrence (real-pack gate).
+/// Kill switch: `AX_MLX_FLASH_NEXT_GDN_METAL=0`.
+pub(crate) fn flash_next_gdn_metal_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_MLX_FLASH_NEXT_GDN_METAL"))
+}
+
+/// Flash Next builds the QSA rotary cos/sin tables once per decode step
+/// instead of once per layer and call. Kill switch:
+/// `AX_FLASH_NEXT_ROPE_CACHE=0`.
+pub(crate) fn flash_next_qsa_rope_cache_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_ROPE_CACHE"))
+}
+
+/// Flash Next keeps the pooled QSA block keys in the index cache and pools
+/// only newly completed blocks. Kill switch:
+/// `AX_FLASH_NEXT_POOLED_CACHE=0`.
+pub(crate) fn flash_next_qsa_pooled_cache_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_POOLED_CACHE"))
+}
+
+/// Flash Next pre-reads the n-gram scales and biases planes into the OS page
+/// cache after the model weights finish loading, so first-seen row gathers
+/// need about one cold read instead of three. Running it earlier would let
+/// the ~70 GB weight read evict the ~6 GB of aux planes again. Kill switch:
+/// `AX_FLASH_NEXT_NGRAM_WARM_AUX=0`.
+pub(crate) fn flash_next_ngram_warm_aux_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_default_on("AX_FLASH_NEXT_NGRAM_WARM_AUX"))
+}
+
 /// Read `name` as an opt-in flag. Only the [`parse_bool_value`] truthy
 /// spellings engage it; unset or any other value (including junk and empty)
 /// is `false`.
@@ -1528,6 +1591,164 @@ env_flag_default_on!(
     /// **Default: ON** (kill-switch via `AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4=0`).
     mtp_dense_head_draft_q4_enabled,
     "AX_MLX_MTP_DENSE_HEAD_DRAFT_Q4"
+);
+
+/// `AX_MLX_DFLASH2_DIR`: explicit directory of a z-lab DFlash2 drafter
+/// checkpoint (`config.json` + `model.safetensors`). When unset the runner looks
+/// for `dflash2/` inside the model directory and for the `z-lab/Qwen3.8-27B-DFlash2`
+/// snapshot in the Hugging Face cache. Read once per process.
+pub(crate) fn dflash2_dir() -> Option<&'static std::path::Path> {
+    static CACHED: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var("AX_MLX_DFLASH2_DIR")
+                .ok()
+                .map(|raw| raw.trim().to_owned())
+                .filter(|raw| !raw.is_empty())
+                .map(std::path::PathBuf::from)
+        })
+        .as_deref()
+}
+
+env_flag_default_on!(
+    /// `AX_MLX_DFLASH2` - DFlash2 block speculation for greedy text requests on
+    /// the Qwen 3.8 27B target whenever a drafter checkpoint can be found
+    /// (ADR-045). `--mlx-mtp-policy disabled`, the direct baseline switches and
+    /// a missing drafter keep it off too.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_DFLASH2=0`).
+    dflash2_enabled,
+    "AX_MLX_DFLASH2"
+);
+
+/// Hugging Face hub cache roots to search for the DFlash2 drafter, in priority
+/// order: `HF_HUB_CACHE`, `HF_HOME/hub`, `~/.cache/huggingface/hub`. Read once.
+pub(crate) fn hf_hub_cache_roots() -> &'static [std::path::PathBuf] {
+    static CACHED: OnceLock<Vec<std::path::PathBuf>> = OnceLock::new();
+    CACHED.get_or_init(|| {
+        let var = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .map(|raw| raw.trim().to_owned())
+                .filter(|raw| !raw.is_empty())
+        };
+        let mut roots = Vec::new();
+        if let Some(cache) = var("HF_HUB_CACHE") {
+            roots.push(std::path::PathBuf::from(cache));
+        }
+        if let Some(home) = var("HF_HOME") {
+            roots.push(std::path::PathBuf::from(home).join("hub"));
+        }
+        if let Some(home) = var("HOME") {
+            roots.push(
+                std::path::PathBuf::from(home)
+                    .join(".cache")
+                    .join("huggingface")
+                    .join("hub"),
+            );
+        }
+        roots
+    })
+}
+
+/// `AX_MLX_DFLASH2_WINDOW`: pin the DFlash2 verify window to this many rows
+/// (anchor plus drafts, 3 to the drafter's block size). Unset or `0` lets the
+/// per-request policy choose it from the observed acceptance. Read once per
+/// process.
+pub(crate) fn dflash2_window_override() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_DFLASH2_WINDOW")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .filter(|rows| *rows >= 3)
+    })
+}
+
+env_flag!(
+    /// `AX_MLX_DFLASH2_BF16` - keep the DFlash2 drafter in bf16 instead of
+    /// quantizing its large matrices to MXFP4 at load (0.3% more tokens per
+    /// round, about 25% slower drafting). **Default: OFF** (MXFP4).
+    dflash2_bf16_enabled,
+    "AX_MLX_DFLASH2_BF16"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM` - price Flash Next Auto expert
+    /// streaming on the bytes the loader actually makes resident, excluding
+    /// the disk-served n-gram table (about 53.6 GiB of the 132 GB pinned
+    /// MXFP4 pack; about 69.5 GiB stays resident). A 128 GiB host then loads
+    /// the pack resident instead of paging; a host where even the discounted
+    /// estimate does not fit still pages.
+    ///
+    /// **Default: ON** since ADR-044 admitted the M5 Max 128 GiB single-stream
+    /// resident tier (`AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM=0` restores pricing
+    /// on the whole file set).
+    expert_stream_discount_ngram_enabled,
+    "AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_MTP_QUANTIZED_HEAD_DRAFT` - requantize a quantized target
+    /// lm_head of at least 6 bits that is wider than the draft width (the
+    /// 8-bit g64 head of the
+    /// Qwen 3.8 27B MXFP4 / affine-4bit MTP packs) into a draft-only head at
+    /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS` (default 3, group 64). The draft head
+    /// reads the vocabulary projection once per draft step (1.35 GB at 8 bits
+    /// on the 27B, three times per depth-3 round); verify still decides every
+    /// token on the target head. M5 Max 128 GB, 27B MXFP4, 17 real prompts,
+    /// greedy depth 3: 70.3 -> 77.2 tok/s at 3 bits (75.7 at 4 bits), 17/17
+    /// outputs token-identical to MTP with the full-width head. The 4-bit
+    /// Qwen 3.6 35B-A3B head is left
+    /// alone: 3 bits measured +0.3% there.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_MTP_QUANTIZED_HEAD_DRAFT=0`).
+    mtp_quantized_head_draft_enabled,
+    "AX_MLX_MTP_QUANTIZED_HEAD_DRAFT"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_MTP_PENALIZED_VERIFY` - keep Qwen linear MTP on for sampled
+    /// requests (temperature > 0) that carry a repetition, presence or
+    /// frequency penalty or a logit_bias. Each verify row is sampled on the
+    /// host from the target logits processed with the committed history plus
+    /// the drafts before it (the law direct decode samples from); the
+    /// rejection residual and the bonus token use the same processed rows.
+    /// No-repeat n-gram bans and greedy requests keep the direct route.
+    /// M5 Max, 27B MXFP4, 17 real prompts, 256 tokens: Qwen's sampled
+    /// settings (T 0.7, top_p 0.8, top_k 20, presence 1.5) decode at 47.7
+    /// vs 29.3 tok/s on the direct route; at T 0.01 with presence 1.5 and
+    /// repetition 1.05, 56.9 vs 33.5 tok/s, and the share of outputs equal to
+    /// direct decode (10/17) matches unpenalised MTP against direct (10/17).
+    ///
+    /// **Default: ON** (kill-switch `AX_MLX_MTP_PENALIZED_VERIFY=0`).
+    mtp_penalized_verify_enabled,
+    "AX_MLX_MTP_PENALIZED_VERIFY"
+);
+
+env_flag!(
+    /// `AX_MLX_QWEN4_EXP_VISION` - load the Qwen3-VL style vision tower a
+    /// qwen4_exp pack ships (about 0.85 GB of BF16 on Qwen 3.8 Flash Next)
+    /// so chat requests may carry images.
+    ///
+    /// **Default: OFF** while image input is an uncertified preview
+    /// (`AX_MLX_QWEN4_EXP_VISION=1` loads the tower).
+    qwen4_exp_vision_enabled,
+    "AX_MLX_QWEN4_EXP_VISION"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_LINEAR_PREFIX_GRID_RUNG` - on hybrid linear-attention models,
+    /// also capture a prefix snapshot at the last prefill-chunk boundary of a
+    /// completed prompt. Restore floors every multi-token warm extension to
+    /// that chunk grid and linear state cannot be trimmed, so without this
+    /// rung a sibling prompt or a follow-up turn finds only the block-aligned
+    /// boundary snapshot and misses. The rung splits the cold prefill exactly
+    /// on a chunk boundary it already crosses, so no chunk shape changes.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_LINEAR_PREFIX_GRID_RUNG=0`).
+    linear_prefix_grid_rung_enabled,
+    "AX_MLX_LINEAR_PREFIX_GRID_RUNG"
 );
 
 /// `AX_MLX_MTP_DENSE_HEAD_DRAFT_BITS` - width of the requantized draft-only

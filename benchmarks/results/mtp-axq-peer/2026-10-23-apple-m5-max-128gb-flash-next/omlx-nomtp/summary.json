@@ -1,0 +1,27 @@
+{
+  "schema_version": "ax.flash_next_peer_summary.v1",
+  "hardware": "MacBook Pro, Apple M5 Max, 128 GB unified memory, internal NVMe SSD",
+  "pack_repo": "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
+  "pack_revision": "ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3",
+  "model_type": "qwen4_exp",
+  "contract": {
+    "suite": "flappy",
+    "sampling": "temperature 0, top_p 1, top_k 0, seed 0",
+    "max_tokens": 256,
+    "repetitions": 5,
+    "warmup_repetitions": 2,
+    "peer_depth": 0,
+    "ax_mtp_policy": "required",
+    "stream_experts": "auto"
+  },
+  "qualification": false,
+  "lanes": {
+    "omlx": {
+      "status": "failed",
+      "exit_code": 1,
+      "elapsed_s": 109.211,
+      "artifact": "omlx.json",
+      "log": "omlx.log"
+    }
+  }
+}

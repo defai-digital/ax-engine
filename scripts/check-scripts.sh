@@ -42,6 +42,10 @@ bash scripts/check-qa.sh
 "$PYTHON_BIN" -m py_compile \
   scripts/download_model.py \
   scripts/test_download_model.py \
+  scripts/simulate_mtp_verify_prefix.py \
+  scripts/test_simulate_mtp_verify_prefix.py \
+  scripts/probe_hybrid_prefix_reuse.py \
+  scripts/test_probe_hybrid_prefix_reuse.py \
   scripts/bench_ax_serving.py \
   scripts/test_bench_ax_serving.py \
   scripts/bench_single_client_mlx_serving.py \
@@ -286,6 +290,9 @@ bash scripts/check-qa.sh
   scripts/test_source_distribution.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_download_model.py \
+  scripts/test_bench_omlx_prompt_suites.py \
+  scripts/test_simulate_mtp_verify_prefix.py \
+  scripts/test_probe_hybrid_prefix_reuse.py \
   scripts/test_bench_ax_serving.py \
   scripts/test_bench_single_client_mlx_serving.py \
   scripts/test_bench_ax_multimodel_serving.py \

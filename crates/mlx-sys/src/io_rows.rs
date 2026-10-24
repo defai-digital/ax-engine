@@ -581,6 +581,90 @@ impl SafetensorsRowReader {
             meta.dtype,
         ))
     }
+
+    /// Read one axis-zero row of `tensor` into `dst` with the same bounds
+    /// checks and payload accounting as [`Self::gather_rows`].
+    ///
+    /// `&self` only: positional reads share no cursor, so callers may issue
+    /// many rows concurrently from scoped threads. `dst` must be exactly one
+    /// row long. The caller owns any output budget.
+    pub fn read_row_into(&self, tensor: &str, row: u64, dst: &mut [u8]) -> Result<(), String> {
+        let meta = self
+            .tensors
+            .get(tensor)
+            .ok_or_else(|| format!("unknown tensor {tensor}"))?;
+        if dst.len() != meta.row_bytes {
+            return Err(format!(
+                "read {tensor}: destination {} bytes != row size {} bytes",
+                dst.len(),
+                meta.row_bytes
+            ));
+        }
+        if row >= meta.rows as u64 {
+            return Err(format!(
+                "read {tensor}: row id {row} out of bounds (rows {})",
+                meta.rows
+            ));
+        }
+        let row_bytes = meta.row_bytes as u64;
+        let abs = row
+            .checked_mul(row_bytes)
+            .and_then(|off| meta.data_start.checked_add(off))
+            .ok_or_else(|| format!("read {tensor}: absolute offset overflows for row {row}"))?;
+        let abs_end = abs
+            .checked_add(row_bytes)
+            .ok_or_else(|| format!("read {tensor}: absolute end overflows for row {row}"))?;
+        if abs_end > self.file_len || abs < meta.data_start || abs_end > meta.data_end {
+            return Err(format!(
+                "read {tensor}: row {row} range [{abs},{abs_end}] outside the tensor or file \
+                 ({} bytes; file may be truncated)",
+                self.file_len
+            ));
+        }
+        pread_exact(&self.file, dst, abs).map_err(|e| {
+            format!("read {tensor}: row {row} at file offset {abs}: {e} (file may be truncated)")
+        })?;
+        self.payload_bytes_read
+            .fetch_add(row_bytes, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Sequentially read `tensor`'s whole payload range to warm the page
+    /// cache.
+    ///
+    /// Flash Next row gathers touch three regions of the table file per row
+    /// (packed weight, scales, biases). Pre-reading the two small aux planes
+    /// sequentially turns a first-seen row gather into about one cold read
+    /// instead of three. This walks `[data_start, data_end)` in 8 MiB chunks
+    /// through the same positional `pread_exact` path, discards the bytes,
+    /// and returns the number of bytes read. Warm reads deliberately do NOT
+    /// count toward [`Self::payload_bytes_read`]: that counter stays pure
+    /// test evidence for row gathers. Fails closed for an unknown tensor or
+    /// a failed read.
+    pub fn warm_tensor(&self, tensor: &str) -> Result<u64, String> {
+        let meta = self
+            .tensors
+            .get(tensor)
+            .ok_or_else(|| format!("unknown tensor {tensor}"))?;
+        const WARM_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+        let mut scratch: Vec<u8> = Vec::new();
+        let mut offset = meta.data_start;
+        let mut read_bytes: u64 = 0;
+        while offset < meta.data_end {
+            let chunk = WARM_CHUNK_BYTES.min(meta.data_end - offset);
+            let chunk_usize = usize::try_from(chunk)
+                .map_err(|_| format!("warm {tensor}: chunk length {chunk} does not fit usize"))?;
+            if scratch.len() < chunk_usize {
+                scratch.resize(chunk_usize, 0);
+            }
+            pread_exact(&self.file, &mut scratch[..chunk_usize], offset).map_err(|e| {
+                format!("warm {tensor}: read at file offset {offset}: {e} (file may be truncated)")
+            })?;
+            offset += chunk;
+            read_bytes += chunk;
+        }
+        Ok(read_bytes)
+    }
 }
 
 #[cfg(test)]
@@ -1127,6 +1211,87 @@ mod tests {
         assert_eq!(empty.shape(), vec![0, 4]);
         assert_eq!(empty.nbytes(), 0);
         assert_eq!(reader.payload_bytes_read(), 80);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_row_into_matches_gather_and_checks_every_bound() {
+        let dir = test_dir("read-row");
+        let path = dir.join("t.safetensors");
+        let rows: Vec<Vec<f32>> = (0..4)
+            .map(|r| (0..4).map(|c| (r * 10 + c) as f32).collect())
+            .collect();
+        let payload = f32_rows_payload(&rows);
+        let header = serde_json::json!({
+            "w": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 64]}
+        });
+        write_st_file(&path, header, &payload);
+        let reader = SafetensorsRowReader::open(&path).unwrap();
+
+        let mut row = [0u8; 16];
+        reader.read_row_into("w", 2, &mut row).unwrap();
+        assert_eq!(row.as_slice(), &payload[32..48]);
+        assert_eq!(reader.payload_bytes_read(), 16);
+
+        // Concurrent readers share one handle without a cursor.
+        std::thread::scope(|scope| {
+            for id in 0..4u64 {
+                let reader = &reader;
+                let payload = &payload;
+                scope.spawn(move || {
+                    let mut row = [0u8; 16];
+                    reader.read_row_into("w", id, &mut row).unwrap();
+                    let start = id as usize * 16;
+                    assert_eq!(row.as_slice(), &payload[start..start + 16]);
+                });
+            }
+        });
+        assert_eq!(reader.payload_bytes_read(), 16 + 4 * 16);
+
+        let before = reader.payload_bytes_read();
+        assert!(reader.read_row_into("w", 4, &mut row).is_err());
+        assert!(reader.read_row_into("missing", 0, &mut row).is_err());
+        assert!(reader.read_row_into("w", 0, &mut [0u8; 8]).is_err());
+        assert_eq!(reader.payload_bytes_read(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn warm_tensor_reads_whole_payload_without_payload_accounting() {
+        let dir = test_dir("warm");
+        let path = dir.join("t.safetensors");
+        let rows: Vec<Vec<f32>> = (0..4)
+            .map(|r| (0..4).map(|c| (r * 10 + c) as f32).collect())
+            .collect();
+        let payload = f32_rows_payload(&rows);
+        let header = serde_json::json!({
+            "w": {"dtype": "F32", "shape": [4, 4], "data_offsets": [0, 64]}
+        });
+        write_st_file(&path, header, &payload);
+        let reader = SafetensorsRowReader::open(&path).unwrap();
+        assert_eq!(reader.payload_bytes_read(), 0);
+
+        // The whole payload is warmed, reported, and repeatable, and none of
+        // it counts toward the gather-only accounting counter.
+        let warmed = reader.warm_tensor("w").unwrap();
+        assert_eq!(warmed, payload.len() as u64);
+        assert_eq!(reader.payload_bytes_read(), 0);
+        assert_eq!(reader.warm_tensor("w").unwrap(), warmed);
+        assert_eq!(reader.payload_bytes_read(), 0);
+
+        // Row gathers still work after warming and account as usual.
+        let out = reader.gather_rows("w", &[1]).unwrap();
+        eval(&[&out]);
+        assert_eq!(out.data_f32(), &[10.0, 11.0, 12.0, 13.0]);
+        assert_eq!(reader.payload_bytes_read(), 16);
+
+        let err = reader.warm_tensor("missing").expect_err("unknown tensor");
+        assert!(err.contains("unknown tensor"), "unexpected: {err}");
+        assert_eq!(
+            reader.payload_bytes_read(),
+            16,
+            "a failed warm adds nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

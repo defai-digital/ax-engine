@@ -1,0 +1,36 @@
+{
+ "label": "t15new3",
+ "bin": "<home>/build/fn-ab/ax-engine-server-t15",
+ "rows": [
+  {
+   "file": "p1.txt",
+   "prompt_tokens": 2207,
+   "completion_tokens": 128,
+   "ttft_s": 2.379,
+   "prefill_tok_s": 927.8,
+   "decode_tok_s": 45.02,
+   "text_head": "This Rust code implements a **backend adapter layer** for an LLM (Large Language",
+   "text_sha": "6189ecc27de45897"
+  },
+  {
+   "file": "p3.txt",
+   "prompt_tokens": 1905,
+   "completion_tokens": 128,
+   "ttft_s": 1.42,
+   "prefill_tok_s": 1341.3,
+   "decode_tok_s": 47.3,
+   "text_head": "This Rust code implements the **input handling and editing logic for a chat inte",
+   "text_sha": "8c0545060f84c30b"
+  },
+  {
+   "file": "long1.txt",
+   "prompt_tokens": 8976,
+   "completion_tokens": 128,
+   "ttft_s": 13.653,
+   "prefill_tok_s": 657.4,
+   "decode_tok_s": 43.77,
+   "text_head": "This codebase implements a **distributed LLM inference gateway** (likely for a m",
+   "text_sha": "c14a851241e3a98f"
+  }
+ ]
+}

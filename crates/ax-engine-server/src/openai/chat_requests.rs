@@ -2450,6 +2450,20 @@ pub(crate) fn messages_contain_inline_media(messages: &[OpenAiChatMessage]) -> b
     })
 }
 
+/// Whether any message carries inline audio or video (anything but images).
+pub(crate) fn messages_contain_inline_non_image_media(messages: &[OpenAiChatMessage]) -> bool {
+    messages.iter().any(|message| match &message.content {
+        Some(OpenAiChatContent::Text(_)) | None => false,
+        Some(OpenAiChatContent::Parts(parts)) => parts.iter().any(|part| {
+            matches!(
+                chat_content_part_kind(part),
+                OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio)
+                    | OpenAiChatContentPartKind::Video
+            )
+        }),
+    })
+}
+
 /// Build a native-MLX chat prompt when the messages carry inline base64 image or
 /// audio parts, expanding them into Gemma 4 unified soft-token spans and the
 /// encoder-free connector's preprocessed tensors. Returns `Ok(None)` when there
@@ -2632,8 +2646,10 @@ fn qwen3_vl_single_placeholder_token(
 /// Media is decoded (data URI only), patchified for the portable ViT, and
 /// attached as [`Qwen3VlRuntimeInputs`]. Audio is not part of Qwen3-VL.
 /// Returns `Ok(None)` with no media.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_qwen3_vl_chat_with_media(
     model_id: &str,
+    artifact_family: Option<&str>,
     model_dir: &Path,
     messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
@@ -2705,8 +2721,16 @@ pub(crate) fn render_qwen3_vl_chat_with_media(
     }
 
     let pairs = prepend_qwen_tool_contract(model_id, pairs, tools, tool_choice);
-    let prompt = chat::render_prompt_with_qwen_thinking(model_id, &pairs, options.enable_thinking)
-        .map_err(chat_error_response)?;
+    // Resolve the template from the loaded artifact family too, as the
+    // text path does: a product model id need not name the Qwen family.
+    let prompt = chat::render_prompt_with_template_and_framing(
+        model_id,
+        chat::resolve_chat_template(model_id, artifact_family),
+        &pairs,
+        options.enable_thinking,
+        None,
+    )
+    .map_err(chat_error_response)?;
     let base_tokens = tokenizer.encode(&prompt, false).map_err(|error| {
         error_response(
             StatusCode::BAD_REQUEST,
@@ -4025,7 +4049,10 @@ fn patchify_qwen3_vl_image(
             format!("Qwen visual input aspect ratio {aspect:.1} exceeds 200"),
         ));
     }
-    let round_to_factor = |value: u32| ((value as f64 / unit as f64).round() as u32).max(1) * unit;
+    // Hugging Face `smart_resize` uses Python `round` (ties to even): a
+    // 336-pixel edge at a 32-pixel unit becomes 320, not 352.
+    let round_to_factor =
+        |value: u32| ((value as f64 / unit as f64).round_ties_even() as u32).max(1) * unit;
     let mut th = round_to_factor(oh);
     let mut tw = round_to_factor(ow);
     let pixels = u64::from(th).saturating_mul(u64::from(tw));
@@ -4149,7 +4176,10 @@ fn patchify_qwen3_vl_video(
             format!("Qwen visual video aspect ratio {aspect:.1} exceeds 200"),
         ));
     }
-    let round_to_factor = |value: u32| ((value as f64 / unit as f64).round() as u32).max(1) * unit;
+    // Hugging Face `smart_resize` uses Python `round` (ties to even): a
+    // 336-pixel edge at a 32-pixel unit becomes 320, not 352.
+    let round_to_factor =
+        |value: u32| ((value as f64 / unit as f64).round_ties_even() as u32).max(1) * unit;
     let mut th = round_to_factor(oh);
     let mut tw = round_to_factor(ow);
     let pixels = u64::from(th).saturating_mul(u64::from(tw));

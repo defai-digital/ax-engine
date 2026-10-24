@@ -1,0 +1,5 @@
+{"ttft": 2.397, "tokens": 128, "prompt_tokens": 2207, "decode_tok_s": 42.22, "sha": "6189ecc27de45897", "file": "p1.txt"}
+{"ttft": 2.637, "tokens": 128, "prompt_tokens": 2415, "decode_tok_s": 41.99, "sha": "1f5066fc1fb37c04", "file": "p2.txt"}
+{"ttft": 1.431, "tokens": 128, "prompt_tokens": 1905, "decode_tok_s": 44.41, "sha": "8c0545060f84c30b", "file": "p3.txt"}
+{"ttft": 2.54, "tokens": 128, "prompt_tokens": 2264, "decode_tok_s": 42.08, "sha": "ebe6be51938bc1b5", "file": "p4.txt"}
+{"ttft": 13.76, "tokens": 128, "prompt_tokens": 8976, "decode_tok_s": 39.81, "sha": "47864ec1b6583fad", "file": "long1.txt"}

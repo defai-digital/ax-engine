@@ -83,8 +83,20 @@ pub struct MlxSamplingParams {
     pub min_p: Option<f32>,
     pub repetition_penalty: f32,
     pub repetition_context_size: Option<u32>,
+    /// OpenAI-style additive penalties over generated tokens (0 disables).
+    pub presence_penalty: f32,
+    pub frequency_penalty: f32,
     pub no_repeat_ngram_size: u32,
     pub ngram_window: u32,
+    /// The request sets an OpenAI-style `logit_bias`. The entries are not
+    /// `Copy`; the runner installs them with [`scoped_logit_bias`] for the
+    /// item, and [`sample_categorical_into`] applies them. Routing treats the
+    /// bias as a logits processor, so it always reaches that host sampler.
+    pub logit_bias_active: bool,
+    /// Every token must follow the request's grammar. The runner installs the
+    /// allowed-token mask of each sampled row with [`scoped_token_mask`];
+    /// like `logit_bias` this always routes to the host sampler.
+    pub json_grammar_active: bool,
     /// Explicit sampling seed. `Some(seed)` marks a reproducible request whose
     /// pure-temperature draw must go through the seeded host path; `None`
     /// keeps the unseeded stream so pure-temperature sampling stays on the GPU.
@@ -100,8 +112,12 @@ impl MlxSamplingParams {
             min_p: None,
             repetition_penalty: 1.0,
             repetition_context_size: None,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
             no_repeat_ngram_size: 0,
             ngram_window: 128,
+            logit_bias_active: false,
+            json_grammar_active: false,
             seed: None,
         }
     }
@@ -131,6 +147,34 @@ impl MlxSamplingParams {
         self.repetition_penalty = repetition_penalty;
         self.repetition_context_size = repetition_context_size;
         self
+    }
+
+    pub(crate) const fn with_presence_frequency_penalty(
+        mut self,
+        presence_penalty: f32,
+        frequency_penalty: f32,
+    ) -> Self {
+        self.presence_penalty = presence_penalty;
+        self.frequency_penalty = frequency_penalty;
+        self
+    }
+
+    pub(crate) fn uses_presence_frequency_penalty(self) -> bool {
+        ax_engine_core::presence_frequency_penalty_active(
+            self.presence_penalty,
+            self.frequency_penalty,
+        )
+    }
+
+    /// Whether the repetition history handed to the sampler holds generated
+    /// tokens only: true when presence/frequency penalties are the only
+    /// history-dependent processors (OpenAI / vLLM semantics). With a
+    /// repetition penalty or n-gram ban active the history also covers the
+    /// prompt window and the additive penalties apply over that window.
+    pub(crate) fn history_is_generated_only(self) -> bool {
+        self.uses_presence_frequency_penalty()
+            && !self.uses_repetition_penalty()
+            && !self.uses_no_repeat_ngram()
     }
 
     pub(crate) const fn with_min_p(mut self, min_p: Option<f32>) -> Self {
@@ -163,9 +207,104 @@ impl MlxSamplingParams {
         self.no_repeat_ngram_size > 0
     }
 
-    pub(crate) fn uses_logits_processors(self) -> bool {
-        self.uses_repetition_penalty() || self.uses_no_repeat_ngram()
+    pub(crate) const fn with_logit_bias_active(mut self, logit_bias_active: bool) -> Self {
+        self.logit_bias_active = logit_bias_active;
+        self
     }
+
+    pub(crate) const fn with_json_grammar_active(mut self, json_grammar_active: bool) -> Self {
+        self.json_grammar_active = json_grammar_active;
+        self
+    }
+
+    /// Processors that need no token history but a per-item scope.
+    pub(crate) const fn uses_scoped_processors(self) -> bool {
+        self.logit_bias_active || self.json_grammar_active
+    }
+
+    /// Whether any processor reads the token history (`logit_bias` does not).
+    pub(crate) fn uses_history_processors(self) -> bool {
+        self.uses_repetition_penalty()
+            || self.uses_no_repeat_ngram()
+            || self.uses_presence_frequency_penalty()
+    }
+
+    pub(crate) fn uses_logits_processors(self) -> bool {
+        self.uses_history_processors() || self.uses_scoped_processors()
+    }
+}
+
+thread_local! {
+    /// `logit_bias` of the request whose item this thread is executing.
+    static LOGIT_BIAS_SCOPE: std::cell::RefCell<Vec<(u32, f32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Restores the previous `logit_bias` scope on drop.
+#[must_use]
+pub(crate) struct LogitBiasScope {
+    previous: Vec<(u32, f32)>,
+}
+
+impl Drop for LogitBiasScope {
+    fn drop(&mut self) {
+        let previous = std::mem::take(&mut self.previous);
+        LOGIT_BIAS_SCOPE.with(|current| *current.borrow_mut() = previous);
+    }
+}
+
+/// Install `logit_bias` for the item executed while the guard lives.
+pub(crate) fn scoped_logit_bias(logit_bias: &[(u32, f32)]) -> LogitBiasScope {
+    let previous = LOGIT_BIAS_SCOPE
+        .with(|current| std::mem::replace(&mut *current.borrow_mut(), logit_bias.to_vec()));
+    LogitBiasScope { previous }
+}
+
+thread_local! {
+    /// Allowed-token mask of the row being sampled for a grammar-constrained
+    /// request; `None` leaves the row unconstrained (for example while the
+    /// model is still thinking).
+    static TOKEN_MASK_SCOPE: std::cell::RefCell<Option<Vec<u64>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Restores the previous token-mask scope on drop.
+#[must_use]
+pub(crate) struct TokenMaskScope {
+    previous: Option<Vec<u64>>,
+}
+
+impl Drop for TokenMaskScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        TOKEN_MASK_SCOPE.with(|current| *current.borrow_mut() = previous);
+    }
+}
+
+/// Install the allowed-token mask for samples drawn while the guard lives.
+pub(crate) fn scoped_token_mask(mask: Option<Vec<u64>>) -> TokenMaskScope {
+    let previous =
+        TOKEN_MASK_SCOPE.with(|current| std::mem::replace(&mut *current.borrow_mut(), mask));
+    TokenMaskScope { previous }
+}
+
+fn apply_scoped_token_mask(logits: &mut [f32]) {
+    TOKEN_MASK_SCOPE.with(|current| {
+        if let Some(mask) = current.borrow().as_deref() {
+            ax_engine_core::grammar::apply_token_mask(logits, mask);
+        }
+    });
+}
+
+fn apply_scoped_logit_bias(logits: &mut [f32]) {
+    LOGIT_BIAS_SCOPE.with(|current| {
+        let bias = current.borrow();
+        debug_assert!(
+            !bias.is_empty(),
+            "logit_bias_active request sampled without a logit_bias scope"
+        );
+        ax_engine_core::apply_logit_bias_in_place(logits, &bias);
+    });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -257,21 +396,28 @@ pub(crate) fn sample_categorical(
     )
 }
 
-pub(crate) fn sample_categorical_into(
-    logits: &[f32],
+/// Apply the request's logits processors (logit bias, repetition penalty,
+/// no-repeat n-gram ban, presence/frequency penalties) the way the host
+/// sampler does, against `repetition_tokens` as the history. Returns the
+/// input unchanged when no processor applies. Shared by the direct sampler
+/// and the penalised MTP verifier so both see the same target law.
+pub(crate) fn processed_logits<'a>(
+    logits: &'a [f32],
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
-    rng: &mut Xorshift64,
-    probs_buf: &mut Vec<f32>,
-    logits_buf: &mut Vec<f32>,
-    candidates_buf: &mut Vec<(usize, f32)>,
-) -> u32 {
-    if logits.is_empty() {
-        return 0;
-    }
-    let logits = if sampling.uses_logits_processors() && !repetition_tokens.is_empty() {
+    logits_buf: &'a mut Vec<f32>,
+) -> &'a [f32] {
+    if (sampling.uses_history_processors() && !repetition_tokens.is_empty())
+        || sampling.uses_scoped_processors()
+    {
         logits_buf.clear();
         logits_buf.extend_from_slice(logits);
+        if sampling.logit_bias_active {
+            apply_scoped_logit_bias(logits_buf);
+        }
+        if sampling.json_grammar_active {
+            apply_scoped_token_mask(logits_buf);
+        }
         if sampling.uses_repetition_penalty() {
             logits_with_repetition_penalty_in_place(
                 logits_buf,
@@ -285,10 +431,33 @@ pub(crate) fn sample_categorical_into(
             sampling.ngram_window,
             repetition_tokens,
         );
+        if sampling.uses_presence_frequency_penalty() {
+            ax_engine_core::apply_presence_frequency_penalty_in_place(
+                logits_buf,
+                sampling.presence_penalty,
+                sampling.frequency_penalty,
+                repetition_tokens,
+            );
+        }
         logits_buf.as_slice()
     } else {
         logits
-    };
+    }
+}
+
+pub(crate) fn sample_categorical_into(
+    logits: &[f32],
+    sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
+    rng: &mut Xorshift64,
+    probs_buf: &mut Vec<f32>,
+    logits_buf: &mut Vec<f32>,
+    candidates_buf: &mut Vec<(usize, f32)>,
+) -> u32 {
+    if logits.is_empty() {
+        return 0;
+    }
+    let logits = processed_logits(logits, sampling, repetition_tokens, logits_buf);
     if sampling.temperature <= 0.0 {
         return argmax_f32(logits);
     }
@@ -383,6 +552,7 @@ pub(crate) fn sample_categorical_with_topk_gpu(
         || sampling.temperature <= 0.0
         || sampling.top_k == 0
         || sampling.uses_min_p()
+        || sampling.uses_scoped_processors()
         || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
@@ -425,6 +595,7 @@ pub(crate) fn sample_categorical_with_topp_gpu(
         || sampling.top_k != 0
         || !(sampling.top_p > 0.0 && sampling.top_p < 1.0)
         || sampling.uses_min_p()
+        || sampling.uses_scoped_processors()
         || (sampling.uses_logits_processors() && !repetition_tokens.is_empty())
     {
         return None;
@@ -1005,7 +1176,7 @@ fn argmax_index_f32(logits: &[f32]) -> Option<usize> {
         .or((!logits.is_empty()).then_some(0))
 }
 
-fn argmax_f32(logits: &[f32]) -> u32 {
+pub(crate) fn argmax_f32(logits: &[f32]) -> u32 {
     argmax_index_f32(logits).map_or(0, |index| index as u32)
 }
 
@@ -1427,6 +1598,97 @@ mod tests {
         let mut rng = Xorshift64::new(99);
         let tok = sample_categorical(&logits, MlxSamplingParams::new(1.0, 1.0, 0), &[], &mut rng);
         assert!((tok as usize) < logits.len());
+    }
+
+    #[test]
+    fn presence_penalty_steers_greedy_sampling_away_from_generated_tokens() {
+        let logits = vec![4.0, 3.0, 0.0];
+        let mut rng = Xorshift64::new(7);
+        let sampling = MlxSamplingParams::greedy().with_presence_frequency_penalty(2.0, 0.0);
+        assert!(sampling.uses_logits_processors());
+        assert!(sampling.history_is_generated_only());
+        // Token 0 was generated before: 4.0 - 2.0 < 3.0.
+        assert_eq!(sample_categorical(&logits, sampling, &[0], &mut rng), 1);
+        // Nothing generated yet: no penalty.
+        assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 0);
+        // Frequency penalty scales with the count.
+        let frequency = MlxSamplingParams::greedy().with_presence_frequency_penalty(0.0, 0.6);
+        assert_eq!(sample_categorical(&logits, frequency, &[0, 0], &mut rng), 1);
+        assert_eq!(sample_categorical(&logits, frequency, &[0], &mut rng), 0);
+    }
+
+    #[test]
+    fn scoped_logit_bias_steers_host_sampling_without_history() {
+        let logits = vec![4.0, 3.0, 0.0];
+        let mut rng = Xorshift64::new(7);
+        let sampling = MlxSamplingParams::greedy().with_logit_bias_active(true);
+        assert!(sampling.uses_logits_processors());
+        assert!(!sampling.uses_history_processors());
+        {
+            let _scope = scoped_logit_bias(&[(0, -100.0), (2, 2.0)]);
+            // Applied with an empty history, unlike the history processors.
+            assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 1);
+            {
+                let _inner = scoped_logit_bias(&[(2, 10.0)]);
+                assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 2);
+            }
+            // The inner scope restores the outer bias on drop.
+            assert_eq!(sample_categorical(&logits, sampling, &[], &mut rng), 1);
+        }
+        // Without the flag the scope is never consulted.
+        assert_eq!(
+            sample_categorical(&logits, MlxSamplingParams::greedy(), &[], &mut rng),
+            0
+        );
+        // Biased requests never take the batched path.
+        assert_eq!(
+            crate::batched_sampling::batched_sampling_class(sampling, false),
+            None
+        );
+    }
+
+    #[test]
+    fn scoped_token_mask_restricts_greedy_and_sampled_rows() {
+        let logits = vec![4.0, 3.0, 0.0, 1.0];
+        let mut rng = Xorshift64::new(11);
+        let greedy = MlxSamplingParams::greedy().with_json_grammar_active(true);
+        let sampled = MlxSamplingParams::new(1.0, 1.0, 0).with_json_grammar_active(true);
+        assert!(greedy.uses_logits_processors() && greedy.uses_scoped_processors());
+        // Only tokens 2 and 3 are allowed.
+        let mask = vec![0b1100u64];
+        {
+            let _scope = scoped_token_mask(Some(mask));
+            assert_eq!(sample_categorical(&logits, greedy, &[], &mut rng), 3);
+            for _ in 0..32 {
+                let token = sample_categorical(&logits, sampled, &[], &mut rng);
+                assert!(token == 2 || token == 3, "{token}");
+            }
+            {
+                // A `None` scope (inside a think block) leaves rows free.
+                let _inner = scoped_token_mask(None);
+                assert_eq!(sample_categorical(&logits, greedy, &[], &mut rng), 0);
+            }
+            assert_eq!(sample_categorical(&logits, greedy, &[], &mut rng), 3);
+        }
+        assert_eq!(sample_categorical(&logits, greedy, &[], &mut rng), 0);
+        assert_eq!(
+            crate::batched_sampling::batched_sampling_class(greedy, false),
+            None
+        );
+    }
+
+    #[test]
+    fn combined_processors_keep_the_prompt_window_history() {
+        let sampling = MlxSamplingParams::greedy()
+            .with_presence_frequency_penalty(1.0, 0.0)
+            .with_repetition_penalty(1.1, None);
+        assert!(!sampling.history_is_generated_only());
+        assert!(!MlxSamplingParams::greedy().history_is_generated_only());
+        assert!(
+            !MlxSamplingParams::greedy()
+                .with_presence_frequency_penalty(f32::NAN, 0.0)
+                .uses_logits_processors()
+        );
     }
 
     #[test]

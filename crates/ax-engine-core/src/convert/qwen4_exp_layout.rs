@@ -23,6 +23,9 @@ const EXPECTED_REVISION: &str = "de4b8e4d43b917e7706784d8bb445c9af86a3540";
 const EXPECTED_RUNTIME_NAME: &str = "mlx-vlm";
 const EXPECTED_MLX_VLM_COMMIT: &str = "6102cb4ad1a5b3cc38d8dc7e6cbe2aca395596cb";
 const HF_NORM_ONLY: &str = "hf_norm_only";
+/// Declared-layout contract values (`runtime.ax_engine.weight_layout`).
+const DECLARED_NORM_WEIGHTS_RAW_DELTA: &str = "raw_delta";
+const DECLARED_CONV1D_AXES_MLX: &str = "mlx";
 
 /// Runtime blocker recorded when the on-disk weight layout could not be
 /// interpreted from `axquant_manifest.json` (missing file or unrecognized
@@ -270,6 +273,23 @@ pub(super) fn apply(
         })?;
 
     if !matches_audited_legacy_tuple(&value) {
+        if matches_declared_layout(&value) {
+            validate_optional_sanitize_field(value.get("weight_sanitize"), "weight_sanitize")?;
+            validate_conv_tensors(manifest)?;
+            manifest.weight_sanitize = WeightSanitize::HfNormOnly;
+            let source = format!(
+                "{}@{}",
+                json_str(&value, &["source_model", "model_id"]).unwrap_or("unknown"),
+                json_str(&value, &["source_model", "revision"]).unwrap_or("unknown")
+            );
+            manifest.runtime_status.notes.push(format!(
+                "AX interpreted axquant_manifest.json through its declared weight layout \
+(runtime.ax_engine.weight_layout: norm_weights={DECLARED_NORM_WEIGHTS_RAW_DELTA}, \
+conv1d_axes={DECLARED_CONV1D_AXES_MLX}; weight_sanitize=hf_norm_only) for source {source}. The \
+declaration is the exporter's claim; numerical parity is a separate qualification."
+            ));
+            return Ok(());
+        }
         push_layout_unknown(manifest);
         return Ok(());
     }
@@ -350,6 +370,29 @@ fn matches_audited_legacy_tuple(value: &serde_json::Value) -> bool {
             value,
             &["runtime", "primary_runtime", "standard_mlx_weights"],
         ) == Some(true)
+}
+
+/// Exporter-declared layout contract, independent of the source checkpoint.
+///
+/// The audited legacy tuple pins one checkpoint (model id and revision), so a
+/// new checkpoint of the same `qwen4_exp` architecture (for example a Qwen 4
+/// release) could never load. An exporter may instead declare the layout the
+/// legacy tuple implies: raw norm deltas, conv1d in MLX axis order, and
+/// `weight_sanitize=hf_norm_only`. Everything in the declaration is required;
+/// the conv-axis shape checks and the dedicated `qwen4_exp` validator still run.
+fn matches_declared_layout(value: &serde_json::Value) -> bool {
+    json_str(value, &["schema_version"]) == Some(EXPECTED_SCHEMA_VERSION)
+        && json_str(value, &["quantizer"]) == Some(EXPECTED_QUANTIZER)
+        && json_str(value, &["format"]) == Some(EXPECTED_FORMAT)
+        && json_str(value, &["runtime", "ax_engine", "weight_sanitize"]) == Some(HF_NORM_ONLY)
+        && json_str(
+            value,
+            &["runtime", "ax_engine", "weight_layout", "norm_weights"],
+        ) == Some(DECLARED_NORM_WEIGHTS_RAW_DELTA)
+        && json_str(
+            value,
+            &["runtime", "ax_engine", "weight_layout", "conv1d_axes"],
+        ) == Some(DECLARED_CONV1D_AXES_MLX)
 }
 
 fn validate_optional_mlx_vlm_commit(value: &serde_json::Value) -> Result<(), ConvertError> {
@@ -642,6 +685,127 @@ mod tests {
                 },
             },
         })
+    }
+
+    fn declared_layout_json(model_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": EXPECTED_SCHEMA_VERSION,
+            "axquant_version": "2.0.0",
+            "quantizer": EXPECTED_QUANTIZER,
+            "format": EXPECTED_FORMAT,
+            "source_model": {
+                "architecture": EXPECTED_ARCHITECTURE,
+                "model_id": model_id,
+                "revision": "0000000000000000000000000000000000000000",
+            },
+            "runtime": {
+                "ax_engine": {
+                    "weight_sanitize": HF_NORM_ONLY,
+                    "weight_layout": {
+                        "norm_weights": DECLARED_NORM_WEIGHTS_RAW_DELTA,
+                        "conv1d_axes": DECLARED_CONV1D_AXES_MLX,
+                    },
+                },
+            },
+        })
+    }
+
+    #[test]
+    fn declared_layout_admits_a_new_checkpoint_of_the_same_architecture() {
+        let dir = temp_model_dir("declared-layout");
+        write_axquant_manifest(&dir, &declared_layout_json("Qwen/Qwen4-Next-Preview"));
+        let mut manifest = base_manifest();
+        apply(&dir, &mut manifest).unwrap();
+        assert_eq!(manifest.weight_sanitize, WeightSanitize::HfNormOnly);
+        assert!(!has_unknown_layout_blocker(&manifest));
+        assert!(
+            manifest
+                .runtime_status
+                .notes
+                .iter()
+                .any(|note| note.contains("Qwen/Qwen4-Next-Preview"))
+        );
+        // Re-running the interpretation is stable, so runtime admission agrees.
+        assert!(layout_apply_matches(&dir, &manifest));
+        manifest.tensors.push(conv_tensor(
+            "expert",
+            NativeTensorRole::FfnGateExps,
+            vec![4, 8, 1],
+            NativeTensorDataType::U32,
+            true,
+        ));
+        assert!(experimental_runtime_admission(&dir, &manifest, false));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Readiness fixture on the real pinned Flash Next exporter manifest, when
+    /// `AX_ENGINE_FLASH_NEXT_PACK_DIR` points at the pack (skipped otherwise).
+    /// The pin matches the audited tuple; a renamed checkpoint of the same
+    /// architecture fails closed until its exporter declares the layout, and
+    /// loads once it does.
+    #[test]
+    fn pinned_flash_next_manifest_readiness_under_a_new_checkpoint_id() {
+        let Some(pack) = std::env::var_os("AX_ENGINE_FLASH_NEXT_PACK_DIR") else {
+            return;
+        };
+        let path = std::path::Path::new(&pack).join("axquant_manifest.json");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let pinned: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(matches_audited_legacy_tuple(&pinned));
+
+        let mut renamed = pinned.clone();
+        renamed["source_model"]["model_id"] = serde_json::json!("Qwen/Qwen4-Preview");
+        renamed["source_model"]["revision"] = serde_json::json!("0000000000000000");
+        assert!(!matches_audited_legacy_tuple(&renamed));
+        assert!(
+            !matches_declared_layout(&renamed),
+            "no declaration: fail closed"
+        );
+
+        renamed["runtime"]["ax_engine"]["weight_sanitize"] = serde_json::json!(HF_NORM_ONLY);
+        renamed["runtime"]["ax_engine"]["weight_layout"] = serde_json::json!({
+            "norm_weights": DECLARED_NORM_WEIGHTS_RAW_DELTA,
+            "conv1d_axes": DECLARED_CONV1D_AXES_MLX,
+        });
+        assert!(matches_declared_layout(&renamed));
+    }
+
+    #[test]
+    fn declared_layout_requires_every_declared_field() {
+        for path in [
+            vec!["runtime", "ax_engine", "weight_sanitize"],
+            vec!["runtime", "ax_engine", "weight_layout", "norm_weights"],
+            vec!["runtime", "ax_engine", "weight_layout", "conv1d_axes"],
+            vec!["schema_version"],
+            vec!["quantizer"],
+            vec!["format"],
+        ] {
+            let dir = temp_model_dir("declared-layout-missing");
+            let mut value = declared_layout_json("Qwen/Qwen4-Next-Preview");
+            let mut cursor = &mut value;
+            for key in &path[..path.len() - 1] {
+                cursor = cursor.get_mut(*key).unwrap();
+            }
+            cursor[path[path.len() - 1]] = "something-else".into();
+            write_axquant_manifest(&dir, &value);
+            let mut manifest = base_manifest();
+            apply(&dir, &mut manifest).unwrap();
+            assert!(has_unknown_layout_blocker(&manifest), "{path:?}");
+            assert_eq!(manifest.weight_sanitize, WeightSanitize::None, "{path:?}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn declared_layout_still_rejects_wrong_conv_axes() {
+        let dir = temp_model_dir("declared-layout-conv");
+        write_axquant_manifest(&dir, &declared_layout_json("Qwen/Qwen4-Next-Preview"));
+        let mut manifest = base_manifest();
+        manifest.tensors[0].shape = vec![4, 1, 8];
+        assert!(apply(&dir, &mut manifest).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn write_axquant_manifest(model_dir: &std::path::Path, value: &serde_json::Value) {

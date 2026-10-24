@@ -482,6 +482,10 @@ fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext 
         top_k: 0,
         repetition_penalty: 1.0,
         repetition_context_size: None,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
+        logit_bias_active: false,
+        json_grammar_active: false,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: false,
@@ -3149,7 +3153,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
             state.cache.set_seq_len(native_tokens);
             state.multimodal_prefill_complete = complete;
             runner.states.lock().insert(item.request_id, state);
-            let result = runner.run_item(&item, None, "qwen3", 4, Some(media), None);
+            let result = runner.run_item(&item, None, "qwen3", 4, Some(media), None, None);
             assert_eq!(
                 result.update.error.as_deref(),
                 Some("multimodal decode requires a completed media prefill")
@@ -3186,7 +3190,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     assert!(state.multimodal_prefill_complete);
     state.cached_prefill_output_token = Some(5);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None);
     assert!(result.update.error.is_none(), "{:?}", result.update.error);
     assert_eq!(result.update.output_token, Some(5));
 
@@ -3198,7 +3202,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     assert_eq!(prompt, [vec![7; 8], vec![9, 10]].concat());
     assert!(!state.multimodal_prefill_complete);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&inputs), None, None);
     assert_eq!(
         result.update.error.as_deref(),
         Some("multimodal decode requires a completed media prefill")
@@ -3218,7 +3222,7 @@ fn multimodal_decode_requires_native_prefill_before_any_restore() {
     state.cache.set_seq_len(8);
     state.cached_prefill_output_token = Some(5);
     runner.states.lock().insert(item.request_id, state);
-    let result = runner.run_item(&item, None, "qwen3", 4, Some(&empty), None);
+    let result = runner.run_item(&item, None, "qwen3", 4, Some(&empty), None, None);
     assert!(result.update.error.is_none(), "{:?}", result.update.error);
     assert_eq!(result.update.output_token, Some(5));
     fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
@@ -3507,6 +3511,49 @@ fn prefix_cache_exact_membership_rejects_collision_tokens_without_touching_lru()
         1,
         "read-only membership probe must not touch LRU state"
     );
+}
+
+#[test]
+fn linear_grid_rung_head_len_lands_on_the_restore_grid() {
+    let rung = MlxRunner::linear_grid_rung_head_len;
+    // Cold 5500-token prompt, 1024 grid: rung 5120, distinct from the
+    // block boundary 5488.
+    assert_eq!(rung(16, 1024, 1024, 0, 5500), Some(5120));
+    // The rung sits strictly before the final token: a grid-aligned prompt
+    // end steps back one rung (the singleton tail keeps its own step).
+    assert_eq!(rung(16, 1024, 1024, 0, 6144), Some(5120));
+    assert_eq!(rung(16, 1024, 1024, 0, 6160), Some(6144));
+    // 6145 and 6150 have block boundary 6144 == rung: the boundary capture
+    // already stores it.
+    assert_eq!(rung(16, 1024, 1024, 0, 6145), None);
+    assert_eq!(rung(16, 1024, 1024, 0, 6150), None);
+    // Prompt inside the first chunk has no rung.
+    assert_eq!(rung(16, 1024, 1024, 0, 1024), None);
+    assert_eq!(rung(16, 1024, 1024, 0, 700), None);
+    // An item that starts on the rung (scheduler-split final item, or a
+    // warm extension from a restored rung) captures before prefilling; the
+    // next rung appears only if the tail crosses another chunk.
+    assert_eq!(rung(16, 1024, 1024, 5120, 900), Some(0));
+    assert_eq!(rung(16, 2048, 2048, 6144, 64), Some(0));
+    assert_eq!(rung(16, 1024, 1024, 5120, 2000), Some(1024));
+    // Off-grid prior context or a clamped request chunk would change the
+    // chunk trajectory: no rung.
+    assert_eq!(rung(16, 1024, 1024, 5488, 2000), None);
+    assert_eq!(rung(16, 2048, 512, 0, 9000), None);
+    // Degenerate inputs.
+    assert_eq!(rung(0, 1024, 1024, 0, 5500), None);
+    assert_eq!(rung(16, 0, 0, 0, 5500), None);
+    assert_eq!(rung(16, 1024, 1024, 0, 0), None);
+    assert_eq!(rung(48, 1000, 1000, 0, 5500), None);
+    // The rung is always a whole number of request chunks and never passes
+    // the block-aligned boundary.
+    for total in 1..=5000usize {
+        if let Some(head) = rung(16, 1024, 1024, 0, total) {
+            assert!(head.is_multiple_of(1024), "total={total}");
+            assert!(head < total, "total={total}");
+            assert!(head <= total - total % 16, "total={total}");
+        }
+    }
 }
 
 #[test]
@@ -3844,10 +3891,21 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
             prefix_tokens_reused: prefix_len as u32,
             prefix_blocks_reused: 1,
         };
-        let selected = grid_aligned_prefix_restore_len(&item, prefix_len, chunk);
+        let selected = grid_aligned_prefix_restore_len(&item, prefix_len, chunk, false);
         assert_eq!(
             selected, expected,
             "prefix={prefix_len}, suffix={suffix_len}"
+        );
+        // Gap replay keeps a non-zero rung below the claim; a zero rung
+        // still replays the whole prompt.
+        let gap_expected = match expected {
+            None if prefix_len / chunk * chunk > 0 => Some(prefix_len / chunk * chunk),
+            other => other,
+        };
+        assert_eq!(
+            grid_aligned_prefix_restore_len(&item, prefix_len, chunk, true),
+            gap_expected,
+            "gap replay prefix={prefix_len}, suffix={suffix_len}"
         );
         if selected.is_none() {
             let telemetry = MlxPrefixCacheTelemetry {
@@ -3865,9 +3923,55 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
             assert_eq!(replay, [vec![1; prefix_len], vec![2; suffix_len]].concat());
         }
         if prefix_len == 0 {
-            assert_eq!(grid_aligned_prefix_restore_len(&item, 12, chunk), Some(8));
+            assert_eq!(
+                grid_aligned_prefix_restore_len(&item, 12, chunk, false),
+                Some(8)
+            );
         }
     }
+}
+
+#[test]
+fn scheduler_gap_replay_runs_claimed_tokens_past_the_restored_rung() {
+    let item = ax_engine_core::ExecutionItem {
+        request_id: RequestId(23),
+        mode: ExecutionMode::Prefill,
+        planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+        input_token_slice: vec![9, 9],
+        reused_prefix_token_slice: (0..12).collect(),
+        position_range: PositionRange {
+            start: 12,
+            end_exclusive: 14,
+        },
+        scheduled_token_count: 2,
+        block_table_ref: RequestId(23),
+        prefix_tokens_reused: 12,
+        prefix_blocks_reused: 3,
+    };
+    let mut state = RequestState::new(2, 23, None);
+    // Nothing restored: the warmup fallback owns this case.
+    assert!(scheduler_gap_replay_tokens(&item, &item.input_token_slice, &state).is_none());
+
+    state.cache.advance(8);
+    state.prompt_prefix_tokens = (0..8).collect();
+    assert_eq!(
+        scheduler_gap_replay_tokens(&item, &item.input_token_slice, &state),
+        Some(vec![8, 9, 10, 11, 9, 9])
+    );
+
+    // A restored prefix that disagrees with the claim never splices.
+    state.prompt_prefix_tokens = vec![0; 8];
+    assert!(scheduler_gap_replay_tokens(&item, &item.input_token_slice, &state).is_none());
+
+    // A restore that covers the claim, or a decode item, needs no gap.
+    let mut covered = RequestState::new(2, 23, None);
+    covered.cache.advance(12);
+    covered.prompt_prefix_tokens = (0..12).collect();
+    assert!(scheduler_gap_replay_tokens(&item, &item.input_token_slice, &covered).is_none());
+    let mut decode = item.clone();
+    decode.mode = ExecutionMode::Decode;
+    state.prompt_prefix_tokens = (0..8).collect();
+    assert!(scheduler_gap_replay_tokens(&decode, &decode.input_token_slice, &state).is_none());
 }
 
 #[test]
@@ -4154,6 +4258,10 @@ fn split_prefill_only_completes_on_final_prompt_chunk() {
         top_k: 0,
         repetition_penalty: 1.0,
         repetition_context_size: None,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
+        logit_bias_active: false,
+        json_grammar_active: false,
         no_repeat_ngram_size: 0,
         ngram_window: 128,
         ignore_eos: false,
@@ -8566,4 +8674,52 @@ fn block_aligned_prefix_hashes_match_full_rehash_per_boundary() {
     // Unaligned tails contribute no boundary; empty input has none.
     assert_eq!(block_aligned_prefix_hashes(&tokens[..39], 4).len(), 9);
     assert!(block_aligned_prefix_hashes(&[], 4).is_empty());
+}
+
+#[test]
+fn presence_penalty_history_holds_generated_tokens_only() {
+    let mut state = RequestState::new(2, 1, None);
+    state.prompt_prefix_tokens = vec![10, 11, 12];
+    state.generated_tokens = vec![20, 21];
+    let presence = MlxSamplingParams::greedy().with_presence_frequency_penalty(1.5, 0.0);
+    assert_eq!(state.repetition_history(&[13], presence), vec![20, 21]);
+    // With a repetition penalty the history keeps its prompt + output window.
+    let combined = presence.with_repetition_penalty(1.1, Some(4));
+    assert_eq!(
+        state.repetition_history(&[13], combined),
+        vec![12, 13, 20, 21]
+    );
+    // Logits processors route MTP requests to direct decode.
+    assert_eq!(
+        mtp_request_route(
+            true,
+            true,
+            true,
+            false,
+            false,
+            presence.uses_logits_processors()
+        ),
+        MtpRequestRoute::DirectFallback
+    );
+}
+
+#[test]
+fn penalized_mtp_rows_see_the_drafts_before_them() {
+    // Three verify rows over a 4-token vocabulary, all preferring token 2.
+    let logits = MlxArray::from_f32_slice(&[
+        0.0, 0.0, 5.0, 4.0, //
+        0.0, 0.0, 5.0, 4.0, //
+        0.0, 0.0, 5.0, 4.0,
+    ]);
+    let logits = mlx_sys::reshape(&logits, &[3, 4], None);
+    let sampling = MlxSamplingParams::new(0.7, 1.0, 0).with_presence_frequency_penalty(2.0, 0.0);
+    // History holds token 3; drafts are [2, 1].
+    let rows = penalized_mtp_target_rows(&logits, &[3], &[2, 1], 4, sampling, &[]);
+    assert_eq!(rows.len(), 3);
+    // Row 0: only the committed history (token 3) is penalised.
+    assert_eq!(rows[0], vec![0.0, 0.0, 5.0, 2.0]);
+    // Row 1: draft 2 is now history too.
+    assert_eq!(rows[1], vec![0.0, 0.0, 3.0, 2.0]);
+    // Row 2 (bonus): drafts 2 and 1.
+    assert_eq!(rows[2], vec![0.0, -2.0, 3.0, 2.0]);
 }

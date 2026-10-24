@@ -8,18 +8,47 @@ retired; MXFP8 pack audit and native admission are pending. Older affine
 receipts below are historical and do not qualify MX packs.
 See [format policy](../QWEN38-FORMAT-POLICY.md).
 
-Status: **Candidate; direct-default release gates passed (one host); MTP gates open**
+Status: **Candidate; direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open**
 
-Second SKU. MXFP4 MTP target; native functional controls verified; direct-default release gates passed on one host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed; MTP gates open).
+Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open).
 
-Target SKU: **Mac Studio, Ultra-class Apple Silicon (M2 Ultra or newer), 192 GB+**
-(corrected from the original MacBook Pro M5 Max 128 GB target by
-[ADR-037](../../.internal/adr/ADR-037-FLASH-NEXT-ULTRA-192GB-TARGET-CORRECTION.md),
-2026-09-22; campaign host: Apple M2 Ultra 192 GiB). Target pack: **MXFP4 MTP**.
-Historical affine real-pack evidence is from **Apple M2 Ultra, 192 GB**. The
-M5 Max 128 GB evidence recorded below remains historical evidence for the
-Auto expert-paging code path; it does not by itself qualify the corrected
-target. Last reviewed: **2026-10-05**.
+Standard host: **MacBook Pro M5 Max 128 GB** (ADR-049, 2026-10-23). ADR-037
+had corrected the target from this machine to Mac Studio, Ultra-class Apple
+Silicon (M2 Ultra or newer), 192 GB+; ADR-049 restores this machine as the
+qualification and certification standard, inside the single-stream resident
+envelope. Target pack: **MXFP4 MTP**. Historical affine real-pack evidence is
+from **Apple M2 Ultra, 192 GB**. The 2026-10-05 direct-default release gates
+were measured on that larger host and stay bound to it; the gates were re-run on
+the standard host on 2026-10-23 and pass there (below). Last reviewed:
+**2026-10-23**.
+
+**MacBook Pro M5 Max 128 GB, single-stream resident tier (2026-10-22).** The
+pinned pack's 53.6 GiB n-gram table is read from disk row by row and never
+loaded, so Auto now prices only the ~69.5 GiB the loader makes resident
+(`AX_MLX_EXPERT_STREAM_DISCOUNT_NGRAM`, default on; `=0` restores pricing on the
+whole file set). On an M5 Max 128 GB with the pack on the internal SSD, one
+request at a time with MTP off: decode 32.4 / 32.0 / 27.9 tok/s and TTFT
+7.2 / 24.0 / 103 s at 2,048 / 8,192 / 32,768 input tokens, server footprint at
+most 91 GiB, no swap, normal memory pressure, and a flat 32.1 tok/s across a
+10-minute sustained run. Two concurrent 8,192-token requests pushed the
+footprint to 104 GiB with 6 GiB of compressor growth, and required MTP at
+32,768 tokens touched swap, so the tier is one request at a time
+(`--max-concurrent-requests 1`), MTP off, contexts up to 32k. This is the
+operating evidence for the ADR-049 standard. It is one machine, and it does
+not by itself close the release gates or the MTP gates. The Ultra-class
+192 GB+ host is larger-memory evidence, not the product standard.
+
+Those TTFT figures were dominated by cold reads of the n-gram table, one row at a
+time. After the 2026-10-22 changes (concurrent row reads, next-chunk read-ahead, and
+compiled decode stretches, each with a kill switch), first-seen prompts on the same
+host measured TTFT 2.5 s at 2,207 tokens, 14.0 s at 8,976 and 76.4 s at 39,225, and
+decode 37.9-42.4 tok/s with identical generated text. Record:
+[Flash Next n-gram reads and fused decode stretches, 2026-10-22](../performance/flash-next-ngram-reads-and-fused-decode-2026-10-22.md).
+Follow-ups on 2026-10-23 (22 fused or native stretches including a native hyper-connection read, a
+sealed-prefix-plus-tail K/V history, cached QSA pooled keys and rotary tables, the native GDN kernels on by default
+and cached weight views) measured decode 47.3, 45.7 and 44.5 tok/s at 2,207, 8,976 and 39,225 tokens, with identical
+generated text; record:
+[Flash Next long-context decode, 2026-10-23](../performance/flash-next-long-context-decode-2026-10-23.md).
 
 On 2026-09-23 the MXFP4 MTP direct-fallback behaviour was root-caused and
 instrumented. The draft cursor is created only on a genuine cold-start prefill,
@@ -54,7 +83,23 @@ promotion) are evidenced separately. For this SKU all three are open. Default
 admission remains fail-closed; the opt-in experimental evidence below does not
 by itself close any gate.
 
-## Direct-default release gates (2026-10-05)
+## Direct-default release gates on the standard host (2026-10-23)
+
+For the same release scope, on one MacBook Pro M5 Max 128 GB with the pack on the
+internal SSD and every server started with `--max-concurrent-requests 1`, the pinned
+pack passes all nine gates in the
+[M5 Max release-gate evidence](../../benchmarks/results/qualification/2026-10-23-flash-next-mxfp4-m5max-release-gates/README.md)
+(verdict: `release_ready = true`): fresh-cache delivery (one Hub-timeout attempt
+resumed), 101/105 in every mode with the same four retained failures and identical text
+across modes, peak server RSS 78.1 GiB within the 96 GiB bound, readiness 48.5 s after
+delivery and at most 50.5 s staged, a 29,774-token lookup in 56 s, decode 50.8 / 47.3 /
+45.7 tok/s at 512 / 2,048 / 8,192 tokens, and the default path never activating the
+drafter. The pinned reference is memory-constrained on 128 GB (it materializes the
+n-gram table), so the reference-relative floor passes with a wide margin that is not a
+speedup claim. The status sentence and the qualifier's release flags now derive from
+this verdict.
+
+## Direct-default release gates on the larger host (2026-10-05)
 
 Release scope: direct decoding is the default product path; model MTP stays an
 explicit, experimental opt-in (`--mlx-mtp-policy required`). MTP-S, MTP-P and MTP-D
@@ -96,6 +141,22 @@ graphs on this pack revision. Not covered: model MTP (MTP-S/P/D), MXFP8, NAS or
 other storage, other hosts, endurance, multi-model residency and multimodal use. The
 16,384-token default KV pool is unchanged; use `--total-blocks 4096` for contexts up
 to 65,536 tokens.
+
+Image input is a functional preview outside this certification. The pack's
+Qwen3-VL style vision tower (333 BF16 `vision_tower.*` tensors, about 0.85 GB)
+loads only with `AX_MLX_QWEN4_EXP_VISION=1` (off by default while the preview
+is uncertified, which also keeps the tower out of the memory budget), and then
+`/v1/chat/completions` accepts `image_url` parts; audio and video are refused.
+Attention and QSA keys rotate at interleaved MRoPE positions (sections
+[11, 11, 10]); decode continues at `position + delta`. Image requests skip the
+prefix cache and decode without model MTP. Evidence (M2 Ultra 192 GB, greedy,
+thinking off), against the pinned MLX-VLM reference on the same pack: prompt
+token counts match on two synthetic images (161 and 168 tokens), the first
+answer is identical to its end of sequence, and the second agrees for about
+45 tokens before a near-tie split (the two engines' text trunks already split
+at tokens 1, 12 and 34 on three plain prompts). Text-only output on this pack
+is unchanged token for token with model MTP on and off, also after an image
+request on the same server.
 
 ## Current target and open gates
 
@@ -431,7 +492,7 @@ quality or later-candidate qualification result.
 Six-bit is excluded from this target campaign. The former Studio M5 Ultra
 256 GB target, the intermediate MacBook Pro M5 Max 128 GB target, and all
 affine results below are historical; they do not qualify MXFP4 on the
-current Ultra-class 192 GB+ target. Historical affine artifact identities remain unchanged; retired aliases
+MacBook Pro M5 Max 128 GB standard. Historical affine artifact identities remain unchanged; retired aliases
 return migration errors.
 
 | Gate | Current target state |
@@ -441,7 +502,7 @@ return migration errors.
 | Numerical and MTP | Canonical source `bf06cbb2` passes the original two-prompt M5 diagnostic (90/133 positions to EOS) and four-prompt holdout (64 outputs each), including compared state/hidden/logits and complete integrity checks. Broader checkpoint/default/MTP qualification remains open. All `cd207324` failures and incomplete M2 SIGBUS remain retained |
 | Installed QA and lifecycle | Source `5d028881` passes installation and all 14 lifecycle actions with original pre/post integrity checks. New 105-input-per-mode QA is launched, without a result yet. Historical installed85 QA failures and both bf06 lifecycle failures remain retained |
 | Throughput and memory | Failed fixed workload on installed `85a2bab0`: one of six AX cells complete; first 512-token MTP warmup times out; four AX cells unstarted. Three primary-reference cells unsupported. Target peak memory and cold latency pending |
-| Release | Direct-default release gates passed on one host (see above); no default-MTP promotion, MTP-S/P/D not assessed |
+| Release | Direct-default release gates passed on the MacBook Pro M5 Max 128 GB standard host (2026-10-23; also on the larger host 2026-10-05); no default-MTP promotion, MTP-S/P/D not assessed |
 
 ## Existing affine implementation and historical evidence
 
@@ -477,7 +538,7 @@ Audited legacy manifests identify source `Qwen/Qwen3.8-Flash-Next` revision
 | MTP integration | All 12 HC state/runner controls and 105-item native QA parity pass; four installed direct/required pairs have text and usage identity | Full installed/default-route QA and target qualification before promotion |
 | HTTP / SSE | HC candidate: six modes and 12 requests pass. Installed wheel: eight HTTP completions with 32-token budgets, correct ready health and clean shutdown pass | Extend installed streaming/lifecycle coverage and target qualification |
 | Throughput | Historical fixed-output matrix: 11/18 complete; two failed cells and five without results; 128 tokens in every measured sample | Collect a complete current-candidate matrix; retain historical budget/reference GPU failures and qualify target-SKU memory |
-| Former target hardware | No Studio M5 Ultra 256 GB result; intermediate MacBook Pro M5 Max 128 GB target evidence retained for the Auto expert-paging code path | Superseded by the Ultra-class 192 GB+ target above (ADR-037) |
+| Former target hardware | No Studio M5 Ultra 256 GB result; MacBook Pro M5 Max 128 GB paging-path evidence is historical | Current standard is MacBook Pro M5 Max 128 GB, single-stream resident (ADR-049). ADR-037's Ultra-class 192 GB+ target is larger-host evidence |
 | Release | Not release-ready | Close the numerical, QA, MTP, throughput, delivery and target-hardware gates above; merged validation alone is insufficient |
 
 The statistical threshold was adjusted on the collected sample: the earlier

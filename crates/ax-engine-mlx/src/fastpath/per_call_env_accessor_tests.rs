@@ -216,6 +216,7 @@ const ENV_VAR_ALLOWED_OWNERS: &[(&str, &str)] = &[
     ("src/model/shared/verify_qmm.rs", "min_route_n"),
     ("src/model/shared/verify_qmm.rs", "msg_pad_m4_enabled"),
     ("src/model/shared/verify_qmm.rs", "msg_simdgroups"),
+    ("src/model/shared/verify_qmm.rs", "mxfp4_window_min_n"),
     ("src/model/shared/verify_qmm.rs", "split_k_huge_enabled"),
     (
         "src/model/whole_verify.rs",
@@ -265,6 +266,7 @@ const ENV_VAR_ALLOWED_OWNERS: &[(&str, &str)] = &[
     ),
     ("src/runner/mtp_profitability.rs", "env_u32"),
     ("src/runner/mtp_profitability.rs", "env_f64"),
+    ("src/runner/mtp_step_trace.rs", "trace_sink"),
     (
         "src/runner/mtp_profitability.rs",
         "mtp_profitability_config_from_env",

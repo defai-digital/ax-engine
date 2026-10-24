@@ -115,6 +115,10 @@ pub struct EngineSessionConfig {
     /// Max concurrent text prefills admitted per step when fair mode is on.
     /// `0` means unlimited (subject to free-block headroom).
     pub max_inflight_prefill_requests: u32,
+    /// Time-targeted prefill while other requests decode: target stall per
+    /// prefill step in milliseconds, with decode-debt repayment between
+    /// chunks (see `ax_engine_core::prefill_stall`). `0` (default) is off.
+    pub prefill_stall_target_ms: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,6 +158,10 @@ pub struct PreviewSessionConfigRequest {
     pub multi_prefill_fair: bool,
     pub max_prefill_tokens_per_request_per_step: u32,
     pub max_inflight_prefill_requests: u32,
+    /// Time-targeted prefill while other requests decode: target stall per
+    /// prefill step in milliseconds, with decode-debt repayment between
+    /// chunks (see `ax_engine_core::prefill_stall`). `0` (default) is off.
+    pub prefill_stall_target_ms: u32,
 }
 
 impl Default for PreviewSessionConfigRequest {
@@ -177,6 +185,7 @@ impl Default for PreviewSessionConfigRequest {
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
+            prefill_stall_target_ms: 0,
         }
     }
 }
@@ -206,6 +215,10 @@ pub struct ResolvedSessionConfigRequest {
     pub multi_prefill_fair: bool,
     pub max_prefill_tokens_per_request_per_step: u32,
     pub max_inflight_prefill_requests: u32,
+    /// Time-targeted prefill while other requests decode: target stall per
+    /// prefill step in milliseconds, with decode-debt repayment between
+    /// chunks (see `ax_engine_core::prefill_stall`). `0` (default) is off.
+    pub prefill_stall_target_ms: u32,
 }
 
 impl Default for ResolvedSessionConfigRequest {
@@ -236,6 +249,7 @@ impl Default for ResolvedSessionConfigRequest {
             max_prefill_tokens_per_request_per_step: default
                 .max_prefill_tokens_per_request_per_step,
             max_inflight_prefill_requests: default.max_inflight_prefill_requests,
+            prefill_stall_target_ms: default.prefill_stall_target_ms,
         }
     }
 }
@@ -278,6 +292,7 @@ impl Default for EngineSessionConfig {
             multi_prefill_fair: false,
             max_prefill_tokens_per_request_per_step: 0,
             max_inflight_prefill_requests: 0,
+            prefill_stall_target_ms: 0,
         }
     }
 }
@@ -383,6 +398,7 @@ impl EngineSessionConfig {
             max_prefill_tokens_per_request_per_step: request
                 .max_prefill_tokens_per_request_per_step,
             max_inflight_prefill_requests: request.max_inflight_prefill_requests,
+            prefill_stall_target_ms: request.prefill_stall_target_ms,
         })
     }
 
@@ -421,6 +437,7 @@ impl EngineSessionConfig {
             max_prefill_tokens_per_request_per_step: request
                 .max_prefill_tokens_per_request_per_step,
             max_inflight_prefill_requests: request.max_inflight_prefill_requests,
+            prefill_stall_target_ms: request.prefill_stall_target_ms,
         })
     }
 
