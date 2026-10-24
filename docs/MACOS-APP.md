@@ -79,8 +79,42 @@ Settings is a page in the main workspace. Use its sidebar row, the AX Engine
 menu or Command-Comma; all three routes open the same page without a separate
 settings window. The command also reopens the main window if it was closed.
 Draft edits survive page switches. Save validates and persists them; Revert
-restores the saved values. Runtime and model operations lock settings while busy.
+restores the saved values. Runtime and model operations lock runtime locations
+and the port while busy. Generation-only changes remain editable and apply to
+the next Chat request without restarting the server or rescanning models.
 Third-party notices remain available from Settings and the app menu.
+
+## Usage profiles
+
+Settings opens with **Coding**, **Chatbot**, **Media**, and **Custom**. Profiles
+set a response ceiling and use runtime sampling defaults (no temperature, top-p,
+top-k, or penalty overrides). These are app starting points, not model-specific
+quality or performance qualifications:
+
+| Profile | Maximum output tokens | Intended use |
+| --- | ---: | --- |
+| Coding | 8,192 | Code, explanations and tests |
+| Chatbot | 2,048 | Everyday conversation |
+| Media | 4,096 | Text responses for image/document analysis |
+| Custom | User-selected | Preserve or adjust your own settings |
+
+The response ceiling is not context size or a reserved memory allocation.
+Reasoning can consume output tokens; increase the limit when necessary. The
+model/runtime still enforces context and memory admission. Profiles do not change
+thinking, MTP, tool execution, model loading or system prompts. Media requires a
+compatible model and client; built-in Chat remains text-only. It does not enable
+image, audio or video generation.
+
+**Advanced generation** exposes the output limit and an optional temperature
+override. Editing preset values displays Custom. Existing settings retain their
+original temperature and output limit as Custom; fresh installs start with
+Chatbot. Save commits the draft, and Revert restores it.
+
+Profiles apply to built-in Chat requests. Other apps continue to supply their own
+parameters. **Copy saved request defaults** copies only a JSON request fragment
+(`max_tokens` and an optional `temperature`) for configuration in a compatible
+client; it contains no API key or local path and does not change a running server's
+global defaults. Only supported request parameters should be used by that client.
 
 ## Local data
 

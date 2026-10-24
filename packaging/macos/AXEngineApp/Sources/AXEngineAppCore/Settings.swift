@@ -9,9 +9,30 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var executable = ""
     public var modelsDirectory = AppPaths.support.appendingPathComponent("Models").path
     public var port = 31418
-    public var maxTokens = 1024
+    public var maxTokens = 2048
     public var temperature = 0.7
+    public var generationProfile: GenerationProfile = .chatbot
+    public var useRuntimeSampling = true
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case executable, modelsDirectory, port, maxTokens, temperature, generationProfile, useRuntimeSampling
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        executable = try values.decode(String.self, forKey: .executable)
+        modelsDirectory = try values.decode(String.self, forKey: .modelsDirectory)
+        port = try values.decode(Int.self, forKey: .port)
+        maxTokens = try values.decode(Int.self, forKey: .maxTokens)
+        temperature = try values.decode(Double.self, forKey: .temperature)
+        // Existing installs keep their exact behavior until a profile is selected.
+        generationProfile = try values.decodeIfPresent(GenerationProfile.self, forKey: .generationProfile) ?? .custom
+        useRuntimeSampling = try values.decodeIfPresent(Bool.self, forKey: .useRuntimeSampling) ?? false
+    }
+
+    public func hasRuntimeChanges(comparedTo saved: Self) -> Bool {
+        executable != saved.executable || modelsDirectory != saved.modelsDirectory || port != saved.port
+    }
 
     public func validate() throws {
         guard (1024...65535).contains(port), (1...32768).contains(maxTokens),

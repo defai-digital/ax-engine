@@ -102,8 +102,8 @@ public final class ChatStore: ObservableObject {
                 requestID = nil; activeConnection = nil; persist()
             }
             do {
-                let request = OpenAiChatCompletionRequest(model: model, messages: history, maxTokens: settings.maxTokens,
-                    temperature: supportsTemperature ? settings.temperature : nil)
+                let request = settings.chatRequest(model: model, messages: history,
+                    supportsTemperature: supportsTemperature)
                 for try await chunk in client.streamChatCompletion(request) {
                     try Task.checkCancellation()
                     if requestID == nil { requestID = EngineConnection.requestID(chunk.id) }

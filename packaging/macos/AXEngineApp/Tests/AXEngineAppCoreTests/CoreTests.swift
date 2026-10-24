@@ -231,6 +231,17 @@ private func temporary() throws -> URL {
     #expect(restored.error?.contains("changing models") == true)
     restored.retry(model: "different", connection: client, settings: settings, supportsTemperature: true)
     #expect(restored.messages.count == retainedCount)
+    // Prove profile defaults reach the HTTP request, including omission semantics.
+    for profile in [GenerationProfile.coding, .chatbot, .media] {
+        var profiled = settings; profiled.apply(profile)
+        chat.clear(); chat.send("parameters", model: "fixture", connection: client, settings: profiled)
+        while chat.generating { try await Task.sleep(for: .milliseconds(30)) }
+        let text = try #require(chat.messages.last?.content)
+        let payload = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        #expect(payload["max_tokens"] as? Int == profile.outputLimit)
+        #expect(payload["temperature"] == nil)
+        #expect(runtime.ready && runtime.job.running)
+    }
     chat.clear(); chat.send("slow", model: "fixture", connection: client, settings: settings)
     try await Task.sleep(for: .milliseconds(350)); await chat.stop()
     #expect(!chat.generating)

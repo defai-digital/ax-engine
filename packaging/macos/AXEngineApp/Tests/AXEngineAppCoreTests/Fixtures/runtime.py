@@ -77,9 +77,9 @@ class Handler(BaseHTTPRequestHandler):
             if prompt == 'error':
                 self.wfile.write(b'event: error\ndata: {"error":{"message":"Fixture generation failure"}}\n\n')
             else:
-                for i in range(100 if prompt == 'slow' else 2):
+                for i in range(100 if prompt == 'slow' else 1 if prompt == 'parameters' else 2):
                     event = {'id': 'chatcmpl-1', 'object': 'chat.completion.chunk', 'created': 1, 'model': 'fixture',
-                             'choices': [{'index': 0, 'delta': {'content': (json.dumps(body['messages']) if prompt == 'history' else 'Hello ') if i == 0 else 'world'}, 'finish_reason': None}]}
+                             'choices': [{'index': 0, 'delta': {'content': (json.dumps(body) if prompt == 'parameters' else json.dumps(body['messages']) if prompt == 'history' else 'Hello ') if i == 0 else 'world'}, 'finish_reason': None}]}
                     self.wfile.write(('data: '+json.dumps(event)+'\n\n').encode()); self.wfile.flush()
                     if prompt == 'slow': time.sleep(0.1)
                 if prompt != 'truncate': self.wfile.write(b'data: [DONE]\n\n')
