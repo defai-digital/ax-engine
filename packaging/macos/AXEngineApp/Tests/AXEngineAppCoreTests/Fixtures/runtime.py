@@ -28,6 +28,7 @@ if sys.argv[1:2] == ['download']:
     if 'Missing' not in sys.argv[2]:
         (dest/'config.json').write_text('{}')
         (dest/'model-manifest.json').write_text('{}')
+        (dest/'model.safetensors').write_bytes(b'fixture')
     emit({'schema_version': 'ax.download_model.v1', 'status': 'ready', 'dest': str(dest)})
     sys.exit(0)
 

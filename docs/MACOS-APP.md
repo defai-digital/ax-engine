@@ -25,9 +25,16 @@ rounded-plate and multi-resolution checks used by AX Code Desktop.
 ## Runtime setup
 
 Install AX Engine using the main README's installation instructions. The app
-looks for a bundled runtime, `/opt/homebrew/bin/ax-engine`, or
-`/usr/local/bin/ax-engine`. Settings can select another executable by absolute
-path. It does not install packages or download models on first launch.
+honors an explicit executable in Settings or `AX_ENGINE_BIN`, then searches
+PATH and standard install directories, the complete AX Code managed installation
+record, an app-bundled runtime, and a source-build runtime hint. It also discovers
+user Python and virtual-environment installs. AX Code's install marker is read
+from `$XDG_STATE_HOME/ax-code/ax-engine/install.json` (default
+`~/.local/state/ax-code/ax-engine/install.json`); unfinished installations are
+not selected. The app does not update or modify AX Code's installation.
+Settings shows the resolved executable path and can override it explicitly.
+Local source builds record an existing checkout native runtime (or `.venv`
+console entry point) as a fallback; that development hint is not a bundled runtime. It does not install packages or download models on first launch.
 
 An optional `--runtime-dir <directory>` bundles an already prepared standalone
 runtime payload. Its executable/dylib layout must match
@@ -38,12 +45,19 @@ complete supported command environment.
 
 ## Workflow
 
-1. **Models:** refresh the installed runtime's catalog. Revisions are read from
-   the runtime and retained in download requests. Add a local folder, or choose
-   Download. Catalog inclusion is not a memory-fit or qualification claim.
-2. **Downloads:** view progress, cancel and retry. Transfers run sequentially
-   through `ax-engine download --progress-json`. Ready requires both a successful
-   terminal record and a successful process exit, not just a 100% progress bar.
+1. **Models:** Local Library shows existing managed, imported and cached models
+   by default. As in the TUI, one snapshot per cached repository is shown,
+   preferring complete weights before the newest revision. Metadata-only caches
+   and missing indexed shards are marked incomplete. Add an existing folder
+   without moving it, or use Catalog to browse the installed runtime's profiles.
+   Revisions are retained in download requests. Catalog inclusion is not a
+   memory-fit or qualification claim.
+2. **Models → Transfers:** choosing Download in Catalog switches to Transfers,
+   where you can view progress, cancel and retry. This is the current session's
+   queue; an empty queue does not mean no models are downloaded. Transfers run
+   sequentially through `ax-engine download --progress-json`. Ready requires
+   complete weight files, a successful terminal record and a successful process
+   exit, not just a 100% progress bar. There is no separate Downloads sidebar page.
 3. **Server:** choose an installed folder or cached alias. Start uses offline
    resolution and loopback only. Runtime MTP and expert-streaming defaults remain
    unchanged. An app-owned server uses a per-launch in-memory API key.
@@ -59,13 +73,21 @@ Its API key stays in memory. Disconnect and app quit do not stop an attached
 service. Quit asks before stopping app-owned inference or downloads. Closing a
 window follows macOS app conventions; use Quit to stop app-owned work.
 
+## Settings navigation
+
+Settings is a page in the main workspace. Use its sidebar row, the AX Engine
+menu or Command-Comma; all three routes open the same page without a separate
+settings window. The command also reopens the main window if it was closed.
+Draft edits survive page switches. Save validates and persists them; Revert
+restores the saved values. Runtime and model operations lock settings while busy.
+Third-party notices remain available from Settings and the app menu.
+
 ## Local data
 
 Settings and the current conversation live in
 `~/Library/Application Support/AX Engine/`. Downloaded model folders default to
 its `Models/` subdirectory. The library also discovers Hugging Face snapshots and
-explicitly imported folders. A manifest-present label is not proof that a model
-will load; the runtime performs admission and compatibility validation.
+explicitly imported folders. Complete weight files are not proof that a model will load; the runtime performs admission and compatibility validation.
 
 Only app-managed model directories can be deleted from the GUI, after
 confirmation and while disconnected. Imported directories and the Hugging Face

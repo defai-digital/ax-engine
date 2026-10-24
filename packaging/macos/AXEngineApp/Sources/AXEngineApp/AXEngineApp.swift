@@ -5,17 +5,33 @@ import AXEngineAppCore
 @MainActor
 final class ApplicationModel: ObservableObject {
     @Published var settings = AppSettings()
+    @Published var settingsDraft = AppSettings() {
+        didSet { settingsSaved = false }
+    }
+    @Published var settingsSaved = false
     @Published var settingsError: String?
+    @Published var page: Page? = .overview
     let runtime = RuntimeController()
     let models = ModelStore()
     let chat = ChatStore()
     init() {
         do { settings = try AppSettings.load() }
         catch { settingsError = error.localizedDescription }
+        settingsDraft = settings
     }
-    func saveSettings() {
-        do { try settings.save(); settingsError = nil }
-        catch { settingsError = error.localizedDescription }
+    var hasSettingsChanges: Bool { settingsDraft != settings }
+    func saveSettings() -> Bool {
+        do {
+            try settingsDraft.save()
+            settings = settingsDraft; settingsError = nil; settingsSaved = true
+            return true
+        } catch {
+            settingsError = error.localizedDescription; settingsSaved = false
+            return false
+        }
+    }
+    func revertSettings() {
+        settingsDraft = settings; settingsError = nil
     }
 }
 
@@ -48,7 +64,7 @@ struct AXEngineApplication: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = ApplicationModel()
     var body: some Scene {
-        WindowGroup("AX Engine", id: "main") {
+        Window("AX Engine", id: "main") {
             MainView(model: model, runtime: model.runtime, models: model.models, chat: model.chat)
                 .tint(Brand.accentChrome)
                 .frame(minWidth: 940, minHeight: 680)
@@ -63,8 +79,8 @@ struct AXEngineApplication: App {
                 Button("About AX Engine") { showAbout() }
             }
             ThirdPartyNoticeCommands()
+            SettingsNavigationCommands(model: model)
         }
-        Settings { SettingsView(model: model).frame(width: 620).padding(28) }
         Window("Third-Party Notices", id: "third-party-notices") {
             ThirdPartyNoticesView()
         }
@@ -73,6 +89,20 @@ struct AXEngineApplication: App {
     private func showAbout() {
         let credits = NSMutableAttributedString(string: "Native local inference for Apple Silicon.\n\nManage your models, run local inference and chat on your Mac.\n\nOpen Third-Party Notices from the AX Engine menu for open-source acknowledgements.")
         NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
+}
+
+struct SettingsNavigationCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+    @ObservedObject var model: ApplicationModel
+    var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") {
+                model.page = .settings
+                openWindow(id: "main")
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
     }
 }
 

@@ -33,8 +33,20 @@ with open(sys.argv[1], 'rb') as source:
     print(tomllib.load(source)['workspace']['package']['version'])
 PY
 )"
-python3 - "$APP/Contents/Info.plist" "$VERSION" <<'PY'
-import plistlib, sys
+python3 - "$APP/Contents/Info.plist" "$VERSION" "$ROOT" "$RUNTIME" <<'PY'
+import os, plistlib, sys
+from pathlib import Path
+development = {}
+if not sys.argv[4]:
+    root = Path(sys.argv[3])
+    native = [root/'target'/profile/'ax-engine' for profile in ['debug', 'release']]
+    native = [path for path in native if path.is_file() and os.access(path, os.X_OK)]
+    console = root/'.venv/bin/ax-engine'
+    executable = max(native, key=lambda p: p.stat().st_mtime) if native else console
+    if executable.is_file() and os.access(executable, os.X_OK):
+        development['AXEngineDevelopmentRuntime'] = str(executable)
+    if console.is_file():
+        development['AXEngineDevelopmentPythonBin'] = str(console.parent)
 with open(sys.argv[1], 'wb') as dest:
     plistlib.dump({
         'CFBundleName': 'AX Engine', 'CFBundleDisplayName': 'AX Engine',
@@ -45,6 +57,7 @@ with open(sys.argv[1], 'wb') as dest:
         'NSHighResolutionCapable': True,
         'NSHumanReadableCopyright': 'AX Engine contributors.',
         'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
+        **development,
     }, dest)
 PY
 if [[ -n "$RUNTIME" ]]; then

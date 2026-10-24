@@ -2,16 +2,16 @@ import SwiftUI
 import AppKit
 import AXEngineAppCore
 
-private enum Page: String, CaseIterable, Identifiable {
-    case overview = "Overview", models = "Models", downloads = "Downloads", server = "Server", chat = "Chat"
+enum Page: String, CaseIterable, Identifiable {
+    case overview = "Overview", models = "Models", server = "Server", chat = "Chat", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .overview: "square.grid.2x2"
         case .models: "square.stack.3d.up"
-        case .downloads: "arrow.down.circle"
         case .server: "server.rack"
         case .chat: "bubble.left.and.bubble.right"
+        case .settings: "gearshape"
         }
     }
 }
@@ -21,9 +21,9 @@ struct MainView: View {
     @ObservedObject var runtime: RuntimeController
     @ObservedObject var models: ModelStore
     @ObservedObject var chat: ChatStore
-    @State private var page: Page? = .overview
     @State private var selectedPath = ""
     @State private var search = ""
+    @State private var modelsSection = "library"
     @State private var removeTarget: LocalModel?
     @State private var stopConfirmation = false
     @State private var apiKey = ""
@@ -38,7 +38,7 @@ struct MainView: View {
                         Text("Local inference").font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.horizontal, 14).padding(.top, 20)
-                List(Page.allCases, selection: $page) { item in
+                List(Page.allCases, selection: $model.page) { item in
                     Label(item.rawValue, systemImage: item.icon).tag(item)
                         .padding(.vertical, 5)
                 }.listStyle(.sidebar)
@@ -46,8 +46,6 @@ struct MainView: View {
                     PillBadge(text: runtime.state, systemImage: runtime.ready ? "circle.fill" : "circle", tint: runtime.ready ? Brand.accentChrome : .secondary)
                     Text("Apple Silicon · \(ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)) unified memory")
                         .font(.caption).foregroundStyle(.secondary)
-                    SettingsLink { Label("Settings", systemImage: "gearshape") }
-                        .buttonStyle(.plain)
                 }.padding(18)
             }
             .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 280)
@@ -55,20 +53,20 @@ struct MainView: View {
             VStack(spacing: 0) {
                 HStack {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text((page ?? .overview).rawValue).font(.system(size: 27, weight: .semibold))
+                        Text((model.page ?? .overview).rawValue).font(.system(size: 27, weight: .semibold))
                         Text(subtitle).font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if runtime.ready && page != .chat { Button("Open Chat", systemImage: "bubble.left") { page = .chat } }
+                    if runtime.ready && model.page != .chat { Button("Open Chat", systemImage: "bubble.left") { model.page = .chat } }
                 }.padding(26)
                 Divider()
                 Group {
-                    switch page ?? .overview {
+                    switch model.page ?? .overview {
                     case .overview: overview
                     case .models: modelsPage
-                    case .downloads: downloadsPage
                     case .server: serverPage
                     case .chat: ChatView(chat: chat, runtime: runtime, settings: model.settings)
+                    case .settings: SettingsView(model: model)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -91,12 +89,12 @@ struct MainView: View {
     }
 
     private var subtitle: String {
-        switch page ?? .overview {
+        switch model.page ?? .overview {
         case .overview: "Your models. Your Mac. Your control."
         case .models: "Browse runtime profiles and manage local model folders."
-        case .downloads: "A resumable queue powered by the AX Engine downloader."
         case .server: "Start a local model or connect to an existing AX Engine service."
         case .chat: "Private conversations with your running model."
+        case .settings: "Configure your local runtime and generation defaults."
         }
     }
 
@@ -110,8 +108,8 @@ struct MainView: View {
                         Text("Choose a model, start the engine, and keep the conversation on your Mac.")
                             .foregroundStyle(.secondary)
                         HStack {
-                            Button("Browse Models", systemImage: "square.stack.3d.up") { page = .models }.buttonStyle(.borderedProminent)
-                            Button("Connect a Server") { page = .server }
+                            Button("Browse Models", systemImage: "square.stack.3d.up") { model.page = .models }.buttonStyle(.borderedProminent)
+                            Button("Connect a Server") { model.page = .server }
                         }
                     }
                 }.padding(.vertical, 12)
@@ -123,7 +121,7 @@ struct MainView: View {
                         MetricRow(label: "Thermal state", value: thermalLabel)
                     }
                     Card("Your workspace") {
-                        MetricRow(label: "Local models", value: String(models.library.count))
+                        MetricRow(label: "Local models", value: models.scanning || models.refreshing ? "Checking…" : String(models.library.count))
                         MetricRow(label: "Server", value: runtime.state)
                         MetricRow(label: "Active downloads", value: String(models.downloads.filter { ["Queued", "Downloading"].contains($0.state) }.count))
                     }
@@ -149,76 +147,99 @@ struct MainView: View {
     }
 
     private var modelsPage: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(spacing: 0) {
+            VStack(spacing: 14) {
                 if let error = models.error { ErrorBanner(text: error) }
-                HStack {
-                    TextField("Search models", text: $search).textFieldStyle(.roundedBorder)
-                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await models.refresh(settings: model.settings) } }.disabled(models.refreshing)
-                    Button("Add Local Folder", systemImage: "folder.badge.plus") { importFolder() }
-                }
-                Card("Local library", subtitle: "Imported and cached folders stay where they are.") {
-                    if models.library.isEmpty { Text("No local models found. Download a model below or add an existing folder.").foregroundStyle(.secondary) }
-                    ForEach(models.library.filter { search.isEmpty || $0.path.localizedCaseInsensitiveContains(search) || $0.name.localizedCaseInsensitiveContains(search) }) { item in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.name).font(.headline).lineLimit(1)
-                                Text(item.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(item.path)
-                                Text(item.ready ? "Manifest present · runtime validates at load" : "Manifest missing · prepare with AX Engine CLI").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Use") { selectedPath = item.path; page = .server }.disabled(!item.ready)
-                            if item.managed {
-                                Button(role: .destructive) { removeTarget = item } label: { Image(systemName: "trash") }
-                                    .disabled(runtime.owned || runtime.connection != nil || runtime.busy || models.downloading || models.removing)
-                                    .help("Remove app-managed model")
-                            }
-                        }.padding(.vertical, 6)
-                        Divider()
-                    }
-                }
-                Card("Runtime catalog", subtitle: "Pinned profiles come from your installed AX Engine runtime. A catalog entry is not a hardware qualification.") {
-                    if models.refreshing { ProgressView("Reading runtime catalog…") }
-                    if models.catalog.isEmpty && !models.refreshing { Text("Select your AX Engine runtime in Settings, then refresh.").foregroundStyle(.secondary) }
-                    ForEach(models.catalog.filter { search.isEmpty || $0.alias.localizedCaseInsensitiveContains(search) || $0.repoId.localizedCaseInsensitiveContains(search) }) { item in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.alias).font(.headline)
-                                Text(item.repoId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                Text(item.revision.map { "Revision " + $0 } ?? "Unpinned runtime profile").font(.caption2).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Download", systemImage: "arrow.down") { models.enqueue(item, settings: model.settings); page = .downloads }
-                        }.padding(.vertical, 7)
-                        Divider()
-                    }
-                }
-            }.padding(26)
-        }
-    }
-    private var downloadsPage: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                if models.downloads.isEmpty {
-                    ContentUnavailableView("No downloads yet", systemImage: "arrow.down.circle", description: Text("Choose a model from Models to begin."))
-                    Button("Browse Models") { page = .models }
-                }
-                ForEach(models.downloads) { item in
-                    Card(item.model.alias, subtitle: item.state) {
-                        if let progress = item.fraction { ProgressView(value: progress) }
-                        else if item.state == "Downloading" { ProgressView() }
-                        Text(item.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        HStack {
-                            Text(item.destination).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                            Spacer()
-                            if ["Queued", "Downloading"].contains(item.state) { Button("Cancel", role: .destructive) { models.cancel(item.id) } }
-                            if ["Failed", "Cancelled"].contains(item.state) { Button("Retry") { models.retry(item.id, settings: model.settings) } }
-                            if item.state == "Ready" { Button("Use Model") { selectedPath = item.destination; page = .server } }
+                Picker("Models view", selection: $modelsSection) {
+                    Text("Local Library").tag("library")
+                    Text("Catalog").tag("catalog")
+                    Text("Transfers").tag("transfers")
+                }.pickerStyle(.segmented).frame(maxWidth: 460)
+                if modelsSection != "transfers" {
+                    HStack {
+                        TextField("Search models", text: $search).textFieldStyle(.roundedBorder)
+                        Button("Refresh", systemImage: "arrow.clockwise") { Task { await models.refresh(settings: model.settings) } }
+                            .disabled(models.refreshing || models.scanning)
+                        if modelsSection == "library" {
+                            Button("Add Local Folder", systemImage: "folder.badge.plus") { importFolder() }
                         }
                     }
                 }
             }.padding(26)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    switch modelsSection {
+                    case "catalog": runtimeCatalog
+                    case "transfers": transfers
+                    default: localLibrary(filter: search)
+                    }
+                }.padding([.horizontal, .bottom], 26)
+            }
         }
+        .task { await models.scan(settings: model.settings) }
+    }
+    private var runtimeCatalog: some View {
+        Card("Runtime catalog", subtitle: "Pinned profiles come from your installed AX Engine runtime. A catalog entry is not a hardware qualification.") {
+            if models.refreshing { ProgressView("Reading runtime catalog…") }
+            if models.catalog.isEmpty && !models.refreshing { Text("Select your AX Engine runtime in Settings, then refresh.").foregroundStyle(.secondary) }
+            ForEach(models.catalog.filter { search.isEmpty || $0.alias.localizedCaseInsensitiveContains(search) || $0.repoId.localizedCaseInsensitiveContains(search) }) { item in
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.alias).font(.headline)
+                        Text(item.repoId).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(item.revision.map { "Revision " + $0 } ?? "Unpinned runtime profile").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Download", systemImage: "arrow.down") { models.enqueue(item, settings: model.settings); modelsSection = "transfers"; model.page = .models }
+                }.padding(.vertical, 7)
+                Divider()
+            }
+        }
+    }
+    private func localLibrary(filter: String = "") -> some View {
+        Card("Local library", subtitle: models.scanning ? "Checking model folders and cached snapshots…" : "\(models.library.count) local models · \(models.library.filter { $0.ready }.count) with complete weights") {
+            if models.scanning { ProgressView("Scanning local library…") }
+            if models.library.isEmpty && !models.scanning { Text("No local models found. Browse Catalog to download one, or add an existing folder.").foregroundStyle(.secondary) }
+            ForEach(models.library.filter { filter.isEmpty || $0.path.localizedCaseInsensitiveContains(filter) || $0.name.localizedCaseInsensitiveContains(filter) }) { item in
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.name).font(.headline).lineLimit(1)
+                        Text(item.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(item.path)
+                        Text(item.ready ? "Downloaded · runtime validates at load" : "Incomplete download or metadata only").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Use") { selectedPath = item.path; model.page = .server }.disabled(!item.ready)
+                    if item.managed {
+                        Button(role: .destructive) { removeTarget = item } label: { Image(systemName: "trash") }
+                            .disabled(runtime.owned || runtime.connection != nil || runtime.busy || models.downloading || models.removing)
+                            .help("Remove app-managed model")
+                    }
+                }.padding(.vertical, 6)
+                Divider()
+            }
+        }
+    }
+    private var transfers: some View {
+        VStack(spacing: 16) {
+            if models.downloads.isEmpty {
+                ContentUnavailableView("No transfers in this session", systemImage: "arrow.down.circle", description: Text("Previously downloaded models are available in Local Library."))
+                Button("Browse Catalog") { search = ""; modelsSection = "catalog" }
+            }
+            ForEach(models.downloads) { item in
+                Card(item.model.alias, subtitle: item.state) {
+                    if let progress = item.fraction { ProgressView(value: progress) }
+                    else if item.state == "Downloading" { ProgressView() }
+                    Text(item.detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    HStack {
+                        Text(item.destination).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer()
+                        if ["Queued", "Downloading"].contains(item.state) { Button("Cancel", role: .destructive) { models.cancel(item.id) } }
+                        if ["Failed", "Cancelled"].contains(item.state) { Button("Retry") { models.retry(item.id, settings: model.settings) } }
+                        if item.state == "Ready" { Button("Use Model") { selectedPath = item.destination; model.page = .server } }
+                    }
+                }
+            }
+        }.frame(maxWidth: .infinity)
     }
     private var serverPage: some View {
         ScrollView {

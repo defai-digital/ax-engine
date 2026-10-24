@@ -69,6 +69,8 @@ public final class ModelStore: ObservableObject {
     @Published public private(set) var downloads: [DownloadItem] = []
     @Published public private(set) var error: String?
     @Published public private(set) var refreshing = false
+    @Published public private(set) var scanning = false
+    private var scanGeneration = 0
     @Published public private(set) var downloading = false
     @Published public private(set) var removing = false
     public let downloadJob = ProcessJob()
@@ -100,14 +102,23 @@ public final class ModelStore: ObservableObject {
     }
 
     public func scan(settings: AppSettings) async {
+        scanGeneration += 1
+        let generation = scanGeneration
+        scanning = true
         let root = settings.modelsDirectory, extra = imported
-        library = await Task.detached(priority: .utility) { Self.scanLibrary(root: root, imported: extra) }.value
+        let result = await Task.detached(priority: .utility) { Self.scanLibrary(root: root, imported: extra) }.value
+        guard generation == scanGeneration else { return }
+        library = result
+        scanning = false
     }
 
     public nonisolated static func scanLibrary(root: String, imported: [String], environment: [String: String] = ProcessInfo.processInfo.environment) -> [LocalModel] {
         let fm = FileManager.default
         let rootURL = URL(fileURLWithPath: root)
         var paths = (try? fm.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)) ?? []
+        if let configured = environment["AX_ENGINE_MODELS_DIR"], configured != root {
+            paths += (try? fm.contentsOfDirectory(at: URL(fileURLWithPath: configured), includingPropertiesForKeys: nil)) ?? []
+        }
         paths += imported.map { URL(fileURLWithPath: $0) }
         let cache: URL
         if let path = environment["HF_HUB_CACHE"] { cache = URL(fileURLWithPath: path) }
@@ -115,16 +126,53 @@ public final class ModelStore: ObservableObject {
         else if let path = environment["XDG_CACHE_HOME"] { cache = URL(fileURLWithPath: path).appendingPathComponent("huggingface/hub") }
         else { cache = fm.homeDirectoryForCurrentUser.appendingPathComponent(".cache/huggingface/hub") }
         for repo in (try? fm.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil)) ?? [] where repo.lastPathComponent.hasPrefix("models--") {
-            paths += (try? fm.contentsOfDirectory(at: repo.appendingPathComponent("snapshots"), includingPropertiesForKeys: nil)) ?? []
+            // Match the TUI: one representative snapshot per repository,
+            // preferring complete weights, then the newest snapshot.
+            let snapshots = ((try? fm.contentsOfDirectory(at: repo.appendingPathComponent("snapshots"), includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey])) ?? [])
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            let ranked = snapshots.map { snapshot in
+                (url: snapshot, ready: modelReady(snapshot),
+                 modified: (try? snapshot.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
+            }.sorted { left, right in
+                if left.ready != right.ready { return !left.ready && right.ready }
+                return left.modified == right.modified ? left.url.path < right.url.path : left.modified < right.modified
+            }
+            if let selected = ranked.last { paths.append(selected.url) }
         }
         var seen = Set<String>()
         return paths.compactMap { path in
             let canonical = path.resolvingSymlinksInPath().standardizedFileURL.path
-            guard seen.insert(canonical).inserted, fm.fileExists(atPath: path.appendingPathComponent("config.json").path) else { return nil }
+            guard seen.insert(canonical).inserted, fm.fileExists(atPath: path.appendingPathComponent("config.json").path) || fm.fileExists(atPath: path.appendingPathComponent("model-manifest.json").path) else { return nil }
             return LocalModel(path: canonical,
-                ready: fm.fileExists(atPath: path.appendingPathComponent("model-manifest.json").path),
+                ready: modelReady(path),
                 managed: canRemove(path: canonical, root: root))
         }.sorted { $0.path < $1.path }
+    }
+
+    // Same readiness boundary as the TUI catalog: metadata plus complete
+    // safetensor files. The runtime still performs format/admission validation.
+    public nonisolated static func modelReady(_ path: URL) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path.appendingPathComponent("config.json").path)
+            || fm.fileExists(atPath: path.appendingPathComponent("model-manifest.json").path) else { return false }
+        let index = path.appendingPathComponent("model.safetensors.index.json")
+        if fm.fileExists(atPath: index.path) {
+            guard let size = try? index.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 16 * 1024 * 1024,
+                  let data = try? Data(contentsOf: index),
+                  let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let map = payload["weight_map"] as? [String: String], !map.isEmpty else { return false }
+            return Set(map.values).allSatisfy { shard in
+                guard !shard.isEmpty, !shard.hasPrefix("/"),
+                      shard.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !["", ".", ".."].contains(String($0)) }) else { return false }
+                var directory: ObjCBool = false
+                return fm.fileExists(atPath: path.appendingPathComponent(shard).path, isDirectory: &directory) && !directory.boolValue
+            }
+        }
+        return ((try? fm.contentsOfDirectory(at: path, includingPropertiesForKeys: [.isRegularFileKey])) ?? [])
+            .contains {
+                var directory: ObjCBool = false
+                return $0.pathExtension.lowercased() == "safetensors" && fm.fileExists(atPath: $0.path, isDirectory: &directory) && !directory.boolValue
+            }
     }
 
     public nonisolated static func canRemove(path: String, root: String) -> Bool {
@@ -210,7 +258,7 @@ public final class ModelStore: ObservableObject {
                 guard result.status == 0, progress.terminalReady, let destination = progress.destination,
                       URL(fileURLWithPath: destination).resolvingSymlinksInPath() == URL(fileURLWithPath: item.destination).resolvingSymlinksInPath(),
                       FileManager.default.fileExists(atPath: URL(fileURLWithPath: destination).appendingPathComponent("model-manifest.json").path),
-                      FileManager.default.fileExists(atPath: URL(fileURLWithPath: destination).appendingPathComponent("config.json").path) else {
+                      Self.modelReady(URL(fileURLWithPath: destination)) else {
                     throw AppFailure.message(progress.detail ?? String(result.stderr.suffix(2048)))
                 }
                 if let i = downloads.firstIndex(where: { $0.id == id }) { downloads[i].state = "Ready"; downloads[i].fraction = 1 }

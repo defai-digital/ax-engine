@@ -54,7 +54,13 @@ public final class ProcessJob: ObservableObject {
         child.executableURL = executable
         child.arguments = arguments
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + (env["PATH"] ?? "")
+        let developmentRuntime = Bundle.main.object(forInfoDictionaryKey: "AXEngineDevelopmentRuntime") as? String
+        // A development helper environment belongs only to the source-built
+        // runtime. Let installed runtimes choose their own download environment.
+        let pythonBin = executable.path == developmentRuntime
+            ? Bundle.main.object(forInfoDictionaryKey: "AXEngineDevelopmentPythonBin") as? String : nil
+        let localBins = [executable.deletingLastPathComponent().path, pythonBin].compactMap { $0 }
+        env["PATH"] = localBins.joined(separator: ":") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + (env["PATH"] ?? "")
         env.merge(environment) { _, value in value }
         child.environment = env
         child.standardInput = FileHandle.nullDevice

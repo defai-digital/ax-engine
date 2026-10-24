@@ -261,3 +261,71 @@ private func temporary() throws -> URL {
     // Attached-mode stop is lifecycle-neutral: the external server still answers.
     #expect(try await connection.models().contains(where: { $0.id == model.id }))
 }
+
+@Test func runtimeDiscoveryFindsUserAndDevelopmentInstalls() throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let userBin = root.appendingPathComponent(".local/bin/ax-engine")
+    try FileManager.default.createDirectory(at: userBin.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("#!/bin/sh\nexit 0\n".utf8).write(to: userBin)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: userBin.path)
+    #expect(try RuntimeLocator.find(environment: [:], home: root, systemDirectories: []) == userBin)
+    let development = root.appendingPathComponent("checkout-runtime")
+    try FileManager.default.copyItem(at: userBin, to: development)
+    #expect(try RuntimeLocator.find(development: development.path, environment: [:], home: root, systemDirectories: []) == userBin)
+    #expect(throws: AppFailure.self) {
+        try RuntimeLocator.find(explicit: root.appendingPathComponent("missing").path,
+                                development: development.path, environment: [:], home: root, systemDirectories: [])
+    }
+    try FileManager.default.removeItem(at: userBin)
+    let pathBin = root.appendingPathComponent("ax-engine")
+    try FileManager.default.copyItem(at: development, to: pathBin)
+    #expect(try RuntimeLocator.find(environment: ["PATH": root.path + ":relative"], home: root, systemDirectories: []) == pathBin)
+    #expect(try RuntimeLocator.find(environment: ["AX_ENGINE_BIN": development.path], home: root, systemDirectories: []) == development)
+}
+
+@Test func libraryPrefersCompleteSnapshotAndValidatesShardFiles() throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let cache = root.appendingPathComponent("hub")
+    let snapshots = cache.appendingPathComponent("models--Tests--Model/snapshots")
+    let complete = snapshots.appendingPathComponent("old-complete")
+    let metadata = snapshots.appendingPathComponent("new-metadata")
+    for folder in [complete, metadata] {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: folder.appendingPathComponent("config.json"))
+    }
+    let blob = root.appendingPathComponent("blob")
+    try Data("fixture".utf8).write(to: blob)
+    try FileManager.default.createSymbolicLink(at: complete.appendingPathComponent("model.safetensors"), withDestinationURL: blob)
+    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 10)], ofItemAtPath: complete.path)
+    let models = ModelStore.scanLibrary(root: root.appendingPathComponent("managed").path, imported: [], environment: ["HF_HUB_CACHE": cache.path])
+    #expect(models.count == 1)
+    #expect(models.first?.path == complete.path)
+    #expect(models.first?.ready == true)
+    #expect(!ModelStore.modelReady(metadata))
+    let index = complete.appendingPathComponent("model.safetensors.index.json")
+    try Data(#"{"weight_map":{"a":"model.safetensors","b":"missing.safetensors"}}"#.utf8).write(to: index)
+    #expect(!ModelStore.modelReady(complete))
+    try Data(#"{"weight_map":{"a":"../blob"}}"#.utf8).write(to: index)
+    #expect(!ModelStore.modelReady(complete))
+    try Data(#"{"weight_map":{"a":"model.safetensors"}}"#.utf8).write(to: index)
+    #expect(ModelStore.modelReady(complete))
+}
+
+@Test func runtimeDiscoveryUsesCompleteAxCodeManagedInstall() throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let payload = root.appendingPathComponent(".cache/ax-code/ax-engine/bin/7.7.0")
+    let marker = root.appendingPathComponent(".local/state/ax-code/ax-engine/install.json")
+    try FileManager.default.createDirectory(at: payload, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let binary = payload.appendingPathComponent("ax-engine")
+    try Data("#!/bin/sh\nexit 0\n".utf8).write(to: binary)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+    try JSONSerialization.data(withJSONObject: ["path": binary.path, "version": "7.7.0"]).write(to: marker)
+    #expect(throws: AppFailure.self) { try RuntimeLocator.find(environment: [:], home: root, systemDirectories: []) }
+    for name in ["ax-engine-server", "libmlx.dylib", "libjaccl.dylib", "mlx.metallib"] {
+        try Data("fixture".utf8).write(to: payload.appendingPathComponent(name))
+    }
+    #expect(try RuntimeLocator.find(environment: [:], home: root, systemDirectories: []) == binary)
+    try FileManager.default.removeItem(at: marker)
+    #expect(throws: AppFailure.self) { try RuntimeLocator.find(environment: [:], home: root, systemDirectories: []) }
+}
