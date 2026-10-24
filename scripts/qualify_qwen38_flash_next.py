@@ -123,7 +123,7 @@ def contract() -> dict[str, Any]:
         "ci": "dry-run only; do not mount Flash Next weights on CI",
         "fail_closed": True,
         "ready": False,
-        "readiness_scope": "MLX AXQ MXFP4/MXFP8 MTP only; standalone affine packs retired",
+        "readiness_scope": "this qualifier covers MLX AXQ MXFP4 MTP; the affine 6-bit MTP pack is supported (ADR-050) but not qualified here",
         "format_scope": ["mxfp4", "mxfp8"],
         "mtp_sidecar_required": True,
         "mxfp8_status": "in scope; audited pack pin and dedicated native-path validation pending",
@@ -133,7 +133,7 @@ def contract() -> dict[str, Any]:
         "release_scope": RELEASE_SCOPE,
         "release_verdict": release_record(),
         "validation_scope": "manifest and sidecar header metadata only; native loader validation required",
-        "convert": "metadata mapping; retired affine readiness is not MXFP4 readiness",
+        "convert": "metadata mapping; affine 6-bit readiness is not MXFP4 readiness",
         "load_blocker": "none: MXFP4/group32 loads without an env var; target qualification pending",
         "unknown_layout_blocker": "qwen4_exp_weight_layout_unknown",
         "experimental_opt_in": "none for MXFP4; Candidate status and MTP-S/P/D gates remain open",
@@ -195,7 +195,7 @@ def _print_contract(as_json: bool) -> None:
     print("target admission: MXFP4/group32 loads without an env var; certification stays Candidate "
           f"({'direct-default release gates passed; MTP gates open' if payload['release_ready'] else 'gates open'})")
     print(f"release scope: {payload['release_scope']}")
-    print("standalone affine packs retired; MXFP8 pack audit and admission pending")
+    print("affine 6-bit MTP supported but not qualified by this record; other affine widths unsupported; MXFP8 pack audit and admission pending")
     print("fail-closed: convert must not remap onto qwen3_5")
     print("MTP gates (metadata preflight assesses none):")
     for gate, requirement in payload["mtp_gates"].items():
@@ -334,7 +334,7 @@ def _live_preflight(model_dir: Path) -> None:
     if not layouts:
         raise SystemExit("manifest has no quantized expert tensors")
     if layouts[0] not in allowed:
-        raise SystemExit(f"unsupported expert layout {layouts[0]}; standalone affine packs retired, MXFP8 admission pending")
+        raise SystemExit(f"unsupported expert layout {layouts[0]}; this qualifier covers MXFP4 only (affine 6-bit is supported but not qualified here), MXFP8 admission pending")
     sidecar = _mtp_metadata(model_dir)
     print(f"MTP sidecar metadata: {sidecar['tensor_count']} tensors; {sidecar['mtp_norm_layout']}")
     print("MXFP4/group32 preflight: no experimental opt-in required")

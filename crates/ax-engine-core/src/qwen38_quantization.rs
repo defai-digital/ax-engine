@@ -1,7 +1,9 @@
 //! Product format policy for the two Qwen 3.8 AXQ targets.
 //!
-//! Source identity distinguishes 27B from older models sharing `qwen3_5`.
-//! Companion affine8 tensors inside MX packs retain their exported precision.
+//! Supported packs: MLX AXQ MXFP4 / MXFP8 and affine 6-bit/group64 (the
+//! quality-size balance point, ADR-050). Other standalone affine widths stay
+//! out of product scope. Source identity distinguishes 27B from older models
+//! sharing `qwen3_5`. Companion affine8 tensors keep their exported precision.
 
 use std::path::Path;
 
@@ -29,18 +31,26 @@ pub(crate) fn validate(root: &Path, manifest: &NativeModelManifest) -> Result<()
             return Ok(());
         }
     }
-    let mut has_mx_projection = false;
+    let mut has_product_projection = false;
     for tensor in &manifest.tensors {
         if let Some(quant) = &tensor.quantization {
             validate_projection(quant, tensor.role, flash_next)
                 .map_err(|message| format!("{}: {message}", tensor.name))?;
-            has_mx_projection |= matches!(quant.mode.as_str(), "mxfp4" | "mxfp8");
+            has_product_projection |=
+                matches!(quant.mode.as_str(), "mxfp4" | "mxfp8") || is_affine6(quant);
         }
     }
-    if !has_mx_projection {
-        return Err("Qwen 3.8 AXQ requires MXFP4/MXFP8 decoder projections; standalone affine packs are retired".into());
+    if !has_product_projection {
+        return Err(
+            "Qwen 3.8 AXQ requires MXFP4/MXFP8 or affine 6-bit/group64 decoder projections".into(),
+        );
     }
     Ok(())
+}
+
+/// The supported affine width: 6-bit, group 64.
+fn is_affine6(quant: &NativeTensorQuantization) -> bool {
+    quant.mode == "affine" && (quant.bits, quant.group_size) == (6, 64)
 }
 
 fn validate_projection(
@@ -64,10 +74,13 @@ fn validate_projection(
         }
         return Ok(());
     }
+    if is_affine6(quant) {
+        return Ok(());
+    }
     if !expert && quant.mode == "affine" && quant.bits == 8 && matches!(quant.group_size, 32 | 64) {
         return Ok(());
     }
-    Err("Qwen 3.8 standalone affine packs are retired; use MLX AXQ MXFP4/MXFP8 with MTP (protected affine8 companions remain valid)".into())
+    Err("Qwen 3.8 supports MLX AXQ MXFP4/MXFP8 or affine 6-bit/group64 packs; other standalone affine widths are not supported (protected affine8 companions remain valid)".into())
 }
 
 #[cfg(test)]
@@ -84,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn source_identity_scopes_retirement_without_breaking_older_qwen() {
+    fn source_identity_scopes_the_policy_without_breaking_older_qwen() {
         let root = std::env::temp_dir().join(format!(
             "ax-qwen38-mx-policy-{}-{}",
             std::process::id(),
@@ -102,10 +115,11 @@ mod tests {
                 "name": "projection", "role": "attention_q", "dtype": "u32",
                 "shape": [64, 12], "file": "model.safetensors",
                 "offset_bytes": 0, "length_bytes": 3072,
-                "quantization": {"mode": "affine", "bits": 6, "group_size": 64}
+                "quantization": {"mode": "affine", "bits": 4, "group_size": 64}
             }]
         }))
         .unwrap();
+        // Older Qwen models sharing `qwen3_5` keep every affine width.
         assert!(validate(&root, &manifest).is_ok());
         let metadata = root.join("axquant_manifest.json");
         std::fs::write(
@@ -119,40 +133,61 @@ mod tests {
             r#"{"source_model":{"model_id":"Qwen/Qwen3.8-27B"}}"#,
         )
         .unwrap();
-        assert!(validate(&root, &manifest).unwrap_err().contains("retired"));
+        assert!(
+            validate(&root, &manifest)
+                .unwrap_err()
+                .contains("not supported")
+        );
+        manifest.tensors[0].quantization = Some(quant("affine", 6, 64));
+        assert!(
+            validate(&root, &manifest).is_ok(),
+            "27B affine 6-bit is supported"
+        );
         manifest.tensors[0].quantization = Some(quant("mxfp4", 4, 32));
         assert!(validate(&root, &manifest).is_ok());
         manifest.tensors[0].quantization = Some(quant("mxfp8", 8, 32));
         assert!(validate(&root, &manifest).is_ok());
         manifest.tensors[0].quantization = Some(quant("affine", 8, 64));
-        assert!(validate(&root, &manifest).unwrap_err().contains("retired"));
+        assert!(
+            validate(&root, &manifest).unwrap_err().contains("requires"),
+            "an affine8 companion alone is not a product pack"
+        );
         manifest.model_family = "qwen4_exp".into();
         std::fs::remove_file(metadata).unwrap();
         manifest.tensors[0].quantization = Some(quant("affine", 6, 64));
-        assert!(validate(&root, &manifest).unwrap_err().contains("retired"));
+        assert!(
+            validate(&root, &manifest).is_ok(),
+            "Flash Next affine 6-bit is supported"
+        );
+        manifest.tensors[0].quantization = Some(quant("affine", 4, 64));
+        assert!(
+            validate(&root, &manifest)
+                .unwrap_err()
+                .contains("not supported")
+        );
         std::fs::remove_dir(root).unwrap();
     }
 
     #[test]
-    fn retirement_cannot_be_bypassed_by_experimental_opt_ins() {
-        for bits in [2, 4, 6, 8] {
+    fn only_affine_6bit_group64_is_admitted_among_standalone_affine_widths() {
+        for flash in [false, true] {
+            for role in [NativeTensorRole::FfnGateExps, NativeTensorRole::AttentionQ] {
+                assert!(validate_projection(&quant("affine", 6, 64), role, flash).is_ok());
+                assert!(validate_projection(&quant("affine", 6, 32), role, flash).is_err());
+                for bits in [2, 3, 4] {
+                    assert!(validate_projection(&quant("affine", bits, 64), role, flash).is_err());
+                }
+            }
+            // Affine8 stays a non-expert companion only.
             assert!(
                 validate_projection(
-                    &quant("affine", bits, 64),
+                    &quant("affine", 8, 64),
                     NativeTensorRole::FfnGateExps,
-                    true
+                    flash
                 )
                 .is_err()
             );
         }
-        assert!(
-            validate_projection(&quant("affine", 6, 64), NativeTensorRole::AttentionQ, false)
-                .is_err()
-        );
-        assert!(
-            validate_projection(&quant("affine", 4, 32), NativeTensorRole::AttentionQ, false)
-                .is_err()
-        );
     }
 
     #[test]

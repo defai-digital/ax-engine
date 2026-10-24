@@ -466,9 +466,14 @@ class AxEngineCliTests(unittest.TestCase):
         for model in ("qwen3.8-27b:axq-6bit", "ax-qwen3.8-27b-8bit",
                       "qwen3.8-flash-next:axq-4bit", "qwen3.8-27b:axq-mxfp4-base",
                       "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP",
-                      "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP/tree/main"):
-            with self.subTest(model=model), self.assertRaisesRegex(SystemExit, "retired"):
+                      "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit"):
+            with self.subTest(model=model), self.assertRaisesRegex(SystemExit, "not supported"):
                 _cli._download_repo_id(model)
+        # Flash Next affine 6-bit MTP passes the format scope (ADR-050).
+        _cli._reject_retired_qwen38_target(
+            "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP/tree/main"
+        )
+        _cli._reject_retired_qwen38_target("qwen3.8-flash-next:axq-6bit")
         for model in ("qwen3.8-27b:axq-mxfp8",
                       "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP8-MTP",
                       "https://huggingface.co/AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP8-MTP/tree/main"):

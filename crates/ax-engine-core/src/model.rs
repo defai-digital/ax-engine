@@ -23,9 +23,10 @@ pub const EXPERIMENTAL_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[3];
 pub const AX_ENGINE_2BIT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_2BIT_EXPERIMENTAL";
 pub const EXPERIMENTAL_2BIT_MLX_AFFINE_QUANTIZATION_BITS: &[u32] = &[2];
 /// Legacy Flash Next experimental control retained for diagnostic contracts.
-/// Product admission accepts audited MXFP4 MTP; standalone affine formats
-/// are retired and cannot be re-enabled by this or the 2-bit opt-in.
-/// MXFP8 pack admission and dedicated-path validation remain pending.
+/// Product admission accepts audited MXFP4 MTP and affine 6-bit/group64 MTP
+/// (ADR-050); other standalone affine widths cannot be enabled by this or the
+/// 2-bit opt-in. MXFP8 pack admission and dedicated-path validation remain
+/// pending.
 pub const AX_ENGINE_FLASH_NEXT_EXPERIMENTAL_ENV: &str = "AX_ENGINE_FLASH_NEXT_EXPERIMENTAL";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -1,8 +1,9 @@
 # Getting Started
 
-Qwen 3.8 27B and Flash Next now target **MLX AXQ MXFP4 / MXFP8 with MTP**.
-Standalone affine variants are retired; MXFP8 pack admission is pending.
-Historical 6-bit qualification and speed receipts do not apply to MX packs.
+Qwen 3.8 27B and Flash Next target **MLX AXQ MXFP4 / MXFP8 with MTP**, and
+Flash Next also supports **affine 6-bit MTP** as the quality/size balance point
+(ADR-050). Other standalone affine widths are not supported; MXFP8 pack
+admission is pending. Historical receipts of one format do not qualify another.
 See [format policy](QWEN38-FORMAT-POLICY.md).
 
 AX Engine is a Mac-first inference runtime **optimized first for Qwen 3.8 27B

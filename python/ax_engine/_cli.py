@@ -1215,13 +1215,24 @@ def _reject_retired_qwen38_target(value: str) -> None:
         raise SystemExit(
             "Qwen 3.8 AXQ MXFP8 MTP pack admission is pending; use the pinned MXFP4 MTP pack"
         )
+    flash_next_6bit = "flash-next" in normalized and (
+        normalized.endswith("-6bit-mtp")
+        or (
+            not normalized.startswith("automatosx/")
+            and re.search(r"(?:^|[-:])(?:axq-)?6bit$", normalized) is not None
+        )
+    )
+    if flash_next_6bit:
+        # Flash Next affine 6-bit MTP is supported (ADR-050); the pinned Hub
+        # repository is not public yet, so it is not in the download catalog.
+        return
     if re.search(r"(?:^|[-:])(?:axq-)?(?:[2468]bit|mxfp4-base)(?:$|[-:])", normalized) or (
         normalized.startswith("automatosx/") and not normalized.endswith("-mxfp4-mtp")
     ):
         raise SystemExit(
-            "Qwen 3.8 affine and non-MTP packs are retired; use qwen3.8-27b:axq "
-            "or qwen3.8-flash-next:mxfp4 (MLX AXQ MXFP4 MTP). "
-            "MXFP8 MTP catalog admission is pending verified pack evidence."
+            "Qwen 3.8 supports MLX AXQ MXFP4 MTP (qwen3.8-27b:axq, qwen3.8-flash-next:mxfp4) "
+            "and Flash Next affine 6-bit MTP; other affine widths and non-MTP packs are not "
+            "supported. MXFP8 MTP catalog admission is pending verified pack evidence."
         )
 
 

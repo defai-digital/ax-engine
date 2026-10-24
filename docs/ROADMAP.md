@@ -1,8 +1,9 @@
 # Roadmap
 
-Qwen 3.8 27B and Flash Next now target **MLX AXQ MXFP4 / MXFP8 with MTP**.
-Standalone affine variants are retired; MXFP8 pack admission is pending.
-Historical 6-bit qualification and speed receipts do not apply to MX packs.
+Qwen 3.8 27B and Flash Next target **MLX AXQ MXFP4 / MXFP8 with MTP**, and
+Flash Next also supports **affine 6-bit MTP** as the quality/size balance point
+(ADR-050). Other standalone affine widths are not supported; MXFP8 pack
+admission is pending. Historical receipts of one format do not qualify another.
 See [format policy](QWEN38-FORMAT-POLICY.md).
 
 AX Engine v7 is the current serving-oriented runtime line. It carries forward
@@ -54,7 +55,7 @@ non-production surfaces until their evidence lands.
 | AXQuant | Ongoing claim gate | AXQuant metadata integrity is verified at model load, or doctor-only verification is recorded as the explicit contract; MTP sidecar gains provenance parity with the vision sidecar |
 | Primary pack | Ongoing claim gate | Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`) on Mac mini M4 Pro 64 GB keeps the [certification record](model-certifications/qwen3.8-27b-axq.md) honest: still Candidate, MTP Tier 2 pending; do not promote dirty-tree refresh rows |
 | AXQuant | Ongoing claim gate | The pinned Qwen 3.6 27B AXQ 6-bit **secondary** candidate clears the [checkpoint certification record](model-certifications/qwen3.6-27b-axq.md); architecture-prior evidence alone cannot promote it |
-| Flash Next | Candidate | Qwen 3.8 Flash Next MXFP4 MTP (`qwen4_exp`) on MacBook Pro M5 Max 128 GB (ADR-049). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. Record: [qwen3.8-flash-next.md](model-certifications/qwen3.8-flash-next.md) |
+| Flash Next | Candidate | Qwen 3.8 Flash Next MXFP4 MTP (`qwen4_exp`) on MacBook Pro M5 Max 128 GB (ADR-049). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; Flash Next also supports affine 6-bit MTP (`qwen3.8-flash-next:axq-6bit`); other standalone affine formats are not supported. MXFP8 MTP admission is pending. Record: [qwen3.8-flash-next.md](model-certifications/qwen3.8-flash-next.md) |
 | Performance | Ongoing claim gate | The cross-family MTP prefill regression and the steady-state eval-wall drift are resolved or explicitly accepted in `PERFORMANCE-RESULTS.md` |
 | Positioning | Ongoing claim gate | The `docs/SERVER.md` "not yet a production server surface" caveat can be removed honestly |
 

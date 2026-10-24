@@ -199,9 +199,10 @@ pub(crate) fn audited_mxfp4_runtime_format(
         && experimental_runtime_admission(model_dir, manifest, true)
 }
 
-/// Historical layout integrity checks for Flash Next. The native validator
-/// separately enforces the current MX-only policy; affine classification here
-/// cannot bypass retirement. MXFP4 remains Candidate. Mixed layouts and
+/// Layout integrity checks for Flash Next. The native validator separately
+/// enforces the format scope (MXFP4 MTP and affine 6-bit/group64 MTP,
+/// ADR-050); affine classification here cannot widen it. MXFP4 remains
+/// Candidate. Mixed layouts and
 /// protected-projection mismatches are errors, not silent admission failures.
 pub(crate) fn validate_qwen4_exp_runtime_formats(
     model_dir: &Path,

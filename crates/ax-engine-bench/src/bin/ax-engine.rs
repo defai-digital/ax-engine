@@ -46,6 +46,9 @@ fn profile_revision(profile: ModelProfile) -> Option<&'static str> {
         "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP" => {
             Some("ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3")
         }
+        "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP" => {
+            Some("d514dcebf3086068ed7968caf395083c95ebcfca")
+        }
         "AutomatosX/AX-Qwen3.6-27B-MLX-AXQ-4bit-MTP" => {
             Some("6182ccbc41c7397ff90670f740c6d9eacfa4b09f")
         }
@@ -189,6 +192,7 @@ fn profile_certification(profile: ModelProfile) -> Option<&'static str> {
         | "AutomatosX/AX-Muse-Glimmer-30B-MLX-AXQ-6bit"
         | "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP"
         | "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP"
+        | "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP"
         | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP"
         | "AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-6bit-MTP"
         | "AutomatosX/AX-Tiel-Coder-35B-A3B-MLX-AXQ-MXFP4-MTP"
@@ -252,6 +256,21 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         ],
         downloadable: true,
         approx_size_bytes: Some(132_261_877_478),
+    },
+    ModelProfile {
+        label: "ax-qwen3.8-flash-next-axq-6bit",
+        preset: None,
+        repo_id: "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
+        aliases: &[
+            "ax-qwen3.8-flash-next-axq-6bit",
+            "ax-qwen3.8-flash-next-6bit",
+            "qwen3.8-flash-next:axq-6bit",
+            "qwen3.8-flash-next:6bit",
+        ],
+        // The pinned Hub repository is not public yet, so the catalog does not
+        // offer it for download; a local copy of the pinned revision runs.
+        downloadable: false,
+        approx_size_bytes: Some(167_059_023_435),
     },
     ModelProfile {
         label: "gemma4-12b",
@@ -4081,13 +4100,16 @@ fn qwen38_target_error(value: &str) -> Option<&'static str> {
     if value.contains("mxfp8") {
         return Some("Qwen 3.8 AXQ MXFP8 MTP pack admission is pending; use pinned MXFP4 MTP");
     }
-    if ["-2bit", "-4bit", "-6bit", "-8bit", "mxfp4-base"]
+    let supported_hub_ref = value.ends_with("-mxfp4-mtp")
+        || (value.contains("flash-next") && value.ends_with("-6bit-mtp"));
+    if ["-2bit", "-4bit", "-8bit", "mxfp4-base"]
         .iter()
         .any(|key| value.contains(key))
-        || (value.starts_with("automatosx/") && !value.ends_with("-mxfp4-mtp"))
+        || (value.contains("-6bit") && !value.contains("flash-next"))
+        || (value.starts_with("automatosx/") && !supported_hub_ref)
     {
         return Some(
-            "Qwen 3.8 affine and non-MTP packs are retired; use qwen3.8-27b:axq or qwen3.8-flash-next:mxfp4 (MLX AXQ MXFP4 MTP)",
+            "Qwen 3.8 supports MLX AXQ MXFP4 MTP (qwen3.8-27b:axq, qwen3.8-flash-next:mxfp4) and Flash Next affine 6-bit MTP (qwen3.8-flash-next:axq-6bit); other affine widths and non-MTP packs are not supported",
         );
     }
     None
@@ -4842,20 +4864,31 @@ mod tests {
     }
 
     #[test]
-    fn qwen38_retirement_is_enforced_for_native_aliases_and_hub_refs() {
+    fn qwen38_format_scope_is_enforced_for_native_aliases_and_hub_refs() {
         for target in [
             "qwen3.8-27b:axq-6bit",
-            "qwen3.8-flash-next:axq-6bit",
+            "qwen3.8-flash-next:axq-4bit",
             "https://huggingface.co/AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-6bit-MTP/tree/main",
             "AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4",
+            "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit",
         ] {
             assert!(
                 download_repo_id(target, None)
                     .err()
                     .unwrap()
-                    .contains("retired")
+                    .contains("not supported"),
+                "{target}"
             );
         }
+        let six = profile_for_model("qwen3.8-flash-next:axq-6bit").unwrap();
+        assert_eq!(
+            six.repo_id,
+            "AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP"
+        );
+        assert_eq!(
+            profile_revision(six),
+            Some("d514dcebf3086068ed7968caf395083c95ebcfca")
+        );
         let flash = profile_for_model("qwen3.8-flash-next:axq").unwrap();
         assert_eq!(
             flash.repo_id,

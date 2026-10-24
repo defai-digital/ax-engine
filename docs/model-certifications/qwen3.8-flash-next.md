@@ -1,11 +1,15 @@
 # Qwen 3.8 Flash Next
 
-Scope updated **2026-10-04**: MLX AXQ MXFP4 / MXFP8 with MTP sidecars only.
-`qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select
+Scope updated **2026-10-23**: MLX AXQ MXFP4 / MXFP8 with MTP sidecars, plus
+the affine 6-bit/group64 MTP pack (ADR-050). `qwen3.8-flash-next:axq` and
+`qwen3.8-flash-next:mxfp4` select
 `AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP` at
-`ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3`. Standalone affine packs are
-retired; MXFP8 pack audit and native admission are pending. Older affine
-receipts below are historical and do not qualify MX packs.
+`ff2a28485eb89bb60e8fe35dd6c65c51e63ee7b3`; `qwen3.8-flash-next:axq-6bit`
+selects `AutomatosX/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP` at
+`d514dcebf3086068ed7968caf395083c95ebcfca` (that Hub repository is not public
+yet, so it runs from a local copy). Other standalone affine widths stay
+unsupported; MXFP8 pack audit and native admission are pending. Receipts of
+one format do not qualify another.
 See [format policy](../QWEN38-FORMAT-POLICY.md).
 
 Status: **Candidate; direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open**
@@ -82,6 +86,20 @@ MTP-S (in-path safety), MTP-P (performance claim license) and MTP-D (default
 promotion) are evidenced separately. For this SKU all three are open. Default
 admission remains fail-closed; the opt-in experimental evidence below does not
 by itself close any gate.
+
+## Affine 6-bit MTP on MacBook Pro M5 Max 128 GB (2026-10-23, signal only)
+
+The 6-bit pack (`qwen3.8-flash-next:axq-6bit`, ADR-050) runs on the standard host
+only with experts resident: start the server with `--stream-experts off`
+and `--max-concurrent-requests 1`. The default Auto placement streams its
+experts from the SSD there and decodes at 0.17 tok/s. Resident, one request at a
+time with MTP off, it decodes 44.3 / 41.6 / 41.1 tok/s at 1,905 / 2,207 / 8,976
+prompt tokens (TTFT 3.3 / 3.8 / 30.7 s) at about 103 GiB server RSS with no swap
+growth and 15-17% memory free, against MXFP4's 49.9 / 47.3 / 45.7 tok/s at 78 GiB.
+No QA cohort, context above 9k, concurrency, MTP or endurance evidence exists for
+it on this host, and it exceeds the 96 GiB bound of the MXFP4 release gates, so it
+is supported but not qualified. Record:
+[6-bit on M5 Max](../../benchmarks/results/flash-next-6bit-m5-20261023/README.md).
 
 ## Direct-default release gates on the standard host (2026-10-23)
 
@@ -169,8 +187,9 @@ the protected MTP sidecar is BF16.
 Storage medium and connection must be recorded for each campaign; older
 NAS/SMB receipts do not qualify external USB or internal NVMe runs.
 MXFP4/group32 loads without an environment opt-in — the certification record (Candidate; direct-default release gates passed, MTP gates open) tracks
-its experimental status. Standalone affine formats, including 2/6-bit,
-are retired regardless of experimental flags. Small generated-tensor controls
+its experimental status. Affine 6-bit/group64 is admitted (ADR-050); other
+standalone affine widths, including 2-bit, stay rejected regardless of
+experimental flags. Small generated-tensor controls
 cover bounded U8 scale reads, full-layer/selected-row equivalence, malformed
 layouts and I/O recovery; target whole-model qualification is still open.
 
@@ -489,11 +508,11 @@ SSE, client and terminal records agree, and the frozen helper completes both
 68-file integrity checks. This is bounded diagnostic evidence, not a throughput,
 quality or later-candidate qualification result.
 
-Six-bit is excluded from this target campaign. The former Studio M5 Ultra
+The MXFP4 release gates do not cover the 6-bit pack. The former Studio M5 Ultra
 256 GB target, the intermediate MacBook Pro M5 Max 128 GB target, and all
 affine results below are historical; they do not qualify MXFP4 on the
-MacBook Pro M5 Max 128 GB standard. Historical affine artifact identities remain unchanged; retired aliases
-return migration errors.
+MacBook Pro M5 Max 128 GB standard. Historical affine artifact identities remain unchanged; unsupported
+format aliases return errors.
 
 | Gate | Current target state |
 | --- | --- |

@@ -1,8 +1,9 @@
 # Supported Models
 
-Qwen 3.8 27B and Flash Next now target **MLX AXQ MXFP4 / MXFP8 with MTP**.
-Standalone affine variants are retired; MXFP8 pack admission is pending.
-Historical 6-bit qualification and speed receipts do not apply to MX packs.
+Qwen 3.8 27B and Flash Next target **MLX AXQ MXFP4 / MXFP8 with MTP**, and
+Flash Next also supports **affine 6-bit MTP** as the quality/size balance point
+(ADR-050). Other standalone affine widths are not supported; MXFP8 pack
+admission is pending. Historical receipts of one format do not qualify another.
 See [format policy](QWEN38-FORMAT-POLICY.md).
 
 AX Engine supports LLMs through a direct-first runtime contract. Direct support
@@ -65,7 +66,7 @@ resolved session*, not how well a family is supported.
 | **16 GB** (base Mac mini M4 and similar) | One compact Qwen 3.5 **9B** pack at a time (AXQ/OptiQ **4-bit** preferred; **6-bit** OK but ~0.6–0.8 GiB free after load). Short context only; no multi-model. |
 | **32 GB+** | Multi-model allowlist, longer context, Qwen 3.6 27B/35B, Gemma 26B/31B, coder stacks |
 | **64 GB (Mac mini M4 Pro)** | Best experience for Qwen 3.8 27B AXQ (`qwen3.8-27b:axq`); MXFP4 SKU qualification pending |
-| **128 GB (MacBook Pro M5 Max)** | Qualification and certification standard for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; standalone affine formats are retired. MXFP8 MTP admission is pending. Also the published 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill). |
+| **128 GB (MacBook Pro M5 Max)** | Qualification and certification standard for Qwen 3.8 Flash Next MXFP4 MTP (125B-A6B). Second SKU. Qualification and certification standard: MacBook Pro M5 Max 128 GB, single-stream resident (one request at a time, MTP off, contexts up to 32k). MXFP4 MTP target; native functional controls verified; direct-default release gates passed on this standard host; model MTP is an explicit experimental opt-in. MTP Tier 2 pending. AX certification record: Candidate (direct-default release gates passed on MacBook Pro M5 Max 128 GB; MTP gates open). `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4` select the revision-pinned MXFP4 MTP pack; Flash Next also supports affine 6-bit MTP (`qwen3.8-flash-next:axq-6bit`); other standalone affine formats are not supported. MXFP8 MTP admission is pending. Also the published 27B campaign host (**76.90 tok/s** decode / **795.3 tok/s** prefill). |
 | **192 GB+ (Mac Studio, Ultra-class Apple Silicon, M2 Ultra or newer)** | Larger-memory host for the same Flash Next pack. The 2026-10-05 direct-default release gates were measured here and stay bound to this host. Super-class Qwen 3.8 (2.4T) stays experimental. |
 
 Catalog entry point: [AutomatosX models](https://huggingface.co/AutomatosX/models).
@@ -123,8 +124,12 @@ Qwen 3.8 caveat:
   The qualification and certification standard is MacBook Pro M5 Max 128 GB,
   single-stream resident (ADR-049). MXFP8 MTP admission is pending.
   CLI aliases `qwen3.8-flash-next:axq` and `qwen3.8-flash-next:mxfp4`
-  select MXFP4 MTP. Standalone affine packs are retired, including 6-bit;
-  experimental flags cannot bypass this policy. MXFP8 MTP remains in scope
+  select MXFP4 MTP; `qwen3.8-flash-next:axq-6bit` selects the affine 6-bit
+  MTP pack (ADR-050; its pinned Hub repository is not public yet, so it runs
+  from a local copy). On MacBook Pro M5 Max 128 GB start it with
+  `--stream-experts off --max-concurrent-requests 1`: resident it decodes about
+  41-46 tok/s at about 103 GiB; Auto streams its experts there at 0.17 tok/s. Other standalone affine widths stay unsupported and
+  experimental flags cannot bypass this. MXFP8 MTP remains in scope
   pending a verified pack and native-path audit. MXFP4 admission alone does
   not qualify the SKU or promote MTP defaults. Record:
   [Qwen 3.8 Flash Next](model-certifications/qwen3.8-flash-next.md).

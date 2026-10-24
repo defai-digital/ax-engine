@@ -1,8 +1,8 @@
 # Model Support Policy
 
-Qwen 3.8 27B and Flash Next support work now covers MLX AXQ MXFP4 / MXFP8
-with MTP only. Standalone affine variants are retired; MXFP8 pack admission
-and qualification are pending. See [format policy](QWEN38-FORMAT-POLICY.md).
+Qwen 3.8 27B and Flash Next support work covers MLX AXQ MXFP4 / MXFP8 with
+MTP, plus Flash Next affine 6-bit MTP (ADR-050). Other standalone affine widths
+are not supported; MXFP8 pack admission and qualification are pending. See [format policy](QWEN38-FORMAT-POLICY.md).
 
 AX Engine is a focused Apple Silicon inference runtime for repo-owned model
 families. The default product contract is direct MLX execution: AX owns the
