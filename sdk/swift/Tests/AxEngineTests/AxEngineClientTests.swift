@@ -340,6 +340,27 @@ final class AxEngineClientTests: XCTestCase {
         XCTAssertEqual(chunks[1].choices.first?.finishReason, "stop")
     }
 
+    func testChatStreamRequestsUsageAndDecodesEmptyChoicePerformanceFrame() async throws {
+        let sse = """
+        data: {"id":"c1","object":"chat.completion.chunk","created":0,"model":"fixture","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":3,"total_tokens":1003,"ax_engine":{"metrics_version":1,"prefill_tokens":200,"prefill_time_us":400000,"decode_tokens":2,"decode_time_us":50000}}}
+
+        data: [DONE]
+
+        """
+        MockURLProtocol.handler = { req in
+            let body = try JSONSerialization.jsonObject(with: readBody(req)!) as! [String: Any]
+            XCTAssertEqual((body["stream_options"] as? [String: Bool])?["include_usage"], true)
+            return sseResponse(sse + "\n")
+        }
+        var request = OpenAiChatCompletionRequest(messages: [.init(role: "user", content: "Hi")])
+        request.streamOptions = .init(includeUsage: true)
+        var chunks: [OpenAiChatCompletionChunk] = []
+        for try await chunk in makeClient().streamChatCompletion(request) { chunks.append(chunk) }
+        XCTAssertEqual(chunks.count, 1)
+        XCTAssertEqual(chunks[0].usage?.axEngine?.prefillTokens, 200)
+        XCTAssertEqual(chunks[0].usage?.axEngine?.decodeTimeUs, 50000)
+    }
+
     func testStreamChatCompletionTruncatedWithoutDoneThrows() async throws {
         // One chunk, then the body ends with no [DONE] sentinel.
         let sse = """

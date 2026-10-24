@@ -52,6 +52,9 @@ struct ChatView: View {
                                 if message.content.isEmpty && message.state == "Streaming" { ProgressView("Waiting for the model…") }
                                 else if message.state == "Streaming" { Text(message.content).textSelection(.enabled) }
                                 else { MarkdownMessage(text: message.content) }
+                                if message.role == "assistant" {
+                                    ChatSpeedSummary(message: message)
+                                }
                             }
                             .padding(18)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -95,6 +98,38 @@ struct ChatView: View {
         guard let connection = runtime.connection else { return }
         chat.send(chat.draft, model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature)
         if chat.generating { chat.draft = "" }
+    }
+}
+
+private struct ChatSpeedSummary: View {
+    let message: ChatMessage
+    private var performance: ChatPerformance? {
+        message.state == "Complete" ? message.performance : nil
+    }
+    private func rate(_ value: Double?) -> String {
+        value.map { String(format: "%.1f tok/s", $0) } ?? "—"
+    }
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 16) { readings }
+            VStack(alignment: .leading, spacing: 6) { readings }
+        }
+        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+        .help("Native evaluation averages for this reply. Prefill counts uncached prompt tokens. Decode excludes the first output batch. These exclude network/display time; first-text latency and elapsed time are shown separately. A dash means no measurement was reported, not zero speed.")
+    }
+    @ViewBuilder private var readings: some View {
+        Text("Prefill \(performance?.promptFullyCached == true ? "Cached" : rate(performance?.prefillTokensPerSecond))")
+        Text("Decode \(rate(performance?.decodeTokensPerSecond))")
+        if message.state == "Streaming" {
+            Text("Measuring · rates shown when complete")
+        } else if performance?.prefillTokensPerSecond != nil
+                    || performance?.decodeTokensPerSecond != nil
+                    || performance?.promptFullyCached == true {
+            Text("Model average")
+        } else {
+            Text("Timing unavailable")
+        }
     }
 }
 

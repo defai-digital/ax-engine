@@ -1639,6 +1639,7 @@ fn count_based_stream_usage(
         prompt_tokens,
         completion_tokens,
         total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        ax_engine: None,
         prompt_tokens_details: prefix_reused_tokens
             .filter(|reused| *reused > 0)
             .map(|cached_tokens| OpenAiPromptTokensDetails { cached_tokens }),

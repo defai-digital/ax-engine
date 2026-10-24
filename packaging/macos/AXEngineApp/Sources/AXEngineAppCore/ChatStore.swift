@@ -8,6 +8,7 @@ public struct ChatMessage: Codable, Identifiable, Sendable {
     public var content: String
     public var reasoning: String
     public var state: String
+    public var performance: ChatPerformance?
     public init(role: String, content: String, reasoning: String = "", state: String = "Complete") {
         id = UUID(); self.role = role; self.content = content; self.reasoning = reasoning; self.state = state
     }
@@ -51,7 +52,10 @@ public final class ChatStore: ObservableObject {
                     messages = try JSONDecoder().decode([ChatMessage].self, from: data)
                     conversationModel = messages.isEmpty ? nil : "unknown saved model"
                 }
-                for index in messages.indices where messages[index].state == "Streaming" { messages[index].state = "Interrupted" }
+                for index in messages.indices {
+                    if messages[index].state == "Streaming" { messages[index].state = "Interrupted" }
+                    if messages[index].state != "Complete" { messages[index].performance = nil }
+                }
             }
         } catch { self.error = "Conversation recovery: " + error.localizedDescription }
     }
@@ -98,15 +102,22 @@ public final class ChatStore: ObservableObject {
         task = Task {
             defer {
                 flushTask?.cancel(); flushTask = nil; flush()
+                if let last = messages.indices.last, messages[last].state != "Complete" {
+                    messages[last].performance = nil
+                }
                 generating = false; elapsedSeconds = Date().timeIntervalSince(started)
                 requestID = nil; activeConnection = nil; persist()
             }
             do {
-                let request = settings.chatRequest(model: model, messages: history,
+                var request = settings.chatRequest(model: model, messages: history,
                     supportsTemperature: supportsTemperature)
+                request.streamOptions = .init(includeUsage: true)
                 for try await chunk in client.streamChatCompletion(request) {
                     try Task.checkCancellation()
                     if requestID == nil { requestID = EngineConnection.requestID(chunk.id) }
+                    if let measurement = chunk.usage?.axEngine, let last = messages.indices.last {
+                        messages[last].performance = ChatPerformance(measurement)
+                    }
                     for choice in chunk.choices {
                         if let delta = choice.delta.content, !delta.isEmpty {
                             if firstTokenSeconds == nil { firstTokenSeconds = Date().timeIntervalSince(started) }

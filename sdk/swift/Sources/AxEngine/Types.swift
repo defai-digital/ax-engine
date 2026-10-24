@@ -314,7 +314,13 @@ public struct OpenAiFunctionCallDelta: Decodable, Sendable {
     public var arguments: String?
 }
 
+public struct OpenAiStreamOptions: Encodable, Sendable {
+    public var includeUsage: Bool
+    public init(includeUsage: Bool = true) { self.includeUsage = includeUsage }
+}
+
 public struct OpenAiChatCompletionRequest: Encodable, Sendable {
+    public var streamOptions: OpenAiStreamOptions?
     public var model: String?
     public var messages: [OpenAiChatMessage]
     public var inputTokens: [Int]?
@@ -364,6 +370,17 @@ public struct OpenAiUsage: Decodable, Sendable {
     public var totalTokens: Int
     /// Prefix-cache reuse in the OpenAI prompt-caching shape.
     public var promptTokensDetails: OpenAiPromptTokensDetails?
+    public var axEngine: OpenAiInferencePerformance?
+}
+
+/// AX Engine native evaluation counters for this request, in microseconds.
+/// Optional because older servers and delegated backends may not measure them.
+public struct OpenAiInferencePerformance: Decodable, Sendable {
+    public var metricsVersion: Int
+    public var prefillTokens: Int?
+    public var prefillTimeUs: Double?
+    public var decodeTokens: Int?
+    public var decodeTimeUs: Double?
 }
 
 public struct OpenAiPromptTokensDetails: Decodable, Sendable {
@@ -420,6 +437,7 @@ public struct OpenAiChatCompletionChunkChoice: Decodable, Sendable {
 }
 
 public struct OpenAiChatCompletionChunk: Decodable, Sendable {
+    public var usage: OpenAiUsage?
     public var id: String
     public var object: String
     public var created: Int
