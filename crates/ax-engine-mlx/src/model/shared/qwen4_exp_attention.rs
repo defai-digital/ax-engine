@@ -931,9 +931,21 @@ fn attend_selected(
     if keys.sealed_rows() != values.sealed_rows() {
         return Err(Qwen4ExpAttentionError::InvalidScalar("kv history segments"));
     }
-    let batched = selection.device_tokens().is_none()
+    let device_rows = selection.device_multi_query();
+    let batched = (selection.device_tokens().is_none() || device_rows)
         && seq >= BATCHED_ATTENTION_MIN_QUERIES
         && batched_attention_enabled();
+    // Device rows are already on the GPU. Compact them to the host gather
+    // layout (valid prefix, then -1) so a sub-batch is a slice, not a copy
+    // back to the host. Lengths stay the closed-form segment sizes.
+    let compact =
+        if batched && device_rows {
+            Some(selection.compact_device_indices().ok_or(
+                Qwen4ExpAttentionError::InvalidScalar("selected token count"),
+            )?)
+        } else {
+            None
+        };
     // Padded sub-batches reshape one contiguous array per batch row; the
     // per-query decode path gathers straight from the segments.
     let flat = if batched {
@@ -985,7 +997,13 @@ fn attend_selected(
                 )
             };
             batch_out.push(attend_selected_batched(
-                &q_b, &k_b, &v_b, selection, b as usize, cfg,
+                &q_b,
+                &k_b,
+                &v_b,
+                selection,
+                b as usize,
+                compact.as_ref(),
+                cfg,
             )?);
             continue;
         }
@@ -1092,7 +1110,7 @@ pub(crate) fn with_batched_attention<T>(enabled: bool, action: impl FnOnce() -> 
 /// scratch against the kernel's own limit.
 pub(crate) const BATCHED_ATTENTION_BYTES: usize = 1 << 30;
 
-/// Attend a chunk of host-selected queries as padded sub-batches.
+/// Attend a chunk of selected queries as padded sub-batches.
 ///
 /// Each query owns its selected token list; lists are padded with `-1` to the
 /// longest in the sub-batch, gathered together, and attention masks the padding,
@@ -1100,12 +1118,17 @@ pub(crate) const BATCHED_ATTENTION_BYTES: usize = 1 << 30;
 /// the unmasked entries; masked entries contribute exact zeros). Queries move to
 /// the batch axis, one query per entry, which replaces one gather and one
 /// attention dispatch per query with a handful per sub-batch.
+///
+/// `compact` is the device selection packed like the host gather buffer. When
+/// it is present the sub-batch is sliced from it. Host selections still copy
+/// their index lists into that buffer.
 fn attend_selected_batched(
     q_b: &MlxArray,
     k_b: &MlxArray,
     v_b: &MlxArray,
     selection: &QsaSelection,
     batch_index: usize,
+    compact: Option<&MlxArray>,
     cfg: Qwen4ExpAttentionConfig,
 ) -> Result<MlxArray> {
     let q_shape = q_b.shape();
@@ -1124,7 +1147,7 @@ fn attend_selected_batched(
     while start < seq {
         let longest = (start..seq)
             .take(BATCHED_ATTENTION_PROBE_QUERIES)
-            .map(|s| selection.tokens_for_query(batch_index, s).len())
+            .map(|s| selection.selected_len(batch_index, s))
             .max()
             .unwrap_or(0);
         if longest == 0 {
@@ -1136,28 +1159,49 @@ fn attend_selected_batched(
         let width = (BATCHED_ATTENTION_BYTES / per_query.max(1)).clamp(1, seq - start);
         let end = start + width;
         let padded = (start..end)
-            .map(|s| selection.tokens_for_query(batch_index, s).len())
+            .map(|s| selection.selected_len(batch_index, s))
             .max()
             .unwrap_or(0);
-        let mut indices = vec![-1_i32; width * padded];
-        for (row, s) in (start..end).enumerate() {
-            let chosen = selection.tokens_for_query(batch_index, s);
-            if chosen.is_empty() {
-                return Err(Qwen4ExpAttentionError::InvalidScalar(
-                    "selected token count",
-                ));
-            }
-            indices[row * padded..row * padded + chosen.len()].copy_from_slice(chosen);
+        if padded == 0 || (start..end).any(|s| selection.selected_len(batch_index, s) == 0) {
+            return Err(Qwen4ExpAttentionError::InvalidScalar(
+                "selected token count",
+            ));
         }
         let width_i = width as i32;
         let padded_i = i32::try_from(padded)
             .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("selected token count"))?;
-        let indices = MlxArray::from_raw_data(
-            indices.as_ptr().cast(),
-            std::mem::size_of_val(indices.as_slice()),
-            &[width_i, padded_i],
-            MlxDtype::Int32,
-        );
+        let indices = if let Some(compact) = compact {
+            let batch = i32::try_from(batch_index)
+                .map_err(|_| Qwen4ExpAttentionError::InvalidScalar("selected token count"))?;
+            reshape(
+                &slice(
+                    compact,
+                    &[batch, start as i32, 0],
+                    &[batch + 1, end as i32, padded_i],
+                    &[1, 1, 1],
+                    None,
+                ),
+                &[width_i, padded_i],
+                None,
+            )
+        } else {
+            let mut indices = vec![-1_i32; width * padded];
+            for (row, s) in (start..end).enumerate() {
+                let chosen = selection.tokens_for_query(batch_index, s);
+                if chosen.is_empty() {
+                    return Err(Qwen4ExpAttentionError::InvalidScalar(
+                        "selected token count",
+                    ));
+                }
+                indices[row * padded..row * padded + chosen.len()].copy_from_slice(chosen);
+            }
+            MlxArray::from_raw_data(
+                indices.as_ptr().cast(),
+                std::mem::size_of_val(indices.as_slice()),
+                &[width_i, padded_i],
+                MlxDtype::Int32,
+            )
+        };
         let valid = greater_equal(
             &indices,
             &MlxArray::from_raw_data(
@@ -1569,6 +1613,37 @@ mod tests {
         assert_eq!(out.next_state().token_count().unwrap(), 19);
         assert!(Qwen4ExpAttentionConfig::new(16, 2, 3, 8, 4, BASE, EPS).is_err());
         assert!(Qwen4ExpAttentionConfig::new(16, 2, 1, 8, 9, BASE, EPS).is_err());
+    }
+
+    #[test]
+    fn prefill_device_select_matches_host_attention_bits() {
+        use crate::qwen4_exp_qsa::with_prefill_device_select;
+
+        let (f, module) = oracle();
+        let input = array(&f["input"], &[1, 19, 16]);
+        let bits = |array: &MlxArray| {
+            let array = contiguous(array, None);
+            eval(&[&array]);
+            array
+                .data_f32()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        for rows in [16, 19] {
+            let hidden = slice(&input, &[0, 0, 0], &[1, rows, 16], &[1, 1, 1], None);
+            let host = with_prefill_device_select(false, || {
+                run(&module, &hidden, &Qwen4ExpAttentionCache::empty(), 0)
+            });
+            let device = with_prefill_device_select(true, || {
+                run(&module, &hidden, &Qwen4ExpAttentionCache::empty(), 0)
+            });
+            assert_eq!(
+                bits(device.delta()),
+                bits(host.delta()),
+                "seq {rows} attention bits"
+            );
+        }
     }
 
     #[test]
