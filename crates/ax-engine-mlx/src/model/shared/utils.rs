@@ -390,8 +390,14 @@ const INVARIANT_MXFP4_QMV_FAST_KERNEL_SOURCE: &str = r#"
 
             for (uint token = 0; token < (uint)Leading; ++token) {
                 float accum = 0.0f;
+                // MLX's fp4 `qdot` folds each four-nibble pack into one
+                // parenthesised sum before adding it to `accum`. Summing the
+                // sixteen products one at a time instead regroups the
+                // roundings and drifts by up to 1 ulp, so the pack grouping
+                // is reproduced here.
                 for (uint i = 0; i < (ValuesPerThread / 4); ++i) {
                     ushort pack = packed16[i];
+                    float products[4];
                     for (uint n = 0; n < 4; ++n) {
                         uint nibble = (pack >> (n * 4)) & 0xfu;
                         half mag = as_type<half>(ushort((nibble & 7u) << 9));
@@ -400,8 +406,9 @@ const INVARIANT_MXFP4_QMV_FAST_KERNEL_SOURCE: &str = r#"
                         if (nibble & 8u) {
                             deq = -deq;
                         }
-                        accum += x_values[token][4 * i + n] * deq;
+                        products[n] = x_values[token][4 * i + n] * deq;
                     }
+                    accum += (products[0] + products[1] + products[2] + products[3]);
                 }
                 result[token][row] += scale * accum;
             }
@@ -456,16 +463,16 @@ const INVARIANT_AFFINE_QMV_FAST_KERNEL_SOURCE: &str = r#"
                 x + token * (uint)InputDim + k + lane * ValuesPerThread;
             if (Bits == 4) {
                 for (uint i = 0; i < ValuesPerThread; i += 4) {
-                    OutT group_sum =
-                        static_cast<OutT>(x_row[i]) +
-                        static_cast<OutT>(x_row[i + 1]) +
-                        static_cast<OutT>(x_row[i + 2]) +
-                        static_cast<OutT>(x_row[i + 3]);
-                    x_sums[token] += static_cast<float>(group_sum);
                     float x0 = static_cast<float>(x_row[i]);
                     float x1 = static_cast<float>(x_row[i + 1]);
                     float x2 = static_cast<float>(x_row[i + 2]);
                     float x3 = static_cast<float>(x_row[i + 3]);
+                    // MLX's `load_vector` accumulates in `U = float` (the
+                    // 0.32.4 `#4516` widening), so the four-value partial is
+                    // an f32 sum. Rounding it through `OutT` first would
+                    // round the same values twice and drift by up to 1 ulp.
+                    float group_sum = x0 + x1 + x2 + x3;
+                    x_sums[token] += group_sum;
                     x_values[token][i] = x0;
                     x_values[token][i + 1] = x1 / 16.0f;
                     x_values[token][i + 2] = x2 / 256.0f;
@@ -473,16 +480,13 @@ const INVARIANT_AFFINE_QMV_FAST_KERNEL_SOURCE: &str = r#"
                 }
             } else if (Bits == 6) {
                 for (uint i = 0; i < ValuesPerThread; i += 4) {
-                    OutT group_sum =
-                        static_cast<OutT>(x_row[i]) +
-                        static_cast<OutT>(x_row[i + 1]) +
-                        static_cast<OutT>(x_row[i + 2]) +
-                        static_cast<OutT>(x_row[i + 3]);
-                    x_sums[token] += static_cast<float>(group_sum);
                     float x0 = static_cast<float>(x_row[i]);
                     float x1 = static_cast<float>(x_row[i + 1]);
                     float x2 = static_cast<float>(x_row[i + 2]);
                     float x3 = static_cast<float>(x_row[i + 3]);
+                    // f32 partial sum, as in MLX's `load_vector` (`U = float`).
+                    float group_sum = x0 + x1 + x2 + x3;
+                    x_sums[token] += group_sum;
                     x_values[token][i] = x0;
                     x_values[token][i + 1] = x1 / 64.0f;
                     x_values[token][i + 2] = x2 / 16.0f;
@@ -590,6 +594,12 @@ const INVARIANT_AFFINE_QMV_FAST_KERNEL_SOURCE: &str = r#"
 ///   `1/16^i`: `x * n` and `(x / 16^i) * (16^i * n)` are the same real
 ///   number and each is rounded once, so the products are identical.
 ///
+/// Both kernels also fold the `sum(x) * bias` term with an f32 four-value
+/// partial, matching MLX 0.32.4's `load_vector`, which widens each element to
+/// `U = float` before adding (`mlx#4516`). Pinned against the MLX op, not only
+/// against each other, by
+/// `invariant_affine_qmv_fast_matches_mlx_qmm_raw_bits_on_double_rounding_groups`.
+///
 /// Measured on the M5 Max verify shapes (2026-09-22): neutral at `Leading`
 /// 1..2, 4-11% faster at 3..4; end-to-end neutral on the 6bit-MTP pack
 /// because the default throughput profile verifies with the relaxed stock
@@ -635,19 +645,17 @@ const INVARIANT_AFFINE_QMV_FAST_BF16_Q4_KERNEL_SOURCE: &str = r#"
             for (uint i = 0; i < ValuesPerThread; i += 4) {
                 uint p0 = x_bits[token][i / 2];
                 uint p1 = x_bits[token][i / 2 + 1];
-                // Same OutT-typed 4-wide group sum as the generic kernel's
-                // static_cast<OutT>(x_row[i]) chain. `bfloat` is the native
-                // Metal 3.1+ type MLX uses for bf16 template arguments on the
-                // supported macOS, so the reinterpret is free; widening
-                // through f32 and converting back costs four extra
-                // conversions per group and measured slower than the generic
-                // kernel at S=4 (M5 Max, 2026-09-22).
-                OutT group_sum =
-                    static_cast<OutT>(as_type<bfloat>(static_cast<ushort>(p0 & 0xffff))) +
-                    static_cast<OutT>(as_type<bfloat>(static_cast<ushort>(p0 >> 16))) +
-                    static_cast<OutT>(as_type<bfloat>(static_cast<ushort>(p1 & 0xffff))) +
-                    static_cast<OutT>(as_type<bfloat>(static_cast<ushort>(p1 >> 16)));
-                x_sums[token] += static_cast<float>(group_sum);
+                // Same f32 4-wide group sum as MLX's `load_vector`, which
+                // widens each element to `U = float` before adding. Widening a
+                // bf16 to f32 is a shift of its raw bits, so the widening is
+                // free here; summing in `OutT` instead would round the partial
+                // twice and drift from MLX by up to 1 ulp.
+                float group_sum =
+                    as_type<float>((p0 & 0xffffu) << 16) +
+                    as_type<float>(p0 & 0xffff0000u) +
+                    as_type<float>((p1 & 0xffffu) << 16) +
+                    as_type<float>(p1 & 0xffff0000u);
+                x_sums[token] += group_sum;
             }
         }
 

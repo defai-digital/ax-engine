@@ -728,6 +728,12 @@ fn eligible(x: &MlxArray, weight: &QuantizedWeight, min_route_n: i32) -> Option<
     Some((m, k, n))
 }
 
+/// Relaxed verify-shape projection: the kernels here fold the group bias into
+/// every product (`sum(x * (q * scale + bias))`) instead of MLX's
+/// `scale * sum(q * x) + bias * sum(x)`, so they are **not** bit-exact with
+/// MLX and are admitted by tolerance-only tests. They may only be armed for a
+/// relaxed target-verify profile; arming this route under the exact profile
+/// would silently give up the invariant that route is built to preserve.
 pub(crate) fn try_qwen_mtp_verify_qmm(x: &MlxArray, weight: &QuantizedWeight) -> Option<MlxArray> {
     if matches!(
         weight.mlx_quantization_mode(),
