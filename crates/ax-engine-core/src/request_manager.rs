@@ -92,14 +92,49 @@ impl RequestManager {
         Ok(request_id)
     }
 
+    /// Admit every waiting request, unbounded.
+    ///
+    /// The engine calls [`Self::admit_waiting_up_to`] so a model's live-sequence
+    /// cap is honoured; this uncapped form is kept for tests that exercise the
+    /// queue itself.
+    #[cfg(test)]
     pub(crate) fn admit_waiting(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {
-        let request_ids = self.sorted_request_ids(|record| record.state == RequestState::Waiting);
+        self.admit_waiting_up_to(None)
+    }
+
+    /// Admit waiting requests, stopping once `max_live` requests are live.
+    ///
+    /// `max_live` is the concurrency the model's load-time memory plan proved
+    /// (`ExecutionRunner::native_live_sequence_cap`). Requests left in
+    /// `Waiting` keep their arrival order and are admitted as earlier ones
+    /// reach a terminal state, so the engine queues rather than rejects. `None`
+    /// admits every waiting request, which is the historical behaviour.
+    pub(crate) fn admit_waiting_up_to(
+        &mut self,
+        max_live: Option<usize>,
+    ) -> Result<Vec<RequestId>, RequestManagerError> {
+        let mut request_ids =
+            self.sorted_request_ids(|record| record.state == RequestState::Waiting);
+
+        if let Some(max_live) = max_live {
+            let room = max_live.saturating_sub(self.live_request_count());
+            request_ids.truncate(room);
+        }
 
         for request_id in &request_ids {
             self.transition_request(*request_id, RequestRecord::mark_runnable)?;
         }
 
         Ok(request_ids)
+    }
+
+    /// Requests that hold per-sequence runner state: submitted, not waiting for
+    /// admission, and not yet terminal.
+    pub(crate) fn live_request_count(&self) -> usize {
+        self.records
+            .values()
+            .filter(|record| record.state != RequestState::Waiting && !record.state.is_terminal())
+            .count()
     }
 
     pub(crate) fn retry_memory_blocked(&mut self) -> Result<Vec<RequestId>, RequestManagerError> {

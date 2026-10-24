@@ -490,9 +490,28 @@ pub struct AutoResidencyContext {
     /// Advisory: the plan warns when the priced working set goes above it and
     /// keeps the RAM-derived ceiling either way.
     pub metal_recommended_max_working_set_bytes: Option<u64>,
+    /// Bytes the runner passed to `mlx_set_wired_limit` for this session.
+    ///
+    /// Advisory, exactly like the Metal recommendation: a wired limit below
+    /// the priced working set is what makes macOS page part of the weights
+    /// out of GPU residency, so the plan reports the gap instead of changing
+    /// the placement decision. `None` when the caller never wired.
+    pub wired_limit_bytes: Option<u64>,
     /// Explicit `AX_MLX_MEMORY_CEILING_BYTES` override, bounded by
     /// `RAM - 4 GiB` once the plan knows RAM.
     pub ceiling_override_bytes: Option<u64>,
+    /// Live decode sequences [`Self::state_bytes`] is priced for: the
+    /// session's configured bound (the server's admitted concurrency, else the
+    /// runner's cohort capacity). `None` keeps the legacy behaviour of not
+    /// pricing live sequences at all.
+    pub live_sequences: Option<u32>,
+    /// Bytes of [`Self::state_bytes`] that scale with one live decode
+    /// sequence. Lets the plan re-price itself for a smaller admitted count
+    /// without approximating.
+    pub state_bytes_per_live_sequence: u64,
+    /// Whether [`Self::live_sequences`] came from an explicit operator cap
+    /// (`--max-concurrent-requests`) rather than the cohort default.
+    pub live_sequences_operator_capped: bool,
 }
 
 thread_local! {
@@ -534,46 +553,68 @@ fn resolved_expert_cache_budget() -> Option<u64> {
         .or_else(priced_expert_cache_bytes)
 }
 
-/// Metal `recommendedMaxWorkingSetSize`, plus the operator's `iogpu.wired_limit_mb`
-/// cap when one is set.
+/// Advisory working-set report: MLX's recommendation, raised to the operator's
+/// `iogpu.wired_limit_mb` when one is set.
 ///
 /// The authoritative value is MLX's own device query. It is safe to call on
 /// the loading thread before the weights load: the runner already queries it
 /// at startup for `set_wired_limit`, on this same thread, so this read cannot
-/// pull new device work into the load. The kernel's `iogpu.wired_limit_mb` is
-/// an operator override whose default is `0` (no override), so it only
-/// contributes when non-zero — and then only as a cap.
+/// pull new device work into the load.
+///
+/// An operator's `iogpu.wired_limit_mb` is a *floor* here, not a cap: it is
+/// the wired memory the GPU is actually allowed to use, and the documented
+/// remedy for a pack that prices above Metal's recommendation is to raise it
+/// (`sudo sysctl iogpu.wired_limit_mb=<MiB>`). MLX's
+/// `recommendedMaxWorkingSetSize` is dynamic and underreports under memory
+/// pressure, so the larger of the two probes is the honest stable bound. This
+/// matches `combined_metal_budget` in the server's load admission, which has
+/// always preferred the sysctl over a pressured device value. The kernel
+/// default of `0` means "no override", so it contributes nothing until an
+/// operator sets it.
 ///
 /// The result is advisory: the priced plan warns when the working set exceeds
 /// it, but never clamps the ceiling to it (a measured 6-bit Flash Next session
 /// ran resident at a higher peak RSS with no swap growth).
 pub fn metal_recommended_working_set_bytes() -> Option<u64> {
     let recommended = mlx_sys::device_recommended_working_set_bytes();
-    let explicit_cap = crate::hardware::sysctl_string(&["-n", "iogpu.wired_limit_mb"])
+    let operator_floor = crate::hardware::sysctl_string(&["-n", "iogpu.wired_limit_mb"])
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|mebibytes| *mebibytes > 0)
         .map(|mebibytes| mebibytes.saturating_mul(1024 * 1024));
-    select_metal_working_set(recommended, explicit_cap)
+    select_metal_working_set(recommended, operator_floor)
 }
 
-/// Ceiling selection: the tighter of MLX's recommendation and an operator's
-/// explicit wired-limit cap, whichever is known when the other is not, and
-/// `None` when neither probe answers (in which case the plan cannot prove
-/// residency and pages instead).
-fn select_metal_working_set(recommended: Option<u64>, explicit_cap: Option<u64>) -> Option<u64> {
-    match (recommended, explicit_cap) {
-        (Some(recommended), Some(cap)) => Some(recommended.min(cap)),
+/// Working-set selection: the larger of MLX's recommendation and the wired
+/// limit the GPU is actually allowed to use, whichever is known when the other
+/// is not, and `None` when neither probe answers (in which case the plan
+/// cannot prove residency and pages instead).
+///
+/// Taking the maximum — rather than the tighter of the two — is the rule both
+/// admission paths use: `recommendedMaxWorkingSetSize` dips under memory
+/// pressure, so a lower device value must never turn transient pressure into a
+/// spurious "does not fit", and an operator who raised the sysctl widened what
+/// the GPU may wire, which is exactly the headroom the plan should report.
+fn select_metal_working_set(recommended: Option<u64>, operator_floor: Option<u64>) -> Option<u64> {
+    match (recommended, operator_floor) {
+        (Some(recommended), Some(floor)) => Some(recommended.max(floor)),
         (Some(recommended), None) => Some(recommended),
-        (None, Some(cap)) => Some(cap),
+        (None, Some(floor)) => Some(floor),
         (None, None) => None,
     }
 }
 
 /// Price one candidate stream manifest with this session's non-weight costs.
 ///
-/// `None` when the manifest does not price its resident share: charging zero
-/// non-expert bytes would make any pack look resident, so such a manifest
-/// keeps the legacy formula rather than being priced from a missing number.
+/// The plan is returned with its live-sequence cap resolved: when the
+/// session's configured live-sequence count does not fit under the ceiling but
+/// a smaller count does, the plan re-prices the per-request state term and
+/// publishes that count in
+/// [`MemoryPlan::live_sequence_cap`](ax_engine_core::memory_budget::MemoryPlan::live_sequence_cap)
+/// so a pack with enough weights resident stays resident at reduced
+/// concurrency instead of paging every expert. `None` when the manifest does
+/// not price its resident share: charging zero non-expert bytes would make any
+/// pack look resident, so such a manifest keeps the legacy formula rather than
+/// being priced from a missing number.
 pub(crate) fn memory_plan_for(
     manifest: &ExpertStreamManifest,
     context: &AutoResidencyContext,
@@ -587,18 +628,26 @@ pub(crate) fn memory_plan_for(
     // expert (streamable) bytes would admit a resident load that pages later.
     // The delta lands on the resident share, which is the conservative side.
     let (resident_non_expert_bytes, expert_bytes) = priced_weight_split(manifest, context);
-    Some(ax_engine_core::memory_budget::MemoryPlan {
-        resident_non_expert_bytes,
-        expert_bytes,
-        ngram_table_bytes: context.ngram_table_bytes,
-        kv_bytes: context.kv_bytes,
-        state_bytes: context.state_bytes,
-        prefill_scratch_bytes: context.prefill_scratch_bytes,
-        host_ram_bytes: context.host_ram_bytes,
-        metal_recommended_max_working_set_bytes: context.metal_recommended_max_working_set_bytes,
-        ceiling_override_bytes: context.ceiling_override_bytes,
-        ..ax_engine_core::memory_budget::MemoryPlan::default()
-    })
+    Some(
+        ax_engine_core::memory_budget::MemoryPlan {
+            resident_non_expert_bytes,
+            expert_bytes,
+            ngram_table_bytes: context.ngram_table_bytes,
+            kv_bytes: context.kv_bytes,
+            state_bytes: context.state_bytes,
+            prefill_scratch_bytes: context.prefill_scratch_bytes,
+            host_ram_bytes: context.host_ram_bytes,
+            metal_recommended_max_working_set_bytes: context
+                .metal_recommended_max_working_set_bytes,
+            wired_limit_bytes: context.wired_limit_bytes,
+            ceiling_override_bytes: context.ceiling_override_bytes,
+            charged_live_sequences: context.live_sequences,
+            state_bytes_per_live_sequence: context.state_bytes_per_live_sequence,
+            live_sequences_operator_capped: context.live_sequences_operator_capped,
+            ..ax_engine_core::memory_budget::MemoryPlan::default()
+        }
+        .with_fitting_live_sequences(),
+    )
 }
 
 /// Split the plan's weight bytes into resident and streamable shares.
@@ -632,6 +681,11 @@ const ACTIVATION_BYTES: u64 = 2;
 /// Copies of one chunk's hidden state a prefill step can hold at once: the
 /// residual stream, the attention output, and the gate/up pair.
 const PREFILL_SCRATCH_MULTIPLIER: u64 = 4;
+/// Bytes one QSA score graph can occupy. The indexer tiles its f32 score GEMM
+/// so every issued tile stays inside this ceiling
+/// (`qwen4_exp_qsa::QSA_SCORE_WORKSPACE_LIMIT`); a monolithic score tensor that
+/// would exceed it is split, not materialized.
+const QSA_SCORE_WORKSPACE_BYTES: u64 = 256 * 1024 * 1024;
 /// KV bytes charged when the manifest geometry cannot be priced (diffusion, or
 /// a manifest that predates the KV estimator). Matches the flat floor the
 /// unpriced admission path already used. MLA packs no longer land here: their
@@ -650,17 +704,31 @@ pub(crate) fn resolved_live_sequences(configured: Option<u32>, batched_cap: usiz
     configured.map_or(capacity, |live| live.max(1).min(capacity))
 }
 
+/// Bytes one live decode sequence's gated-delta-net state costs: the causal
+/// conv ring plus the recurrent state for every linear-attention layer.
+///
+/// This is the only term of [`estimate_auto_residency_costs`] that scales with
+/// concurrency, so it is what lets the priced plan re-price itself for a
+/// smaller admitted count ([`resolved_live_sequences`] gives the configured
+/// count, [`ax_engine_core::memory_budget::MemoryPlan::with_fitting_live_sequences`]
+/// finds the count that fits). Zero for packs without the linear-attention
+/// contract, which therefore never need a live-sequence cap.
+pub(crate) fn per_live_sequence_state_bytes(manifest: &ax_engine_core::NativeModelManifest) -> u64 {
+    hybrid_state_bytes(manifest)
+}
+
 /// KV-cache, hybrid-state, and prefill-scratch bytes this session charges.
 ///
 /// Conservative bounds, not allocator limits. The KV term is the pool-wide
 /// worst case from the manifest geometry at the admitted pool. The state term
 /// splits by ownership: gated-delta-net conv/recurrent state is per live
-/// sequence (each live row owns one), while per-token state (the QSA index
-/// keys and their pooled blocks) lives inside the shared KV pool and can never
-/// exceed it, so it is charged once at the pool token bound. Charging the
-/// index per sequence at full context double-counts the pool by the
-/// concurrency and priced a resident pack out of the default eight-row
-/// cohort. The scratch term bounds one prefill chunk's activations.
+/// sequence (each live row owns one, and
+/// [`per_live_sequence_state_bytes`] is that share), while per-token state (the
+/// QSA index keys and their pooled blocks) lives inside the shared KV pool and
+/// can never exceed it, so it is charged once at the pool token bound. Charging
+/// the index per sequence at full context double-counts the pool by the
+/// concurrency and priced a resident pack out of the default eight-row cohort.
+/// The scratch term bounds one prefill chunk's activations.
 ///
 /// `max_live_sequences` is the served concurrency (`MemoryPlan::state_bytes`
 /// means exactly that). It is the runner's live-row bound, never zero: one
@@ -676,15 +744,235 @@ pub(crate) fn estimate_auto_residency_costs(
             ax_engine_core::memory_budget::estimated_kv_pool_bytes(&geometry, budget.kv_pool_tokens)
         })
         .unwrap_or(UNKNOWN_KV_BYTES);
-    let sequence_state =
-        hybrid_state_bytes(manifest).saturating_mul(u64::from(max_live_sequences.max(1)));
+    let sequence_state = per_live_sequence_state_bytes(manifest)
+        .saturating_mul(u64::from(max_live_sequences.max(1)));
     let pool_state = qsa_index_state_bytes(manifest, budget.kv_pool_tokens);
     let state_bytes = sequence_state.saturating_add(pool_state);
-    let prefill_scratch_bytes = (budget.prefill_chunk as u64)
-        .saturating_mul(u64::from(manifest.hidden_size))
-        .saturating_mul(ACTIVATION_BYTES)
-        .saturating_mul(PREFILL_SCRATCH_MULTIPLIER);
+    let prefill_scratch_bytes = estimate_prefill_scratch_bytes(manifest, budget.prefill_chunk);
     (kv_bytes, state_bytes, prefill_scratch_bytes)
+}
+
+/// Bound on the prefill activations one chunk keeps live at once.
+///
+/// The flat `chunk × hidden × 2 × 4` estimate under-priced every large sparse
+/// pack: it charged the residual stream and the gate/up pair but not the
+/// selection and MoE staging a sparse prefill actually allocates. A profiled
+/// 8192-token Flash Next prefill peaked about 3.5 GiB above that plan. Each
+/// term below is derived from the manifest geometry the runtime uses, so a
+/// pack pays for the shapes it really runs and a dense one pays almost nothing:
+///
+/// - residual/attention/activation copies (`chunk × hidden × 2 × 4`);
+/// - gated-delta-net chunk intermediates for hybrid packs: the projected
+///   q/k/v/g/beta rows and the conv output at f32;
+/// - MoE selected-expert staging: `chunk × top_k` routed rows through the
+///   gathered input, the gate/up pair, and the down projection back at hidden
+///   width;
+/// - QSA selection: one score workspace plus the batched gather of the selected
+///   K/V rows, capped by the attention kernel's own per-sub-batch bound;
+/// - hyper-connection read/write buffers.
+///
+/// This is a bound on simultaneously live intermediates, not an allocator
+/// limit, and it stays a per-chunk figure: the chunk is what the runner
+/// submits, so it is what the plan can prove.
+pub(crate) fn estimate_prefill_scratch_bytes(
+    manifest: &ax_engine_core::NativeModelManifest,
+    prefill_chunk: usize,
+) -> u64 {
+    let chunk = prefill_chunk as u64;
+    let hidden = u64::from(manifest.hidden_size);
+    chunk
+        .saturating_mul(hidden)
+        .saturating_mul(ACTIVATION_BYTES)
+        .saturating_mul(PREFILL_SCRATCH_MULTIPLIER)
+        .saturating_add(gated_delta_chunk_bytes(manifest, chunk))
+        .saturating_add(moe_staging_bytes(manifest, chunk))
+        .saturating_add(qsa_prefill_bytes(manifest, chunk))
+        .saturating_add(hyper_connection_chunk_bytes(manifest, chunk))
+}
+
+/// Gated-delta-net chunk intermediates: one projected row set
+/// (`key_heads × key_dim × 2 + value_heads × value_dim` wide) plus its conv
+/// output, both f32 for the Metal kernels. Zero for packs without the
+/// linear-attention contract.
+fn gated_delta_chunk_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64) -> u64 {
+    let config = &manifest.linear_attention;
+    if !config.is_enabled() {
+        return 0;
+    }
+    let (Some(key_heads), Some(value_heads), Some(key_dim), Some(value_dim)) = (
+        config.num_key_heads,
+        config.num_value_heads,
+        config.key_head_dim,
+        config.value_head_dim,
+    ) else {
+        return 0;
+    };
+    let conv_width = u64::from(key_heads)
+        .saturating_mul(u64::from(key_dim))
+        .saturating_mul(2)
+        .saturating_add(u64::from(value_heads).saturating_mul(u64::from(value_dim)));
+    // Two f32 copies: the q/k/v/g/beta projections and the conv output.
+    chunk
+        .saturating_mul(conv_width)
+        .saturating_mul(4)
+        .saturating_mul(2)
+}
+
+/// MoE selected-expert staging for one chunk: the gathered input rows at
+/// hidden width, the gate/up pair at the expert width, and the down projection
+/// written back at hidden width. Zero for dense packs.
+fn moe_staging_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64) -> u64 {
+    let moe = &manifest.moe;
+    let (Some(top_k), Some(intermediate)) = (moe.experts_per_token, moe.expert_intermediate_size)
+    else {
+        return 0;
+    };
+    if moe.expert_count.unwrap_or(0) == 0 || top_k == 0 || intermediate == 0 {
+        return 0;
+    }
+    let hidden = u64::from(manifest.hidden_size);
+    let routed_rows = chunk.saturating_mul(u64::from(top_k));
+    let per_row = u64::from(intermediate)
+        .saturating_mul(2)
+        .saturating_add(hidden.saturating_mul(2));
+    routed_rows
+        .saturating_mul(per_row)
+        .saturating_mul(ACTIVATION_BYTES)
+}
+
+/// QSA prefill workspace: the indexer score graph plus the gathered K/V of the
+/// selected rows for one sub-batch. Zero for packs without the indexer
+/// geometry.
+fn qsa_prefill_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64) -> u64 {
+    let config = &manifest.qwen4_exp;
+    let (Some(head_dim), Some(ratio), Some(budget)) = (
+        config.indexer_head_dim,
+        config.indexer_compress_ratio,
+        config.indexer_budget,
+    ) else {
+        return 0;
+    };
+    if head_dim == 0 || ratio == 0 || budget == 0 || manifest.kv_head_count == 0 {
+        return 0;
+    }
+    // Selection width: `token_budget / ratio` complete blocks plus the visible
+    // tail of `ratio - 1` tokens.
+    let kept = u64::from(budget)
+        .saturating_add(u64::from(ratio))
+        .saturating_sub(1);
+    let gathered = chunk
+        .saturating_mul(kept)
+        .saturating_mul(u64::from(manifest.kv_head_count))
+        .saturating_mul(u64::from(manifest.attention_head_dim))
+        .saturating_mul(ACTIVATION_BYTES)
+        .min(crate::model::shared::qwen4_exp_attention::BATCHED_ATTENTION_BYTES as u64);
+    QSA_SCORE_WORKSPACE_BYTES.saturating_add(gathered)
+}
+
+/// Hyper-connection read/write buffers for one chunk.
+fn hyper_connection_chunk_bytes(manifest: &ax_engine_core::NativeModelManifest, chunk: u64) -> u64 {
+    let config = &manifest.qwen4_exp;
+    let (Some(count), Some(lowrank)) = (config.hc_count, config.hc_lowrank) else {
+        return 0;
+    };
+    chunk
+        .saturating_mul(u64::from(count))
+        .saturating_mul(u64::from(lowrank))
+        .saturating_mul(ACTIVATION_BYTES)
+}
+
+/// What the pre-load pricing pass tells the runner about a resident pack.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PricedSessionResidency {
+    /// Live decode sequences the engine may admit, when the plan resolved one.
+    ///
+    /// `Some(n)` means the pack stays resident while at most `n` requests
+    /// decode or prefill at once; `None` means either the pack cannot be priced
+    /// pre-load or it does not stay resident, so residency imposes no cap and
+    /// the operator's own admission limit stands.
+    pub live_sequence_cap: Option<u32>,
+    /// Priced resident working set to size the wired limit against. `None`
+    /// when the pack streams (there is no full working set to wire).
+    pub resident_working_set_bytes: Option<u64>,
+}
+
+/// Price the pack about to load, returning both the wired-limit input and the
+/// live-sequence cap this session must enforce, estimated before a single
+/// tensor is read.
+///
+/// The runner needs this ahead of `set_wired_limit` to size the wired limit
+/// against the working set instead of always taking 0.9 of Metal's
+/// recommendation, and ahead of request admission so the concurrency the plan
+/// was priced for is the concurrency the engine actually admits. It
+/// deliberately reuses the same inputs the load-time plan uses (session
+/// KV/state/scratch, the pack's expert-stream sidecar, the resident tensor
+/// inventory) so the two numbers cannot diverge, and it reports no working set
+/// rather than guessing when the pack cannot be priced, requires streaming, or
+/// the plan decides to stream: a streamed pack has no full working set to
+/// wire and its expert cache, not its concurrency, is what bounds it.
+pub fn price_session_residency(
+    artifacts: &ax_engine_core::NativeModelArtifacts,
+    budget: SessionResidencyBudget,
+    max_live_sequences: u32,
+) -> PricedSessionResidency {
+    let (kv_bytes, state_bytes, prefill_scratch_bytes) =
+        estimate_auto_residency_costs(artifacts.manifest(), budget, max_live_sequences);
+    let discount_ngram = crate::fastpath::expert_stream_discount_ngram_enabled();
+    let never_loaded_bytes = if discount_ngram {
+        crate::weights::qwen4_exp::never_loaded_ngram_bytes(artifacts.tensor_specs())
+    } else {
+        0
+    };
+    let manifest = ExpertStreamManifest::read_from_dir(artifacts.root_dir())
+        .ok()
+        .flatten()
+        .or_else(|| {
+            infer_layer_stack_manifest(
+                artifacts.tensor_specs(),
+                artifacts
+                    .manifest()
+                    .moe
+                    .experts_per_token
+                    .unwrap_or(1)
+                    .max(1),
+            )
+            .ok()
+        });
+    let Some(manifest) = manifest else {
+        return PricedSessionResidency::default();
+    };
+    if manifest.required {
+        return PricedSessionResidency::default();
+    }
+    let manifest = discount_never_loaded_bytes(manifest, never_loaded_bytes);
+    // Everything below is derived from this pack's own artifacts, including the
+    // resident tensor inventory. Inheriting it from the thread-local context
+    // would let a previous load on a reused worker thread floor this plan with
+    // another model's tensors, which is enough to move the residency decision
+    // and therefore the live-sequence cap.
+    let context = AutoResidencyContext {
+        kv_bytes,
+        state_bytes,
+        prefill_scratch_bytes,
+        resident_tensor_inventory_bytes: resident_tensor_inventory_bytes(
+            artifacts.tensor_specs(),
+            discount_ngram,
+        ),
+        live_sequences: Some(max_live_sequences.max(1)),
+        state_bytes_per_live_sequence: per_live_sequence_state_bytes(artifacts.manifest()),
+        live_sequences_operator_capped: budget.max_live_sequences.is_some(),
+        ..session_auto_residency_context(auto_residency_context(), never_loaded_bytes)
+    };
+    let Some(plan) = memory_plan_for(&manifest, &context) else {
+        return PricedSessionResidency::default();
+    };
+    if !plan.decide().is_resident() {
+        return PricedSessionResidency::default();
+    }
+    PricedSessionResidency {
+        live_sequence_cap: plan.live_sequence_cap,
+        resident_working_set_bytes: Some(plan.resident_working_set_bytes()),
+    }
 }
 
 /// Project the typed manifest into the tolerant KV-geometry view.
@@ -1048,20 +1336,7 @@ where
                 && let Some(plan) = memory_plan_for(&manifest, context)
             {
                 let decision = plan.decide();
-                let line = plan.log_line();
-                if plan.exceeds_recommended_working_set() {
-                    // Keep the RAM-derived decision, but surface both numbers:
-                    // the priced working set is above the platform's
-                    // recommendation, which is advisory rather than a limit.
-                    tracing::warn!(
-                        target: "ax_engine_mlx::expert_stream",
-                        working_set_bytes = plan.resident_working_set_bytes(),
-                        recommended_working_set_bytes = plan.metal_recommended_max_working_set_bytes,
-                        "{line}"
-                    );
-                } else {
-                    tracing::info!(target: "ax_engine_mlx::expert_stream", "{line}");
-                }
+                log_memory_plan(&plan);
                 return match decision {
                     ax_engine_core::memory_budget::MemoryPlanDecision::Resident { .. } => Ok(None),
                     ax_engine_core::memory_budget::MemoryPlanDecision::Stream {
@@ -1094,6 +1369,88 @@ where
                     .then_some(manifest),
             )
         }
+    }
+}
+
+/// Emit one priced plan, publish its wired-residency numbers, and warn when a
+/// resident plan cannot fit the limit the runner wired.
+///
+/// Two separate warnings can come out of one admission and they are not the
+/// same finding: the Metal recommendation is a vendor hint that the plan
+/// deliberately ignores for placement, while the wired limit is the cap the
+/// process actually set. Only the second one makes macOS evict weights, so it
+/// names the gap and the exact `sysctl` that closes it.
+fn log_memory_plan(plan: &ax_engine_core::memory_budget::MemoryPlan) {
+    let line = plan.log_line();
+    if plan.exceeds_recommended_working_set() {
+        // Keep the RAM-derived decision, but surface both numbers: the priced
+        // working set is above the platform's recommendation, which is
+        // advisory rather than a limit.
+        tracing::warn!(
+            target: "ax_engine_mlx::expert_stream",
+            working_set_bytes = plan.resident_working_set_bytes(),
+            recommended_working_set_bytes = plan.metal_recommended_max_working_set_bytes,
+            "{line}"
+        );
+    } else {
+        tracing::info!(target: "ax_engine_mlx::expert_stream", "{line}");
+    }
+    // `/v1/memory` reports the same numbers an operator sees here, including
+    // the ones this admission decided not to act on.
+    ax_engine_core::memory_budget::publish_wired_memory_report(
+        ax_engine_core::memory_budget::WiredMemoryReport::from_plan(plan),
+    );
+    if let (Some(wired_limit_bytes), Some(wired_shortfall_bytes), Some(remedy_mebibytes)) = (
+        plan.wired_limit_bytes,
+        plan.wired_shortfall_bytes(),
+        plan.suggested_wired_limit_mebibytes(),
+    ) && plan.wired_shortfall_needs_attention()
+    {
+        tracing::warn!(
+            target: "ax_engine_mlx::expert_stream",
+            working_set_bytes = plan.resident_working_set_bytes(),
+            wired_limit_bytes,
+            wired_shortfall_bytes,
+            recommended_wired_limit_mebibytes = remedy_mebibytes,
+            "memory plan keeps the pack resident but the wired limit cannot hold it: macOS can \
+             page part of the weights out of GPU residency and long-context prefill/decode \
+             collapse. Raise the limit and restart the process: \
+             `sudo sysctl iogpu.wired_limit_mb={remedy_mebibytes}` (needs root, resets on \
+             reboot). Placement is unchanged."
+        );
+    }
+    // The configured live-sequence count did not fit but a smaller one does:
+    // state exactly which count is admitted, why, and what the operator can do
+    // about it. This is the difference between a resident pack at L rows and
+    // the 0.17 tok/s disk-paging mode the same pack falls into at N rows.
+    if let (Some(configured), Some(admitted)) =
+        (plan.charged_live_sequences, plan.live_sequence_cap)
+        && plan.live_sequences_reduced()
+    {
+        let reason = if plan.live_sequences_operator_capped {
+            format!(
+                "the operator's cap of {configured} live sequences is honoured, and the priced \
+                 working set needs {admitted} of them to stay under the ceiling"
+            )
+        } else {
+            format!(
+                "the default live-sequence bound of {configured} does not fit the priced working \
+                 set under the ceiling; {admitted} does"
+            )
+        };
+        tracing::warn!(
+            target: "ax_engine_mlx::expert_stream",
+            configured_live_sequences = configured,
+            live_sequence_cap = admitted,
+            charged_working_set_bytes =
+                plan.working_set_bytes_for_live_sequences(configured),
+            admitted_working_set_bytes = plan.resident_working_set_bytes(),
+            ceiling_bytes = plan.ceiling_bytes(),
+            operator_capped = plan.live_sequences_operator_capped,
+            "priced memory plan admits fewer live sequences than configured: {reason}. The \
+             engine queues further decoding/prefilling requests instead of paging the experts; \
+             raise --max-concurrent-requests only after reducing context or the KV pool."
+        );
     }
 }
 
@@ -3284,7 +3641,7 @@ mod tests {
     }
 
     #[test]
-    fn metal_ceiling_uses_the_mlx_recommendation_and_caps_only_on_override() {
+    fn metal_working_set_prefers_the_wired_limit_the_gpu_is_actually_allowed() {
         const GIB: u64 = 1024 * 1024 * 1024;
         // What MLX's device query reports on a 128 GiB M5 Max (measured
         // 2026-10-24). With the kernel default `iogpu.wired_limit_mb = 0`
@@ -3294,17 +3651,23 @@ mod tests {
             select_metal_working_set(Some(M5_MAX_RECOMMENDED), None),
             Some(M5_MAX_RECOMMENDED)
         );
-        // A non-zero wired limit is an explicit cap: lower wins...
+        // A lowered wired limit is what the GPU is allowed to wire, so it wins
+        // over a recommendation that underreported under memory pressure. This
+        // is the same rule `combined_metal_budget` uses for load admission:
+        // taking the minimum here would turn transient device pressure into a
+        // spurious "the pack does not fit".
         assert_eq!(
-            select_metal_working_set(Some(M5_MAX_RECOMMENDED), Some(64 * GIB)),
-            Some(64 * GIB)
+            select_metal_working_set(Some(64 * GIB), Some(96 * GIB)),
+            Some(96 * GIB)
         );
-        // ...and an override above the recommendation never raises it.
+        // An operator who raised the sysctl widened residency (the documented
+        // remedy for a pack above the recommendation), so the raised value is
+        // the headroom the plan reports rather than the stale device hint.
         assert_eq!(
-            select_metal_working_set(Some(M5_MAX_RECOMMENDED), Some(128 * GIB)),
-            Some(M5_MAX_RECOMMENDED)
+            select_metal_working_set(Some(M5_MAX_RECOMMENDED), Some(120_000 * 1024 * 1024)),
+            Some(120_000 * 1024 * 1024)
         );
-        // Without a device answer (non-Metal), an explicit override stands.
+        // Without a device answer (non-Metal), an explicit wired limit stands.
         assert_eq!(
             select_metal_working_set(None, Some(64 * GIB)),
             Some(64 * GIB)
@@ -3598,6 +3961,136 @@ mod tests {
         assert_eq!(plain_state, gdn * 2);
     }
 
+    /// Real Flash Next 6-bit geometry, copied from the pinned pack's
+    /// `model-manifest.json`, so the scratch bound is tested on the numbers the
+    /// qualification host actually runs.
+    fn flash_next_6bit_scratch_manifest() -> ax_engine_core::NativeModelManifest {
+        let json = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "qwen4_exp",
+            "tensor_format": "safetensors",
+            "layer_count": 48,
+            "hidden_size": 2560,
+            "attention_head_count": 24,
+            "attention_head_dim": 256,
+            "kv_head_count": 2,
+            "vocab_size": 248_320,
+            "tensors": [],
+            "moe": {
+                "expert_count": 512,
+                "experts_per_token": 10,
+                "expert_intermediate_size": 640,
+                "shared_expert_count": 1
+            },
+            "linear_attention": {
+                "full_attention_interval": 4,
+                "num_key_heads": 16,
+                "num_value_heads": 48,
+                "key_head_dim": 128,
+                "value_head_dim": 128,
+                "conv_kernel_dim": 4
+            },
+            "qwen4_exp": {
+                "indexer_head_dim": 128,
+                "indexer_compress_ratio": 4,
+                "indexer_n_heads": 4,
+                "indexer_kv_heads": 1,
+                "indexer_budget": 2048,
+                "hc_count": 4,
+                "hc_lowrank": 320
+            }
+        });
+        serde_json::from_value(json).expect("flash next 6-bit manifest")
+    }
+
+    #[test]
+    fn prefill_scratch_prices_the_selection_and_moe_staging_of_a_sparse_chunk() {
+        let manifest = flash_next_6bit_scratch_manifest();
+        // Residual/attention/activation copies: chunk * hidden * 2 bytes * 4.
+        let base = 2048u64 * 2560 * 2 * 4;
+        // GDN: (16*128*2 + 48*128) wide, f32, two copies.
+        let gdn = 2048u64 * 10_240 * 4 * 2;
+        // MoE: 2048*10 routed rows, (640*2 + 2560*2) wide, 2 bytes.
+        let moe = 20_480u64 * 6_400 * 2;
+        // QSA: the 256 MiB score workspace plus one sub-batch of gathered
+        // selected K/V. The shape product (2048*2051*2*256*2 = 4.0 GiB) stays
+        // capped by the attention kernel's own 1 GiB per-sub-batch bound.
+        let qsa = 256 * 1024 * 1024 + (1u64 << 30);
+        // Hyper-connections: 2048 * 4 * 320 * 2 bytes.
+        let hc = 2048u64 * 4 * 320 * 2;
+
+        assert_eq!(gated_delta_chunk_bytes(&manifest, 2048), gdn);
+        assert_eq!(moe_staging_bytes(&manifest, 2048), moe);
+        assert_eq!(qsa_prefill_bytes(&manifest, 2048), qsa);
+        assert_eq!(hyper_connection_chunk_bytes(&manifest, 2048), hc);
+        assert_eq!(
+            estimate_prefill_scratch_bytes(&manifest, 2048),
+            base + gdn + moe + qsa + hc
+        );
+        // The bound is ~37x the flat 40.00 MiB estimate that under-priced the
+        // measured 8192-token prefill by about 3.5 GiB.
+        assert_eq!(base, 41_943_040);
+        assert!(
+            estimate_prefill_scratch_bytes(&manifest, 2048) > 30 * base,
+            "the scratch bound must reflect the packed prefill transients"
+        );
+        // Doubling the chunk doubles every term, so the bound stays
+        // shape-derived rather than pinned to one chunk size.
+        assert_eq!(
+            estimate_prefill_scratch_bytes(&manifest, 4096),
+            (base + gdn + moe + hc) * 2 + qsa
+        );
+    }
+
+    #[test]
+    fn prefill_scratch_of_a_dense_pack_keeps_the_legacy_activation_copy() {
+        // A 27B-class dense pack: no MoE, no linear attention, no QSA indexer,
+        // no hyper-connections. Nothing may be added to the activation copy, so
+        // dense packs keep exactly the pricing they had.
+        let json = serde_json::json!({
+            "schema_version": ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION,
+            "model_family": "qwen3_5",
+            "tensor_format": "safetensors",
+            "layer_count": 64,
+            "hidden_size": 5120,
+            "attention_head_count": 40,
+            "attention_head_dim": 128,
+            "kv_head_count": 8,
+            "vocab_size": 151_936,
+            "tensors": []
+        });
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(json).expect("dense manifest");
+        assert_eq!(
+            estimate_prefill_scratch_bytes(&manifest, 2048),
+            2048u64 * 5120 * 2 * 4
+        );
+    }
+
+    #[test]
+    fn qsa_gather_term_is_a_cap_not_a_constant() {
+        // The small state fixture keeps far fewer than a gibibyte of selected
+        // K/V, so the bound must fall back to the shape product.
+        let manifest = flash_next_state_manifest();
+        let chunk = 16u64;
+        let kept = 64u64 + 8 - 1;
+        // The gather runs over the attention K/V width (`attention_head_dim`,
+        // not the indexer width) with the fixture's single KV head.
+        let kv_head_count = 1u64;
+        let gathered = chunk * kept * kv_head_count * 64 * 2;
+        assert!(gathered < 1u64 << 30);
+        assert_eq!(
+            qsa_prefill_bytes(&manifest, chunk),
+            256 * 1024 * 1024 + gathered
+        );
+        // A pack without the indexer geometry pays no selection workspace.
+        let mut dense = flash_next_state_manifest();
+        dense.qwen4_exp.indexer_head_dim = None;
+        dense.qwen4_exp.indexer_compress_ratio = None;
+        dense.qwen4_exp.indexer_budget = None;
+        assert_eq!(qsa_prefill_bytes(&dense, chunk), 0);
+    }
+
     #[test]
     fn mla_pack_prices_the_latent_cache_not_the_unknown_floor() {
         let json = serde_json::json!({
@@ -3724,51 +4217,117 @@ mod tests {
     }
 
     #[test]
-    fn real_flash_next_packs_price_resident_for_one_live_sequence() {
+    fn real_flash_next_packs_stay_resident_at_the_default_server_cohort() {
         // The two pinned Flash Next packs on the qualification host. The test
         // skips (not fails) on machines without them, and never writes into
         // the model cache.
-        const PACKS: [&str; 2] = [
-            "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP",
-            "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP",
-        ];
+        const SIX_BIT: &str = "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP";
+        const MXFP4: &str = "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-MXFP4-MTP";
         const HOST_RAM: u64 = 128 * GIB;
         // 4096 blocks x 16 tokens: the configured pool the log line reports.
         const POOL_TOKENS: u64 = 4_096 * 16;
-        // The default server passes no `--max-concurrent-requests`, so the plan
-        // resolves the runner's cohort cap (`resolved_live_sequences(None, 8)`).
-        const NO_LIMIT_LIVE_SEQUENCES: u32 = 8;
-        let mut planned = 0usize;
-        for pack in PACKS {
-            for live_sequences in [1u32, NO_LIMIT_LIVE_SEQUENCES] {
-                let Some(plan) = real_pack_plan(
-                    std::path::Path::new(pack),
-                    HOST_RAM,
-                    POOL_TOKENS,
-                    live_sequences,
-                ) else {
-                    eprintln!("skipping {pack}: local pack metadata not readable");
-                    break;
-                };
-                planned += 1;
-                println!("{pack} ({live_sequences} live): {}", plan.log_line());
-                assert!(
-                    plan.decide().is_resident(),
-                    "{live_sequences} live sequences must keep the pack resident: {}",
-                    plan.log_line()
-                );
-                // The 128 GiB host ceiling is `RAM - max(8 GiB, RAM/10)` =
-                // 115.20 GiB; the priced working set must stay under it.
-                let ceiling = plan.ceiling_bytes().expect("128 GiB host has a ceiling");
-                assert!(
-                    plan.resident_working_set_bytes() <= ceiling,
-                    "the working set must stay under the 115.20 GiB ceiling: {}",
-                    plan.log_line()
-                );
-            }
-        }
-        if planned == 0 {
-            eprintln!("skipping: no Flash Next pack metadata is present on this host");
+        // The default server passes no `--max-concurrent-requests`, so the
+        // charged count is the runner's cohort capacity
+        // (`resolved_live_sequences(None, 8)`).
+        const COHORT_LIVE_SEQUENCES: u32 = 8;
+        let ceiling =
+            HOST_RAM - ax_engine_core::memory_budget::memory_plan_os_reserve_bytes(HOST_RAM);
+
+        // 6-bit at the default cohort: the per-request state term does not fit
+        // 8 rows, but the pack's experts still do at fewer. The plan must stay
+        // resident and publish the count that fits, because the alternative --
+        // paging 91 GiB of experts from disk -- decodes at 0.17 tok/s.
+        let Some(six_bit) =
+            real_pack_plan(std::path::Path::new(SIX_BIT), HOST_RAM, POOL_TOKENS, None)
+        else {
+            eprintln!("skipping {SIX_BIT}: local pack metadata not readable");
+            return;
+        };
+        println!("{SIX_BIT} (default cohort): {}", six_bit.log_line());
+        assert_eq!(six_bit.charged_live_sequences, Some(COHORT_LIVE_SEQUENCES));
+        assert!(
+            six_bit.working_set_bytes_for_live_sequences(COHORT_LIVE_SEQUENCES) > ceiling,
+            "the regression case must be a configured count that does not fit: {}",
+            six_bit.log_line()
+        );
+        assert!(
+            six_bit.decide().is_resident(),
+            "the 6-bit pack must stay resident at a reduced live-sequence count: {}",
+            six_bit.log_line()
+        );
+        let cap = six_bit
+            .live_sequence_cap
+            .expect("a reduced live-sequence count is published");
+        assert!(
+            (1..COHORT_LIVE_SEQUENCES).contains(&cap),
+            "the cap must admit at least one row and fewer than the cohort: {cap} in {}",
+            six_bit.log_line()
+        );
+        assert!(six_bit.live_sequences_reduced());
+        assert!(
+            six_bit.resident_working_set_bytes() <= ceiling,
+            "the admitted working set must fit the 115.20 GiB ceiling: {}",
+            six_bit.log_line()
+        );
+        // One row below the cap could not fit either, so the cap is the largest
+        // count the ceiling allows rather than an arbitrary reduction.
+        assert!(
+            six_bit.working_set_bytes_for_live_sequences(cap + 1) > ceiling,
+            "the cap must be the largest fitting count: {}",
+            six_bit.log_line()
+        );
+        // The line names both counts and the reduction, which is what an
+        // operator sees when the server silently serves fewer rows.
+        let line = six_bit.log_line();
+        assert!(
+            line.contains(&format!("live-sequences={COHORT_LIVE_SEQUENCES}")),
+            "{line}"
+        );
+        assert!(line.contains(&format!("live-sequence-cap={cap}")), "{line}");
+        assert!(line.contains("warning=live-sequences-capped"), "{line}");
+
+        // The same pack at one explicitly configured row stays resident and
+        // keeps the full cap of one.
+        let Some(single) = real_pack_plan(
+            std::path::Path::new(SIX_BIT),
+            HOST_RAM,
+            POOL_TOKENS,
+            Some(1),
+        ) else {
+            return;
+        };
+        println!("{SIX_BIT} (1 live): {}", single.log_line());
+        assert!(single.decide().is_resident(), "{}", single.log_line());
+        assert_eq!(single.live_sequence_cap, Some(1));
+        assert!(!single.live_sequences_reduced());
+
+        // MXFP4 has ~33 GiB of headroom: the full cohort must survive. This is
+        // the case a blanket concurrency reduction would have broken.
+        let Some(mxfp4) = real_pack_plan(std::path::Path::new(MXFP4), HOST_RAM, POOL_TOKENS, None)
+        else {
+            eprintln!("skipping {MXFP4}: local pack metadata not readable");
+            return;
+        };
+        println!("{MXFP4} (default cohort): {}", mxfp4.log_line());
+        assert!(mxfp4.decide().is_resident(), "{}", mxfp4.log_line());
+        assert_eq!(
+            mxfp4.live_sequence_cap,
+            Some(COHORT_LIVE_SEQUENCES),
+            "MXFP4 must keep its full N: {}",
+            mxfp4.log_line()
+        );
+        assert!(!mxfp4.live_sequences_reduced());
+        assert!(!mxfp4.log_line().contains("warning=live-sequences-capped"));
+        // Every case reports both sides of the wired limit, so an operator can
+        // see why a resident pack still runs below the 0.9 share (or at the
+        // full recommendation for the 6-bit single-stream case).
+        for plan in [&six_bit, &mxfp4] {
+            assert!(plan.wired_limit_bytes.is_some(), "{}", plan.log_line());
+            assert!(
+                plan.wired_shortfall_bytes().is_some(),
+                "{}",
+                plan.log_line()
+            );
         }
     }
 
@@ -3777,21 +4336,17 @@ mod tests {
         const PACK: &str = "/Volumes/Ext16TR0/models/AX-Qwen3.8-Flash-Next-MLX-AXQ-6bit-MTP";
         // 96 GiB cannot hold the 6-bit pack's ~91 GiB expert set next to its
         // ~23 GiB fixed part, so the plan must page experts. The 128 GiB case
-        // at the same pool and cohort is resident (see the test above): the
-        // corrected per-token pricing is what moved it.
+        // at the same pool and cohort stays resident at a reduced live count
+        // (see the test above): the live-sequence cap never turns a host that
+        // cannot hold the experts into a resident one.
         const HOST_RAM: u64 = 96 * GIB;
         const POOL_TOKENS: u64 = 4_096 * 16;
-        const LIVE_SEQUENCES: u32 = 8;
-        let Some(plan) = real_pack_plan(
-            std::path::Path::new(PACK),
-            HOST_RAM,
-            POOL_TOKENS,
-            LIVE_SEQUENCES,
-        ) else {
+        let Some(plan) = real_pack_plan(std::path::Path::new(PACK), HOST_RAM, POOL_TOKENS, None)
+        else {
             eprintln!("skipping {PACK}: local pack metadata not readable");
             return;
         };
-        println!("{PACK} (8 live, 96 GiB): {}", plan.log_line());
+        println!("{PACK} (default cohort, 96 GiB): {}", plan.log_line());
         assert!(
             matches!(
                 plan.decide(),
@@ -3800,19 +4355,24 @@ mod tests {
             "a host that cannot hold the expert set must stream: {}",
             plan.log_line()
         );
+        // Not even one live sequence fits, so no cap is published: residency is
+        // not what bounds this session.
+        assert_eq!(plan.live_sequence_cap, None);
     }
 
     /// Price one real pack exactly as the runner does at load admission.
     ///
-    /// Returns `None` when the directory (or its metadata) is absent, so the
-    /// tests skip on a host without the pinned packs. It only reads the
-    /// native manifest, `ax_expert_stream.json`, `config.json` and safetensors
-    /// headers; no tensor payload is loaded.
+    /// `configured_live_sequences` mirrors `--max-concurrent-requests`: `None`
+    /// is the default server, which charges the runner's cohort capacity. It
+    /// only reads the native manifest, `ax_expert_stream.json`, `config.json`
+    /// and safetensors headers; no tensor payload is loaded. Returns `None`
+    /// when the directory (or its metadata) is absent, so the tests skip on a
+    /// host without the pinned packs.
     fn real_pack_plan(
         dir: &std::path::Path,
         host_ram_bytes: u64,
         pool_tokens: u64,
-        live_sequences: u32,
+        configured_live_sequences: Option<u32>,
     ) -> Option<ax_engine_core::memory_budget::MemoryPlan> {
         if !dir.is_dir() {
             return None;
@@ -3826,14 +4386,19 @@ mod tests {
             0
         };
         let manifest = discount_never_loaded_bytes(file_manifest, never_loaded_bytes);
+        // The runner's cohort capacity (`AX_MLX_BATCHED_DECODE_MAX` default).
+        // `resolved_live_sequences` caps a configured bound by it and falls back
+        // to it when the server set no bound, which is the default server.
+        const COHORT_CAP: usize = 8;
+        let live_sequences = resolved_live_sequences(configured_live_sequences, COHORT_CAP);
         let budget = SessionResidencyBudget {
             kv_pool_tokens: pool_tokens,
             prefill_chunk: crate::generate::DEFAULT_PREFILL_CHUNK,
-            max_live_sequences: Some(live_sequences),
+            max_live_sequences: configured_live_sequences,
         };
         let (kv_bytes, state_bytes, prefill_scratch_bytes) =
             estimate_auto_residency_costs(artifacts.manifest(), budget, live_sequences);
-        let context = AutoResidencyContext {
+        let mut context = AutoResidencyContext {
             kv_bytes,
             state_bytes,
             prefill_scratch_bytes,
@@ -3844,8 +4409,26 @@ mod tests {
             ),
             host_ram_bytes: Some(host_ram_bytes),
             metal_recommended_max_working_set_bytes: Some(115_448_725_504),
+            wired_limit_bytes: None,
             ceiling_override_bytes: None,
+            live_sequences: Some(live_sequences.max(1)),
+            state_bytes_per_live_sequence: per_live_sequence_state_bytes(artifacts.manifest()),
+            live_sequences_operator_capped: configured_live_sequences.is_some(),
         };
+        // Mirror the runner's two passes: it prices the pack to size the wired
+        // limit, then builds the admission plan with that limit. The working set
+        // is identical between passes (nothing in the plan depends on the
+        // limit), so the second pass is the one production sees.
+        let first = memory_plan_for(&manifest, &context)?;
+        let wired = crate::tiel_memory_policy::resolve_wired_limit(
+            115_448_725_504,
+            first
+                .decide()
+                .is_resident()
+                .then(|| first.resident_working_set_bytes()),
+            None,
+        );
+        context.wired_limit_bytes = Some(wired.limit_bytes);
         memory_plan_for(&manifest, &context)
     }
 

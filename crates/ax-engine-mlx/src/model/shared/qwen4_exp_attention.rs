@@ -1086,7 +1086,11 @@ pub(crate) fn with_batched_attention<T>(enabled: bool, action: impl FnOnce() -> 
 }
 
 /// Upper bound on the gathered K+V bytes of one sub-batch.
-const BATCHED_ATTENTION_BYTES: usize = 1 << 30;
+///
+/// The memory plan charges this same bound as one prefill transient
+/// (`expert_stream::qsa_prefill_bytes`), so a reader can compare the priced
+/// scratch against the kernel's own limit.
+pub(crate) const BATCHED_ATTENTION_BYTES: usize = 1 << 30;
 
 /// Attend a chunk of host-selected queries as padded sub-batches.
 ///
