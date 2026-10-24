@@ -1,0 +1,263 @@
+import Foundation
+import Testing
+import Darwin
+@testable import AXEngineAppCore
+
+private func temporary() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("ax-engine-gui-test-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+@Test func settingsExcludeSecretsAndValidate() throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("settings.json")
+    var settings = AppSettings(); settings.port = 34567
+    try settings.save(to: url)
+    #expect(try AppSettings.load(from: url) == settings)
+    let data = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+    #expect(!data.contains("apiKey"))
+    settings.port = 0
+    #expect(throws: AppFailure.self) { try settings.validate() }
+}
+
+@Test func malformedSettingsRemainVisible() throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("settings.json")
+    try Data("broken".utf8).write(to: url)
+    #expect(throws: (any Error).self) { try AppSettings.load(from: url) }
+}
+
+@Test func progressNeedsTerminalSuccess() {
+    let progress = DownloadProgress.parse("{\"event\":\"progress\",\"done\":100,\"total\":100,\"file\":\"Ready\"}\n")
+    #expect(progress.fraction == 1)
+    #expect(!progress.terminalReady)
+    let failure = DownloadProgress.parse("{\"schema_version\":\"ax.download_model.v1\",\"status\":\"download_failed\",\"errors\":[\"disk full\"]}\n")
+    #expect(!failure.terminalReady)
+    #expect(failure.detail == "disk full")
+}
+
+@Test func progressHandlesNoiseAndZeroTotal() {
+    let value = DownloadProgress.parse("not json\n{\"event\":\"progress\",\"done\":8,\"total\":0}\n{\"schema_version\":\"ax.download_model.v1\",\"status\":\"ready\",\"dest\":\"/model\"}\n")
+    #expect(value.fraction == nil)
+    #expect(value.terminalReady)
+    #expect(value.destination == "/model")
+}
+
+@Test func catalogPreservesRuntimePin() throws {
+    let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let model = try decoder.decode(CatalogModel.self, from: Data(#"{"alias":"Model","repo_id":"Owner/Repo","revision":"abc123","mtp_included":true}"#.utf8))
+    #expect(model.target == "Owner/Repo@abc123")
+    #expect(model.folderName == "Owner--Repo--abc123")
+}
+
+@Test func metricLabelsDoNotDoubleCount() {
+    let parsed = EngineConnection.parseMetrics("# comment\nax_engine_tokens 12\nax_engine_tokens{model=\"a\"} 10\ninvalid NaN\n")
+    #expect(parsed["ax_engine_tokens"] == 12)
+    #expect(parsed["invalid"] == nil)
+    #expect(parsed.count == 1)
+    #expect(EngineConnection.requestID("chatcmpl-123") == 123)
+    #expect(EngineConnection.requestID("chatcmpl-../1") == nil)
+    #expect(EngineConnection.requestID("cmpl-123") == nil)
+}
+
+@Test func removeCannotEscapeManagedRoot() throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let models = root.appendingPathComponent("models"), outside = root.appendingPathComponent("outside")
+    try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: outside.appendingPathComponent("model-manifest.json"))
+    let link = models.appendingPathComponent("escape")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+    #expect(!ModelStore.canRemove(path: link.path, root: models.path))
+    #expect(!ModelStore.canRemove(path: outside.path, root: models.path))
+    #expect(!ModelStore.canRemove(path: models.path, root: models.path))
+}
+
+@Test func boundedLogsCapEntriesAndMessageSize() async {
+    let logs = BoundedLogStore(capacity: 2)
+    await logs.append("first", stream: .system)
+    await logs.append("second", stream: .system)
+    await logs.append(String(repeating: "x", count: 9000), stream: .stderr)
+    let snapshot = await logs.snapshot()
+    #expect(snapshot.count == 2)
+    #expect(snapshot.first?.message == "second")
+    #expect(snapshot.last?.message.count == 4096)
+}
+
+@Test @MainActor func processDrainsBothPipesAndKeepsArgumentBoundaries() async throws {
+    let job = ProcessJob()
+    let result = try await job.run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+        arguments: ["-c", "import sys; print(sys.argv[1]); sys.stderr.write('e'*200000); print('o'*200000)", "hello; no shell"], timeout: 10)
+    #expect(result.status == 0)
+    #expect(result.stdout.hasPrefix("hello; no shell\n"))
+    #expect(result.stderr.count == 200000)
+    #expect(!job.running)
+}
+
+@Test @MainActor func processBoundsLargeOutput() async throws {
+    let result = try await ProcessJob().run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+        arguments: ["-c", "print('x'*5000000)"], timeout: 15)
+    #expect(result.status == 0)
+    #expect(result.truncated)
+    #expect(result.stdout.utf8.count <= 4 * 1024 * 1024)
+}
+
+@Test @MainActor func processCancellationIsBounded() async throws {
+    let job = ProcessJob()
+    let task = Task { try await job.run(executable: URL(fileURLWithPath: "/usr/bin/python3"), arguments: ["-c", "import time; time.sleep(60)"]) }
+    while !job.running { try await Task.sleep(for: .milliseconds(20)) }
+    let started = Date(); job.cancel()
+    do { _ = try await task.value; Issue.record("Cancelled job returned success") } catch is CancellationError {} catch { throw error }
+    #expect(Date().timeIntervalSince(started) < 6)
+    #expect(!job.running)
+}
+
+@Test @MainActor func processTimeoutIsAnError() async throws {
+    await #expect(throws: AppFailure.self) {
+        _ = try await ProcessJob().run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-c", "import time; time.sleep(60)"], timeout: 0.2)
+    }
+}
+
+@Test @MainActor func modelStoreShutsDownCatalogProcess() async throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let executable = root.appendingPathComponent("slow-runtime")
+    try Data("#!/usr/bin/python3\nimport time\ntime.sleep(60)\n".utf8).write(to: executable)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    var settings = AppSettings(); settings.executable = executable.path
+    settings.modelsDirectory = root.appendingPathComponent("models").path
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"))
+    let task = Task { await store.refresh(settings: settings) }
+    while !store.refreshing { try await Task.sleep(for: .milliseconds(20)) }
+    let started = Date()
+    await store.shutdown()
+    await task.value
+    #expect(!store.refreshing)
+    #expect(Date().timeIntervalSince(started) < 6)
+}
+
+@Test(arguments: [false, true]) @MainActor func exitedLeaderCannotLeaveDescendant(closePipes: Bool) async throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let pidFile = root.appendingPathComponent("descendant.pid")
+    let script = """
+    import os, signal, sys, time
+    pid = os.fork()
+    if pid:
+        time.sleep(0.1)
+        os._exit(0)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with open(sys.argv[1], 'w') as f:
+        f.write(str(os.getpid()))
+    if sys.argv[2] == 'close':
+        os.close(1)
+        os.close(2)
+    time.sleep(60)
+    """
+    let started = Date()
+    let job = ProcessJob()
+    if closePipes {
+        let result = try await job.run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-c", script, pidFile.path, "close"], timeout: 10)
+        #expect(result.status == 0)
+    } else {
+        await #expect(throws: AppFailure.self) {
+            _ = try await job.run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+                arguments: ["-c", script, pidFile.path, "keep"], timeout: 10)
+        }
+    }
+    let pid = try #require(Int32(String(contentsOf: pidFile, encoding: .utf8)))
+    defer { if kill(pid, 0) == 0 { kill(pid, SIGKILL) } }
+    let deadline = Date().addingTimeInterval(2)
+    while kill(pid, 0) == 0 && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    #expect(kill(pid, 0) != 0)
+    #expect(Date().timeIntervalSince(started) < 6)
+}
+
+@Test @MainActor func fixtureRuntimeLifecycleChatAndDownloads() async throws {
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let fixture = root.appendingPathComponent("runtime")
+    try FileManager.default.copyItem(at: #require(Bundle.module.url(forResource: "runtime", withExtension: "py", subdirectory: "Fixtures")), to: fixture)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.path)
+    // Obtain a short-lived test port. Runtime readiness is authenticated, so a
+    // bind race fails visibly rather than attaching to another listener.
+    let portResult = try await ProcessJob().run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+        arguments: ["-c", "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1])"])
+    var settings = AppSettings(); settings.executable = fixture.path
+    settings.port = try #require(Int(portResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
+    settings.modelsDirectory = root.appendingPathComponent("models").path
+    let store = ModelStore(importsURL: root.appendingPathComponent("imports.json"))
+    await store.refresh(settings: settings)
+    #expect(store.catalog.count == 1)
+    store.enqueue(try #require(store.catalog.first), settings: settings)
+    while store.downloading { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(store.downloads.first?.state == "Ready")
+    #expect(store.library.contains(where: { $0.managed && $0.ready }))
+    for name in ["Failure", "Missing"] {
+        store.enqueue(CatalogModel(alias: name, repoId: "Tests/" + name, revision: "abc123", mtpIncluded: false), settings: settings)
+    }
+    while store.downloading { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(store.downloads.suffix(2).allSatisfy { $0.state == "Failed" })
+    let runtime = RuntimeController()
+    runtime.start(model: "fixture", settings: settings)
+    let deadline = Date().addingTimeInterval(15)
+    while !runtime.ready && Date() < deadline && runtime.owned { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(runtime.ready)
+    let client = try #require(runtime.connection)
+    let attached = RuntimeController()
+    await attached.attach(port: settings.port, apiKey: "wrong")
+    #expect(!attached.ready)
+    #expect(attached.error?.contains("API key") == true)
+    #expect(runtime.job.running)
+    let chat = ChatStore(storage: root.appendingPathComponent("chat.json"))
+    for (prompt, expected) in [("hello", "Complete"), ("truncate", "Failed"), ("error", "Failed")] {
+        chat.clear(); chat.send(prompt, model: "fixture", connection: client, settings: settings)
+        while chat.generating { try await Task.sleep(for: .milliseconds(30)) }
+        #expect(chat.messages.last?.state == expected)
+    }
+    // The last turn failed; its orphan user prompt must not be replayed.
+    chat.send("history", model: "fixture", connection: client, settings: settings)
+    while chat.generating { try await Task.sleep(for: .milliseconds(30)) }
+    #expect(chat.messages.last?.content.contains("error") == false)
+    #expect(chat.messages.last?.content.contains("history") == true)
+    let restored = ChatStore(storage: root.appendingPathComponent("chat.json"))
+    let retainedCount = restored.messages.count
+    restored.send("keep my history", model: "different", connection: client, settings: settings)
+    #expect(!restored.generating)
+    #expect(restored.messages.count == retainedCount)
+    #expect(restored.error?.contains("changing models") == true)
+    restored.retry(model: "different", connection: client, settings: settings, supportsTemperature: true)
+    #expect(restored.messages.count == retainedCount)
+    chat.clear(); chat.send("slow", model: "fixture", connection: client, settings: settings)
+    try await Task.sleep(for: .milliseconds(350)); await chat.stop()
+    #expect(!chat.generating)
+    #expect(chat.messages.last?.state == "Stopped")
+    await attached.stop()
+    #expect(runtime.job.running)
+    await runtime.stop()
+    #expect(!runtime.job.running)
+    #expect(!runtime.owned)
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["AX_ENGINE_GUI_REAL_PORT"] != nil, "Requires an explicitly provisioned model test service")) @MainActor func realRuntimeSmokeWhenExplicitlyRequested() async throws {
+    guard let raw = ProcessInfo.processInfo.environment["AX_ENGINE_GUI_REAL_PORT"], let port = Int(raw) else { return }
+    let root = try temporary(); defer { try? FileManager.default.removeItem(at: root) }
+    let runtime = RuntimeController()
+    await runtime.attach(port: port, apiKey: ProcessInfo.processInfo.environment["AX_ENGINE_GUI_REAL_API_KEY"] ?? "")
+    #expect(runtime.ready)
+    let connection = try #require(runtime.connection)
+    let model = try #require(runtime.models.first)
+    var settings = AppSettings(); settings.maxTokens = 32; settings.temperature = 0
+    let chat = ChatStore(storage: root.appendingPathComponent("chat.json"))
+    chat.send("Reply with the word ready.", model: model.id, connection: connection, settings: settings,
+              supportsTemperature: model.capabilities?.temperature == true)
+    let deadline = Date().addingTimeInterval(120)
+    while chat.generating && Date() < deadline { try await Task.sleep(for: .milliseconds(100)) }
+    if chat.generating { await chat.stop(); Issue.record("Real runtime smoke exceeded its deadline") }
+    #expect(chat.error == nil)
+    #expect(chat.messages.last?.state == "Complete")
+    #expect(chat.messages.last?.content.isEmpty == false)
+    await runtime.stop()
+    // Attached-mode stop is lifecycle-neutral: the external server still answers.
+    #expect(try await connection.models().contains(where: { $0.id == model.id }))
+}

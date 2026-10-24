@@ -253,6 +253,24 @@ jobs:
         working-directory: sdk/swift
         run: swift test
 
+  native-macos-app:
+    name: Native macOS App
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Test native app contracts
+        run: swift test --package-path packaging/macos/AXEngineApp
+      - name: Set up icon tooling
+        run: |
+          python3 -m venv .icon-venv
+          .icon-venv/bin/pip install Pillow==13.0.0
+      - name: Build and verify local app bundle
+        env:
+          AX_APP_ICON_PYTHON: ${{ github.workspace }}/.icon-venv/bin/python
+        run: scripts/build-macos-app.sh
+
   model-smoke:
     name: Model Smoke
     runs-on: macos-26

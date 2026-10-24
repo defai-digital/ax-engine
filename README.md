@@ -204,6 +204,8 @@ for the full channel comparison and troubleshooting.
 
 ### Run AX Engine
 
+A native macOS app is also available as a [source build](docs/MACOS-APP.md), with model downloads, server controls and streaming chat. The CLI and TUI remain supported.
+
 **Option A — interactive TUI** (pick a model, download, serve, chat):
 
 ```bash

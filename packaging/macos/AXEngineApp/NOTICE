@@ -1,0 +1,14 @@
+AX Engine native macOS application
+
+Selected native UI and bounded-log/URL support are derived from MTPLX,
+Copyright 2026 Youssof Altoukhi, Apache-2.0.
+Source baseline: 9882703f3105363ddc37eca9f97aa09a1d387112
+https://github.com/youssofal/MTPLX
+
+Powered by MTPLX
+https://github.com/youssofal/mtplx
+
+See Resources/MTPLX-LICENSE.txt and Resources/MTPLX-NOTICE.txt for the
+unmodified upstream license and notices. Individual derived files identify
+source paths and modifications. AX Engine supplies the inference runtime;
+no MTPLX inference implementation, model assets, or branding is included.

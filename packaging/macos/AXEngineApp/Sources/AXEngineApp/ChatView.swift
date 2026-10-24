@@ -1,0 +1,120 @@
+import SwiftUI
+import AXEngineAppCore
+
+struct ChatView: View {
+    @ObservedObject var chat: ChatStore
+    @ObservedObject var runtime: RuntimeController
+    let settings: AppSettings
+    @State private var prompt = ""
+    @State private var selectedModel = ""
+    @State private var clearConfirmation = false
+    @State private var followOutput = true
+    private var modelID: String { runtime.models.contains(where: { $0.id == selectedModel }) ? selectedModel : runtime.models.first?.id ?? "" }
+    private var supportsTemperature: Bool { runtime.models.first(where: { $0.id == modelID })?.capabilities?.temperature == true }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Picker("Model", selection: $selectedModel) {
+                    Text(runtime.models.isEmpty ? "No running model" : "Default model").tag("")
+                    ForEach(runtime.models) { Text($0.id).tag($0.id) }
+                }.frame(maxWidth: 450).disabled(chat.generating)
+                Spacer()
+                Toggle("Follow output", isOn: $followOutput).toggleStyle(.checkbox)
+                Button("Clear", systemImage: "trash") { clearConfirmation = true }.disabled(chat.generating || chat.messages.isEmpty)
+            }.padding(.horizontal, 26).padding(.vertical, 14)
+            if let error = chat.error { ErrorBanner(text: error).padding(.horizontal, 26) }
+            if !runtime.ready { ErrorBanner(text: "Start or connect to a server to send messages.").padding(.horizontal, 26) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 20) {
+                        if chat.messages.isEmpty {
+                            ContentUnavailableView("A conversation, on your Mac", systemImage: "bubble.left.and.bubble.right",
+                                description: Text("Your chat history stays in your local application support folder."))
+                                .frame(maxWidth: .infinity).padding(.vertical, 45)
+                        }
+                        ForEach(chat.messages) { message in
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Label(message.role == "user" ? "You" : "AX Engine", systemImage: message.role == "user" ? "person.crop.circle" : "sparkle")
+                                        .font(.headline)
+                                    Spacer()
+                                    if message.state != "Complete" { Text(message.state).font(.caption).foregroundStyle(.secondary) }
+                                    Button { copyText(message.content) } label: { Image(systemName: "doc.on.doc") }
+                                        .buttonStyle(.plain).help("Copy message")
+                                }
+                                if !message.reasoning.isEmpty {
+                                    DisclosureGroup("Reasoning") { Text(message.reasoning).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+                                }
+                                if message.content.isEmpty && message.state == "Streaming" { ProgressView("Waiting for the model…") }
+                                else if message.state == "Streaming" { Text(message.content).textSelection(.enabled) }
+                                else { MarkdownMessage(text: message.content) }
+                            }
+                            .padding(18)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(message.role == "user" ? Brand.accentChrome.opacity(0.06) : Brand.cardSurface,
+                                        in: RoundedRectangle(cornerRadius: 14))
+                        }
+                        Color.clear.frame(height: 1).id("bottom")
+                    }.padding(26)
+                }
+                .onChange(of: chat.messages.last?.content) { _, _ in if followOutput { proxy.scrollTo("bottom", anchor: .bottom) } }
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("Message your model…", text: $prompt, axis: .vertical)
+                    .lineLimit(2...7).textFieldStyle(.plain).padding(12)
+                    .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 10))
+                    .disabled(chat.generating)
+                HStack {
+                    if let seconds = chat.firstTokenSeconds { Text(String(format: "First text %.2fs", seconds)).font(.caption).foregroundStyle(.secondary) }
+                    if let seconds = chat.elapsedSeconds { Text(String(format: "Elapsed %.1fs", seconds)).font(.caption).foregroundStyle(.secondary) }
+                    Spacer()
+                    Button("Retry", systemImage: "arrow.clockwise") {
+                        if let connection = runtime.connection { chat.retry(model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature) }
+                    }.disabled(chat.generating || chat.messages.isEmpty || !runtime.ready)
+                    if chat.generating { Button("Stop", systemImage: "stop.fill") { Task { await chat.stop() } } }
+                    else { Button("Send", systemImage: "arrow.up") { send() }.buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !runtime.ready) }
+                }
+            }.padding(20)
+        }
+        .onChange(of: runtime.models.map(\.id)) { _, ids in
+            if !ids.contains(selectedModel) { selectedModel = "" }
+        }
+        .alert("Clear this conversation?", isPresented: $clearConfirmation) {
+            Button("Clear", role: .destructive) { chat.clear() }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("This removes the saved local conversation.") }
+    }
+    private func send() {
+        guard let connection = runtime.connection else { return }
+        chat.send(prompt, model: modelID, connection: connection, settings: settings, supportsTemperature: supportsTemperature)
+        if chat.generating { prompt = "" }
+    }
+}
+
+// Settled replies receive Markdown formatting; live replies stay plain text.
+// This follows MTPLX's streaming-cost boundary without executing generated HTML.
+private struct MarkdownMessage: View {
+    let text: String
+    var body: some View {
+        let parts = text.components(separatedBy: "```")
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
+                if index % 2 == 1 {
+                    ScrollView(.horizontal) { Text(part).font(.system(.callout, design: .monospaced)).textSelection(.enabled).padding(12) }
+                        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Text((try? AttributedString(markdown: part, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(part))
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .environment(\.openURL, OpenURLAction { url in
+            guard ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return .discarded }
+            return .systemAction
+        })
+    }
+}
