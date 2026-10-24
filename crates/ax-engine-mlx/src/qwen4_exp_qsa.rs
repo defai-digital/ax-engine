@@ -22,14 +22,19 @@
 //! GEMM shape whose tests match the monolithic score bits: the proven head
 //! counts, and query widths 1024, 512, or 256 plus a folded tail of at least
 //! two queries. The production indexer is 4 heads of dim 128. Every other
-//! shape keeps one score tensor and the 256 MiB workspace check.
+//! shape keeps one score tensor and the 256 MiB workspace check. When prefill
+//! device selection is also on, tiling still wins for a chunk that does not
+//! fit that monolithic workspace, and the blocks are then chosen on the host.
 //!
 //! `AX_MLX_FLASH_NEXT_QSA_PREFILL_DEVICE_SELECT` (default on) chooses prefill
 //! blocks on the device. The single-query switch
 //! `AX_MLX_FLASH_NEXT_QSA_DEVICE_SELECT` stays on for decode and is a separate
-//! kill switch. Set the prefill switch to `0` to restore the host sort. The
-//! block-key kernel is compiled at Flash Next load so the first request does
-//! not pay that compile.
+//! kill switch. Set the prefill switch to `0` to restore the host sort. A
+//! causal non-finite score, or a row with fewer finite causal blocks than the
+//! block budget, selects that whole chunk on the host (same order, same
+//! error). The block-key kernel is compiled at Flash Next load so the first
+//! request does not pay that compile. A failed build is logged once and the
+//! host sort is used for later prefills.
 
 #[cfg(test)]
 use mlx_sys::eval;
@@ -37,11 +42,10 @@ use std::sync::OnceLock;
 
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
-    MlxQuantizationMode, add, arange, argmax, argpartition_axis, argsort_axis, astype,
-    broadcast_to, concatenate, contiguous, cos, cumsum, divide, equal, expand_dims_axes,
-    gpu_device_architecture, less, logical_and, matmul, maximum, minimum, multiply, negative,
-    outer, quantized_matmul_with_mode, reshape, rms_norm, sin, slice, slice_last_dim, subtract,
-    sum_axis, take_along_axis, transpose, where_cond, zeros,
+    MlxQuantizationMode, add, arange, argpartition_axis, argsort_axis, astype, broadcast_to,
+    concatenate, contiguous, cos, divide, expand_dims_axes, gpu_device_architecture, less, matmul,
+    maximum, minimum, multiply, negative, outer, quantized_matmul_with_mode, reshape, rms_norm,
+    sin, slice, slice_last_dim, subtract, sum_axis, take_along_axis, transpose, where_cond, zeros,
 };
 use thiserror::Error;
 
@@ -701,22 +705,29 @@ impl QsaIndexer {
             .filter(|&n| n <= i32::MAX as usize)
             .ok_or(QsaError::InvalidScalar("total context length"))?;
         let n_blocks_est = total_tokens / cfg.compress_ratio();
-        // Device selection keeps one score tensor. Tiling is host-only, and
-        // only when the measured GEMM contract accepts this shape.
-        let score_plan = if device_select {
+        // Device selection keeps one score tensor when that tensor fits. A
+        // chunk that would miss the monolithic workspace check uses the tiled
+        // host path instead, which is the path device selection off would take
+        // when tiled scores are on. Shapes the tile contract refuses still hit
+        // the workspace check below.
+        let tiled_plan = i32::try_from(n_blocks_est).ok().and_then(|n_blocks| {
+            ScoreTilePlan::try_new(
+                batch,
+                seq,
+                cfg.query_heads,
+                cfg.head_dim,
+                n_blocks,
+                hidden.dtype(),
+            )
+        });
+        let monolithic_fits = monolithic_scores_fit(batch, seq, cfg.query_heads, n_blocks_est);
+        let prefer_tiled_host = device_select && tiled_plan.is_some() && !monolithic_fits;
+        let score_plan = if device_select && !prefer_tiled_host {
             None
         } else {
-            i32::try_from(n_blocks_est).ok().and_then(|n_blocks| {
-                ScoreTilePlan::try_new(
-                    batch,
-                    seq,
-                    cfg.query_heads,
-                    cfg.head_dim,
-                    n_blocks,
-                    hidden.dtype(),
-                )
-            })
+            tiled_plan
         };
+        let select_on_device = device_select && !prefer_tiled_host;
         if score_plan.is_none() {
             ensure_score_workspace(batch, seq, cfg.query_heads, n_blocks_est)?;
         }
@@ -848,7 +859,7 @@ impl QsaIndexer {
             None
         };
 
-        if device_select {
+        if select_on_device {
             if seq == 1 {
                 let device_tokens =
                     select_tokens_device(cfg, batch, position_offset, n_complete, scores.as_ref())?;
@@ -897,13 +908,13 @@ impl QsaIndexer {
                 });
             }
         }
-        if device_select
+        if select_on_device
             && seq > crate::fastpath::QSA_DEVICE_SELECT_MULTI_MAX_QUERIES
             && prefill_device_select_enabled()
         {
-            // Stay lazy: a causal nonfinite check would sync the score GEMM
-            // before the rest of the layer is even built. Tests call the
-            // selector with rejection on and match the host error there.
+            // One flag word comes back so a non-finite causal score raises the
+            // host error. Rows that fit the block budget and are finite stay
+            // on the device; anything else uses the host sort for this chunk.
             let (device_tokens, segments) = select_tokens_device_prefill(
                 cfg,
                 batch,
@@ -911,7 +922,6 @@ impl QsaIndexer {
                 position_offset,
                 n_complete,
                 scores.as_ref(),
-                false,
             )?;
             let selection = QsaSelection {
                 #[cfg(test)]
@@ -1731,6 +1741,10 @@ pub(crate) fn flash_next_qsa_tiled_score_gate_open() -> bool {
 }
 
 fn tiled_score_runtime_matches() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = TILED_RUNTIME_OVERRIDE.with(std::cell::Cell::get) {
+        return forced;
+    }
     static ARCH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     static VERSION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let arch_ok = if let Some(matches) = ARCH.get() {
@@ -1750,6 +1764,19 @@ fn tiled_score_runtime_matches() -> bool {
     arch_ok && version_ok
 }
 
+fn score_workspace_limit() -> usize {
+    #[cfg(test)]
+    if let Some(limit) = SCORE_WORKSPACE_LIMIT_OVERRIDE.with(std::cell::Cell::get) {
+        return limit.max(1);
+    }
+    QSA_SCORE_WORKSPACE_LIMIT
+}
+
+fn monolithic_scores_fit(batch: i32, rows: i32, heads: i32, n_blocks: usize) -> bool {
+    full_score_workspace_bytes(batch, rows, heads, n_blocks)
+        .is_some_and(|bytes| bytes <= score_workspace_limit())
+}
+
 fn full_score_workspace_bytes(batch: i32, rows: i32, heads: i32, n_blocks: usize) -> Option<usize> {
     (batch as usize)
         .checked_mul(rows as usize)
@@ -1760,7 +1787,7 @@ fn full_score_workspace_bytes(batch: i32, rows: i32, heads: i32, n_blocks: usize
 
 fn ensure_score_workspace(batch: i32, rows: i32, heads: i32, n_blocks: usize) -> Result<()> {
     let bytes = full_score_workspace_bytes(batch, rows, heads, n_blocks);
-    if bytes.is_none_or(|n| n > QSA_SCORE_WORKSPACE_LIMIT) {
+    if bytes.is_none_or(|n| n > score_workspace_limit()) {
         return Err(QsaError::InvalidScalar(
             "score workspace; use a smaller prefill chunk",
         ));
@@ -1815,7 +1842,7 @@ fn tile_within_budget(
 ) -> bool {
     estimate_tile_workspace(batch, rows, heads, dim, n_blocks).is_some_and(|bytes| bytes <= budget)
         && full_score_workspace_bytes(batch, rows, heads, n_blocks as usize)
-            .is_some_and(|bytes| bytes <= QSA_SCORE_WORKSPACE_LIMIT)
+            .is_some_and(|bytes| bytes <= score_workspace_limit())
 }
 
 fn candidate_tile_widths(max_rows: i32) -> Vec<i32> {
@@ -2132,6 +2159,13 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     static TILE_LIMITS_OVERRIDE: std::cell::Cell<Option<(i32, usize)>> =
         const { std::cell::Cell::new(None) };
+    static TILED_RUNTIME_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+    static SCORE_WORKSPACE_LIMIT_OVERRIDE: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+    static PREFILL_KEY_KERNEL_FORCE_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PREFILL_DEVICE_ORDER_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static PREFILL_HOST_FALLBACK_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static HOST_SELECTION_CAPTURE: std::cell::RefCell<Option<HostSelectionLog>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -2207,6 +2241,66 @@ pub(crate) fn with_tile_limits<T>(
         TILE_LIMITS_OVERRIDE.with(|value| value.replace(Some((max_rows, workspace_bytes)))),
     );
     action()
+}
+
+/// Run `action` with the tiled-score GPU contract forced open or closed.
+#[cfg(test)]
+fn with_tiled_score_runtime<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TILED_RUNTIME_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(TILED_RUNTIME_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+/// Run `action` with a smaller monolithic score-workspace ceiling.
+#[cfg(test)]
+fn with_score_workspace_limit<T>(limit: usize, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SCORE_WORKSPACE_LIMIT_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(SCORE_WORKSPACE_LIMIT_OVERRIDE.with(|value| value.replace(Some(limit))));
+    action()
+}
+
+/// Run `action` with the prefill block-key kernel treated as unavailable.
+#[cfg(test)]
+fn with_prefill_key_kernel<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PREFILL_KEY_KERNEL_FORCE_OFF.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(PREFILL_KEY_KERNEL_FORCE_OFF.with(|value| value.replace(!enabled)));
+    action()
+}
+
+#[cfg(test)]
+fn prefill_route_hits() -> (u32, u32) {
+    (
+        PREFILL_DEVICE_ORDER_HITS.with(std::cell::Cell::get),
+        PREFILL_HOST_FALLBACK_HITS.with(std::cell::Cell::get),
+    )
+}
+
+fn note_prefill_route(device_order: bool) {
+    #[cfg(test)]
+    {
+        if device_order {
+            PREFILL_DEVICE_ORDER_HITS.with(|hits| hits.set(hits.get().saturating_add(1)));
+        } else {
+            PREFILL_HOST_FALLBACK_HITS.with(|hits| hits.set(hits.get().saturating_add(1)));
+        }
+    }
+    #[cfg(not(test))]
+    let _ = device_order;
 }
 
 #[cfg(test)]
@@ -2500,16 +2594,24 @@ const PREFILL_KEY_MIN_BUFFER: i32 = 8;
 /// One key per `(query, block)`. High 32 bits are the inverted order-preserving
 /// score (signed zero collapsed to `+0`, matching `f32::partial_cmp`). Low 30
 /// bits are the block id, so an ascending sort is score descending, then lower
-/// block id. Acausal blocks and nonfinite causal scores get the sentinel key;
-/// only the latter set the marker.
+/// block id.
 ///
-/// `limits` is `[count, blocks, seq]` plus padding. Those three values used to
-/// be template arguments, which compiled a new pipeline for every chunk shape
-/// and put that compile on the first request.
+/// Finite causal keys stay in `0..=0x3fffffffffffffff`. A non-finite causal
+/// score uses `0x4000000000000000 | block`. A future block uses
+/// `0x6000000000000000 | block`, which is greater than every causal key, so it
+/// cannot win a prefix of length `completes[query]`. The block id keeps those
+/// keys unique, so the argsort order is determined.
+///
+/// `flags[row]` is 1 when any causal score is non-finite or the number of
+/// finite causal blocks is below `limits[3]` (`block_topk`). The host sort
+/// handles every flagged chunk. `limits` is `[count, blocks, seq, keep]` plus
+/// padding. Those values used to be template arguments, which compiled a new
+/// pipeline for every chunk shape and put that compile on the first request.
 const PREFILL_KEY_SOURCE: &str = r#"
 const int count_limit = limits[0];
 const int blocks_n = limits[1];
 const int seq_n = limits[2];
+const int keep_q = limits[3];
 const size_t i = thread_position_in_grid.x;
 if (blocks_n <= 0 || seq_n <= 0 || i >= (size_t)count_limit) return;
 const size_t blocks = (size_t)blocks_n;
@@ -2518,41 +2620,69 @@ const size_t query = (i / blocks) % (size_t)seq_n;
 const int limit = completes[query];
 const float score = scores[i];
 const int causal = ((int)block < limit) ? 1 : 0;
-const int bad = (causal != 0 && !metal::isfinite(score)) ? 1 : 0;
-markers[i] = bad;
-long key = 0x4000000000000000L;
-if (causal != 0 && bad == 0) {
-    const float canon = (score == 0.0f) ? 0.0f : score;
-    const uint bits = as_type<uint>(canon);
-    const uint mask = (uint)(((int)bits) >> 31);
-    const uint order = bits ^ (mask | 0x80000000u);
-    const uint inverted = ~order;
-    key = ((long)inverted << 30) | (long)block;
+long key = 0x6000000000000000L | (long)block;
+if (causal != 0) {
+    if (!metal::isfinite(score)) {
+        key = 0x4000000000000000L | (long)block;
+    } else {
+        const float canon = (score == 0.0f) ? 0.0f : score;
+        const uint bits = as_type<uint>(canon);
+        const uint mask = (uint)(((int)bits) >> 31);
+        const uint order = bits ^ (mask | 0x80000000u);
+        const uint inverted = ~order;
+        key = ((long)inverted << 30) | (long)block;
+    }
 }
 keys[i] = key;
+if (block == 0) {
+    int finite = 0;
+    int bad = 0;
+    const size_t row = i / blocks;
+    for (int b = 0; b < limit; ++b) {
+        const float causal_score = scores[row * blocks + (size_t)b];
+        if (!metal::isfinite(causal_score)) {
+            bad = 1;
+        } else {
+            finite += 1;
+        }
+    }
+    flags[row] = (bad != 0 || finite < keep_q) ? 1 : 0;
+}
 "#;
 
-fn prefill_key_kernel() -> Result<&'static MlxMetalKernel> {
+fn prefill_key_kernel() -> Option<&'static MlxMetalKernel> {
+    #[cfg(test)]
+    if PREFILL_KEY_KERNEL_FORCE_OFF.with(std::cell::Cell::get) {
+        return None;
+    }
     static KERNEL: OnceLock<Option<MlxMetalKernel>> = OnceLock::new();
-    let kernel = KERNEL.get_or_init(|| {
-        match MlxMetalKernel::try_new(
-            "ax_qsa_prefill_block_key_v2",
-            &["scores", "completes", "limits"],
-            &["keys", "markers"],
-            PREFILL_KEY_SOURCE,
-            PREFILL_KEY_HEADER,
-            true,
-        ) {
-            Ok(kernel) => Some(kernel),
-            Err(error) => {
-                tracing::warn!(%error, "QSA prefill block-key kernel failed to build");
-                None
+    KERNEL
+        .get_or_init(|| {
+            match MlxMetalKernel::try_new(
+                "ax_qsa_prefill_block_key_v3",
+                &["scores", "completes", "limits"],
+                &["keys", "flags"],
+                PREFILL_KEY_SOURCE,
+                PREFILL_KEY_HEADER,
+                true,
+            ) {
+                Ok(kernel) => Some(kernel),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "QSA prefill block-key kernel failed to build; prefill selection uses the host sort"
+                    );
+                    None
+                }
             }
-        }
-    });
-    kernel
+        })
         .as_ref()
-        .ok_or(QsaError::InvalidScalar("qsa prefill block-key kernel"))
+}
+
+/// Whether the block-key pipeline was built. A failed build stays `false`
+/// for the process, and prefill selection uses the host sort.
+pub(crate) fn prefill_block_key_kernel_available() -> bool {
+    prefill_key_kernel().is_some()
 }
 
 fn host_i32(data: &[i32], shape: &[i32]) -> MlxArray {
@@ -2570,12 +2700,13 @@ fn launch_prefill_block_keys(
     batch: i32,
     seq: i32,
     n_blocks: i32,
+    keep_q: i32,
 ) -> Result<(MlxArray, MlxArray)> {
     let count = batch
         .checked_mul(seq)
         .and_then(|n| n.checked_mul(n_blocks))
         .ok_or(QsaError::InvalidScalar("prefill block-key count"))?;
-    if count < 1 {
+    if count < 1 || keep_q < 1 {
         return Err(QsaError::InvalidScalar("prefill block-key count"));
     }
     let groups = count
@@ -2585,24 +2716,24 @@ fn launch_prefill_block_keys(
     let grid = groups
         .checked_mul(PREFILL_KEY_THREADS)
         .ok_or(QsaError::InvalidScalar("prefill block-key grid"))?;
-    let kernel = prefill_key_kernel()?;
+    let kernel =
+        prefill_key_kernel().ok_or(QsaError::InvalidScalar("qsa prefill block-key kernel"))?;
     let completes = pad_prefill_key_i32(completes, seq)?;
     let limits = host_i32(
-        &[count, n_blocks, seq, 0, 0, 0, 0, 0],
+        &[count, n_blocks, seq, keep_q, 0, 0, 0, 0],
         &[PREFILL_KEY_MIN_BUFFER],
     );
-    let shape = vec![batch, seq, n_blocks];
     let template: &[KernelTemplateArg<'_>] = &[];
     let mut outputs = kernel
         .try_apply_with_template(
             &[scores, &completes, &limits],
             &[
                 KernelOutputSpec {
-                    shape: shape.clone(),
+                    shape: vec![batch, seq, n_blocks],
                     dtype: MlxDtype::Int64,
                 },
                 KernelOutputSpec {
-                    shape,
+                    shape: vec![batch, seq],
                     dtype: MlxDtype::Int32,
                 },
             ],
@@ -2616,7 +2747,7 @@ fn launch_prefill_block_keys(
             context: format!("batch={batch} seq={seq} blocks={n_blocks}"),
             detail,
         })?;
-    let markers = outputs
+    let flags = outputs
         .pop()
         .ok_or(QsaError::InvalidScalar("qsa prefill block-key kernel"))?;
     let keys = outputs
@@ -2625,7 +2756,7 @@ fn launch_prefill_block_keys(
     if !outputs.is_empty() {
         return Err(QsaError::InvalidScalar("qsa prefill block-key kernel"));
     }
-    Ok((keys, markers))
+    Ok((keys, flags))
 }
 
 /// Pad a 1-d int32 prefix out to [`PREFILL_KEY_MIN_BUFFER`] so MLX keeps it in
@@ -2664,9 +2795,9 @@ pub(crate) fn warm_prefill_key_kernel() -> std::result::Result<(), String> {
     let blocks = PREFILL_KEY_MIN_BUFFER;
     let scores = zeros(&[1, seq, blocks], MlxDtype::Float32, None);
     let completes = host_i32(&[blocks; PREFILL_KEY_MIN_BUFFER as usize], &[seq]);
-    let (keys, markers) = launch_prefill_block_keys(&scores, &completes, 1, seq, blocks)
+    let (keys, flags) = launch_prefill_block_keys(&scores, &completes, 1, seq, blocks, blocks)
         .map_err(|error| format!("qsa prefill block-key warm-up failed: {error}"))?;
-    mlx_sys::try_eval(&[&keys, &markers])
+    mlx_sys::try_eval(&[&keys, &flags])
         .map_err(|error| format!("qsa prefill block-key warm-up failed: {error}"))
 }
 
@@ -2703,62 +2834,31 @@ fn ordered_block_ids(keys: &MlxArray, keep_cols: i32, topk: i32) -> Result<MlxAr
     Ok(concatenate(&[&narrowed, &pad], 2, None))
 }
 
-/// Host error for the first causal nonfinite score in row-major
-/// `(batch, query, block)` order. Future nonfinite scores are not marked.
-fn reject_causal_nonfinite(markers: &MlxArray, batch: i32, seq: i32, n_blocks: i32) -> Result<()> {
+/// True when any row asked for the host sort. One scalar is read back.
+fn prefill_row_flags_need_host(flags: &MlxArray, batch: i32, seq: i32) -> Result<bool> {
+    if flags.shape() != [batch, seq] {
+        return Err(QsaError::TensorShape {
+            tensor: "prefill row flags",
+            expected: format!("[{batch}, {seq}]"),
+            actual: flags.shape(),
+        });
+    }
     let rows = batch
         .checked_mul(seq)
-        .and_then(|n| n.checked_mul(n_blocks))
-        .ok_or(QsaError::InvalidScalar("nonfinite score count"))?;
-    let flat = reshape(markers, &[rows], None);
+        .ok_or(QsaError::InvalidScalar("prefill row flags"))?;
+    let flat = reshape(flags, &[rows], None);
     let total = sum_axis(&astype(&flat, MlxDtype::Float32, None), 0, false, None);
     mlx_sys::try_eval(&[&total]).map_err(|detail| QsaError::Evaluation {
-        stage: "qsa prefill nonfinite check",
-        context: format!("markers={:?}", markers.shape()),
+        stage: "qsa prefill row-flag check",
+        context: format!("flags={:?}", flags.shape()),
         detail,
     })?;
     let count = total
         .data_f32()
         .first()
         .copied()
-        .ok_or(QsaError::InvalidScalar("nonfinite score count"))?;
-    if count == 0.0 {
-        return Ok(());
-    }
-    // Inclusive cumsum stays at 1 across the zeros that follow the first hit,
-    // so the hit is the element where the running sum and the marker are both 1.
-    let one = host_i32(&[1], &[1]);
-    let running = cumsum(&flat, 0, false, true, None);
-    let hit = logical_and(
-        &equal(&running, &one, None),
-        &equal(&flat, &one, None),
-        None,
-    );
-    let index = argmax(&astype(&hit, MlxDtype::Int32, None), None);
-    mlx_sys::try_eval(&[&index]).map_err(|detail| QsaError::Evaluation {
-        stage: "qsa prefill nonfinite index",
-        context: format!("markers={:?}", markers.shape()),
-        detail,
-    })?;
-    let index = index
-        .data_u32()
-        .first()
-        .copied()
-        .ok_or(QsaError::InvalidScalar("nonfinite score index"))? as usize;
-    let n_blocks_u = n_blocks as usize;
-    let seq_u = seq as usize;
-    if n_blocks_u == 0 || seq_u == 0 || index >= rows as usize {
-        return Err(QsaError::InvalidScalar("nonfinite score index"));
-    }
-    let block = index % n_blocks_u;
-    let tmp = index / n_blocks_u;
-    let query = tmp % seq_u;
-    let batch = tmp / seq_u;
-    Err(QsaError::NonFiniteScore {
-        batch,
-        query,
-        block,
-    })
+        .ok_or(QsaError::InvalidScalar("prefill row flags"))?;
+    Ok(count != 0.0)
 }
 
 fn expand_selected_blocks(
@@ -2846,14 +2946,80 @@ fn visible_tail_tokens(
     )))
 }
 
+/// Pack host rows into the segmented device layout: `block_len` tokens, `-1`
+/// padding out to `blocks_width`, then `tail_len` visible-tail tokens.
+fn pack_host_rows_as_device(
+    host: &[Vec<Vec<i32>>],
+    batch: i32,
+    seq: i32,
+    blocks_width: i32,
+    tail_width: i32,
+    segments: &[(i32, i32)],
+) -> Result<MlxArray> {
+    if blocks_width < 0 || tail_width < 0 || host.len() != batch as usize {
+        return Err(QsaError::InvalidScalar("selected token count"));
+    }
+    let width = blocks_width
+        .checked_add(tail_width)
+        .ok_or(QsaError::InvalidScalar("selected token count"))?;
+    let rows = (batch as usize)
+        .checked_mul(seq as usize)
+        .ok_or(QsaError::InvalidScalar("selected token count"))?;
+    let stride =
+        usize::try_from(width).map_err(|_| QsaError::InvalidScalar("selected token count"))?;
+    let count = rows
+        .checked_mul(stride)
+        .ok_or(QsaError::InvalidScalar("selected token count"))?;
+    let mut packed = Vec::new();
+    packed
+        .try_reserve_exact(count)
+        .map_err(|_| QsaError::InvalidScalar("selected token count"))?;
+    packed.resize(count, -1_i32);
+    let blocks_width_u = blocks_width as usize;
+    for (b, queries) in host.iter().enumerate() {
+        if queries.len() != seq as usize {
+            return Err(QsaError::InvalidScalar("selected token count"));
+        }
+        for (q, row) in queries.iter().enumerate() {
+            let (block_len, tail_len) = segments
+                .get(b * seq as usize + q)
+                .copied()
+                .ok_or(QsaError::InvalidScalar("selected token count"))?;
+            if block_len < 0 || tail_len < 0 {
+                return Err(QsaError::InvalidScalar("selected token count"));
+            }
+            let block_len = block_len as usize;
+            let tail_len = tail_len as usize;
+            let row_len = block_len
+                .checked_add(tail_len)
+                .ok_or(QsaError::InvalidScalar("selected token count"))?;
+            if row_len != row.len() || block_len > blocks_width_u || tail_len > tail_width as usize
+            {
+                return Err(QsaError::InvalidScalar("selected token count"));
+            }
+            let dst = (b * seq as usize + q) * stride;
+            packed[dst..dst + block_len].copy_from_slice(&row[..block_len]);
+            let tail_at = dst + blocks_width_u;
+            packed[tail_at..tail_at + tail_len].copy_from_slice(&row[block_len..]);
+        }
+    }
+    Ok(MlxArray::from_raw_data(
+        packed.as_ptr().cast(),
+        std::mem::size_of_val(packed.as_slice()),
+        &[batch, seq, width],
+        MlxDtype::Int32,
+    ))
+}
+
 /// Prefill block selection on the device.
 ///
 /// Same ordered token lists as [`select_tokens`]: up to `block_topk` causally
 /// complete blocks, score descending and lower block id first (signed zero
-/// equal), then the visible partial tail. `reject_nonfinite` reports the host
-/// [`QsaError::NonFiniteScore`] for a causal NaN or infinity and syncs one
-/// scalar to do it. The `select` path passes `false` so the score GEMM stays
-/// in the chunk graph.
+/// equal), then the visible partial tail. Future blocks use a key that sorts
+/// after every causal block, and each row keeps at most its causal count.
+/// A row with a non-finite causal score, or fewer finite causal blocks than
+/// `block_topk`, selects the whole chunk on the host, including the host
+/// [`QsaError::NonFiniteScore`]. A missing block-key kernel does the same.
 fn select_tokens_device_prefill(
     cfg: QsaConfig,
     batch: i32,
@@ -2861,7 +3027,6 @@ fn select_tokens_device_prefill(
     position_offset: usize,
     n_complete: i32,
     scores: Option<&MlxArray>,
-    reject_nonfinite: bool,
 ) -> Result<(MlxArray, Vec<(i32, i32)>)> {
     let ratio = i32::try_from(cfg.compress_ratio())
         .map_err(|_| QsaError::InvalidScalar("compress ratio"))?;
@@ -2909,7 +3074,9 @@ fn select_tokens_device_prefill(
     let block_cols = topk
         .checked_mul(ratio)
         .ok_or(QsaError::InvalidScalar("selected token count"))?;
+    let tail_width = (ratio - 1).max(0);
     let block_tokens = if n_complete == 0 {
+        note_prefill_route(true);
         broadcast_to(&host_i32(&[-1], &[1]), &[batch, seq, block_cols], None)
     } else {
         let scores = scores.ok_or(QsaError::InvalidScalar("block scores"))?;
@@ -2924,16 +3091,30 @@ fn select_tokens_device_prefill(
                 actual: shape,
             });
         }
-        let (keys, markers) = launch_prefill_block_keys(
+        let use_host = || -> Result<(MlxArray, Vec<(i32, i32)>)> {
+            note_prefill_route(false);
+            let host = select_tokens(cfg, batch, seq, position_offset, n_complete, Some(scores))?;
+            let packed =
+                pack_host_rows_as_device(&host, batch, seq, block_cols, tail_width, &segments)?;
+            Ok((packed, segments.clone()))
+        };
+        if prefill_key_kernel().is_none() {
+            return use_host();
+        }
+        let (keys, flags) = launch_prefill_block_keys(
             scores,
             &host_i32(&complete, &[seq]),
             batch,
             seq,
             n_complete,
+            topk,
         )?;
-        if reject_nonfinite {
-            reject_causal_nonfinite(&markers, batch, seq, n_complete)?;
+        if prefill_row_flags_need_host(&flags, batch, seq)? {
+            return use_host();
         }
+        note_prefill_route(true);
+        // Every unflagged row has at least `topk` finite causal blocks, so the
+        // first `topk` keys are causal. Future keys sort after every causal key.
         let keep_cols = topk.min(n_complete);
         let order = ordered_block_ids(&keys, keep_cols, topk)?;
         expand_selected_blocks(&order, batch, seq, topk, ratio, &keep)
@@ -3666,27 +3847,19 @@ mod tests {
         offset: usize,
         n_complete: i32,
         scores: Option<&[f32]>,
-        reject_nonfinite: bool,
     ) {
         let array = scores.map(|scores| array_f32(scores, &[batch, seq, n_complete]));
         let host = select_tokens(cfg, batch, seq, offset, n_complete, array.as_ref()).unwrap();
-        let (device, segments) = select_tokens_device_prefill(
-            cfg,
-            batch,
-            seq,
-            offset,
-            n_complete,
-            array.as_ref(),
-            reject_nonfinite,
-        )
-        .unwrap();
+        let (device, segments) =
+            select_tokens_device_prefill(cfg, batch, seq, offset, n_complete, array.as_ref())
+                .unwrap();
         let selection = selection_from_prefill(cfg, device, segments);
         for (b, queries) in host.iter().enumerate() {
             for (s, chosen) in queries.iter().enumerate() {
                 assert_eq!(
                     selection.tokens_for_query(b, s),
                     chosen.as_slice(),
-                    "batch={b} query={s} offset={offset} blocks={n_complete} reject={reject_nonfinite}"
+                    "batch={b} query={s} offset={offset} blocks={n_complete}"
                 );
             }
         }
@@ -3718,12 +3891,14 @@ mod tests {
     #[test]
     fn prefill_device_selection_matches_host_on_random_scores_ties_and_signed_zero() {
         let cfg = prefill_cfg(4, 16);
+        let before = prefill_route_hits();
         // Pinned: score 1 wins, then signed zeros by ascending block id.
+        // Every row has at least block_topk finite causal blocks, so this stays
+        // on the device order rather than the host fallback.
         let pinned = [-0.0_f32, 0.0, 1.0, -0.0];
-        assert_prefill_matches_host(cfg, 1, 1, 15, 4, Some(&pinned), false);
-        assert_prefill_matches_host(cfg, 1, 1, 15, 4, Some(&pinned), true);
+        assert_prefill_matches_host(cfg, 1, 1, 15, 4, Some(&pinned));
         let tied = [0.0_f32, 0.0, -0.0, 0.0];
-        assert_prefill_matches_host(cfg, 1, 1, 15, 4, Some(&tied), true);
+        assert_prefill_matches_host(cfg, 1, 1, 15, 4, Some(&tied));
         let mut seed = 0x51_5au32;
         let (batch, seq, n_blocks) = (2, 5, 9);
         let mut scores = Vec::with_capacity((batch * seq * n_blocks) as usize);
@@ -3740,8 +3915,16 @@ mod tests {
             };
             scores.push(value);
         }
-        assert_prefill_matches_host(cfg, batch, seq, 20, n_blocks, Some(&scores), false);
-        assert_prefill_matches_host(cfg, batch, seq, 20, n_blocks, Some(&scores), true);
+        assert_prefill_matches_host(cfg, batch, seq, 20, n_blocks, Some(&scores));
+        let after = prefill_route_hits();
+        assert!(
+            after.0 > before.0,
+            "finite rows with a full causal budget stay on the device order"
+        );
+        assert_eq!(
+            after.1, before.1,
+            "those rows must not fall back to the host sort"
+        );
     }
 
     #[test]
@@ -3767,19 +3950,11 @@ mod tests {
                 } else {
                     Some(scores.as_slice())
                 };
-                assert_prefill_matches_host(
-                    cfg,
-                    1,
-                    seq as i32,
-                    offset,
-                    n_complete as i32,
-                    scores,
-                    false,
-                );
+                assert_prefill_matches_host(cfg, 1, seq as i32, offset, n_complete as i32, scores);
             }
         }
         // No complete block: tail only, including a short chunk below the multi cap.
-        assert_prefill_matches_host(cfg, 2, 3, 0, 0, None, false);
+        assert_prefill_matches_host(cfg, 2, 3, 0, 0, None);
     }
 
     #[test]
@@ -3800,7 +3975,7 @@ mod tests {
         let array = array_f32(&future, &[1, 1, n_complete]);
         let host = select_tokens(cfg, 1, 1, 3, n_complete, Some(&array)).unwrap();
         let (device, segments) =
-            select_tokens_device_prefill(cfg, 1, 1, 3, n_complete, Some(&array), true).unwrap();
+            select_tokens_device_prefill(cfg, 1, 1, 3, n_complete, Some(&array)).unwrap();
         let selection = selection_from_prefill(cfg, device, segments);
         assert_eq!(selection.tokens_for_query(0, 0), host[0][0].as_slice());
     }
@@ -3814,8 +3989,7 @@ mod tests {
     ) {
         let array = array_f32(scores, &[2, 3, 4]);
         let host = select_tokens(*cfg, 2, 3, 3, 4, Some(&array)).unwrap_err();
-        let device =
-            select_tokens_device_prefill(*cfg, 2, 3, 3, 4, Some(&array), true).unwrap_err();
+        let device = select_tokens_device_prefill(*cfg, 2, 3, 3, 4, Some(&array)).unwrap_err();
         assert!(
             matches!(
                 host,
@@ -3837,6 +4011,107 @@ mod tests {
                 } if got_batch == batch && got_query == query && got_block == block
             ),
             "device {device}"
+        );
+    }
+
+    fn assert_prefill_error_matches(
+        cfg: QsaConfig,
+        batch: i32,
+        seq: i32,
+        offset: usize,
+        n_complete: i32,
+        scores: &[f32],
+    ) {
+        let array = array_f32(scores, &[batch, seq, n_complete]);
+        let host = select_tokens(cfg, batch, seq, offset, n_complete, Some(&array)).unwrap_err();
+        let device =
+            select_tokens_device_prefill(cfg, batch, seq, offset, n_complete, Some(&array))
+                .unwrap_err();
+        assert_eq!(host.to_string(), device.to_string());
+    }
+
+    #[test]
+    fn prefill_device_selection_matches_host_on_nonfinite_short_and_future_rows() {
+        // block_topk is 2. Rows below have either a full causal budget or not.
+        let cfg = prefill_cfg(4, 8);
+        let before = prefill_route_hits();
+        // Both queries see exactly two causal blocks. Later columns are future,
+        // including NaN, infinities, and a score larger than every causal one.
+        let mut future = vec![
+            3.0_f32,
+            1.0,
+            f32::NAN,
+            f32::INFINITY,
+            1_000.0,
+            f32::NEG_INFINITY,
+        ];
+        future.extend_from_slice(&[
+            0.5,
+            2.0,
+            f32::NAN,
+            f32::INFINITY,
+            1_000.0,
+            f32::NEG_INFINITY,
+        ]);
+        assert_prefill_matches_host(cfg, 1, 2, 8, 6, Some(&future));
+        let mid = prefill_route_hits();
+        assert!(
+            mid.0 > before.0,
+            "future non-finite rows stay on the device order"
+        );
+        assert_eq!(mid.1, before.1);
+
+        // One causal block and a future score that would win if it were eligible.
+        let short = [0.25_f32, 1_000.0, f32::NAN, f32::INFINITY];
+        assert_prefill_matches_host(cfg, 1, 1, 3, 4, Some(&short));
+        let after_short = prefill_route_hits();
+        assert!(
+            after_short.1 > mid.1,
+            "fewer finite causal blocks than block_topk falls back to the host"
+        );
+
+        // No query can see a block. Every score is future.
+        let all_future = [
+            1_000.0_f32,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            4.0,
+            -1.0,
+        ];
+        assert_prefill_matches_host(cfg, 1, 2, 0, 3, Some(&all_future));
+
+        let before_err = prefill_route_hits();
+        assert_prefill_error_matches(cfg, 1, 1, 15, 4, &[1.0, f32::INFINITY, 0.5, 0.2]);
+        assert_prefill_error_matches(cfg, 1, 1, 15, 4, &[5.0, 4.0, 3.0, f32::NAN]);
+        assert_prefill_error_matches(cfg, 1, 1, 15, 4, &[f32::NEG_INFINITY, 1.0, 2.0, 3.0]);
+        let mut batched = vec![1.0_f32, 2.0, 3.0, 0.5];
+        batched.extend_from_slice(&[1.0, 2.0, f32::NAN, 9.0]);
+        assert_prefill_error_matches(cfg, 2, 1, 15, 4, &batched);
+        let after_err = prefill_route_hits();
+        assert!(
+            after_err.1 > before_err.1,
+            "a causal non-finite score falls back to the host error"
+        );
+    }
+
+    #[test]
+    fn prefill_device_selection_uses_host_when_the_block_key_kernel_is_unavailable() {
+        let cfg = prefill_cfg(4, 16);
+        let scores = [1.0_f32, -0.0, 0.0, 3.0, 2.0, 4.0, -1.0, 0.5];
+        let before = prefill_route_hits();
+        with_prefill_key_kernel(false, || {
+            assert_prefill_matches_host(cfg, 1, 2, 15, 4, Some(&scores));
+            assert_prefill_error_matches(cfg, 1, 1, 15, 4, &[1.0, f32::NAN, 3.0, 4.0]);
+        });
+        let after = prefill_route_hits();
+        assert_eq!(
+            after.0, before.0,
+            "a missing kernel must not sort on the device"
+        );
+        assert!(
+            after.1 > before.1,
+            "a missing kernel falls back to the host sort"
         );
     }
 
@@ -3879,13 +4154,13 @@ mod tests {
         warm_prefill_key_kernel().expect("prefill key kernel warm-up");
         let cfg = prefill_cfg(4, 16);
         let scores: Vec<f32> = (0..16 * 9).map(|i| (i % 7) as f32 - 3.0).collect();
-        assert_prefill_matches_host(cfg, 1, 16, 4, 9, Some(&scores), false);
+        assert_prefill_matches_host(cfg, 1, 16, 4, 9, Some(&scores));
         // Shorter than the constant-buffer cutoff. Padding keeps this on the
         // same pipeline as the warm-up launch.
         let short: Vec<f32> = (0..3 * 5).map(|i| (i as f32) * 0.5 - 1.0).collect();
-        assert_prefill_matches_host(cfg, 1, 3, 1, 5, Some(&short), false);
+        assert_prefill_matches_host(cfg, 1, 3, 1, 5, Some(&short));
         let tiny_scores = [1.0_f32, -0.0, 0.0, 2.0];
-        assert_prefill_matches_host(cfg, 1, 2, 0, 2, Some(&tiny_scores), false);
+        assert_prefill_matches_host(cfg, 1, 2, 0, 2, Some(&tiny_scores));
     }
 
     #[test]
@@ -6162,6 +6437,97 @@ mod tests {
         };
         assert_eq!(before, after);
         assert!(cache.pooled_blocks().is_some());
+    }
+
+    #[test]
+    fn prefill_device_select_defers_to_tiled_scores_when_monolithic_scores_do_not_fit() {
+        let spec = Geom {
+            heads: 2,
+            dim: 4,
+            ratio: 2,
+            budget: 4,
+            hidden: 8,
+        };
+        let indexer = geom_indexer(&spec);
+        let past_tokens = 8usize;
+        let past = array_f32(
+            &vec![0.05f32; past_tokens * spec.dim],
+            &[1, past_tokens as i32, spec.dim as i32],
+        );
+        let cache = QsaIndexKeyCache::from_serialized(Some(past));
+        let seq = 8usize;
+        let hidden = hidden_tensor(&spec, 1, seq, 0.0);
+        let limit = 128usize;
+        let run = |device_select: bool, tiled: bool| {
+            with_tiled_score_runtime(true, || {
+                with_tile_limits(2, QSA_TILE_WORKSPACE_BUDGET, || {
+                    with_score_workspace_limit(limit, || {
+                        with_prefill_device_select(true, || {
+                            with_tiled_scores(tiled, || {
+                                indexer.select_with_mode(
+                                    &hidden,
+                                    &cache,
+                                    past_tokens,
+                                    project,
+                                    device_select,
+                                )
+                            })
+                        })
+                    })
+                })
+            })
+        };
+        match run(true, false) {
+            Err(QsaError::InvalidScalar(message)) => {
+                assert!(message.contains("score workspace"), "{message}");
+            }
+            Err(error) => panic!("untiled device selection must reject this chunk, got {error}"),
+            Ok(_) => panic!("untiled device selection must reject this chunk"),
+        }
+        let device_on = run(true, true).expect("tiled scores succeed with device selection on");
+        let device_off = run(false, true).expect("tiled host path");
+        assert!(
+            device_on.device_tokens().is_none(),
+            "an over-budget chunk uses the tiled host path"
+        );
+        for query in 0..seq {
+            assert_eq!(
+                device_on.tokens_for_query(0, query),
+                device_off.tokens_for_query(0, query),
+                "query {query}"
+            );
+        }
+        let wide = with_tiled_score_runtime(true, || {
+            with_tile_limits(2, QSA_TILE_WORKSPACE_BUDGET, || {
+                with_score_workspace_limit(QSA_SCORE_WORKSPACE_LIMIT, || {
+                    with_prefill_device_select(true, || {
+                        with_tiled_scores(true, || {
+                            indexer
+                                .select_with_mode(&hidden, &cache, past_tokens, project, true)
+                                .unwrap()
+                        })
+                    })
+                })
+            })
+        });
+        let host = with_score_workspace_limit(QSA_SCORE_WORKSPACE_LIMIT, || {
+            with_tiled_scores(false, || {
+                indexer
+                    .select_with_mode(&hidden, &cache, past_tokens, project, false)
+                    .unwrap()
+            })
+        });
+        assert!(
+            wide.device_tokens().is_some(),
+            "device selection runs when the monolithic scores fit"
+        );
+        for query in 0..seq {
+            assert_eq!(
+                wide.tokens_for_query(0, query),
+                host.tokens_for_query(0, query),
+                "fitted device query {query}"
+            );
+        }
     }
 
     #[test]
