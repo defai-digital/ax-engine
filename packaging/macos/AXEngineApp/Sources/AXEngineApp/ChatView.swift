@@ -34,8 +34,8 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 20) {
                         if chat.messages.isEmpty {
-                            ContentUnavailableView("A conversation, on your Mac", systemImage: "bubble.left.and.bubble.right",
-                                description: Text("Your chat history stays in your local application support folder."))
+                            ContentUnavailableView("Try your model", systemImage: "bubble.left.and.bubble.right",
+                                description: Text("Send a prompt to inspect response quality and inference speed. History stays on this Mac."))
                                 .frame(maxWidth: .infinity).padding(.vertical, 45)
                         }
                         ForEach(chat.messages) { message in

@@ -1,6 +1,6 @@
-# Chat speed measurements
+# Playground speed measurements
 
-AX Engine for macOS shows **Prefill** and **Decode** beneath each assistant reply.
+AX Engine Playground for macOS shows **Prefill** and **Decode** beneath each assistant reply.
 Both are native evaluation averages in tokens per second, saved with the reply.
 
 - **Prefill:** uncached input tokens divided by native prompt evaluation time.

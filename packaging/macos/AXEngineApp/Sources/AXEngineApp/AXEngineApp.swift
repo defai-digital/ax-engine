@@ -100,7 +100,7 @@ struct AXEngineApplication: App {
         .windowResizability(.contentSize)
     }
     private func showAbout() {
-        let credits = NSMutableAttributedString(string: "Native local inference for Apple Silicon.\n\nManage your models, run local inference and chat on your Mac.\n\nOpen Third-Party Notices from the AX Engine menu for open-source acknowledgements.")
+        let credits = NSMutableAttributedString(string: "Native local inference for Apple Silicon.\n\nManage your models, run local inference and test responses in Playground.\n\nOpen Third-Party Notices from the AX Engine menu for open-source acknowledgements.")
         NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])
     }
 }

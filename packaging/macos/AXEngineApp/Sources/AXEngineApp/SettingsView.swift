@@ -37,7 +37,7 @@ struct SettingsView: View {
                     LabeledContent("Sampling", value: model.settingsDraft.useRuntimeSampling
                         ? "Runtime defaults" : "Custom temperature")
                     if model.settingsDraft.generationProfile == .media {
-                        Label("Media analysis needs a compatible model and client. The built-in Chat currently accepts text only; this profile does not enable image, audio or video generation.", systemImage: "info.circle")
+                        Label("Media analysis needs a compatible model and client. Playground currently accepts text only; this profile does not enable image, audio or video generation.", systemImage: "info.circle")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     DisclosureGroup("Advanced generation", isExpanded: $advancedGeneration) {
@@ -53,7 +53,7 @@ struct SettingsView: View {
                         Text("Runtime defaults omit sampling overrides. A custom temperature is sent only when the model supports it. Context limits, memory admission, thinking and MTP remain controlled by the model and runtime.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("Saved profiles apply to new requests in the built-in Chat. Other apps keep their own request parameters; copy the saved defaults to configure them.")
+                    Text("Saved profiles apply to new requests in Playground. Other apps keep their own request parameters; copy the saved defaults to configure them.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button(copiedDefaults ? "Copied request defaults" : "Copy saved request defaults") {
                         do {

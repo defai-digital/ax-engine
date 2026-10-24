@@ -3,7 +3,7 @@ import AppKit
 import AXEngineAppCore
 
 enum Page: String, CaseIterable, Identifiable {
-    case overview = "Dashboard", models = "Models", server = "Server", chat = "Chat", settings = "Settings"
+    case overview = "Dashboard", models = "Models", server = "Server", chat = "Playground", settings = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -55,7 +55,7 @@ struct MainView: View {
                         Text(subtitle).font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if runtime.ready && model.page != .chat { Button("Open Chat", systemImage: "bubble.left") { model.page = .chat } }
+                    if runtime.ready && model.page != .chat { Button("Open Playground", systemImage: "bubble.left") { model.page = .chat } }
                 }.padding(26)
                 Divider()
                 Group {
@@ -100,7 +100,7 @@ struct MainView: View {
         case .overview: "Memory, storage and the models on your Mac."
         case .models: "Browse runtime profiles and manage local model folders."
         case .server: "Start a local model or connect to an existing AX Engine service."
-        case .chat: "Private conversations with your running model."
+        case .chat: "Test your model’s responses and inference speed."
         case .settings: "Configure your local runtime and generation defaults."
         }
     }
