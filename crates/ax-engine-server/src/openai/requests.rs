@@ -1094,7 +1094,12 @@ pub(crate) fn tokenize_native_mlx_text_input(
             format!("failed to load tokenizer for native MLX OpenAI text endpoint: {error}"),
         )
     })?;
-    let (input_tokens, byte_offsets) = if assistant_byte_starts.is_empty() {
+    // Semantic cut points are the only consumer of byte offsets, and the
+    // runner only uses them behind an opt-in switch. On the default path the
+    // edge tokenizes once and never builds offsets or hints.
+    let wants_semantic_cuts =
+        !assistant_byte_starts.is_empty() && ax_engine_core::prefix_features::any_enabled();
+    let (input_tokens, byte_offsets) = if !wants_semantic_cuts {
         let tokens = tokenizer.encode(&input_text, false).map_err(|error| {
             error_response(
                 StatusCode::BAD_REQUEST,
@@ -1117,10 +1122,11 @@ pub(crate) fn tokenize_native_mlx_text_input(
             })?
     };
     let prefill_hints = ax_engine_core::PrefillHints {
-        semantic_cut_tokens: chat::token_starts_for_byte_starts(
-            &byte_offsets,
-            assistant_byte_starts,
-        ),
+        semantic_cut_tokens: if wants_semantic_cuts {
+            chat::token_starts_for_byte_starts(&byte_offsets, assistant_byte_starts)
+        } else {
+            Vec::new()
+        },
     };
 
     Ok((input_tokens, None, prefill_hints))

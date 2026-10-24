@@ -23,6 +23,7 @@ pub mod multimodal_adapter;
 pub mod nemotron_omni;
 pub mod prefill_cohort;
 pub mod prefill_stall;
+pub mod prefix_features;
 mod qwen38_quantization;
 pub mod qwen3_vl;
 pub mod repo_ref;

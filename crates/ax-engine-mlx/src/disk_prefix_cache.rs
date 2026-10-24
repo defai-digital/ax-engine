@@ -858,7 +858,7 @@ impl DiskPrefixCache {
         if stored_key != key_bytes {
             return None;
         }
-        let payload_bytes = if flags == PAGE_MANIFEST_FLAG {
+        let (payload_bytes, materialized_bytes) = if flags == PAGE_MANIFEST_FLAG {
             let manifest_len = usize::try_from(payload_len).ok()?;
             if manifest_len > MAX_PAGE_MANIFEST_BYTES {
                 return None;
@@ -871,6 +871,10 @@ impl DiskPrefixCache {
                 self.policy.max_entry_bytes,
             )
             .ok()?;
+            // Read cost: the manifest plus every referenced page blob, which
+            // are content-addressed and therefore deduplicated across the
+            // entry. Materialization cost is the *logical* payload the pages
+            // reassemble into — never the manifest length.
             let mut seen = std::collections::HashSet::new();
             let page_bytes = manifest
                 .pages
@@ -878,13 +882,16 @@ impl DiskPrefixCache {
                 .filter(|page| seen.insert(page.hash))
                 .map(|page| u64::from(page.len))
                 .fold(0u64, u64::saturating_add);
-            (manifest_len as u64).saturating_add(page_bytes)
+            (
+                (manifest_len as u64).saturating_add(page_bytes),
+                manifest.payload_len,
+            )
         } else {
-            payload_len
+            (payload_len, payload_len)
         };
         Some(DiskEntryMetadata {
             payload_bytes,
-            materialized_bytes: payload_len,
+            materialized_bytes,
             producer_cold_prefill_us,
         })
     }

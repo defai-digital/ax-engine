@@ -211,7 +211,9 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains("ax_engine_mlx_prefill_generation_state_wall_us_total 100\n"));
     // WP07 semantic cuts and value-priced restores are observable so an
     // operator can tell "the switch is on but nothing fired" from "the switch
-    // is off": the snapshot counter is unlabeled, the decisions are labeled.
+    // is off". This step carries no such route decision: both series stay at
+    // zero (the non-zero path is covered by
+    // `metrics_record_semantic_cut_and_restore_value_route_decisions`).
     assert!(body.contains("ax_engine_mlx_semantic_cut_snapshots_total 0\n"));
     assert!(body.contains(
         "ax_engine_mlx_prefix_restore_value_decisions_total{decision=\"semantic_cut\"} 0\n"
@@ -244,6 +246,76 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     assert!(body.contains(
         "ax_engine_model_kv_topology_info{model=\"qwen3\",attention_storage=\"contiguous\",sliding_storage=\"none\",recurrent_state=\"present\",rollback_strategy=\"restore_replay\"} 1\n"
     ));
+}
+
+/// The WP07 semantic-cut and value-priced-restore route decisions must reach
+/// `/metrics` as counters. A step report that carries them is the only source
+/// for these series, so a key that is dropped between the runner's route map
+/// and the per-step accumulation reads as "the switch is on but nothing
+/// fired" — indistinguishable from a real cold run.
+#[tokio::test]
+async fn metrics_record_semantic_cut_and_restore_value_route_decisions() {
+    let state = llama_cpp_state();
+    let metrics = state.metrics.clone();
+    let app = build_router(state);
+
+    let report = |snapshots: u32, semantic_cut: u32, priced: u32, baseline: u32| EngineStepReport {
+        route: Some(GenerateRouteReport {
+            crossover_decisions: BTreeMap::from([
+                (
+                    "ax_mlx_prefix_cache_semantic_cut_snapshots".to_string(),
+                    snapshots,
+                ),
+                (
+                    "ax_mlx_prefix_cache_restore_value_semantic_cut".to_string(),
+                    semantic_cut,
+                ),
+                (
+                    "ax_mlx_prefix_cache_restore_value_priced_restore".to_string(),
+                    priced,
+                ),
+                (
+                    "ax_mlx_prefix_cache_restore_value_ram_baseline".to_string(),
+                    baseline,
+                ),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // Cold step: two cuts captured, the warm restore priced against a RAM
+    // baseline. Warm step: one more cut, one semantic-cut restore.
+    metrics.record_step_report("qwen3", &report(2, 0, 0, 1));
+    metrics.record_step_report("qwen3", &report(1, 1, 0, 0));
+
+    let (status, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("ax_engine_mlx_semantic_cut_snapshots_total 3\n"),
+        "per-step cut counters accumulate (2 + 1): {body}"
+    );
+    assert!(
+        body.contains(
+            "ax_engine_mlx_prefix_restore_value_decisions_total{decision=\"semantic_cut\"} 1\n"
+        ),
+        "the warm request's semantic-cut restore must be visible: {body}"
+    );
+    assert!(body.contains(
+        "ax_engine_mlx_prefix_restore_value_decisions_total{decision=\"priced_restore\"} 0\n"
+    ));
+    assert!(body.contains(
+        "ax_engine_mlx_prefix_restore_value_decisions_total{decision=\"ram_baseline\"} 1\n"
+    ));
+    assert!(!body.contains("ax_engine_mlx_semantic_cut_snapshots_total 0\n"));
 }
 
 /// DecodeTelemetry re-emits the request's running prefill wall times on each

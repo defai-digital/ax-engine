@@ -217,6 +217,14 @@ const NGRAM_REPEATING_PROMPT_FEED_MAX: usize = 512;
 const NGRAM_MIN_OUTPUT_FOR_ACCELERATION: u32 = 64;
 const DEFAULT_PREFIX_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_PREFIX_CACHE_MAX_ENTRIES: usize = 64;
+/// Upper bound on block-aligned prefixes the value-priced restore adds
+/// to its candidate set. Together with the scheduler claim and the
+/// semantic cuts this keeps the priced decision O(1) in prompt length.
+const MAX_ALIGNED_RESTORE_CANDIDATES: usize = 8;
+/// How many block-aligned lengths the candidate scan may inspect with
+/// an L1 hash lookup or one `stat` before it stops looking. Never a
+/// file open: metadata probes run only for candidates that exist.
+const MAX_ALIGNED_RESTORE_SCAN: usize = 64;
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_HITS: &str = "ax_mlx_prefix_cache_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_MISSES: &str = "ax_mlx_prefix_cache_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_BLOCKED: &str = "ax_mlx_prefix_cache_blocked";
@@ -3036,6 +3044,14 @@ impl MlxRunner {
             }
         }
         let native_prefix_cache_policy = prefix_cache.lock().policy;
+        // One line per model load: the two opt-in prefix features are read
+        // once, so this is the only place a mis-set environment is visible.
+        tracing::info!(
+            target: "ax_engine_mlx::runner",
+            prefix_semantic_cuts = crate::fastpath::prefix_semantic_cuts_enabled(),
+            prefix_restore_value = crate::fastpath::prefix_restore_value_enabled(),
+            "resolved MLX prefix-cache value features"
+        );
 
         let cfg_arc = Arc::new(cfg.clone());
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
@@ -7137,41 +7153,17 @@ impl MlxRunner {
                     } else {
                         prefill_tokens
                     };
-                    let prefill_tokens = if self.cfg.linear_attention.is_some()
-                        && self.prefix_cache.lock().enabled()
-                        && let Some(head) = Self::linear_boundary_capture_head_len(
-                            block_size_tokens as usize,
-                            state.cache.seq_len(),
-                            prefill_tokens.len(),
-                        ) {
-                        let head_tokens = &prefill_tokens[..head];
-                        if flash_next_mtp_prefill {
-                            // Same n-1 plus singleton schedule as the
-                            // cache-only head, with draft history absorbed.
-                            let _ = self.run_flash_next_mtp_prefill(
-                                &mut state,
-                                head_tokens,
-                                prefill_chunk_for_request,
-                                false,
-                            );
-                        } else {
-                            chunked_prefill_cache_only(
-                                &self.cfg,
-                                &self.weights,
-                                head_tokens,
-                                &mut state.cache,
-                                prefill_chunk_for_request,
-                                CacheOnlyPrefillLayout::PreserveFinalTokenStep,
-                                crate::generate::CacheOnlyBarrier::Blocking,
-                            );
-                        }
-                        state.prefill_boundary_snapshot =
-                            Some((state.cache.seq_len(), state.cache.clone()));
-                        &prefill_tokens[head..]
-                    } else {
-                        prefill_tokens
-                    };
-                    // Semantic cut capture (`AX_MLX_PREFIX_SEMANTIC_CUTS`).
+                    // Semantic cut capture (`AX_MLX_PREFIX_SEMANTIC_CUTS`)
+                    // runs *after* the grid-rung capture above and before the
+                    // boundary capture below. The rung is the prefix a warm
+                    // request claims, so its snapshot must be taken from the
+                    // whole item; capturing cuts first would advance the cache
+                    // past the rung, and `linear_grid_rung_head_len` would
+                    // then report the rung as inside prior context and drop
+                    // the claim snapshot. Running the cuts on the post-rung
+                    // remainder still reaches every assistant-turn cut inside
+                    // the prompt body, so cut snapshots are stored in
+                    // addition to the block-aligned ones, never instead.
                     // A semantic cut is an assistant-turn start, so it is not
                     // block-aligned and `trim_to` cannot produce it: linear
                     // conv/recurrent (GDN), QSA and PLE state cannot be rolled
@@ -7225,6 +7217,40 @@ impl MlxRunner {
                             cursor = offset;
                         }
                         &prefill_tokens[cursor..]
+                    } else {
+                        prefill_tokens
+                    };
+                    let prefill_tokens = if self.cfg.linear_attention.is_some()
+                        && self.prefix_cache.lock().enabled()
+                        && let Some(head) = Self::linear_boundary_capture_head_len(
+                            block_size_tokens as usize,
+                            state.cache.seq_len(),
+                            prefill_tokens.len(),
+                        ) {
+                        let head_tokens = &prefill_tokens[..head];
+                        if flash_next_mtp_prefill {
+                            // Same n-1 plus singleton schedule as the
+                            // cache-only head, with draft history absorbed.
+                            let _ = self.run_flash_next_mtp_prefill(
+                                &mut state,
+                                head_tokens,
+                                prefill_chunk_for_request,
+                                false,
+                            );
+                        } else {
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                head_tokens,
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                CacheOnlyPrefillLayout::PreserveFinalTokenStep,
+                                crate::generate::CacheOnlyBarrier::Blocking,
+                            );
+                        }
+                        state.prefill_boundary_snapshot =
+                            Some((state.cache.seq_len(), state.cache.clone()));
+                        &prefill_tokens[head..]
                     } else {
                         prefill_tokens
                     };
@@ -8282,12 +8308,19 @@ impl MlxRunner {
         saturating_u32(native_len)
     }
 
-    /// Price durable candidates (block-aligned and semantic cuts) against the
-    /// best resident RAM prefix and return the chosen exact prefix.
+    /// Price durable candidates (semantic cuts, the scheduler claim and a
+    /// bounded set of block-aligned prefixes) against the best resident RAM
+    /// prefix and return the chosen exact prefix.
     ///
     /// With `AX_MLX_PREFIX_RESTORE_VALUE` off this degrades to the historical
     /// longest-candidate choice, but still consults semantic cuts when
     /// `AX_MLX_PREFIX_SEMANTIC_CUTS` is on.
+    ///
+    /// The candidate set is bounded on purpose: the scheduler claim, every
+    /// semantic cut, and at most [`MAX_ALIGNED_RESTORE_CANDIDATES`]
+    /// block-aligned prefixes discovered by a `contains` scan (an L1 hash
+    /// lookup or one `stat`, never a file open). Only the kept candidates are
+    /// metadata-probed, and only when the priced path needs their bytes.
     fn select_restore_prefix_by_value<'a>(
         &self,
         model_id: &str,
@@ -8295,23 +8328,58 @@ impl MlxRunner {
         input: &'a [u32],
         media_key: &str,
         cut_plan: &SnapshotCutPlan,
+        claim_tokens: usize,
     ) -> Option<&'a [u32]> {
         let disk = self.disk_prefix_cache.as_ref();
-        if disk.is_none() && !self.prefix_cache.lock().enabled() {
+        let l1_enabled = self.prefix_cache.lock().enabled();
+        if disk.is_none() && !l1_enabled {
             return None;
         }
-        let block_size = block_size_tokens as usize;
-        let mut lengths = Vec::new();
-        if let Some(block_len) = input.len().checked_div(block_size) {
-            let mut len = block_len * block_size;
-            while len >= block_size {
-                lengths.push(len);
-                len -= block_size;
-            }
+        // A restore shorter than the claim leaves a positional gap that only
+        // a full replay can cover, so it can never beat taking the claim.
+        let claim = claim_tokens.min(input.len());
+        let price_value = crate::fastpath::prefix_restore_value_enabled();
+
+        let mut lengths: Vec<usize> = Vec::new();
+        if claim > 0 {
+            lengths.push(claim);
         }
         for cut in &cut_plan.cuts {
-            if *cut > 0 && *cut < input.len() {
+            if *cut > claim && *cut < input.len() {
                 lengths.push(*cut);
+            }
+        }
+        let block_size = block_size_tokens as usize;
+        // `checked_div` also covers a zero block size (never a real config,
+        // but the candidate scan must not divide by it).
+        if let Some(blocks) = input.len().checked_div(block_size) {
+            let mut key =
+                self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
+            let mut aligned = blocks * block_size;
+            let mut scanned = 0usize;
+            let mut found = 0usize;
+            while aligned > claim
+                && found < MAX_ALIGNED_RESTORE_CANDIDATES
+                && scanned < MAX_ALIGNED_RESTORE_SCAN
+            {
+                let prefix = &input[..aligned];
+                key.token_count = saturating_u32(aligned);
+                let resident =
+                    l1_enabled && self.prefix_cache.lock().contains_exact_tokens(&key, prefix);
+                let on_disk = !resident
+                    && disk.is_some_and(|disk| {
+                        self.disk_prefix_key_bytes(&key, prefix)
+                            .is_some_and(|bytes| disk.contains(&bytes))
+                    });
+                if resident || on_disk {
+                    lengths.push(aligned);
+                    found += 1;
+                }
+                scanned += 1;
+                let Some(next) = aligned.checked_sub(block_size) else {
+                    break;
+                };
+                aligned = next;
             }
         }
         lengths.sort_unstable();
@@ -8321,15 +8389,21 @@ impl MlxRunner {
             self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
         let mut candidates = Vec::new();
         for len in lengths {
+            if len == 0 || len > input.len() {
+                continue;
+            }
             let prefix = &input[..len];
             key.token_count = saturating_u32(len);
             // Prefer a resident RAM snapshot: rehydration from L1 is strictly
             // cheaper than a durable read, and semantic cuts are stored in L1
             // even when no disk layer is open.
-            let resident_bytes = self
-                .prefix_cache
-                .lock()
-                .resident_payload_bytes(&key, prefix);
+            let resident_bytes = if l1_enabled {
+                self.prefix_cache
+                    .lock()
+                    .resident_payload_bytes(&key, prefix)
+            } else {
+                None
+            };
             if let Some(payload_bytes) = resident_bytes {
                 candidates.push(crate::disk_prefix_cache::RestoreCandidate {
                     token_count: saturating_u32(len),
@@ -8347,13 +8421,22 @@ impl MlxRunner {
             let Some(key_bytes) = self.disk_prefix_key_bytes(&key, prefix) else {
                 continue;
             };
-            let Some(metadata) = disk.probe_metadata(&key_bytes) else {
+            // A manifest read is only needed to price the restore. The
+            // longest-prefix fallback just needs to know the entry exists.
+            let (payload_bytes, materialized_bytes) = if price_value {
+                let Some(metadata) = disk.probe_metadata(&key_bytes) else {
+                    continue;
+                };
+                (metadata.payload_bytes, metadata.materialized_bytes)
+            } else if disk.contains(&key_bytes) {
+                (0, 0)
+            } else {
                 continue;
             };
             candidates.push(crate::disk_prefix_cache::RestoreCandidate {
                 token_count: saturating_u32(len),
-                payload_bytes: metadata.payload_bytes,
-                materialized_bytes: metadata.materialized_bytes,
+                payload_bytes,
+                materialized_bytes,
                 estimated_prefill_us: estimated_prefill_us(saturating_u32(len)).unwrap_or(0),
                 key: key_bytes,
                 resident_in_l1: false,
@@ -8374,10 +8457,11 @@ impl MlxRunner {
                 .map(|model| model.restore_us(candidate.payload_bytes));
             restore_cost_us(candidate, read)
         };
-        let chosen = if crate::fastpath::prefix_restore_value_enabled() {
+        let chosen = if price_value {
             choose_restore_candidate(
                 &candidates,
                 ram_prefix_tokens,
+                saturating_u32(claim),
                 estimated_prefill_us,
                 restore_us,
             )?
@@ -8496,14 +8580,6 @@ impl MlxRunner {
         let Some(media_key) = media_identity else {
             telemetry.record_blocked_media_identity();
             let reused_tokens: &[u32] = &item.reused_prefix_token_slice;
-            Self::pfx_dbg(
-                "restore",
-                &format!(
-                    "reused_tokens={} cache_seq={}",
-                    reused_tokens.len(),
-                    state.cache.seq_len()
-                ),
-            );
             if !reused_tokens.is_empty() && state.cache.seq_len() == 0 {
                 let capture_prefill_output = item.mode == ExecutionMode::Decode
                     && ctx.is_some_and(|ctx| ctx.generated_len == 0);
@@ -8535,56 +8611,91 @@ impl MlxRunner {
         //
         // Probe the runner-side cache to find the longest block-aligned
         // prefix that is *actually* in the snapshot map, capped at the
-        // scheduler's annotation when one exists (so the probe never
+        // scheduler's annotation when one exists (so the unpriced probe never
         // claims more tokens than core does). Cache `get` below still
         // bit-equality-checks the tokens, so a wrong probe cannot produce
         // a stale restore.
-        let probe_upper_bound = if !item.reused_prefix_token_slice.is_empty() {
-            &item.reused_prefix_token_slice[..]
-        } else {
+        let claim_tokens = &item.reused_prefix_token_slice[..];
+        let default_probe_bound: &[u32] = if claim_tokens.is_empty() {
             &item.input_token_slice[..]
+        } else {
+            claim_tokens
+        };
+        // Both value features are opt-in. The default path must not build a
+        // cut plan (or the execution-signature string it carries) for a
+        // request that can never use one.
+        let value_features = crate::fastpath::prefix_restore_value_enabled()
+            || crate::fastpath::prefix_semantic_cuts_enabled();
+        // A value-priced restore may legitimately land on a semantic cut that
+        // is *beyond* the scheduler claim: the cut snapshot exists for a token
+        // position core never claimed, so a claim-capped bound could not see
+        // it. Price those positions too, as `claim + this item's own prompt
+        // tokens`, capped at `prompt_len - 1` so the final prompt token is
+        // always recomputed instead of restored. Off the value path the bound
+        // stays claim-capped and nothing is allocated.
+        let mut priced_bound: Vec<u32> = Vec::new();
+        let probe_upper_bound: &[u32] = if value_features && !claim_tokens.is_empty() {
+            let prompt_cap = ctx
+                .map(|ctx| usize::try_from(ctx.prompt_len).unwrap_or(usize::MAX))
+                .unwrap_or(0)
+                .saturating_sub(1);
+            let bound_len = claim_tokens
+                .len()
+                .saturating_add(item.input_token_slice.len())
+                .min(prompt_cap);
+            if bound_len > claim_tokens.len() {
+                priced_bound.reserve(bound_len);
+                priced_bound.extend_from_slice(claim_tokens);
+                priced_bound
+                    .extend_from_slice(&item.input_token_slice[..bound_len - claim_tokens.len()]);
+                &priced_bound
+            } else {
+                default_probe_bound
+            }
+        } else {
+            default_probe_bound
         };
         let probed_tokens: Vec<u32> = if state.cache.seq_len() == 0
-            && !probe_upper_bound.is_empty()
+            && !default_probe_bound.is_empty()
             && matches!(item.mode, ExecutionMode::Prefill)
         {
             self.probe_runner_snapshot_for_prefix(
                 model_id,
                 block_size_tokens,
-                probe_upper_bound,
+                default_probe_bound,
                 media_key,
             )
             .unwrap_or_default()
         } else {
             Vec::new()
         };
-        let cut_plan = snapshot_cut_plan(
-            probe_upper_bound.len(),
-            block_size_tokens as usize,
-            prefill_hints
-                .map(|hints| hints.semantic_cut_tokens.as_slice())
-                .unwrap_or(&[]),
-            crate::fastpath::prefix_semantic_cuts_enabled(),
-            &self.prefix_execution_signature(),
-        );
-        let priced_tokens = (crate::fastpath::prefix_restore_value_enabled()
-            || crate::fastpath::prefix_semantic_cuts_enabled())
-        .then(|| {
+        let cut_plan = value_features.then(|| {
+            snapshot_cut_plan(
+                probe_upper_bound.len(),
+                block_size_tokens as usize,
+                prefill_hints
+                    .map(|hints| hints.semantic_cut_tokens.as_slice())
+                    .unwrap_or(&[]),
+                crate::fastpath::prefix_semantic_cuts_enabled(),
+                &self.prefix_execution_signature(),
+            )
+        });
+        let priced_tokens = cut_plan.as_ref().and_then(|cut_plan| {
             self.select_restore_prefix_by_value(
                 model_id,
                 block_size_tokens,
                 probe_upper_bound,
                 media_key,
-                &cut_plan,
+                cut_plan,
+                item.reused_prefix_token_slice.len(),
             )
-        })
-        .flatten();
-        let planned_cut = priced_tokens.is_some_and(|tokens| cut_plan.cuts.contains(&tokens.len()));
-        if crate::fastpath::prefix_restore_value_enabled()
-            || crate::fastpath::prefix_semantic_cuts_enabled()
-        {
+        });
+        let priced_planned_cut = cut_plan
+            .as_ref()
+            .is_some_and(|plan| priced_tokens.is_some_and(|t| plan.cuts.contains(&t.len())));
+        if value_features {
             telemetry.record_restore_value_decision(match priced_tokens {
-                Some(_) if planned_cut => RestoreValueDecision::SemanticCut,
+                Some(_) if priced_planned_cut => RestoreValueDecision::SemanticCut,
                 Some(_) => RestoreValueDecision::PricedRestore,
                 None => RestoreValueDecision::RamBaseline,
             });
@@ -8598,15 +8709,6 @@ impl MlxRunner {
         } else {
             &item.reused_prefix_token_slice
         };
-        Self::pfx_dbg(
-            "restore-entry",
-            &format!(
-                "core_claim={} probed={} cache_seq={}",
-                item.reused_prefix_token_slice.len(),
-                probed_tokens.len(),
-                state.cache.seq_len()
-            ),
-        );
         if state.cache.seq_len() != 0 {
             return telemetry;
         }
@@ -8622,23 +8724,24 @@ impl MlxRunner {
         // under one chunk is cheaper than any drift risk. Restores that
         // need no multi-token extension (warm_repeat tails of <=1 token)
         // keep their full length.
-        // A planned semantic cut is an exact snapshot boundary captured at
-        // that token position (full conv/recurrent state, never trimmed), so
-        // it must not be floored onto the cold chunk grid.
-        let grid_restore_len = (!planned_cut).then(|| {
-            grid_aligned_prefix_restore_len(
-                item,
-                reused_tokens.len(),
-                self.prefill_chunk.max(1),
-                self.cfg.linear_attention.is_some()
-                    && crate::fastpath::linear_prefix_grid_rung_enabled(),
-            )
-        });
-        let Some(restore_len) = (if planned_cut {
-            Some(reused_tokens.len())
-        } else {
-            grid_restore_len.flatten()
-        }) else {
+        // A restore point that the cut plan itself produced is an exact
+        // snapshot boundary captured at that token position (full
+        // conv/recurrent state, never trimmed), so it must not be floored
+        // onto the cold chunk grid. The check uses the length actually
+        // restored, not only the priced choice: the terminal anchor is
+        // block-aligned by construction, so the unpriced probe can land on a
+        // planned cut too.
+        let Some(restore_len) = planned_cut_restore_len(cut_plan.as_ref(), reused_tokens.len())
+            .or_else(|| {
+                grid_aligned_prefix_restore_len(
+                    item,
+                    reused_tokens.len(),
+                    self.prefill_chunk.max(1),
+                    self.cfg.linear_attention.is_some()
+                        && crate::fastpath::linear_prefix_grid_rung_enabled(),
+                )
+            })
+        else {
             // The scheduler already removed this prefix from the input slice.
             // Recompute prefix+suffix together instead of leaving a context gap.
             telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
@@ -8685,16 +8788,6 @@ impl MlxRunner {
             telemetry.record_stats(cache.stats());
             hit
         };
-        Self::pfx_dbg(
-            "restore-get",
-            &format!(
-                "reused={} l1_hit={} native_hit={}",
-                reused_tokens.len(),
-                hit.is_some(),
-                native_hit.is_some()
-            ),
-        );
-
         // Historical context: MLA + Prefill used to refuse a snapshot restore
         // because the post-restore chunked_prefill drifted fp-wise from a
         // cold full prefill (p2_medium_explain idx=13 divergence on
@@ -9269,17 +9362,12 @@ impl MlxRunner {
                 .admits_lower_bound(lower_bound)
             {
                 telemetry.record_blocked_entry_too_large();
-                Self::pfx_dbg(
-                    "store-skip",
-                    &format!("entry_too_large lower_bound={lower_bound}"),
-                );
                 return telemetry;
             }
         }
         if snapshot_cache.has_unserializable_layers() {
             // DeepSeek V4 compressor state has no wire encoding: the
             // snapshot would claim tokens and restore as empty.
-            Self::pfx_dbg("store-skip", "unserializable_layers");
             return telemetry;
         }
         let serialize_started = Instant::now();
@@ -9341,12 +9429,6 @@ impl MlxRunner {
         telemetry
     }
 
-    fn pfx_dbg(stage: &str, detail: &str) {
-        if crate::fastpath::prefill_time_debug_env() {
-            eprintln!("AX_PREFIX_DEBUG {stage} {detail}");
-        }
-    }
-
     fn store_prompt_prefix_snapshots(
         &self,
         model_id: &str,
@@ -9363,7 +9445,6 @@ impl MlxRunner {
         } = options;
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         if block_size_tokens == 0 || state.prompt_prefix_tokens.is_empty() {
-            Self::pfx_dbg("store-skip", "empty_prompt_or_block");
             return telemetry;
         }
         // Media present without a digest: storing under a text-only key
@@ -9371,17 +9452,14 @@ impl MlxRunner {
         // media adopt this KV. Fail closed.
         let Some(media_key) = media_key else {
             telemetry.record_blocked_media_identity();
-            Self::pfx_dbg("store-skip", "media_identity");
             return telemetry;
         };
         if !self.prefix_cache.lock().enabled() {
             telemetry.record_blocked_policy_disabled();
-            Self::pfx_dbg("store-skip", "policy_disabled");
             return telemetry;
         }
         let native_store_enabled = self.native_fa_prefix_sharing_enabled();
         if !portable_prefix_store_allowed(prefill_completes_prompt, native_store_enabled) {
-            Self::pfx_dbg("store-skip", "portable_store_not_allowed_partial");
             // A scheduler-split prefill can yield hundreds of execution
             // items. Portable snapshots serialize the complete live KV
             // state, so doing that after every partial item turns an O(N)
@@ -9393,7 +9471,6 @@ impl MlxRunner {
             return telemetry;
         }
         if state.cache.has_rotated_sliding_layers() {
-            Self::pfx_dbg("store-skip", "rotated_sliding_layers");
             // Slot order is a decode-local physical representation, not a
             // prompt-prefix representation. A no-op trim would otherwise
             // serialize it and a later warm extension could issue a
@@ -9463,7 +9540,6 @@ impl MlxRunner {
                 return telemetry;
             }
             telemetry.record_blocked_trim_failure();
-            Self::pfx_dbg("store-skip", "trim_failure_unaligned");
             return telemetry;
         }
         let snapshot_start_tokens = prefix_snapshot_start_tokens(
@@ -9473,15 +9549,6 @@ impl MlxRunner {
             native_store_enabled,
         );
 
-        Self::pfx_dbg(
-            "store-attempt",
-            &format!(
-                "prompt={} full_block={} start={}",
-                state.prompt_prefix_tokens.len(),
-                full_block_tokens,
-                snapshot_start_tokens
-            ),
-        );
         // Build the invariant key fields once and hash the prompt in a single
         // rolling pass: deriving the full key per boundary previously re-ran
         // the format! strings and an O(prefix_len) hash for every candidate.
@@ -9588,10 +9655,6 @@ impl MlxRunner {
                         .is_some_and(|key_bytes| !disk.contains(&key_bytes))
                 });
             if prefix_len < retention_floor && !native_store_needed && !disk_store_needed {
-                Self::pfx_dbg(
-                    "store-loop-skip",
-                    &format!("below_retention_floor prefix={prefix_len} floor={retention_floor}"),
-                );
                 continue;
             }
             // A live standard-FA prefill boundary needs only a runner-local
@@ -9660,17 +9723,9 @@ impl MlxRunner {
                 drop(native_outcome.evicted);
             }
             if !portable_store_phase && native_snapshot_ready {
-                Self::pfx_dbg(
-                    "store-loop-skip",
-                    &format!("native_ready prefix={prefix_len}"),
-                );
                 continue;
             }
             if l1_superseding && !disk_store_needed {
-                Self::pfx_dbg(
-                    "store-loop-skip",
-                    &format!("l1_superseding prefix={prefix_len}"),
-                );
                 continue;
             }
             if !l1_superseding {
@@ -9694,10 +9749,6 @@ impl MlxRunner {
                     .admits_lower_bound(lower_bound)
                 {
                     telemetry.record_blocked_entry_too_large();
-                    Self::pfx_dbg(
-                        "store-loop-skip",
-                        &format!("entry_too_large prefix={prefix_len} lower_bound={lower_bound}"),
-                    );
                     continue;
                 }
             }
@@ -9710,7 +9761,6 @@ impl MlxRunner {
             // future hits because shorter prefixes always derive from
             // it.
             if snapshot_cache.has_unserializable_layers() {
-                Self::pfx_dbg("store-skip", "unserializable_layers");
                 continue;
             }
             let serialize_started = Instant::now();
@@ -9738,7 +9788,6 @@ impl MlxRunner {
             // key), and the disk path clones once more only when a disk
             // write will actually fire.
             let key_for_disk = disk_payload.as_ref().map(|_| store_key.clone());
-            let payload_len = payload.len();
             let outcome = {
                 let mut cache = self.prefix_cache.lock();
                 let outcome = cache.insert(
@@ -9749,12 +9798,6 @@ impl MlxRunner {
                         prefix_len,
                         snapshot_prefill_output_token,
                         mtp_cursor_payload,
-                    ),
-                );
-                Self::pfx_dbg(
-                    "store-insert",
-                    &format!(
-                        "prefix={prefix_len} payload_bytes={payload_len} serialize_us={serialize_us}"
                     ),
                 );
                 telemetry.record_stats(cache.stats());
@@ -17389,9 +17432,23 @@ fn extend_prompt_prefix_tokens(
     token_ids: &[u32],
 ) {
     let expected_start = item.position_range.start as usize;
-    if state.prompt_prefix_tokens.len() > expected_start {
-        state.prompt_prefix_tokens.truncate(expected_start);
-    } else if state.prompt_prefix_tokens.len() < expected_start {
+    let restored = state.prompt_prefix_tokens.len();
+    if restored > expected_start {
+        // A restore longer than the scheduler claim already covers the first
+        // `restored - expected_start` tokens of this item (the caller sliced
+        // them off `token_ids`). Keep the restored prefix instead of
+        // truncating it back to the claim, and append only the item tokens
+        // the cache does not already hold, so `prompt_prefix_tokens` keeps
+        // matching the cache's real prefix length.
+        let covered = restored - expected_start;
+        if covered < token_ids.len() {
+            state
+                .prompt_prefix_tokens
+                .extend_from_slice(&token_ids[covered..]);
+        }
+        return;
+    }
+    if restored < expected_start {
         state.prompt_prefix_tokens = item.reused_prefix_token_slice.clone();
     }
     state.prompt_prefix_tokens.extend_from_slice(token_ids);
@@ -17430,6 +17487,23 @@ fn grid_aligned_prefix_restore_len(
     } else {
         Some(restore_len)
     }
+}
+
+/// The restore length a planned cut pins, bypassing the cold-grid floor.
+///
+/// A cut snapshot is captured in place at exactly its token position, so its
+/// conv/recurrent state is complete and the prefill that follows is the cold
+/// partition rather than a grid-aligned replay. Flooring it onto the
+/// prefill-chunk grid would both discard a usable snapshot and break that
+/// partition agreement. `None` when the restored length is not a planned cut,
+/// or when no cut plan was built (both value switches off).
+fn planned_cut_restore_len(
+    cut_plan: Option<&SnapshotCutPlan>,
+    restored_len: usize,
+) -> Option<usize> {
+    cut_plan
+        .filter(|plan| plan.cuts.contains(&restored_len))
+        .map(|_| restored_len)
 }
 
 /// Tokens a Prefill item must run after a restore that stopped short of the

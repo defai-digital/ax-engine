@@ -3931,6 +3931,145 @@ fn prefill_grid_trim_replays_scheduler_prefix_without_losing_context() {
     }
 }
 
+/// One Prefill item whose scheduler claim is `claim` tokens and whose own
+/// input covers the next `item_len` positions, with token ids equal to their
+/// absolute positions so prefix bookkeeping is readable in assertions.
+fn prefill_item_with_claim(claim: usize, item_len: usize) -> ax_engine_core::ExecutionItem {
+    ax_engine_core::ExecutionItem {
+        request_id: RequestId(30),
+        mode: ExecutionMode::Prefill,
+        planned_work_unit: ax_engine_core::WorkUnitKind::PrefillChunk,
+        input_token_slice: (claim as u32..(claim + item_len) as u32).collect(),
+        reused_prefix_token_slice: (0..claim as u32).collect(),
+        position_range: PositionRange {
+            start: claim as u32,
+            end_exclusive: (claim + item_len) as u32,
+        },
+        scheduled_token_count: item_len as u32,
+        block_table_ref: RequestId(30),
+        prefix_tokens_reused: claim as u32,
+        prefix_blocks_reused: 1,
+    }
+}
+
+#[test]
+fn warm_restore_beyond_scheduler_claim_keeps_the_restored_prefix() {
+    // A value-priced restore may adopt a snapshot longer than the scheduler
+    // claim (a semantic cut beyond it). Truncating `prompt_prefix_tokens`
+    // back to the claim would leave it shorter than the cache, so the next
+    // snapshot key and the linear gap-replay guard would describe a prefix
+    // the cache does not hold.
+    let item = prefill_item_with_claim(8, 6);
+    let prompt: Vec<u32> = (0..14).collect();
+    let mut state = RequestState::new(2, 31, None);
+    state.prompt_prefix_tokens = prompt[..12].to_vec();
+
+    extend_prompt_prefix_tokens(&mut state, &item, &item.input_token_slice);
+
+    assert_eq!(
+        state.prompt_prefix_tokens, prompt,
+        "restored prefix (12) plus the uncovered item tail (2) is the full 14 tokens"
+    );
+}
+
+#[test]
+fn warm_restore_at_the_scheduler_claim_appends_the_whole_item() {
+    // Regression guard for the ordinary case: a restore exactly at the claim
+    // covers none of the item, so every item token must be appended.
+    let item = prefill_item_with_claim(8, 6);
+    let prompt: Vec<u32> = (0..14).collect();
+    let mut state = RequestState::new(2, 32, None);
+    state.prompt_prefix_tokens = prompt[..8].to_vec();
+
+    extend_prompt_prefix_tokens(&mut state, &item, &item.input_token_slice);
+
+    assert_eq!(state.prompt_prefix_tokens, prompt);
+}
+
+#[test]
+fn cold_prefill_step_restarts_the_prefix_from_the_scheduler_claim() {
+    // A later cold chunk runs with a claim but no restored cache prefix;
+    // `prompt_prefix_tokens` must be rebuilt from the claim, not from part 0.
+    let item = prefill_item_with_claim(8, 6);
+    let prompt: Vec<u32> = (0..14).collect();
+    let mut state = RequestState::new(2, 33, None);
+
+    extend_prompt_prefix_tokens(&mut state, &item, &item.input_token_slice);
+
+    assert_eq!(state.prompt_prefix_tokens, prompt);
+}
+
+#[test]
+fn planned_cut_is_not_refloored_onto_the_prefill_grid() {
+    // The terminal anchor is block-aligned by construction but is not
+    // necessarily a multiple of the prefill chunk. The cold-grid floor would
+    // move it (or reject it when the floor lands under the claim), which
+    // discards an exact in-place cut snapshot and breaks cold/warm partition
+    // agreement.
+    let plan = snapshot_cut_plan(1000, 256, &[700], true, "sig");
+    assert_eq!(
+        plan.cuts,
+        vec![700, 768],
+        "anchor at 768, semantic cut at 700"
+    );
+    assert_eq!(
+        planned_cut_restore_len(Some(&plan), 768),
+        Some(768),
+        "a planned cut pins its own length"
+    );
+    assert_eq!(
+        planned_cut_restore_len(Some(&plan), 512),
+        None,
+        "a length that is not a planned cut still goes through the grid floor"
+    );
+    assert_eq!(planned_cut_restore_len(None, 768), None);
+
+    // 700 claimed tokens, 300 more in this item, chunk 512: the grid floor
+    // would move 768 down to 512 and then reject it as shorter than the
+    // claim. This is the regression the planned-cut check prevents.
+    let item = prefill_item_with_claim(700, 300);
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 768, 512, false),
+        None
+    );
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 768, 512, true),
+        Some(512)
+    );
+}
+
+#[test]
+fn grid_rung_snapshot_must_be_captured_before_semantic_cuts_advance_the_cache() {
+    // Regression (WP07): a 1930-token linear-attention prompt with block 32
+    // and a 1024-token prefill chunk. The prefix a warm request claims, and
+    // therefore the entry it looks up, is the grid rung at 1024.
+    assert_eq!(
+        MlxRunner::linear_grid_rung_head_len(32, 1024, 1024, 0, 1930),
+        Some(1024),
+        "a whole-item prefill splits at the rung a warm request restores"
+    );
+    // Capturing the semantic cuts first advances the cache to 1898 (the last
+    // assistant-turn start below the terminal anchor). From there the same
+    // rung sits *inside* prior context, so the head is `None` and the claim
+    // snapshot is never captured: the warm request then looks up a 1024 entry
+    // that does not exist and recomputes the whole prompt. Cut snapshots must
+    // therefore be stored in addition to the block-aligned ones, never
+    // instead of them.
+    assert_eq!(
+        MlxRunner::linear_grid_rung_head_len(32, 1024, 1024, 1898, 32),
+        None,
+        "cut capture must not precede the grid-rung capture"
+    );
+    // The rung is exactly the length the warm restore is floored onto, so a
+    // missing capture is a missing restore (hits 0 / reused 0 in the
+    // regression run).
+    let item = prefill_item_with_claim(1920, 10);
+    assert_eq!(
+        grid_aligned_prefix_restore_len(&item, 1920, 1024, true),
+        Some(1024)
+    );
+}
+
 #[test]
 fn scheduler_gap_replay_runs_claimed_tokens_past_the_restored_rung() {
     let item = ax_engine_core::ExecutionItem {

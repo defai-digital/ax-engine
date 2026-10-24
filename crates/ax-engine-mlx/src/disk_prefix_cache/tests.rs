@@ -1585,6 +1585,46 @@ fn page_manifest_round_trip_survives_restart_with_flag_disabled() {
 }
 
 #[test]
+fn probe_metadata_reports_logical_payload_for_page_manifests() {
+    let dir = unique_tempdir("page-probe");
+    let key = test_key("m", "p", "standard-fa", 4, 4, 0x9a, &[5, 6, 7, 8]);
+    // Two identical 8-byte pages: one blob on disk, 16 logical bytes.
+    let payload = b"abcdefghabcdefgh".to_vec();
+    let cache = DiskPrefixCache::with_policy(
+        &dir,
+        DiskPrefixCachePolicy {
+            page_store: true,
+            page_bytes: 8,
+            page_gc_grace_ms: 0,
+            ..DiskPrefixCachePolicy::default()
+        },
+    )
+    .expect("open page store");
+    cache
+        .insert_parts(&key, &payload, None, 0, 0)
+        .expect("insert page manifest");
+
+    let raw = fs::read(cache.path_for(&key)).expect("manifest file");
+    let manifest_len = u64::from_le_bytes(raw[20..28].try_into().expect("manifest length"));
+    let metadata = cache.probe_metadata(&key).expect("metadata probe");
+    // Capacity guards and restore pricing use the logical payload the pages
+    // reassemble into, never the framing/manifest size that names them (with
+    // a 16-byte payload the manifest is the larger of the two).
+    assert_eq!(metadata.materialized_bytes, payload.len() as u64);
+    assert_eq!(metadata.materialized_bytes, 16);
+    assert!(
+        metadata.materialized_bytes < metadata.payload_bytes,
+        "read cost is the manifest plus the deduplicated page blob, so it \
+         exceeds the logical payload: materialized={} read={}",
+        metadata.materialized_bytes,
+        metadata.payload_bytes
+    );
+    // Read cost counts the manifest plus the deduplicated page blob once.
+    assert_eq!(metadata.payload_bytes, manifest_len + 8);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn page_manifest_streams_native_restore_without_payload_vec() {
     let dir = unique_tempdir("page-native");
     let cache = DiskPrefixCache::with_policy(
