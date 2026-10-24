@@ -95,7 +95,8 @@ pub use request::{
     SessionRequestState,
 };
 pub use session::{
-    EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream, GenerateStreamState,
-    MlxMtpPolicy, MlxStreamExpertsMode, PreviewSessionConfigError, PreviewSessionConfigRequest,
-    ResolvedSessionConfigRequest, SpeechTranscription, StatelessGenerateContext,
+    EngineSession, EngineSessionConfig, EngineSessionError, GenerateStream,
+    GenerateStreamPerformance, GenerateStreamState, MlxMtpPolicy, MlxStreamExpertsMode,
+    PreviewSessionConfigError, PreviewSessionConfigRequest, ResolvedSessionConfigRequest,
+    SpeechTranscription, StatelessGenerateContext,
 };
