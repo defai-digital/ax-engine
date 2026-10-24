@@ -2688,6 +2688,71 @@ fn kv_quant_trim_to_then_reappend_stays_consistent() {
     );
 }
 
+/// Quantized sliding-window (retained-window) offsets and draft rollback.
+///
+/// Ordering is per-layer: the layer stores tokens at their logical offsets, so
+/// the returned view must be the last `window` tokens ending at `write_end` —
+/// not a capacity-wide or zero-padded range. Rolling back draft positions only
+/// moves the logical boundary; the next append rewrites those offsets, so the
+/// window must then hold the corrected tokens.
+#[test]
+fn kv_quant_retained_window_offsets_survive_trim_rollback() {
+    let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");
+    const H: usize = 1;
+    const D: usize = 128;
+    const WINDOW: usize = 4;
+    let mut quant = MlxKVCache::new_contiguous(1);
+    quant.set_kv_quant_table(vec![spec(8, 64)]);
+
+    let prefill = kv_tokens_bf16(10, H, D, 5);
+    let _ = quant.append(0, prefill.clone(), prefill);
+    quant.advance(10);
+
+    // Two speculative draft tokens appended for verification, then accepted.
+    let draft_k = kv_tokens_bf16(2, H, D, 41);
+    let draft_v = kv_tokens_bf16(2, H, D, 141);
+    let (k_view, v_view) =
+        quant.append_with_retained_window(0, draft_k.clone(), draft_v.clone(), Some(WINDOW));
+    quant.advance(2);
+    assert!(
+        quant.layer_is_quantized(0),
+        "a retained window must not force the quantized layer back to dense"
+    );
+    // The view is exactly the window, ending at the just-written position.
+    assert_eq!(k_view.shape(), vec![1, H as i32, WINDOW as i32, D as i32]);
+    assert_eq!(v_view.shape(), k_view.shape());
+    // Offsets: tokens 8..12 (write_end = 12, window 4).
+    let got_k = host_values(&k_view);
+    let expect_tail = host_values(&draft_k);
+    let tail = &got_k[(WINDOW - 2) * D..];
+    assert!(
+        max_abs_err(tail, &expect_tail[..2 * D]) <= 0.03,
+        "window must end at the two just-appended tokens"
+    );
+
+    // Roll the two drafts back and re-append corrected tokens at the same
+    // offsets. The window must show the corrections, never the rejected draft.
+    assert!(quant.trim_to(10));
+    assert!(quant.layer_is_quantized(0), "trim keeps quantized storage");
+    let fixed_k = kv_tokens_bf16(2, H, D, 77);
+    let fixed_v = kv_tokens_bf16(2, H, D, 177);
+    let (k_view, _) =
+        quant.append_with_retained_window(0, fixed_k.clone(), fixed_v.clone(), Some(WINDOW));
+    quant.advance(2);
+    assert_eq!(quant.seq_len(), 12);
+    let got_k = host_values(&k_view);
+    assert_eq!(got_k.len(), WINDOW * D, "window view width");
+    let expect_fixed = host_values(&fixed_k);
+    assert!(
+        max_abs_err(&got_k[(WINDOW - 2) * D..], &expect_fixed[..2 * D]) <= 0.03,
+        "rolled-back offsets must hold the corrected tokens"
+    );
+    assert!(
+        max_abs_err(&got_k[(WINDOW - 2) * D..], &expect_tail[..2 * D]) > 0.03,
+        "rejected draft tokens must not survive the rollback"
+    );
+}
+
 #[test]
 fn kv_quant_serialize_roundtrip_and_requantize_on_first_append() {
     let _env = KV_QUANT_ENV_LOCK.read().expect("env lock");

@@ -1821,6 +1821,42 @@ mod tests {
         assert!(cache.entries.contains_key(&healthy_key));
     }
 
+    /// Lookups decide from host metadata (the token vector), never from the KV
+    /// payload. Empty payloads make that explicit: a lookup that rehydrated,
+    /// evaluated or hashed the snapshot bytes would fail or miss, while a
+    /// host-side token comparison still hits. Pins the no-GPU-read contract of
+    /// `get` / `contains_exact_tokens` / `longest_prefix_len`.
+    #[test]
+    fn prefix_lookup_uses_host_tokens_not_the_kv_payload() {
+        let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+            max_bytes: 1 << 20,
+            max_entries: 4,
+        });
+        let tokens = vec![7u32, 8, 9, 10];
+        let key = native_prefix_key(9);
+        let snapshot = MlxPrefixSnapshot::from_shared_payload(
+            Arc::<[u8]>::from(Vec::new()),
+            tokens.clone(),
+            4,
+            None,
+            None,
+        );
+        assert!(cache.insert(key.clone(), snapshot).stored);
+
+        let hit = cache.get(&key, &tokens).expect("host token match must hit");
+        assert_eq!(hit.tokens, tokens);
+        assert!(
+            hit.kv_cache_payload.is_empty(),
+            "a lookup must not need the snapshot payload bytes"
+        );
+        assert!(
+            cache.get(&key, &[7, 8, 9, 11]).is_none(),
+            "same key with different tokens must miss"
+        );
+        assert!(cache.contains_exact_tokens(&key, &tokens));
+        assert!(!cache.contains_exact_tokens(&key, &[7, 8, 9, 11]));
+    }
+
     fn native_prefix_key(token: u32) -> MlxPrefixCacheKey {
         MlxPrefixCacheKey {
             model_id: "native-test".to_string(),

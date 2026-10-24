@@ -30,7 +30,7 @@
 //! swap-remove so `slot → row` stays a compact prefix, matching the runner's
 //! slot bookkeeping.
 
-use mlx_sys::{MlxArray, concatenate, slice};
+use mlx_sys::{MlxArray, concatenate, eval, slice};
 
 /// One linear-attention layer's batched recurrent state.
 #[derive(Default)]
@@ -188,6 +188,29 @@ impl BatchedLinearState {
         let recurrent = slice_rows(l.recurrent.as_ref()?, row as i32, row as i32 + 1);
         Some((conv, recurrent))
     }
+
+    /// Evaluate every layer's conv/recurrent state.
+    ///
+    /// The kernel's per-step state output is only consumed by the *next* step's
+    /// kernel, so it is not an ancestor of the step's logits and stays pending
+    /// unless something asks for it. Materializing at the commit boundary keeps
+    /// the MLX graph one step wide instead of letting a long-running cohort
+    /// chain a suspended graph per step. Values are unchanged — `eval` only
+    /// forces scheduled work.
+    pub(crate) fn materialize(&self) {
+        let mut arrays: Vec<&MlxArray> = Vec::with_capacity(self.layers.len() * 2);
+        for layer in &self.layers {
+            if let Some(conv) = &layer.conv {
+                arrays.push(conv);
+            }
+            if let Some(recurrent) = &layer.recurrent {
+                arrays.push(recurrent);
+            }
+        }
+        if !arrays.is_empty() {
+            eval(&arrays);
+        }
+    }
 }
 
 /// Swap-remove row `slot`: move row `last` into `slot`, then drop the last row.
@@ -325,5 +348,44 @@ mod tests {
         eval(&[&c, &rec]);
         assert!(c.data_f32().iter().all(|&x| x == 0.0));
         assert!(rec.data_f32().iter().all(|&x| x == 0.0));
+    }
+
+    /// The commit-boundary materialization must be value-preserving: it only
+    /// forces the pending kernel graph, never rewrites the state the next step
+    /// reads. Also pins that evaluating one step's state cannot reshape it.
+    #[test]
+    fn materialize_preserves_pending_state_values() {
+        const LAYERS: usize = 2;
+        let mut state = BatchedLinearState::with_capacity(LAYERS, 4);
+        let (c0, r0) = seed_states(1.0, LAYERS);
+        state.add_row(&c0, &r0);
+        // Two active rows, so the kernel-style update below matches `batch`.
+        let (c1, r1) = seed_states(2.0, LAYERS);
+        state.add_row(&c1, &r1);
+        assert_eq!(state.batch(), 2);
+
+        // A lazy kernel-style update: `concatenate` builds pending graph nodes
+        // whose rows are the two seeds (row 0 = seed 1, row 1 = seed 2).
+        for l in 0..LAYERS {
+            let conv = concatenate(&[&c0[l], &c1[l]], 0, None);
+            let recurrent = concatenate(&[&r0[l], &r1[l]], 0, None);
+            state.update_layer(l, conv, recurrent);
+        }
+
+        state.materialize();
+
+        assert_eq!(state.batch(), 2);
+        assert_row_matches(&state, 0, 1.0, LAYERS);
+        assert_row_matches(&state, 1, 2.0, LAYERS);
+    }
+
+    /// An empty cohort (no joiners yet) must not make the commit-boundary
+    /// materialization panic or fabricate state.
+    #[test]
+    fn materialize_without_rows_is_a_noop() {
+        let state = BatchedLinearState::with_capacity(2, 4);
+        assert_eq!(state.batch(), 0);
+        state.materialize();
+        assert!(state.layer_state(0).is_none());
     }
 }

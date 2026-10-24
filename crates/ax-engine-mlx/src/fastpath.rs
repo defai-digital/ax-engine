@@ -6653,6 +6653,24 @@ env_flag_default_on!(
     "AX_MLX_BATCHED_SHARED_PROJ"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_BATCHED_STATE_MATERIALIZE` — evaluate the batched gated-delta
+    /// conv/recurrent state at the end of every batched decode step.
+    ///
+    /// **Default: ON** (kill switch via `AX_MLX_BATCHED_STATE_MATERIALIZE=0`,
+    /// which restores the purely lazy state update).
+    ///
+    /// Each step's state is a fresh kernel output consumed by the *next* step's
+    /// kernel; nothing on the logits path reads it, so without an explicit
+    /// materialization the state node stays pending and the next step's kernel
+    /// graph is built on top of it. A long-running cohort therefore keeps one
+    /// suspended graph per step alive for the whole session — the failure mode
+    /// that drove another engine into Metal's resource limit after ~40 minutes.
+    /// `eval` only forces work already scheduled: the state bytes are unchanged.
+    batched_state_materialize_enabled,
+    "AX_MLX_BATCHED_STATE_MATERIALIZE"
+);
+
 /// Diffusion convergence: mean entropy threshold below which strict
 /// convergence triggers. Defaults to 0.005 when unset.
 pub(crate) fn diffusion_entropy_threshold() -> Option<f32> {
