@@ -10,70 +10,199 @@ struct MetricHistoryChart: View {
     var percent = false
     var divisor: Double = 1
     var unit = ""
+    var tint: Color = Brand.accentChrome
+    var symbol = "waveform.path"
+    var detail = "Runtime measurement"
+    var emptyDetail = "Awaiting measurements"
+    var window: TimeInterval = 300
+    var readoutMultiplier: Double = 1
+    var readoutUnit: String? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+    @State private var selectedDate: Date?
 
     var body: some View {
-        let points = history.points(key, now: now)
-        VStack(alignment: .leading, spacing: 8) {
+        let start = now.addingTimeInterval(-window)
+        let points = history.points(key, now: now).filter { $0.time >= start }
+        let selected = selectedDate.flatMap { history.sample(key, near: $0, now: now) }.flatMap { $0.time >= start ? $0 : nil }
+        let latest = selectedDate == nil ? history.latest(key, now: now) : selected?.values[key]
+        let segmentCounts = Dictionary(grouping: points, by: \.segment).mapValues(\.count)
+        let ceiling = percent ? 100 : max(1, (points.map { $0.value / divisor }.max() ?? 1) * 1.1)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).foregroundStyle(tint).accessibilityHidden(true)
+                Text(title).font(.system(size: 13, weight: .semibold))
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(latest.map { String(format: "%.1f", $0 / divisor * readoutMultiplier) } ?? "—")
+                    .font(.system(size: 32, weight: .semibold, design: .rounded))
+                    .monospacedDigit().contentTransition(reduceMotion ? .identity : .numericText())
+                if latest != nil {
+                    Text((readoutUnit ?? unit).trimmingCharacters(in: .whitespaces))
+                        .font(.system(size: 16, weight: .medium)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+            Text(selectedDate != nil
+                 ? selected.map { $0.time.formatted(date: .omitted, time: .standard) } ?? "No sample at this time"
+                 : latest == nil ? (points.isEmpty ? emptyDetail : "No current sample") : detail)
+                .font(.caption).foregroundStyle(.secondary)
+            Chart {
+                ForEach(points) { point in
+                    AreaMark(x: .value("Time", point.time), y: .value(title, point.value / divisor),
+                             series: .value("Continuous samples", point.segment))
+                        .interpolationMethod(.linear)
+                        .foregroundStyle(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.01)], startPoint: .top, endPoint: .bottom))
+                        .accessibilityHidden(true)
+                    LineMark(x: .value("Time", point.time), y: .value(title, point.value / divisor),
+                             series: .value("Continuous samples", point.segment))
+                        .interpolationMethod(.linear).foregroundStyle(tint)
+                        .lineStyle(StrokeStyle(lineWidth: contrast == .increased ? 3 : 2, lineCap: .round, lineJoin: .round))
+                    // Keep isolated samples visible without dotting every point on a line.
+                    if point.id == points.last?.id || segmentCounts[point.segment] == 1 {
+                        PointMark(x: .value("Time", point.time), y: .value(title, point.value / divisor))
+                            .symbolSize(18).foregroundStyle(tint).accessibilityHidden(true)
+                    }
+                }
+            }
+            .chartOverlay { chart in
+                GeometryReader { geometry in
+                    if let selected, let anchor = chart.plotFrame, let x = chart.position(forX: selected.time) {
+                        let frame = geometry[anchor]
+                        Rectangle().fill(.secondary.opacity(0.6))
+                            .frame(width: 1, height: frame.height)
+                            .position(x: frame.minX + x, y: frame.midY)
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                    Color.clear.contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let location): inspect(location, chart: chart, geometry: geometry)
+                            case .ended: selectedDate = nil
+                            }
+                        }
+                        .gesture(SpatialTapGesture().onEnded { inspect($0.location, chart: chart, geometry: geometry) })
+                        .accessibilityHidden(true)
+                }
+            }
+            .chartXScale(domain: start...now)
+            .chartYScale(domain: 0...ceiling)
+            .chartXAxis(.hidden)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: [0, ceiling / 2, ceiling]) { value in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 4]))
+                        .foregroundStyle(.secondary.opacity(0.2))
+                    AxisValueLabel {
+                        if let number = value.as(Double.self) {
+                            Text(number.formatted(.number.precision(.fractionLength(0...1))) + (percent ? "%" : ""))
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                }
+            }
+            .chartPlotStyle { plot in
+                // Rasterize only the plot through SwiftUI's Metal-backed path.
+                // Keep controls, labels and chart accessibility outside this layer.
+                plot.padding(.vertical, 4).padding(.horizontal, 4)
+                    .drawingGroup(opaque: false, colorMode: .linear)
+            }
+            .frame(height: 108)
+            .accessibilityLabel(title + ". Last \(Int(window / 60)) \(window == 60 ? "minute" : "minutes"). Missing samples are gaps.")
+            .accessibilityValue(percent ? "Vertical scale: zero to one hundred percent." : "Values in " + (unit.isEmpty ? "count" : unit))
             HStack {
-                Text(title).font(.callout.weight(.medium))
+                Text("\(Int(window / 60)) min ago")
                 Spacer()
-                Text(history.latest(key, now: now).map { String(format: "%.1f", $0 / divisor) + unit } ?? "—")
-                    .monospacedDigit()
-            }
-            Chart(points) { point in
-                LineMark(x: .value("Time", point.time), y: .value(title, point.value / divisor),
-                         series: .value("Continuous samples", point.segment))
-                    .interpolationMethod(.linear).foregroundStyle(Brand.accentChrome)
-                PointMark(x: .value("Time", point.time), y: .value(title, point.value / divisor))
-                    .symbolSize(8).foregroundStyle(Brand.accentChrome)
-            }
-            .chartXScale(domain: now.addingTimeInterval(-300)...now)
-            .chartYScale(domain: 0...(percent ? 100 : max(1, (points.map { $0.value / divisor }.max() ?? 1) * 1.1)))
-            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { AxisValueLabel(format: .dateTime.hour().minute()) } }
-            .frame(height: 110)
-            .accessibilityLabel(title + ". Last five minutes. Missing samples are gaps.")
-            if points.isEmpty { Text("No measurements available").font(.caption).foregroundStyle(.secondary) }
+                Text("Now")
+            }.font(.system(size: 10)).foregroundStyle(.secondary)
         }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Brand.separator.opacity(0.6), lineWidth: 0.5))
         .accessibilityElement(children: .contain)
+        .onDisappear { selectedDate = nil }
+        .onChange(of: window) { _, _ in selectedDate = nil }
+    }
+    private func inspect(_ location: CGPoint, chart: ChartProxy, geometry: GeometryProxy) {
+        guard let anchor = chart.plotFrame else { selectedDate = nil; return }
+        let frame = geometry[anchor]
+        guard frame.contains(location) else { selectedDate = nil; return }
+        selectedDate = chart.value(atX: location.x - frame.minX, as: Date.self)
     }
 }
 
 struct HostMonitoringView: View {
     @ObservedObject var model: ApplicationModel
     @ObservedObject var monitor: HostMonitor
+    @State private var detailsExpanded = false
+
     var body: some View {
-        Card("This Mac · monitoring", subtitle: "Optional host-wide measurements, separate from the inference runtime.") {
-            Toggle("Show CPU, GPU and memory history", isOn: $model.hostMonitoringEnabled)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Mac activity").font(.system(size: 18, weight: .semibold))
+                    Text("CPU, GPU and unified memory across your Mac")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Toggle("Monitoring", isOn: $model.hostMonitoringEnabled)
+                    .toggleStyle(.switch).controlSize(.small).fixedSize()
+                    .accessibilityLabel("Monitor CPU, GPU and memory")
+            }
             if model.hostMonitoringEnabled {
-                Text(monitor.active ? (monitor.collecting ? "Collecting a sample…" : "Sampling while this page is active") : "Paused · sampling resumes when this page is active")
-                    .font(.callout).foregroundStyle(.secondary)
                 TimelineView(.periodic(from: .now, by: 2)) { context in
-                    VStack(spacing: 18) {
-                        ViewThatFits(in: .horizontal) {
-                            HStack(alignment: .top, spacing: 20) {
-                                hostChart("CPU estimate", key: "cpu", at: context.date).frame(minWidth: 190)
-                                hostChart("GPU utilization", key: "gpu", at: context.date).frame(minWidth: 190)
-                                hostChart("Memory estimate", key: "memory", at: context.date).frame(minWidth: 190)
-                            }
-                            VStack(spacing: 20) {
-                                hostChart("CPU estimate", key: "cpu", at: context.date)
-                                hostChart("GPU utilization", key: "gpu", at: context.date)
-                                hostChart("Memory estimate", key: "memory", at: context.date)
-                            }
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 12) {
+                            hostChart("CPU", key: "cpu", tint: Brand.accentChrome, symbol: "cpu", detail: "Estimated utilization", at: context.date).frame(minWidth: 180)
+                            hostChart("GPU", key: "gpu", tint: .blue, symbol: "square.3.layers.3d", detail: "Device utilization", at: context.date).frame(minWidth: 180)
+                            hostChart("Memory", key: "memory", tint: .purple, symbol: "memorychip", detail: "Estimated usage", at: context.date).frame(minWidth: 180)
+                        }
+                        VStack(spacing: 12) {
+                            hostChart("CPU", key: "cpu", tint: Brand.accentChrome, symbol: "cpu", detail: "Estimated utilization", at: context.date)
+                            hostChart("GPU", key: "gpu", tint: .blue, symbol: "square.3.layers.3d", detail: "Device utilization", at: context.date)
+                            hostChart("Memory", key: "memory", tint: .purple, symbol: "memorychip", detail: "Estimated usage", at: context.date)
                         }
                     }
                 }
-                HStack {
-                    Text("Last OS memory-pressure event: " + (monitor.pressure ?? "Not reported"))
-                    if let date = monitor.pressureAt { Text(date.formatted(date: .omitted, time: .standard)) }
-                }.font(.caption)
-                Text("CPU: process averages normalized by logical cores. Memory: active + wired + compressed pages / unified memory. GPU: IOAccelerator when exposed. These are whole-Mac estimates, not model throughput or a memory-fit guarantee. Missing or old samples show a dash; gaps are not filled.")
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 7) {
+                    Image(systemName: monitor.active ? "circle.fill" : "pause.circle")
+                        .font(.system(size: 7)).foregroundStyle(monitor.active ? Brand.accentChrome : .secondary)
+                    Text(monitor.active ? "Live while this page is active" : "Paused · return to this page to resume")
+                    Spacer()
+                    Text("Hover to inspect · 5 min")
+                }.font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("About these measurements", isExpanded: $detailsExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("CPU uses process averages normalized by logical cores. Memory includes active, wired and compressed pages. GPU is available when IOAccelerator exposes it.")
+                        Text("These host-wide estimates are not model throughput or a memory-fit guarantee. Missing and stale samples show a dash; gaps are never filled. Hover over a chart to inspect an actual sample and its time.")
+                        HStack {
+                            Text("Last OS memory-pressure event: " + (monitor.pressure ?? "Not reported"))
+                            if let date = monitor.pressureAt { Text(date.formatted(date: .omitted, time: .standard)) }
+                        }
+                    }.font(.callout).foregroundStyle(.secondary).padding(.top, 8)
+                }.font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 12) {
+                    Image(systemName: "chart.xyaxis.line").font(.title2).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("See how your Mac is working").font(.callout.weight(.medium))
+                        Text("Enable monitoring for a live, five-minute history.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 16))
+                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Brand.separator.opacity(0.6), lineWidth: 0.5))
             }
         }
+        .padding(.vertical, 6)
     }
-    private func hostChart(_ title: String, key: String, at date: Date) -> some View {
-        MetricHistoryChart(title: title, history: monitor.history, key: key, now: date, percent: true, unit: "%")
+    private func hostChart(_ title: String, key: String, tint: Color, symbol: String, detail: String, at date: Date) -> some View {
+        MetricHistoryChart(title: title, history: monitor.history, key: key, now: date, percent: true,
+                           unit: "%", tint: tint, symbol: symbol, detail: detail)
     }
 }
 

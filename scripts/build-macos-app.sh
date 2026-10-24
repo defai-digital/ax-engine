@@ -29,6 +29,7 @@ codesign --force --sign - "$APP/Contents/MacOS/AXEngineModelScanner"
 "${AX_APP_ICON_PYTHON:-python3}" "$PACKAGE/Scripts/generate_icon.py" --output "$APP/Contents/Resources"
 cp "$PACKAGE/Resources/MTPLX-LICENSE.txt" "$PACKAGE/Resources/MTPLX-NOTICE.txt" "$APP/Contents/Resources/"
 cp "$PACKAGE/NOTICE" "$APP/Contents/Resources/NOTICE.txt"
+cp "$PACKAGE/Resources/PrivacyInfo.xcprivacy" "$APP/Contents/Resources/PrivacyInfo.xcprivacy"
 VERSION="$(python3 - "$ROOT/Cargo.toml" <<'PY'
 import sys, tomllib
 with open(sys.argv[1], 'rb') as source:

@@ -2,34 +2,6 @@ import Foundation
 import Testing
 @testable import AXEngineAppCore
 
-@Test func dashboardDoesNotConfuseFilesWithRuntimeReadiness() {
-    func status(_ state: String = "Stopped", ready: Bool = false, owned: Bool = false,
-                connected: Bool = false, files: Bool = false, scanning: Bool = false,
-                attempted: Bool = true, issue: Bool = false) -> DashboardStatus {
-        DashboardStatus.resolve(state: state, ready: ready, owned: owned, hasConnection: connected,
-                                hasFiles: files, discovering: scanning, discoveryAttempted: attempted, discoveryIssue: issue)
-    }
-    #expect(status().action == .catalog)
-    #expect(status(files: true).action == .models)
-    #expect(status(files: true).title != "Your model is ready")
-    #expect(status(scanning: true).title == "Finding your local models")
-    #expect(status(attempted: false).action == .models)
-    #expect(status(issue: true).action == .models)
-    #expect(status("Starting", owned: true, files: true).action == .server)
-    #expect(status("Running", ready: true, owned: true).action == .chat)
-    #expect(status("Attached", ready: true, connected: true).detail.contains("external service"))
-    let degraded = status("Connection degraded", connected: true, files: true)
-    #expect(degraded.title == "Connection could not be verified")
-    #expect(degraded.action == .server)
-    #expect(degraded.detail.contains("never stopped"))
-    #expect(status("Not ready", owned: true).action == .server)
-    #expect(status("Running", connected: true).action == .server)
-    #expect(status("Failed", files: true).action == .server)
-    #expect(status("Stopping", owned: true).action == .server)
-    #expect(DashboardStatus.resolve(state: "Stopped", ready: false, owned: false, hasConnection: false,
-        hasFiles: true, discovering: false, discoveryAttempted: true, discoveryIssue: false, hasSelection: true).action == .server)
-}
-
 private func scanFixture() throws -> (URL, URL) {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("ax-library-test-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

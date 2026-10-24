@@ -44,11 +44,6 @@ public struct DownloadItem: Identifiable, Sendable {
     public var state = "Queued"
     public var fraction: Double?
     public var detail = "Waiting"
-    public static func dashboardItem(_ items: [Self]) -> Self? {
-        items.first(where: { $0.state == "Downloading" })
-            ?? items.first(where: { $0.state == "Queued" })
-            ?? items.last(where: { $0.state == "Failed" })
-    }
 }
 
 public struct DownloadProgress: Equatable, Sendable {

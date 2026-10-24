@@ -88,7 +88,7 @@ import Testing
     await slow.shutdown()
 }
 
-@Test func libraryAssociationDoesNotInferCompatibilityAndTransfersPreferActiveWork() {
+@Test func libraryAssociationDoesNotInferCompatibility() {
     let catalog = CatalogModel(alias: "test", repoId: "Owner/Repo", revision: "abc", mtpIncluded: false)
     let matched = LocalModel(path: "/cache/models--Owner--Repo/snapshots/abc", ready: false, managed: false)
     let other = LocalModel(path: "/cache/models--Other--Repo/snapshots/def", ready: true, managed: false)
@@ -96,12 +96,21 @@ import Testing
     #expect(!matched.ready)
     #expect(!other.isCatalogAssociated([catalog]))
     #expect(other.ready)
-    var failed = DownloadItem(model: catalog, destination: "/a"); failed.state = "Failed"
-    var active = DownloadItem(model: catalog, destination: "/b"); active.state = "Downloading"
-    let queued = DownloadItem(model: catalog, destination: "/c")
-    #expect(DownloadItem.dashboardItem([failed, queued, active])?.id == active.id)
-    #expect(DownloadItem.dashboardItem([failed, queued])?.id == queued.id)
-    #expect(DownloadItem.dashboardItem([failed])?.id == failed.id)
-    failed.state = "Cancelled"
-    #expect(DownloadItem.dashboardItem([failed]) == nil)
+
+}
+
+@Test func chartInspectionDoesNotBridgeMissingOrExpiredSamples() {
+    var history = MetricHistory()
+    let start = Date(timeIntervalSince1970: 100)
+    history.append(["cpu": 25], at: start)
+    history.append([:], at: start.addingTimeInterval(5))
+    history.append(["cpu": 75], at: start.addingTimeInterval(10))
+    let now = start.addingTimeInterval(20)
+    #expect(history.sample("cpu", near: start.addingTimeInterval(1), now: now)?.values["cpu"] == 25)
+    #expect(history.sample("cpu", near: start.addingTimeInterval(5), now: now) == nil)
+    #expect(history.sample("cpu", near: start.addingTimeInterval(9), now: now)?.values["cpu"] == 75)
+    #expect(history.sample("cpu", near: now, now: now) == nil)
+    #expect(history.sample("cpu", near: now.addingTimeInterval(1), now: now) == nil)
+    #expect(history.sample("cpu", near: start, now: start.addingTimeInterval(301)) == nil)
+    #expect(history.sample("gpu", near: start, now: now) == nil)
 }

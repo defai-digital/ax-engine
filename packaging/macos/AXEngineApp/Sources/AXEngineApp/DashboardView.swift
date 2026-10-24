@@ -1,129 +1,219 @@
 import SwiftUI
+import Charts
 import AXEngineAppCore
 
 struct DashboardView: View {
     @ObservedObject var model: ApplicationModel
-    @ObservedObject var runtime: RuntimeController
     @ObservedObject var models: ModelStore
-
-    private var status: DashboardStatus {
-        DashboardStatus.resolve(state: runtime.state, ready: runtime.ready, owned: runtime.owned,
-            hasConnection: runtime.connection != nil,
-            hasFiles: models.library.contains { $0.ready && models.checkedPaths.contains($0.path) },
-            discovering: models.scanning, discoveryAttempted: models.discoveryAttempted,
-            discoveryIssue: models.libraryIssue != nil,
-            hasSelection: models.library.contains { $0.path == model.selectedPath && $0.ready && models.checkedPaths.contains($0.path) })
-    }
-    private var modelName: String {
-        if let running = runtime.models.first { return running.id }
-        let path = runtime.owned ? runtime.selectedModel : model.selectedPath
-        return models.library.first(where: { $0.path == path })?.displayName
-            ?? (path.isEmpty ? "No model selected" : URL(fileURLWithPath: path).lastPathComponent)
-    }
-    private var ownership: String {
-        runtime.owned ? "Managed by this app" : runtime.connection != nil ? "External service · disconnect only" : "Not connected"
-    }
+    @ObservedObject var monitor: HostMonitor
+    @ObservedObject var storage: StorageMonitor
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var detailsExpanded = false
 
     var body: some View {
+        GeometryReader { geometry in
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Card {
-                    HStack {
-                        PillBadge(text: runtime.state, systemImage: runtime.ready ? "checkmark.circle" : "circle", tint: runtime.ready ? Brand.accentChrome : .secondary)
-                        Spacer()
-                        Text(ownership).font(.callout).foregroundStyle(.secondary)
-                    }
-                    Text(status.title).font(.title2.weight(.semibold))
-                    Text(status.detail).foregroundStyle(.secondary)
-                    Label(modelName, systemImage: "cube").font(.headline).textSelection(.enabled)
-                    if runtime.state == "Starting" || runtime.state == "Connecting", let started = runtime.startedAt {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            HStack {
-                                ProgressView().controlSize(.small)
-                                Text("Elapsed \(max(0, Int(context.date.timeIntervalSince(started))))s · waiting for readiness")
-                                    .monospacedDigit().font(.callout)
-                            }
-                        }
-                    }
-                    if let error = runtime.error { ErrorBanner(text: error) }
-                    if let checked = runtime.lastSuccessfulCheck {
-                        Text("Last successful check: " + checked.formatted(date: .omitted, time: .standard))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Button(status.actionTitle, systemImage: status.action == .chat ? "bubble.left" : "arrow.right") { perform(status.action) }
-                            .buttonStyle(.borderedProminent)
-                        if status.action != .server { Button("Server details") { model.page = .server } }
-                        if runtime.ready {
-                            Button("Copy API URL", systemImage: "doc.on.doc") { copyText("http://127.0.0.1:\(model.settings.port)/v1") }
-                        }
-                    }
-                }
-                if let error = model.settingsError {
-                    Card("Settings need attention") {
-                        ErrorBanner(text: error)
-                        Button("Review Settings") { model.page = .settings }
-                    }
-                }
-                if let error = models.error {
-                    Card("Model catalog needs attention") {
-                        ErrorBanner(text: error)
-                        Button("Review runtime settings") { model.page = .settings }
-                    }
-                }
-                HStack(alignment: .top, spacing: 16) {
-                    Card("Runtime snapshot", subtitle: "Reported by the connected service. Unavailable values show a dash.") {
-                        if runtime.connection == nil && !runtime.owned {
-                            Label("No service connected", systemImage: "network.slash")
-                            Text("Start a model or connect to an existing service to see runtime measurements.")
-                                .font(.callout).foregroundStyle(.secondary)
-                        } else {
-                            MetricRow(label: "Active streams", value: number("ax_engine_generation_active_streams"))
-                            MetricRow(label: "MLX active memory", value: memory("ax_engine_memory_mlx_active_bytes"))
-                            MetricRow(label: "Process resident memory", value: memory("ax_engine_memory_host_resident_bytes"))
-                        }
-                        Button("View diagnostics") { model.page = .server }
-                    }
-                    Card("Model library", subtitle: "Downloaded files still require runtime compatibility checks.") {
-                        MetricRow(label: "Discovered folders", value: String(models.library.count))
-                        MetricRow(label: "Checked this scan", value: String(models.checkedPaths.count))
-                        if models.scanning { ProgressView("Finding models…") }
-                        else if models.libraryIssue != nil { Label("Some folders need another check", systemImage: "exclamationmark.triangle").font(.callout) }
-                        else if let date = models.lastScanAt {
-                            Text("Checked " + date.formatted(date: .omitted, time: .standard)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Button("Open library") { model.modelsSection = "library"; model.page = .models }
-                    }
-                }
-                if let transfer = DownloadItem.dashboardItem(models.downloads) {
-                    Card("Model transfer", subtitle: transfer.model.alias) {
-                        Text(transfer.state).font(.headline)
-                        if let fraction = transfer.fraction { ProgressView(value: fraction) }
-                        Text(transfer.detail).font(.callout).lineLimit(2)
-                        Button("View transfers") { model.modelsSection = "transfers"; model.page = .models }
-                    }
-                }
-                HostMonitoringView(model: model, monitor: model.hostMonitor)
+            VStack(alignment: .leading, spacing: 20) {
                 HStack {
-                    Label("This Mac", systemImage: "desktopcomputer")
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory) + " unified memory")
+                    Label("This Mac", systemImage: "desktopcomputer").font(.headline)
+                    Text(memoryTotal + " unified memory").font(.callout).foregroundStyle(.secondary)
                     Spacer()
-                    Text("Model fit is checked by AX Engine.")
+                    Picker("History range", selection: $model.dashboardHistoryWindow) {
+                        Text("1 min").tag(60.0)
+                        Text("5 min").tag(300.0)
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: 124)
+                        .accessibilityLabel("Activity history range")
+                    Toggle("Live activity", isOn: $model.hostMonitoringEnabled)
+                        .toggleStyle(.switch).controlSize(.small).fixedSize()
+                    Button {
+                        Task {
+                            async let capacity: Void = storage.refresh(path: model.settings.modelsDirectory)
+                            async let library: Void = models.scan(settings: model.settings)
+                            _ = await (capacity, library)
+                        }
+                    } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Refresh storage and model inventory").accessibilityLabel("Refresh storage and model inventory")
+                    .disabled(storage.refreshing || models.scanning)
+                }.frame(height: 36)
+                TimelineView(.periodic(from: .now, by: 2)) { context in
+                    VStack(spacing: 20) {
+                    if geometry.size.width >= 640 {
+                        HStack(alignment: .top, spacing: 14) {
+                            ramChart(at: context.date).frame(minWidth: 260)
+                            StorageCapacityCard(storage: storage).frame(minWidth: 260)
+                        }
+                    } else {
+                        VStack(spacing: 14) {
+                            ramChart(at: context.date)
+                            StorageCapacityCard(storage: storage)
+                        }
+                    }
+                    if geometry.size.width >= 720 {
+                        HStack(alignment: .top, spacing: 14) {
+                            activityChart("CPU", key: "cpu", tint: Brand.accentChrome, symbol: "cpu", at: context.date).frame(minWidth: 180)
+                            activityChart("GPU", key: "gpu", tint: .blue, symbol: "square.3.layers.3d", at: context.date).frame(minWidth: 180)
+                            ModelInventoryCard(models: models).frame(minWidth: 210)
+                        }
+                    } else {
+                        VStack(spacing: 14) {
+                            HStack(spacing: 14) {
+                                activityChart("CPU", key: "cpu", tint: Brand.accentChrome, symbol: "cpu", at: context.date)
+                                activityChart("GPU", key: "gpu", tint: .blue, symbol: "square.3.layers.3d", at: context.date)
+                            }
+                            ModelInventoryCard(models: models)
+                        }
+                    }
+                    }
+                }
+                HStack(spacing: 7) {
+                    Image(systemName: monitor.active ? "circle.fill" : "pause.circle")
+                        .foregroundStyle(monitor.active ? Brand.accentChrome : .secondary)
+                    Text(model.hostMonitoringEnabled
+                         ? monitor.active ? "Live activity · last \(Int(model.dashboardHistoryWindow / 60)) min" : "Activity paused while the app is inactive"
+                         : "Activity monitoring is off")
+                    Spacer()
+                    Text("Hover over a history to inspect a sample")
                 }.font(.caption).foregroundStyle(.secondary)
-            }.padding(26)
+                DisclosureGroup("How these measurements work", isExpanded: $detailsExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("RAM is an estimate from active, wired and compressed pages, not model memory or an admission guarantee. CPU uses process averages normalized by logical cores. GPU is available when IOAccelerator exposes it. Missing and stale samples leave gaps.")
+                        Text("Storage shows the volume containing your download folder, including other files and APFS allocations. Imported models and caches can live on other volumes. The app does not scan model weights to estimate disk usage.")
+                        Text("Model counts cover discovered folders, not verified runtime support. One cached snapshot per repository is counted. Incomplete includes metadata-only folders; unchecked folders are retained from earlier scans.")
+                        Text("Last OS memory-pressure event: " + (monitor.pressure ?? "Not reported"))
+                        Text("Download folder: " + model.settings.modelsDirectory).textSelection(.enabled)
+                        if let snapshot = storage.snapshot {
+                            Text("Storage read from: " + snapshot.resolvedPath).textSelection(.enabled)
+                        }
+                    }.font(.callout).foregroundStyle(.secondary).padding(.top, 8)
+                }.font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: 1240).padding(26).frame(maxWidth: .infinity)
+        }
+        }
+        .task(id: "\(scenePhase == .active):\(model.settings.modelsDirectory)") {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await storage.refresh(path: model.settings.modelsDirectory)
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
         }
     }
-    private func perform(_ action: DashboardStatus.Action) {
-        switch action {
-        case .models: model.modelsSection = "library"; model.page = .models
-        case .catalog: model.modelSearch = ""; model.modelsSection = "catalog"; model.page = .models
-        case .server: model.page = .server
-        case .chat: model.page = .chat
-        }
+    private var memoryTotal: String {
+        ByteCountFormatter.string(fromByteCount: Int64(ProcessInfo.processInfo.physicalMemory), countStyle: .memory)
     }
-    private func number(_ key: String) -> String { runtime.metrics[key].map { String(format: "%.0f", $0) } ?? "—" }
-    private func memory(_ key: String) -> String {
-        guard let bytes = runtime.metrics[key], bytes >= 0, bytes < Double(Int64.max) else { return "—" }
-        return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+    private func ramChart(at date: Date) -> some View {
+        let percent = monitor.history.latest("memory", now: date)
+        return MetricHistoryChart(title: "RAM usage", history: monitor.history, key: "memory", now: date,
+            percent: true, unit: "%", tint: .purple, symbol: "memorychip",
+            detail: percent.map { String(format: "%.1f%%", $0) + " of " + memoryTotal } ?? "Estimated unified memory",
+            emptyDetail: model.hostMonitoringEnabled ? "Awaiting measurements" : "Enable Live activity",
+            window: model.dashboardHistoryWindow,
+            readoutMultiplier: Double(ProcessInfo.processInfo.physicalMemory) / 100 / 1_073_741_824,
+            readoutUnit: "GB")
+    }
+    private func activityChart(_ title: String, key: String, tint: Color, symbol: String, at date: Date) -> some View {
+        MetricHistoryChart(title: title, history: monitor.history, key: key, now: date,
+            percent: true, unit: "%", tint: tint, symbol: symbol,
+            detail: key == "cpu" ? "Estimated utilization" : "Device utilization",
+            emptyDetail: model.hostMonitoringEnabled ? "Awaiting measurements" : "Enable Live activity",
+            window: model.dashboardHistoryWindow)
+    }
+}
+
+private struct StorageCapacityCard: View {
+    @ObservedObject var storage: StorageMonitor
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Disk space", systemImage: "internaldrive").font(.system(size: 13, weight: .semibold))
+            if let value = storage.snapshot {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(bytes(value.availableBytes)).font(.system(size: 32, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text("available").font(.callout).foregroundStyle(.secondary)
+                }
+                Text(value.volumeName + " · " + bytes(value.totalBytes) + " capacity")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).help(value.volumeName)
+                Chart {
+                    SectorMark(angle: .value("Bytes", value.usedBytes), innerRadius: .ratio(0.74), angularInset: 2)
+                        .foregroundStyle(Color.secondary.opacity(0.25))
+                        .accessibilityLabel("Used or reserved").accessibilityValue(bytes(value.usedBytes))
+                    SectorMark(angle: .value("Bytes", value.availableBytes), innerRadius: .ratio(0.74), angularInset: 2)
+                        .foregroundStyle(Color.teal)
+                        .accessibilityLabel("Available disk space").accessibilityValue(bytes(value.availableBytes))
+                }
+                .chartPlotStyle { $0.drawingGroup(opaque: false, colorMode: .linear) }
+                .chartBackground { _ in
+                    VStack(spacing: 3) {
+                        Text(String(format: "%.0f%%", Double(value.availableBytes) / Double(value.totalBytes) * 100))
+                            .font(.system(size: 23, weight: .semibold, design: .rounded))
+                        Text("available").font(.caption).foregroundStyle(.secondary)
+                    }.accessibilityHidden(true)
+                }
+                .frame(height: 108)
+                HStack {
+                    Label("Used / reserved " + bytes(value.usedBytes), systemImage: "circle.fill").foregroundStyle(.secondary)
+                    Spacer()
+                    if let updated = storage.updatedAt { Text(updated.formatted(date: .omitted, time: .shortened)).foregroundStyle(.secondary) }
+                }.font(.system(size: 10))
+            } else {
+                Text("—").font(.system(size: 32, weight: .semibold, design: .rounded))
+                Text(storage.refreshing ? "Reading model volume…" : "Storage unavailable")
+                    .font(.callout).foregroundStyle(.secondary)
+                Image(systemName: "internaldrive").font(.system(size: 40)).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, minHeight: 108)
+                Text(storage.error ?? "Volume containing your model downloads")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }.padding(18).frame(maxWidth: .infinity, minHeight: 278, alignment: .topLeading)
+            .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Brand.separator.opacity(0.6), lineWidth: 0.5))
+    }
+    private func bytes(_ value: Int64) -> String { ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
+}
+
+private struct ModelInventoryCard: View {
+    @ObservedObject var models: ModelStore
+    var body: some View {
+        let inventory = ModelInventory(library: models.library, checked: models.checkedPaths)
+        let hasInventory = models.lastScanAt != nil || !models.library.isEmpty
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Models on disk", systemImage: "square.stack.3d.up").font(.system(size: 13, weight: .semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(hasInventory ? String(inventory.total) : "—")
+                    .font(.system(size: 32, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text("folders").font(.callout).foregroundStyle(.secondary)
+            }
+            Text(models.scanning ? "Checking your library…" : models.libraryIssue != nil ? "Partial scan · counts may be incomplete" : "Discovered in your library")
+                .font(.caption).foregroundStyle(.secondary)
+            if hasInventory {
+                Chart {
+                BarMark(x: .value("Folders", inventory.complete), y: .value("Status", "Complete"))
+                    .foregroundStyle(Brand.accentChrome).cornerRadius(3)
+                    .annotation(position: .trailing) { Text(String(inventory.complete)).font(.caption.monospacedDigit()) }
+                BarMark(x: .value("Folders", inventory.incomplete), y: .value("Status", "Incomplete"))
+                    .foregroundStyle(Color.orange).cornerRadius(3)
+                    .annotation(position: .trailing) { Text(String(inventory.incomplete)).font(.caption.monospacedDigit()) }
+                BarMark(x: .value("Folders", inventory.unchecked), y: .value("Status", "Unchecked"))
+                    .foregroundStyle(Color.secondary).cornerRadius(3)
+                    .annotation(position: .trailing) { Text(String(inventory.unchecked)).font(.caption.monospacedDigit()) }
+            }
+            .chartXScale(domain: 0...max(1, inventory.total))
+            .chartXAxis(.hidden)
+            .chartYAxis { AxisMarks { AxisValueLabel().font(.system(size: 10)) } }
+            .chartPlotStyle { $0.padding(.trailing, 20).drawingGroup(opaque: false, colorMode: .linear) }
+            .frame(height: 108)
+                .accessibilityLabel("Discovered model folders by file status")
+            } else {
+                Text(models.scanning ? "Discovering model folders…" : "Model inventory unavailable")
+                    .font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 108)
+            }
+            if let date = models.lastScanAt, !models.scanning, models.libraryIssue == nil {
+                Text("Checked " + date.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            } else {
+                Text("Complete files ≠ runtime compatibility").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }.padding(18).frame(maxWidth: .infinity, minHeight: 278, alignment: .topLeading)
+            .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Brand.separator.opacity(0.6), lineWidth: 0.5))
     }
 }

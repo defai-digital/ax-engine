@@ -111,16 +111,25 @@ AX Engine provides inference; MTPLX inference code and model assets are not bund
 
 ## Dashboard and discovery
 
-Dashboard replaces the static Overview. It keeps one layout and changes its
-primary action for discovery, downloaded files, startup, a ready service, and
-failures. It shows the current model, service ownership, last successful health
-check, startup elapsed time and a small snapshot of existing runtime metrics.
-When disconnected, the snapshot explains how to start or connect instead of
-showing an empty metric grid. Unknown metrics show a dash. Startup phases,
-percentages and generated-token throughput are not invented. Server retains
-lifecycle configuration, advanced counters and output.
+Dashboard is a resource overview, with charts for RAM usage, available disk space,
+CPU/GPU activity and the model folders on disk. Model selection, downloads and
+runtime operations stay in Models and Server.
 
-Optional **This Mac monitoring** shows five minutes of CPU, GPU and unified-memory
+The disk-space ring shows the volume containing the configured model download
+folder, not the size of model files. Used/reserved includes other files and APFS
+allocations. Imported models and caches may be on other volumes. A metadata helper
+reads capacity with a three-second deadline, once when Dashboard becomes active
+and every minute while it stays active. Missing volumes and broken links remain
+unavailable. No weights are read or directories sized for this chart. A local
+privacy manifest declares the disk-capacity API's display-only usage.
+
+The inventory chart separates complete weight files, incomplete/metadata-only
+folders and folders not yet checked in the current scan. These are discovered
+folders, not a count of models verified to run. One cached snapshot per repository
+is included. Partial and ongoing scans are labeled. Refresh updates storage and
+inventory without starting a model or downloading anything.
+
+Optional **Live activity** shows five minutes of CPU, GPU and unified-memory
 history. It is off by default; the preference persists locally. Sampling runs only
 while Dashboard or Server is visible in the active app, with a five-second pause
 between samples and a two-second deadline per probe. CPU uses process averages
@@ -129,6 +138,16 @@ GPU utilization is available only when IOAccelerator exposes it. These host-wide
 estimates are separate from runtime metrics and do not establish model fit or
 inference performance. OS memory pressure remains unknown until a public system
 event arrives. Missing, stale and interrupted samples leave gaps instead of zeros.
+
+RAM shows estimated GB used with the percentage and total memory alongside it.
+Select a one- or five-minute activity window; changing the range does not change
+sampling or discard history. Each trend has a fixed 0–100% scale. Hover
+over a plot to inspect an actual sample and its timestamp; empty intervals stay
+unavailable. Source explanations are under **How these measurements work** on Dashboard. The
+native Swift Charts plot uses SwiftUI's Metal-backed offscreen composition, while
+labels and controls remain native. This is a rendering choice, not a measured
+performance claim. Chart appearance adapts to light/dark mode, increased contrast
+and reduced motion; metric names and symbols supplement color.
 
 Server's collapsed **Runtime history** uses existing service polls for MLX active
 memory, active streams and interval MTP draft acceptance. Idle intervals, counter
@@ -151,8 +170,8 @@ revision details behind a disclosure. Complete files do not establish runtime
 compatibility, and absence from the runtime catalog does not mean unsupported.
 Library filters distinguish all folders, catalog matches and other folders without
 claiming compatibility. Search offers a clear recovery action when nothing matches.
-The app-owned running model is labeled explicitly. Dashboard prioritizes active
-transfers over older failures, and Catalog links an active download to Transfers.
+The app-owned running model is labeled explicitly. Catalog links an active
+download to Transfers.
 The app performs compatibility validation when the operator explicitly starts a
 model. Models from other tools are not silently deleted or hidden.
 

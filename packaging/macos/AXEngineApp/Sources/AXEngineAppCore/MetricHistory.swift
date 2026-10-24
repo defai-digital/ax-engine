@@ -32,6 +32,15 @@ public struct MetricHistory: Sendable {
         guard let sample = samples.last, now >= sample.time, now.timeIntervalSince(sample.time) <= maxAge else { return nil }
         return sample.values[key]
     }
+    /// Inspect an actual sample; do not interpolate across missing data or pauses.
+    public func sample(_ key: String, near time: Date, now: Date = Date(), tolerance: TimeInterval = 6) -> MetricSample? {
+        guard time <= now, now.timeIntervalSince(time) <= duration,
+              let nearest = samples.filter({ $0.time <= now && now.timeIntervalSince($0.time) <= duration })
+                .min(by: { abs($0.time.timeIntervalSince(time)) < abs($1.time.timeIntervalSince(time)) }),
+              abs(nearest.time.timeIntervalSince(time)) <= tolerance,
+              nearest.values[key] != nil else { return nil }
+        return nearest
+    }
     public func points(_ key: String, now: Date = Date(), maxGap: TimeInterval = 12) -> [MetricPlotPoint] {
         var segment = 0, points: [MetricPlotPoint] = []
         var previous: Date?

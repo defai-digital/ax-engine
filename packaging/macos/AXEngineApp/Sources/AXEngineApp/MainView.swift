@@ -61,7 +61,7 @@ struct MainView: View {
                 Divider()
                 Group {
                     switch model.page ?? .overview {
-                    case .overview: DashboardView(model: model, runtime: runtime, models: models)
+                    case .overview: DashboardView(model: model, models: models, monitor: model.hostMonitor, storage: model.storageMonitor)
                     case .models: modelsPage
                     case .server: serverPage
                     case .chat: ChatView(chat: chat, runtime: runtime, settings: model.settings, openServer: { model.page = .server })
@@ -101,7 +101,7 @@ struct MainView: View {
     }
     private var subtitle: String {
         switch model.page ?? .overview {
-        case .overview: "Your model, runtime status and next step."
+        case .overview: "Memory, storage and the models on your Mac."
         case .models: "Browse runtime profiles and manage local model folders."
         case .server: "Start a local model or connect to an existing AX Engine service."
         case .chat: "Private conversations with your running model."
