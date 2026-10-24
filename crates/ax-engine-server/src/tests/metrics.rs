@@ -216,6 +216,7 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     // `metrics_record_semantic_cut_and_restore_value_route_decisions`).
     assert!(body.contains("ax_engine_mlx_semantic_cut_snapshots_total 0\n"));
     assert!(body.contains("ax_engine_mlx_checkpoint_unsupported_total 0\n"));
+    assert!(body.contains("ax_engine_mlx_checkpoint_write_errors_total 0\n"));
     assert!(body.contains(
         "ax_engine_mlx_prefix_restore_value_decisions_total{decision=\"semantic_cut\"} 0\n"
     ));
@@ -357,6 +358,46 @@ async fn metrics_record_checkpoint_unsupported_route_decisions() {
         "per-step refusal deltas accumulate (2 + 1 + 0): {body}"
     );
     assert!(body.contains("ax_engine_mlx_checkpoint_unsupported_total{model=\"qwen3\"} 3\n"));
+}
+
+/// `checkpoint_write_errors` is a runner counter. `/metrics` must publish the
+/// per-step deltas the runner emits, including a step that reports zero.
+#[tokio::test]
+async fn metrics_record_checkpoint_write_error_route_decisions() {
+    let state = llama_cpp_state();
+    let metrics = state.metrics.clone();
+    let app = build_router(state);
+
+    let report = |errors: u32| EngineStepReport {
+        route: Some(GenerateRouteReport {
+            crossover_decisions: BTreeMap::from([(
+                "ax_mlx_checkpoint_write_errors".to_string(),
+                errors,
+            )]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    metrics.record_step_report("qwen3", &report(2));
+    metrics.record_step_report("qwen3", &report(1));
+    metrics.record_step_report("qwen3", &report(0));
+
+    let (status, _, body) = text_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("ax_engine_mlx_checkpoint_write_errors_total 3\n"),
+        "per-step write-error deltas accumulate (2 + 1 + 0): {body}"
+    );
+    assert!(body.contains("ax_engine_mlx_checkpoint_write_errors_total{model=\"qwen3\"} 3\n"));
 }
 
 /// DecodeTelemetry re-emits the request's running prefill wall times on each

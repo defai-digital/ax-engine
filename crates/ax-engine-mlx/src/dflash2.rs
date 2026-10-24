@@ -531,12 +531,14 @@ impl Dflash2Weights {
                 &layer.mlp_conv.projection_t,
             ]);
         }
+        // Load-time residency. No request cache or drafter cursor exists yet,
+        // so a failure here cannot decline a step.
         mlx_sys::eval(&arrays);
     }
 }
 
 /// Per-layer rolling key/value cache of the committed context (post-RoPE keys).
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct LayerCache {
     keys: Option<MlxArray>,
     values: Option<MlxArray>,
@@ -547,6 +549,15 @@ struct LayerCache {
 /// still sees `max_size` of context.
 fn retained_old_rows(cached: i32, max_size: i32) -> i32 {
     cached.min((max_size - 1).max(0))
+}
+
+/// Pre-round drafter cursor. A failed capture or verify restores this so the
+/// next round drafts the same context rows again.
+#[derive(Clone)]
+pub(crate) struct DrafterCursor {
+    offset: i32,
+    caches: Vec<LayerCache>,
+    tree_alternatives: [Option<u32>; 2],
 }
 
 /// The drafter and its cache state for one request.
@@ -597,12 +608,53 @@ impl Dflash2Drafter {
     }
 
     /// Evaluates `array` and records the time since the previous mark.
-    fn mark(&mut self, stage: &'static str, array: &MlxArray, started: &mut std::time::Instant) {
-        if let Some(times) = self.stage_times.as_mut() {
-            mlx_sys::eval(&[array]);
-            times.push((stage, started.elapsed().as_secs_f64() * 1e3));
-            *started = std::time::Instant::now();
+    ///
+    /// Stage timing is opt-in. The default drafter leaves it unset, so this
+    /// does not evaluate on the linear request path. A profiled failure is
+    /// returned so the caller can restore the pre-round cursor.
+    fn mark(
+        &mut self,
+        stage: &'static str,
+        array: &MlxArray,
+        started: &mut std::time::Instant,
+    ) -> Result<(), String> {
+        let Some(times) = self.stage_times.as_mut() else {
+            return Ok(());
+        };
+        if let Some(error) = take_dflash2_capture_verify_eval_error() {
+            tracing::warn!(
+                target: "ax_engine_mlx::dflash2",
+                %error,
+                "DFlash2 draft evaluation failed; declining speculation"
+            );
+            return Err(error);
         }
+        if let Err(error) = mlx_sys::try_eval(&[array]) {
+            tracing::warn!(
+                target: "ax_engine_mlx::dflash2",
+                %error,
+                "DFlash2 draft evaluation failed; declining speculation"
+            );
+            return Err(error);
+        }
+        times.push((stage, started.elapsed().as_secs_f64() * 1e3));
+        *started = std::time::Instant::now();
+        Ok(())
+    }
+
+    /// Restores `cursor` after a draft read fails. The returned ids are unused.
+    fn fail_draft(
+        &mut self,
+        cursor: DrafterCursor,
+        block: i32,
+        error: String,
+    ) -> (MlxArray, Option<String>) {
+        self.restore_cursor(cursor);
+        let width = (block - 1).max(0);
+        (
+            mlx_sys::zeros(&[1, width], MlxDtype::Uint32, None),
+            Some(error),
+        )
     }
 
     /// Runs the block at every context-row count it will see (1 to the block
@@ -613,10 +665,59 @@ impl Dflash2Drafter {
         let block = self.weights.cfg.block_size;
         for rows in 1..=block {
             let hidden = mlx_sys::zeros(&[1, rows, width], MlxDtype::Bfloat16, None);
-            let drafts = self.draft_block(0, &hidden, target, block);
-            mlx_sys::eval(&[&drafts]);
+            let drafts = match self.draft_block(0, &hidden, target, block) {
+                Ok(drafts) => drafts,
+                Err(error) => {
+                    // Scratch cursor only. `reset` drops it; no request is live.
+                    tracing::warn!(
+                        target: "ax_engine_mlx::dflash2",
+                        %error,
+                        "DFlash2 drafter warm-up failed; the first request compiles the kernels"
+                    );
+                    self.reset();
+                    return;
+                }
+            };
+            if let Err(error) = mlx_sys::try_eval(&[&drafts]) {
+                tracing::warn!(
+                    target: "ax_engine_mlx::dflash2",
+                    %error,
+                    "DFlash2 drafter warm-up failed; the first request compiles the kernels"
+                );
+                self.reset();
+                return;
+            }
         }
         self.reset();
+    }
+
+    /// Absolute position of the next context row.
+    pub(crate) fn cache_offset(&self) -> i32 {
+        self.offset
+    }
+
+    /// Rows in the first layer's key cache. Zero before the first committed draft.
+    pub(crate) fn cache_rows(&self) -> i32 {
+        self.caches
+            .iter()
+            .find_map(|cache| cache.keys.as_ref().map(|keys| keys.shape()[2]))
+            .unwrap_or(0)
+    }
+
+    /// Copies the offset, per-layer KV, and runner-up slots.
+    pub(crate) fn snapshot_cursor(&self) -> DrafterCursor {
+        DrafterCursor {
+            offset: self.offset,
+            caches: self.caches.clone(),
+            tree_alternatives: self.tree_alternatives,
+        }
+    }
+
+    /// Puts back a cursor taken before a draft whose capture or verify failed.
+    pub(crate) fn restore_cursor(&mut self, cursor: DrafterCursor) {
+        self.offset = cursor.offset;
+        self.caches = cursor.caches;
+        self.tree_alternatives = cursor.tree_alternatives;
     }
 
     /// Sets the absolute position of the first context row when the prompt rows
@@ -639,15 +740,22 @@ impl Dflash2Drafter {
     /// `new_hidden` is `[1, S, target_hidden_width]` bf16: the captured target
     /// hidden states of the tokens committed since the previous call (the whole
     /// prompt on the first call). Returns `[1, block - 1]` token ids (lazy).
+    ///
+    /// `Err` means an opt-in stage-timing read failed. The drafter cursor is
+    /// already back to the pre-call snapshot. The default path does not time
+    /// stages, so this returns the same lazy ids as before.
     pub(crate) fn draft_block(
         &mut self,
         anchor: u32,
         new_hidden: &MlxArray,
         target: &ModelWeights,
         block: i32,
-    ) -> MlxArray {
-        self.draft_block_inner(anchor, new_hidden, target, block, false)
-            .0
+    ) -> Result<MlxArray, String> {
+        let (tokens, error) = self.draft_block_inner(anchor, new_hidden, target, block, false);
+        match error {
+            Some(error) => Err(error),
+            None => Ok(tokens),
+        }
     }
 
     /// Same block as [`Self::draft_block`], and also records the runner-up
@@ -655,8 +763,8 @@ impl Dflash2Drafter {
     /// The returned primary chain matches [`Self::draft_block`].
     ///
     /// `Err` means the runner-up read failed before any request cache write.
-    /// The caller declines the speculative step; this drafter's own cache was
-    /// already updated while the block graph was built.
+    /// The drafter's offset and KV cache are restored to the pre-call cursor
+    /// so the caller can draft the same rows again.
     pub(crate) fn draft_block_capturing_alternatives(
         &mut self,
         anchor: u32,
@@ -679,6 +787,9 @@ impl Dflash2Drafter {
         block: i32,
         capture_alternatives: bool,
     ) -> (MlxArray, Option<String>) {
+        // The block graph appends KV and advances `offset` before the runner-up
+        // read. Keep the pre-call cursor so a failed read does not stick.
+        let cursor = self.snapshot_cursor();
         self.tree_alternatives = [None, None];
         let weights = self.weights.clone();
         let cfg = &weights.cfg;
@@ -687,6 +798,15 @@ impl Dflash2Drafter {
         // seven.
         let _fused_rows = QwenMtpVerifyQmmGuard::arm(true);
         let mut timer = std::time::Instant::now();
+        // Opt-in only. With stage timing off, `mark` does not evaluate and
+        // this never restores.
+        macro_rules! drafted_mark {
+            ($stage:expr, $array:expr) => {
+                if let Err(error) = self.mark($stage, $array, &mut timer) {
+                    return self.fail_draft(cursor.clone(), block, error);
+                }
+            };
+        }
         let hidden = cfg.hidden_size;
         let kv_width = cfg.num_kv_heads * cfg.head_dim;
         let dtype = new_hidden.dtype();
@@ -704,7 +824,7 @@ impl Dflash2Drafter {
             );
         }
         let mut x = embedded;
-        self.mark("embed", &x, &mut timer);
+        drafted_mark!("embed", &x);
 
         // Context for the new rows: project, normalise, and cut to the window.
         let mut context = rms_norm(
@@ -727,10 +847,10 @@ impl Dflash2Drafter {
             self.offset += skip;
             rows = keep;
         }
-        self.mark("context fc+norm", &context, &mut timer);
+        drafted_mark!("context fc+norm", &context);
         let projected = weights.context_kv.project(&context);
         let chunks = split(&projected, (cfg.num_layers * 2) as i32, 2, None);
-        self.mark("context kv projection", &projected, &mut timer);
+        drafted_mark!("context kv projection", &projected);
 
         let context_offset = self.offset;
         let block_offset = self.offset + rows;
@@ -754,7 +874,7 @@ impl Dflash2Drafter {
                 &layer.attention_conv.finish(cfg, &attention, &taps),
                 None,
             );
-            self.mark("attention block", &x, &mut timer);
+            drafted_mark!("attention block", &x);
             let residual = x.clone();
             let normed = rms_norm(&x, Some(&layer.post_norm), cfg.rms_norm_eps, None);
             let (prepared, taps) = layer.mlp_conv.prepare(cfg, &normed);
@@ -765,12 +885,12 @@ impl Dflash2Drafter {
             );
             let mlp = layer.down.project(&activated);
             x = add(&residual, &layer.mlp_conv.finish(cfg, &mlp, &taps), None);
-            self.mark("mlp block", &x, &mut timer);
+            drafted_mark!("mlp block", &x);
         }
         self.offset += rows;
         let normed = rms_norm(&x, Some(&weights.final_norm), cfg.rms_norm_eps, None);
         let draft_hidden = slice(&normed, &[0, 1, 0], &[1, block, hidden], &[1, 1, 1], None);
-        self.mark("final norm", &draft_hidden, &mut timer);
+        drafted_mark!("final norm", &draft_hidden);
 
         // The target's LM head over the seven draft positions, using the fused
         // multi-row MXFP4 matmul when the head is MXFP4.
@@ -798,11 +918,11 @@ impl Dflash2Drafter {
             logits
         };
         let _ = dtype;
-        self.mark("lm head", &logits, &mut timer);
-        if !self.use_selector {
+        drafted_mark!("lm head", &logits);
+        let (tokens, capture_error) = if !self.use_selector {
             // Greedy path: plain argmax of the target LM head.
             let tokens = astype(&argmax(&logits, None), MlxDtype::Uint32, None);
-            self.mark("argmax", &tokens, &mut timer);
+            drafted_mark!("argmax", &tokens);
             let capture_error = if capture_alternatives {
                 match greedy_runner_up(&logits, &tokens) {
                     Ok(alternatives) => {
@@ -814,16 +934,21 @@ impl Dflash2Drafter {
             } else {
                 None
             };
-            return (tokens, capture_error);
+            (tokens, capture_error)
+        } else {
+            self.select(
+                &weights.selector,
+                cfg,
+                &draft_hidden,
+                &logits,
+                anchor,
+                capture_alternatives,
+            )
+        };
+        if capture_error.is_some() {
+            self.restore_cursor(cursor);
         }
-        self.select(
-            &weights.selector,
-            cfg,
-            &draft_hidden,
-            &logits,
-            anchor,
-            capture_alternatives,
-        )
+        (tokens, capture_error)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1084,6 +1209,16 @@ fn greedy_runner_up(logits: &MlxArray, drafted: &MlxArray) -> Result<[Option<u32
         None,
     );
     // Draft capture only: the request cache is not written on this path.
+    // The drafter KV was updated while the block graph was built; the caller
+    // restores that cursor when this returns `Err`.
+    if let Some(error) = take_dflash2_capture_verify_eval_error() {
+        tracing::warn!(
+            target: "ax_engine_mlx::dflash2",
+            %error,
+            "DFlash2 runner-up capture failed; declining speculation"
+        );
+        return Err(error);
+    }
     if let Err(error) = mlx_sys::try_eval(&[&top, &primary]) {
         tracing::warn!(
             target: "ax_engine_mlx::dflash2",
@@ -1135,6 +1270,16 @@ fn selector_runner_up(
         let scores = astype(scores, MlxDtype::Float32, None);
         let chosen = astype(chosen, MlxDtype::Uint32, None);
         // Draft capture only: the request cache is not written on this path.
+        // The drafter KV was updated while the block graph was built; the caller
+        // restores that cursor when this returns `Err`.
+        if let Some(error) = take_dflash2_capture_verify_eval_error() {
+            tracing::warn!(
+                target: "ax_engine_mlx::dflash2",
+                %error,
+                "DFlash2 runner-up capture failed; declining speculation"
+            );
+            return Err(error);
+        }
         if let Err(error) = mlx_sys::try_eval(&[&candidates, &scores, &chosen]) {
             tracing::warn!(
                 target: "ax_engine_mlx::dflash2",
@@ -1227,9 +1372,169 @@ pub(crate) fn locate_drafter(
 }
 
 #[cfg(test)]
+thread_local! {
+    static DFLASH2_CAPTURE_VERIFY_EVAL_ERROR: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// One-shot fault for the next DFlash2 capture or verify read.
+///
+/// Production builds never set it. Tests use it to make the fallible read
+/// return the same error a failed `try_eval` would, after the drafter cursor
+/// has already moved.
+pub(crate) fn take_dflash2_capture_verify_eval_error() -> Option<String> {
+    #[cfg(test)]
+    {
+        DFLASH2_CAPTURE_VERIFY_EVAL_ERROR.with(|slot| slot.take().map(str::to_owned))
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
+/// Arms [`take_dflash2_capture_verify_eval_error`] for the next read.
+#[cfg(test)]
+pub(crate) fn fail_next_dflash2_capture_verify_eval_for_test(message: &'static str) {
+    DFLASH2_CAPTURE_VERIFY_EVAL_ERROR.with(|slot| slot.set(Some(message)));
+}
+
+/// One-layer drafter and a dense target embedding / LM head, for the eval-failure
+/// round test. Shapes satisfy the drafter's block graph; the weights are zeros.
+#[cfg(test)]
+pub(crate) fn dflash2_tiny_fixture() -> (std::sync::Arc<Dflash2Weights>, ModelWeights) {
+    let hidden = 8i32;
+    let head_dim = 4i32;
+    let kv = 4i32;
+    let inter = 8i32;
+    let vocab = 16i32;
+    let kernel = 2i32;
+    let groups = 2i32;
+    let rank = 4i32;
+    let bf16 = MlxDtype::Bfloat16;
+    let z = |shape: &[i32]| mlx_sys::zeros(shape, bf16, None);
+    let proj = |out: i32, inn: i32| Projection::new(&z(&[out, inn]), DrafterPrecision::Bf16);
+    let conv = || GroupedConv {
+        base: z(&[2, kernel, hidden]),
+        projection_t: z(&[hidden, 2 * kernel * groups]),
+    };
+    let cfg = Dflash2Config {
+        hidden_size: hidden,
+        num_layers: 1,
+        num_heads: 2,
+        num_kv_heads: 1,
+        head_dim,
+        intermediate_size: inter,
+        rms_norm_eps: 1e-6,
+        rope_theta: 10_000.0,
+        sliding_window: 8,
+        block_size: 4,
+        mask_token_id: 1,
+        target_layer_ids: vec![0],
+        conv_group_size: hidden / groups,
+        conv_kernel_size: kernel,
+        selector_rank: rank,
+        selector_top_k: 2,
+        vocab_size: vocab,
+        input_embedding_scale: 1.0,
+        output_multiplier: 1.0,
+    };
+    let k_weight = z(&[kv, hidden]);
+    let v_weight = z(&[kv, hidden]);
+    let context_kv = Projection::new(
+        &concatenate(&[&k_weight, &v_weight], 0, None),
+        DrafterPrecision::Bf16,
+    );
+    let layer = Layer {
+        q: proj(hidden, hidden),
+        k: Projection::new(&k_weight, DrafterPrecision::Bf16),
+        v: Projection::new(&v_weight, DrafterPrecision::Bf16),
+        o: proj(hidden, hidden),
+        q_norm: z(&[head_dim]),
+        k_norm: z(&[head_dim]),
+        gate: proj(inter, hidden),
+        up: proj(inter, hidden),
+        down: proj(hidden, inter),
+        input_norm: z(&[hidden]),
+        post_norm: z(&[hidden]),
+        attention_conv: conv(),
+        mlp_conv: conv(),
+    };
+    let weights = std::sync::Arc::new(Dflash2Weights {
+        cfg,
+        fc: proj(hidden, hidden),
+        hidden_norm: z(&[hidden]),
+        layers: vec![layer],
+        final_norm: z(&[hidden]),
+        selector: Selector {
+            predecessor_codebook: z(&[vocab, rank]),
+            successor_codebook: z(&[vocab, rank]),
+            hidden_projection_t: z(&[hidden, rank]),
+        },
+        context_kv,
+        precision: DrafterPrecision::Bf16,
+    });
+    let embedding = QuantizedWeight::new(z(&[vocab, hidden]), None, None);
+    let target = ModelWeights {
+        token_embedding: embedding.clone(),
+        final_norm: Some(z(&[hidden])),
+        lm_head: embedding,
+        layers: Vec::new(),
+        per_layer_embed: None,
+        per_layer_model_proj: None,
+        per_layer_proj_norm: None,
+        mtp: None,
+        gemma4_assistant_mtp: Default::default(),
+        assistant_pre_projection: None,
+        assistant_post_projection: None,
+        embedding_dense_0: None,
+        embedding_dense_1: None,
+        gemma4_unified_vision: None,
+        gemma4_unified_audio: None,
+        gemma4_vl_vision: None,
+        diffusion_self_conditioning: None,
+        glm_mtp: None,
+        deepseek_v4_head: None,
+        deepseek_v4_nextn: None,
+        unlimited_ocr_vision: None,
+        qwen3_vl_vision: None,
+        minicpm_v46_vision: None,
+        nemotron_omni: None,
+        expert_stream: None,
+        qwen4_exp: None,
+        qwen4_exp_mtp: None,
+    };
+    (weights, target)
+}
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_timing_eval_failure_restores_the_drafter_cursor() {
+        let (weights, target) = dflash2_tiny_fixture();
+        let mut drafter = Dflash2Drafter::new(weights.clone());
+        drafter.set_stage_timing(true);
+        let width = weights.config().target_hidden_width();
+        let hidden = mlx_sys::zeros(&[1, 2, width], MlxDtype::Bfloat16, None);
+        let block = weights.config().block_size;
+        fail_next_dflash2_capture_verify_eval_for_test("injected draft stage eval failure");
+        let failed = drafter.draft_block(3, &hidden, &target, block);
+        assert!(failed.is_err(), "a stage read must fail the draft");
+        assert_eq!(drafter.cache_offset(), 0);
+        assert_eq!(drafter.cache_rows(), 0);
+
+        drafter.set_stage_timing(false);
+        let drafts = drafter
+            .draft_block(3, &hidden, &target, block)
+            .expect("next draft");
+        mlx_sys::eval(&[&drafts]);
+        assert_eq!(drafts.shape()[1], block - 1);
+        assert!(drafter.cache_offset() > 0);
+        assert!(drafter.cache_rows() > 0);
+    }
 
     const CONFIG: &str = r#"{
         "hidden_size": 5120, "num_hidden_layers": 5, "num_attention_heads": 32,
@@ -1543,7 +1848,9 @@ mod tests {
                 mlx_sys::eval(&[hidden, &anchor, &expected]);
                 let anchor = anchor.data_u32()[0];
                 let started = std::time::Instant::now();
-                let drafts = drafter.draft_block(anchor, hidden, &target, weights.cfg.block_size);
+                let drafts = drafter
+                    .draft_block(anchor, hidden, &target, weights.cfg.block_size)
+                    .unwrap();
                 mlx_sys::eval(&[&drafts]);
                 draft_ms.push(started.elapsed().as_secs_f64() * 1e3);
                 for (stage, ms) in drafter.take_stage_times() {
