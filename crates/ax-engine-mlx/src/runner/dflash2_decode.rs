@@ -246,7 +246,8 @@ fn linear_window_commit(
 }
 
 /// Draft rows that survive the EOS and output-budget cut. Acceptance telemetry
-/// counts these, not the pre-cut greedy match, so it matches emitted tokens.
+/// counts these, not the pre-cut greedy match, so it never credits a draft
+/// past the cut. The emitted count is one higher (the target's bonus token).
 fn committed_draft_count(pre_cut_accepted: usize, keep: usize) -> usize {
     keep.saturating_sub(1).min(pre_cut_accepted)
 }
