@@ -3021,6 +3021,28 @@ fn long_prompt_prefill_clamp_skips_qwen3_5() {
         scale_prefill_chunk_for_remaining_in_family(2048, 2048, "gemma4"),
         long_prompt_prefill_chunk()
     );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override(false, Some(8192)),
+        None
+    );
+    assert_eq!(flash_next_tiled_outer_chunk_override(true, None), None);
+    assert_eq!(flash_next_tiled_outer_chunk_override(true, Some(512)), None);
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override(true, Some(3072)),
+        None
+    );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override(true, Some(2048)),
+        Some(2048)
+    );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override(true, Some(4096)),
+        Some(4096)
+    );
+    assert_eq!(
+        flash_next_tiled_outer_chunk_override(true, Some(8192)),
+        Some(8192)
+    );
     // hy_v3 keeps the session chunk for any remaining length, so a 10k prompt
     // runs as 2048-token forwards instead of 512-token ones.
     for remaining in [2048, 3369, 10_248] {

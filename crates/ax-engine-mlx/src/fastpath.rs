@@ -5621,6 +5621,59 @@ env_flag_default_on!(
     "AX_MLX_FLASH_NEXT_QSA_BATCHED_ATTENTION"
 );
 
+env_flag!(
+    /// `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` — score Flash Next QSA blocks in
+    /// query tiles so a long prefill chunk is not rejected by the monolithic
+    /// 256 MiB score workspace. Default OFF. Tiling runs only for the MLX
+    /// 0.32.4 GEMM shapes whose tests match the monolithic score bits; every
+    /// other shape keeps the monolithic scores and the 256 MiB check. Set
+    /// `=1` to opt in. This does not by itself change the outer prefill chunk.
+    flash_next_qsa_tiled_scores_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_TILED_SCORES"
+);
+
+/// Outer prefill chunks a tiled-score measurement may request. 8192 is one
+/// of the measured sizes, not the default chunk.
+pub(crate) const FLASH_NEXT_QSA_TILED_OUTER_CHUNKS: [usize; 3] = [2048, 4096, 8192];
+
+/// `requested` is honored only while tiled scores are on and the value is one
+/// of [`FLASH_NEXT_QSA_TILED_OUTER_CHUNKS`]. Any other request keeps the
+/// existing chunk. A chunk the monolithic 256 MiB check would reject is a
+/// measurement configuration, not a baseline comparison.
+pub(crate) fn flash_next_tiled_outer_chunk_override(
+    tiled_scores: bool,
+    requested: Option<usize>,
+) -> Option<usize> {
+    if !tiled_scores {
+        return None;
+    }
+    requested.filter(|chunk| FLASH_NEXT_QSA_TILED_OUTER_CHUNKS.contains(chunk))
+}
+
+/// `AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK` — when tiled scores are on,
+/// run Flash Next outer prefill at 2048, 4096, or 8192 instead of the
+/// long-prompt clamp. Unset, or set while tiled scores are off, keeps the
+/// current chunk. 8192 is not the default.
+///
+/// Measure TTFT as the serving bench does: request to the first content or
+/// reasoning chunk. Same-chunk A/B isolates this change. Then sweep 512,
+/// 2048, 4096, and 8192. A chunk the monolithic score check rejects is not a
+/// baseline. Fixtures are 8192, 32768, and 39936 tokens; 39936 is past the
+/// 32k standard and is listed separately when it does not fit in 128 GiB.
+/// One resident request, MTP off, prefix hits disabled, greedy 32 tokens.
+/// Two warm-ups and ten interleaved runs: median, p95, peak memory, QSA
+/// time, and ordered indices. Whole-model qualification of the larger
+/// chunks is a later increment.
+pub(crate) fn flash_next_qsa_tiled_outer_prefill_chunk() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        flash_next_tiled_outer_chunk_override(
+            flash_next_qsa_tiled_scores_enabled(),
+            parse_positive_usize_env("AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK"),
+        )
+    })
+}
+
 env_flag_default_on!(
     /// `AX_MLX_FLASH_NEXT_PREFILL_EXPERT_SORT` — gather routed experts in
     /// expert-id order for Flash Next prefill chunks of at least 64 tokens, as
@@ -6380,6 +6433,16 @@ pub(crate) fn scale_prefill_chunk_for_remaining_in_family(
     remaining_tokens: usize,
     model_family: &str,
 ) -> usize {
+    // Measurement mode only. The default chunk is unchanged unless
+    // `AX_MLX_FLASH_NEXT_QSA_TILED_PREFILL_CHUNK` names 2048, 4096, or 8192
+    // while tiled scores are on. Whole-model qualification of those chunks
+    // is a later increment. Do not treat a chunk the monolithic score check
+    // would reject as a successful baseline comparison.
+    if model_family.eq_ignore_ascii_case("qwen4_exp")
+        && let Some(chunk) = flash_next_qsa_tiled_outer_prefill_chunk()
+    {
+        return chunk;
+    }
     let base = base_chunk.max(1);
     if remaining_tokens >= LONG_PROMPT_PREFILL_THRESHOLD
         && long_prompt_prefill_clamp_applies(model_family)

@@ -2244,3 +2244,56 @@ fn flash_next_long_context_arms_match_baseline_on_real_pack() {
         eprintln!("LONG_ARM {name}: identical, gdn kernel dispatches {dispatches}");
     }
 }
+
+/// 8192-token prompt at the original outer chunk. Compares host QSA indices
+/// and final-logit bits with tiled scores off and on. A chunk the monolithic
+/// score check would reject is not this comparison.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS; 8192-token prompt at the original outer chunk"]
+fn flash_next_qsa_tiled_matches_monolithic_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::qwen4_exp_qsa::{capture_host_selections, with_tiled_scores};
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let vocab = artifacts.manifest().vocab_size;
+    let tokens = profile_prompt_ids(vocab);
+    assert_eq!(
+        tokens.len(),
+        8192,
+        "the real-pack comparison is an 8192-token prompt"
+    );
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let streaming = crate::fastpath::qwen_gated_delta_prefill_streaming_enabled();
+    let cap = crate::linear_attention_ops::linear_attention_prefill_chunk_cap(
+        streaming,
+        cfg.moe_expert_count > 0,
+    );
+    let chunk = cap.min(crate::fastpath::long_prompt_prefill_chunk()).max(1);
+    let owner = cfg.compile_cache_identity;
+    let run = |tiled: bool| {
+        capture_host_selections(|| {
+            with_tiled_scores(tiled, || {
+                run_chunked_prefill(trunk, &tokens, owner, chunk, false)
+            })
+        })
+    };
+    let ((off, off_indices), (on, on_indices)) = (run(false), run(true));
+    assert!(!off_indices.is_empty(), "host selections were not recorded");
+    assert_eq!(
+        on_indices, off_indices,
+        "tiled scores changed ordered QSA indices at chunk {chunk}"
+    );
+    assert_eq!(on.final_logits.len(), off.final_logits.len());
+    for (index, (left, right)) in off.final_logits.iter().zip(&on.final_logits).enumerate() {
+        assert_eq!(
+            left.to_bits(),
+            right.to_bits(),
+            "tiled scores changed logit bits at {index}"
+        );
+    }
+}

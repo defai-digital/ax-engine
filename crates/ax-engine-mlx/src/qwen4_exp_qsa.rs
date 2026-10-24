@@ -15,14 +15,20 @@
 //!
 //! Cache updates are staged locally and published only when selection
 //! succeeds. The input cache is never mutated.
+//!
+//! `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` (default off) scores a long prefill
+//! chunk as query tiles and keeps only the selected indices. A tile runs
+//! only for an MLX 0.32.4 `applegpu_g14d` GEMM shape whose tests match the
+//! monolithic score bits. Every other shape keeps one score tensor and the
+//! 256 MiB workspace check.
 
 #[cfg(test)]
 use mlx_sys::eval;
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxQuantizationMode, add, arange, argsort_axis, astype,
-    broadcast_to, concatenate, contiguous, cos, divide, expand_dims_axes, less, matmul, maximum,
-    multiply, negative, outer, quantized_matmul_with_mode, reshape, rms_norm, sin, slice,
-    slice_last_dim, sum_axis, transpose, where_cond,
+    broadcast_to, concatenate, contiguous, cos, divide, expand_dims_axes, gpu_device_architecture,
+    less, matmul, maximum, multiply, negative, outer, quantized_matmul_with_mode, reshape,
+    rms_norm, sin, slice, slice_last_dim, sum_axis, transpose, where_cond,
 };
 use thiserror::Error;
 
@@ -613,19 +619,29 @@ impl QsaIndexer {
     ) -> Result<QsaSelection> {
         let cfg = self.config;
         let (batch, seq) = rank3_dims("hidden", hidden, cfg.hidden_size)?;
-        let total = position_offset
+        let total_tokens = position_offset
             .checked_add(seq as usize)
             .filter(|&n| n <= i32::MAX as usize)
             .ok_or(QsaError::InvalidScalar("total context length"))?;
-        let score_bytes = (batch as usize)
-            .checked_mul(seq as usize)
-            .and_then(|n| n.checked_mul(cfg.query_heads as usize))
-            .and_then(|n| n.checked_mul(total / cfg.compress_ratio()))
-            .and_then(|n| n.checked_mul(std::mem::size_of::<f32>()));
-        if score_bytes.is_none_or(|n| n > 256 * 1024 * 1024) {
-            return Err(QsaError::InvalidScalar(
-                "score workspace; use a smaller prefill chunk",
-            ));
+        let n_blocks_est = total_tokens / cfg.compress_ratio();
+        // Device selection keeps one score tensor. Tiling is host-only, and
+        // only when the measured GEMM contract accepts this shape.
+        let score_plan = if device_select {
+            None
+        } else {
+            i32::try_from(n_blocks_est).ok().and_then(|n_blocks| {
+                ScoreTilePlan::try_new(
+                    batch,
+                    seq,
+                    cfg.query_heads,
+                    cfg.head_dim,
+                    n_blocks,
+                    hidden.dtype(),
+                )
+            })
+        };
+        if score_plan.is_none() {
+            ensure_score_workspace(batch, seq, cfg.query_heads, n_blocks_est)?;
         }
         ensure_floating("hidden", hidden.dtype())?;
         let cached_tokens = cache.token_count()?;
@@ -679,6 +695,7 @@ impl QsaIndexer {
         // those blocks are both recomputed and never adopted.
         let media_active = current_media().is_some();
         let mut next_pooled: Option<PooledBlocks> = None;
+        let mut tiled_tokens = None;
         let scores = if n_complete > 0 {
             let blocks = pooled_blocks_for(
                 cache,
@@ -690,9 +707,33 @@ impl QsaIndexer {
             )?;
             #[cfg(test)]
             crate::model::qwen4_exp::profiling::mark("qsa_k_pool", &[&blocks]);
-            let scores = block_scores(&queries, &blocks);
-            #[cfg(test)]
-            crate::model::qwen4_exp::profiling::mark("qsa_l_scores", &[&scores]);
+            // The plan was built from the cache length. If the staged block
+            // count differs, the GEMM contract no longer applies: require the
+            // monolithic budget and score the whole chunk.
+            let tiled = match score_plan.as_ref() {
+                Some(plan) if plan.matches_blocks(n_complete) => Some(select_tokens_tiled(
+                    cfg,
+                    batch,
+                    position_offset,
+                    n_complete,
+                    &queries,
+                    &blocks,
+                    plan,
+                )?),
+                Some(_) => {
+                    ensure_score_workspace(batch, seq, cfg.query_heads, n_complete as usize)?;
+                    None
+                }
+                None => None,
+            };
+            let scores = if tiled.is_none() {
+                let scores = block_scores(&queries, &blocks);
+                #[cfg(test)]
+                crate::model::qwen4_exp::profiling::mark("qsa_l_scores", &[&scores]);
+                Some(scores)
+            } else {
+                None
+            };
             // Only complete blocks are pooled; the next step extends them
             // instead of recomputing the whole history.
             if !media_active {
@@ -701,7 +742,8 @@ impl QsaIndexer {
                     n_blocks: n_complete,
                 });
             }
-            Some(scores)
+            tiled_tokens = tiled;
+            scores
         } else {
             None
         };
@@ -753,14 +795,20 @@ impl QsaIndexer {
             }
         }
 
-        let tokens = select_tokens(
-            cfg,
-            batch,
-            seq,
-            position_offset,
-            n_complete,
-            scores.as_ref(),
-        )?;
+        let tokens = if let Some(tokens) = tiled_tokens {
+            tokens
+        } else {
+            select_tokens(
+                cfg,
+                batch,
+                seq,
+                position_offset,
+                n_complete,
+                scores.as_ref(),
+            )?
+        };
+        #[cfg(test)]
+        record_host_selection(&tokens);
         let gather_indices = pack_gather_indices(cfg, batch, seq, &tokens)?;
         let mut owned = vec![&staged_keys, &gather_indices];
         if let Some(scores) = &scores {
@@ -1410,6 +1458,287 @@ fn rope_block_starts(
     apply_rotary_trig_split(blocks, rotary_dim, &tables, 1)
 }
 
+/// Largest query tile. One tile that covers every query is the monolithic GEMM,
+/// so that shape stays on the monolithic path.
+const QSA_TILE_MAX_QUERIES: i32 = 1024;
+/// Scratch budget for one tile: the score graph plus the f32 casts.
+const QSA_TILE_WORKSPACE_BUDGET: usize = 128 * 1024 * 1024;
+/// Monolithic score-workspace ceiling. Each issued tile is checked against it.
+const QSA_SCORE_WORKSPACE_LIMIT: usize = 256 * 1024 * 1024;
+/// GPU architecture whose tiled f32 GEMM matched the monolithic score bits.
+const QSA_TILED_SCORE_ARCH: &str = "applegpu_g14d";
+const QSA_TILED_MLX_VERSION: &str = "0.32.4";
+
+/// Query tiles for one score. `query_rows` sums to the chunk length.
+/// `workspace_bytes` is the largest tile's scratch estimate.
+/// `dispatch_identity` names the MLX 0.32.4 dtype and tile shape.
+struct ScoreTilePlan {
+    query_rows: Vec<i32>,
+    workspace_bytes: usize,
+    dispatch_identity: u64,
+    n_blocks: i32,
+}
+
+impl ScoreTilePlan {
+    fn matches_blocks(&self, n_complete: i32) -> bool {
+        self.n_blocks == n_complete
+    }
+
+    /// `None` keeps the monolithic scores. A plan exists only when every tile
+    /// is a GEMM shape that matched the monolithic score bits, the scratch
+    /// estimate fits the tile budget, and at least two tiles are required.
+    fn try_new(
+        batch: i32,
+        seq: i32,
+        heads: i32,
+        dim: i32,
+        n_blocks: i32,
+        dtype: MlxDtype,
+    ) -> Option<Self> {
+        if !tiled_scores_enabled()
+            || batch < 1
+            || seq < 2
+            || heads < 1
+            || dim < 1
+            || n_blocks < 1
+            || !tiled_score_contract(batch, dim, n_blocks, dtype)
+        {
+            return None;
+        }
+        let (max_rows, budget) = tile_limits();
+        let width = max_tile_rows(batch, seq.min(max_rows), heads, dim, n_blocks, budget)?;
+        let query_rows = split_query_tiles(seq, width, heads, |rows| {
+            tile_within_budget(batch, rows, heads, dim, n_blocks, budget)
+        })?;
+        let mut workspace_bytes = 0usize;
+        for &rows in &query_rows {
+            let bytes = estimate_tile_workspace(batch, rows, heads, dim, n_blocks)?;
+            workspace_bytes = workspace_bytes.max(bytes);
+        }
+        Some(Self {
+            dispatch_identity: score_dispatch_identity(
+                dtype,
+                batch,
+                heads,
+                dim,
+                n_blocks,
+                &query_rows,
+            ),
+            query_rows,
+            workspace_bytes,
+            n_blocks,
+        })
+    }
+}
+
+fn tiled_scores_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(value) = TILED_SCORES_OVERRIDE.with(std::cell::Cell::get) {
+        return value;
+    }
+    crate::fastpath::flash_next_qsa_tiled_scores_enabled()
+}
+
+fn tile_limits() -> (i32, usize) {
+    #[cfg(test)]
+    if let Some((rows, bytes)) = TILE_LIMITS_OVERRIDE.with(std::cell::Cell::get) {
+        return (rows.max(1), bytes.max(1));
+    }
+    (QSA_TILE_MAX_QUERIES, QSA_TILE_WORKSPACE_BUDGET)
+}
+
+/// Shapes measured against the monolithic f32 GEMM on MLX 0.32.4.
+/// Head width 128 matches only once there are at least 129 key blocks.
+/// A one-row GEMV is rejected later, when the tiles are split.
+fn tiled_score_contract(batch: i32, dim: i32, n_blocks: i32, dtype: MlxDtype) -> bool {
+    if !(1..=2).contains(&batch) {
+        return false;
+    }
+    if !matches!(
+        dtype,
+        MlxDtype::Float32 | MlxDtype::Float16 | MlxDtype::Bfloat16
+    ) {
+        return false;
+    }
+    let shape_ok = match dim {
+        4 | 8 | 16 | 32 | 64 => n_blocks >= 1,
+        128 => n_blocks >= 129,
+        _ => false,
+    };
+    shape_ok && tiled_score_runtime_matches()
+}
+
+fn tiled_score_runtime_matches() -> bool {
+    static ARCH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static VERSION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let arch_ok = if let Some(matches) = ARCH.get() {
+        *matches
+    } else if let Ok(arch) = gpu_device_architecture() {
+        *ARCH.get_or_init(|| arch == QSA_TILED_SCORE_ARCH)
+    } else {
+        false
+    };
+    let version_ok = if let Some(matches) = VERSION.get() {
+        *matches
+    } else if let Ok(version) = mlx_sys::runtime_version() {
+        *VERSION.get_or_init(|| version == QSA_TILED_MLX_VERSION)
+    } else {
+        false
+    };
+    arch_ok && version_ok
+}
+
+fn full_score_workspace_bytes(batch: i32, rows: i32, heads: i32, n_blocks: usize) -> Option<usize> {
+    (batch as usize)
+        .checked_mul(rows as usize)
+        .and_then(|n| n.checked_mul(heads as usize))
+        .and_then(|n| n.checked_mul(n_blocks))
+        .and_then(|n| n.checked_mul(std::mem::size_of::<f32>()))
+}
+
+fn ensure_score_workspace(batch: i32, rows: i32, heads: i32, n_blocks: usize) -> Result<()> {
+    let bytes = full_score_workspace_bytes(batch, rows, heads, n_blocks);
+    if bytes.is_none_or(|n| n > QSA_SCORE_WORKSPACE_LIMIT) {
+        return Err(QsaError::InvalidScalar(
+            "score workspace; use a smaller prefill chunk",
+        ));
+    }
+    Ok(())
+}
+
+/// `B * Qt * N * 4 * (2H + 1)` for the dots, ReLU, and head reduction, plus
+/// the f32 query cast, its contiguous copy, and the key cast and transpose.
+fn estimate_tile_workspace(
+    batch: i32,
+    rows: i32,
+    heads: i32,
+    dim: i32,
+    n_blocks: i32,
+) -> Option<usize> {
+    let b = i64::from(batch);
+    let q = i64::from(rows);
+    let h = i64::from(heads);
+    let d = i64::from(dim);
+    let n = i64::from(n_blocks);
+    let scores = b
+        .checked_mul(q)?
+        .checked_mul(n)?
+        .checked_mul(4)?
+        .checked_mul(2 * h + 1)?;
+    let q_cast = b
+        .checked_mul(q)?
+        .checked_mul(h)?
+        .checked_mul(d)?
+        .checked_mul(4)?;
+    let k_cast = 2i64
+        .checked_mul(b)?
+        .checked_mul(n)?
+        .checked_mul(d)?
+        .checked_mul(4)?;
+    let total = scores
+        .checked_add(q_cast)?
+        .checked_add(q_cast)?
+        .checked_add(k_cast)?;
+    usize::try_from(total).ok()
+}
+
+fn tile_within_budget(
+    batch: i32,
+    rows: i32,
+    heads: i32,
+    dim: i32,
+    n_blocks: i32,
+    budget: usize,
+) -> bool {
+    estimate_tile_workspace(batch, rows, heads, dim, n_blocks).is_some_and(|bytes| bytes <= budget)
+        && full_score_workspace_bytes(batch, rows, heads, n_blocks as usize)
+            .is_some_and(|bytes| bytes <= QSA_SCORE_WORKSPACE_LIMIT)
+}
+
+fn max_tile_rows(
+    batch: i32,
+    hi_cap: i32,
+    heads: i32,
+    dim: i32,
+    n_blocks: i32,
+    budget: usize,
+) -> Option<i32> {
+    if hi_cap < 1 {
+        return None;
+    }
+    let mut lo = 1i32;
+    let mut hi = hi_cap;
+    let mut best = None;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        if tile_within_budget(batch, mid, heads, dim, n_blocks, budget) {
+            best = Some(mid);
+            lo = mid + 1;
+        } else if mid == 1 {
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    best
+}
+
+/// Split `seq` into widths of at most `width`. A one-row tail with one head
+/// is a GEMV, which did not match the monolithic GEMM, so it folds into the
+/// previous tile when that tile still fits.
+fn split_query_tiles(
+    seq: i32,
+    width: i32,
+    heads: i32,
+    fits: impl Fn(i32) -> bool,
+) -> Option<Vec<i32>> {
+    if width < 1 || seq < 2 {
+        return None;
+    }
+    let mut rows = Vec::new();
+    let mut left = seq;
+    while left > 0 {
+        let take = width.min(left);
+        rows.push(take);
+        left -= take;
+    }
+    if heads == 1 && rows.last().copied() == Some(1) {
+        rows.pop();
+        let last = rows.last_mut()?;
+        *last = last.checked_add(1)?;
+    }
+    if rows.len() < 2 || rows.iter().any(|&row| row.saturating_mul(heads) < 2) {
+        return None;
+    }
+    if rows.iter().copied().all(fits) {
+        Some(rows)
+    } else {
+        None
+    }
+}
+
+fn score_dispatch_identity(
+    dtype: MlxDtype,
+    batch: i32,
+    heads: i32,
+    dim: i32,
+    n_blocks: i32,
+    rows: &[i32],
+) -> u64 {
+    let mix = |id: u64, value: u64| id.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(value);
+    let mut id = 0x0032_0004u64;
+    id = mix(id, u64::try_from(dtype_key(dtype)).unwrap_or(0));
+    id = mix(id, u64::try_from(batch).unwrap_or(0));
+    id = mix(id, u64::try_from(heads).unwrap_or(0));
+    id = mix(id, u64::try_from(dim).unwrap_or(0));
+    id = mix(id, u64::try_from(n_blocks).unwrap_or(0));
+    id = mix(id, rows.len() as u64);
+    for &row in rows {
+        id = mix(id, u64::try_from(row).unwrap_or(0));
+    }
+    id
+}
+
 fn block_scores(queries: &MlxArray, blocks: &MlxArray) -> MlxArray {
     let q_shape = queries.shape();
     let b_shape = blocks.shape();
@@ -1434,19 +1763,38 @@ fn select_tokens(
     n_complete: i32,
     scores: Option<&MlxArray>,
 ) -> Result<Vec<Vec<Vec<i32>>>> {
-    let batch_u = batch as usize;
-    let seq_u = seq as usize;
-    let n_blocks = n_complete as usize;
     let score_data = if let Some(scores) = scores {
-        mlx_sys::try_eval(&[scores]).map_err(|detail| QsaError::Evaluation {
-            stage: "block-score materialization",
-            context: format!("scores={:?}", scores.shape()),
-            detail,
-        })?;
+        materialize_scores(scores, "block-score materialization")?;
         scores.data_f32().to_vec()
     } else {
         Vec::new()
     };
+    tokens_from_score_data(cfg, batch, seq, 0, position_offset, n_complete, &score_data)
+}
+
+fn materialize_scores(scores: &MlxArray, stage: &'static str) -> Result<()> {
+    mlx_sys::try_eval(&[scores]).map_err(|detail| QsaError::Evaluation {
+        stage,
+        context: format!("scores={:?}", scores.shape()),
+        detail,
+    })
+}
+
+/// Score descending, lower block index first. `query_base` is the chunk-local
+/// index of `score_data`'s first query, so a tile reports the same query index
+/// the monolithic path would.
+fn tokens_from_score_data(
+    cfg: QsaConfig,
+    batch: i32,
+    rows: i32,
+    query_base: usize,
+    position_offset: usize,
+    n_complete: i32,
+    score_data: &[f32],
+) -> Result<Vec<Vec<Vec<i32>>>> {
+    let batch_u = batch as usize;
+    let rows_u = rows as usize;
+    let n_blocks = n_complete as usize;
     let mut tokens = Vec::new();
     tokens
         .try_reserve_exact(batch_u)
@@ -1454,21 +1802,25 @@ fn select_tokens(
     for b in 0..batch_u {
         let mut queries = Vec::new();
         queries
-            .try_reserve_exact(seq_u)
+            .try_reserve_exact(rows_u)
             .map_err(|_| QsaError::InvalidScalar("token index buffer"))?;
-        for q in 0..seq_u {
-            let abs_pos = position_offset + q;
+        for local in 0..rows_u {
+            let query = query_base + local;
+            let abs_pos = position_offset + query;
             let visible = abs_pos + 1;
             let complete = visible / cfg.compress_ratio();
             let mut chosen = Vec::new();
             if complete > 0 {
-                let row_start = (b * seq_u + q) * n_blocks;
-                let order = select_blocks(
-                    &score_data[row_start..row_start + complete],
-                    cfg.block_topk(),
-                    b,
-                    q,
-                )?;
+                if complete > n_blocks {
+                    return Err(QsaError::InvalidScalar("complete block count"));
+                }
+                let row_start = (b * rows_u + local) * n_blocks;
+                let row_end = row_start + complete;
+                if row_end > score_data.len() {
+                    return Err(QsaError::InvalidScalar("block score length"));
+                }
+                let order =
+                    select_blocks(&score_data[row_start..row_end], cfg.block_topk(), b, query)?;
                 for block in order {
                     let start = (block * cfg.compress_ratio()) as i32;
                     for token in 0..cfg.compress_ratio() {
@@ -1483,6 +1835,83 @@ fn select_tokens(
             queries.push(chosen);
         }
         tokens.push(queries);
+    }
+    Ok(tokens)
+}
+
+/// Score and select one query tile at a time. The score array is evaluated
+/// and dropped before the next tile; only indices are kept.
+fn select_tokens_tiled(
+    cfg: QsaConfig,
+    batch: i32,
+    position_offset: usize,
+    n_complete: i32,
+    queries: &MlxArray,
+    blocks: &MlxArray,
+    plan: &ScoreTilePlan,
+) -> Result<Vec<Vec<Vec<i32>>>> {
+    let q_shape = queries.shape();
+    if q_shape.len() != 4 {
+        return Err(QsaError::InvalidScalar("tiled query rank"));
+    }
+    let (heads, dim) = (q_shape[2], q_shape[3]);
+    let batch_u = batch as usize;
+    let mut tokens = Vec::new();
+    tokens
+        .try_reserve_exact(batch_u)
+        .map_err(|_| QsaError::InvalidScalar("token index buffer"))?;
+    for _ in 0..batch_u {
+        tokens.push(Vec::new());
+    }
+    let mut cursor = 0i32;
+    for &rows in &plan.query_rows {
+        ensure_score_workspace(batch, rows, heads, n_complete as usize)?;
+        let tile = slice(
+            queries,
+            &[0, cursor, 0, 0],
+            &[batch, cursor + rows, heads, dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let scores = block_scores(&tile, blocks);
+        let summed_bytes = scores
+            .shape()
+            .iter()
+            .try_fold(1usize, |acc, &axis| {
+                acc.checked_mul(usize::try_from(axis).unwrap_or(usize::MAX))
+            })
+            .and_then(|elements| elements.checked_mul(std::mem::size_of::<f32>()));
+        if summed_bytes.is_none_or(|bytes| bytes > QSA_SCORE_WORKSPACE_LIMIT) {
+            return Err(QsaError::InvalidScalar(
+                "score workspace; use a smaller prefill chunk",
+            ));
+        }
+        mlx_sys::try_eval(&[&scores]).map_err(|detail| QsaError::Evaluation {
+            stage: "tiled block-score materialization",
+            context: format!(
+                "rows={rows} workspace_bytes={} dispatch={:#x} scores={:?}",
+                plan.workspace_bytes,
+                plan.dispatch_identity,
+                scores.shape()
+            ),
+            detail,
+        })?;
+        let data = scores.data_f32().to_vec();
+        drop(scores);
+        drop(tile);
+        let chosen = tokens_from_score_data(
+            cfg,
+            batch,
+            rows,
+            cursor as usize,
+            position_offset,
+            n_complete,
+            &data,
+        )?;
+        for (batch_index, row) in chosen.into_iter().enumerate() {
+            tokens[batch_index].extend(row);
+        }
+        cursor += rows;
     }
     Ok(tokens)
 }
@@ -1504,11 +1933,20 @@ fn device_select_multi_enabled() -> bool {
 }
 
 #[cfg(test)]
+type HostSelectionLog = Vec<Vec<Vec<Vec<i32>>>>;
+
+#[cfg(test)]
 thread_local! {
     static DEVICE_SELECT_OVERRIDE: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
     static DEVICE_SELECT_MULTI_OVERRIDE: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
+    static TILED_SCORES_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+    static TILE_LIMITS_OVERRIDE: std::cell::Cell<Option<(i32, usize)>> =
+        const { std::cell::Cell::new(None) };
+    static HOST_SELECTION_CAPTURE: std::cell::RefCell<Option<HostSelectionLog>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Run `action` with single-query selection forced on or off on this thread.
@@ -1536,6 +1974,64 @@ pub(crate) fn with_device_select_multi<T>(enabled: bool, action: impl FnOnce() -
     }
     let _restore = Restore(DEVICE_SELECT_MULTI_OVERRIDE.with(|value| value.replace(Some(enabled))));
     action()
+}
+
+/// Run `action` with tiled QSA scores forced on or off on this thread.
+#[cfg(test)]
+pub(crate) fn with_tiled_scores<T>(enabled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TILED_SCORES_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(TILED_SCORES_OVERRIDE.with(|value| value.replace(Some(enabled))));
+    action()
+}
+
+/// Run `action` with a smaller query-tile cap and scratch budget.
+#[cfg(test)]
+pub(crate) fn with_tile_limits<T>(
+    max_rows: i32,
+    workspace_bytes: usize,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<(i32, usize)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TILE_LIMITS_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _restore = Restore(
+        TILE_LIMITS_OVERRIDE.with(|value| value.replace(Some((max_rows, workspace_bytes)))),
+    );
+    action()
+}
+
+#[cfg(test)]
+fn record_host_selection(tokens: &[Vec<Vec<i32>>]) {
+    HOST_SELECTION_CAPTURE.with(|slot| {
+        if let Some(captured) = slot.borrow_mut().as_mut() {
+            captured.push(tokens.to_vec());
+        }
+    });
+}
+
+/// Record every host QSA selection made while `action` runs.
+#[cfg(test)]
+pub(crate) fn capture_host_selections<T>(action: impl FnOnce() -> T) -> (T, HostSelectionLog) {
+    struct Restore(Option<HostSelectionLog>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            HOST_SELECTION_CAPTURE.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let previous = HOST_SELECTION_CAPTURE.with(|slot| slot.borrow_mut().take());
+    let _restore = Restore(previous);
+    HOST_SELECTION_CAPTURE.with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+    let value = action();
+    let captured = HOST_SELECTION_CAPTURE.with(|slot| slot.borrow_mut().take().unwrap_or_default());
+    (value, captured)
 }
 
 /// Single-query block selection on the device, with no host read-back.
@@ -3849,5 +4345,759 @@ mod tests {
             rope_bits(&slice_last_dim(&miss.sin, 0, half, None)),
             "sin_h must slice sin"
         );
+    }
+
+    fn cast_tensor(data: &[f32], shape: &[i32], dtype: MlxDtype) -> MlxArray {
+        let array = array_f32(data, shape);
+        if dtype == MlxDtype::Float32 {
+            array
+        } else {
+            astype(&array, dtype, None)
+        }
+    }
+
+    fn score_bits(queries: &MlxArray, blocks: &MlxArray) -> Vec<u32> {
+        let scores = block_scores(queries, blocks);
+        eval(&[&scores]);
+        scores
+            .data_f32()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    /// Host-only assembly. Production never concatenates score tiles.
+    fn tiled_score_bits(queries: &MlxArray, blocks: &MlxArray, rows: &[i32]) -> Vec<u32> {
+        let shape = queries.shape();
+        let (batch, seq, heads, dim) = (shape[0], shape[1], shape[2], shape[3]);
+        let n_blocks = blocks.shape()[1] as usize;
+        let mut bits = vec![0u32; batch as usize * seq as usize * n_blocks];
+        let mut cursor = 0i32;
+        for &width in rows {
+            let tile = slice(
+                queries,
+                &[0, cursor, 0, 0],
+                &[batch, cursor + width, heads, dim],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let scores = block_scores(&tile, blocks);
+            eval(&[&scores]);
+            let data = scores.data_f32();
+            for b in 0..batch as usize {
+                for local in 0..width as usize {
+                    let src = (b * width as usize + local) * n_blocks;
+                    let dst = (b * seq as usize + cursor as usize + local) * n_blocks;
+                    for col in 0..n_blocks {
+                        bits[dst + col] = data[src + col].to_bits();
+                    }
+                }
+            }
+            cursor += width;
+        }
+        assert_eq!(cursor, seq);
+        bits
+    }
+
+    fn assert_same_bits(actual: &[u32], expected: &[u32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+            assert_eq!(
+                actual, expected,
+                "score bit mismatch at {index}: {:08x} vs {:08x}",
+                actual, expected
+            );
+        }
+    }
+
+    fn planned(
+        batch: i32,
+        seq: i32,
+        heads: i32,
+        dim: i32,
+        n_blocks: i32,
+        dtype: MlxDtype,
+    ) -> Option<ScoreTilePlan> {
+        with_tiled_scores(true, || {
+            ScoreTilePlan::try_new(batch, seq, heads, dim, n_blocks, dtype)
+        })
+    }
+
+    fn wave_pair(
+        batch: i32,
+        seq: i32,
+        heads: i32,
+        dim: i32,
+        n_blocks: i32,
+        dtype: MlxDtype,
+    ) -> (MlxArray, MlxArray) {
+        let queries = wave((batch * seq * heads * dim) as usize, 0.17, 0.55, 0.04);
+        let mut blocks = wave((batch * n_blocks * dim) as usize, 0.11, 0.35, -0.03);
+        if n_blocks >= 2 {
+            let dim_u = dim as usize;
+            let n_u = n_blocks as usize;
+            for b in 0..batch as usize {
+                let base = b * n_u * dim_u;
+                blocks.copy_within(base..base + dim_u, base + dim_u);
+                blocks[base + dim_u] += 1.0e-4;
+            }
+        }
+        (
+            cast_tensor(&queries, &[batch, seq, heads, dim], dtype),
+            cast_tensor(&blocks, &[batch, n_blocks, dim], dtype),
+        )
+    }
+
+    struct Geom {
+        heads: usize,
+        dim: usize,
+        ratio: usize,
+        budget: usize,
+        hidden: usize,
+    }
+
+    fn geom_indexer(spec: &Geom) -> QsaIndexer {
+        geom_indexer_dtype(spec, MlxDtype::Float32)
+    }
+
+    fn geom_indexer_dtype(spec: &Geom, dtype: MlxDtype) -> QsaIndexer {
+        let config = QsaConfig::new(
+            spec.heads,
+            1,
+            spec.dim,
+            2,
+            spec.ratio,
+            spec.budget,
+            spec.hidden,
+            EPS,
+            BASE,
+        )
+        .unwrap();
+        let out = (spec.heads + 1) * spec.dim;
+        QsaIndexer::new(
+            config,
+            QsaIndexerWeights {
+                qk_proj: QuantizedWeight::new(
+                    cast_tensor(
+                        &wave(out * spec.hidden, 0.37, 0.45, 0.08),
+                        &[config.proj_out(), spec.hidden as i32],
+                        dtype,
+                    ),
+                    None,
+                    None,
+                ),
+                q_norm: cast_tensor(&wave(spec.dim, 0.21, 0.3, 0.9), &[spec.dim as i32], dtype),
+                k_norm: cast_tensor(&wave(spec.dim, 0.17, 0.25, 1.05), &[spec.dim as i32], dtype),
+            },
+        )
+        .unwrap()
+    }
+
+    fn hidden_tensor(spec: &Geom, batch: usize, tokens: usize, salt: f32) -> MlxArray {
+        let mut data = wave(batch * tokens * spec.hidden, 0.41 + salt, 0.9, 0.12);
+        for (index, value) in data.iter_mut().enumerate() {
+            *value *= 0.6 + 0.15 * (index % spec.hidden) as f32;
+        }
+        array_f32(&data, &[batch as i32, tokens as i32, spec.hidden as i32])
+    }
+
+    fn host_selection(
+        indexer: &QsaIndexer,
+        hidden: &MlxArray,
+        cache: &QsaIndexKeyCache,
+        offset: usize,
+        tiled: bool,
+        limits: Option<(i32, usize)>,
+    ) -> Vec<Vec<Vec<i32>>> {
+        let run = || {
+            indexer
+                .select_with_mode(hidden, cache, offset, project, false)
+                .unwrap()
+                .tokens
+                .clone()
+        };
+        match limits {
+            Some((rows, budget)) => {
+                with_tile_limits(rows, budget, || with_tiled_scores(tiled, run))
+            }
+            None => with_tiled_scores(tiled, run),
+        }
+    }
+
+    #[test]
+    fn qsa_tiled_score_bits_match_monolithic() {
+        let arch = gpu_device_architecture().unwrap();
+        let version = mlx_sys::runtime_version().unwrap();
+        assert_eq!(arch, QSA_TILED_SCORE_ARCH);
+        assert_eq!(version, QSA_TILED_MLX_VERSION);
+
+        let cases = [
+            (1, 1025, 4, 128, 129, MlxDtype::Float32, None),
+            (
+                2,
+                5,
+                4,
+                128,
+                129,
+                MlxDtype::Float32,
+                Some((2, QSA_TILE_WORKSPACE_BUDGET)),
+            ),
+            (
+                1,
+                5,
+                4,
+                128,
+                129,
+                MlxDtype::Float16,
+                Some((2, QSA_TILE_WORKSPACE_BUDGET)),
+            ),
+            (
+                1,
+                5,
+                4,
+                128,
+                129,
+                MlxDtype::Bfloat16,
+                Some((2, QSA_TILE_WORKSPACE_BUDGET)),
+            ),
+            (
+                1,
+                5,
+                1,
+                64,
+                7,
+                MlxDtype::Float32,
+                Some((2, QSA_TILE_WORKSPACE_BUDGET)),
+            ),
+            (
+                1,
+                4,
+                2,
+                32,
+                1,
+                MlxDtype::Float32,
+                Some((1, QSA_TILE_WORKSPACE_BUDGET)),
+            ),
+            (
+                1,
+                4,
+                2,
+                4,
+                3,
+                MlxDtype::Bfloat16,
+                Some((1, QSA_TILE_WORKSPACE_BUDGET)),
+            ),
+        ];
+        for (batch, seq, heads, dim, n_blocks, dtype, limits) in cases {
+            let (queries, blocks) = wave_pair(batch, seq, heads, dim, n_blocks, dtype);
+            let plan = match limits {
+                Some((rows, budget)) => with_tile_limits(rows, budget, || {
+                    planned(batch, seq, heads, dim, n_blocks, dtype)
+                }),
+                None => planned(batch, seq, heads, dim, n_blocks, dtype),
+            }
+            .unwrap_or_else(|| {
+                panic!(
+                    "proven shape {batch}x{seq} h{heads} d{dim} n{n_blocks} {dtype:?} did not tile"
+                )
+            });
+            assert!(
+                plan.query_rows.len() > 1,
+                "proven shape must issue more than one tile: {:?}",
+                plan.query_rows
+            );
+            assert_eq!(plan.query_rows.iter().sum::<i32>(), seq);
+            let budget = limits
+                .map(|(_, budget)| budget)
+                .unwrap_or(QSA_TILE_WORKSPACE_BUDGET);
+            assert!(plan.workspace_bytes <= budget);
+            assert!(plan.dispatch_identity != 0);
+            let again = match limits {
+                Some((rows, tile_budget)) => with_tile_limits(rows, tile_budget, || {
+                    planned(batch, seq, heads, dim, n_blocks, dtype)
+                }),
+                None => planned(batch, seq, heads, dim, n_blocks, dtype),
+            }
+            .unwrap();
+            assert_eq!(again.dispatch_identity, plan.dispatch_identity);
+            let monolithic = score_bits(&queries, &blocks);
+            let tiled = tiled_score_bits(&queries, &blocks, &plan.query_rows);
+            assert_same_bits(&tiled, &monolithic);
+        }
+
+        assert!(
+            with_tiled_scores(false, || {
+                ScoreTilePlan::try_new(1, 1025, 4, 128, 129, MlxDtype::Float32)
+            })
+            .is_none()
+        );
+        assert!(planned(1, 4, 4, 128, 128, MlxDtype::Float32).is_none());
+        assert!(
+            with_tile_limits(2, QSA_TILE_WORKSPACE_BUDGET, || {
+                planned(1, 8, 4, 128, 128, MlxDtype::Float32)
+            })
+            .is_none(),
+            "K=128 with fewer than 129 blocks stays monolithic"
+        );
+        assert!(planned(3, 6, 2, 64, 4, MlxDtype::Float32).is_none());
+        assert!(planned(1, 6, 2, 96, 4, MlxDtype::Float32).is_none());
+        assert!(
+            with_tile_limits(1, QSA_TILE_WORKSPACE_BUDGET, || {
+                planned(1, 4, 1, 64, 4, MlxDtype::Float32)
+            })
+            .is_none(),
+            "a one-row GEMV is not a proven tile"
+        );
+        let wide = planned(1, 8, 4, 64, 4, MlxDtype::Float32);
+        assert!(
+            wide.is_none(),
+            "one tile of the whole chunk stays on the monolithic GEMM"
+        );
+    }
+
+    #[test]
+    fn qsa_tiled_indices_match_including_ties() {
+        let spec = Geom {
+            heads: 4,
+            dim: 64,
+            ratio: 4,
+            budget: 8,
+            hidden: 8,
+        };
+        let indexer = geom_indexer(&spec);
+        let cache = QsaIndexKeyCache::empty();
+        let seq = 12;
+        let hidden = hidden_tensor(&spec, 2, seq, 0.0);
+        let limits = Some((2, QSA_TILE_WORKSPACE_BUDGET));
+        let off = host_selection(&indexer, &hidden, &cache, 0, false, limits);
+        let on = host_selection(&indexer, &hidden, &cache, 0, true, limits);
+        assert_eq!(on, off);
+        assert_eq!(on.len(), 2);
+        assert_eq!(on[0].len(), seq);
+        assert_eq!(on[1].len(), seq);
+        let kept = spec.budget / spec.ratio;
+        let mut saw_boundary = false;
+        for queries in &on {
+            for (query, tokens) in queries.iter().enumerate() {
+                let complete = (query + 1) / spec.ratio;
+                if complete > kept {
+                    saw_boundary = true;
+                    let blocks = tokens.len() / spec.ratio;
+                    assert!(blocks <= kept + 1, "kept more than top-k plus the tail");
+                }
+            }
+        }
+        assert!(saw_boundary, "the chunk must cross the top-k boundary");
+
+        let tied = array_f32(
+            &vec![0.25f32; 2 * seq * spec.hidden],
+            &[2, seq as i32, spec.hidden as i32],
+        );
+        let tied_off = host_selection(&indexer, &tied, &cache, 0, false, limits);
+        let tied_on = host_selection(&indexer, &tied, &cache, 0, true, limits);
+        assert_eq!(tied_on, tied_off);
+        let (tie_batch, tie_seq, tie_heads, tie_dim, tie_blocks) = (1, 4, 4, 64, 4);
+        let mut tie_keys = wave((tie_blocks * tie_dim) as usize, 0.11, 0.35, -0.03);
+        let tie_dim_u = tie_dim as usize;
+        for block in 1..tie_blocks as usize {
+            tie_keys.copy_within(0..tie_dim_u, block * tie_dim_u);
+        }
+        let tie_queries = cast_tensor(
+            &wave((tie_seq * tie_heads * tie_dim) as usize, 0.17, 0.55, 0.04),
+            &[tie_batch, tie_seq, tie_heads, tie_dim],
+            MlxDtype::Float32,
+        );
+        let tie_block_array = cast_tensor(
+            &tie_keys,
+            &[tie_batch, tie_blocks, tie_dim],
+            MlxDtype::Float32,
+        );
+        let tie_rows = [2, 2];
+        let tie_monolithic = score_bits(&tie_queries, &tie_block_array);
+        let tie_tiled = tiled_score_bits(&tie_queries, &tie_block_array, &tie_rows);
+        assert_same_bits(&tie_tiled, &tie_monolithic);
+        let tie_values: Vec<f32> = tie_monolithic.iter().copied().map(f32::from_bits).collect();
+        for query in 0..tie_seq as usize {
+            let row = query * tie_blocks as usize;
+            for block in 1..tie_blocks as usize {
+                assert_eq!(
+                    tie_values[row].to_bits(),
+                    tie_values[row + block].to_bits(),
+                    "identical blocks must tie"
+                );
+            }
+            let order = select_blocks(
+                &tie_values[row..row + tie_blocks as usize],
+                tie_blocks as usize,
+                0,
+                query,
+            )
+            .unwrap();
+            assert_eq!(
+                order,
+                (0..tie_blocks as usize).collect::<Vec<_>>(),
+                "a tie must keep the lower block first"
+            );
+        }
+        let tie_cfg = QsaConfig::new(4, 1, 64, 2, 4, 8, 8, EPS, BASE).unwrap();
+        let tie_tokens =
+            tokens_from_score_data(tie_cfg, tie_batch, tie_seq, 0, 0, tie_blocks, &tie_values)
+                .unwrap();
+        let tiled_values: Vec<f32> = tie_tiled.iter().copied().map(f32::from_bits).collect();
+        let tiled_tokens =
+            tokens_from_score_data(tie_cfg, tie_batch, tie_seq, 0, 0, tie_blocks, &tiled_values)
+                .unwrap();
+        assert_eq!(tiled_tokens, tie_tokens);
+
+        let bf = Geom {
+            heads: 4,
+            dim: 128,
+            ratio: 4,
+            budget: 8,
+            hidden: 8,
+        };
+        let past_blocks = 129;
+        let past_tokens = past_blocks * bf.ratio;
+        let indexer = geom_indexer_dtype(&bf, MlxDtype::Bfloat16);
+        let past = cast_tensor(
+            &wave(past_tokens * bf.dim, 0.19, 0.2, 0.1),
+            &[1, past_tokens as i32, bf.dim as i32],
+            MlxDtype::Bfloat16,
+        );
+        let cache = QsaIndexKeyCache::from_serialized(Some(past));
+        let hidden = cast_tensor(
+            &wave(5 * bf.hidden, 0.23, 0.4, 0.2),
+            &[1, 5, bf.hidden as i32],
+            MlxDtype::Bfloat16,
+        );
+        let off = host_selection(&indexer, &hidden, &cache, past_tokens, false, limits);
+        let on = host_selection(&indexer, &hidden, &cache, past_tokens, true, limits);
+        assert_eq!(on, off);
+
+        let short = Geom {
+            heads: 4,
+            dim: 64,
+            ratio: 4,
+            budget: 4,
+            hidden: 8,
+        };
+        let indexer = geom_indexer(&short);
+        let hidden = hidden_tensor(&short, 1, 4, 0.02);
+        let cache = QsaIndexKeyCache::empty();
+        let host = with_tile_limits(2, QSA_TILE_WORKSPACE_BUDGET, || {
+            with_tiled_scores(true, || {
+                indexer
+                    .select_with_mode(&hidden, &cache, 0, project, false)
+                    .unwrap()
+            })
+        });
+        let device = with_device_select_multi(true, || indexer.select(&hidden, &cache, 0).unwrap());
+        assert!(device.device_tokens().is_some());
+        for query in 0..4 {
+            assert_eq!(
+                host.tokens_for_query(0, query),
+                device.tokens_for_query(0, query),
+                "device oracle query {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn qsa_tiled_preserves_signed_zero_order() {
+        let (batch, seq, heads, dim, n_blocks) = (1, 2, 2, 4, 2);
+        let queries = cast_tensor(
+            &vec![0.0f32; (batch * seq * heads * dim) as usize],
+            &[batch, seq, heads, dim],
+            MlxDtype::Float32,
+        );
+        let mut keys = vec![0.0f32; (n_blocks * dim) as usize];
+        for value in keys.iter_mut().skip(dim as usize) {
+            *value = -0.0;
+        }
+        let blocks = cast_tensor(&keys, &[batch, n_blocks, dim], MlxDtype::Float32);
+        let plan = with_tile_limits(1, QSA_TILE_WORKSPACE_BUDGET, || {
+            planned(batch, seq, heads, dim, n_blocks, MlxDtype::Float32)
+        })
+        .unwrap();
+        assert_eq!(plan.query_rows, vec![1, 1]);
+        let monolithic = score_bits(&queries, &blocks);
+        let tiled = tiled_score_bits(&queries, &blocks, &plan.query_rows);
+        assert_same_bits(&tiled, &monolithic);
+        let scores: Vec<f32> = monolithic
+            .chunks(n_blocks as usize)
+            .flat_map(|row| {
+                assert_eq!(row.len(), 2);
+                assert_eq!(
+                    f32::from_bits(row[0]).partial_cmp(&f32::from_bits(row[1])),
+                    Some(std::cmp::Ordering::Equal),
+                    "signed zeros must tie"
+                );
+                row.iter().copied().map(f32::from_bits)
+            })
+            .collect();
+        let cfg = QsaConfig::new(heads as usize, 1, dim as usize, 2, 2, 2, 4, EPS, BASE).unwrap();
+        let tokens = tokens_from_score_data(cfg, batch, seq, 0, 0, n_blocks, &scores).unwrap();
+        for (query, chosen) in tokens[0].iter().enumerate() {
+            assert_eq!(
+                chosen.first().copied(),
+                Some(0),
+                "query {query} must break the ±0 tie toward block 0"
+            );
+        }
+        assert_eq!(select_blocks(&[0.0, -0.0], 2, 0, 0).unwrap(), vec![0, 1]);
+        assert_eq!(select_blocks(&[-0.0, 0.0], 2, 0, 0).unwrap(), vec![0, 1]);
+    }
+
+    #[test]
+    fn qsa_tiled_masks_future_nonfinite() {
+        let (batch, seq, heads, dim, n_blocks) = (1, 4, 4, 128, 129);
+        let queries = cast_tensor(
+            &wave((seq * heads * dim) as usize, 0.17, 0.55, 0.04),
+            &[batch, seq, heads, dim],
+            MlxDtype::Float32,
+        );
+        let clean_keys = wave((n_blocks * dim) as usize, 0.11, 0.35, -0.03);
+        let mut poisoned = clean_keys.clone();
+        let dim_u = dim as usize;
+        for value in &mut poisoned[(n_blocks as usize - 1) * dim_u..] {
+            *value = f32::NAN;
+        }
+        let clean = cast_tensor(&clean_keys, &[batch, n_blocks, dim], MlxDtype::Float32);
+        let blocks = cast_tensor(&poisoned, &[batch, n_blocks, dim], MlxDtype::Float32);
+        let rows = [2, 2];
+        let monolithic = score_bits(&queries, &clean);
+        let poisoned_full = score_bits(&queries, &blocks);
+        let poisoned_tiled = tiled_score_bits(&queries, &blocks, &rows);
+        let visible = (n_blocks - 1) as usize;
+        for query in 0..seq as usize {
+            let start = query * n_blocks as usize;
+            assert_same_bits(
+                &poisoned_tiled[start..start + visible],
+                &poisoned_full[start..start + visible],
+            );
+            assert_same_bits(
+                &poisoned_full[start..start + visible],
+                &monolithic[start..start + visible],
+            );
+            for bits in &poisoned_full[start..start + visible] {
+                assert!(f32::from_bits(*bits).is_finite(), "visible score poisoned");
+            }
+            assert!(!f32::from_bits(poisoned_full[start + visible]).is_finite());
+            assert!(!f32::from_bits(poisoned_tiled[start + visible]).is_finite());
+        }
+        let cfg = QsaConfig::new(4, 1, 128, 2, 4, 16, 8, EPS, BASE).unwrap();
+        let offset = 512usize;
+        let full: Vec<f32> = poisoned_full.iter().copied().map(f32::from_bits).collect();
+        let tiled: Vec<f32> = poisoned_tiled.iter().copied().map(f32::from_bits).collect();
+        for query in 0..3 {
+            let complete = (offset + query + 1) / 4;
+            assert!(complete < n_blocks as usize);
+            let row = query * n_blocks as usize;
+            let host =
+                select_blocks(&full[row..row + complete], cfg.block_topk(), 0, query).unwrap();
+            let tile =
+                select_blocks(&tiled[row..row + complete], cfg.block_topk(), 0, query).unwrap();
+            assert_eq!(tile, host, "future nonfinite changed query {query}");
+        }
+        let last = 3 * n_blocks as usize;
+        let seen = (offset + 4) / 4;
+        assert_eq!(seen, n_blocks as usize);
+        assert!(matches!(
+            select_blocks(&full[last..last + seen], cfg.block_topk(), 0, 3),
+            Err(QsaError::NonFiniteScore { query: 3, .. })
+        ));
+        assert!(matches!(
+            select_blocks(&tiled[last..last + seen], cfg.block_topk(), 0, 3),
+            Err(QsaError::NonFiniteScore { query: 3, .. })
+        ));
+
+        let spec = Geom {
+            heads: 4,
+            dim: 64,
+            ratio: 4,
+            budget: 16,
+            hidden: 8,
+        };
+        let indexer = geom_indexer(&spec);
+        let cache = QsaIndexKeyCache::empty();
+        let limits = Some((2, QSA_TILE_WORKSPACE_BUDGET));
+        let finite = hidden_tensor(&spec, 1, 5, 0.0);
+        let off = host_selection(&indexer, &finite, &cache, 0, false, limits);
+        let on = host_selection(&indexer, &finite, &cache, 0, true, limits);
+        assert_eq!(on, off);
+        let mut data = wave(6 * spec.hidden, 0.41, 0.9, 0.12);
+        for value in &mut data[5 * spec.hidden..] {
+            *value = f32::NAN;
+        }
+        let hidden = array_f32(&data, &[1, 6, spec.hidden as i32]);
+        for tiled in [false, true] {
+            let error = with_tile_limits(2, QSA_TILE_WORKSPACE_BUDGET, || {
+                with_tiled_scores(tiled, || {
+                    indexer.select_with_mode(&hidden, &cache, 0, project, false)
+                })
+            });
+            match error {
+                Err(QsaError::NonFiniteScore { query: 5, .. }) => {}
+                Err(error) => panic!("tiled={tiled} reported {error}"),
+                Ok(_) => panic!("tiled={tiled} accepted a nonfinite query"),
+            }
+        }
+    }
+
+    #[test]
+    fn qsa_tiled_partial_tail_matches() {
+        let spec = Geom {
+            heads: 4,
+            dim: 64,
+            ratio: 4,
+            budget: 16,
+            hidden: 8,
+        };
+        let indexer = geom_indexer(&spec);
+        let limits = Some((2, QSA_TILE_WORKSPACE_BUDGET));
+        let first = hidden_tensor(&spec, 1, 5, 0.0);
+        let staged = with_tiled_scores(false, || {
+            indexer
+                .select_with_mode(&first, &QsaIndexKeyCache::empty(), 0, project, false)
+                .unwrap()
+                .into_next_cache()
+        });
+        let second = hidden_tensor(&spec, 1, 5, 0.03);
+        let off = host_selection(&indexer, &second, &staged, 5, false, limits);
+        let on = host_selection(&indexer, &second, &staged, 5, true, limits);
+        assert_eq!(on, off);
+        let tail = &on[0][4];
+        assert!(
+            tail.contains(&8) && tail.contains(&9),
+            "partial tail missing: {tail:?}"
+        );
+        assert!(tail.iter().all(|token| *token <= 9));
+    }
+
+    #[test]
+    fn qsa_tiled_failure_preserves_cache() {
+        let spec = Geom {
+            heads: 4,
+            dim: 64,
+            ratio: 4,
+            budget: 16,
+            hidden: 8,
+        };
+        let indexer = geom_indexer(&spec);
+        let first = hidden_tensor(&spec, 1, 4, 0.0);
+        let cache = with_tiled_scores(false, || {
+            indexer
+                .select_with_mode(&first, &QsaIndexKeyCache::empty(), 0, project, false)
+                .unwrap()
+                .into_next_cache()
+        });
+        let before = {
+            let keys = cache.keys().unwrap();
+            eval(&[keys]);
+            keys.data_f32()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        let mut data = wave(8 * spec.hidden, 0.41, 0.9, 0.12);
+        for value in &mut data[4 * spec.hidden..] {
+            *value = f32::NAN;
+        }
+        let hidden = array_f32(&data, &[1, 8, spec.hidden as i32]);
+        let error = with_tile_limits(2, QSA_TILE_WORKSPACE_BUDGET, || {
+            with_tiled_scores(true, || {
+                indexer.select_with_mode(&hidden, &cache, 4, project, false)
+            })
+        });
+        match error {
+            Err(QsaError::NonFiniteScore { query, .. }) => {
+                assert!(
+                    query >= 2,
+                    "the failure must land in a later tile, query {query}"
+                );
+            }
+            Err(error) => panic!("expected a later-tile nonfinite score, got {error}"),
+            Ok(_) => panic!("expected a later-tile nonfinite score"),
+        }
+        let after = {
+            let keys = cache.keys().unwrap();
+            eval(&[keys]);
+            keys.data_f32()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(before, after);
+        assert!(cache.pooled_blocks().is_some());
+    }
+
+    #[test]
+    fn qsa_tiled_peak_workspace_is_bounded() {
+        let seq = 2048i32;
+        let heads = 4i32;
+        let dim = 128i32;
+        let n_blocks = 8193i32;
+        let monolithic = full_score_workspace_bytes(1, seq, heads, n_blocks as usize).unwrap();
+        assert!(monolithic > QSA_SCORE_WORKSPACE_LIMIT);
+        let plan = planned(1, seq, heads, dim, n_blocks, MlxDtype::Float32).unwrap();
+        assert!(plan.query_rows.len() > 1);
+        assert!(plan.workspace_bytes <= QSA_TILE_WORKSPACE_BUDGET);
+        assert_eq!(plan.query_rows.iter().sum::<i32>(), seq);
+        for &rows in &plan.query_rows {
+            let bytes = full_score_workspace_bytes(1, rows, heads, n_blocks as usize).unwrap();
+            assert!(bytes <= QSA_SCORE_WORKSPACE_LIMIT);
+        }
+        let spec = Geom {
+            heads: heads as usize,
+            dim: dim as usize,
+            ratio: 4,
+            budget: 4,
+            hidden: 4,
+        };
+        let indexer = geom_indexer(&spec);
+        let past_tokens = n_blocks as usize * spec.ratio - seq as usize;
+        let past = array_f32(
+            &vec![0.05f32; past_tokens * spec.dim],
+            &[1, past_tokens as i32, spec.dim as i32],
+        );
+        let cache = QsaIndexKeyCache::from_serialized(Some(past));
+        let hidden = hidden_tensor(&spec, 1, seq as usize, 0.0);
+        let rejected = with_tiled_scores(false, || {
+            indexer.select_with_mode(&hidden, &cache, past_tokens, project, false)
+        });
+        match rejected {
+            Err(QsaError::InvalidScalar(message)) => {
+                assert!(message.contains("score workspace"), "{message}");
+            }
+            Err(error) => panic!("monolithic path must reject this chunk, got {error}"),
+            Ok(_) => panic!("monolithic path must reject this chunk"),
+        }
+        let previous_limit = mlx_sys::set_cache_limit(0);
+        let active_before = mlx_sys::mempressure::device_active_bytes().unwrap_or(0);
+        mlx_sys::reset_peak_memory();
+        let peak_after_reset = mlx_sys::get_peak_memory() as u64;
+        let selected = with_tiled_scores(true, || {
+            indexer
+                .select_with_mode(&hidden, &cache, past_tokens, project, false)
+                .unwrap()
+        });
+        let peak = mlx_sys::get_peak_memory() as u64;
+        mlx_sys::set_cache_limit(previous_limit);
+        let growth = peak.saturating_sub(peak_after_reset);
+        let over_active = peak.saturating_sub(active_before);
+        let observed = match (growth > 0, over_active > 0) {
+            (true, true) => growth.min(over_active),
+            (true, false) => growth,
+            (false, true) => over_active,
+            (false, false) => 0,
+        };
+        assert!(observed > 1024 * 1024, "tiled select allocated nothing");
+        assert!(
+            observed < monolithic as u64,
+            "tiled peak growth {observed} reached the monolithic score workspace {monolithic}"
+        );
+        assert_eq!(selected.tokens.len(), 1);
+        assert_eq!(selected.tokens[0].len(), seq as usize);
+        assert!(selected.next_cache().keys().is_some());
     }
 }
