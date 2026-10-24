@@ -480,6 +480,43 @@ impl QsaSelection {
         &self.next_cache
     }
 
+    /// Test-only: a host selection from explicit ordered token rows, so a
+    /// caller can exercise attention over a hand-built selection without
+    /// running the indexer. The rows must already be in the block-then-tail
+    /// order [`tokens_from_score_data`] produces.
+    #[cfg(test)]
+    pub(crate) fn from_host_tokens(tokens: Vec<Vec<Vec<i32>>>) -> Self {
+        let batch = tokens.len() as i32;
+        let rows = tokens.first().map_or(0, Vec::len) as i32;
+        let longest = tokens
+            .iter()
+            .flat_map(|queries| queries.iter().map(Vec::len))
+            .max()
+            .unwrap_or(0) as i32;
+        let mut indices = vec![-1_i32; (batch * rows * longest).max(1) as usize];
+        for (b, queries) in tokens.iter().enumerate() {
+            for (s, chosen) in queries.iter().enumerate() {
+                let start = (b as i32 * rows + s as i32) * longest;
+                indices[start as usize..start as usize + chosen.len()].copy_from_slice(chosen);
+            }
+        }
+        let gather_indices = MlxArray::from_raw_data(
+            indices.as_ptr().cast(),
+            std::mem::size_of_val(indices.as_slice()),
+            &[batch, rows, longest],
+            MlxDtype::Int32,
+        );
+        Self {
+            gather_indices,
+            tokens,
+            device_tokens: None,
+            device_row_segments: Vec::new(),
+            device_tail_width: 0,
+            test_host_tokens: std::sync::OnceLock::new(),
+            next_cache: QsaIndexKeyCache::empty(),
+        }
+    }
+
     pub(crate) fn into_next_cache(self) -> QsaIndexKeyCache {
         self.next_cache
     }

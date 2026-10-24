@@ -5641,6 +5641,23 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL` — attend Flash Next QSA prefill
+    /// chunks by reading each query's selected K/V rows straight out of the
+    /// sealed/tail history in a custom Metal kernel, instead of gathering a
+    /// padded `[queries, selected, kv_heads, head_dim]` tile and running masked
+    /// `scaled_dot_product_attention` over it.
+    ///
+    /// **Default OFF**. Selection order, causal membership, scale, the GQA
+    /// mapping and the dtype transition are preserved, so this attends to the
+    /// same values as the gathered path, but the reduction order and online
+    /// softmax rescaling differ: it is not bit-identical to MLX's fused SDPA.
+    /// Decode, verifier windows, multi-batch calls and unsupported geometries
+    /// keep the gathered path. Set `=1` to opt in; `=0` restores today's path.
+    flash_next_qsa_indexed_prefill_enabled,
+    "AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL"
+);
+
+env_flag!(
     /// `AX_MLX_FLASH_NEXT_QSA_TILED_SCORES` — score Flash Next QSA blocks in
     /// query tiles so a long prefill chunk is not rejected by the monolithic
     /// 256 MiB score workspace. Default OFF. Tiling runs only for the MLX

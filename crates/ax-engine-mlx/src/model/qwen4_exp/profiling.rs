@@ -1256,6 +1256,160 @@ fn flash_next_last_row_logits_match_the_full_projection() {
     );
 }
 
+/// Greedy identity of the indexed QSA prefill arm against the gathered arm on
+/// the real pack.
+///
+/// The indexed kernel is not bit-identical to fused SDPA (different reduction
+/// order and online rescaling), so the contract is behavioural: the same
+/// prompt must produce the same greedy token ids, decoded from each arm's own
+/// state, and the same generated text. Logit deltas are reported instead of
+/// asserted.
+///
+/// `AX_FLASH_NEXT_INDEXED_PROMPT_TOKENS` (default 2048) selects how much of the
+/// fixture prompt to prefill and `AX_FLASH_NEXT_INDEXED_DECODE_TOKENS`
+/// (default 32) how many tokens to generate greedily. Prefill runs in 1024-token
+/// chunks, the schedule the server uses.
+#[test]
+#[ignore = "requires AX_FLASH_NEXT_PROFILE_PACK and AX_FLASH_NEXT_PROMPT_IDS"]
+fn flash_next_indexed_prefill_keeps_greedy_tokens_on_real_pack() {
+    use crate::model::ModelConfig;
+    use crate::model::shared::qwen4_exp_attention_indexed::with_indexed_attention;
+    use ax_engine_core::NativeModelArtifacts;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(std::env::var_os("AX_FLASH_NEXT_PROFILE_PACK").unwrap());
+    let tokens: Vec<u32> =
+        serde_json::from_str(&std::env::var("AX_FLASH_NEXT_PROMPT_IDS").unwrap()).unwrap();
+    // Default to the whole fixture prompt and the 256 greedy tokens the
+    // acceptance contract names, so a bare run needs no numeric tuning.
+    let prompt_len = env_usize("AX_FLASH_NEXT_INDEXED_PROMPT_TOKENS")
+        .unwrap_or(tokens.len())
+        .min(tokens.len());
+    let decode_steps = env_usize("AX_FLASH_NEXT_INDEXED_DECODE_TOKENS").unwrap_or(256);
+    assert!(prompt_len >= 1024, "the prompt needs at least one chunk");
+
+    let artifacts = NativeModelArtifacts::from_dir(root).unwrap();
+    let vocab = artifacts.manifest().vocab_size as usize;
+    let cfg = ModelConfig::from_manifest(artifacts.manifest());
+    let weights = crate::weights::load_weights(&artifacts).unwrap();
+    let trunk = weights.qwen4_exp.as_ref().unwrap();
+    let owner = cfg.compile_cache_identity;
+
+    // Last position's logits, the ones greedy sampling reads.
+    let last_logits = |array: &MlxArray| -> Vec<f32> {
+        let logits = astype(array, MlxDtype::Float32, None);
+        eval(&[&logits]);
+        let data = logits.data_f32();
+        data[data.len() - vocab..].to_vec()
+    };
+    let argmax = |logits: &[f32]| -> u32 {
+        let mut best = 0usize;
+        for (index, value) in logits.iter().enumerate() {
+            if value > &logits[best] {
+                best = index;
+            }
+        }
+        best as u32
+    };
+
+    struct Arm {
+        /// Logits at the end of prefill: the only place the two arms can
+        /// disagree before decode amplifies rounding.
+        prefill: Vec<f32>,
+        boundary: Vec<f32>,
+        ids: Vec<u32>,
+        state: Vec<u8>,
+    }
+    let run = |indexed: bool| -> Arm {
+        with_indexed_attention(indexed, || {
+            let mut state = Qwen4ExpState::new(trunk, owner);
+            let mut logits = None;
+            for (offset, end) in chunk_ranges(prompt_len, 1024) {
+                let output = forward(
+                    trunk,
+                    &tokens[offset..end],
+                    &state,
+                    owner,
+                    ProjectionBatchPolicy::Shared,
+                )
+                .unwrap();
+                state = output.state;
+                logits = Some(output.logits);
+            }
+            let prefill = last_logits(&logits.expect("prefill logits"));
+            let mut boundary = prefill.clone();
+            let mut ids = Vec::new();
+            for _ in 0..decode_steps {
+                let id = argmax(&boundary);
+                ids.push(id);
+                let output =
+                    forward(trunk, &[id], &state, owner, ProjectionBatchPolicy::Shared).unwrap();
+                state = output.state;
+                boundary = last_logits(&output.logits);
+            }
+            Arm {
+                prefill,
+                boundary,
+                ids,
+                state: snapshot(state),
+            }
+        })
+    };
+
+    let gathered = run(false);
+    let indexed = run(true);
+    assert_eq!(
+        gathered.ids.len(),
+        decode_steps,
+        "greedy decode produced the wrong token count"
+    );
+    let first_mismatch = gathered
+        .ids
+        .iter()
+        .zip(&indexed.ids)
+        .position(|(a, b)| a != b);
+    let prefill_delta = gathered
+        .prefill
+        .iter()
+        .zip(&indexed.prefill)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    let max_logit_delta = gathered
+        .boundary
+        .iter()
+        .zip(&indexed.boundary)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    let top = |logits: &[f32]| -> (usize, f32, f32) {
+        let mut best = 0usize;
+        for (index, value) in logits.iter().enumerate() {
+            if value > &logits[best] {
+                best = index;
+            }
+        }
+        let mut second = f32::NEG_INFINITY;
+        for (index, value) in logits.iter().enumerate() {
+            if index != best && *value > second {
+                second = *value;
+            }
+        }
+        (best, logits[best], logits[best] - second)
+    };
+    let (gbest, gval, gmargin) = top(&gathered.boundary);
+    let (ibest, ival, imargin) = top(&indexed.boundary);
+    eprintln!(
+        "INDEXED_GREEDY prompt_tokens={prompt_len} decode_steps={decode_steps} ids_equal={} state_bytes_equal={} prefill_logit_delta={prefill_delta:.6} final_logit_delta={max_logit_delta:.6} gathered_top={gbest}:{gval:.6}(+{gmargin:.6}) indexed_top={ibest}:{ival:.6}(+{imargin:.6})",
+        first_mismatch.is_none(),
+        gathered.state == indexed.state,
+    );
+    assert!(
+        first_mismatch.is_none(),
+        "indexed prefill changed greedy token {first_mismatch:?} (max logit delta {max_logit_delta:.6})"
+    );
+    // Identical ids are identical text: this crate has no tokenizer (it lives
+    // in ax-engine-sdk), and decoding is a pure function of the id sequence.
+}
+
 #[test]
 fn paging_capture_preserves_context_without_evaluation() {
     assert!(CAPTURE.with_borrow(Option::is_none));
