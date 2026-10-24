@@ -74,7 +74,10 @@ is used with elevation only when required. No Xcode installation is requested.
 Installation uses a lock, staged copy and previous-app backup. It refuses a
 version downgrade, does not overwrite another app or follow a linked destination,
 and restores the previous app on a failed swap or installed-app verification.
-A subsequent run can recover an interrupted swap. Quit AX Engine first. Models,
+A subsequent run can recover an interrupted swap. Stale-lock recovery is
+serialized, and processes owned by another user are treated as active. If a
+process is killed while holding `.AX-Engine.recovery.lock`, inspect active
+installers before manually removing that empty guard directory. Quit AX Engine first. Models,
 settings and conversation files are outside the replacement and remain untouched.
 The installer never removes quarantine or disables Gatekeeper.
 

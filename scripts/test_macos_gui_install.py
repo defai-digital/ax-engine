@@ -18,7 +18,7 @@ ROOT=Path(__file__).resolve().parents[1]
 INSTALL=ROOT/'packaging/macos/distribution/install'
 COMMIT='a'*40
 STUB=r'''#!/usr/bin/env python3
-import os,sys,pathlib,json,shutil,hashlib,base64
+import os,sys,pathlib,json,shutil,hashlib,base64,subprocess
 p=pathlib.Path
 name=p(sys.argv[0]).name;a=sys.argv[1:];root=p(os.environ['FIXTURE']);mode=os.environ.get('FAIL_MODE','')
 def done(value='',status=0):
@@ -59,6 +59,7 @@ if name=='codesign':
 if name=='spctl':done(status=1 if mode=='gatekeeper' or (mode=='post-gatekeeper' and a[-1]==str(root/'Applications/AX Engine.app')) else 0)
 if name=='xcode-select':done(status=1)
 if name=='pgrep':done(status=1)
+if name=='ps':done('424242' if mode=='other-user-installer' else '',0 if mode=='other-user-installer' else subprocess.call(['/bin/ps',*a]))
 if name=='PlistBuddy':
  field=a[1].removeprefix('Print :');data=json.loads(p(a[-1]).read_text())
  if mode=='identity' and field=='AXEngineSourceCommit' and p(a[-1])==root/'Applications/AX Engine.app/Contents/Info.plist':done('wrong')
@@ -76,7 +77,7 @@ class InstallerTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name).resolve();self.apps=self.root/'Applications';self.apps.mkdir()
         self.remote=self.root/'remote';self.remote.mkdir();(self.root/'bin').mkdir()
-        for name in ['uname','sw_vers','curl','shasum','ditto','minisign','plutil','base64','hdiutil','codesign','spctl','xcode-select','pgrep','PlistBuddy','mv']:
+        for name in ['uname','sw_vers','curl','shasum','ditto','minisign','plutil','base64','hdiutil','codesign','spctl','xcode-select','pgrep','ps','PlistBuddy','mv']:
             file=self.root/'bin'/name;file.write_text(STUB.replace('#!/usr/bin/env python3','#!'+shutil.which('python3')));file.chmod(0o755)
         self.app=self.root/'app';self.create_app(self.app,'1.2.3',COMMIT)
         self.filename='AX-Engine-1.2.3-mac-arm64.dmg';image=b'dmg fixture'
@@ -142,6 +143,19 @@ class InstallerTests(unittest.TestCase):
         lock=self.apps/'.AX-Engine.install.lock';lock.mkdir();(lock/'pid').write_text(str(os.getpid()))
         result=self.invoke();self.assertNotEqual(result.returncode,0);self.assertTrue(lock.exists())
         self.assertIn('Another installation',result.stderr)
+
+    def test_other_user_installer_is_not_treated_as_stale(self):
+        lock=self.apps/'.AX-Engine.install.lock';lock.mkdir();(lock/'pid').write_text('424242')
+        result=self.invoke('other-user-installer');self.assertNotEqual(result.returncode,0)
+        self.assertIn('Another installation',result.stderr)
+        self.assertEqual((lock/'pid').read_text(),'424242')
+
+    def test_recovery_guard_cannot_be_stolen(self):
+        lock=self.apps/'.AX-Engine.install.lock';lock.mkdir();(lock/'pid').write_text('99999999')
+        guard=self.apps/'.AX-Engine.recovery.lock';guard.mkdir()
+        result=self.invoke();self.assertNotEqual(result.returncode,0)
+        self.assertIn('recovery is busy',result.stderr)
+        self.assertTrue(guard.exists());self.assertTrue(lock.exists())
 
     def test_downgrade_is_rejected(self):
         self.create_app(self.apps/'AX Engine.app','1.10.0')

@@ -22,11 +22,13 @@ applications="$(cd "$applications" && pwd -P)"
 target="$applications/AX Engine.app"
 backup="$applications/.AX-Engine.previous.app"
 lock="$applications/.AX-Engine.install.lock"
+recovery="$applications/.AX-Engine.recovery.lock"
 stage="$applications/.AX-Engine.stage-$$.app"
 temporary="$(mktemp -d "${TMPDIR:-/tmp}/ax-engine-install.XXXXXX")"
 mount="$temporary/mount"
 mounted=false
 locked=false
+recovery_owned=false
 stage_owned=false
 previous_moved=false
 use_sudo=false
@@ -39,6 +41,7 @@ cleanup() {
   fi
   if [[ "$stage_owned" == true && -d "$stage" && ! -L "$stage" ]]; then priv rm -rf -- "$stage" || true; fi
   if [[ "$locked" == true ]]; then priv rm -f "$lock/pid" || true; priv rmdir "$lock" || true; fi
+  if [[ "$recovery_owned" == true ]]; then priv rmdir "$recovery" || true; fi
   if [[ "$mounted" == true ]]; then hdiutil detach "$mount" >/dev/null 2>&1 || true; fi
   rm -rf -- "$temporary"
   exit "$status"
@@ -116,16 +119,22 @@ fi
 if [[ "$verify_only" == true ]]; then echo "Verified AX Engine $version; no application was installed."; exit 0; fi
 pgrep -x AXEngineApp >/dev/null && fail 'Quit AX Engine before installing' || true
 if [[ ! -w "$applications" ]]; then [[ -r /dev/tty ]] || fail 'An interactive terminal is required for /Applications installation'; use_sudo=true; fi
-[[ ! -L "$lock" && ! -L "$backup" && ! -L "$target" && ! -e "$stage" ]] || fail 'Unsafe installation or staging path'
+[[ ! -L "$lock" && ! -L "$recovery" && ! -L "$backup" && ! -L "$target" && ! -e "$stage" ]] || fail 'Unsafe installation or staging path'
+# Serialize lock acquisition and stale-lock recovery. Without this guard, two
+# recovering installers could remove the new lock created by the other one.
+priv mkdir "$recovery" 2>/dev/null || fail 'Installation recovery is busy or needs inspection'
+recovery_owned=true
 if ! priv mkdir "$lock" 2>/dev/null; then
   owner="$(cat "$lock/pid" 2>/dev/null || true)"
   [[ "$owner" =~ ^[1-9][0-9]*$ ]] || fail 'Installation lock needs inspection'
-  if kill -0 "$owner" 2>/dev/null; then fail 'Another installation is running'; fi
+  if ps -p "$owner" -o pid= >/dev/null 2>&1; then fail 'Another installation is running'; fi
   priv rm -f "$lock/pid"; priv rmdir "$lock"; priv mkdir "$lock"
 fi
 locked=true
 printf '%s\n' "$$" > "$temporary/pid"
 priv cp "$temporary/pid" "$lock/pid"
+priv rmdir "$recovery"
+recovery_owned=false
 # Restore an interrupted swap before validating an upgrade. Preserve both apps
 # if a completed-but-unacknowledged replacement differs from this candidate.
 if [[ -e "$backup" ]]; then
