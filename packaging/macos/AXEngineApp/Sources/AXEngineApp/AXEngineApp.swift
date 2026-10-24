@@ -24,20 +24,43 @@ final class ApplicationModel: ObservableObject {
     let runtime = RuntimeController()
     let models = ModelStore()
     let chat = ChatStore()
-    init() {
-        do { settings = try AppSettings.load() }
+    private let settingsURL: URL
+    init(settingsURL: URL = AppPaths.settings) {
+        self.settingsURL = settingsURL
+        do { settings = try AppSettings.load(from: settingsURL) }
         catch { settingsError = error.localizedDescription }
         settingsDraft = settings
     }
     var hasSettingsChanges: Bool { settingsDraft != settings }
     func saveSettings() -> Bool {
         do {
-            try settingsDraft.save()
+            try settingsDraft.save(to: settingsURL)
             settings = settingsDraft; settingsError = nil; settingsSaved = true
             return true
         } catch {
             settingsError = error.localizedDescription; settingsSaved = false
             return false
+        }
+    }
+    func selectPlaygroundProfile(_ profile: GenerationProfile) {
+        guard !chat.generating else { return }
+        // Keep pending edits intact; Settings owns their save/revert flow.
+        guard !hasSettingsChanges else { page = .settings; return }
+        if profile == .custom {
+            settingsDraft.apply(.custom)
+            page = .settings
+            return
+        }
+        var updated = settings
+        updated.apply(profile)
+        do {
+            try updated.save(to: settingsURL)
+            settings = updated
+            settingsDraft = updated
+            settingsError = nil
+            settingsSaved = true
+        } catch {
+            settingsError = error.localizedDescription
         }
     }
     func revertSettings() {
@@ -100,7 +123,7 @@ struct AXEngineApplication: App {
         .windowResizability(.contentSize)
     }
     private func showAbout() {
-        let credits = NSMutableAttributedString(string: "Native local inference for Apple Silicon.\n\nManage your models, run local inference and test responses in Playground.\n\nOpen Third-Party Notices from the AX Engine menu for open-source acknowledgements.")
+        let credits = NSMutableAttributedString(string: "Native local inference for Apple Silicon.\n\nManage your models, run local inference and test responses in Playground. This app sends no analytics or telemetry.\n\nOpen Third-Party Notices from the AX Engine menu for open-source acknowledgements.")
         NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])
     }
 }

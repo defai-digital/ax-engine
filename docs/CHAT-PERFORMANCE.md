@@ -48,3 +48,13 @@ engine work; they are not pure GPU-kernel benchmarks or hardware certification.
 The optional extension is absent when the backend cannot provide these timings.
 A live rolling rate requires native progress measurements and is not estimated
 from text length or SSE event arrival frequency.
+
+## Playground request profiles
+
+Server and Playground share an upper model-and-profile panel. Coding, Chatbot
+and Media apply the saved request presets to future Playground replies without
+restarting the model. They describe request defaults, not model capabilities or
+server-wide defaults; other clients supply their own parameters. Media does not
+add image/audio support to the text-only Playground. Custom opens Settings for
+editing and saving custom parameters. Profile switching is paused during a reply,
+and pending Settings edits must be reviewed before applying another preset.

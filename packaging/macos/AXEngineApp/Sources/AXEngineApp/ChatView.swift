@@ -15,10 +15,6 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Picker("Model", selection: $chat.selectedModel) {
-                    Text(runtime.models.isEmpty ? "No running model" : "Default model").tag("")
-                    ForEach(runtime.models) { Text($0.id).tag($0.id) }
-                }.frame(maxWidth: 450).disabled(chat.generating)
                 Spacer()
                 Toggle("Follow output", isOn: $chat.followOutput).toggleStyle(.checkbox)
                 Button("Clear", systemImage: "trash") { clearConfirmation = true }.disabled(chat.generating || chat.messages.isEmpty)
@@ -84,8 +80,13 @@ struct ChatView: View {
                     .lineLimit(2...7).textFieldStyle(.plain).padding(12)
                     .background(Brand.cardSurface, in: RoundedRectangle(cornerRadius: 10))
                     .disabled(chat.generating)
-                Text("Enter to send · Shift+Enter for a new line")
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Enter to send · Shift+Enter for a new line")
+                    Spacer(minLength: 12)
+                    Label("No analytics or telemetry uploads", systemImage: "lock.shield")
+                        .help("Playground sends requests to the AX Engine service on this Mac. Conversations are saved locally. Model downloads use the network.")
+                }
+                .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     if let seconds = chat.firstTokenSeconds { Text(String(format: "First text %.2fs", seconds)).font(.caption).foregroundStyle(.secondary) }
                     if let seconds = chat.elapsedSeconds { Text(String(format: "Elapsed %.1fs", seconds)).font(.caption).foregroundStyle(.secondary) }

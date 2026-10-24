@@ -11,6 +11,7 @@ let package = Package(
         .target(name: "AXEngineAppCore", dependencies: [.product(name: "AxEngine", package: "swift")]),
         .executableTarget(name: "AXEngineApp", dependencies: ["AXEngineAppCore"]),
         .executableTarget(name: "AXEngineModelScanner", dependencies: ["AXEngineAppCore"]),
+        .testTarget(name: "AXEngineAppTests", dependencies: ["AXEngineApp"]),
         .testTarget(name: "AXEngineAppCoreTests", dependencies: ["AXEngineAppCore"], resources: [.copy("Fixtures")]),
     ]
 )

@@ -57,6 +57,10 @@ struct MainView: View {
                     Spacer()
                     if runtime.ready && model.page != .chat { Button("Open Playground", systemImage: "bubble.left") { model.page = .chat } }
                 }.padding(26)
+                if model.page == .server || model.page == .chat {
+                    ModelProfileHeader(model: model, runtime: runtime, chat: chat)
+                        .padding(.horizontal, 26).padding(.bottom, 16)
+                }
                 Divider()
                 Group {
                     switch model.page ?? .overview {
@@ -141,6 +145,8 @@ struct MainView: View {
         Card("Public AutomatosX models", subtitle: "Pinned profiles come from your installed AX Engine runtime. A catalog entry is not a hardware qualification.") {
             Label("No Hugging Face account or token required", systemImage: "arrow.down.circle")
                 .font(.headline)
+            Text("Model downloads connect to Hugging Face and its delivery hosts.")
+                .font(.caption).foregroundStyle(.secondary)
             Text("AX Engine provides downloads for public AutomatosX models only. To use other models, download them separately and run them with the AX Engine CLI.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Divider()

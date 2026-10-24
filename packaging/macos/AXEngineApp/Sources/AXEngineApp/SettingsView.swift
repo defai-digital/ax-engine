@@ -78,9 +78,17 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                 }.disabled(locked)
-                Section("Privacy and licenses") {
-                    Text("Your settings and conversation are stored on this Mac. No telemetry is sent by this app.")
-                        .font(.callout).foregroundStyle(.secondary)
+                Section("Privacy") {
+                    Label("No analytics or telemetry uploads", systemImage: "hand.raised.fill")
+                        .font(.headline)
+                    Text("This app does not upload your conversations or usage analytics to AutomatosX. Playground sends requests to the AX Engine service on this Mac.")
+                    Text("Settings and conversations are saved locally. Use Clear in Playground to remove the saved conversation. Activity history stays in memory and resets when the app quits.")
+                        .foregroundStyle(.secondary)
+                    Text("Model downloads connect to Hugging Face and its delivery hosts. Downloads and external links are subject to those services’ privacy practices.")
+                        .foregroundStyle(.secondary)
+                    Button("Show local data folder") { NSWorkspace.shared.open(AppPaths.support) }
+                }
+                Section("Open-source licenses") {
                     Button("Third-Party Notices") { openWindow(id: "third-party-notices") }
                 }
             }
@@ -91,7 +99,7 @@ struct SettingsView: View {
             Divider()
             VStack(alignment: .leading, spacing: 10) {
                 if locked {
-                    Label("Runtime locations and port are locked during server or model operations. Profile changes apply to the next Chat request.", systemImage: "lock")
+                    Label("Runtime locations and port are locked during server or model operations. Profile changes apply to the next Playground request.", systemImage: "lock")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
