@@ -74,6 +74,10 @@ pub fn prefix_adoption_allowed(stored: &CommittedPrefix, chunk_history: &[u32]) 
     stored.device_capture && !chunk_history_is_miss(stored, chunk_history)
 }
 
+/// Appended after a frozen-quantum partial chunk. Planned histories never
+/// contain it, so later adoption is a miss. It is not a token count.
+pub const NON_REUSABLE_CHUNK_HISTORY_MARK: u32 = 0;
+
 /// Largest text prefill chunk the resident-budget contract allows.
 pub const MODEL_PREFILL_SAFETY_CAP: u32 = 2048;
 
@@ -234,8 +238,9 @@ pub enum CheckpointReason {
     PressureSpill,
 }
 
-/// Result of one checkpoint attempt. `ssd_hit` is set only after a durable
-/// write of a supported layout. Unsupported layouts stay a miss.
+/// Result of one checkpoint attempt. `committed` means the L1 prefix cache
+/// or the disk tier accepted a supported snapshot. `ssd_hit` reports only
+/// the disk tier. Unsupported layouts stay a miss.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CheckpointReceipt {
     pub request_id: RequestId,
@@ -258,9 +263,10 @@ impl CheckpointReceipt {
         }
     }
 
+    /// The cursor can be restored when L1 or the disk tier accepted the
+    /// snapshot. `ssd_hit` is the disk-tier metric and does not gate this.
     pub fn adopts_cursor(self, committed_limit: u32) -> bool {
         self.committed
-            && self.ssd_hit
             && self.device_capture
             && !self.unsupported_layout
             && self.cut <= committed_limit
@@ -345,6 +351,31 @@ mod tests {
     use crate::sampling::SamplingParams;
     use crate::scheduler::{Scheduler, SchedulerInput};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn l1_or_disk_accept_adopts_cursor_without_requiring_ssd_hit() {
+        let l1 = CheckpointReceipt {
+            request_id: RequestId(1),
+            cut: 4,
+            committed: true,
+            ssd_hit: false,
+            unsupported_layout: false,
+            device_capture: true,
+        };
+        assert!(l1.adopts_cursor(4));
+        assert!(!l1.adopts_cursor(3));
+
+        let disk = CheckpointReceipt {
+            ssd_hit: true,
+            ..l1
+        };
+        assert!(disk.ssd_hit);
+        assert!(disk.adopts_cursor(4));
+
+        let miss = CheckpointReceipt::miss(RequestId(1), 4);
+        assert!(!miss.ssd_hit);
+        assert!(!miss.adopts_cursor(4));
+    }
 
     #[test]
     fn incompatible_chunk_history_is_a_miss() {
@@ -845,6 +876,46 @@ mod tests {
     }
 
     #[test]
+    fn l1_checkpoint_restores_on_resubmit_without_ssd_hit() {
+        let mut engine = scripted_engine(Script::l1());
+        engine.set_cancel_keep_prefix(true);
+        engine.set_adaptive_prefill(true);
+        let prompt = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        engine
+            .submit(submission(7, 1, prompt.clone(), 2))
+            .expect("submit");
+        engine.step(4, true).expect("partial");
+        engine.cancel(RequestId(7)).expect("cancel");
+        assert!(engine.cancel_checkpoints()[0].device_capture);
+        engine
+            .submit(submission(8, 2, prompt, 2))
+            .expect("resubmit");
+        let restored = engine
+            .request_manager()
+            .snapshot(RequestId(8))
+            .expect("restored");
+        assert_eq!(restored.processed_prompt_tokens, 4);
+    }
+
+    #[test]
+    fn l1_spill_adopts_without_counting_ssd_hit() {
+        let mut engine = scripted_engine(Script::l1());
+        engine.set_pressure_requeue(true);
+        engine
+            .submit(submission(1, 1, vec![1, 2, 3, 4, 5, 6, 7, 8], 2))
+            .expect("submit");
+        engine.step(4, true).expect("commit");
+        engine.step(4, true).expect("spill");
+        assert_eq!(engine.ssd_spill_hits(), 0);
+        let snapshot = engine
+            .request_manager()
+            .snapshot(RequestId(1))
+            .expect("snapshot");
+        assert_eq!(snapshot.state, RequestState::BlockedOnMemory);
+        assert_eq!(snapshot.processed_prompt_tokens, 4);
+    }
+
+    #[test]
     fn pressure_reclaim_runs_only_under_high_pressure() {
         let mut quiet = Script::success();
         quiet.pressure_active_bytes = 100;
@@ -1003,6 +1074,7 @@ mod tests {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum ReceiptMode {
         Adopt,
+        L1,
         Fail,
     }
 
@@ -1031,6 +1103,12 @@ mod tests {
         fn fail() -> Self {
             let mut script = Self::success();
             script.mode = ReceiptMode::Fail;
+            script
+        }
+
+        fn l1() -> Self {
+            let mut script = Self::success();
+            script.mode = ReceiptMode::L1;
             script
         }
     }
@@ -1065,6 +1143,14 @@ mod tests {
                     cut: committed_limit,
                     committed: true,
                     ssd_hit: true,
+                    unsupported_layout: false,
+                    device_capture: true,
+                },
+                ReceiptMode::L1 => CheckpointReceipt {
+                    request_id,
+                    cut: committed_limit,
+                    committed: true,
+                    ssd_hit: false,
                     unsupported_layout: false,
                     device_capture: true,
                 },

@@ -8811,9 +8811,40 @@ fn mlx_checkpoint_stores_through_prefix_cache() {
     };
     assert_eq!(prefix_checkpoint_write_error_count(&stored), 1);
     let receipt = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &stored, true);
-    assert!(receipt.adopts_cursor(4));
+    assert!(receipt.committed);
     assert!(receipt.device_capture);
-    assert!(receipt.ssd_hit);
+    assert!(
+        !receipt.ssd_hit,
+        "an L1 store with a failed disk commit is not a durable hit"
+    );
+    assert!(
+        receipt.adopts_cursor(4),
+        "an L1 prefix-cache accept is adoptable on resubmit"
+    );
+    let l1_only = checkpoint_receipt_from_prefix_store(
+        RequestId(7),
+        4,
+        &MlxPrefixCacheTelemetry::default(),
+        true,
+    );
+    assert!(l1_only.committed);
+    assert!(!l1_only.ssd_hit);
+    assert!(l1_only.adopts_cursor(4));
+    let enqueued = MlxPrefixCacheTelemetry {
+        disk_store_enqueued: 1,
+        ..MlxPrefixCacheTelemetry::default()
+    };
+    let enqueued_receipt = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &enqueued, false);
+    assert!(enqueued_receipt.ssd_hit);
+    assert!(enqueued_receipt.adopts_cursor(4));
+    let durable = MlxPrefixCacheTelemetry {
+        stores: 1,
+        disk_store_committed: 1,
+        ..MlxPrefixCacheTelemetry::default()
+    };
+    let durable_receipt = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &durable, true);
+    assert!(durable_receipt.ssd_hit);
+    assert!(durable_receipt.adopts_cursor(4));
 
     let dropped = MlxPrefixCacheTelemetry {
         disk_store_dropped: 1,
@@ -8822,4 +8853,92 @@ fn mlx_checkpoint_stores_through_prefix_cache() {
     assert_eq!(prefix_checkpoint_write_error_count(&dropped), 1);
     let miss = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &dropped, false);
     assert!(!miss.adopts_cursor(4));
+}
+
+#[test]
+fn checkpoint_refuses_trimmed_linear_state() {
+    let mut manifest = dense_manifest();
+    manifest.model_family = "qwen3".into();
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    shared_weights.publish(Arc::new(runner_test_weights(vec![runner_test_layer()])));
+    let runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .expect("runner");
+    *runner.last_prefix_model_id.lock() = "qwen3".to_string();
+    runner
+        .last_block_size_tokens
+        .store(4, std::sync::atomic::Ordering::Relaxed);
+
+    let mut state = RequestState::new(1, 1, None);
+    state.prompt_prefix_tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    state.cache.set_seq_len(8);
+    state.cache.set_linear_state(
+        0,
+        mlx_sys::zeros(&[1, 3, 14], mlx_sys::MlxDtype::Float32, None),
+        mlx_sys::zeros(&[1, 4, 8, 6], mlx_sys::MlxDtype::Float32, None),
+    );
+    runner.states.lock().insert(RequestId(7), state);
+
+    let receipt = ax_engine_core::ExecutionRunner::checkpoint_request(
+        &runner,
+        RequestId(7),
+        ax_engine_core::prefill_handoff::CheckpointReason::Cancel,
+        4,
+    );
+    assert!(!receipt.committed);
+    assert!(receipt.unsupported_layout);
+    assert!(!receipt.ssd_hit);
+    assert!(!receipt.adopts_cursor(4));
+    assert_eq!(
+        runner
+            .checkpoint_unsupported
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(runner.prefix_cache.lock().stats().entries, 0);
+    assert_eq!(
+        runner
+            .states
+            .lock()
+            .get(&RequestId(7))
+            .expect("state")
+            .cache
+            .seq_len(),
+        8
+    );
+
+    let mut exact = RequestState::new(1, 2, None);
+    exact.prompt_prefix_tokens = vec![1, 2, 3, 4];
+    exact.cache.set_seq_len(4);
+    exact.cache.set_linear_state(
+        0,
+        mlx_sys::zeros(&[1, 3, 14], mlx_sys::MlxDtype::Float32, None),
+        mlx_sys::zeros(&[1, 4, 8, 6], mlx_sys::MlxDtype::Float32, None),
+    );
+    runner.states.lock().insert(RequestId(8), exact);
+    let exact_receipt = ax_engine_core::ExecutionRunner::checkpoint_request(
+        &runner,
+        RequestId(8),
+        ax_engine_core::prefill_handoff::CheckpointReason::Cancel,
+        4,
+    );
+    assert_eq!(
+        runner
+            .checkpoint_unsupported
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "an exact-position linear capture is allowed"
+    );
+    assert_ne!(
+        (exact_receipt.unsupported_layout, exact_receipt.committed),
+        (true, true)
+    );
+    fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
 }

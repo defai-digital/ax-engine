@@ -1654,6 +1654,9 @@ pub struct MlxRunner {
     last_block_size_tokens: std::sync::atomic::AtomicU32,
     /// Disk prefix writes that failed or were dropped during checkpoint.
     checkpoint_write_errors: std::sync::atomic::AtomicU32,
+    /// Checkpoints refused because linear, GDN, or QSA state was not already
+    /// at the requested cut. `trim_to` cannot roll that state back.
+    checkpoint_unsupported: std::sync::atomic::AtomicU32,
     /// Weight-layout snapshot computed once at construction. `runner.run`
     /// emits this as `ax_mlx_dense_ffn_gate_up_packed_layers` /
     /// `ax_mlx_dense_ffn_split_gate_up_layers` and
@@ -3226,6 +3229,7 @@ impl MlxRunner {
             last_prefix_model_id: Mutex::new(String::new()),
             last_block_size_tokens: std::sync::atomic::AtomicU32::new(0),
             checkpoint_write_errors: std::sync::atomic::AtomicU32::new(0),
+            checkpoint_unsupported: std::sync::atomic::AtomicU32::new(0),
             dflash2: None,
             weight_layout_telemetry,
             affine_quant_telemetry,
@@ -4571,18 +4575,17 @@ fn warn_prefix_checkpoint_write_errors(
     errors
 }
 
-/// A checkpoint adopts only when L1 or the disk tier accepted the snapshot.
-/// Write errors stay visible through the counter even when L1 succeeded.
+/// A checkpoint is committed when L1 or the disk tier accepted the snapshot.
+/// `ssd_hit` is set only when the disk tier accepted. Write errors stay
+/// visible through the counter even when L1 succeeded.
 fn checkpoint_receipt_from_prefix_store(
     request_id: RequestId,
     cut: u32,
     telemetry: &MlxPrefixCacheTelemetry,
     l1_resident: bool,
 ) -> ax_engine_core::prefill_handoff::CheckpointReceipt {
-    let accepted = telemetry.stores > 0
-        || l1_resident
-        || telemetry.disk_store_committed > 0
-        || telemetry.disk_store_enqueued > 0;
+    let disk_accepted = telemetry.disk_store_committed > 0 || telemetry.disk_store_enqueued > 0;
+    let accepted = telemetry.stores > 0 || l1_resident || disk_accepted;
     if !accepted {
         return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(request_id, cut);
     }
@@ -4590,7 +4593,7 @@ fn checkpoint_receipt_from_prefix_store(
         request_id,
         cut,
         committed: true,
-        ssd_hit: true,
+        ssd_hit: disk_accepted,
         unsupported_layout: false,
         device_capture: true,
     }
@@ -4633,6 +4636,17 @@ impl ExecutionRunner for MlxRunner {
             );
         }
         if state.cache.seq_len() < cut || state.prompt_prefix_tokens.len() < cut {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        // Linear, GDN, and QSA snapshots are sound only when captured at
+        // `cut`. `trim_to` cannot roll that state back, so a longer cache
+        // must be a counted miss instead of a trimmed store.
+        if state.cache.seq_len() != cut && state.cache.recurrent_capture_requires_exact_prefix() {
+            self.checkpoint_unsupported
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
                 request_id,
                 committed_limit,

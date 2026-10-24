@@ -12,8 +12,8 @@ use crate::kv::{
 };
 use crate::prefill_handoff::{
     CheckpointReason, CommittedPrefix, MAX_PRESSURE_SPILLS, MODEL_PREFILL_SAFETY_CAP,
-    MemoryPressureSample, PrefillChunkPolicy, SpillVictimProfile, chunk_history_is_miss,
-    env_switch_enabled, planned_chunk_history, prefix_adoption_allowed,
+    MemoryPressureSample, NON_REUSABLE_CHUNK_HISTORY_MARK, PrefillChunkPolicy, SpillVictimProfile,
+    chunk_history_is_miss, env_switch_enabled, planned_chunk_history, prefix_adoption_allowed,
     published_adaptive_prefill_quantum, spill_victim_eligible,
 };
 use crate::request::RequestRecord;
@@ -33,6 +33,7 @@ use crate::sampling::{
 };
 use crate::scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
+    chunk_history_marked_non_reusable,
 };
 use thiserror::Error;
 use tracing::{debug, debug_span, error, field, trace, warn};
@@ -2247,6 +2248,12 @@ impl EngineCore {
             let history_snapshot = {
                 let history = self.chunk_histories.entry(item.request_id).or_default();
                 history.push(delta);
+                if chunk_history_marked_non_reusable(
+                    &batch.route_metadata.crossover_decisions,
+                    item.request_id.0,
+                ) {
+                    history.push(NON_REUSABLE_CHUNK_HISTORY_MARK);
+                }
                 history.clone()
             };
             let prefix = CommittedPrefix::from_committed_tokens(tokens, history_snapshot, false);
@@ -2379,7 +2386,10 @@ impl EngineCore {
         if receipt.adopts_cursor(prefix.cut) && !chunk_history_is_miss(&prefix, &planned) {
             self.runner.release_restorable_state(victim);
             self.request_manager.block_on_memory(victim)?;
-            self.ssd_spill_hits = self.ssd_spill_hits.saturating_add(1);
+            // Disk-tier metric. Cursor adoption is `adopts_cursor`.
+            if receipt.ssd_hit {
+                self.ssd_spill_hits = self.ssd_spill_hits.saturating_add(1);
+            }
             if let Some(stored) = self.committed_prefixes.get_mut(&victim) {
                 stored.device_capture = true;
             }

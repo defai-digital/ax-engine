@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use crate::generation::{
     GenerationKind, GenerationProgress, GenerationStrategyDescriptor, WorkUnitKind,
@@ -371,8 +372,27 @@ impl TokenBudgetTelemetry {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Scheduler;
+/// Route key for a text prefill whose frozen quantum was broken by the
+/// starvation bound. The engine appends [`crate::prefill_handoff::NON_REUSABLE_CHUNK_HISTORY_MARK`]
+/// so a later adoption misses. The forward itself stays a normal chunk.
+pub const CHUNK_HISTORY_NON_REUSABLE_ROUTE_PREFIX: &str = "ax_scheduler_chunk_history_non_reusable";
+
+pub fn chunk_history_non_reusable_route_key(request_id: u64) -> String {
+    format!("{CHUNK_HISTORY_NON_REUSABLE_ROUTE_PREFIX}.{request_id}")
+}
+
+pub fn chunk_history_marked_non_reusable(decisions: &[(String, u32)], request_id: u64) -> bool {
+    let key = chunk_history_non_reusable_route_key(request_id);
+    decisions
+        .iter()
+        .any(|(existing, value)| existing == &key && *value > 0)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Scheduler {
+    /// Consecutive frozen-quantum defers since the request was last scheduled.
+    frozen_quantum_defers: Arc<Mutex<BTreeMap<RequestId, u32>>>,
+}
 
 /// Fallback budget for *unrecognized* pressure labels only: one token so
 /// decode can still progress. No current label maps here — `kv_exhausted`
@@ -389,13 +409,31 @@ const MEMORY_PRESSURE_MAX_PREFILL_TOKENS_PER_STEP: u32 = 1;
 const MEMORY_PRESSURE_SOFT_PREFILL_TOKENS_PER_STEP: u32 = 256;
 const MEMORY_PRESSURE_KV_EXHAUSTED: &str = "kv_exhausted";
 const MEMORY_PRESSURE_KV_LOW_PREFIX: &str = "kv_low_free_blocks:";
+/// Consecutive steps a frozen quantum may be deferred for lack of budget.
+/// The 64 matches the request manager's memory-block starvation bound. The
+/// next step schedules a partial chunk and marks that chunk history
+/// non-reusable. Output stays exact because the step is still a normal prefill.
+const FROZEN_QUANTUM_DEFER_LIMIT: u32 = 64;
 
 impl Scheduler {
     pub(crate) fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    fn frozen_quantum_defers(&self) -> std::sync::MutexGuard<'_, BTreeMap<RequestId, u32>> {
+        self.frozen_quantum_defers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub(crate) fn plan(&self, input: &SchedulerInput) -> SchedulePlan {
+        let mut frozen_quantum_defers = self.frozen_quantum_defers();
+        frozen_quantum_defers.retain(|request_id, _| {
+            input
+                .request_snapshots
+                .iter()
+                .any(|snapshot| snapshot.request_id == *request_id)
+        });
         // Borrow the snapshots: each owns the request's full prompt/output
         // history, and planning only reads them.
         let mut runnable = input
@@ -522,6 +560,7 @@ impl Scheduler {
                 .iter()
                 .any(|(_, mode)| *mode == ExecutionMode::Decode);
         let mut scheduled_adaptive_quanta: Vec<(RequestId, u32)> = Vec::new();
+        let mut non_reusable_chunk_requests: Vec<RequestId> = Vec::new();
 
         // Splittable-text prefill candidates share the fair chunk; multimodal
         // prefills stay atomic and are excluded from the fair-N denominator.
@@ -659,16 +698,26 @@ impl Scheduler {
                 })
                 .flatten()
                 .filter(|quantum| *quantum > 0);
+            let mut schedule_partial_frozen_quantum = false;
             if let Some(frozen) = frozen_quantum {
                 let remaining_prompt = snapshot
                     .prompt_len
                     .saturating_sub(snapshot.processed_prompt_tokens);
                 // A frozen quantum is not shrunk mid-request. Defer the whole
-                // remainder when this step cannot fund that quantum.
+                // remainder when this step cannot fund that quantum. After
+                // `FROZEN_QUANTUM_DEFER_LIMIT` consecutive defers, schedule a
+                // partial chunk of `remaining_budget` instead of starving.
                 if remaining_budget < frozen && remaining_prompt > frozen {
-                    token_budget.record_skipped(mode, requested_tokens);
-                    deferred_requests.push(snapshot.request_id);
-                    continue;
+                    let deferrals = frozen_quantum_defers
+                        .entry(snapshot.request_id)
+                        .or_insert(0);
+                    *deferrals = deferrals.saturating_add(1);
+                    if *deferrals < FROZEN_QUANTUM_DEFER_LIMIT {
+                        token_budget.record_skipped(mode, requested_tokens);
+                        deferred_requests.push(snapshot.request_id);
+                        continue;
+                    }
+                    schedule_partial_frozen_quantum = true;
                 }
             }
             let adaptive_quantum = if let Some(frozen) = frozen_quantum {
@@ -741,6 +790,11 @@ impl Scheduler {
                 mode_route_seeds.push(candidate_route);
             }
 
+            if schedule_partial_frozen_quantum {
+                non_reusable_chunk_requests.push(snapshot.request_id);
+            }
+            frozen_quantum_defers.remove(&snapshot.request_id);
+
             remaining_budget -= item.scheduled_token_count;
             if let (ExecutionMode::Prefill, Some(prefill_budget)) =
                 (item.mode, pressure_prefill_budget)
@@ -794,6 +848,13 @@ impl Scheduler {
                     &mut route_metadata.crossover_decisions,
                     &adaptive_prefill_request_route_key(request_id.0),
                     *quantum,
+                );
+            }
+            for request_id in &non_reusable_chunk_requests {
+                upsert_route_decision(
+                    &mut route_metadata.crossover_decisions,
+                    &chunk_history_non_reusable_route_key(request_id.0),
+                    1,
                 );
             }
             if let Some(cap) = decode_cap {
@@ -1133,6 +1194,10 @@ fn route_seed(snapshot: &RequestSnapshot) -> RouteMetadata {
 mod tests {
     use super::*;
     use crate::ids::{ModelId, SequenceNo};
+    use crate::prefill_handoff::{
+        CommittedPrefix, NON_REUSABLE_CHUNK_HISTORY_MARK, chunk_history_is_miss,
+        planned_chunk_history, prefix_adoption_allowed,
+    };
     use std::collections::BTreeSet;
 
     fn make_snapshot(
@@ -2650,5 +2715,51 @@ mod tests {
         let schedule_plan = scheduler.plan(&input);
         assert!(schedule_plan.selected_requests.is_empty());
         assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+    }
+
+    #[test]
+    fn frozen_quantum_defer_is_bounded() {
+        let scheduler = Scheduler::new();
+        let prompt = vec![7u32; 32];
+        let mut input = SchedulerInput::new(
+            StepId(1),
+            vec![make_snapshot(1, 1, "qwen3", &prompt, 0, &[], 8)],
+            None,
+            3,
+        );
+        input.adaptive_prefill = true;
+        input.frozen_prefill_quantums.insert(RequestId(1), 8);
+
+        for step in 1..FROZEN_QUANTUM_DEFER_LIMIT {
+            let plan = scheduler.plan(&input);
+            assert!(
+                plan.selected_requests.is_empty(),
+                "step {step} must still defer a frozen quantum the budget cannot fund"
+            );
+            assert_eq!(plan.deferred_requests, vec![RequestId(1)]);
+        }
+
+        let plan = scheduler.plan(&input);
+        assert_eq!(plan.selected_requests, vec![RequestId(1)]);
+        let batch = plan.execution_batch.expect("aged partial batch");
+        assert_eq!(batch.items[0].scheduled_token_count, 3);
+        assert!(chunk_history_marked_non_reusable(
+            &batch.route_metadata.crossover_decisions,
+            1
+        ));
+        let history = vec![
+            batch.items[0].scheduled_token_count,
+            NON_REUSABLE_CHUNK_HISTORY_MARK,
+        ];
+        let prefix = CommittedPrefix::from_committed_tokens(prompt[..3].to_vec(), history, true);
+        let planned = planned_chunk_history(prefix.cut, 8);
+        assert!(chunk_history_is_miss(&prefix, &planned));
+        assert!(!prefix_adoption_allowed(&prefix, &planned));
+
+        let again = scheduler.plan(&input);
+        assert!(
+            again.selected_requests.is_empty(),
+            "the defer streak restarts after the partial chunk is scheduled"
+        );
     }
 }

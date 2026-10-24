@@ -2457,6 +2457,19 @@ impl MlxKVCache {
                 .is_some_and(crate::model::qwen4_exp::Qwen4ExpState::has_media)
     }
 
+    /// Gated-delta conv or recurrent state.
+    pub(crate) fn has_generic_linear_recurrent_state(&self) -> bool {
+        self.linear_layers
+            .iter()
+            .any(|state| state.conv_state.is_some() || state.recurrent_state.is_some())
+    }
+
+    /// Linear, GDN, or QSA state is valid only at the token position that
+    /// produced it. A checkpoint may store it when `seq_len` is already the cut.
+    pub(crate) fn recurrent_capture_requires_exact_prefix(&self) -> bool {
+        self.qwen4_exp.is_some() || self.has_generic_linear_recurrent_state()
+    }
+
     pub(crate) fn serialize_to_bytes(&self) -> Vec<u8> {
         // Fail closed before writing anything: DeepSeek V4 compressor layers
         // cannot round-trip, and this infallible signature would otherwise

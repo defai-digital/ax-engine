@@ -29,7 +29,7 @@ pub(crate) fn with_isolated_peak_memory(measure: impl FnOnce()) {
     );
     let combined = format!("{stdout}{stderr}");
     assert!(
-        combined.contains("1 passed"),
+        combined.contains("test result: ok. 1 passed;"),
         "isolated peak measurement did not run {name}\n{combined}"
     );
 }
