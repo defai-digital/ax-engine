@@ -9213,3 +9213,200 @@ fn cuts_only_restore_is_not_recorded_as_priced_restore() {
         RestoreValueDecision::RamBaseline
     );
 }
+
+fn f32_zeros(shape: &[i32]) -> mlx_sys::MlxArray {
+    mlx_sys::zeros(shape, mlx_sys::MlxDtype::Float32, None)
+}
+
+fn f32_ones(len: i32) -> mlx_sys::MlxArray {
+    let data = vec![1.0f32; len as usize];
+    mlx_sys::MlxArray::from_raw_data(
+        data.as_ptr() as *const u8,
+        std::mem::size_of_val(data.as_slice()),
+        &[len],
+        mlx_sys::MlxDtype::Float32,
+    )
+}
+
+fn dense_qw(shape: &[i32]) -> QuantizedWeight {
+    QuantizedWeight::new(f32_zeros(shape), None, None)
+}
+
+/// One Qwen3.5 linear layer whose shapes match `dflash2_tiny_fixture` (hidden 8,
+/// vocab 16) so a linear verify round can reach the fence.
+fn tiny_linear_dflash_weights() -> ModelWeights {
+    let hidden = 8;
+    let mut layer = runner_test_layer();
+    layer.attn_norm = f32_ones(hidden);
+    layer.ffn_norm = f32_ones(hidden);
+    layer.gate_proj = Some(dense_qw(&[hidden, hidden]));
+    layer.up_proj = Some(dense_qw(&[hidden, hidden]));
+    layer.down_proj = Some(dense_qw(&[hidden, hidden]));
+    layer.linear_attn = Some(crate::weights::LinearAttentionWeights {
+        in_proj_qkv: Some(dense_qw(&[68, hidden])),
+        in_proj_z: Some(dense_qw(&[4, hidden])),
+        in_proj_a: Some(dense_qw(&[1, hidden])),
+        in_proj_b: Some(dense_qw(&[1, hidden])),
+        in_proj_qkvz: None,
+        in_proj_ba: None,
+        fused_qkvz_ba: None,
+        prefill_q2_qkvz: None,
+        prefill_q2_ba: None,
+        conv1d_bias: None,
+        d: None,
+        conv1d_dense: f32_zeros(&[68, 4, 1]),
+        dt_bias: f32_zeros(&[1]),
+        a_log: f32_zeros(&[1]),
+        norm: f32_ones(4),
+        out_proj: dense_qw(&[hidden, 4]),
+    });
+    let mut weights = runner_test_weights(vec![layer]);
+    let embedding = dense_qw(&[16, hidden]);
+    weights.token_embedding = embedding.clone();
+    weights.lm_head = embedding;
+    weights.final_norm = Some(f32_ones(hidden));
+    weights
+}
+
+fn decode_claim(id: u64, token: u32) -> ax_engine_core::ExecutionItem {
+    ax_engine_core::ExecutionItem {
+        request_id: RequestId(id),
+        mode: ExecutionMode::Decode,
+        planned_work_unit: ax_engine_core::WorkUnitKind::TokenDecode,
+        input_token_slice: vec![token],
+        reused_prefix_token_slice: Vec::new(),
+        position_range: PositionRange {
+            start: 4,
+            end_exclusive: 5,
+        },
+        scheduled_token_count: 1,
+        block_table_ref: RequestId(id),
+        prefix_tokens_reused: 0,
+        prefix_blocks_reused: 0,
+    }
+}
+
+#[test]
+fn linear_verify_fence_failure_fails_the_request_and_the_next_request_runs() {
+    assert!(
+        !crate::fastpath::tree_verify_enabled(),
+        "the linear fence is not on the tree-verify route"
+    );
+    assert!(
+        crate::fastpath::mtp_relaxed_target_verify_enabled()
+            && crate::fastpath::mtp_linear_projected_replay_enabled(),
+        "linear verify is off, so this request never reaches the fence"
+    );
+
+    let mut manifest = qwen35_linear_manifest();
+    manifest.hidden_size = 8;
+    manifest.intermediate_size = 8;
+    manifest.rms_norm_eps = Some(1e-6);
+    for tensor in &mut manifest.tensors {
+        tensor.shape = match tensor.role {
+            NativeTensorRole::TokenEmbedding | NativeTensorRole::LmHead => vec![16, 8],
+            NativeTensorRole::FinalNorm
+            | NativeTensorRole::AttentionNorm
+            | NativeTensorRole::FfnNorm => vec![8],
+            NativeTensorRole::FfnGate | NativeTensorRole::FfnUp | NativeTensorRole::FfnDown => {
+                vec![8, 8]
+            }
+            NativeTensorRole::LinearAttentionInProjQkv => vec![68, 8],
+            NativeTensorRole::LinearAttentionInProjZ => vec![4, 8],
+            NativeTensorRole::LinearAttentionInProjA | NativeTensorRole::LinearAttentionInProjB => {
+                vec![1, 8]
+            }
+            NativeTensorRole::LinearAttentionOutProj => vec![8, 4],
+            _ => tensor.shape.clone(),
+        };
+    }
+    let artifacts = write_artifacts(manifest);
+    let shared_weights = MlxSharedWeightsCell::new();
+    shared_weights.publish(Arc::new(tiny_linear_dflash_weights()));
+    let mut runner = MlxRunner::from_artifacts_with_runtime_shares(
+        &artifacts,
+        8,
+        true,
+        true,
+        None,
+        Some(&shared_weights),
+    )
+    .expect("runner");
+
+    let (drafter, _) = crate::dflash2::dflash2_tiny_fixture();
+    let width = drafter.config().target_hidden_width();
+    assert_eq!(width, runner.cfg.hidden_size as i32);
+    let hidden = mlx_sys::zeros(&[1, 2, width], mlx_sys::MlxDtype::Bfloat16, None);
+    mlx_sys::eval(&[&hidden]);
+    let mut dflash = dflash2_decode::Dflash2RequestState::new(drafter.clone());
+    dflash.stage_pending_hidden_for_test(hidden, 0);
+    let mut state = RequestState::new(1, 41, None);
+    state.next_model_last_token = Some(3);
+    state.dflash2 = Some(dflash);
+    runner.dflash2 = Some(drafter);
+    runner.states.lock().insert(RequestId(41), state);
+
+    let mut failed_ctx = ctx_with_argmax(true);
+    failed_ctx.request_id = RequestId(41);
+    failed_ctx.prompt_len = 4;
+    failed_ctx.generated_len = 1;
+    failed_ctx.max_output_tokens = 8;
+    // Drop a leftover injection if the forward never reaches the fence.
+    struct ClearFenceHook;
+    impl Drop for ClearFenceHook {
+        fn drop(&mut self) {
+            let _ = crate::dflash2::take_dflash2_capture_verify_eval_error();
+        }
+    }
+    let _clear_hook = ClearFenceHook;
+    crate::dflash2::fail_next_dflash2_capture_verify_eval_for_test(
+        "injected linear verify fence failure",
+    );
+    let failed = runner.run_item(
+        &decode_claim(41, 3),
+        Some(&failed_ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        failed.update.error.as_deref(),
+        Some("DFlash2 linear verify fence failed: injected linear verify fence failure")
+    );
+    assert_eq!(failed.update.tokens_executed, 0);
+    assert_eq!(failed.update.output_token, None);
+    assert!(failed.update.output_tokens.is_empty());
+    assert!(!runner.states.lock().contains_key(&RequestId(41)));
+
+    let mut followed_ctx = ctx_with_argmax(true);
+    followed_ctx.request_id = RequestId(42);
+    followed_ctx.prompt_len = 4;
+    followed_ctx.generated_len = 0;
+    followed_ctx.max_output_tokens = 8;
+    let mut followed_state = RequestState::new(1, 42, None);
+    followed_state.cached_prefill_output_token = Some(11);
+    runner.states.lock().insert(RequestId(42), followed_state);
+    let followed = runner.run_item(
+        &decode_claim(42, 3),
+        Some(&followed_ctx),
+        "qwen3_5",
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(
+        followed.update.error.is_none(),
+        "{:?}",
+        followed.update.error
+    );
+    assert_eq!(followed.update.output_token, Some(11));
+    assert!(runner.states.lock().contains_key(&RequestId(42)));
+    fs::remove_dir_all(artifacts.root_dir()).expect("remove synthetic artifacts");
+}
