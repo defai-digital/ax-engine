@@ -667,15 +667,27 @@ pub(crate) async fn run_bridged(
         return Ok(Json(from_openai_chat_response(&id, &chat)).into_response());
     }
 
+    Ok(bridge_stream(response.into_body(), id, model))
+}
+
+fn bridge_stream(body: Body, id: String, model: String) -> Response {
     let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(64);
-    let mut upstream = response.into_body().into_data_stream();
+    let mut upstream = body.into_data_stream();
     tokio::spawn(async move {
         let mut translator = StreamTranslator::default();
         if tx.send(Ok(translator.start(&id, &model))).await.is_err() {
             return;
         }
         let mut buffer = String::new();
-        while let Some(frame) = upstream.next().await {
+        loop {
+            let frame = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                frame = upstream.next() => frame,
+            };
+            let Some(frame) = frame else {
+                break;
+            };
             let bytes = match frame {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -716,12 +728,12 @@ pub(crate) async fn run_bridged(
         }
         let _ = tx.send(Ok(translator.finish())).await;
     });
-    Ok((
+    (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/event-stream")],
         Body::from_stream(ReceiverStream::new(rx)),
     )
-        .into_response())
+        .into_response()
 }
 
 /// `/v1/messages/count_tokens`: prompt tokens of the rendered request on the
@@ -767,6 +779,27 @@ pub(crate) async fn anthropic_count_tokens(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn disconnect_drops_an_idle_upstream_stream() {
+        let (upstream_tx, upstream_rx) = mpsc::channel::<Result<String, std::io::Error>>(1);
+        let response = bridge_stream(
+            Body::from_stream(ReceiverStream::new(upstream_rx)),
+            "msg-cancel".to_string(),
+            "m".to_string(),
+        );
+        let mut downstream = response.into_body().into_data_stream();
+        let start = downstream.next().await.unwrap().unwrap();
+        assert!(
+            std::str::from_utf8(&start)
+                .unwrap()
+                .contains("message_start")
+        );
+        drop(downstream);
+        tokio::time::timeout(std::time::Duration::from_secs(1), upstream_tx.closed())
+            .await
+            .expect("disconnect must release upstream even while no model output is arriving");
+    }
 
     #[test]
     fn request_translation_covers_tools_results_thinking_and_billing() {
