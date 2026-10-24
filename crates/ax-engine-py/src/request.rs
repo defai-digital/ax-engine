@@ -36,6 +36,7 @@ pub(crate) fn build_generate_request(
     metadata: Option<String>,
 ) -> GenerateRequest {
     GenerateRequest {
+        prefill_hints: Default::default(),
         model_id,
         input_tokens,
         input_text,

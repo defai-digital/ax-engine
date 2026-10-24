@@ -769,6 +769,38 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
     }
 }
 
+/// One rendered prompt plus the byte offsets where assistant turns start
+/// (history turns and the generation prompt). The offsets index `text`
+/// exactly as rendered, so one full tokenization can map them to token
+/// indices without re-encoding individual messages.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RenderedPrompt {
+    pub(crate) text: String,
+    pub(crate) assistant_byte_starts: Vec<usize>,
+}
+
+/// Map assistant byte starts to token indices through the token offsets of
+/// the **single full-prompt tokenization**. Returns indices in input order,
+/// deduplicated; every index is a valid position in `token_offsets`.
+pub(crate) fn token_starts_for_byte_starts(
+    token_offsets: &[(usize, usize)],
+    assistant_byte_starts: &[usize],
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    for start in assistant_byte_starts {
+        let index = token_offsets
+            .iter()
+            .position(|(token_start, token_end)| *token_end > *start || token_start >= start);
+        if let Some(index) = index {
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+            if out.last() != Some(&index) {
+                out.push(index);
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn render_prompt(
     model_id: &str,
     messages: &[(String, String)],
@@ -810,6 +842,25 @@ pub(crate) fn render_prompt_with_template_and_framing(
     qwen_thinking_enabled: bool,
     deepseek_v4_framing: Option<bool>,
 ) -> Result<String, String> {
+    render_prompt_with_template_and_framing_offsets(
+        model_id,
+        template,
+        messages,
+        qwen_thinking_enabled,
+        deepseek_v4_framing,
+    )
+    .map(|rendered| rendered.text)
+}
+
+/// Offset-preserving variant of
+/// [`render_prompt_with_template_and_framing`].
+pub(crate) fn render_prompt_with_template_and_framing_offsets(
+    model_id: &str,
+    template: ChatPromptTemplate,
+    messages: &[(String, String)],
+    qwen_thinking_enabled: bool,
+    deepseek_v4_framing: Option<bool>,
+) -> Result<RenderedPrompt, String> {
     if messages.is_empty() {
         return Err("chat.completions requires at least one message".to_string());
     }
@@ -847,6 +898,7 @@ pub(crate) fn render_prompt_with_template(
         qwen_thinking_enabled,
         None,
     )
+    .map(|rendered| rendered.text)
 }
 
 fn render_prompt_internal(
@@ -856,11 +908,12 @@ fn render_prompt_internal(
     qwen_generation_prompt: &str,
     thinking_enabled: bool,
     deepseek_v4_framing: Option<bool>,
-) -> Result<String, String> {
+) -> Result<RenderedPrompt, String> {
     // Resolved once per render (ADR-025 Phase 2): the registry contract
     // wins when known; model-id heuristics remain the manifest-less fallback.
     let deepseek_v4 = deepseek_v4_framing.unwrap_or_else(|| is_deepseek_v4_model(model_id));
     let mut prompt = String::new();
+    let mut assistant_byte_starts = Vec::new();
     let mut qwen_tool_response_open = false;
     let mut deepseek_tool_response_open = false;
     match template {
@@ -961,6 +1014,9 @@ fn render_prompt_internal(
     }
     for (msg_index, (role, content)) in messages.iter().enumerate() {
         let role = normalize_role(role)?;
+        if role == "assistant" {
+            assistant_byte_starts.push(prompt.len());
+        }
         match template {
             ChatPromptTemplate::QwenChatMl => {
                 if matches!(role, "tool" | "function") {
@@ -1325,6 +1381,9 @@ fn render_prompt_internal(
             prompt.push_str("<|end|>");
         }
     }
+    // The generation prompt opens an assistant turn: record its start
+    // before any template-specific header is appended.
+    assistant_byte_starts.push(prompt.len());
     match template {
         ChatPromptTemplate::QwenChatMl => {
             prompt.push_str(qwen_generation_prompt);
@@ -1400,7 +1459,10 @@ fn render_prompt_internal(
             return Err(format!("unsupported chat template: {}", family.label()));
         }
     }
-    Ok(prompt)
+    Ok(RenderedPrompt {
+        text: prompt,
+        assistant_byte_starts,
+    })
 }
 
 fn qwen_assistant_generation_prompt(model_id: &str, thinking_enabled: bool) -> &'static str {
@@ -1788,6 +1850,46 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn assistant_offsets_match_full_tokenization() {
+        // Tokenize the whole rendered prompt once (one token per byte here)
+        // and map each assistant byte start through those offsets.
+        let prompt = "<|im_start|>system\nrules<|im_end|>\n<|im_start|>assistant\none<|im_end|>\n<|im_start|>assistant\n";
+        let assistant_byte_starts = prompt
+            .match_indices("<|im_start|>assistant")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(assistant_byte_starts.len(), 2);
+        let token_offsets = (0..prompt.len()).map(|i| (i, i + 1)).collect::<Vec<_>>();
+        let cuts = token_starts_for_byte_starts(&token_offsets, &assistant_byte_starts);
+        assert_eq!(
+            cuts,
+            assistant_byte_starts
+                .iter()
+                .map(|start| *start as u32)
+                .collect::<Vec<_>>()
+        );
+
+        // Summing per-message encode lengths cannot reproduce these indices:
+        // template headers and separators belong to no message.
+        let per_message_sum = "rules".len() + "one".len();
+        assert_ne!(cuts[1] as usize, per_message_sum);
+
+        // Multi-byte tokens: the start maps to the token covering it, not to
+        // a position derived from token counts.
+        let token_offsets = (0..prompt.len() / 2)
+            .map(|i| (i * 2, (i + 1) * 2))
+            .collect::<Vec<_>>();
+        let cuts = token_starts_for_byte_starts(&token_offsets, &assistant_byte_starts);
+        assert_eq!(
+            cuts,
+            assistant_byte_starts
+                .iter()
+                .map(|start| (*start / 2) as u32)
+                .collect::<Vec<_>>()
+        );
+    }
 
     /// ADR-025 behavior-preservation gate: for every registered family, the
     /// registry-contract resolution must agree with the legacy model-id

@@ -40,6 +40,26 @@ pub struct RequestSubmission {
     pub max_output_tokens: u32,
     pub arrival_sequence: SequenceNo,
     pub metadata: Option<String>,
+    /// Typed prefill scheduling hints (semantic snapshot cut points).
+    /// Kept out of `metadata` so runners never parse JSON for them.
+    pub prefill_hints: PrefillHints,
+}
+
+/// Typed runner hints derived from the rendered prompt, never from
+/// per-message re-encoding (byte offsets are mapped through the single
+/// full-prompt tokenization).
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PrefillHints {
+    /// Token indices where an assistant turn starts. Each candidate is
+    /// validated by the runner (spacing, bounds) before use.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub semantic_cut_tokens: Vec<u32>,
+}
+
+impl PrefillHints {
+    pub fn is_empty(&self) -> bool {
+        self.semantic_cut_tokens.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -343,6 +363,7 @@ pub struct RequestRecord {
     pub max_output_tokens: u32,
     pub sampling_params: SamplingParams,
     pub workload_hints: RequestWorkloadHints,
+    pub prefill_hints: PrefillHints,
     pub execution_plan_ref: Option<String>,
     pub route_metadata_hint: RouteMetadata,
     pub block_table: BlockTable,
@@ -387,6 +408,7 @@ impl RequestRecord {
             max_output_tokens: submission.max_output_tokens,
             sampling_params: submission.sampling_params,
             workload_hints: RequestWorkloadHints::from_metadata(submission.metadata.as_deref()),
+            prefill_hints: submission.prefill_hints,
             execution_plan_ref: None,
             route_metadata_hint: RouteMetadata::empty(),
             block_table,
@@ -435,6 +457,7 @@ impl RequestRecord {
             max_output_tokens: self.max_output_tokens,
             cancel_requested: self.cancel_requested,
             has_multimodal_inputs: !self.multimodal_inputs.is_empty(),
+            prefill_hints: self.prefill_hints.clone(),
             execution_plan_ref: self.execution_plan_ref.clone(),
             route_metadata_hint: self.route_metadata_hint.clone(),
             terminal_stop_reason: self.terminal_stop_reason,
@@ -590,6 +613,7 @@ pub struct RequestSnapshot {
     /// split across execution items), so the scheduler must defer rather than
     /// chunk prefill work for requests that carry multimodal inputs.
     pub has_multimodal_inputs: bool,
+    pub prefill_hints: PrefillHints,
     pub execution_plan_ref: Option<String>,
     pub route_metadata_hint: RouteMetadata,
     pub terminal_stop_reason: Option<StopReason>,
@@ -641,6 +665,7 @@ mod tests {
 
     fn make_record() -> RequestRecord {
         let submission = RequestSubmission {
+            prefill_hints: Default::default(),
             request_id: RequestId(1),
             model_id: ModelId("qwen3".into()),
             input_tokens: vec![1, 2, 3],

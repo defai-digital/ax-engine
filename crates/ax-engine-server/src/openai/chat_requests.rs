@@ -225,7 +225,34 @@ pub(crate) fn render_openai_chat_prompt_with_family(
     tool_choice: Option<&Value>,
     options: ChatPromptRenderOptions,
 ) -> Result<String, HttpErrorResponse> {
+    render_openai_chat_prompt_with_family_offsets(
+        model_id,
+        family_hint,
+        messages,
+        tools,
+        tool_choice,
+        options,
+    )
+    .map(|rendered| rendered.text)
+}
+
+/// Offset-preserving variant of
+/// [`render_openai_chat_prompt_with_family`]. Families with a dedicated
+/// renderer that does not expose byte offsets return an empty
+/// `assistant_byte_starts`, which the request edge treats as "no hint".
+pub(crate) fn render_openai_chat_prompt_with_family_offsets(
+    model_id: &str,
+    family_hint: Option<&str>,
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+    options: ChatPromptRenderOptions,
+) -> Result<chat::RenderedPrompt, HttpErrorResponse> {
     validate_openai_tool_names(messages, tools, tool_choice)?;
+    let no_offsets = |text: String| chat::RenderedPrompt {
+        text,
+        assistant_byte_starts: Vec::new(),
+    };
     // Always use the dedicated Gemma 4 renderer so multi-turn history,
     // tool-call turn continuation, and enable_thinking stay aligned with
     // Google's 2026-07-09 canonical chat template (not only when tools are
@@ -240,39 +267,42 @@ pub(crate) fn render_openai_chat_prompt_with_family(
             tools,
             tool_choice,
             options.enable_thinking,
-        );
+        )
+        .map(no_offsets);
     }
     if matches!(
         chat::resolve_chat_template(model_id, family_hint),
         chat::ChatPromptTemplate::Glm47
     ) {
-        return render_glm_openai_chat_prompt(model_id, messages, tools, tool_choice);
+        return render_glm_openai_chat_prompt(model_id, messages, tools, tool_choice)
+            .map(no_offsets);
     }
     if matches!(
         chat::resolve_chat_template(model_id, family_hint),
         chat::ChatPromptTemplate::DeepSeekChat
     ) {
-        return render_deepseek_openai_chat_prompt(model_id, messages, tools, tool_choice, options);
+        return render_deepseek_openai_chat_prompt(model_id, messages, tools, tool_choice, options)
+            .map(no_offsets);
     }
     let template = chat::resolve_chat_template(model_id, family_hint);
     // Always use the dedicated Ministral renderer: structured tool-call history
     // can be present even when this request does not redeclare the tool schemas.
     if matches!(template, chat::ChatPromptTemplate::MinistralInstruct) {
-        return render_ministral_openai_chat_prompt(messages, tools);
+        return render_ministral_openai_chat_prompt(messages, tools).map(no_offsets);
     }
     // Llama 4 hub: inject function schemas into the first user turn (not a
     // Qwen-style system tools block).
     if matches!(template, chat::ChatPromptTemplate::Llama4)
         && tools.map(openai_value_is_present).unwrap_or(false)
     {
-        return render_llama4_openai_chat_prompt(messages, tools);
+        return render_llama4_openai_chat_prompt(messages, tools).map(no_offsets);
     }
     // Llama 3 hub: tools go into the first user turn with a short JSON-call
     // instruction (AX still omits the default knowledge-date system preamble).
     if matches!(template, chat::ChatPromptTemplate::Llama3)
         && tools.map(openai_value_is_present).unwrap_or(false)
     {
-        return render_llama3_openai_chat_prompt(messages, tools);
+        return render_llama3_openai_chat_prompt(messages, tools).map(no_offsets);
     }
     let tool_contract_style = qwen_tool_contract_style(model_id);
     // HyV3's hub jinja never replays reasoning into history: every assistant
@@ -289,7 +319,7 @@ pub(crate) fn render_openai_chat_prompt_with_family(
     )?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
-    chat::render_prompt_with_template_and_framing(
+    chat::render_prompt_with_template_and_framing_offsets(
         model_id,
         template,
         &rendered_messages,

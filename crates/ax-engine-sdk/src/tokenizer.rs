@@ -30,6 +30,11 @@ pub enum EngineTokenizerError {
     Decode(String),
 }
 
+/// One full tokenization paired with per-token byte offsets into the same
+/// text: `(token ids, [(start, end), ...])`. The offsets are what maps
+/// rendered-prompt byte positions to token indices for semantic cut points.
+pub type EncodedTokenByteOffsets = (Vec<u32>, Vec<(usize, usize)>);
+
 /// Thin wrapper over `tokenizers::Tokenizer`. Cloned cheaply (the
 /// inner tokenizer is `Arc`-shared internally by the upstream crate).
 #[derive(Clone)]
@@ -249,6 +254,40 @@ impl EngineTokenizer {
             }
         }
         Ok(ids)
+    }
+
+    /// Encode `text` once and return token byte offsets into `text`.
+    ///
+    /// Callers that need prompt positions (semantic snapshot cut points)
+    /// must map through this full tokenization instead of summing
+    /// per-message encode lengths: template headers, special tokens and
+    /// whitespace merges make per-message lengths non-additive.
+    pub fn encode_with_byte_offsets(
+        &self,
+        text: &str,
+    ) -> Result<EncodedTokenByteOffsets, EngineTokenizerError> {
+        let encoding = self
+            .inner
+            .encode(text, false)
+            .map_err(|e| EngineTokenizerError::Encode(e.to_string()))?;
+        let ids = encoding.get_ids().to_vec();
+        // `get_offsets` is char-indexed; convert once per char boundary.
+        let mut char_to_byte = Vec::with_capacity(text.chars().count() + 1);
+        for (byte_index, _) in text.char_indices() {
+            char_to_byte.push(byte_index);
+        }
+        char_to_byte.push(text.len());
+        let byte_offsets = encoding
+            .get_offsets()
+            .iter()
+            .map(|(start, end)| {
+                (
+                    char_to_byte.get(*start).copied().unwrap_or(text.len()),
+                    char_to_byte.get(*end).copied().unwrap_or(text.len()),
+                )
+            })
+            .collect();
+        Ok((ids, byte_offsets))
     }
 
     /// Encode a single string using the tokenizer's own special-token handling.

@@ -12,6 +12,7 @@ use ax_engine_core::{
 
 fn submission(id: u64, seq: u64, tokens: Vec<u32>) -> RequestSubmission {
     RequestSubmission {
+        prefill_hints: Default::default(),
         request_id: RequestId(id),
         model_id: ModelId("testmodel".into()),
         input_tokens: tokens,

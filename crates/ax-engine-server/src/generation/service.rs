@@ -2573,6 +2573,7 @@ mod tests {
             .start_stream(
                 9001,
                 GenerateRequest {
+                    prefill_hints: Default::default(),
                     model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3, 4],
                     input_text: None,
@@ -2666,6 +2667,7 @@ mod tests {
     fn cancelling_a_terminal_stepwise_request_returns_its_report() {
         let mut session = EngineSession::new_deterministic_native_for_tests();
         let request = ax_engine_sdk::GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2, 3],
             input_text: None,
@@ -2710,6 +2712,7 @@ mod tests {
             .start_stream(
                 42,
                 GenerateRequest {
+                    prefill_hints: Default::default(),
                     model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3, 4],
                     input_text: None,
@@ -2763,6 +2766,7 @@ mod tests {
             .submit_stepwise(
                 42,
                 GenerateRequest {
+                    prefill_hints: Default::default(),
                     model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3, 4],
                     input_text: None,
@@ -3110,6 +3114,7 @@ mod tests {
             .start_stream(
                 4242,
                 GenerateRequest {
+                    prefill_hints: Default::default(),
                     model_id: "qwen3".to_string(),
                     input_tokens: vec![1, 2, 3],
                     input_text: None,

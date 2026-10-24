@@ -120,6 +120,7 @@ impl LongPrefillVsDecode {
 
     fn build_long_prefill_request(&self, seed: u64) -> GenerateRequest {
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: self.model_id.clone(),
             // The long-prefill request keeps its decode budget tiny so the
             // measurement focuses on prefill cost, not on its own decode
@@ -144,6 +145,7 @@ impl LongPrefillVsDecode {
     fn build_short_decode_requests(&self, seed: u64) -> Vec<GenerateRequest> {
         (0..self.concurrent_short_requests as usize)
             .map(|i| GenerateRequest {
+                prefill_hints: Default::default(),
                 model_id: self.model_id.clone(),
                 input_tokens: synthetic_prompt_tokens(
                     self.short_prefix_tokens,

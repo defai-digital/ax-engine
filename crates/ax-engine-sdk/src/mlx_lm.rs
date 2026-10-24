@@ -980,6 +980,7 @@ mod tests {
 
     fn text_request(prompt: &str) -> GenerateRequest {
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: Vec::new(),
             input_text: Some(prompt.to_string()),

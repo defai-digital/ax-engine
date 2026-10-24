@@ -178,6 +178,7 @@ mod tests {
 
     fn sample_request() -> GenerateRequest {
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: "qwen3".to_string(),
             input_tokens: vec![1, 2],
             input_text: None,

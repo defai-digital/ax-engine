@@ -122,7 +122,9 @@ mod mtp_step_trace;
 mod mtp_tuning;
 mod pipeline;
 mod prefix_cache;
+mod restore_value;
 mod runner_telemetry;
+mod snapshot_cuts;
 mod step_telemetry;
 mod util;
 
@@ -133,6 +135,8 @@ use mtp_ngram_gates::*;
 use mtp_profitability::*;
 use mtp_routing::*;
 use mtp_tuning::*;
+use restore_value::*;
+use snapshot_cuts::*;
 use step_telemetry::*;
 
 use pipeline::*;
@@ -5096,6 +5100,7 @@ impl ExecutionRunner for MlxRunner {
                 &input.execution_batch.model_id,
                 input.block_size_tokens,
                 input.request_multimodal_inputs(item.request_id),
+                input.request_prefill_hints(item.request_id),
                 staged_prefill.remove(&item.request_id.0),
                 input.request_json_grammar(item.request_id),
             );
@@ -6368,6 +6373,10 @@ impl MlxRunner {
             prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
         }
 
+        record_prefill(
+            state.prompt_prefix_tokens.len(),
+            u64::from(elapsed_us(prefill_started)),
+        );
         state
             .decode_telemetry
             .record_prefill(elapsed_us(prefill_started));
@@ -6398,6 +6407,7 @@ impl MlxRunner {
         model_id: &str,
         block_size_tokens: u32,
         multimodal_inputs: Option<&RequestMultimodalInputs>,
+        prefill_hints: Option<&ax_engine_core::PrefillHints>,
         mut staged_batched_prefill: Option<StagedBatchedPrefill>,
         json_grammar: Option<&Arc<ax_engine_core::grammar::JsonGrammar>>,
     ) -> MlxItemRun {
@@ -6622,6 +6632,7 @@ impl MlxRunner {
                     !has_native_multimodal_prefill
                         && self.flash_next_mtp_prefill_eligible(is_greedy, sampling),
                     media_key.as_deref(),
+                    prefill_hints,
                 )
             };
         self.reclaim_native_prefix_capacity(
@@ -7141,6 +7152,63 @@ impl MlxRunner {
                     } else {
                         prefill_tokens
                     };
+                    // Semantic cut capture (`AX_MLX_PREFIX_SEMANTIC_CUTS`).
+                    // A semantic cut is an assistant-turn start, so it is not
+                    // block-aligned and `trim_to` cannot produce it: linear
+                    // conv/recurrent (GDN), QSA and PLE state cannot be rolled
+                    // back at store time. Split the prefill at every planned
+                    // cut and capture the live cache in place at that token
+                    // position, so the stored snapshot is exact rather than
+                    // trimmed. The plan is built from the same prompt, block
+                    // size and execution signature the restore side uses
+                    // (`snapshot_cut_plan`), so a cold store and a warm
+                    // restore agree on the partition.
+                    let mut semantic_cut_snapshots: Vec<(usize, MlxKVCache)> = Vec::new();
+                    let prefill_tokens = if self.cfg.linear_attention.is_some()
+                        && !flash_next_mtp_prefill
+                        && crate::fastpath::prefix_semantic_cuts_enabled()
+                        && self.prefix_cache.lock().enabled()
+                        && !prefill_tokens.is_empty()
+                    {
+                        let cut_start = state.cache.seq_len();
+                        let cut_end = cut_start + prefill_tokens.len();
+                        let plan = snapshot_cut_plan(
+                            cut_end,
+                            block_size_tokens as usize,
+                            prefill_hints
+                                .map(|hints| hints.semantic_cut_tokens.as_slice())
+                                .unwrap_or(&[]),
+                            true,
+                            &self.prefix_execution_signature(),
+                        );
+                        let mut cursor = 0usize;
+                        for cut in plan
+                            .cuts
+                            .iter()
+                            .filter(|cut| **cut > cut_start && **cut < cut_end)
+                        {
+                            let offset = cut - cut_start;
+                            if offset <= cursor {
+                                continue;
+                            }
+                            chunked_prefill_cache_only(
+                                &self.cfg,
+                                &self.weights,
+                                &prefill_tokens[cursor..offset],
+                                &mut state.cache,
+                                prefill_chunk_for_request,
+                                CacheOnlyPrefillLayout::Batched,
+                                crate::generate::CacheOnlyBarrier::Blocking,
+                            );
+                            if state.cache.seq_len() == *cut {
+                                semantic_cut_snapshots.push((*cut, state.cache.clone()));
+                            }
+                            cursor = offset;
+                        }
+                        &prefill_tokens[cursor..]
+                    } else {
+                        prefill_tokens
+                    };
                     let prefill_output_token = if prefill_tokens.is_empty() {
                         if !prefill_completes_prompt {
                             None
@@ -7423,7 +7491,7 @@ impl MlxRunner {
                         && rung_len <= state.prompt_prefix_tokens.len()
                         && !rung_cache.has_rotated_sliding_layers()
                     {
-                        prefix_cache.merge_from(self.store_linear_boundary_snapshot(
+                        prefix_cache.merge_from(self.store_at_cut(
                             model_id,
                             block_size_tokens,
                             &state,
@@ -7433,11 +7501,38 @@ impl MlxRunner {
                             media_key,
                         ));
                     }
+                    // Publish the semantic cut snapshots captured in place
+                    // during this item's prefill. Each cache was cloned at
+                    // exactly its cut position, so no trim is involved.
+                    for (cut_len, cut_cache) in semantic_cut_snapshots {
+                        let Some(media_key) = media_key.as_deref() else {
+                            break;
+                        };
+                        if cut_cache.seq_len() != cut_len
+                            || cut_len > state.prompt_prefix_tokens.len()
+                            || cut_cache.has_rotated_sliding_layers()
+                        {
+                            continue;
+                        }
+                        prefix_cache.merge_from(self.store_at_cut(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            cut_len,
+                            &cut_cache,
+                            u64::from(cold_prefill_us),
+                            media_key,
+                        ));
+                    }
                     let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
                     // Record pure prefill wall time before initialize_generation_state.
                     // MTP warmup and generation-state init are decode preparation, not
                     // prefill — including them in the prefill rate artificially lowers
                     // the reported throughput by 5–12 % on MTP workloads.
+                    record_prefill(
+                        effective_prefill_token_count,
+                        u64::from(elapsed_us(prefill_started)),
+                    );
                     state
                         .decode_telemetry
                         .record_prefill(elapsed_us(prefill_started));
@@ -7824,13 +7919,63 @@ impl MlxRunner {
         }
     }
 
-    /// Canonical disk key (schema v3) for `key` plus the exact tokens, or
+    /// Resolved per-layer KV quantization identity for the durable key.
+    /// `None` per layer means full precision; otherwise the bits and group
+    /// size that actually select the quantization kernel.
+    fn kv_cache_quant_identity(&self) -> String {
+        if self.cfg.kv_cache_quant.is_empty() {
+            return "f16".to_string();
+        }
+        self.cfg
+            .kv_cache_quant
+            .iter()
+            .map(|spec| match spec {
+                None => "f16".to_string(),
+                Some(spec) => format!("{}b/g{}", spec.bits, spec.group_size),
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Resolved KV storage dtype identity for the durable key.
+    fn kv_cache_dtype_identity(&self) -> String {
+        format!(
+            "{:?}",
+            crate::fastpath::activation_dtype_for_family(&self.cfg.model_family)
+        )
+        .to_lowercase()
+    }
+
+    /// Execution contract identity: the arithmetic route, prefill split
+    /// strategy, and the MLX/GPU identity that decides kernel selection.
+    /// Weight identity stays the artifact fingerprint, never a mutable
+    /// revision string.
+    fn prefix_execution_signature(&self) -> String {
+        const MLX_PIN: &str =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../mlx.version"));
+        let hardware = crate::hardware::current();
+        format!(
+            "route={};prefill_chunk={};cold_chunk={};semantic_cuts={};mlx={};soc={:?};layers={}",
+            self.prefix_cache_route_policy(),
+            self.prefill_chunk,
+            self.cold_prefill_chunk,
+            u8::from(crate::fastpath::prefix_semantic_cuts_enabled()),
+            MLX_PIN.trim(),
+            hardware.silicon_generation,
+            self.cfg.layer_count,
+        )
+    }
+
+    /// Canonical disk key (schema v4) for `key` plus the exact tokens, or
     /// `None` when the loaded model has no content-derived artifact
     /// identity — the durable L2 tier is then ineligible, because a
     /// path-only identity could restore stale KV after an in-place
     /// checkpoint replacement (spec §6).
     fn disk_prefix_key_bytes(&self, key: &MlxPrefixCacheKey, tokens: &[u32]) -> Option<Vec<u8>> {
         let fingerprint = self.artifact_fingerprint.as_deref()?;
+        let kv_quantization = self.kv_cache_quant_identity();
+        let kv_dtype = self.kv_cache_dtype_identity();
+        let execution_signature = self.prefix_execution_signature();
         Some(crate::disk_prefix_cache::canonical_key_bytes(
             &crate::disk_prefix_cache::DiskPrefixKeyFields {
                 model_id: &key.model_id,
@@ -7838,6 +7983,9 @@ impl MlxRunner {
                 route_policy: &key.route_policy,
                 layer_layout: &key.layer_layout,
                 kv_payload_version: MlxKVCache::serialize_version(),
+                kv_quantization: &kv_quantization,
+                kv_dtype: &kv_dtype,
+                execution_signature: &execution_signature,
                 block_size_tokens: key.block_size_tokens,
                 token_count: key.token_count,
                 tokens,
@@ -8052,6 +8200,173 @@ impl MlxRunner {
         }
     }
 
+    /// Bytes this runner can free before a restore: the shared FA pool's
+    /// available blocks, counted once per block. Borrowed/shared blocks are
+    /// deliberately excluded — they cannot be reclaimed under a live owner.
+    fn prefix_restore_capacity_bytes(&self) -> u64 {
+        let Some(pool) = self.shared_fa_block_pool.as_ref() else {
+            return u64::MAX;
+        };
+        let snapshot = pool.snapshot();
+        let per_block = if snapshot.allocated_blocks > 0 {
+            snapshot.slab_bytes / u64::from(snapshot.allocated_blocks)
+        } else {
+            0
+        };
+        let blocks = (0..snapshot.available_blocks)
+            .map(|id| (id, per_block, 1))
+            .collect::<Vec<_>>();
+        reclaimable_bytes(&blocks)
+    }
+
+    /// Longest block-aligned prefix resident in RAM (L1 / native), used as
+    /// the baseline `m` for restore pricing.
+    fn longest_resident_prefix_len(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        input: &[u32],
+        media_key: &str,
+    ) -> u32 {
+        let block_size = block_size_tokens as usize;
+        if block_size == 0 {
+            return 0;
+        }
+        let mut key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
+        let native_len = self
+            .native_fa_prefix_sharing_enabled()
+            .then(|| {
+                self.native_prefix_cache
+                    .lock()
+                    .longest_prefix_len(&key, input)
+            })
+            .flatten()
+            .unwrap_or(0);
+        let mut len = (input.len() / block_size) * block_size;
+        while len >= block_size {
+            key.token_count = saturating_u32(len);
+            if self
+                .prefix_cache
+                .lock()
+                .contains_exact_tokens(&key, &input[..len])
+            {
+                return saturating_u32(len.max(native_len));
+            }
+            len -= block_size;
+        }
+        saturating_u32(native_len)
+    }
+
+    /// Price durable candidates (block-aligned and semantic cuts) against the
+    /// best resident RAM prefix and return the chosen exact prefix.
+    ///
+    /// With `AX_MLX_PREFIX_RESTORE_VALUE` off this degrades to the historical
+    /// longest-candidate choice, but still consults semantic cuts when
+    /// `AX_MLX_PREFIX_SEMANTIC_CUTS` is on.
+    fn select_restore_prefix_by_value<'a>(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        input: &'a [u32],
+        media_key: &str,
+        cut_plan: &SnapshotCutPlan,
+    ) -> Option<&'a [u32]> {
+        let disk = self.disk_prefix_cache.as_ref();
+        if disk.is_none() && !self.prefix_cache.lock().enabled() {
+            return None;
+        }
+        let block_size = block_size_tokens as usize;
+        let mut lengths = Vec::new();
+        if let Some(block_len) = input.len().checked_div(block_size) {
+            let mut len = block_len * block_size;
+            while len >= block_size {
+                lengths.push(len);
+                len -= block_size;
+            }
+        }
+        for cut in &cut_plan.cuts {
+            if *cut > 0 && *cut < input.len() {
+                lengths.push(*cut);
+            }
+        }
+        lengths.sort_unstable();
+        lengths.dedup();
+
+        let mut key =
+            self.prefix_cache_key_with_media(model_id, block_size_tokens, input, media_key);
+        let mut candidates = Vec::new();
+        for len in lengths {
+            let prefix = &input[..len];
+            key.token_count = saturating_u32(len);
+            // Prefer a resident RAM snapshot: rehydration from L1 is strictly
+            // cheaper than a durable read, and semantic cuts are stored in L1
+            // even when no disk layer is open.
+            let resident_bytes = self
+                .prefix_cache
+                .lock()
+                .resident_payload_bytes(&key, prefix);
+            if let Some(payload_bytes) = resident_bytes {
+                candidates.push(crate::disk_prefix_cache::RestoreCandidate {
+                    token_count: saturating_u32(len),
+                    payload_bytes,
+                    materialized_bytes: payload_bytes,
+                    estimated_prefill_us: estimated_prefill_us(saturating_u32(len)).unwrap_or(0),
+                    key: Vec::new(),
+                    resident_in_l1: true,
+                });
+                continue;
+            }
+            let Some(disk) = disk else {
+                continue;
+            };
+            let Some(key_bytes) = self.disk_prefix_key_bytes(&key, prefix) else {
+                continue;
+            };
+            let Some(metadata) = disk.probe_metadata(&key_bytes) else {
+                continue;
+            };
+            candidates.push(crate::disk_prefix_cache::RestoreCandidate {
+                token_count: saturating_u32(len),
+                payload_bytes: metadata.payload_bytes,
+                materialized_bytes: metadata.materialized_bytes,
+                estimated_prefill_us: estimated_prefill_us(saturating_u32(len)).unwrap_or(0),
+                key: key_bytes,
+                resident_in_l1: false,
+            });
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        let ram_prefix_tokens =
+            self.longest_resident_prefix_len(model_id, block_size_tokens, input, media_key);
+        let throughput = self
+            .disk_prefix_writer
+            .as_ref()
+            .and_then(|writer| writer.cost_model().snapshot());
+        let restore_us = |candidate: &crate::disk_prefix_cache::RestoreCandidate| {
+            let read = throughput
+                .as_ref()
+                .map(|model| model.restore_us(candidate.payload_bytes));
+            restore_cost_us(candidate, read)
+        };
+        let chosen = if crate::fastpath::prefix_restore_value_enabled() {
+            choose_restore_candidate(
+                &candidates,
+                ram_prefix_tokens,
+                estimated_prefill_us,
+                restore_us,
+            )?
+        } else {
+            candidates
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, candidate)| candidate.token_count)?
+                .0
+        };
+        Some(&input[..candidates[chosen].token_count as usize])
+    }
+
     /// Discard a probed prefix that is shorter than a *non-empty* scheduler
     /// claim (`item.reused_prefix_token_slice`).
     ///
@@ -8080,8 +8395,8 @@ impl MlxRunner {
         probed_tokens: Vec<u32>,
         item: &ax_engine_core::ExecutionItem,
     ) -> Vec<u32> {
-        if !item.reused_prefix_token_slice.is_empty()
-            && probed_tokens.len() < item.reused_prefix_token_slice.len()
+        if restore_gap_tokens(item.reused_prefix_token_slice.len(), probed_tokens.len()) > 0
+            && !item.reused_prefix_token_slice.is_empty()
         {
             Vec::new()
         } else {
@@ -8146,6 +8461,7 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
         needs_flash_next_cursor: bool,
         media_identity: Option<&str>,
+        prefill_hints: Option<&ax_engine_core::PrefillHints>,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         // Media present but no digest: never touch the prefix-cache
@@ -8218,7 +8534,32 @@ impl MlxRunner {
         } else {
             Vec::new()
         };
-        let probed_tokens = Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item);
+        let cut_plan = snapshot_cut_plan(
+            probe_upper_bound.len(),
+            block_size_tokens as usize,
+            prefill_hints
+                .map(|hints| hints.semantic_cut_tokens.as_slice())
+                .unwrap_or(&[]),
+            crate::fastpath::prefix_semantic_cuts_enabled(),
+            &self.prefix_execution_signature(),
+        );
+        let priced_tokens = (crate::fastpath::prefix_restore_value_enabled()
+            || crate::fastpath::prefix_semantic_cuts_enabled())
+        .then(|| {
+            self.select_restore_prefix_by_value(
+                model_id,
+                block_size_tokens,
+                probe_upper_bound,
+                media_key,
+                &cut_plan,
+            )
+        })
+        .flatten();
+        let planned_cut = priced_tokens.is_some_and(|tokens| cut_plan.cuts.contains(&tokens.len()));
+        let probed_tokens = match priced_tokens {
+            Some(tokens) => tokens.to_vec(),
+            None => Self::discard_probe_shorter_than_scheduler_claim(probed_tokens, item),
+        };
         let reused_tokens: &[u32] = if !probed_tokens.is_empty() {
             &probed_tokens
         } else {
@@ -8248,13 +8589,23 @@ impl MlxRunner {
         // under one chunk is cheaper than any drift risk. Restores that
         // need no multi-token extension (warm_repeat tails of <=1 token)
         // keep their full length.
-        let Some(restore_len) = grid_aligned_prefix_restore_len(
-            item,
-            reused_tokens.len(),
-            self.prefill_chunk.max(1),
-            self.cfg.linear_attention.is_some()
-                && crate::fastpath::linear_prefix_grid_rung_enabled(),
-        ) else {
+        // A planned semantic cut is an exact snapshot boundary captured at
+        // that token position (full conv/recurrent state, never trimmed), so
+        // it must not be floored onto the cold chunk grid.
+        let grid_restore_len = (!planned_cut).then(|| {
+            grid_aligned_prefix_restore_len(
+                item,
+                reused_tokens.len(),
+                self.prefill_chunk.max(1),
+                self.cfg.linear_attention.is_some()
+                    && crate::fastpath::linear_prefix_grid_rung_enabled(),
+            )
+        });
+        let Some(restore_len) = (if planned_cut {
+            Some(reused_tokens.len())
+        } else {
+            grid_restore_len.flatten()
+        }) else {
             // The scheduler already removed this prefix from the input slice.
             // Recompute prefix+suffix together instead of leaving a context gap.
             telemetry.warmup_tokens = saturating_u32(item.reused_prefix_token_slice.len());
@@ -8501,89 +8852,103 @@ impl MlxRunner {
             && let Some(disk) = self.disk_prefix_cache.as_ref()
             && let Some(key_bytes) = self.disk_prefix_key_bytes(&key, reused_tokens)
         {
-            match disk.get_restored_timed(&key_bytes) {
-                Ok(Some((mut restored, read_timings))) => {
-                    // Streaming restore materializes tensors while reading;
-                    // stage timings already include payload IO + checksum.
-                    let deserialize_us = 0u64;
-                    telemetry.record_disk_hit();
-                    telemetry.record_disk_restore_stages(read_timings, deserialize_us);
-                    // Feed the observed restore throughput back into
-                    // the admission cost model.
-                    if let Some(writer) = self.disk_prefix_writer.as_ref() {
-                        writer.cost_model().record_restore(
-                            read_timings.bytes_read,
-                            read_timings
-                                .read_wall_us
-                                .saturating_add(read_timings.checksum_wall_us)
-                                .saturating_add(deserialize_us),
-                        );
-                    }
-                    if restored.cache.has_rotated_sliding_layers() {
-                        telemetry.record_blocked_unsupported_layout();
-                        telemetry.record_disk_admission(
-                            crate::disk_prefix_cache::DiskAdmissionReason::UnsupportedLayout,
-                        );
-                        telemetry.record_disk_fallback_recompute();
-                        tracing::warn!(
-                            target: "ax_engine_mlx::prefix_cache",
-                            "disk prefix-cache payload contains slot-ordered rotating KV; \
-                             treating as miss and recomputing ordered prefix state",
-                        );
-                    } else if let Err(e) = self
-                        .verify_restored_prefix_snapshot(&mut restored.cache, reused_tokens.len())
-                    {
-                        telemetry.record_blocked_snapshot_incomplete();
-                        telemetry.record_disk_fallback_recompute();
-                        tracing::warn!(
-                            target: "ax_engine_mlx::prefix_cache",
-                            error = %e,
-                            "disk prefix-cache payload is structurally incomplete; \
-                             treating as miss and recomputing",
-                        );
-                    } else {
-                        let prepared =
-                            self.prepare_portable_prefix_restore(restored.cache, &mut telemetry);
-                        match prepared {
-                            Ok(restored_cache) => {
-                                state.cache = restored_cache;
-                                state.prompt_prefix_tokens = reused_tokens.to_vec();
-                                // F3 M4 — the entry carries the greedy prefill
-                                // output token, so cross-restart L2 hits avoid
-                                // recomputing at decode step 0. Sampling policy
-                                // still controls whether the token is reusable.
-                                state.cached_prefill_output_token = restored
-                                    .prefill_output_token
-                                    .filter(|_| prefill_output_token_cacheable(ctx, sampling));
-                                telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
-                                telemetry.reused_tokens = telemetry
-                                    .reused_tokens
-                                    .saturating_add(saturating_u32(reused_tokens.len()));
-                                return telemetry;
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    target: "ax_engine_mlx::prefix_cache",
-                                    error = %e,
-                                    "disk prefix-cache payload could not enter the shared FA pool; recomputing",
-                                );
-                                telemetry.record_blocked_restore_error();
-                                telemetry.record_disk_fallback_recompute();
+            // Reserve capacity before reading the payload: materializing a
+            // snapshot that cannot fit must fall back to recompute instead of
+            // failing halfway through the read.
+            let reserve_needed = disk
+                .probe_metadata(&key_bytes)
+                .map(|metadata| metadata.materialized_bytes)
+                .unwrap_or(0);
+            if crate::fastpath::prefix_restore_value_enabled()
+                && reserve_needed > self.prefix_restore_capacity_bytes()
+            {
+                telemetry.record_disk_miss();
+                telemetry.record_disk_fallback_recompute();
+            } else {
+                let restore_started = Instant::now();
+                match disk.get_restored_timed(&key_bytes) {
+                    Ok(Some((mut restored, read_timings))) => {
+                        // Streaming restore materializes tensors while reading;
+                        // stage timings already include payload IO + checksum.
+                        let deserialize_us = 0u64;
+                        telemetry.record_disk_hit();
+                        telemetry.record_disk_restore_stages(read_timings, deserialize_us);
+                        if restored.cache.has_rotated_sliding_layers() {
+                            telemetry.record_blocked_unsupported_layout();
+                            telemetry.record_disk_admission(
+                                crate::disk_prefix_cache::DiskAdmissionReason::UnsupportedLayout,
+                            );
+                            telemetry.record_disk_fallback_recompute();
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                "disk prefix-cache payload contains slot-ordered rotating KV; \
+                                 treating as miss and recomputing ordered prefix state",
+                            );
+                        } else if let Err(e) = self.verify_restored_prefix_snapshot(
+                            &mut restored.cache,
+                            reused_tokens.len(),
+                        ) {
+                            telemetry.record_blocked_snapshot_incomplete();
+                            telemetry.record_disk_fallback_recompute();
+                            tracing::warn!(
+                                target: "ax_engine_mlx::prefix_cache",
+                                error = %e,
+                                "disk prefix-cache payload is structurally incomplete; \
+                                 treating as miss and recomputing",
+                            );
+                        } else {
+                            let prepared = self
+                                .prepare_portable_prefix_restore(restored.cache, &mut telemetry);
+                            match prepared {
+                                Ok(restored_cache) => {
+                                    state.cache = restored_cache;
+                                    state.prompt_prefix_tokens = reused_tokens.to_vec();
+                                    // F3 M4 — the entry carries the greedy prefill
+                                    // output token, so cross-restart L2 hits avoid
+                                    // recomputing at decode step 0. Sampling policy
+                                    // still controls whether the token is reusable.
+                                    state.cached_prefill_output_token = restored
+                                        .prefill_output_token
+                                        .filter(|_| prefill_output_token_cacheable(ctx, sampling));
+                                    telemetry.record_restore_source(RESTORE_SOURCE_DISK_L2);
+                                    telemetry.reused_tokens = telemetry
+                                        .reused_tokens
+                                        .saturating_add(saturating_u32(reused_tokens.len()));
+                                    // Feed the complete successful restore (read +
+                                    // verification + materialization + repage)
+                                    // back into the admission cost model.
+                                    if let Some(writer) = self.disk_prefix_writer.as_ref() {
+                                        writer.cost_model().record_restore(
+                                            read_timings.bytes_read,
+                                            u64::from(elapsed_us(restore_started)),
+                                        );
+                                    }
+                                    return telemetry;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "ax_engine_mlx::prefix_cache",
+                                        error = %e,
+                                        "disk prefix-cache payload could not enter the shared FA pool; recomputing",
+                                    );
+                                    telemetry.record_blocked_restore_error();
+                                    telemetry.record_disk_fallback_recompute();
+                                }
                             }
                         }
                     }
-                }
-                Ok(None) => {
-                    telemetry.record_disk_miss();
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        target: "ax_engine_mlx::prefix_cache",
-                        error = %e,
-                        "disk prefix-cache get failed; treating as miss",
-                    );
-                    telemetry.record_disk_miss();
-                    telemetry.record_disk_fallback_recompute();
+                    Ok(None) => {
+                        telemetry.record_disk_miss();
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            error = %e,
+                            "disk prefix-cache get failed; treating as miss",
+                        );
+                        telemetry.record_disk_miss();
+                        telemetry.record_disk_fallback_recompute();
+                    }
                 }
             }
         }
@@ -8804,8 +9169,17 @@ impl MlxRunner {
         }
     }
 
+    /// Store a snapshot captured **in place** at `prefix_len`.
+    ///
+    /// Both callers hand over a cache that was cloned mid-prefill at exactly
+    /// `prefix_len`, so it holds complete linear (conv/recurrent), QSA and
+    /// PLE state for that position. That is what makes a non-block-aligned
+    /// semantic cut storable at all: `trim_to` cannot roll linear state back,
+    /// so a trimmed snapshot would be unsound, while this captured one is
+    /// exact. A block-aligned linear boundary capture is just the special
+    /// case where the cut lands on a block boundary.
     #[allow(clippy::too_many_arguments)]
-    fn store_linear_boundary_snapshot(
+    fn store_at_cut(
         &self,
         model_id: &str,
         block_size_tokens: u32,
@@ -9044,7 +9418,7 @@ impl MlxRunner {
                 && boundary_cache.seq_len() == *boundary_len
                 && *boundary_len <= state.prompt_prefix_tokens.len()
             {
-                telemetry.merge_from(self.store_linear_boundary_snapshot(
+                telemetry.merge_from(self.store_at_cut(
                     model_id,
                     block_size_tokens,
                     state,

@@ -1811,6 +1811,7 @@ fn run_warmup_generate_request(
     if generation_service
         .submit(move |session| {
             let request = GenerateRequest {
+                prefill_hints: Default::default(),
                 model_id,
                 input_tokens,
                 // Cleared after tokenize (parity with OpenAI native MLX path).

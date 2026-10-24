@@ -1057,6 +1057,7 @@ impl EngineSession {
         self.next_arrival_sequence = self.next_arrival_sequence.saturating_add(1);
 
         let submission = RequestSubmission {
+            prefill_hints: request.prefill_hints,
             request_id,
             model_id: ModelId(request.model_id),
             input_tokens: request.input_tokens,

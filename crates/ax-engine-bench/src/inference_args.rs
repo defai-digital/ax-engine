@@ -79,6 +79,7 @@ impl Default for InferenceArgs {
 impl InferenceArgs {
     pub(crate) fn generate_request(&self) -> GenerateRequest {
         GenerateRequest {
+            prefill_hints: Default::default(),
             model_id: self.model_id.clone(),
             input_tokens: self.input_tokens.clone(),
             input_text: self.input_text.clone(),

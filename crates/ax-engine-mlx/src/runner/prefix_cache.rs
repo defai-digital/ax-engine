@@ -288,6 +288,21 @@ impl MlxPrefixCache {
                 .is_some_and(|entry| entry.snapshot.tokens == tokens)
     }
 
+    /// Non-mutating exact membership check that also returns the serialized
+    /// KV payload size. Used to price a *resident* RAM snapshot as a restore
+    /// candidate (semantic cuts live in L1 even when no disk layer is open).
+    pub(crate) fn resident_payload_bytes(
+        &self,
+        key: &MlxPrefixCacheKey,
+        tokens: &[u32],
+    ) -> Option<u64> {
+        if !self.policy.enabled() {
+            return None;
+        }
+        let entry = self.entries.get(key)?;
+        (entry.snapshot.tokens == tokens).then(|| entry.snapshot.kv_cache_payload.len() as u64)
+    }
+
     /// True when an entry for `key` already holds exactly `tokens` and would
     /// lose nothing if a fresh store were skipped: either the new snapshot
     /// carries no prefill-output token, or the stored one already has one;
@@ -2275,6 +2290,9 @@ mod tests {
                 layer_layout: "writer-layout",
                 kv_payload_version: 3,
                 block_size_tokens: 16,
+                kv_quantization: "",
+                kv_dtype: "",
+                execution_signature: "",
                 token_count: 4,
                 tokens: &[5, 6, 7, 8],
             },

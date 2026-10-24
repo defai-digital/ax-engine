@@ -73,6 +73,7 @@ fn execute_with_block_size(
         ctx.prompt_len + ctx.generated_len - 1
     };
     runner.run(RunnerInput {
+        request_prefill_hints: Vec::new(),
         block_size_tokens,
         memory_pressure: None,
         block_tables: Vec::new(),
@@ -1078,6 +1079,7 @@ fn flash_next_prefix_restore_replays_missing_or_corrupt_draft_history() {
             MlxSamplingParams::greedy(),
             needs_cursor,
             Some(""),
+            None,
         );
         assert_eq!(telemetry.hits > 0, expect_hit);
         assert_eq!(telemetry.misses > 0, !expect_hit);
