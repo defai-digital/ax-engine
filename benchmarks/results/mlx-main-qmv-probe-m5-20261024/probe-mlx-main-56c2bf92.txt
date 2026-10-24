@@ -1,0 +1,95 @@
+mlx_version=0.32.5.dev20261024+56c2bf9236d929097f61e2c6e55be4e4bb6da249
+gpu_arch=applegpu_g17s
+warmup=2 iters=5 rows=1,2,6,8,16
+model                  proj     quant         M      K      N  median_ms    vs_m1 bits 
+quantizing qwen3.8-flash-next q_proj mxfp4-g32 (N=6144, K=2560)
+qwen3.8-flash-next     q_proj   mxfp4-g32     1   2560   6144      0.256    1.000 exact
+qwen3.8-flash-next     q_proj   mxfp4-g32     2   2560   6144      0.238    0.929 exact
+qwen3.8-flash-next     q_proj   mxfp4-g32     6   2560   6144      0.253    0.989 DIFF
+qwen3.8-flash-next     q_proj   mxfp4-g32     8   2560   6144      0.258    1.008 DIFF
+qwen3.8-flash-next     q_proj   mxfp4-g32    16   2560   6144      0.382    1.494 DIFF
+quantizing qwen3.8-flash-next q_proj affine-6-g64 (N=6144, K=2560)
+qwen3.8-flash-next     q_proj   affine-6-g64  1   2560   6144      0.272    1.000 exact
+qwen3.8-flash-next     q_proj   affine-6-g64  2   2560   6144      0.185    0.682 DIFF
+qwen3.8-flash-next     q_proj   affine-6-g64  6   2560   6144      0.243    0.896 DIFF
+qwen3.8-flash-next     q_proj   affine-6-g64  8   2560   6144      0.230    0.846 DIFF
+qwen3.8-flash-next     q_proj   affine-6-g64 16   2560   6144      0.417    1.537 DIFF
+quantizing qwen3.8-flash-next q_proj affine-4-g64 (N=6144, K=2560)
+qwen3.8-flash-next     q_proj   affine-4-g64  1   2560   6144      0.730    1.000 exact
+qwen3.8-flash-next     q_proj   affine-4-g64  2   2560   6144      0.163    0.223 DIFF
+qwen3.8-flash-next     q_proj   affine-4-g64  6   2560   6144      0.198    0.271 DIFF
+qwen3.8-flash-next     q_proj   affine-4-g64  8   2560   6144      0.338    0.463 DIFF
+qwen3.8-flash-next     q_proj   affine-4-g64 16   2560   6144      0.285    0.391 DIFF
+quantizing qwen3.8-flash-next expert mxfp4-g32 (N=640, K=2560)
+qwen3.8-flash-next     expert   mxfp4-g32     1   2560    640      0.147    1.000 exact
+qwen3.8-flash-next     expert   mxfp4-g32     2   2560    640      0.151    1.027 exact
+qwen3.8-flash-next     expert   mxfp4-g32     6   2560    640      0.160    1.087 exact
+qwen3.8-flash-next     expert   mxfp4-g32     8   2560    640      0.160    1.092 exact
+qwen3.8-flash-next     expert   mxfp4-g32    16   2560    640      0.229    1.562 DIFF
+quantizing qwen3.8-flash-next expert affine-6-g64 (N=640, K=2560)
+qwen3.8-flash-next     expert   affine-6-g64  1   2560    640      0.144    1.000 exact
+qwen3.8-flash-next     expert   affine-6-g64  2   2560    640      0.183    1.276 DIFF
+qwen3.8-flash-next     expert   affine-6-g64  6   2560    640      0.150    1.042 DIFF
+qwen3.8-flash-next     expert   affine-6-g64  8   2560    640      0.152    1.058 DIFF
+qwen3.8-flash-next     expert   affine-6-g64 16   2560    640      0.188    1.308 DIFF
+quantizing qwen3.8-flash-next expert affine-4-g64 (N=640, K=2560)
+qwen3.8-flash-next     expert   affine-4-g64  1   2560    640      0.148    1.000 exact
+qwen3.8-flash-next     expert   affine-4-g64  2   2560    640      0.153    1.030 DIFF
+qwen3.8-flash-next     expert   affine-4-g64  6   2560    640      0.153    1.035 DIFF
+qwen3.8-flash-next     expert   affine-4-g64  8   2560    640      0.157    1.061 DIFF
+qwen3.8-flash-next     expert   affine-4-g64 16   2560    640      0.149    1.002 DIFF
+quantizing qwen3.8-27b q_proj mxfp4-g32 (N=6144, K=5120)
+qwen3.8-27b            q_proj   mxfp4-g32     1   5120   6144      0.187    1.000 exact
+qwen3.8-27b            q_proj   mxfp4-g32     2   5120   6144      0.194    1.038 exact
+qwen3.8-27b            q_proj   mxfp4-g32     6   5120   6144      0.220    1.181 DIFF
+qwen3.8-27b            q_proj   mxfp4-g32     8   5120   6144      0.221    1.186 DIFF
+qwen3.8-27b            q_proj   mxfp4-g32    16   5120   6144      0.241    1.290 DIFF
+quantizing qwen3.8-27b q_proj affine-6-g64 (N=6144, K=5120)
+qwen3.8-27b            q_proj   affine-6-g64  1   5120   6144      0.288    1.000 exact
+qwen3.8-27b            q_proj   affine-6-g64  2   5120   6144      0.371    1.289 DIFF
+qwen3.8-27b            q_proj   affine-6-g64  6   5120   6144      0.508    1.761 DIFF
+qwen3.8-27b            q_proj   affine-6-g64  8   5120   6144      0.683    2.372 DIFF
+qwen3.8-27b            q_proj   affine-6-g64 16   5120   6144      0.344    1.193 DIFF
+quantizing qwen3.8-27b q_proj affine-4-g64 (N=6144, K=5120)
+qwen3.8-27b            q_proj   affine-4-g64  1   5120   6144      0.203    1.000 exact
+qwen3.8-27b            q_proj   affine-4-g64  2   5120   6144      0.247    1.220 DIFF
+qwen3.8-27b            q_proj   affine-4-g64  6   5120   6144      0.358    1.767 DIFF
+qwen3.8-27b            q_proj   affine-4-g64  8   5120   6144      0.467    2.308 DIFF
+qwen3.8-27b            q_proj   affine-4-g64 16   5120   6144      0.767    3.787 DIFF
+quantizing qwen3.8-27b ffn_up mxfp4-g32 (N=17408, K=5120)
+qwen3.8-27b            ffn_up   mxfp4-g32     1   5120  17408      0.256    1.000 exact
+qwen3.8-27b            ffn_up   mxfp4-g32     2   5120  17408      0.257    1.002 DIFF
+qwen3.8-27b            ffn_up   mxfp4-g32     6   5120  17408      0.307    1.196 DIFF
+qwen3.8-27b            ffn_up   mxfp4-g32     8   5120  17408      0.301    1.173 DIFF
+qwen3.8-27b            ffn_up   mxfp4-g32    16   5120  17408      0.250    0.977 DIFF
+quantizing qwen3.8-27b ffn_up affine-6-g64 (N=17408, K=5120)
+qwen3.8-27b            ffn_up   affine-6-g64  1   5120  17408      0.283    1.000 exact
+qwen3.8-27b            ffn_up   affine-6-g64  2   5120  17408      0.309    1.094 DIFF
+qwen3.8-27b            ffn_up   affine-6-g64  6   5120  17408      0.398    1.409 DIFF
+qwen3.8-27b            ffn_up   affine-6-g64  8   5120  17408      0.412    1.457 DIFF
+qwen3.8-27b            ffn_up   affine-6-g64 16   5120  17408      0.790    2.795 DIFF
+quantizing qwen3.8-27b ffn_up affine-4-g64 (N=17408, K=5120)
+qwen3.8-27b            ffn_up   affine-4-g64  1   5120  17408      0.406    1.000 exact
+qwen3.8-27b            ffn_up   affine-4-g64  2   5120  17408      0.625    1.539 DIFF
+qwen3.8-27b            ffn_up   affine-4-g64  6   5120  17408      0.346    0.853 DIFF
+qwen3.8-27b            ffn_up   affine-4-g64  8   5120  17408      0.427    1.052 DIFF
+qwen3.8-27b            ffn_up   affine-4-g64 16   5120  17408      0.736    1.813 DIFF
+quantizing qwen3.8-27b ffn_down mxfp4-g32 (N=5120, K=17408)
+qwen3.8-27b            ffn_down mxfp4-g32     1  17408   5120      0.448    1.000 exact
+qwen3.8-27b            ffn_down mxfp4-g32     2  17408   5120      0.435    0.971 DIFF
+qwen3.8-27b            ffn_down mxfp4-g32     6  17408   5120      0.260    0.581 DIFF
+qwen3.8-27b            ffn_down mxfp4-g32     8  17408   5120      0.217    0.484 DIFF
+qwen3.8-27b            ffn_down mxfp4-g32    16  17408   5120      0.221    0.494 DIFF
+quantizing qwen3.8-27b ffn_down affine-6-g64 (N=5120, K=17408)
+qwen3.8-27b            ffn_down affine-6-g64  1  17408   5120      0.340    1.000 exact
+qwen3.8-27b            ffn_down affine-6-g64  2  17408   5120      0.307    0.905 DIFF
+qwen3.8-27b            ffn_down affine-6-g64  6  17408   5120      0.385    1.134 DIFF
+qwen3.8-27b            ffn_down affine-6-g64  8  17408   5120      0.500    1.472 DIFF
+qwen3.8-27b            ffn_down affine-6-g64 16  17408   5120      0.716    2.109 DIFF
+quantizing qwen3.8-27b ffn_down affine-4-g64 (N=5120, K=17408)
+qwen3.8-27b            ffn_down affine-4-g64  1  17408   5120      0.501    1.000 exact
+qwen3.8-27b            ffn_down affine-4-g64  2  17408   5120      0.650    1.298 DIFF
+qwen3.8-27b            ffn_down affine-4-g64  6  17408   5120      0.363    0.723 DIFF
+qwen3.8-27b            ffn_down affine-4-g64  8  17408   5120      0.394    0.786 DIFF
+qwen3.8-27b            ffn_down affine-4-g64 16  17408   5120      0.731    1.457 DIFF
+mlx_main_qmv_probe: one or more multi-row results were not bit-exact against the stacked 1-row results
