@@ -6,10 +6,9 @@
 //! `AX_MLX_CANCEL_KEEP_PREFIX`.
 //!
 //! Pressure control reads the MLX memory limit only. It does not claim to
-//! cover mmap or the rest of host memory. Device KV capture from the prefix
-//! store work is not in this tree, so a token-prefix blob is not a restorable
-//! KV layout: callers treat that as an unsupported layout and recompute
-//! instead of reporting an SSD hit. A chunk-history mismatch is a miss.
+//! cover mmap or the rest of host memory. A committed prefix is restorable
+//! only when the runner stored it through the prefix cache and the adopter's
+//! chunk history matches. A chunk-history mismatch is a miss.
 
 use crate::ids::RequestId;
 
@@ -17,6 +16,63 @@ use crate::ids::RequestId;
 /// applied. The MLX runner uses it so its internal chunk size does not
 /// shrink or enlarge that choice. Absent when adaptive prefill is off.
 pub const ADAPTIVE_PREFILL_CHUNK_ROUTE_KEY: &str = "ax_scheduler_adaptive_prefill_chunk_tokens";
+
+/// Per-request route key. The unscoped key is the first text prefill's
+/// quantum and is telemetry only; the runner reads this key.
+pub fn adaptive_prefill_request_route_key(request_id: u64) -> String {
+    format!("{ADAPTIVE_PREFILL_CHUNK_ROUTE_KEY}.{request_id}")
+}
+
+/// Quantum published for `request_id`, ignoring the batch-wide key.
+pub fn published_adaptive_prefill_quantum(
+    decisions: &[(String, u32)],
+    request_id: u64,
+) -> Option<u32> {
+    let key = adaptive_prefill_request_route_key(request_id);
+    decisions
+        .iter()
+        .find_map(|(existing, value)| (existing == &key && *value > 0).then_some(*value))
+}
+
+/// Chunk the runner should use. A warm-extend quantum is applied only when
+/// it equals the selected warm chunk, so an MLA alignment is left intact.
+/// `scaled_chunk` is the historical choice used when no quantum was published.
+pub fn effective_prefill_chunk(
+    adaptive_quantum: Option<u32>,
+    selected_chunk: u32,
+    warm_extend: bool,
+    scaled_chunk: u32,
+) -> u32 {
+    let Some(quantum) = adaptive_quantum.filter(|quantum| *quantum > 0) else {
+        return scaled_chunk.max(1);
+    };
+    let selected = selected_chunk.max(1);
+    if warm_extend && quantum != selected {
+        return selected;
+    }
+    quantum
+}
+
+/// Chunk sizes a request produces when every step uses `quantum`, with a
+/// shorter final step when `cut` is not a multiple of `quantum`.
+pub fn planned_chunk_history(cut: u32, quantum: u32) -> Vec<u32> {
+    if cut == 0 || quantum == 0 {
+        return Vec::new();
+    }
+    let mut history = Vec::new();
+    let mut remaining = cut;
+    while remaining > 0 {
+        let step = remaining.min(quantum);
+        history.push(step);
+        remaining -= step;
+    }
+    history
+}
+
+/// `true` when a device snapshot may be adopted for `chunk_history`.
+pub fn prefix_adoption_allowed(stored: &CommittedPrefix, chunk_history: &[u32]) -> bool {
+    stored.device_capture && !chunk_history_is_miss(stored, chunk_history)
+}
 
 /// Largest text prefill chunk the resident-budget contract allows.
 pub const MODEL_PREFILL_SAFETY_CAP: u32 = 2048;
@@ -274,51 +330,6 @@ pub fn spill_victim_eligible(profile: SpillVictimProfile) -> bool {
 /// `1` enables the switch. Unset, `0`, and every other value leave it off.
 pub(crate) fn env_switch_enabled(name: &str) -> bool {
     std::env::var(name).ok().is_some_and(|value| value == "1")
-}
-
-#[derive(Debug)]
-pub(crate) struct BackgroundPrefixWriter {
-    tx: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
-}
-
-impl BackgroundPrefixWriter {
-    pub(crate) fn disabled() -> Self {
-        Self { tx: None }
-    }
-
-    /// Bounded queue. The sender never waits for the write or for `fsync`.
-    pub(crate) fn start() -> Self {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
-        let spawned = std::thread::Builder::new()
-            .name("ax-prefix-ckpt".to_string())
-            .spawn(move || {
-                while let Ok(bytes) = rx.recv() {
-                    let _ = write_checkpoint_bytes(&bytes);
-                }
-            });
-        match spawned {
-            Ok(_join) => Self { tx: Some(tx) },
-            Err(_error) => Self { tx: None },
-        }
-    }
-
-    pub(crate) fn try_submit(&self, bytes: Vec<u8>) -> bool {
-        match &self.tx {
-            Some(tx) => tx.try_send(bytes).is_ok(),
-            None => false,
-        }
-    }
-}
-
-fn write_checkpoint_bytes(bytes: &[u8]) -> std::io::Result<()> {
-    let dir = std::env::temp_dir().join("ax-engine-prefix-ckpt");
-    std::fs::create_dir_all(&dir)?;
-    static NEXT_CHECKPOINT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let seq = NEXT_CHECKPOINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = dir.join(format!("pfx-{}-{seq}.bin", std::process::id()));
-    // No fsync: cancel and spill must not wait for durability beyond the
-    // in-memory receipt the caller already observed.
-    std::fs::write(path, bytes)
 }
 
 #[cfg(test)]
@@ -616,8 +627,8 @@ mod tests {
         assert!(!saved[0].tokens.iter().any(|token| *token >= 90));
         let events = script.events.lock().expect("events").clone();
         assert!(
-            !events.iter().any(|event| event == "checkpoint"),
-            "cancel persists the accepted prefix and does not capture runner state"
+            events.iter().any(|event| event == "checkpoint"),
+            "cancel stores the accepted prefix through the runner prefix cache"
         );
         let snapshot = engine
             .request_manager()
@@ -638,6 +649,226 @@ mod tests {
         assert!(engine.cancel(RequestId(3)).is_err());
         assert_eq!(engine.cancel_checkpoints().len(), 1);
         assert_eq!(engine.cancel_checkpoint_attempts(), 1);
+    }
+
+    #[test]
+    fn per_request_quantum_is_applied_per_request() {
+        let prompt = vec![1u32; 400];
+        let mut input = SchedulerInput::new(
+            StepId(1),
+            vec![
+                text_snapshot(1, 1, &prompt, 0, &[]),
+                text_snapshot(2, 2, &prompt, 0, &[]),
+            ],
+            Some("kv_low_free_blocks:1/8".into()),
+            10_000,
+        );
+        input.adaptive_prefill = true;
+        input.model_prefill_safety_cap = MODEL_PREFILL_SAFETY_CAP;
+        input.prefill_chunk_policy.explicit = Some(200);
+        let plan = Scheduler::new().plan(&input);
+        let batch = plan.execution_batch.as_ref().expect("batch");
+        let first = batch
+            .items
+            .iter()
+            .find(|item| item.request_id == RequestId(1))
+            .expect("first prefill");
+        let second = batch
+            .items
+            .iter()
+            .find(|item| item.request_id == RequestId(2))
+            .expect("second prefill");
+        let first_quantum =
+            published_adaptive_prefill_quantum(&batch.route_metadata.crossover_decisions, 1)
+                .expect("first quantum");
+        let second_quantum =
+            published_adaptive_prefill_quantum(&batch.route_metadata.crossover_decisions, 2)
+                .expect("second quantum");
+        assert_ne!(first_quantum, second_quantum);
+        assert_eq!(first.scheduled_token_count, first_quantum);
+        assert_eq!(second.scheduled_token_count, second_quantum);
+        assert_eq!(
+            effective_prefill_chunk(Some(first_quantum), 16, false, 16),
+            first_quantum
+        );
+        assert_eq!(
+            effective_prefill_chunk(Some(second_quantum), 16, false, 16),
+            second_quantum
+        );
+        // The batch-wide key is not what the second request runs.
+        assert_ne!(
+            decision_value(&plan, ADAPTIVE_PREFILL_CHUNK_ROUTE_KEY),
+            Some(second_quantum)
+        );
+        // A warm-extend quantum that is not the selected chunk is not applied.
+        assert_eq!(
+            effective_prefill_chunk(Some(first_quantum), 16, true, 16),
+            16
+        );
+        assert_eq!(effective_prefill_chunk(Some(16), 16, true, 32), 16);
+    }
+
+    #[test]
+    fn chunk_history_mismatch_is_miss_in_production_path() {
+        let mut engine = scripted_engine(Script::success());
+        engine.set_cancel_keep_prefix(true);
+        engine.set_adaptive_prefill(true);
+        let mut policy = PrefillChunkPolicy {
+            explicit: Some(2),
+            ..PrefillChunkPolicy::default()
+        };
+        engine.set_prefill_chunk_policy(policy);
+        engine
+            .submit(submission(1, 1, vec![1, 2, 3, 4, 5, 6, 7, 8], 2))
+            .expect("submit");
+        engine.step(8, true).expect("first chunk");
+        engine.step(8, true).expect("second chunk");
+        engine.cancel(RequestId(1)).expect("cancel");
+        let saved = engine.cancel_checkpoints();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].chunk_history, vec![2, 2]);
+        assert!(saved[0].device_capture);
+        assert!(prefix_adoption_allowed(
+            &saved[0],
+            &planned_chunk_history(saved[0].cut, 2)
+        ));
+        assert!(!prefix_adoption_allowed(
+            &saved[0],
+            &planned_chunk_history(saved[0].cut, 4)
+        ));
+
+        policy.explicit = Some(4);
+        engine.set_prefill_chunk_policy(policy);
+        engine
+            .submit(submission(2, 2, vec![1, 2, 3, 4, 5, 6, 7, 8], 2))
+            .expect("resubmit");
+        let mismatched = engine
+            .request_manager()
+            .snapshot(RequestId(2))
+            .expect("snapshot");
+        assert_eq!(mismatched.processed_prompt_tokens, 0);
+    }
+
+    #[test]
+    fn quantum_frozen_after_first_chunk_for_linear_models() {
+        let mut script = Script::success();
+        script.chunk_sensitive = true;
+        let mut engine = scripted_engine_with_blocks(script, 512);
+        engine.set_adaptive_prefill(true);
+        let prompt: Vec<u32> = (0..5000).collect();
+        engine
+            .submit(submission(1, 1, prompt, 8))
+            .expect("submit long");
+        let first = engine.step(10_000, true).expect("first chunk");
+        let first_count =
+            first.schedule_plan.execution_batch.expect("batch").items[0].scheduled_token_count;
+        assert_eq!(first_count, 2048);
+
+        engine
+            .submit(submission(2, 2, vec![9, 9, 9, 9], 4))
+            .expect("submit decode candidate");
+        // A budget below the frozen quantum defers the long prefill and lets
+        // the short prompt finish, so the next step mixes a decode with it.
+        engine.step(4, true).expect("finish short prefill");
+        let mixed = engine.step(10_000, true).expect("decode plus prefill");
+        let batch = mixed.schedule_plan.execution_batch.as_ref().expect("batch");
+        let prefill = batch
+            .items
+            .iter()
+            .find(|item| item.request_id == RequestId(1))
+            .expect("long prefill");
+        assert_eq!(prefill.scheduled_token_count, 2048);
+        assert_eq!(
+            published_adaptive_prefill_quantum(&batch.route_metadata.crossover_decisions, 1),
+            Some(2048)
+        );
+    }
+
+    #[test]
+    fn spill_success_releases_reservation() {
+        let mut engine = scripted_engine(Script::success());
+        engine.set_pressure_requeue(true);
+        engine
+            .submit(submission(1, 1, vec![1, 2, 3, 4, 5, 6, 7, 8], 2))
+            .expect("submit");
+        engine.step(4, true).expect("commit");
+        engine.step(4, true).expect("spill");
+        assert_eq!(engine.ssd_spill_hits(), 1);
+        assert_eq!(engine.spill_reserved_bytes(), 0);
+    }
+
+    #[test]
+    fn terminal_cleanup_drops_handoff_state() {
+        let mut engine = scripted_engine(Script::success());
+        engine.set_pressure_requeue(true);
+        engine.set_cancel_keep_prefix(true);
+        engine
+            .submit(submission(1, 1, vec![1, 2, 3, 4, 5, 6, 7, 8], 2))
+            .expect("submit");
+        engine.step(4, true).expect("commit");
+        assert!(engine.chunk_history_len(RequestId(1)) > 0);
+        assert!(engine.handoff_prefix_count() > 0);
+        engine.cancel(RequestId(1)).expect("cancel");
+        assert_eq!(engine.handoff_prefix_count(), 0);
+        assert_eq!(engine.chunk_history_len(RequestId(1)), 0);
+        assert_eq!(engine.spill_attempts_for(RequestId(1)), 0);
+        assert!(!engine.cancel_checkpoint_tracked(RequestId(1)));
+        assert_eq!(engine.spill_reserved_bytes(), 0);
+        assert_eq!(engine.cancel_checkpoints().len(), 1);
+    }
+
+    #[test]
+    fn cancel_keep_prefix_restores_on_resubmit() {
+        let mut engine = scripted_engine(Script::success());
+        engine.set_cancel_keep_prefix(true);
+        engine.set_adaptive_prefill(true);
+        let prompt = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        engine
+            .submit(submission(7, 1, prompt.clone(), 2))
+            .expect("submit");
+        engine.step(4, true).expect("partial");
+        engine.cancel(RequestId(7)).expect("cancel");
+        assert!(engine.cancel_checkpoints()[0].device_capture);
+        engine
+            .submit(submission(8, 2, prompt, 2))
+            .expect("resubmit");
+        let restored = engine
+            .request_manager()
+            .snapshot(RequestId(8))
+            .expect("restored");
+        assert_eq!(restored.processed_prompt_tokens, 4);
+        let step = engine.step(8, true).expect("resume");
+        let item = &step.schedule_plan.execution_batch.expect("batch").items[0];
+        assert_eq!(item.request_id, RequestId(8));
+        assert_eq!(item.position_range.start, 4);
+        assert_eq!(item.reused_prefix_token_slice, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn pressure_reclaim_runs_only_under_high_pressure() {
+        let mut quiet = Script::success();
+        quiet.pressure_active_bytes = 100;
+        quiet.pressure_idle_bytes = 50;
+        let mut engine = scripted_engine(quiet.clone());
+        engine.set_pressure_requeue(true);
+        engine
+            .submit(submission(1, 1, vec![1, 2, 3, 4], 1))
+            .expect("submit");
+        engine.step(4, true).expect("quiet step");
+        let events = quiet.events.lock().expect("events").clone();
+        assert!(!events.iter().any(|event| event == "reclaim"));
+
+        let mut hot = Script::success();
+        hot.pressure_active_bytes = 1_000;
+        hot.pressure_idle_bytes = 100;
+        let mut engine = scripted_engine(hot.clone());
+        engine.set_pressure_requeue(true);
+        engine
+            .submit(submission(1, 1, vec![1, 2, 3, 4], 1))
+            .expect("submit");
+        engine.step(4, true).expect("hot step");
+        let events = hot.events.lock().expect("events").clone();
+        assert!(events.iter().any(|event| event == "reclaim"));
     }
 
     #[test]
@@ -705,8 +936,12 @@ mod tests {
     }
 
     fn scripted_engine(script: Script) -> EngineCore {
+        scripted_engine_with_blocks(script, 64)
+    }
+
+    fn scripted_engine_with_blocks(script: Script, total_blocks: u32) -> EngineCore {
         EngineCore::with_runtime_components(
-            KvManagerConfig::validated(CacheGroupId(2), 16, 64),
+            KvManagerConfig::validated(CacheGroupId(2), 16, total_blocks),
             ScriptedRunner { script },
             crate::sampling::DeterministicSampler,
         )
@@ -776,6 +1011,9 @@ mod tests {
         events: Arc<Mutex<Vec<String>>>,
         mode: ReceiptMode,
         unconfirmed_tokens: Arc<Mutex<Vec<u32>>>,
+        chunk_sensitive: bool,
+        pressure_active_bytes: u64,
+        pressure_idle_bytes: u64,
     }
 
     impl Script {
@@ -784,6 +1022,9 @@ mod tests {
                 events: Arc::new(Mutex::new(Vec::new())),
                 mode: ReceiptMode::Adopt,
                 unconfirmed_tokens: Arc::new(Mutex::new(Vec::new())),
+                chunk_sensitive: false,
+                pressure_active_bytes: 1_000,
+                pressure_idle_bytes: 0,
             }
         }
 
@@ -853,11 +1094,21 @@ mod tests {
 
         fn memory_pressure_sample(&self) -> Option<MemoryPressureSample> {
             Some(MemoryPressureSample {
-                active_bytes: 1_000,
+                active_bytes: self.script.pressure_active_bytes,
                 limit_bytes: 1_000,
-                idle_cache_bytes: 0,
+                idle_cache_bytes: self.script.pressure_idle_bytes,
                 next_chunk_workspace_bytes: 0,
             })
+        }
+
+        fn reclaim_idle_cache(&self) {
+            if let Ok(mut events) = self.script.events.lock() {
+                events.push("reclaim".to_string());
+            }
+        }
+
+        fn chunk_sensitive_prefill(&self) -> bool {
+            self.script.chunk_sensitive
         }
 
         fn mtp_active(&self) -> bool {

@@ -11,9 +11,10 @@ use crate::kv::{
     AllocationStatus, FreeResult, KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
 use crate::prefill_handoff::{
-    BackgroundPrefixWriter, CheckpointReason, CommittedPrefix, MAX_PRESSURE_SPILLS,
-    MODEL_PREFILL_SAFETY_CAP, MemoryPressureSample, PrefillChunkPolicy, SpillVictimProfile,
-    env_switch_enabled, spill_victim_eligible,
+    CheckpointReason, CommittedPrefix, MAX_PRESSURE_SPILLS, MODEL_PREFILL_SAFETY_CAP,
+    MemoryPressureSample, PrefillChunkPolicy, SpillVictimProfile, chunk_history_is_miss,
+    env_switch_enabled, planned_chunk_history, prefix_adoption_allowed,
+    published_adaptive_prefill_quantum, spill_victim_eligible,
 };
 use crate::request::RequestRecord;
 use crate::request::RequestState;
@@ -151,8 +152,12 @@ pub struct EngineCore {
     cancel_checkpoint_ids: BTreeSet<RequestId>,
     cancel_checkpoints: Vec<CommittedPrefix>,
     cancel_checkpoint_attempts: u32,
-    prefix_writer: BackgroundPrefixWriter,
-    prefix_writer_started: bool,
+    /// First committed chunk size for chunk-sensitive models. Kept for the
+    /// life of the request so a later step does not change that quantum.
+    frozen_prefill_quantums: BTreeMap<RequestId, u32>,
+    /// Committed prompt tokens to attach when a spilled or cancelled prefix
+    /// resumes. The runner restores from this slice, not from a temp file.
+    restore_prefix_tokens: BTreeMap<RequestId, Vec<u32>>,
 }
 
 impl EngineCore {
@@ -184,7 +189,7 @@ impl EngineCore {
         R: ExecutionRunner + 'static,
         S: TokenSampler + 'static,
     {
-        let mut engine = Self {
+        Self {
             request_manager: RequestManager::new(kv_config.cache_group_id),
             kv_manager: KvManager::new(kv_config),
             scheduler: Scheduler::new(),
@@ -221,19 +226,9 @@ impl EngineCore {
             cancel_checkpoint_ids: BTreeSet::new(),
             cancel_checkpoints: Vec::new(),
             cancel_checkpoint_attempts: 0,
-            prefix_writer: BackgroundPrefixWriter::disabled(),
-            prefix_writer_started: false,
-        };
-        engine.ensure_prefix_writer();
-        engine
-    }
-
-    fn ensure_prefix_writer(&mut self) {
-        if self.prefix_writer_started || !(self.pressure_requeue || self.cancel_keep_prefix) {
-            return;
+            frozen_prefill_quantums: BTreeMap::new(),
+            restore_prefix_tokens: BTreeMap::new(),
         }
-        self.prefix_writer = BackgroundPrefixWriter::start();
-        self.prefix_writer_started = true;
     }
 
     /// `AX_ENGINE_ADAPTIVE_PREFILL`. The historical chunk choice stays in
@@ -245,17 +240,15 @@ impl EngineCore {
     /// `AX_MLX_PRESSURE_REQUEUE`.
     pub fn set_pressure_requeue(&mut self, enabled: bool) {
         self.pressure_requeue = enabled;
-        if enabled {
-            self.ensure_prefix_writer();
-        }
     }
 
     /// `AX_MLX_CANCEL_KEEP_PREFIX`.
     pub fn set_cancel_keep_prefix(&mut self, enabled: bool) {
         self.cancel_keep_prefix = enabled;
-        if enabled {
-            self.ensure_prefix_writer();
-        }
+    }
+
+    pub fn set_prefill_chunk_policy(&mut self, policy: PrefillChunkPolicy) {
+        self.prefill_chunk_policy = policy;
     }
 
     pub fn set_spill_budget_bytes(&mut self, bytes: u64) {
@@ -276,6 +269,25 @@ impl EngineCore {
 
     pub fn cancel_checkpoint_attempts(&self) -> u32 {
         self.cancel_checkpoint_attempts
+    }
+
+    pub fn spill_reserved_bytes(&self) -> u64 {
+        self.spill_reserved_bytes
+    }
+
+    pub fn handoff_prefix_count(&self) -> usize {
+        self.committed_prefixes.len()
+    }
+
+    pub fn chunk_history_len(&self, request_id: RequestId) -> usize {
+        self.chunk_histories
+            .get(&request_id)
+            .map(|history| history.len())
+            .unwrap_or(0)
+    }
+
+    pub fn cancel_checkpoint_tracked(&self, request_id: RequestId) -> bool {
+        self.cancel_checkpoint_ids.contains(&request_id)
     }
 
     pub fn request_manager(&self) -> &RequestManager {
@@ -390,12 +402,22 @@ impl EngineCore {
         )?;
         // Bind generation kind atomically with insert (ADR-038) so a failed
         // post-submit set cannot leave a request with the wrong strategy.
+        let restore_tokens = self
+            .cancel_keep_prefix
+            .then(|| submission.input_tokens.clone());
         if let Err(error) = self
             .request_manager
             .submit_with_generation_kind(submission, self.generation_kind)
         {
             let _ = self.kv_manager.free(request_id);
             return Err(error.into());
+        }
+        if let Some(tokens) = restore_tokens.as_deref()
+            && let Err(error) = self.try_restore_cancelled_prefix(request_id, tokens)
+        {
+            let _ = self.request_manager.cancel(request_id);
+            let _ = self.drain_terminal_cleanup();
+            return Err(error);
         }
         Ok(request_id)
     }
@@ -888,11 +910,13 @@ impl EngineCore {
                     // Borrow the record instead of snapshotting: `snapshot()`
                     // deep-clones the full prompt/output history per item per
                     // step just to source the warmup slice below.
+                    let restore_prefix = self.restore_prefix_tokens.get(&rid).cloned();
                     let record = self.request_manager.record(rid);
                     allocated_items.push(Self::annotate_prefix_reuse(
                         item,
                         prefix_reuse.get(&rid),
                         record,
+                        restore_prefix.as_deref(),
                     ));
                 }
                 AllocationStatus::InsufficientCapacity | AllocationStatus::Deferred => {
@@ -1213,6 +1237,9 @@ impl EngineCore {
         } else {
             0
         };
+        if self.adaptive_prefill {
+            input.frozen_prefill_quantums = self.frozen_prefill_quantums.clone();
+        }
         if !self.spill_excluded.is_empty() {
             input
                 .request_snapshots
@@ -1371,6 +1398,7 @@ impl EngineCore {
             }
         };
         self.reconcile_runner_appended_kv(&execution_batch)?;
+        self.latch_frozen_prefill_quantums(&execution_batch);
         self.publish_committed_prefixes(&execution_batch);
 
         execution_batch.route_metadata = runner_output.route_metadata.clone();
@@ -1979,9 +2007,17 @@ impl EngineCore {
         mut item: ExecutionItem,
         lookup: Option<&PrefixLookupResult>,
         record: Option<&RequestRecord>,
+        restore_prefix: Option<&[u32]>,
     ) -> ExecutionItem {
         item.reused_prefix_token_slice =
             Self::native_prefix_warmup_token_slice(&item, lookup, record);
+        if item.reused_prefix_token_slice.is_empty()
+            && item.mode == ExecutionMode::Prefill
+            && let Some(tokens) = restore_prefix
+            && u32::try_from(tokens.len()).ok() == Some(item.position_range.start)
+        {
+            item.reused_prefix_token_slice = tokens.to_vec();
+        }
         if let Some(lookup) = lookup {
             item.prefix_tokens_reused = lookup.matched_token_count;
             item.prefix_blocks_reused = lookup.matched_blocks.len() as u32;
@@ -2142,6 +2178,41 @@ impl EngineCore {
         self.pressure_requeue || self.cancel_keep_prefix
     }
 
+    /// Keep the first published text-prefill quantum for chunk-sensitive
+    /// models. Later steps must not adopt a decode or pressure shrink.
+    fn latch_frozen_prefill_quantums(&mut self, batch: &ExecutionBatch) {
+        if !self.adaptive_prefill || !self.runner.chunk_sensitive_prefill() {
+            return;
+        }
+        for item in &batch.items {
+            if item.mode != ExecutionMode::Prefill {
+                continue;
+            }
+            if self.frozen_prefill_quantums.contains_key(&item.request_id) {
+                continue;
+            }
+            let Some(record) = self.request_manager.record(item.request_id) else {
+                continue;
+            };
+            if record.state.is_terminal() {
+                continue;
+            }
+            // A step after the first chunk has already moved the cursor past
+            // this item. Do not latch a later, smaller quantum.
+            if record.processed_prompt_tokens > item.scheduled_token_count {
+                continue;
+            }
+            let Some(quantum) = published_adaptive_prefill_quantum(
+                &batch.route_metadata.crossover_decisions,
+                item.request_id.0,
+            ) else {
+                continue;
+            };
+            self.frozen_prefill_quantums
+                .insert(item.request_id, quantum);
+        }
+    }
+
     fn publish_committed_prefixes(&mut self, batch: &ExecutionBatch) {
         if !self.handoff_enabled() {
             return;
@@ -2172,9 +2243,13 @@ impl EngineCore {
                 continue;
             }
             let tokens = record.prompt_tokens[..cut_index].to_vec();
-            let history = self.chunk_histories.entry(item.request_id).or_default();
-            history.push(cut - previous);
-            let prefix = CommittedPrefix::from_committed_tokens(tokens, history.clone(), false);
+            let delta = cut - previous;
+            let history_snapshot = {
+                let history = self.chunk_histories.entry(item.request_id).or_default();
+                history.push(delta);
+                history.clone()
+            };
+            let prefix = CommittedPrefix::from_committed_tokens(tokens, history_snapshot, false);
             self.committed_prefixes.insert(item.request_id, prefix);
         }
     }
@@ -2183,25 +2258,45 @@ impl EngineCore {
         if !self.cancel_checkpoint_ids.insert(request_id) {
             return;
         }
-        let Some(prefix) = self.committed_prefixes.get(&request_id).cloned() else {
+        let Some(mut prefix) = self.committed_prefixes.get(&request_id).cloned() else {
             return;
         };
-        self.cancel_checkpoint_attempts = self.cancel_checkpoint_attempts.saturating_add(1);
-        self.cancel_checkpoints.push(prefix.clone());
-        if !self.prefix_writer.try_submit(prefix.snapshot) {
+        if chunk_history_is_miss(&prefix, &prefix.chunk_history) {
             warn!(
                 request_id = request_id.0,
-                "prefix checkpoint handoff was not queued"
+                "committed prefix chunk history does not match its signature"
+            );
+            return;
+        }
+        self.cancel_checkpoint_attempts = self.cancel_checkpoint_attempts.saturating_add(1);
+        let receipt =
+            self.runner
+                .checkpoint_request(request_id, CheckpointReason::Cancel, prefix.cut);
+        if receipt.adopts_cursor(prefix.cut) {
+            prefix.device_capture = true;
+        } else {
+            warn!(
+                request_id = request_id.0,
+                cut = prefix.cut,
+                "prefix checkpoint was not stored"
             );
         }
+        self.cancel_checkpoints.push(prefix);
     }
 
     fn pressure_sample_after_reclaim(&mut self) -> Option<MemoryPressureSample> {
+        if !self.pressure_requeue {
+            return None;
+        }
         let sample = self.runner.memory_pressure_sample()?;
         if sample.limit_bytes == 0 {
             return None;
         }
-        if sample.idle_cache_bytes == 0 {
+        let pressure_high = sample
+            .hard_bytes()
+            .is_some_and(|hard| sample.active_bytes >= hard)
+            || sample.over_hard();
+        if !pressure_high || sample.idle_cache_bytes == 0 {
             return Some(sample);
         }
         self.runner.reclaim_idle_cache();
@@ -2244,11 +2339,13 @@ impl EngineCore {
     /// `true` when the caller should unblock a request that kept its cursor.
     /// A miss recomputes and leaves the request runnable.
     fn resume_spilled_prefix(&mut self, request_id: RequestId) -> Result<bool, EngineCoreError> {
-        let adopt = self
-            .committed_prefixes
-            .get(&request_id)
-            .is_some_and(|prefix| prefix.device_capture);
-        if adopt {
+        let Some(prefix) = self.committed_prefixes.get(&request_id).cloned() else {
+            self.recompute_for_spill(request_id)?;
+            return Ok(false);
+        };
+        let planned = planned_chunk_history(prefix.cut, self.adoption_quantum(request_id, &prefix));
+        if prefix_adoption_allowed(&prefix, &planned) {
+            self.restore_prefix_tokens.insert(request_id, prefix.tokens);
             return Ok(true);
         }
         self.recompute_for_spill(request_id)?;
@@ -2278,13 +2375,16 @@ impl EngineCore {
         let receipt =
             self.runner
                 .checkpoint_request(victim, CheckpointReason::PressureSpill, prefix.cut);
-        if receipt.adopts_cursor(prefix.cut) {
+        let planned = planned_chunk_history(prefix.cut, self.adoption_quantum(victim, &prefix));
+        if receipt.adopts_cursor(prefix.cut) && !chunk_history_is_miss(&prefix, &planned) {
             self.runner.release_restorable_state(victim);
             self.request_manager.block_on_memory(victim)?;
             self.ssd_spill_hits = self.ssd_spill_hits.saturating_add(1);
             if let Some(stored) = self.committed_prefixes.get_mut(&victim) {
                 stored.device_capture = true;
             }
+            self.restore_prefix_tokens.insert(victim, prefix.tokens);
+            self.release_reservation(victim);
             return Ok(());
         }
         self.release_reservation(victim);
@@ -2321,10 +2421,87 @@ impl EngineCore {
     }
 
     fn recompute_for_spill(&mut self, request_id: RequestId) -> Result<(), EngineCoreError> {
+        self.restore_prefix_tokens.remove(&request_id);
         let mut metrics = PreemptionMetrics::default();
         self.preempt_request(request_id, &mut metrics, false)?;
         self.spill_preemption = self.spill_preemption.merge(metrics);
         Ok(())
+    }
+
+    /// Quantum a later adopter would use for `prefix`. A latched quantum wins
+    /// so a chunk-sensitive request is not compared against a shrunk policy.
+    fn adoption_quantum(&self, request_id: RequestId, prefix: &CommittedPrefix) -> u32 {
+        if let Some(frozen) = self
+            .frozen_prefill_quantums
+            .get(&request_id)
+            .copied()
+            .filter(|quantum| *quantum > 0)
+        {
+            return frozen;
+        }
+        let policy = self.prefill_chunk_policy.quantum(false);
+        if policy > 0 {
+            return policy;
+        }
+        prefix
+            .chunk_history
+            .first()
+            .copied()
+            .filter(|quantum| *quantum > 0)
+            .unwrap_or(1)
+    }
+
+    fn try_restore_cancelled_prefix(
+        &mut self,
+        request_id: RequestId,
+        tokens: &[u32],
+    ) -> Result<(), EngineCoreError> {
+        if !self.cancel_keep_prefix {
+            return Ok(());
+        }
+        let quantum = self.prefill_chunk_policy.quantum(false).max(1);
+        let Some(prefix) = self
+            .cancel_checkpoints
+            .iter()
+            .rev()
+            .find(|prefix| {
+                prefix.cut > 0
+                    && usize::try_from(prefix.cut).ok() == Some(prefix.tokens.len())
+                    && tokens.starts_with(&prefix.tokens)
+                    && prefix_adoption_allowed(prefix, &planned_chunk_history(prefix.cut, quantum))
+            })
+            .cloned()
+        else {
+            return Ok(());
+        };
+        self.request_manager
+            .apply_prefix_reuse(request_id, prefix.cut)?;
+        if self.runner.chunk_sensitive_prefill()
+            && let Some(first) = prefix
+                .chunk_history
+                .first()
+                .copied()
+                .filter(|quantum| *quantum > 0)
+        {
+            self.frozen_prefill_quantums.insert(request_id, first);
+        }
+        self.chunk_histories
+            .insert(request_id, prefix.chunk_history.clone());
+        self.restore_prefix_tokens
+            .insert(request_id, prefix.tokens.clone());
+        self.committed_prefixes.insert(request_id, prefix);
+        Ok(())
+    }
+
+    fn drop_handoff_state(&mut self, request_id: RequestId) {
+        self.committed_prefixes.remove(&request_id);
+        self.chunk_histories.remove(&request_id);
+        self.spill_attempts.remove(&request_id);
+        self.spill_excluded.remove(&request_id);
+        self.frozen_prefill_quantums.remove(&request_id);
+        self.restore_prefix_tokens.remove(&request_id);
+        self.cancel_checkpoint_ids.remove(&request_id);
+        self.release_reservation(request_id);
     }
 
     fn try_reserve_spill(&mut self, request_id: RequestId, bytes: u64) -> bool {
@@ -2349,6 +2526,7 @@ impl EngineCore {
             // Release runner-side GPU resources first so a later free() error
             // cannot skip cleanup and leak per-request state for the process
             // lifetime (MTP buffers, n-gram tables, sampling workspace).
+            self.drop_handoff_state(request_id);
             self.runner.release_request_state(request_id);
             let free_result = self.kv_manager.free(request_id)?;
             self.request_manager.mark_terminal_cleaned(request_id)?;

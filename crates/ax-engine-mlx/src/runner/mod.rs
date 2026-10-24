@@ -374,6 +374,9 @@ struct RequestState {
     /// Set only by successful native media prefill, never by a prefix restore.
     multimodal_prefill_complete: bool,
     prompt_prefix_tokens: Vec<u32>,
+    /// First effective prefill chunk for a chunk-sensitive model. Later
+    /// steps of this request keep it unless warm-extend alignment disagrees.
+    frozen_prefill_chunk: Option<u32>,
     generated_tokens: Vec<u32>,
     cached_prefill_output_token: Option<u32>,
     /// Lazy cache clone captured mid-prefill at the largest block-aligned
@@ -1245,6 +1248,7 @@ impl RequestState {
             cache,
             multimodal_prefill_complete: false,
             prompt_prefix_tokens: Vec::new(),
+            frozen_prefill_chunk: None,
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
             prefill_boundary_snapshot: None,
@@ -1644,6 +1648,12 @@ pub struct MlxRunner {
     /// Effective MLX memory limit in bytes (`0` when the limit is unknown).
     /// Pressure requeue uses 90% / 80% of this value and stays off at `0`.
     mlx_memory_limit: u64,
+    /// Model id from the latest `run`, used when a checkpoint stores a prefix.
+    last_prefix_model_id: Mutex<String>,
+    /// Block size from the latest `run`, paired with `last_prefix_model_id`.
+    last_block_size_tokens: std::sync::atomic::AtomicU32,
+    /// Disk prefix writes that failed or were dropped during checkpoint.
+    checkpoint_write_errors: std::sync::atomic::AtomicU32,
     /// Weight-layout snapshot computed once at construction. `runner.run`
     /// emits this as `ax_mlx_dense_ffn_gate_up_packed_layers` /
     /// `ax_mlx_dense_ffn_split_gate_up_layers` and
@@ -3213,6 +3223,9 @@ impl MlxRunner {
             rotating_sliding_decode,
             direct_clear_cache_cadence,
             mlx_memory_limit: u64::try_from(memory_limit).unwrap_or(u64::MAX),
+            last_prefix_model_id: Mutex::new(String::new()),
+            last_block_size_tokens: std::sync::atomic::AtomicU32::new(0),
+            checkpoint_write_errors: std::sync::atomic::AtomicU32::new(0),
             dflash2: None,
             weight_layout_telemetry,
             affine_quant_telemetry,
@@ -4534,6 +4547,55 @@ struct StagedBatchedPrefill {
     seq_len: usize,
 }
 
+fn prefix_checkpoint_write_error_count(telemetry: &MlxPrefixCacheTelemetry) -> u32 {
+    telemetry
+        .disk_store_commit_failed
+        .saturating_add(telemetry.disk_store_dropped)
+}
+
+fn warn_prefix_checkpoint_write_errors(
+    request_id: RequestId,
+    telemetry: &MlxPrefixCacheTelemetry,
+) -> u32 {
+    let errors = prefix_checkpoint_write_error_count(telemetry);
+    if errors > 0 {
+        tracing::warn!(
+            target: "ax_engine_mlx::prefix_cache",
+            request_id = request_id.0,
+            errors,
+            commit_failed = telemetry.disk_store_commit_failed,
+            dropped = telemetry.disk_store_dropped,
+            "prefix checkpoint write failed"
+        );
+    }
+    errors
+}
+
+/// A checkpoint adopts only when L1 or the disk tier accepted the snapshot.
+/// Write errors stay visible through the counter even when L1 succeeded.
+fn checkpoint_receipt_from_prefix_store(
+    request_id: RequestId,
+    cut: u32,
+    telemetry: &MlxPrefixCacheTelemetry,
+    l1_resident: bool,
+) -> ax_engine_core::prefill_handoff::CheckpointReceipt {
+    let accepted = telemetry.stores > 0
+        || l1_resident
+        || telemetry.disk_store_committed > 0
+        || telemetry.disk_store_enqueued > 0;
+    if !accepted {
+        return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(request_id, cut);
+    }
+    ax_engine_core::prefill_handoff::CheckpointReceipt {
+        request_id,
+        cut,
+        committed: true,
+        ssd_hit: true,
+        unsupported_layout: false,
+        device_capture: true,
+    }
+}
+
 impl ExecutionRunner for MlxRunner {
     fn checkpoint_request(
         &self,
@@ -4541,12 +4603,64 @@ impl ExecutionRunner for MlxRunner {
         _reason: ax_engine_core::prefill_handoff::CheckpointReason,
         committed_limit: u32,
     ) -> ax_engine_core::prefill_handoff::CheckpointReceipt {
-        // Device KV capture is not available in this tree. Do not call the
-        // portable prefix store (that path is intentionally closed for partial
-        // prefills). A token-prefix blob cannot be adopted, so this is a miss
-        // and the engine recomputes without declaring an SSD hit.
-        let _ = (self, committed_limit);
-        ax_engine_core::prefill_handoff::CheckpointReceipt::miss(request_id, committed_limit)
+        let Some(cut) = usize::try_from(committed_limit).ok().filter(|cut| *cut > 0) else {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        };
+        let model_id = self.last_prefix_model_id.lock().clone();
+        let block_size = self
+            .last_block_size_tokens
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if model_id.is_empty() || block_size == 0 {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        let states = self.states.lock();
+        let Some(state) = states.get(&request_id) else {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        };
+        if state.rotating_sliding_latch.is_some() || state.cache.has_unserializable_layers() {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        if state.cache.seq_len() < cut || state.prompt_prefix_tokens.len() < cut {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        let mut snapshot = state.cache.clone();
+        if snapshot.seq_len() > cut && !snapshot.trim_to(cut) {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        if snapshot.seq_len() != cut || snapshot.has_unserializable_layers() {
+            return ax_engine_core::prefill_handoff::CheckpointReceipt::miss(
+                request_id,
+                committed_limit,
+            );
+        }
+        let telemetry = self.store_at_cut(&model_id, block_size, state, cut, &snapshot, 0, "");
+        let errors = warn_prefix_checkpoint_write_errors(request_id, &telemetry);
+        if errors > 0 {
+            self.checkpoint_write_errors
+                .fetch_add(errors, std::sync::atomic::Ordering::Relaxed);
+        }
+        let tokens = &state.prompt_prefix_tokens[..cut];
+        let key = self.prefix_cache_key_with_media(&model_id, block_size, tokens, "");
+        let l1_resident = self.prefix_cache.lock().contains_exact_tokens(&key, tokens);
+        checkpoint_receipt_from_prefix_store(request_id, committed_limit, &telemetry, l1_resident)
     }
 
     fn release_restorable_state(&self, request_id: ax_engine_core::RequestId) {
@@ -4580,6 +4694,14 @@ impl ExecutionRunner for MlxRunner {
         self.mtp_requested && self.has_mtp()
     }
 
+    fn chunk_sensitive_prefill(&self) -> bool {
+        self.cfg.linear_attention.is_some()
+            || self.cfg.mla_attention.is_some()
+            || self.cfg.deepseek_v4.is_some()
+            || self.weights.qwen4_exp.is_some()
+            || self.cfg.model_family == "qwen4_exp"
+    }
+
     fn touch_idle_residency(&self) -> bool {
         // The worker thread already made this stream the default at load.
         // Pin it again so the copy and its eval stay on that stream.
@@ -4587,6 +4709,11 @@ impl ExecutionRunner for MlxRunner {
     }
 
     fn run(&self, input: RunnerInput) -> RunnerOutput {
+        *self.last_prefix_model_id.lock() = input.execution_batch.model_id.clone();
+        self.last_block_size_tokens.store(
+            input.block_size_tokens,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // Keep exact arithmetic model-scoped. This prevents one resident Qwen
         // MTP model from changing the projection path of another model in the
         // same server process. Direct sessions stay off the verifier
@@ -5157,16 +5284,7 @@ impl ExecutionRunner for MlxRunner {
         // here; each row's result is consumed inside its own run_item call
         // below, so per-request bookkeeping and ordering are unchanged.
         let mut staged_prefill = self.stage_batched_prefill(&input, &mut route_metadata);
-        let adaptive_prefill_chunk = input
-            .execution_batch
-            .route_metadata
-            .crossover_decisions
-            .iter()
-            .find_map(|(key, value)| {
-                (*key == ax_engine_core::prefill_handoff::ADAPTIVE_PREFILL_CHUNK_ROUTE_KEY
-                    && *value > 0)
-                    .then_some(*value as usize)
-            });
+        let adaptive_decisions = &input.execution_batch.route_metadata.crossover_decisions;
         for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
             if batched_idx.contains(&item_idx) {
                 continue;
@@ -5175,6 +5293,12 @@ impl ExecutionRunner for MlxRunner {
                 .request_contexts
                 .iter()
                 .find(|c| c.request_id == item.request_id);
+            let adaptive_prefill_chunk =
+                ax_engine_core::prefill_handoff::published_adaptive_prefill_quantum(
+                    adaptive_decisions,
+                    item.request_id.0,
+                )
+                .map(|quantum| quantum as usize);
 
             // The request's `logit_bias` (if any) for the host sampler.
             let _logit_bias_scope =
@@ -7137,16 +7261,41 @@ impl MlxRunner {
                         );
                     // Long remaining prompts clamp to the pure-thr chunk (512);
                     // short prompts keep the session base (e.g. 1536 for S0 TTFT).
-                    // Scheduler adaptive quantum wins over the internal scale so
-                    // the two chunk choices do not cancel each other. Absent
-                    // when `AX_ENGINE_ADAPTIVE_PREFILL` is off.
-                    let prefill_chunk_for_request = adaptive_prefill_chunk.unwrap_or_else(|| {
-                        crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
-                            base_prefill_chunk,
-                            prefill_tokens.len(),
-                            &self.cfg.model_family,
-                        )
-                    });
+                    // The request's own adaptive quantum wins over that scale.
+                    // A warm-extend quantum is applied only when it equals the
+                    // selected MLA chunk, so the SDPA trail stays aligned.
+                    // Absent when `AX_ENGINE_ADAPTIVE_PREFILL` is off.
+                    let scaled_chunk = crate::fastpath::scale_prefill_chunk_for_remaining_in_family(
+                        base_prefill_chunk,
+                        prefill_tokens.len(),
+                        &self.cfg.model_family,
+                    );
+                    let requested_quantum = if self.chunk_sensitive_prefill() {
+                        state
+                            .frozen_prefill_chunk
+                            .filter(|quantum| *quantum > 0)
+                            .map(|quantum| quantum as usize)
+                            .or(adaptive_prefill_chunk)
+                    } else {
+                        adaptive_prefill_chunk
+                    };
+                    let warm_extend = matches!(
+                        prefill_chunk_mode,
+                        crate::fastpath::PrefillChunkMode::WarmExtend
+                    );
+                    let prefill_chunk_for_request =
+                        ax_engine_core::prefill_handoff::effective_prefill_chunk(
+                            requested_quantum.and_then(|chunk| u32::try_from(chunk).ok()),
+                            u32::try_from(base_prefill_chunk).unwrap_or(u32::MAX),
+                            warm_extend,
+                            u32::try_from(scaled_chunk).unwrap_or(u32::MAX),
+                        ) as usize;
+                    if self.chunk_sensitive_prefill()
+                        && state.frozen_prefill_chunk.is_none()
+                        && adaptive_prefill_chunk.is_some()
+                    {
+                        state.frozen_prefill_chunk = u32::try_from(prefill_chunk_for_request).ok();
+                    }
                     state.decode_telemetry.record_prefill_chunk_selection(
                         prefill_chunk_for_request,
                         matches!(

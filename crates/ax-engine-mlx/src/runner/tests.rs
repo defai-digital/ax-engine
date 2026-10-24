@@ -8754,3 +8754,72 @@ fn penalized_mtp_rows_see_the_drafts_before_them() {
     // Row 2 (bonus): drafts 2 and 1.
     assert_eq!(rows[2], vec![0.0, -2.0, 3.0, 2.0]);
 }
+
+#[test]
+fn mlx_checkpoint_stores_through_prefix_cache() {
+    let tokens = vec![1u32, 2, 3, 4];
+    let mut cache = MlxPrefixCache::new(MlxPrefixCachePolicy {
+        max_bytes: 1024 * 1024,
+        max_entries: 8,
+    });
+    let key = MlxPrefixCacheKey {
+        model_id: "model".to_string(),
+        route_policy: "route".to_string(),
+        layer_layout: "layers".to_string(),
+        block_size_tokens: 16,
+        token_count: u32::try_from(tokens.len()).expect("len"),
+        token_hash: hash_prefix_tokens(&tokens),
+        media_key: String::new(),
+    };
+    let snapshot = MlxPrefixSnapshot::from_shared_payload(
+        Arc::<[u8]>::from(vec![7u8, 8, 9]),
+        tokens.clone(),
+        tokens.len(),
+        None,
+        None,
+    );
+    assert!(cache.insert(key.clone(), snapshot).stored);
+    assert!(cache.contains_exact_tokens(&key, &tokens));
+
+    let disk_key = crate::disk_prefix_cache::canonical_key_bytes(
+        &crate::disk_prefix_cache::DiskPrefixKeyFields {
+            model_id: &key.model_id,
+            artifact_fingerprint_sha256: "fingerprint",
+            route_policy: &key.route_policy,
+            layer_layout: &key.layer_layout,
+            kv_payload_version: 4,
+            kv_quantization: "f16",
+            kv_dtype: "float16",
+            execution_signature: "route=test",
+            block_size_tokens: key.block_size_tokens,
+            token_count: key.token_count,
+            tokens: &tokens,
+        },
+    );
+    let domain = b"ax.mlx.disk_prefix_key.v4";
+    assert!(
+        disk_key
+            .windows(domain.len())
+            .any(|window| window == domain),
+        "disk tier key must use the v4 prefix domain"
+    );
+
+    let stored = MlxPrefixCacheTelemetry {
+        stores: 1,
+        disk_store_commit_failed: 1,
+        ..MlxPrefixCacheTelemetry::default()
+    };
+    assert_eq!(prefix_checkpoint_write_error_count(&stored), 1);
+    let receipt = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &stored, true);
+    assert!(receipt.adopts_cursor(4));
+    assert!(receipt.device_capture);
+    assert!(receipt.ssd_hit);
+
+    let dropped = MlxPrefixCacheTelemetry {
+        disk_store_dropped: 1,
+        ..MlxPrefixCacheTelemetry::default()
+    };
+    assert_eq!(prefix_checkpoint_write_error_count(&dropped), 1);
+    let miss = checkpoint_receipt_from_prefix_store(RequestId(7), 4, &dropped, false);
+    assert!(!miss.adopts_cursor(4));
+}

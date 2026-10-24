@@ -417,6 +417,12 @@ pub trait ExecutionRunner: fmt::Debug + Send + Sync {
     /// Return the idle MLX cache to the allocator before a pressure check.
     fn reclaim_idle_cache(&self) {}
 
+    /// GDN, QSA, and MLA change recurrent or latent state with the prefill
+    /// chunk, so the first quantum of a request stays in force.
+    fn chunk_sensitive_prefill(&self) -> bool {
+        false
+    }
+
     /// Model-based multi-token prediction is active for this runner.
     fn mtp_active(&self) -> bool {
         false
