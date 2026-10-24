@@ -2,7 +2,7 @@
 
 The native SwiftUI app provides local model browsing, downloads, server controls,
 streaming chat and runtime metrics. The CLI remains available; the TUI is retired.
-The app targets Apple Silicon and macOS 26 or later. Inference stays in the
+The app targets Apple Silicon and macOS 26.2 or later. Inference stays in the
 AX Engine runtime; the GUI does not change model support or certification.
 
 ## Build and open
@@ -18,7 +18,9 @@ open "build/macos/AX Engine.app"
 
 Use `--release` for an optimized app build. The build is locally ad-hoc signed;
 it is not a published or notarized distribution. Developer ID signing,
-notarization and signed updates remain release work. The icon is generated from
+notarization and public cutover use the separate [distribution tooling](MACOS-DISTRIBUTION.md).
+A local source build does not activate that channel. Automatic signed updates
+remain future work. The icon is generated from
 the supplied original artwork, with the same composition-preserving safe-zone,
 rounded-plate and multi-resolution checks used by AX Code Desktop.
 

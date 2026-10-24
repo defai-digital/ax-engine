@@ -62,7 +62,7 @@ with open(sys.argv[1], 'wb') as dest:
         'CFBundleIdentifier': 'com.automatosx.ax-engine',
         'CFBundleExecutable': 'AXEngineApp', 'CFBundlePackageType': 'APPL',
         'CFBundleShortVersionString': sys.argv[2], 'CFBundleVersion': sys.argv[2],
-        'CFBundleIconFile': 'AppIcon', 'LSMinimumSystemVersion': '26.0',
+        'CFBundleIconFile': 'AppIcon', 'LSMinimumSystemVersion': '26.2',
         'NSHighResolutionCapable': True,
         'NSHumanReadableCopyright': 'AX Engine contributors.',
         'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},

@@ -412,3 +412,8 @@ bash scripts/check-offline-policy-search-artifacts.sh
 
 "$PYTHON_BIN" -m unittest scripts/test_check_flash_next_peer_bench_plan.py
 "$PYTHON_BIN" scripts/check_flash_next_peer_bench_plan.py --dry-run
+
+# GUI release tooling is operator-only; the shipped bootstrap has no Python dependency.
+"$PYTHON_BIN" -m py_compile scripts/release-macos-app.py
+"$PYTHON_BIN" -m unittest scripts/test_release_macos_app.py scripts/test_macos_gui_install.py
+bash -n packaging/macos/distribution/install
