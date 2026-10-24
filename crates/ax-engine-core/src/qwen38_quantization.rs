@@ -220,4 +220,143 @@ mod tests {
                 .contains("audited")
         );
     }
+
+    fn empty_pack_dir(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "ax-qwen38-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        root
+    }
+
+    fn manifest_from(family: &str, tensors: serde_json::Value) -> NativeModelManifest {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": "ax.native_model.v1",
+            "model_family": family,
+            "tensor_format": "safetensors",
+            "layer_count": 1,
+            "hidden_size": 64,
+            "attention_head_count": 1,
+            "attention_head_dim": 64,
+            "kv_head_count": 1,
+            "vocab_size": 32,
+            "tensors": tensors,
+        }))
+        .unwrap()
+    }
+
+    fn listed_tensor(name: &str, role: &str, quant: Option<(&str, u32, u32)>) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "name": name,
+            "role": role,
+            "dtype": "u32",
+            "shape": [64, 12],
+            "file": "optiq-mixed-2bit.safetensors",
+            "offset_bytes": 0,
+            "length_bytes": 8,
+        });
+        if let Some((mode, bits, group_size)) = quant {
+            value["quantization"] = serde_json::json!({
+                "mode": mode,
+                "bits": bits,
+                "group_size": group_size,
+            });
+        } else {
+            value["dtype"] = serde_json::json!("bf16");
+        }
+        value
+    }
+
+    /// Admission reads the manifest only. The named weight file is absent on
+    /// purpose: a loader that opened it would not be able to return this
+    /// policy error.
+    #[test]
+    fn standalone_two_bit_rejected() {
+        let root = empty_pack_dir("two-bit");
+        for (bits, group_size) in [(2, 64), (2, 32)] {
+            let manifest = manifest_from(
+                "qwen4_exp",
+                serde_json::json!([listed_tensor(
+                    "layers.0.mlp.experts.gate_proj.weight",
+                    "ffn_gate_exps",
+                    Some(("affine", bits, group_size)),
+                )]),
+            );
+            let error = validate(&root, &manifest).unwrap_err();
+            assert!(
+                error.contains("not supported"),
+                "affine {bits}/{group_size}: {error}"
+            );
+        }
+        std::fs::write(
+            root.join("axquant_manifest.json"),
+            r#"{"source_model":{"model_id":"Qwen/Qwen3.8-27B"}}"#,
+        )
+        .unwrap();
+        let manifest = manifest_from(
+            "qwen3_5",
+            serde_json::json!([listed_tensor(
+                "model.layers.0.self_attn.q_proj.weight",
+                "attention_q",
+                Some(("affine", 2, 64)),
+            )]),
+        );
+        let error = validate(&root, &manifest).unwrap_err();
+        assert!(error.contains("not supported"), "{error}");
+        assert!(!root.join("optiq-mixed-2bit.safetensors").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// OptiQ-style mix: 2-bit experts, a wider affine projection, and a plain
+    /// norm tensor, with no AXQuant identity. Refused from the manifest before
+    /// any weight file is opened. A folded-norm manifest that also lacks a
+    /// supported product quantizer is refused the same way.
+    #[test]
+    fn optiq_mixed_pack_rejected() {
+        let root = empty_pack_dir("optiq-mixed");
+        let manifest = manifest_from(
+            "qwen4_exp",
+            serde_json::json!([
+                listed_tensor(
+                    "layers.0.mlp.experts.gate_proj.weight",
+                    "ffn_gate_exps",
+                    Some(("affine", 2, 32)),
+                ),
+                listed_tensor(
+                    "layers.0.self_attn.q_proj.weight",
+                    "attention_q",
+                    Some(("affine", 4, 64)),
+                ),
+                listed_tensor(
+                    "layers.0.self_attn.k_proj.weight",
+                    "attention_k",
+                    Some(("affine", 8, 64)),
+                ),
+                listed_tensor("layers.0.self_attn.q_norm.weight", "attention_q_norm", None,),
+            ]),
+        );
+        let error = validate(&root, &manifest).unwrap_err();
+        assert!(error.contains("not supported"), "{error}");
+        let folded_only = manifest_from(
+            "qwen4_exp",
+            serde_json::json!([listed_tensor(
+                "layers.0.self_attn.q_norm.weight",
+                "attention_q_norm",
+                None,
+            )]),
+        );
+        let folded_error = validate(&root, &folded_only).unwrap_err();
+        assert!(
+            folded_error.contains("requires"),
+            "folded norm pack without a supported quantizer identity: {folded_error}"
+        );
+        assert!(!root.join("optiq-mixed-2bit.safetensors").exists());
+        assert!(!root.join("axquant_manifest.json").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

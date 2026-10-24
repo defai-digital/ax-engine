@@ -913,12 +913,25 @@ fn is_false(value: &bool) -> bool {
 /// conv1d axes were already swapped by `mlx_lm.convert` to the MLX layout
 /// `(out, kernel, in)` but the RMSNorm weights were NOT lifted from their
 /// zero-centered delta representation. Use `HfNormOnly` for these.
+///
+/// Flash Next (`qwen4_exp`) decides delta versus folded gains only from this
+/// field, the AXQuant exporter identity, or an explicit
+/// `axquant_manifest.json` field (`runtime.ax_engine.weight_layout.norm_weights`
+/// of `raw_delta` or `folded`, or `weight_sanitize` of `hf_norm_only`,
+/// `hf_to_mlx`, or `folded`). `HfNormOnly` and `HfToMlx` store a delta
+/// (`effective gain = 1 + weight`), added once in fp32. Folded gains are the
+/// effective multiplier already and are used as stored. `None` does not
+/// declare either contract. The loader refuses a missing or contradictory
+/// contract instead of inspecting tensor values or file names. GDN norms are
+/// never offset. `AX_FLASH_NEXT_NORM_CONTRACT=0` restores the previous Flash
+/// Next loader, which treated `None` as already folded.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WeightSanitize {
-    /// Weights are already in MLX layout (the mlx-community convention).
-    /// No transforms are applied at load time. This is the default to keep
-    /// existing manifests backward-compatible.
+    /// Weights are already in MLX layout (the mlx-community convention) for
+    /// families other than Flash Next. No transforms are applied at load time.
+    /// This is the default to keep existing manifests backward-compatible.
+    /// Flash Next does not treat this default as a folded-norm declaration.
     #[default]
     None,
     /// Weights are in the raw HuggingFace convention. The loader will:
@@ -1214,6 +1227,8 @@ pub struct NativeModelManifest {
     /// pre-sanitized layout) so existing manifests deserialize unchanged.
     /// Set to `hf_to_mlx` in raw HuggingFace checkpoints' manifests to
     /// have the loader apply the norm-delta and conv1d-axis transforms.
+    /// Flash Next requires an explicit delta or folded contract; an omitted
+    /// value is not a folded-norm declaration. See [`WeightSanitize`].
     #[serde(default, skip_serializing_if = "WeightSanitize::is_none")]
     pub weight_sanitize: WeightSanitize,
     /// Token ID for `<think>` (Qwen3 reasoning models: 151668).
