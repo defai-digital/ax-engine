@@ -265,6 +265,9 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_RESTORE_VALUE_RAM_BASELINE: &str =
 /// Lifetime count of prefix checkpoints refused because linear, GDN, or QSA
 /// state was not already at the requested cut. Emitted as a per-step delta.
 const ROUTE_DECISION_AX_MLX_CHECKPOINT_UNSUPPORTED: &str = "ax_mlx_checkpoint_unsupported";
+/// Lifetime count of prefix checkpoint disk writes that failed or were dropped.
+/// Emitted as a per-step delta, same as [`ROUTE_DECISION_AX_MLX_CHECKPOINT_UNSUPPORTED`].
+const ROUTE_DECISION_AX_MLX_CHECKPOINT_WRITE_ERRORS: &str = "ax_mlx_checkpoint_write_errors";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_HITS: &str = "ax_mlx_prefix_cache_disk_hits";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_MISSES: &str = "ax_mlx_prefix_cache_disk_misses";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERTS: &str = "ax_mlx_prefix_cache_disk_inserts";
@@ -5486,6 +5489,22 @@ impl ExecutionRunner for MlxRunner {
                     route_decisions.upsert_route_decision(
                         ROUTE_DECISION_AX_MLX_CHECKPOINT_UNSUPPORTED,
                         checkpoint_unsupported,
+                    );
+                }
+            }
+            // Per-step delta of checkpoint disk writes that failed or were
+            // dropped. A zero load stays off the route map.
+            let checkpoint_write_errors = self
+                .checkpoint_write_errors
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if checkpoint_write_errors > 0 {
+                let checkpoint_write_errors = self
+                    .checkpoint_write_errors
+                    .swap(0, std::sync::atomic::Ordering::Relaxed);
+                if checkpoint_write_errors > 0 {
+                    route_decisions.upsert_route_decision(
+                        ROUTE_DECISION_AX_MLX_CHECKPOINT_WRITE_ERRORS,
+                        checkpoint_write_errors,
                     );
                 }
             }

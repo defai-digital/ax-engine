@@ -596,6 +596,15 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
             process.mlx_checkpoint_unsupported_total,
             |step: &crate::app_state::EngineStepGauges| step.mlx_checkpoint_unsupported_total,
         );
+        append_step_metric(
+            &mut body,
+            "ax_engine_mlx_checkpoint_write_errors_total",
+            "Prefix checkpoint disk writes that failed or were dropped.",
+            "counter",
+            &step_models,
+            process.mlx_checkpoint_write_errors_total,
+            |step: &crate::app_state::EngineStepGauges| step.mlx_checkpoint_write_errors_total,
+        );
         let restore_value_decisions: Vec<(&str, u64)> =
             ["semantic_cut", "priced_restore", "ram_baseline"]
                 .into_iter()
