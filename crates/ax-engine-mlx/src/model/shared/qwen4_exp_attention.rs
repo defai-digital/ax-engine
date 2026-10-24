@@ -696,6 +696,10 @@ impl Qwen4ExpAttention {
         };
         #[cfg(test)]
         crate::model::qwen4_exp::profiling::mark("qsa_d_attend", &[&attn]);
+        // Optional per-layer attention capture for the indexed-prefill drift
+        // test; a no-op unless that test armed the recorder.
+        #[cfg(test)]
+        crate::model::qwen4_exp::profiling::capture_attention(&attn);
         let attn = reshape(
             &transpose(&attn, &[0, 2, 1, 3], None),
             &[batch, seq, cfg.query_width],

@@ -103,6 +103,13 @@ fn dispatches() -> u64 {
     INDEXED_DISPATCHES.with(std::cell::Cell::get)
 }
 
+/// Kernel dispatches issued on this thread so far, so a real-pack comparison
+/// can prove the indexed arm actually ran instead of silently falling back.
+#[cfg(test)]
+pub(crate) fn dispatch_count() -> u64 {
+    dispatches()
+}
+
 /// One chunk's selection packed into the row-major index tile.
 struct PackedSelection {
     indices: MlxArray,
@@ -914,14 +921,20 @@ mod tests {
             QsaSelection::from_host_tokens(vec![chosen])
         };
         let scale = 1.0 / (dim as f32).sqrt();
+        // `[1, heads, seq, dim]` is head-major: a contiguous prefix of the
+        // flat data is *not* the first `count` queries of every head, so slice
+        // the sequence axis instead.
+        let all_queries = mlx_sys::astype(
+            &array_f32(&q, &[1, q_heads, big, dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
         let run = |first_query: i32, count: i32| -> MlxArray {
-            let queries = mlx_sys::astype(
-                &array_f32(
-                    &q[(first_query * q_heads * dim) as usize
-                        ..((first_query + count) * q_heads * dim) as usize],
-                    &[1, q_heads, count, dim],
-                ),
-                MlxDtype::Bfloat16,
+            let queries = slice(
+                &all_queries,
+                &[0, 0, first_query, 0],
+                &[1, q_heads, first_query + count, dim],
+                &[1, 1, 1, 1],
                 None,
             );
             let selection = selection_for(first_query, count);
@@ -937,10 +950,8 @@ mod tests {
         let wide_again = run(0, big);
         let narrow = run(0, small);
         let flat = |array: &MlxArray| -> Vec<f32> {
-            let values = mlx_sys::contiguous(
-                &mlx_sys::astype(array, MlxDtype::Float32, None),
-                None,
-            );
+            let values =
+                mlx_sys::contiguous(&mlx_sys::astype(array, MlxDtype::Float32, None), None);
             eval(&[&values]);
             values.data_f32().to_vec()
         };
@@ -950,24 +961,31 @@ mod tests {
             .zip(&b)
             .map(|(x, y)| (x - y).abs())
             .fold(0.0f32, f32::max);
+        // The output is `[1, heads, seq, dim]`, so the two runs share a row at
+        // `h * seq * dim + s * dim + d`, not at a token-major offset: `seq`
+        // differs between them and a token-major index would compare different
+        // heads.
+        let (heads, dims) = (q_heads as usize, dim as usize);
         let mut mismatched = 0usize;
         let mut worst = 0.0f32;
         let mut first = None;
-        let plane = (q_heads * dim) as usize;
-        for s in 0..small as usize {
-            for i in 0..plane {
-                let index = s * plane + i;
-                let delta = (n[index] - a[index]).abs();
-                if delta > 0.0 {
-                    mismatched += 1;
-                    worst = worst.max(delta);
-                    first.get_or_insert(index);
+        for h in 0..heads {
+            for s in 0..small as usize {
+                for d in 0..dims {
+                    let narrow_index = (h * small as usize + s) * dims + d;
+                    let wide_index = (h * big as usize + s) * dims + d;
+                    let delta = (n[narrow_index] - a[wide_index]).abs();
+                    if delta > 0.0 {
+                        mismatched += 1;
+                        worst = worst.max(delta);
+                        first.get_or_insert((h, s, d, delta));
+                    }
                 }
             }
         }
         eprintln!(
             "CHUNK_SIZE_DIAG repeat_delta={repeat_delta} mismatched_elems={mismatched}/{} worst={worst} first={first:?}",
-            small as usize * plane
+            small as usize * heads * dims
         );
         assert_eq!(
             repeat_delta, 0.0,
@@ -975,7 +993,7 @@ mod tests {
         );
         assert_eq!(
             mismatched, 0,
-            "a {big}-query chunk disagrees with a {small}-query chunk on              {mismatched} elements (worst {worst}, first {first:?})"
+            "a {big}-query chunk disagrees with a {small}-query chunk on {mismatched} elements (worst {worst}, first {first:?})"
         );
     }
 
