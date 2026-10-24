@@ -23,7 +23,7 @@ different machine and context length) is not reachable from QSA alone.
 
 | Increment | Exactness | Measured (M2 Ultra, release) | Decision |
 |---|---|---|---|
-| Indexed sparse prompt attention: Metal kernel reading selected KV by index instead of per-query copies (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`) | Tolerance tests pass; the 8,192-token / 256-token greedy text identity check failed (cause not isolated) | `qsa_d_attend` 4.401 -> 4.189 s (-4.8%), wall 23.42 -> 22.22 s (-5.1%), peak unchanged | Not merged |
+| Indexed sparse prompt attention: Metal kernel reading selected KV by index instead of per-query copies (`AX_MLX_FLASH_NEXT_QSA_INDEXED_PREFILL`) | Tolerance tests pass; greedy text differs at 8,192 tokens. Diagnosed as rounding drift, not a bug: prefill argmax identical in all four chunks, the first greedy flip is an exact tie (margin 0.0) on the shipped path. Bit-exactness is not reachable (MLX SDPA vector 2-pass splits keys across simdgroups; the kernel walks them sequentially) | `qsa_d_attend` 4.401 -> 4.189 s (-4.8%), wall 23.42 -> 22.22 s (-5.1%), peak unchanged | Not merged |
 | MoE inverse permutation by scatter instead of a second argsort (`AX_MLX_FLASH_NEXT_MOE_INVERSE_SCATTER`) | Bit-identical (integer permutation and all outputs) | Microbench 0.38 -> 0.24 ms per inverse; end-to-end `moe_compute` within noise (warm pair 10.81 -> 11.13 s) | Not merged |
 
 Already shipped from the same item: tiled QSA scores (opt-in, ~2.6% TTFT with an
